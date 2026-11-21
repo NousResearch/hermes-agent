@@ -817,6 +817,9 @@ gateway:
   plan:
     ack_task: "正在規劃：{task}"
     ack_conversation: "正在根據此對話的上下文進行規劃…"
+  implement:
+    ack_plan: "正在實施計畫：{plan}"
+    ack_locate: "正在尋找最新儲存的計畫…"
   init:
     start_failed: "無法啟動 /init — 請再試一次。"
     ack_update: "正在依專案掃描結果更新 AGENTS.md…"
@@ -1620,6 +1623,8 @@ slash:
     description: "在此工作階段以固定間隔重複執行提示"
   plan:
     description: "將 markdown 實作計畫寫入 .hermes/plans/，不執行任何動作"
+  implement:
+    description: "將已儲存的 /plan 檔案（預設最新）作為下一輪執行"
   moa:
     description: "以預設的 Mixture of Agents 預設組執行一次提示，然後還原你的模型"
   subgoal:
@@ -3036,6 +3041,9 @@ cli:
     plan:
       planning: "📋 規劃中：{task}"
       from_conversation: "📋 正在根據這段對話的上下文進行規劃…"
+    implement:
+      running: "⚙ 正在實施計畫：{plan}"
+      locating: "⚙ 正在尋找最新儲存的計畫..."
     init:
       updating: "⚡ 正在根據專案掃描更新 AGENTS.md…"
       generating: "⚡ 正在根據專案掃描產生 AGENTS.md…"

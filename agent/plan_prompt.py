@@ -52,8 +52,8 @@ Interaction style:
 - If it is genuinely underspecified, ask a brief clarifying question instead
   of guessing.
 - After saving the plan, reply briefly with what you planned and the saved
-  path, and offer to execute it (e.g. via subagent-driven development) —
-  but do not start executing in this turn.
+  path, and tell the user that `/implement` runs it (`/new` first for a
+  clean context) — but do not start executing in this turn.
 """
 
 

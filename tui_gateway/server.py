@@ -1936,7 +1936,7 @@ def _finish_reload(rid, params: dict, *, coalesced: bool) -> dict:
 # slash.exec routes them to command.dispatch instead.
 _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset({
     "retry", "queue", "q", "steer", "plan", "goal", "loop", "proactive", "moa", "undo", "learn",
-    "init", "compress", "compact",
+    "init", "implement", "compress", "compact",
 })
 
 _WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})

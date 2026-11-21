@@ -835,6 +835,9 @@ gateway:
   plan:
     ack_task: "Planning: {task}"
     ack_conversation: "Planning from this conversation's context…"
+  implement:
+    ack_plan: "Implementing plan: {plan}"
+    ack_locate: "Looking for your newest saved plan…"
 
   init:
     start_failed: "Could not start /init — please try again."
@@ -1692,6 +1695,8 @@ slash:
     description: "Re-run a prompt on a recurring interval in this session"
   plan:
     description: "Write a markdown implementation plan to .hermes/plans/ without executing anything"
+  implement:
+    description: "Execute a saved /plan file (newest by default) as the next turn"
   moa:
     description: "Run one prompt through the default Mixture of Agents preset, then restore your model"
   subgoal:
@@ -3137,6 +3142,9 @@ cli:
     plan:
       planning: "📋 Planning: {task}"
       from_conversation: "📋 Planning from this conversation's context..."
+    implement:
+      running: "⚙ Implementing plan: {plan}"
+      locating: "⚙ Looking for your newest saved plan..."
     init:
       updating: "⚡ Updating AGENTS.md from a project scan..."
       generating: "⚡ Generating AGENTS.md from a project scan..."

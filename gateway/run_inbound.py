@@ -1011,6 +1011,22 @@ class GatewayInboundMixin(
                 if task else t("gateway.plan.ack_conversation"))
         return await self._hm_rewrite_turn_to_prompt(event, source, "plan", _ack, lambda: build_plan_prompt(task))
 
+    async def _hm_cmd_implement(self, event, source, _quick_key):
+        # The plan resolves in the SESSION's directory (/init's ladder), read before the ack so
+        # the ack names the plan that will run.
+        from agent.implement_prompt import build_implement_prompt_for_session
+
+        try:
+            prompt, label = await asyncio.to_thread(
+                build_implement_prompt_for_session, event.get_command_args().strip(),
+                session_key=_quick_key or self._session_key_for_source(source))
+        except OSError:  # an unreadable plan dir; find_plan already tolerates missing plans
+            return True, t("gateway.prompt_command.start_failed", command="implement")
+        _ack = t("gateway.implement.ack_plan", plan=label) if label else t("gateway.implement.ack_locate")
+        await self._send_command_ack(source, _ack, "implement")
+        event.text = prompt
+        return False, None
+
     async def _hm_cmd_init(self, event, source, _quick_key):
         # /init builds the prompt first: the ack wording depends on whether AGENTS.md exists.
         from hermes_cli.init_command import build_init_prompt_for_cwd
@@ -1083,7 +1099,8 @@ class GatewayInboundMixin(
     # Idle-path built-ins with bespoke flow (confirmations, prompt rewrites, one-shot MoA), each
     # handled by ``_hm_cmd_<name>`` → ``(handled, result)``; ``(False, None)`` falls through to the agent.
     _HM_CANONICAL_COMMANDS = frozenset({
-        "new", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue", "steer", "moa",
+        "new", "start", "egress", "learn", "plan", "implement", "init", "blueprint", "undo", "queue", "steer",
+        "moa",
     })
 
     async def _hm_dispatch_canonical_command(

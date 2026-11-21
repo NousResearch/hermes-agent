@@ -208,3 +208,46 @@ class TestRunnerConstruction:
         r = ComfyRunner(host="https://cloud.comfy.org", api_key="x")
         url = r._url("/history/abc-123")
         assert url == "https://cloud.comfy.org/api/history_v2/abc-123"
+
+
+# =============================================================================
+# submit() payload
+# =============================================================================
+
+class TestSubmitPayload:
+    def _submit(self, monkeypatch, workflow):
+        import run_workflow as rw
+        from _common import HTTPResponse
+
+        captured = {}
+
+        def fake_post(url, **kwargs):
+            captured["payload"] = kwargs["json_body"]
+            return HTTPResponse(
+                status=200, headers={}, body=b'{"prompt_id": "p1"}', url=url
+            )
+
+        monkeypatch.setattr(rw, "http_post", fake_post)
+        ComfyRunner().submit(workflow)
+        return captured["payload"]
+
+    def test_strips_non_node_top_level_keys(self, monkeypatch, sd15_workflow):
+        # Bundled workflows carry a top-level "_comment" string. Forwarding it
+        # makes ComfyUI's validate_prompt call .get() on a str and return 500.
+        assert "_comment" in sd15_workflow
+        payload = self._submit(monkeypatch, sd15_workflow)
+        assert "_comment" not in payload["prompt"]
+
+    def test_keeps_every_node(self, monkeypatch, sd15_workflow):
+        expected = {
+            node_id
+            for node_id, node in sd15_workflow.items()
+            if isinstance(node, dict) and "class_type" in node
+        }
+        payload = self._submit(monkeypatch, sd15_workflow)
+        assert set(payload["prompt"]) == expected
+        assert expected  # guard against a vacuously passing test
+
+    def test_keeps_client_id(self, monkeypatch, sd15_workflow):
+        payload = self._submit(monkeypatch, sd15_workflow)
+        assert payload["client_id"]

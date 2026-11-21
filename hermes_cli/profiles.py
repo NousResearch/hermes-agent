@@ -21,7 +21,7 @@ from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_arc
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
 from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES, provider_plugin_snapshot_dir
-from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, delete_failed_error, delete_incomplete_message, wait_profile_unowned
+from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, delete_failed_error, delete_incomplete_message, record_delete_finished, wait_profile_unowned
 from hermes_cli.profiles_export_scrub import (
     GATEWAY_CONNECTION_STORE_RE as _GATEWAY_CONNECTION_STORE_RE, GATEWAY_CONNECTION_STORES as _GATEWAY_CONNECTION_STORES,
     scrub_export_secrets as _scrub_export_secrets)
@@ -1730,7 +1730,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     _stop_bot_desktop(profile_dir)
 
     # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
-    mark_named_profile_deleted(profile_dir)
+    mark_named_profile_deleted(profile_dir, incomplete=True)  # until rmtree succeeds
     # The multiplexer sees the tombstone, stops this profile's adapters and releases its handles
     # into the directory before we remove it. Identity settlement is a separate delete-only
     # operation below: an ordinary unserve must preserve identity, because a rename's old name
@@ -1781,6 +1781,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         if not wait_profile_unowned(profile_dir):
             raise RuntimeError("a running gateway still owns this profile; retry the delete once it settles")
         _rmtree_with_retry(profile_dir, _rmtree_make_writable)
+        record_delete_finished(profile_dir)
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")

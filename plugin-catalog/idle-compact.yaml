@@ -1,0 +1,12 @@
+name: idle-compact
+repo: https://github.com/npetroff24/hermes-plugin-idle-compact
+sha: 2c2204f42e893740d866142289f5a484876ec89f
+description: Warm (cache-hit) compaction for Hermes chats: compacts in the background while idle, stays warm when busy.
+maintainer: npetroff24
+tier: community
+category: memory
+version: "0.9.31"
+capabilities:
+  provides_tools: []
+  provides_hooks: ["on_session_end", "post_api_request", "pre_api_request"]
+  provides_middleware: ["llm_execution"]

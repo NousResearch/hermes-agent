@@ -668,8 +668,9 @@ def failed_delegations_for_session(
     if not (origin_ui_session_id or parent_session_id):
         return []
     with _DB_LOCK, _ledger() as store:
+        # Count failed tasks after filtering the retained terminal rows.
         rows = store.coordination.list_finished_delegations(
-            origin_ui_session_id=origin_ui_session_id, parent_session_id=parent_session_id, limit=limit, now=now)
+            origin_ui_session_id=origin_ui_session_id, parent_session_id=parent_session_id, limit=-1, now=now)
     failed: list[dict[str, Any]] = []
     for row in rows:
         delegation_id, state, dispatched_at, completed_at = row.delegation_id, row.state, row.dispatched_at, row.completed_at

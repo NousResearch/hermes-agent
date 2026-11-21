@@ -1705,13 +1705,24 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
     ``(runtime, model)``; provider+model swap atomically (never swap only the provider while keeping
     a paid primary model). Provider precedence: per-job pin > cron.model_provider > persisted
     global config (None lets resolve_runtime_provider read it). A pinned job has no chain here
-    (``_job_fallback_chain``): its resolve failure is the job's failure."""
+    (``_job_fallback_chain``): its resolve failure is the job's failure. An unpinned job whose primary
+    this process already holds unhealthy (the auxiliary ladder's payment/credit marks) starts on its
+    chain, the way a side job skips it, instead of paying a refused first call."""
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider, format_runtime_provider_error)
     from hermes_cli.auth import AuthError
 
     model = jc.model
     requested = job.get("provider") or jc.cron_default_provider or None
+    primary = requested or (jc.model_cfg.get("provider") if isinstance(jc.model_cfg, dict) else "") or ""
+    if not _job_route_pinned(job) and not job.get("base_url"):
+        from agent.auxiliary_client import _is_provider_unhealthy, _normalize_chain_label
+        if _is_provider_unhealthy(_normalize_chain_label(primary)):
+            moved = _resolve_from_chain(job, job_id, jc, requested, model, skip=primary)
+            if moved is not None:
+                logger.info("Job '%s': primary provider %s is marked unhealthy; started on %s model %s",
+                            job_id, primary, moved[0].get("provider"), moved[1])
+                return moved
     try:
         # Do NOT pass HERMES_INFERENCE_PROVIDER as `requested`: it would override persisted config
         # and resurrect stale providers for unpinned jobs.
@@ -1737,33 +1748,51 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             job_id, "auth" if is_auth else "transient network", resolve_exc,
             "trying fallback" if chain else (
                 "not falling back: the job is pinned" if _job_route_pinned(job) else "no fallback configured"))
-        for entry in chain:
-            if not isinstance(entry, dict):
-                continue
-            fb_provider = str(entry.get("provider") or "").strip()
-            fb_model = str(entry.get("model") or "").strip()
-            if not fb_provider or not fb_model:
-                continue
-            try:
-                from hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs
-
-                runtime = resolve_runtime_provider(**fallback_entry_runtime_kwargs(entry))
-                # Named custom entries resolve to the bare "custom" billing class; keep the configured
-                # identity so job sessions record the provider name (#98739).
-                runtime["provider"] = effective_runtime_provider(entry, runtime)
-                logger.info(
-                    "Job '%s': fallback resolved to %s model %s",
-                    job_id, runtime.get("provider"), fb_model)
-                # Delivered with the job output (#74349): a cron agent has no status rail, so the
-                # switch would otherwise stay in the scheduler log only. run_job pops it.
-                from hermes_cli.fallback_config import pre_agent_fallback_notice
-                runtime["_fallback_notice"] = pre_agent_fallback_notice(
-                    requested or (jc.model_cfg.get("provider") if isinstance(jc.model_cfg, dict) else ""),
-                    model, runtime.get("provider"), fb_model)
-                return runtime, fb_model
-            except Exception as fb_exc:
-                logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
+        moved = _resolve_from_chain(job, job_id, jc, requested, model)
+        if moved is not None:
+            return moved
         raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
+
+
+def _resolve_from_chain(job: dict, job_id: str, jc: _CronJobConfig, requested, model: str,
+                        skip: str = "") -> Optional[tuple[dict, str]]:
+    """The first entry of the job's fallback chain that resolves, as ``(runtime, model)``, else None.
+    ``skip`` names a provider label not to try (the unhealthy primary)."""
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    skip_label = ""
+    if skip:
+        from agent.auxiliary_client import _normalize_chain_label
+        skip_label = _normalize_chain_label(skip)
+    for entry in _job_fallback_chain(job, jc.cfg) or []:
+        if not isinstance(entry, dict):
+            continue
+        fb_provider = str(entry.get("provider") or "").strip()
+        fb_model = str(entry.get("model") or "").strip()
+        if not fb_provider or not fb_model:
+            continue
+        if skip_label and _normalize_chain_label(fb_provider) == skip_label:
+            continue
+        try:
+            from hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs
+
+            runtime = resolve_runtime_provider(**fallback_entry_runtime_kwargs(entry))
+            # Named custom entries resolve to the bare "custom" billing class; keep the configured
+            # identity so job sessions record the provider name (#98739).
+            runtime["provider"] = effective_runtime_provider(entry, runtime)
+            logger.info(
+                "Job '%s': fallback resolved to %s model %s",
+                job_id, runtime.get("provider"), fb_model)
+            # Delivered with the job output (#74349): a cron agent has no status rail, so the
+            # switch would otherwise stay in the scheduler log only. run_job pops it.
+            from hermes_cli.fallback_config import pre_agent_fallback_notice
+            runtime["_fallback_notice"] = pre_agent_fallback_notice(
+                requested or (jc.model_cfg.get("provider") if isinstance(jc.model_cfg, dict) else ""),
+                model, runtime.get("provider"), fb_model)
+            return runtime, fb_model
+        except Exception as fb_exc:
+            logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc, exc_info=True)
+    return None
 
 
 def _load_credential_pool(runtime: dict, job_id: str):

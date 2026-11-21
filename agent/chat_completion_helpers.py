@@ -1274,11 +1274,9 @@ def _consume_ephemeral_reasoning_off(agent) -> bool:
 
     Set by the length-continuation path when a request returned reasoning but NO
     visible content (thinking ate the output cap); continuation turns never replay
-    prior reasoning, so thinking ON would re-burn the budget. When True the caller
-    overrides the wire reasoning_config with ``{"enabled": False, "effort": "none"}``
-    for exactly the next call. Prompt-cache cost is bounded to ONE cold prefix write
-    on config-sensitive providers (Anthropic, OpenAI) — far cheaper than four futile
-    full-budget continuations.
+    prior reasoning, so thinking ON would re-burn the budget. When True, an unset
+    session gets reasoning off for the next call; explicit session/model reasoning
+    takes precedence. The flag is consumed in either case.
     """
     consumed = bool(getattr(agent, "_ephemeral_reasoning_off", False))
     if consumed:
@@ -1329,7 +1327,7 @@ def _reasoning_config_for_wire(agent):
             return None
         agent._wire_reasoning_config = cfg
         return cfg
-    if ephemeral_off:
+    if ephemeral_off and agent.reasoning_config is None:
         cfg = {**(cfg or {}), "enabled": False, "effort": "none"}
     # What actually went out: the reasoning-rejection rung reads it to tell a rejected
     # disable (drop the disable) from a rejected level (drop the reasoning fields).

@@ -173,6 +173,7 @@ def _smart_approve(command: str, description: str) -> str:
     _smart_t0 = time.monotonic()
     try:
         from agent.auxiliary_client import _get_task_timeout, call_llm
+        from agent.auxiliary_task_config import auxiliary_output_limit
 
         # Pass the timeout explicitly AND log call + duration: this synchronous call gates EVERY flagged command, and
         # a stalled provider once froze turns for tens of minutes with zero log output (#72500, #82846).
@@ -199,7 +200,7 @@ def _smart_approve(command: str, description: str) -> str:
             "Respond with exactly one word: APPROVE, DENY, or ESCALATE"
         )
         response = call_llm(
-            task="approval", temperature=0, max_tokens=16, timeout=smart_timeout,
+            task="approval", temperature=0, max_tokens=auxiliary_output_limit("approval", 16), timeout=smart_timeout,
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
             reasoning_config=_verdict_reasoning(),
         )

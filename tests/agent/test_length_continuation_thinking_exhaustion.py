@@ -36,7 +36,7 @@ class _AgentStandIn:
 
 
 class TestReasoningOffOneShotOverride:
-    def test_flag_consumed_exactly_once(self):
+    def test_flag_consumed_without_overriding_explicit_effort(self):
         from agent.chat_completion_helpers import _reasoning_config_for_wire
 
         agent = _AgentStandIn({"enabled": True, "effort": "high"})
@@ -48,8 +48,7 @@ class TestReasoningOffOneShotOverride:
 
         agent._ephemeral_reasoning_off = True
         cfg = _reasoning_config_for_wire(agent)
-        assert cfg["enabled"] is False
-        assert cfg["effort"] == "none"
+        assert cfg == {"enabled": True, "effort": "high"}
         assert agent._ephemeral_reasoning_off is False, (
             "The one-shot override must be consumed by the first call."
         )
@@ -239,9 +238,8 @@ class TestThinkingOnlyTruncation:
         assert _no_empty_assistant_rows(result["messages"]) == []
 
 class TestReasoningOffReachesTheWire:
-    def test_continuation_request_carries_reasoning_off_on_the_wire(self, loop_agent):
-        """The flag is only useful if the continuation REQUEST goes out with
-        thinking disabled — assert the OpenRouter extra_body, not the flag."""
+    def test_continuation_request_honors_the_configured_reasoning_on_the_wire(self, loop_agent):
+        """An explicit effort remains authoritative on a thinking-only continuation."""
         loop_agent.reasoning_config = {"enabled": True, "effort": "high"}
         loop_agent._supports_reasoning_extra_body = lambda: True
         loop_agent.client.chat.completions.create.side_effect = [
@@ -256,23 +254,10 @@ class TestReasoningOffReachesTheWire:
         first = (calls[0].kwargs.get("extra_body") or {}).get("reasoning")
         second = (calls[1].kwargs.get("extra_body") or {}).get("reasoning")
         assert first == {"enabled": True, "effort": "high"}, first
-        assert second is not None and second.get("enabled") is False, (
-            f"continuation must be sent with thinking off, got {second!r}"
-        )
+        assert second == {"enabled": True, "effort": "high"}
 
-    def test_reasoning_off_is_exactly_one_request_and_prefix_stays_stable(self, loop_agent):
-        """Prompt-cache invariant for the override.
-
-        The reasoning parameter is part of the provider's cache key on
-        config-sensitive providers (Anthropic renders thinking/effort into
-        the prompt; OpenAI lists reasoning.effort as a prefix-affecting
-        setting), so the reasoning-off request is a deliberate one-request
-        cache miss.  It must stay exactly one request: the request AFTER it
-        (a second, visible-text continuation) must go out with the
-        configured reasoning again, and the system prompt must be
-        byte-identical on every request so the miss never compounds into a
-        rebuilt prefix.
-        """
+    def test_configured_effort_and_prefix_stay_stable_during_continuation(self, loop_agent):
+        """Explicit reasoning and the cached system prefix survive the continuation sequence."""
         loop_agent.reasoning_config = {"enabled": True, "effort": "high"}
         loop_agent._supports_reasoning_extra_body = lambda: True
         loop_agent.client.chat.completions.create.side_effect = [
@@ -291,7 +276,7 @@ class TestReasoningOffReachesTheWire:
             (c.kwargs.get("extra_body") or {}).get("reasoning") for c in calls
         ]
         assert wire[0] == {"enabled": True, "effort": "high"}, wire
-        assert wire[1] == {"enabled": False, "effort": "none"}, wire
+        assert wire[1] == {"enabled": True, "effort": "high"}, wire
         assert wire[2] == {"enabled": True, "effort": "high"}, (
             f"reasoning must be restored on the very next request; got {wire!r}"
         )

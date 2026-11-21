@@ -1,7 +1,7 @@
 """Auto-generate short session titles from the user's opening message.
 
 Two stages, both off the critical path: an **instant** deterministic title (written before the model
-is called, cannot fail), then an **upgrade** from one small-model call (cheap tier, thinking off,
+is called, cannot fail), then an **upgrade** from one small-model call (cheap tier, thinking off by default,
 JSON-constrained). Storage enforces provenance ``derived < llm < user``: stage 2 only replaces stage 1
 and neither replaces a name the user typed."""
 
@@ -603,6 +603,17 @@ def _is_answer_shaped(title: str) -> bool:
         cjk > _MAX_TITLE_CJK_CHARS and _SENTENCE_PUNCTUATION.search(text) is not None)
 
 
+def _title_reasoning() -> Optional[dict]:
+    """Default to thinking off; let explicitly configured title reasoning reach the aux router."""
+    from agent.auxiliary_task_config import _get_auxiliary_task_config
+
+    config = _get_auxiliary_task_config("title_generation")
+    extra_body = config.get("extra_body")
+    if config.get("reasoning_effort") not in (None, "") or (isinstance(extra_body, dict) and "reasoning" in extra_body):
+        return None
+    return {"enabled": False}
+
+
 def generate_title(
     user_message: str,
     timeout: Optional[float] = None,
@@ -646,6 +657,7 @@ def generate_title(
         # and reject explicit temperature values, causing the daemon title
         # thread to fail with "Unsupported value: 'temperature'".
         # See: #72351, #51083, #51157
+        from agent.auxiliary_task_config import auxiliary_output_limit
         response = call_llm(
             task="title_generation",
             messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}],
@@ -654,15 +666,10 @@ def generate_title(
             # honours the JSON contract stops after ~15 tokens regardless, so the ceiling only costs on
             # replies that would have been garbage anyway. temperature=None: omitted from the wire so
             # default-only reasoning models accept the first request (#72351).
-            max_tokens=TITLE_MAX_TOKENS, temperature=None, timeout=timeout, main_runtime=main_runtime,
+            max_tokens=auxiliary_output_limit("title_generation", TITLE_MAX_TOKENS), temperature=None, timeout=timeout, main_runtime=main_runtime,
             extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
-            # The module contract above promises thinking-disabled operation,
-            # but nothing enforced it: with the aux default reasoning_effort
-            # "" (provider default), Gemini enables internal thinking and
-            # bills thought tokens against max_tokens=64 — the JSON payload
-            # never lands, and the prose fallback stores the opening fence
-            # ("```json") as the session title (#91927).
-            reasoning_config={"enabled": False},
+            # Keep the default disable (#91927), while respecting explicit task reasoning.
+            reasoning_config=_title_reasoning(),
         )
         message = response.choices[0].message
         raw_title = _extract_title_text(message.content or "") or _title_from_reasoning(message)

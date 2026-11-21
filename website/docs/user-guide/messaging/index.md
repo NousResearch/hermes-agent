@@ -405,6 +405,21 @@ The platform setting covers direct messages too. There, a question the model ans
 marker gets no reply at all, so set `allow_silence: false` on any DM or channel that must always
 get an answer.
 
+### Profile-wide fallback
+
+Set `gateway.allow_silence` to `true` to opt in across all shared chats served by a profile.
+This also covers adapters that cannot tell whether a reply is expected.
+
+```yaml
+gateway:
+  allow_silence: true
+```
+
+Hermes checks the room first, then the platform, then the serving profile. An explicit
+`false` on a room or platform keeps the visible notice. Direct messages skip the profile
+setting and still honor their room and platform settings. The profile switch defaults to
+`false`, which leaves the existing warning notification policy in effect.
+
 Restart the gateway after editing configuration so all serving profiles use the updated settings.
 The setting affects final delivery only: it does not undo tool actions, retract progress already
 sent, or instruct the model to choose silence. Empty, failed, partial, and interrupted results do

@@ -170,6 +170,26 @@ def test_create_forwards_stream_read_timeout(monkeypatch, tmp_path):
     assert agg["timeout"] is timeout_sentinel
 
 
+def test_create_forwards_per_call_timeout_without_streaming(monkeypatch, tmp_path):
+    """stream=False: the caller's per-call timeout must reach the aggregator too.
+
+    Nothing else bounds the aggregator request on the non-streaming path — the
+    consumer's stream-read timeout only exists when the aggregator actually
+    streams — so dropping it here leaves the leg with no caller-controlled bound
+    at all (#133916). stream/stream_options stay off on this branch.
+    """
+    timeout_sentinel = object()
+    facade, calls = _facade(monkeypatch, tmp_path)
+    facade.create(
+        messages=[{"role": "user", "content": "q"}],
+        tools=[],
+        timeout=timeout_sentinel,
+    )
+    agg = next(c for c in calls if c["task"] == "moa_aggregator")
+    assert agg["timeout"] is timeout_sentinel
+    assert "stream" not in agg
+
+
 
 
 

@@ -138,3 +138,38 @@ def test_recovered_receipt_books_the_same_failure_verdicts_as_the_firer(tmp_path
         saved = jobs.get_job(job['id'])
         assert (saved['last_status'], saved['failure_streak']) == ('error', 1)
         assert executions.get_execution(execution['id'])['status'] == 'failed'
+
+
+def test_recovered_receipt_delivers_under_the_profile_secret_scope(tmp_path, monkeypatch):
+    """On a multiplexed gateway, get_secret raises outside a scope; recovery must not loop on it."""
+    from agent import secret_scope
+    from cron import scheduler
+
+    with jobs.use_cron_store(tmp_path / 'cron'):
+        job = jobs.create_job(prompt='report', schedule='every 1h', deliver='local')
+        execution = executions.create_execution(job['id'], source='test')
+        executions.mark_execution_running(execution['id'])
+        with executions._transaction() as conn:
+            conn.execute('UPDATE executions SET process_id=?,pid=? WHERE id=?', ('old-owner', 999999, execution['id']))
+        params = {'job_id': job['id'], 'request_id': execution['id'], 'extra_prompt': None}
+        journal = scheduler_authority.journal_path(job['id'], execution['id'])
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        journal.write_text(json.dumps({'params': params, 'receipt': None}))
+        peer(monkeypatch, lambda method, params: {'status': 'terminal', 'job': job,
+                                                 'result': [True, 'document', 'answer', None]})
+        save = scheduler._save_compose_deliver
+        reads = []
+
+        def save_reading_a_home_channel(*args, **kwargs):
+            reads.append(secret_scope.get_secret('MATRIX_HOME_ROOM', ''))
+            return save(*args, **kwargs)
+
+        monkeypatch.setattr(scheduler, '_save_compose_deliver', save_reading_a_home_channel)
+        token = secret_scope.set_multiplex_context(True)
+        try:
+            scheduler_authority.reconcile_pending()
+        finally:
+            secret_scope.reset_multiplex_context(token)
+        assert reads == ['']
+        assert executions.get_execution(execution['id'])['status'] == 'completed'
+        assert not journal.exists()

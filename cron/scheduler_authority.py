@@ -164,7 +164,7 @@ def reconcile_pending(*, allow_connect=True):
     from cron.executions import FIRER_FINISHED_STATES, execution_owner_live, get_execution
     from cron.jobs import get_job, pause_job
     from cron.scheduler import (_RunDelivery, _FireOwnership, _apply_agent_failure_marker,
-                                _save_compose_deliver)
+                                _fire_secret_scope, _save_compose_deliver)
     from cron.scheduler_bookkeeping import fail_empty_response, finish_completed_run
     from utils import atomic_json_write
     import logging
@@ -227,10 +227,14 @@ def reconcile_pending(*, allow_connect=True):
             # The canonical receipt supplies the result; a dead scheduler's fire claim does not
             # authorize replay and must not prevent finishing its durable bookkeeping.
             fence = _FireOwnership(dict(job, fire_claim=None))
-            _save_compose_deliver(delivery, fence, answer, output, adapters=None, loop=None,
-                                 verbose=False, execution_token=None)
-            fail_empty_response(delivery, answer)
-            if finish_completed_run(delivery, None, params['request_id'], recovered=True):
+            # Delivery resolves home channels through get_secret, which raises without a scope on
+            # a multiplexed gateway: recover under the same scope the ordinary fire runs in.
+            with _fire_secret_scope():
+                _save_compose_deliver(delivery, fence, answer, output, adapters=None, loop=None,
+                                     verbose=False, execution_token=None)
+                fail_empty_response(delivery, answer)
+                finished = finish_completed_run(delivery, None, params['request_id'], recovered=True)
+            if finished:
                 _lift_pause(params['job_id'], record.get('pause_recorded'))
         except Exception:
             logging.getLogger(__name__).warning('Cron receipt recovery deferred: %s', journal, exc_info=True)

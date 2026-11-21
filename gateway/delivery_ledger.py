@@ -145,6 +145,16 @@ def flood_not_before(updated_at: Any, last_error: Any) -> float:
     return _failed_stamp(updated_at) + flood_wait_seconds(last_error)
 
 
+_TERMINAL_MESSAGE_ERROR_PATTERNS = ("过期", "msgid", "msg_id")
+
+
+def is_terminal_message_error(error: Any) -> bool:
+    """True for a failed send whose error is specific to the message itself and cannot be cured by retry
+    (e.g., passive reply msg_id expired or recalled by sender)."""
+    text = str(error or "").strip().lower()
+    return any(k in text for k in _TERMINAL_MESSAGE_ERROR_PATTERNS)
+
+
 def retry_not_before(updated_at: Any, last_error: Any, attempts: Any) -> Optional[float]:
     """Earliest moment a failed row may be resent, or ``None`` for a row the runtime must leave alone:
     a flood refusal keeps the platform's own wait, an allowlisted reconnect error is due at once, a
@@ -158,6 +168,8 @@ def retry_not_before(updated_at: Any, last_error: Any, attempts: Any) -> Optiona
     if is_reconnect_only(text):
         return _failed_stamp(updated_at)
     if classify_dead_error(text):
+        return None
+    if is_terminal_message_error(text):
         return None
     spent = int(attempts or 0)
     if spent >= MAX_ATTEMPTS - 1:
@@ -328,6 +340,21 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
         # Owners are probed between the owner read and the sweep's write; an owner left out counts as live.
         dead = frozenset(owner for owner in store.coordination.list_obligation_owners()
                          if not _owner_alive(owner.pid, owner.started_at))
+        if hasattr(store.coordination, "_obligation_write"):
+            def _abandon_terminal_for_dead_owners(conn):
+                from persistence.authority.coordination import RecordedOwner
+                rows = conn.execute(
+                    """SELECT obligation_id, owner_pid, owner_started_at, last_error
+                       FROM delivery_obligations
+                       WHERE state IN ('pending', 'attempting', 'failed') AND last_error IS NOT NULL"""
+                ).fetchall()
+                for oid, opid, ostarted, err in rows:
+                    if RecordedOwner(pid=opid, started_at=ostarted) in dead and is_terminal_message_error(err):
+                        conn.execute(
+                            """UPDATE delivery_obligations
+                               SET state='abandoned', updated_at=? WHERE obligation_id=?""",
+                            (now, oid))
+            store.coordination._obligation_write(_abandon_terminal_for_dead_owners)
         claimed = store.coordination.sweep_recoverable_obligations(
             now=now,
             deliverable_platforms=None if deliverable_platforms is None else frozenset(deliverable_platforms),

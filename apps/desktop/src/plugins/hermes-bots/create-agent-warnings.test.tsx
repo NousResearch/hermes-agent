@@ -258,6 +258,69 @@ describe('profile creation warnings', () => {
     }
   })
 
+  it('captures the gateway at delayed draft creation without a render after switching', async () => {
+    mocks.activeConnection.value = 'gateway-a'
+    mocks.connections.mockResolvedValue([
+      { id: 'gateway-a', label: 'Machine A' },
+      { id: 'gateway-b', label: 'Machine B' }
+    ])
+    const base = mocks.request.getMockImplementation()!
+    const createdOn: string[] = []
+    let finishCreate!: () => void
+    mocks.request.mockImplementation(async (method: string, params?: unknown) => {
+      if (method === 'profiles.create') {
+        createdOn.push(mocks.activeConnection.value)
+
+        return new Promise(resolve => { finishCreate = () => resolve({ warnings }) })
+      }
+
+      return method === 'setup.runtime_check' ? { ok: false, error: 'No credentials.' } : base(method, params)
+    })
+    const configure = vi.fn()
+    await renderDialog(true, configure)
+    await showNotifications()
+    await screen.findByText('Create on')
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: '' } })
+    vi.useFakeTimers()
+
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+      fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'inbox-triage' } })
+      expect(createCalls()).toHaveLength(0)
+      // Changing the host state alone does not render the dialog. The pending
+      // timer still holds the callback from the render on Machine A.
+      mocks.activeConnection.value = 'gateway-b'
+      await act(async () => vi.advanceTimersByTimeAsync(800))
+    } finally {
+      vi.useRealTimers()
+    }
+
+    expect(createdOn).toEqual(['gateway-b'])
+    // Switching again while the RPC is pending must not change its owner.
+    mocks.activeConnection.value = 'gateway-a'
+    await act(async () => finishCreate())
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalled())
+    expect.soft(mocks.notify).toHaveBeenCalledWith({
+      kind: 'warning', title: 'inbox-triage — Machine B (gateway-b)',
+      message: warnings.join('\n'), persistent: true
+    })
+
+    const { $lastRoster } = await import('./data')
+    const previous = $lastRoster.get()
+    const live: RosterRow = { name: 'inbox-triage', connectionId: 'gateway-b', sourceScoped: true }
+    $lastRoster.set([{ ...live, connectionId: 'gateway-a' }, live])
+    mocks.activeConnection.value = 'gateway-a'
+
+    try {
+      fireEvent.click(screen.getByRole('button', { name: /Show.*more/ }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Configure model' }))
+      expect(configure).toHaveBeenCalledWith(live)
+    } finally {
+      $lastRoster.set(previous)
+    }
+  })
+
   it('pins Configure model to the creating connection when the roster does not list the bot after a switch', async () => {
     mocks.activeConnection.value = 'gateway-a'
     const base = mocks.request.getMockImplementation()!

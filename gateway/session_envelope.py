@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _EVENT_FIELDS = (
     'user_id', 'user_name', 'message_id', 'platform_update_id',
     'reply_to_message_id', 'reply_to_text', 'reply_to_author_id',
-    'reply_to_author_name', 'reply_to_is_own_message', 'allow_gateway_control',
+    'reply_to_author_name', 'reply_to_is_own_message', 'reply_to_timestamp', 'allow_gateway_control',
 )
 # ``reply_anchor_override`` = '' is Telegram topic transfer's "do not quote the root DM" (#139136).
 _CONTEXT_FIELDS = ('auto_skill', 'channel_prompt', 'channel_context', 'reply_expected', 'reply_anchor_override',

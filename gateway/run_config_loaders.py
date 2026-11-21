@@ -66,7 +66,7 @@ def _profile_channel_overrides(home: Path, platform: Platform):
 
 DEFAULT_HUMAN_DELAY_RANGE_MS: tuple[int, int] = (800, 2500)
 
-_BUSY_INPUT_MODES = {"interrupt", "queue", "steer"}
+_BUSY_INPUT_MODES = {"interrupt", "queue", "steer", "adaptive"}
 
 
 def streaming_config_for_source(runner, source):
@@ -421,7 +421,7 @@ class GatewayConfigLoadersMixin:
     def _load_busy_input_mode(cls) -> str:
         """Gateway drain-time busy-input behavior from env/config (default ``interrupt``)."""
         mode = cls._env_or_cfg_str("HERMES_GATEWAY_BUSY_INPUT_MODE", "display", "busy_input_mode").lower()
-        return mode if mode in {"queue", "steer"} else "interrupt"
+        return mode if mode in {"queue", "steer", "adaptive"} else "interrupt"
 
     @classmethod
     def _load_busy_text_mode(cls) -> str:
@@ -538,9 +538,32 @@ class GatewayConfigLoadersMixin:
         modes = getattr(self, attr + "s_by_profile", None)
         return modes.get(profile_name, fallback) if isinstance(modes, dict) else fallback
 
-    def _effective_busy_input_mode(self, source: SessionSource) -> str:
-        """Resolve busy input mode from the routed profile startup snapshot."""
-        return self._effective_busy_mode(source, "_busy_input_mode")
+    def _effective_busy_input_mode(self, source: SessionSource, event: Any = None) -> str:
+        """Resolve busy input mode from the routed profile startup snapshot. With ``event``,
+        ``adaptive`` resolves per message: queue when it quotes earlier output, else steer."""
+        mode = self._effective_busy_mode(source, "_busy_input_mode")
+        if mode != "adaptive" or event is None:
+            return mode
+        return "queue" if self._quotes_message_before_running_turn(source, event) else "steer"
+
+    def _quotes_message_before_running_turn(self, source: SessionSource, event: Any) -> bool:
+        """A reply to a message sent before the running turn started comments on earlier output and
+        waits for its own turn. A reply into the running turn (its opening message, progress, a
+        mid-run question) is about the live work. Without ``reply_to_timestamp`` from the adapter
+        a reply can't be placed, so it never counts as earlier output."""
+        reply_to = getattr(event, "reply_to_message_id", None)
+        quoted_ts = getattr(event, "reply_to_timestamp", None)
+        # Topic messages can carry the topic root as reply_to: an anchor, not a quote.
+        if not reply_to or quoted_ts is None or str(reply_to) == str(source.thread_id or ""):
+            return False
+        state = self._peek_session_state(self._session_key_for_source(source))
+        turn = state.turn if state else None
+        if turn is None or not turn.started_ts:
+            return True
+        if turn.event is not None and str(getattr(turn.event, "message_id", "")) == str(reply_to):
+            return False
+        # Platform dates can be whole seconds: floor the start so output in its first second counts.
+        return quoted_ts < int(turn.started_ts)
 
     def _effective_busy_text_mode(self, source: SessionSource) -> str:
         """Resolve legacy busy text mode from the routed profile snapshot."""

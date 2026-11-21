@@ -123,7 +123,7 @@ async def test_busy_path_counts_a_bot_message_once_before_steering(monkeypatch, 
     monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
     settings["value"] = BotLoopGuardSettings(max_events=1, window_seconds=60, cooldown_seconds=60)
     runner._draining = False
-    runner._effective_busy_input_mode = lambda source: "steer"
+    runner._effective_busy_input_mode = lambda source, event=None: "steer"
     runner._effective_busy_text_mode = lambda source: "steer"
     runner._route_plaintext_approval_while_busy = AsyncMock(return_value=False)
     runner._delivery_adapter_for = lambda source: SimpleNamespace(_pending_messages={})

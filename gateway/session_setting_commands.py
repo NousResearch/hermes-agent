@@ -24,9 +24,14 @@ def local_policy(runner, source):
     return policy_for_source(runner, source)
 
 
+def local_busy_mode(value):
+    """A local session has no quoted replies for ``adaptive`` to place, so it steers there."""
+    return 'steer' if value == 'adaptive' else value
+
+
 def session_busy_mode(runner, live):
     """The busy mode a local session's next input runs under (what ``config.get busy`` reports)."""
-    value = getattr(live, 'busy_input_mode', None)
+    value = local_busy_mode(getattr(live, 'busy_input_mode', None))
     if value in ('interrupt', 'steer', 'queue'):
         return value
     from gateway.session_policy import policy_for_source
@@ -37,8 +42,8 @@ def session_busy_mode(runner, live):
     # surface keeps the framework default ``interrupt``.
     fallback = 'queue' if policy is not None and getattr(policy, 'source', None) == 'tui' else 'interrupt'
     if policy is None:
-        return runner._effective_busy_input_mode(live.source)
-    value = (policy.config().get('display') or {}).get('busy_input_mode') or fallback
+        return local_busy_mode(runner._effective_busy_input_mode(live.source))
+    value = local_busy_mode((policy.config().get('display') or {}).get('busy_input_mode') or fallback)
     return value if value in ('interrupt', 'steer', 'queue') else fallback
 
 

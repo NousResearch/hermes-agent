@@ -107,7 +107,7 @@ class GatewayBusySessionMixin:
     def _queue_during_drain_enabled(self, busy_input_mode: Optional[str] = None) -> bool:
         # "queue"/"steer" mean messages survive a restart (queued for the new process); "interrupt" drops.
         mode = busy_input_mode or self._busy_input_mode
-        return self._restart_requested and mode in {"queue", "steer"}
+        return self._restart_requested and mode in {"queue", "steer", "adaptive"}
 
     def _overflow_queue(self, session_key: str):
         """The session's FIFO overflow list, or None when no session state exists yet."""
@@ -910,6 +910,9 @@ class GatewayBusySessionMixin:
             head, tail = t("gateway.busy.subagent_working_head"), self._BUSY_DEMOTED_TAIL
         elif is_queue_mode and demoted_for_compression:
             head, tail = t("gateway.busy.compressing_head"), self._BUSY_DEMOTED_TAIL
+        elif is_queue_mode and (self._effective_busy_mode(event.source, "_busy_input_mode") == "adaptive"
+                                and self._quotes_message_before_running_turn(event.source, event)):
+            head, tail = t("gateway.busy.queued_reply_head"), t("gateway.busy.queued_tail")
         elif is_queue_mode:
             head, tail = t("gateway.busy.queued_head"), t("gateway.busy.queued_tail")
         else:
@@ -965,7 +968,7 @@ class GatewayBusySessionMixin:
             return True
         event._bot_loop_admitted = True
 
-        effective_mode = self._effective_busy_input_mode(event.source)
+        effective_mode = self._effective_busy_input_mode(event.source, event)
         if self._draining:  # gateway restarting/stopping
             await self._send_busy_drain_notice(event, session_key, effective_mode)
             return True

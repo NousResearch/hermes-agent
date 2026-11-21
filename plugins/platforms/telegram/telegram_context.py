@@ -56,6 +56,13 @@ def _quoted_reply(message: "Message") -> Optional["Message"]:
     return replied
 
 
+def quoted_message_timestamp(message: "Message") -> Optional[float]:
+    """When the quoted message was sent (epoch seconds), so a busy follow-up can tell a reply to
+    earlier output from one into the running turn; None when nothing is quoted."""
+    date = getattr(_quoted_reply(message), "date", None)
+    return date.timestamp() if date else None
+
+
 def group_reply_expected(adapter: "TelegramAdapter", message: "Message", chat_type: str) -> Optional[bool]:
     """Whether an admitted message needs a reply; None keeps the visible silence fallback."""
     if chat_type != "group":

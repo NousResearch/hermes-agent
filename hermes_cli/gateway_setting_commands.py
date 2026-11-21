@@ -21,8 +21,9 @@ _BUSY_MODES = frozenset({"queue", "steer", "interrupt"})
 
 
 def _mirror_busy(cli, arg):
-    if arg.lower() in _BUSY_MODES:
-        cli.busy_input_mode = arg.lower()
+    mode = {"adaptive": "steer"}.get(arg.lower(), arg.lower())  # the terminal has no quoted replies
+    if mode in _BUSY_MODES:
+        cli.busy_input_mode = mode
 
 
 def _watch_reviewer(cli, _arg):

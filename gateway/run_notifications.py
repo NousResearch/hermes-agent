@@ -23,7 +23,7 @@ from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, SessionStore
-from gateway.run_profile_home import completion_event_scope_or_refuse
+from gateway.run_profile_home import completion_event_scope, completion_event_scope_or_refuse
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 from gateway.run_notifications_update import GatewayUpdateNotificationsMixin
 from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin, _local_completion_card
@@ -177,7 +177,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
 
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
-    _COMPLETION_BATCH_KEY_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id")
+    _COMPLETION_BATCH_KEY_FIELDS = (
+        "session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id", "_completion_ledger_home")
     _ASYNC_GROUP_KEY_FIELDS = ("session_key", "parent_session_id", "task_failure_notice", *_COMPLETION_BATCH_KEY_FIELDS[1:])
 
     @dataclasses.dataclass
@@ -1026,6 +1027,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 return (evt_type, producer_id, started_at)
         return None
 
+    def _completion_queue_identity(self, evt: dict):
+        """Profile-qualified process-local dedup key; durable admission identities stay stable."""
+        identity = self._completion_delivery_identity(evt)
+        if identity is not None and (owner := evt.get("_completion_ledger_home")):
+            return (identity[0], f"{owner}\0{identity[1]}", identity[2])
+        return identity
+
     def _mark_completions_delivered_locked(self, identities) -> None:
         """Move identities inflight -> delivered and trim retention. Caller holds ``_completion_delivery_lock``."""
         for identity in identities:
@@ -1216,22 +1224,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         The supervised ``_async_delegation_watcher`` and startup-recovered process watchers run under
         the ROOT scope, so a secondary profile's completion was looked up in the DEFAULT profile's
         state.db — classified ``terminal`` and dropped, its ledger row stranded ``pending`` forever."""
-        from gateway.run import _async_profile_runtime_scope
-        from hermes_constants import get_hermes_home_override
-        source = self._build_process_event_source(evt)
-        if source is None or not getattr(source, "profile", None):
-            raw_sid = _raw_process_event_session_id(evt)
-            if raw_sid and getattr(getattr(self, "config", None), "multiplex_profiles", False):
-                return self._served_api_server_event_scope(evt, raw_sid)
-            # No routed profile: the launch profile's own completion. Bind ITS scope once the
-            # process multiplexes — unscoped, a fail-closed ledger read raises on a legitimate
-            # launch-profile event (no-op while single-profile).
-            from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
-            return async_launch_profile_scope_if_multiplexed()
-        profile_home = self._resolve_profile_home_for_source(source)
-        if get_hermes_home_override() == str(profile_home):
-            return contextlib.nullcontext()  # already inside this profile's scope
-        return _async_profile_runtime_scope(profile_home)
+        return completion_event_scope(self, evt)
 
     @contextlib.asynccontextmanager
     async def _served_api_server_event_scope(self, evt: dict, raw_sid: str):
@@ -1274,7 +1267,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         restore_completion_route(self, str(evt.get("session_key") or ""))
         from gateway.session_detached import follow_detached_pin
         evt = await follow_detached_pin(self, evt)
-        identity = self._completion_delivery_identity(evt)
+        identity = self._completion_queue_identity(evt)
         claim = self._CompletionClaim()
         accepted = identity_claimed = refused = False
         try:
@@ -1362,7 +1355,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
     def _record_coalesced_completion_siblings(self, events: list[dict]) -> None:
         """Extend a successful primary delivery claim to its batched siblings."""
-        identities = [i for i in map(self._completion_delivery_identity, events) if i is not None]
+        identities = [i for i in map(self._completion_queue_identity, events) if i is not None]
         with self._completion_delivery_lock:
             self._mark_completions_delivered_locked(identities)
 
@@ -1542,7 +1535,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if parent and await self._classify_completion_target(parent, str(evt.get("session_key") or "")) == "terminal":
                 await self._deliver_completion_notification(synth_text, evt)
                 continue
-            identity = self._completion_delivery_identity(evt)
+            identity = self._completion_queue_identity(evt)
             if identity is not None and self._completion_identity_seen(identity):
                 continue
             deliverable.append((evt, synth_text))

@@ -166,6 +166,17 @@ VALID_HOOKS: set[str] = {
     # spawn; completed/blocked fire in the WORKER (or whichever process drove it). Kwargs: task_id,
     # board, assignee, run_id, profile_name; completed adds summary, blocked adds reason.
     "kanban_task_claimed", "kanban_task_completed", "kanban_task_blocked",
+    # pre_kanban_complete: DIRECTIVE (pre-commit) gate on a card close. Fired in
+    # hermes_cli.kanban_db.complete_task BEFORE the created-cards / empty-completion gates
+    # and the write txn, so a plugin can veto the close (receipt-on-close / C-13 provenance).
+    # Unlike the kanban_task_* observers above (which fire AFTER commit, returns ignored),
+    # this one fires BEFORE any state mutation and its return is honored. Kwargs: task_id,
+    # profile_name, board, assignee, run_id, status, result, summary. Return None (or anything
+    # but a block directive) to allow; {"action": "block", "message"} (or "reason") to veto —
+    # the first block in registration order wins and is raised as
+    # kanban_db.PreKanbanCompleteVetoError. Fail-open: a plugin that raises never blocks the
+    # close; a block directive without a message is ignored.
+    "pre_kanban_complete",
     # Kanban worker/mutation/tick observers; returns ignored; fire sites short-circuit on
     # has_hook(). Kwargs: task_id, profile_name, board, assignee, run_id plus, per hook:
     # worker_spawned (DISPATCHER, after PID persisted, inside the dispatch lock — stay fast):
@@ -181,6 +192,14 @@ VALID_HOOKS: set[str] = {
     #   (privacy: task ids, assignees, workspace paths).
     "on_kanban_worker_spawned", "on_kanban_worker_exited", "on_kanban_worker_stale_claim",
     "on_kanban_task_updated", "on_kanban_dispatch_tick",
+    # pre_kanban_board_access: BEFORE a kanban board operation (create/dispatch/write) reaches
+    # the DB, after worker/orchestrator gating — the single chokepoint where every kanban tool
+    # funnels (tools/kanban_tools.py::_kanban_handler). DIRECTIVE hook: a plugin may VETO access
+    # (e.g. a coordinator-only board gate). Return None/{"action": "allow"} to pass, or
+    # {"action": "block", "message"} to refuse the operation before any row is written (the
+    # message becomes the structured tool error). Kwargs: tool_name, board (slug or None for the
+    # default board), profile_name, args. Fire site short-circuits on has_hook().
+    "pre_kanban_board_access",
     # gateway_platform_event: normalized envelopes only, never raw SDK objects or adapter handles.
     # Kwargs: platform, event_type, payload (event_type-local; see hooks.md). New event types land
     # only together with real fire-sites.
@@ -207,6 +226,10 @@ VALID_HOOKS: set[str] = {
     # block/rewrite adopters are discoverable once the middleware variant ships (#64231 taxonomy).
     "pre_command",
     "post_compaction",  # once per committed compaction on every path; observer (hooks.md, #118382)
+    # pre_update: once per ``hermes update`` run, BEFORE any state mutation (receipt, backup,
+    # git fetch/lock sweep, checkout). Kwargs: gateway_mode, args. Return {"action": "block",
+    # "message"} to VETO (abort the update); None/anything else -> proceed.
+    "pre_update",
     # post_curator_run: after a curator pass wrote logs/curator/<run>/ (run.json + REPORT.md). Kwargs:
     # run_dir, run_json_path, report_md_path, dry_run. Observer; returns ignored.
     "post_curator_run",

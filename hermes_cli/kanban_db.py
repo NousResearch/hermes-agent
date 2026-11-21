@@ -192,6 +192,55 @@ def _kanban_observer_consumed(event: str) -> bool:
         return False
 
 
+def _pre_kanban_complete_veto(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    result: Optional[str] = None,
+    summary: Optional[str] = None,
+) -> Optional[str]:
+    """``pre_kanban_complete`` directive gate: fire BEFORE the built-in close
+    gates so a plugin can veto the close (receipt-on-close / C-13 provenance).
+
+    Returns a block message when a plugin vetoes via ``{"action": "block",
+    "message"}`` (``"reason"`` accepted as an alias), else ``None`` to allow.
+    The first block directive in registration order wins. Fail-open: a plugin
+    that raises never blocks the close, and a block directive without a message
+    is ignored. Fired outside the write txn so a slow plugin can never hold the
+    SQLite write lock.
+    """
+    if not _kanban_observer_consumed("pre_kanban_complete"):
+        return None
+    try:
+        row = conn.execute(
+            "SELECT assignee, current_run_id, status FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        from hermes_cli.lifecycle import invoke_hook
+
+        results = invoke_hook(
+            "pre_kanban_complete",
+            task_id=task_id,
+            profile_name=_hook_profile_name(),
+            board=get_current_board(),
+            assignee=row["assignee"] if row else None,
+            run_id=row["current_run_id"] if row else None,
+            status=row["status"] if row else None,
+            result=result,
+            summary=summary,
+        )
+    except Exception as exc:  # pragma: no cover - defensive (fail-open)
+        _log.debug("pre_kanban_complete hook failed: %s", exc)
+        return None
+    for directive in results:
+        if not isinstance(directive, dict) or directive.get("action") != "block":
+            continue
+        message = directive.get("message") or directive.get("reason")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    return None
+
+
 def _fire_worker_spawned_hook(
     conn: sqlite3.Connection, task: Task, workspace_path: str, pid: Optional[int], *,
     board: Optional[str] = None,
@@ -2604,6 +2653,21 @@ class EmptyCompletionError(ValueError):
         )
 
 
+class PreKanbanCompleteVetoError(ValueError):
+    """``complete_task`` vetoed by a ``pre_kanban_complete`` plugin directive.
+
+    A plugin returned ``{"action": "block", "message"}`` (or ``"reason"``) from the
+    pre-commit ``pre_kanban_complete`` hook, vetoing the close BEFORE any gate or
+    state mutation. A ``ValueError`` so tool error handlers treat it as
+    recoverable (the worker retries once the plugin's concern is satisfied);
+    ``.reason`` carries the plugin's block message."""
+
+    def __init__(self, task_id: str, reason: str):
+        self.task_id = task_id
+        self.reason = reason
+        super().__init__(f"completion vetoed: {task_id}: {reason}")
+
+
 class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
@@ -2664,6 +2728,11 @@ def complete_task(
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
+    # Pre-commit directive hook: a plugin may veto the close (receipt-on-close /
+    # C-13 provenance) before any gate or state mutation. Raise on veto.
+    _veto = _pre_kanban_complete_veto(conn, task_id, result=result, summary=summary)
+    if _veto is not None:
+        raise PreKanbanCompleteVetoError(task_id, _veto)
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     _gate_empty_completion(conn, task_id, result=result, summary=summary)

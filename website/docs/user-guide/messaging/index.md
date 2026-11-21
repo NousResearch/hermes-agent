@@ -786,6 +786,92 @@ Agents run as threads inside the one gateway process; the only child processes a
 Like the Linux systemd service, each `HERMES_HOME` directory gets its own launchd label. The default `~/.hermes` uses `ai.hermes.gateway`; other installations use `ai.hermes.gateway-<suffix>`.
 :::
 
+#### Gateway on an external SSD
+
+If `launchctl print` shows `78: EX_CONFIG` and the macOS unified log says `Unable to open stdout path`, keep the LaunchAgent's working directory and stdout/stderr on the boot volume ([#78129](https://github.com/NousResearch/hermes-agent/issues/78129)). The job also needs permission to access the SSD.
+
+This custom user LaunchAgent starts Hermes's signed managed Python directly. Replace the example paths and create `~/Library/Logs/HermesGatewaySSD`. For `ProgramArguments[0]`, resolve the first path returned by `hermes --print-runtime-command -- gateway run` to the actual Python executable.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>ai.hermes.ssd.gateway</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Volumes/YOUR_SSD/Hermes/tools/YOUR_PYTHON_DIR/bin/python3.14</string>
+        <string>-P</string>
+        <string>-s</string>
+        <string>-m</string>
+        <string>hermes_cli.main</string>
+        <string>--profile</string>
+        <string>default</string>
+        <string>gateway</string>
+        <string>run</string>
+        <string>--external-supervisor</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HERMES_HOME</key><string>/Volumes/YOUR_SSD/Hermes</string>
+        <key>HERMES_RUNTIME_DIR</key><string>/Volumes/YOUR_SSD/Hermes/tools</string>
+        <key>PYTHONPATH</key><string>/Volumes/YOUR_SSD/Hermes/hermes-agent</string>
+        <key>HERMES_SUPERVISED_CHILD</key><string>1</string>
+        <key>HERMES_LAUNCHD_LABEL</key><string>ai.hermes.ssd.gateway</string>
+        <key>PATH</key><string>/Users/YOUR_USER/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>WorkingDirectory</key><string>/Users/YOUR_USER</string>
+    <key>StandardOutPath</key><string>/Users/YOUR_USER/Library/Logs/HermesGatewaySSD/launchd.stdout.log</string>
+    <key>StandardErrorPath</key><string>/Users/YOUR_USER/Library/Logs/HermesGatewaySSD/launchd.stderr.log</string>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+    <key>ThrottleInterval</key><integer>30</integer>
+    <key>ExitTimeOut</key><integer>60</integer>
+    <key>LimitLoadToSessionType</key><string>Aqua</string>
+</dict>
+</plist>
+```
+
+**Test SSD access.** Create a scratch directory on the SSD with a `seed.txt` file containing `hermes-ssd-probe` and a newline. Save this script as `ssd-probe.py` on the boot volume.
+
+```python
+import os
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+expected = b"hermes-ssd-probe\n"
+if (root / "seed.txt").read_bytes() != expected:
+    raise SystemExit("Unexpected seed file contents")
+with (root / "pending.txt").open("xb") as stream:
+    stream.write(expected)
+    stream.flush()
+    os.fsync(stream.fileno())
+os.replace(root / "pending.txt", root / "readback.txt")
+if (root / "readback.txt").read_bytes() != expected:
+    raise SystemExit("Unexpected readback contents")
+print("SSD read/write check passed")
+```
+
+Copy the plist to `probe.plist` on the boot volume. Set its label to `ai.hermes.ssd.probe`, remove `KeepAlive` and `EnvironmentVariables`, and give it separate local logs. Use the same Python executable followed by `-I -B -S` and the absolute paths to the script and scratch directory. Load it with `launchctl bootstrap "gui/$(id -u)" /path/to/probe.plist`. Confirm exit code `0` in `launchctl print "gui/$(id -u)/ai.hermes.ssd.probe"` and `SSD read/write check passed` in stdout. Run `launchctl bootout "gui/$(id -u)/ai.hermes.ssd.probe"` and remove the test files.
+
+**Check the gateway.** Stop the previous gateway and disable its login entry. Save the new plist at `~/Library/LaunchAgents/ai.hermes.ssd.gateway.plist`.
+
+```bash
+export HERMES_HOME="/Volumes/YOUR_SSD/Hermes"
+plist="$HOME/Library/LaunchAgents/ai.hermes.ssd.gateway.plist"
+plutil -lint "$plist"
+launchctl bootstrap "gui/$(id -u)" "$plist"
+launchctl print "gui/$(id -u)/ai.hermes.ssd.gateway"
+hermes --profile default gateway status
+hermes --profile default status
+hermes --profile default cron runs --limit 5
+```
+
+Look for `state = running` and matching PIDs in `launchctl print` and `hermes gateway status`. Hermes may show `Running manually` for the custom label. Check that messaging reconnects and a scheduled cron run completes. To revert, boot out the job and move its plist out of `~/Library/LaunchAgents` before restoring the previous entry.
+
+On Apple Silicon, macOS 27.0.1, and Hermes v0.23.1, the SSD probe passed with the existing permission. Weixin and Telegram reconnected, and a scheduled reminder check completed with an empty task list. Phone delivery, LAN access, first-time permission prompts, reboot or drive reattachment, and Python upgrades remain untested.
+
 ### Windows (Task Scheduler)
 
 ```powershell

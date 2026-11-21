@@ -975,10 +975,10 @@ Projects are human-named workspaces that can span multiple folders / repos. They
 ## `hermes webhook`
 
 ```bash
-hermes webhook <subscribe|list|remove|test>
+hermes webhook <subscribe|list|remove|test|history>
 ```
 
-Manage dynamic webhook subscriptions for event-driven agent activation. Requires the webhook platform to be enabled in config — if not configured, prints setup instructions.
+Manage dynamic webhook subscriptions for event-driven agent activation. Requires the webhook platform to be enabled in config — if not configured, prints setup instructions (`history` works either way).
 
 | Subcommand | Description |
 |------------|-------------|
@@ -986,6 +986,7 @@ Manage dynamic webhook subscriptions for event-driven agent activation. Requires
 | `list` / `ls` | Show all agent-created subscriptions. |
 | `remove` / `rm` | Delete a dynamic subscription. Static routes from config.yaml are not affected. |
 | `test` | Send a test POST to verify a subscription is working. |
+| `history` | Show recent deliveries, newest first: `accepted` (with the run it started), `duplicate`, `ignored` (with why: event type, `filter`, `script`) or `failed` (with the reason). `--route <name>` keeps one route, `--delivery <id>` one delivery, `--outcome accepted|duplicate|ignored|failed` one outcome, `--limit N` (default 20), `--json` prints the receipts as a JSON array. See [Delivery history](../user-guide/messaging/webhooks.md#delivery-history). |
 
 ### `hermes webhook subscribe`
 
@@ -1003,6 +1004,7 @@ hermes webhook subscribe <name> [options]
 | `--deliver-chat-id` | Target chat/channel ID for cross-platform delivery. |
 | `--secret` | Custom HMAC secret. Auto-generated if omitted. |
 | `--signature` | Signature scheme the route accepts: `generic` (default for new routes; `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` or Standard Webhooks), `github`, `gitlab` or `linear`. Every other header family is rejected. Kept on update when omitted. See [Pin the signature scheme](../user-guide/messaging/webhooks.md#pin-the-signature-scheme). |
+| `--identity` | Where the delivery ID is read: `header:<Name>` (same ID with a different body is a `409`), `body:/json/pointer`, or `none`. Kept on update when omitted. See [Delivery identity](../user-guide/messaging/webhooks.md#delivery-identity). |
 | `--deliver-only` | Skip the agent — deliver the rendered `--prompt` as the literal message. Zero LLM cost, sub-second delivery. Requires `--deliver` to be a real target (not `log`). |
 | `--mirror-to-session` | Also write each delivered message into the target chat's session, so replying to it in that chat has context. Off by default; only enable it for sources whose content you trust in your conversation. |
 | `--script` | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin; JSON stdout replaces the payload, and empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. See [Script Filters and Transforms](../user-guide/messaging/webhooks.md#script-filters-and-transforms). |

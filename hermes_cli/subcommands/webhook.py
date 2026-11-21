@@ -46,6 +46,12 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "message. Zero LLM cost. Requires --deliver to be a real target "
         "(not 'log').")
     wh_sub.add_argument(
+        "--identity", default=None,
+        help="Where the delivery id is read, so a provider retry is a duplicate: 'header:<Name>' "
+        "(a reused id with a different body is refused with 409), 'body:/json/pointer' "
+        "(e.g. body:/data/event/event_id), or 'none' (every request runs). Default: the "
+        "X-GitHub-Delivery / svix-id / webhook-id / X-Request-ID headers.")
+    wh_sub.add_argument(
         "--mirror-to-session", action="store_true",
         help="Also write each delivered message into the target chat's session, so replying to it "
         "in that chat has context. Only for sources whose content you trust in your conversation.")
@@ -70,5 +76,14 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
     wh_test.add_argument("name", help="Subscription name to test")
     wh_test.add_argument(
         "--payload", default="", help="JSON payload to send (default: test payload)")
+
+    wh_history = webhook_subparsers.add_parser(
+        "history", help="Show recent deliveries: accepted, duplicate, ignored (with the reason) or failed")
+    wh_history.add_argument("--route", default=None, help="Only deliveries to this route")
+    wh_history.add_argument("--limit", type=int, default=20, help="How many deliveries to show (default: 20)")
+    wh_history.add_argument("--delivery", default=None, help="Only receipts for this delivery id")
+    wh_history.add_argument("--outcome", choices=["accepted", "duplicate", "ignored", "failed"], default=None,
+                            help="Only receipts with this outcome")
+    wh_history.add_argument("--json", action="store_true", help="Print the receipts as a JSON array")
 
     webhook_parser.set_defaults(func=cmd_webhook)

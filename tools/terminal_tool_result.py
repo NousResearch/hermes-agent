@@ -267,10 +267,19 @@ def finalize_foreground_result(
     if approval_note and returncode == 130 and "[Command interrupted]" in output:
         approval_note = approval_note.rstrip(".") + ", then interrupted."
 
-    result_dict = {"output": output, "exit_code": returncode, "error": None}
+    timed_out = (result or {}).get("hermes_timed_out") is True
+    timeout_error = (
+        "Command timed out; foreground process group was terminated."
+        if timed_out
+        else None
+    )
+    result_dict = {"output": output, "exit_code": returncode, "error": timeout_error}
     # Optional fields in observable JSON key order; None means "omit". Spill
     # metadata is present only when output overflowed the capture window.
     optional_fields: list[tuple[str, Any]] = [
+        ("status", "timed_out" if timed_out else None),
+        ("timed_out", True if timed_out else None),
+        ("process_terminated", True if timed_out else None),
         ("cwd", changed_cwd),
         ("environment_recreated", _ENV_RECREATED_NOTE if result.get("environment_recreated") else None),
         ("cwd_fallback", _cwd_fallback_note(result.get("cwd_fallback"))),

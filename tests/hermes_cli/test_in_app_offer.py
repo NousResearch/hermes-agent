@@ -347,6 +347,26 @@ def test_an_unreadable_dismissed_file_reads_as_none(_home):
     assert in_app_offer.pending_offer() == OFFER
 
 
+def test_a_click_still_counts_after_the_dismiss_lands(_home, _signed_in, _posts):
+    """The CTA reports its click and dismisses back to back; the dismissal often lands first."""
+    _live_token(_signed_in)
+    in_app_offer.record_from_account_payload({"in_app_offer": dict(OFFER)})
+    assert in_app_offer.dismiss("offer_1") is True
+
+    assert in_app_offer.report_event("offer_1", "clicked") is True
+    assert json.loads(_posts[0]["body"]) == {"offer_id": "offer_1", "event": "clicked"}
+
+    # Still only the offer the Portal served: a dismissed memo does not open the counter to any id.
+    assert in_app_offer.report_event("someone_elses_offer", "clicked") is False
+    assert len(_posts) == 1
+
+
+def test_a_naive_or_garbled_claim_deadline_is_dropped():
+    for bad in ("2026-12-15T12:00:00", "2026-13-40T00:00:00Z", ""):
+        in_app_offer.record_from_account_payload({"in_app_offer": {**OFFER, "claimable_until": bad}})
+        assert in_app_offer.pending_offer() == OFFER
+
+
 def test_keeps_a_valid_claim_deadline_and_drops_a_malformed_one():
     in_app_offer.record_from_account_payload(
         {"in_app_offer": {**OFFER, "claimable_until": "2026-12-15T12:00:00.000Z"}}

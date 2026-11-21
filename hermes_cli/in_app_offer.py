@@ -114,8 +114,17 @@ def pending_offer() -> Optional[dict[str, str]]:
     for an account that is gone, so it must not outlive the login. Checking
     the login here (a local auth-store read, no network) covers every way out
     of an account (``hermes logout``, the desktop's disconnect, a quarantined
-    token) without a hook in each.
+    token) without a hook in each. An offer this profile dismissed is None too.
     """
+    offer = _served_offer()
+    if offer is None or offer["id"] in dismissed_ids():
+        return None
+    return offer
+
+
+def _served_offer() -> Optional[dict[str, str]]:
+    """The memo's offer for this profile's current login, dismissed or not; None when the memo is
+    empty, stale, or was evaluated for another account (which clears it)."""
     key = _mint_memo_key()
     with _lock:
         entry = _offers.get(key)
@@ -128,8 +137,6 @@ def pending_offer() -> Optional[dict[str, str]]:
         or time.time() - recorded_at > MEMO_TTL_SECONDS
     ):
         clear()
-        return None
-    if offer["id"] in dismissed_ids():
         return None
     return dict(offer)
 
@@ -233,13 +240,15 @@ def _validated(value: Any) -> Optional[dict[str, str]]:
 
 
 def _iso_instant(text: str) -> bool:
+    """An ISO 8601 instant: parseable and carrying an offset (``Z`` included). A naive time would
+    read as local time on each client, not the one moment the promo ends."""
     from datetime import datetime
 
     try:
-        datetime.fromisoformat(text.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(text)
     except ValueError:
         return False
-    return True
+    return parsed.tzinfo is not None
 
 
 #: What the client tells the Portal about an offer, for the campaign's counts.
@@ -261,9 +270,11 @@ def report_event(offer_id: str, event: str) -> bool:
 
     if event not in REPORTABLE_EVENTS:
         return False
-    served = pending_offer()
+    served = _served_offer()
     # Only an offer the Portal actually served this profile: the RPC carries a client-chosen
-    # id, and the counter must not become a way to bump an arbitrary campaign.
+    # id, and the counter must not become a way to bump an arbitrary campaign. A dismissed
+    # offer still counts: the CTA reports its click and dismisses at once, and the dismissal
+    # often lands first.
     if served is None or served.get("id") != offer_id:
         return False
     state = get_provider_auth_state("nous") or {}

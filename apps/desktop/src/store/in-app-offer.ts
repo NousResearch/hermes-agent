@@ -98,7 +98,7 @@ function offerFromStatus(status: unknown): InAppOfferPayload | null {
     filled(offer.cta_label) &&
     filled(offer.cta_url) &&
     isHttpsUrl(offer.cta_url) &&
-    (offer.claimable_until === undefined || typeof offer.claimable_until === 'string')
+    (offer.claimable_until == null || typeof offer.claimable_until === 'string')
     ? (offer as InAppOfferPayload)
     : null
 }

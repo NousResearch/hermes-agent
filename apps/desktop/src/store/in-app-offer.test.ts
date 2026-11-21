@@ -93,6 +93,18 @@ describe('syncInAppOffer', () => {
     expect($inAppOfferDialog.get()).toBeNull()
   })
 
+  it('shows an offer whose claim deadline is null, as the contract allows', () => {
+    syncInAppOffer(statusWith({ ...OFFER, claimable_until: null }), IDLE)
+
+    expect($inAppOfferDialog.get()?.id).toBe('offer_1')
+  })
+
+  it('ignores an offer whose claim deadline is not a string', () => {
+    syncInAppOffer(statusWith({ ...OFFER, claimable_until: 1765800000 }), IDLE)
+
+    expect($inAppOfferDialog.get()).toBeNull()
+  })
+
   it('ignores a malformed offer', () => {
     syncInAppOffer(statusWith({ id: 'x', title: 'T', body: 'B', cta_label: 'C' }), IDLE)
 

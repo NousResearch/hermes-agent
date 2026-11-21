@@ -382,3 +382,37 @@ class TestDelegateTaskDispatch:
         assert "OUTPUT CONTRACT" in (captured.get("context") or "")
         results = payload.get("results") or []
         assert results and results[0].get("schema_valid") is True
+
+
+class TestCoerceOutputSchemaRepair:
+    def test_required_list_nested_in_properties_is_hoisted(self):
+        """The model put "required" inside "properties",
+        which failed the whole delegate_task call before any child ran."""
+        from tools.delegation_output_schema import coerce_output_schema
+
+        raw = {
+            "type": "object",
+            "properties": {
+                "offers": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"model": {"type": "string"}, "url": {"type": "string"}},
+                        "required": ["model", "url"],
+                    },
+                },
+                "required": ["offers"],
+            },
+        }
+        schema, err = coerce_output_schema(raw)
+        assert err is None
+        assert schema["required"] == ["offers"]
+        assert set(schema["properties"]) == {"offers"}
+        assert schema["properties"]["offers"]["items"]["required"] == ["model", "url"]
+
+    def test_still_invalid_schema_is_reported(self):
+        from tools.delegation_output_schema import coerce_output_schema
+
+        schema, err = coerce_output_schema({"type": 42})
+        assert schema is None
+        assert "not a valid JSON Schema" in err

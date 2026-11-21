@@ -10,6 +10,7 @@ turns both off).  Semantics mirror the shell scripts they replace; anything they
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import os
 import secrets
@@ -60,15 +61,27 @@ def atomic_write(path: str, data: bytes) -> Optional[str]:
 
     The temp holds its final mode before the first byte lands: an existing target's temp is created
     0o600 and ``fchmod``-ed to the target's mode, so a private file's new contents are never readable
-    through a wider temp (the shell script's ``mktemp`` 0600 temp gave the same guarantee)."""
+    through a wider temp (the shell script's ``mktemp`` 0600 temp gave the same guarantee).
+
+    A rename is allowed by the directory's permissions alone, so an existing target is first checked
+    with ``access(W_OK)``: a read-only file is refused exactly as a plain ``open(path, "w")`` would
+    refuse it. A target with more than one hard link is written in place, because the rename would
+    give this name a new inode and leave the other names on the old content."""
     target = os.path.realpath(path) if os.path.islink(path) else path
     parent = os.path.dirname(target) or "."
     try:
         os.makedirs(parent, exist_ok=True)
         try:
-            mode: Optional[int] = stat.S_IMODE(os.stat(target).st_mode)
+            st: Optional[os.stat_result] = os.stat(target)
         except FileNotFoundError:
-            mode = None
+            st = None
+        mode = None if st is None else stat.S_IMODE(st.st_mode)
+        if st is not None and not os.access(target, os.W_OK):
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), target)
+        if st is not None and st.st_nlink > 1 and stat.S_ISREG(st.st_mode):
+            with open(target, "wb") as fh:
+                fh.write(data)
+            return None
         tmp = os.path.join(parent, f".hermes-tmp.{secrets.token_hex(6)}")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
                      0o666 if mode is None else 0o600)

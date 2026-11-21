@@ -694,7 +694,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // growing — then completed — weight never advances the cut boundary. A
   // moving cut unmounts older rows, shrinks scrollHeight, and the browser
   // clamp looks like a user scroll-up to use-stick-to-bottom.
-  const fullPage = renderBudget >= paneBudget
+  // The eight-turn floor and newest-turn exemption serve the foreground.
+  // Applying them to a hidden pane defeats its small retention budget and
+  // keeps heavy markdown/layout alive across every tab switch.
+  const fullPage = paneVisible && renderBudget >= paneBudget
 
   const hiddenCount = firstVisibleGroupIndex(weightedGroups, renderBudget, fullPage ? MIN_VISIBLE_GROUPS : 0, fullPage)
 

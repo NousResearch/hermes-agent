@@ -52,6 +52,12 @@ function meaningfulNextSibling(node: ChildNode | null): ChildNode | null {
 
 /** The live collapsed selection container, if it belongs to this editor. */
 function composerCollapsedSelectionContainer(editor: HTMLElement): Node | null {
+  // Selection.isCollapsed can force Chromium to lay out the whole document.
+  // A background composer cannot own the caret that cleanup must preserve.
+  if (editor.ownerDocument.activeElement !== editor) {
+    return null
+  }
+
   const selection = window.getSelection()
 
   if (!selection?.isCollapsed || selection.rangeCount === 0) {

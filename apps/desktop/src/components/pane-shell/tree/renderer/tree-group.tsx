@@ -997,7 +997,12 @@ export function TreeGroup({
                   aria-hidden={!isActive || undefined}
                   className={cn(
                     'absolute inset-0 overflow-auto',
-                    !isActive && 'pointer-events-none invisible opacity-0'
+                    !isActive && 'pointer-events-none invisible opacity-0',
+                    // Chat state stays mounted, but its hidden math/markdown
+                    // tree must not take part in a synchronous tab layout.
+                    // Native guests use separate keep-alive hosts and retain
+                    // their geometry; the thread restores its scroll on reveal.
+                    !isActive && (paneId === 'workspace' || paneId.startsWith('session-tile:')) && 'hidden'
                   )}
                   inert={!isActive || undefined}
                   key={paneId}

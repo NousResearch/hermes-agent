@@ -99,6 +99,44 @@ def test_picker_never_synthesizes_900k_for_pro_or_unknown_slugs():
     assert "gpt-5.6-nova-900k" not in out
 
 
+def test_gpt62_extended_window_follows_the_account_catalog(monkeypatch):
+    from types import SimpleNamespace
+    from agent import model_metadata as mm
+    from agent.transports.codex import ResponsesApiTransport
+
+    token = _codex_jwt("catalog-window")
+    route = dict(provider="openai-codex", base_url="https://chatgpt.com/backend-api/codex")
+    bases = {"gpt-6.2-astra": 272_000, "gpt-6.2-sol": 500_000}
+    for maximum in (872_000, 1_050_000, None, 200_000):
+        rows = [dict(slug=m, context_window=w, max_context_window=maximum) for m, w in bases.items()]
+        rows.append(dict(slug="gpt-6.2-sol-pro", context_window=500_000, max_context_window=872_000))
+        reply = SimpleNamespace(status_code=200, json=lambda: {"models": rows})
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: reply)
+        monkeypatch.setattr(mm.model_metadata_http, "get", lambda *a, **kw: reply)
+        monkeypatch.setattr(mm, "_codex_oauth_context_cache", {})
+        monkeypatch.setattr(mm, "_codex_oauth_max_context_cache", {})
+        ids = get_codex_model_ids(access_token=token, base_url=route["base_url"])
+        assert "gpt-6.2-sol-pro-900k" not in ids
+        for model, standard in bases.items():
+            pin = model + "-900k"
+            if maximum and maximum > standard:
+                assert ids[ids.index(model) + 1] == pin and ids.count(pin) == 1
+            else:
+                assert pin not in ids
+            assert mm.get_model_context_length(model, api_key=token, **route) == standard
+            assert mm.get_model_context_length(pin, api_key=token, **route) == min(maximum or standard, 900_000)
+            params = dict(messages=[{"role": "user", "content": "Hello"}], tools=[], is_codex_backend=True, **route)
+            assert ResponsesApiTransport().build_kwargs(model=pin, **params)["model"] == model
+
+
+def test_offline_hints_do_not_advertise_catalog_only_context_variants(monkeypatch, tmp_path):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    pins = ["gpt-6.2-astra-900k", "gpt-6.2-sol-900k"]
+    (tmp_path / "config.toml").write_text('model = "gpt-6.2-astra-900k"\n', encoding="utf-8")
+    (tmp_path / "models_cache.json").write_text(json.dumps({"models": [{"slug": pin} for pin in pins]}), encoding="utf-8")
+    assert not set(pins) & set(get_codex_model_ids())
+
+
 def test_catalog_identity_stays_stable_for_rotation_but_changes_with_route(monkeypatch):
     from hermes_cli import auth, codex_models
     import agent.credential_pool as pool

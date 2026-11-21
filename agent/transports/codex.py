@@ -385,9 +385,12 @@ def _is_openai_api_origin(base_url: Any) -> bool:
 
 def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
     """Strict Astra/GPT-6.2 API contract, plus GPT-6.2 on official Codex and residency hosts."""
+    from agent.model_metadata import strip_codex_context_variant_suffix
     from utils import base_url_hostname
 
-    bare = str(model or "").strip().lower().rsplit("/", 1)[-1]
+    # ``-900k`` aliases are Hermes-side: judge the wire identity the base registration names.
+    model = strip_codex_context_variant_suffix(str(model or ""))
+    bare = model.strip().lower().rsplit("/", 1)[-1]
     if bare in GPT62_MODEL_IDS:
         return (_is_openai_api_origin(base_url) or is_official_codex_base_url(str(base_url or ""))
                 or base_url_hostname(str(base_url or "")) in {"us.api.openai.com", "eu.api.openai.com"})
@@ -401,6 +404,9 @@ def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: boo
     chat-era OpenAI families (gpt-4o, gpt-4.1, ...) on api.openai.com, which 400 on any ``reasoning``
     key (#76255). Only the exact OpenAI origin is judged: a relay serving those ids may translate.
     """
+    from agent.model_metadata import strip_codex_context_variant_suffix
+
+    model = strip_codex_context_variant_suffix(str(model or ""))
     if not is_codex_backend and _is_openai_api_origin(base_url):
         from agent.model_metadata import openai_model_rejects_reasoning
 

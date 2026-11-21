@@ -71,10 +71,10 @@ def _add_forward_compat_models(model_ids: list[str]) -> list[str]:
     return ordered
 
 
-def _add_context_variants(model_ids: list[str]) -> list[str]:
+def _add_context_variants(model_ids: list[str], catalog_rows: Optional[dict] = None) -> list[str]:
     """Insert ``<slug>-900k`` large-context picker variants after eligible base slugs.
 
-    Base slugs keep the cheaper advertised 272K limit; the variant opts into the large window.
+    Base slugs keep their advertised window; the variant opts into the large window.
     The suffix is Hermes-side only — stripped before the id hits the wire (agent/transports/codex.py,
     agent/auxiliary_client.py).
     """
@@ -87,21 +87,28 @@ def _add_context_variants(model_ids: list[str]) -> list[str]:
         variant = model_id + CODEX_CONTEXT_VARIANT_SUFFIX
         if variant in present or variant in out:
             continue
-        if has_codex_context_variant(model_id):
+        if has_codex_context_variant(model_id, (catalog_rows or {}).get(model_id)):
             out.append(variant)
     return out
 
 
-def _finalize_codex_models(model_ids: list[str]) -> list[str]:
+def _finalize_codex_models(model_ids: list[str], catalog_rows: Optional[dict] = None) -> list[str]:
     """Forward-compat synthesis + large-context variant synthesis."""
-    return _add_context_variants(_add_forward_compat_models(model_ids))
+    return _add_context_variants(_add_forward_compat_models(model_ids), catalog_rows)
 
 
 def codex_model_requires_account_discovery(model: str) -> bool:
-    """Whether a Codex model is only advertised after account discovery."""
+    """Whether a Codex model is only advertised after account discovery.
+
+    Astra/GPT-6.2 rows are account-gated, and catalog-only ``-900k`` aliases depend on the live
+    catalog's published ``max_context_window``. A stale ``models_cache.json`` or a ``config.toml``
+    default is a compatibility hint, not entitlement."""
+    from agent.model_metadata import has_codex_context_variant, is_codex_context_variant, strip_codex_context_variant_suffix
     from agent.reasoning_effort import GPT62_MODEL_IDS, is_astra_model
     from hermes_cli.model_normalize import normalize_model_for_provider
 
+    if is_codex_context_variant(model) and not has_codex_context_variant(strip_codex_context_variant_suffix(model)):
+        return True
     return is_astra_model(model) or normalize_model_for_provider(model, "openai-codex") in GPT62_MODEL_IDS
 
 
@@ -181,7 +188,8 @@ def _fetch_models_from_api(access_token: str, base_url: Optional[str] = None) ->
         logger.debug("Failed to fetch Codex models from API: %s", exc)
         return []
 
-    return _finalize_codex_models(_ranked_slugs(entries))
+    rows = {row["slug"].strip(): row for row in entries if isinstance(row, dict) and isinstance(row.get("slug"), str)}
+    return _finalize_codex_models(_ranked_slugs(entries), rows)
 
 
 def _read_default_model(codex_home: Path) -> Optional[str]:

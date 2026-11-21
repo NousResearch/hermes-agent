@@ -116,7 +116,10 @@ def is_astra_model(model: Optional[str]) -> bool:
 
 
 def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
-    """Supported effort set for an OpenAI/Codex Responses model."""
+    """Supported effort set for an OpenAI/Codex Responses model's wire identity."""
+    from agent.model_metadata import strip_codex_context_variant_suffix
+
+    model = strip_codex_context_variant_suffix(model)
     bare = (model or "").strip().lower().rsplit("/", 1)[-1]
     if is_astra_model(model) or bare in GPT62_MODEL_IDS or bare.startswith(NO_DISABLE_TIER_PREFIXES):
         return CODEX_ASTRA_EFFORTS

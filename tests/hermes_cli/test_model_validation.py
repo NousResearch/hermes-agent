@@ -498,7 +498,27 @@ class TestValidateCodex900kVariants:
             result = validate_requested_model(alias, "openai-codex")
         assert result["accepted"] is False
         assert result["persist"] is False
-        assert "272K" in result["message"]
+        assert "not a recognized large-context variant" in result["message"]
+
+    @pytest.mark.parametrize("model", ["gpt-6.2-astra", "gpt-6.2-sol"])
+    def test_gpt62_variant_is_accepted_only_when_the_account_catalog_lists_it(self, model):
+        alias = model + "-900k"
+        with patch("hermes_cli.models.provider_model_ids", return_value=[model, alias]):
+            result = validate_requested_model(alias, "openai-codex")
+        assert result["accepted"] and result["persist"] and result["recognized"]
+        assert result["message"] is None
+        for catalog in ([model], []):
+            with patch("hermes_cli.models.provider_model_ids", return_value=catalog):
+                result = validate_requested_model(alias, "openai-codex")
+            assert not result["accepted"] and not result["persist"]
+            assert "max_context_window" in result["message"] and f"`{model}`" in result["message"]
+
+    def test_unknown_variant_does_not_invent_a_provider_context_limit(self):
+        with patch("hermes_cli.models.provider_model_ids", return_value=self._CATALOG):
+            result = validate_requested_model("gpt-6.3-astra-900k", "openai-codex")
+        assert not result["accepted"] and not result["persist"]
+        assert "272K" not in result["message"]
+        assert "update" in result["message"].lower() and "restart" in result["message"].lower()
 
     def test_valid_variant_missing_from_catalog_still_accepted(self):
         """A verified variant not yet in the (possibly stale) catalog is

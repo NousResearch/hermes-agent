@@ -114,9 +114,12 @@ def test_new_contract_does_not_capture_predecessors_or_invent_variants():
     from hermes_cli.models import model_supports_ultrafast, resolve_fast_mode_overrides
 
     assert "none" in codex_supported_efforts("gpt-6-sol")
-    for model in ("gpt-6.2-astra-pro", "gpt-6.2-sol-mini", "gpt-6.2-sol-900k", "gpt-6.20-sol"):
+    for model in ("gpt-6.2-astra-pro", "gpt-6.2-sol-mini", "gpt-6.20-sol"):
         assert codex_supported_efforts(model) == CODEX_LEGACY_EFFORTS
         assert not model_supports_ultrafast(model)
+    # The catalog-gated context alias is a picker name for its base and inherits the base's contract.
+    assert codex_supported_efforts("gpt-6.2-sol-900k") == codex_supported_efforts("gpt-6.2-sol")
+    assert model_supports_ultrafast("gpt-6.2-sol-900k") == model_supports_ultrafast("gpt-6.2-sol")
     for model in ("gpt-6.2-astra", "gpt-6.2-sol"):
         assert resolve_fast_mode_overrides(model, provider="openrouter", base_url="https://openrouter.ai/api/v1",
                                            tier="ultrafast") is None

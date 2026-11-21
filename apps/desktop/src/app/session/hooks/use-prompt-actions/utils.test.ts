@@ -140,6 +140,26 @@ describe('session error classifiers', () => {
     expect(isSessionNotFoundError(new Error('other'))).toBe(false)
     expect(isSessionBusyError(new Error('other'))).toBe(false)
   })
+
+  it('recognizes only the canonical structured session not-found refusal', () => {
+    expect(
+      isSessionNotFoundError(new JsonRpcGatewayError('not_found', { code: 4001, data: { reason: 'not_found' } }))
+    ).toBe(true)
+    expect(isSessionNotFoundError(new JsonRpcGatewayError('not_found', { code: 4001 }))).toBe(false)
+    expect(
+      isSessionNotFoundError(new JsonRpcGatewayError('not_found', { code: 4002, data: { reason: 'not_found' } }))
+    ).toBe(false)
+    expect(
+      isSessionNotFoundError(
+        new JsonRpcGatewayError('method not found', { code: 4001, data: { reason: 'method_not_found' } })
+      )
+    ).toBe(false)
+    expect(
+      isSessionNotFoundError(
+        new JsonRpcGatewayError('session not found', { code: 4001, data: { reason: 'session_read_only' } })
+      )
+    ).toBe(false)
+  })
 })
 
 describe('ownershipErrorSurface', () => {
@@ -210,6 +230,58 @@ describe('withSessionNotFoundResume', () => {
       sessionId: FRESH
     })
     expect(call.mock.calls.map(c => c[0])).toEqual([DEAD, FRESH])
+  })
+
+  it('resumes and retries once after the canonical gateway not-found refusal', async () => {
+    const d = deps()
+    let attempts = 0
+    const call = vi.fn(async (sid: string) => {
+      attempts += 1
+
+      if (attempts === 1) {
+        throw new JsonRpcGatewayError('not_found', { code: 4001, data: { reason: 'not_found' } })
+      }
+
+      return `ok:${sid}`
+    })
+
+    expect(await withSessionNotFoundResume(DEAD, STORED, call, d)).toEqual({
+      recovered: true,
+      result: `ok:${FRESH}`,
+      sessionId: FRESH
+    })
+    expect(d.requestGateway).toHaveBeenCalledTimes(1)
+    expect(call.mock.calls.map(c => c[0])).toEqual([DEAD, FRESH])
+  })
+
+  it('does not resume for an unrelated structured gateway refusal', async () => {
+    const d = deps()
+    const refusal = new JsonRpcGatewayError('session_read_only', {
+      code: 4001,
+      data: { reason: 'session_read_only' }
+    })
+    const call = vi.fn(async () => {
+      throw refusal
+    })
+
+    await expect(withSessionNotFoundResume(DEAD, STORED, call, d)).rejects.toBe(refusal)
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(d.requestGateway).not.toHaveBeenCalled()
+  })
+
+  it('honors a structured non-not-found reason over legacy error wording', async () => {
+    const d = deps()
+    const refusal = new JsonRpcGatewayError('session not found', {
+      code: 4001,
+      data: { reason: 'session_read_only' }
+    })
+    const call = vi.fn(async () => {
+      throw refusal
+    })
+
+    await expect(withSessionNotFoundResume(DEAD, STORED, call, d)).rejects.toBe(refusal)
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(d.requestGateway).not.toHaveBeenCalled()
   })
 
   it('resumes on the session-owning profile so recovery cannot fork the conversation', async () => {
@@ -291,12 +363,13 @@ describe('withSessionNotFoundResume', () => {
 
   it('rethrows when no stored session id is available to resume', async () => {
     const d = deps()
+    const refusal = new JsonRpcGatewayError('not_found', { code: 4001, data: { reason: 'not_found' } })
 
     const call = vi.fn(async () => {
-      throw new Error('session not found')
+      throw refusal
     })
 
-    await expect(withSessionNotFoundResume(DEAD, null, call, d)).rejects.toThrow('session not found')
+    await expect(withSessionNotFoundResume(DEAD, null, call, d)).rejects.toBe(refusal)
     expect(d.requestGateway).not.toHaveBeenCalled()
   })
 

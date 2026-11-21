@@ -6,6 +6,7 @@ a hard-coded 120s, return a 5019 timeout error, and then DROP the host's late
 never reached the gateway session and the desktop never refreshed.
 """
 
+import json
 import queue
 import sys
 import threading
@@ -14,7 +15,8 @@ import types
 
 import pytest
 
-from tui_gateway import server
+from tests.waiting import wait_until
+from tui_gateway import host_supervisor, server
 from tui_gateway.host_supervisor import HostSupervisor
 
 
@@ -43,6 +45,19 @@ def _session(**extra) -> dict:
         "_compute_host_active": True,
         **extra,
     }
+
+
+class _ExitedHost:
+    def wait(self):
+        return 1
+
+
+def _crash(sup: HostSupervisor) -> None:
+    """Run the supervisor's own exit path for a host that exited with code 1."""
+    sup._proc = _ExitedHost()
+    sup._remove_registry = lambda: None
+    sup._maybe_respawn_after_crash = lambda: None
+    sup._wait_for_exit(sup._proc)
 
 
 # ── HostSupervisor: late-ack registration ───────────────────────────────────
@@ -113,11 +128,35 @@ def test_host_crash_fails_outstanding_late_ack_handlers():
     with pytest.raises(queue.Empty):
         sup.control("sid", route_name="session.compress", wait=True, timeout=0.01,
                     on_late_ack=fired.append)
-    sup._fail_pending_turns(reason="crash", message="compute host exited with code 1")
+    _crash(sup)
     assert len(fired) == 1
     assert fired[0]["type"] == "control.error"
     assert fired[0]["request_id"] == sent[0]["request_id"]
     assert sup._late_control_handlers == {}
+
+
+def test_host_crash_answers_controls_still_waiting():
+    """A control or respond call blocked on the host's reply returns an error as soon as the host
+    exits, instead of waiting out its whole timeout for a child that is gone."""
+    sup, sent = _supervisor()
+    replies: list = []
+    callers = [
+        threading.Thread(target=lambda: replies.append(sup.control(
+            "sid", route_name="session.compress", wait=True, timeout=30))),
+        threading.Thread(target=lambda: replies.append(sup.respond("sid", {"cancel": {}}, timeout=30))),
+        threading.Thread(target=lambda: replies.append(sup.reload_mcp("sid"))),
+    ]
+    for caller in callers:
+        caller.start()
+    assert wait_until(lambda: len(sup._pending_controls) == 3, timeout=5)
+
+    _crash(sup)
+    for caller in callers:
+        caller.join(timeout=5)
+
+    assert sorted(r["type"] for r in replies) == ["control.error", "control.error", "respond.error"]
+    assert {r["request_id"] for r in replies} == {f["request_id"] for f in sent}
+    assert all(r["message"] == "compute host exited with code 1" for r in replies)
 
 
 # ── session.compress RPC: pending answer + late adoption ────────────────────
@@ -243,3 +282,117 @@ def test_compress_wait_budget_follows_config_ceiling(monkeypatch):
     assert server._compute_host_compress_wait_seconds(
         {"compression": {"context_total_ceiling_seconds": 99999}}
     ) == server._COMPUTE_HOST_COMPRESS_WAIT_CAP_SECS
+
+
+def test_reload_mcp_reports_a_host_crash_as_an_error(compute_host_gateway):
+    """A crash answers the waiting reload with control.error; the RPC must not report "reloaded"."""
+    sup, _sent, _emitted, _session = compute_host_gateway
+    replies: list = []
+    caller = threading.Thread(target=lambda: replies.append(server.handle_request(
+        {"id": "9", "method": "reload.mcp", "params": {"session_id": "sid", "confirm": True}})))
+    caller.start()
+    assert wait_until(lambda: sup._pending_controls, timeout=5)
+
+    _crash(sup)
+    caller.join(timeout=5)
+
+    assert replies[0]["error"]["code"] == 5019
+    assert "compute host exited with code 1" in replies[0]["error"]["message"]
+
+
+def test_a_crash_does_not_fail_controls_sent_to_the_replacement_host():
+    """Waiters are detached with the exited process; a control registered afterwards, while a turn
+    callback has already started a replacement host, keeps waiting for that host's reply."""
+    sup, sent = _supervisor()
+    replies: list = []
+
+    def start_a_new_control(_frame):
+        threading.Thread(target=lambda: replies.append(sup.control(
+            "sid", route_name="session.save", wait=True, timeout=5))).start()
+        assert wait_until(lambda: any(f.get("route_name") == "session.save" for f in sent), timeout=5)
+
+    sup._pending_turns["turn-1"] = ("sid", start_a_new_control)
+    _crash(sup)
+
+    new_request = sent[-1]["request_id"]
+    assert replies == []
+    sup._handle_host_frame({"type": "control.ack", "sid": "sid", "request_id": new_request, "route_name": "session.save"})
+    assert wait_until(lambda: replies, timeout=5)[0]["type"] == "control.ack"
+
+
+def test_reload_mcp_reports_an_error_inside_the_host_ack(compute_host_gateway):
+    """The host wraps its own reload.mcp reply in reload_mcp.ack even when that reply is an error."""
+    sup, sent, _emitted, _session = compute_host_gateway
+    replies: list = []
+    caller = threading.Thread(target=lambda: replies.append(server.handle_request(
+        {"id": "9", "method": "reload.mcp", "params": {"session_id": "sid", "confirm": True}})))
+    caller.start()
+    assert wait_until(lambda: sent, timeout=5)
+    sup._handle_host_frame({"type": "reload_mcp.ack", "sid": "sid", "request_id": sent[-1]["request_id"],
+                            "response": {"id": "9", "error": {"code": 5000, "message": "discovery failed"}}})
+    caller.join(timeout=5)
+
+    assert replies[0]["error"]["code"] == 5019
+    assert "discovery failed" in replies[0]["error"]["message"]
+
+
+def test_a_crash_answers_waiting_controls_before_the_turn_callbacks_run():
+    """A turn callback can run long; a control waiting on the crashed host is already answered by
+    then, so it never times out into a late handler that the crash cleanup has passed."""
+    sup, _sent = _supervisor()
+    replies: list = []
+    seen_by_callback: list = []
+    caller = threading.Thread(target=lambda: replies.append(sup.control(
+        "sid", route_name="session.compress", wait=True, timeout=30)))
+    caller.start()
+    assert wait_until(lambda: sup._pending_controls, timeout=5)
+
+    def turn_callback(_frame):
+        caller.join(timeout=5)
+        seen_by_callback.append(list(replies))
+
+    sup._pending_turns["turn-1"] = ("sid", turn_callback)
+    _crash(sup)
+
+    assert seen_by_callback == [[{"type": "control.error", "request_id": seen_by_callback[0][0]["request_id"],
+                                  "reason": "crash", "message": "compute host exited with code 1"}]]
+
+
+def test_an_ack_the_host_wrote_before_exiting_still_answers_its_waiter(monkeypatch):
+    """The host can write a control.ack and exit right away (a SIGTERM drain, a crash after the
+    reply), and the stdout drain may read that ack after the exit is seen: its waiter gets the ack,
+    not the crash error. A control sent to a replacement host meanwhile keeps waiting."""
+    sup, _sent = _supervisor()
+    exit_now, cleaned_up = threading.Event(), threading.Event()
+    replies: dict = {}
+
+    def send(request_id):
+        threading.Thread(target=lambda: replies.setdefault(request_id, sup.control(
+            "sid", route_name="session.save", payload={"request_id": request_id}, wait=True, timeout=30))).start()
+        assert wait_until(lambda: request_id in sup._pending_controls, timeout=5)
+
+    def host_stdout():
+        yield json.dumps({"type": "hello", "build_sha": "", "hermes_home": ""}) + "\n"
+        assert wait_until(lambda: sup._proc is None, timeout=5)  # the exit is already seen
+        send("to-replacement")
+        yield json.dumps({"type": "control.ack", "sid": "sid", "request_id": "save-1", "result": {}}) + "\n"
+
+    class _HostThatAckedThenExited:
+        pid, stdin, stdout, stderr = 0, None, host_stdout(), iter(())
+
+        def wait(self):
+            exit_now.wait(timeout=5)
+            return 0
+
+    monkeypatch.setattr(host_supervisor.subprocess, "Popen", lambda *_a, **_k: _HostThatAckedThenExited())
+    sup._persist_registry = sup._remove_registry = lambda: None
+    sup._maybe_respawn_after_crash = cleaned_up.set
+    sup._spawn_locked(reason="test")
+    send("save-1")
+
+    exit_now.set()
+    assert cleaned_up.wait(timeout=10)
+
+    assert wait_until(lambda: "save-1" in replies, timeout=5)
+    assert replies["save-1"]["type"] == "control.ack"
+    assert "to-replacement" not in replies and "to-replacement" in sup._pending_controls

@@ -41,8 +41,9 @@ import {
   saveBotMeta,
   setLocalBotMeta
 } from './data'
-import { $groupChats, GROUP_CHAT_MAX_MEMBERS, updateGroupChat } from './group-chat'
+import { $groupChats, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
+import { GROUP_CHAT_MAX_MEMBERS } from './group-engine'
 import { stickyGroupEngine } from './group-engine'
 import {
   botGroups,

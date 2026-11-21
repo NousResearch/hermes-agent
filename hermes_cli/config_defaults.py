@@ -2045,10 +2045,7 @@ DEFAULT_CONFIG = {
     # Positive integers only (no unlimited/0). Read from the root owner's config at service
     # startup for all hosted rooms; restart the owning service after changing them.
     "hosted_rooms": {
-        "discussion": {
-            "max_rounds": 3,
-            "max_messages": 10,
-        },
+        "discussion": {"max_rounds": 3, "max_messages": 10, "max_members": 6},
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
         "unmanaged_idle_exit_seconds": 600,  # client-auto-started gateway only; 0 disables

@@ -14,7 +14,8 @@ from tui_gateway.hosted_room_service import HostedRoomService
 from persistence_assembly import open_persistence, profile_scope
 
 
-PROFILES = ("research", "build", "review", "ops", "qa", "docs")
+PROFILES = ("research", "build", "review", "ops", "qa", "docs", "security", "release",
+            *(f"helper-{index}" for index in range(16)))
 ROOM_ID = "budget-room"
 
 
@@ -169,7 +170,7 @@ def test_owner_settings_do_not_leak_from_a_member_scope_and_defaults_are_unchang
     owner.mkdir()
     member.mkdir()
     (member / "config.yaml").write_text(
-        "hosted_rooms:\n  discussion:\n    max_rounds: 99\n    max_messages: 999\n"
+        "hosted_rooms:\n  discussion:\n    max_rounds: 99\n    max_messages: 999\n    max_members: 24\n"
     )
     with open_persistence(profile_scope(home=owner)) as owner_store:
         with _profile_runtime_scope(member, hydrate_secrets=False):
@@ -202,3 +203,28 @@ def test_an_invalid_config_section_keeps_the_defaults(tmp_path, caplog, section,
 
 def yaml_value(text):
     return {"0": 0, "-1": -1, "true": True, "1.5": 1.5, "'6'": "6", "null": None, "[]": [], "{}": {}}[text]
+
+
+@pytest.mark.parametrize("capacity", [8, 24])
+def test_configured_member_capacity_survives_restart_and_lowered_admission_limit(tmp_path, store, capacity):
+    with pytest.raises(discussion.DiscussionValidationError, match="between 2 and 6"):
+        _create(_service(store), 8)
+    (tmp_path / "config.yaml").write_text(
+        f"hosted_rooms:\n  discussion:\n    max_members: {capacity}\n    max_messages: 40\n")
+    service = _service(store)
+    _create(service, capacity)
+    for index in range(capacity):
+        _settle(service, index)
+    replies = [event for event in service._events(ROOM_ID) if event["kind"] == "message.member"]
+    assert {event["payload"]["member_id"] for event in replies} == set(PROFILES[:capacity])
+    (tmp_path / "config.yaml").write_text("hosted_rooms:\n  discussion:\n    max_members: 6\n")
+    restarted = _service(store)
+    restarted.prepare_room(restarted.bindings()[0])
+    assert len(restarted._room(ROOM_ID)["members"]) == capacity
+
+
+@pytest.mark.parametrize("value", ["1", "25", "true", "'8'"])
+def test_invalid_member_capacity_keeps_default(tmp_path, caplog, value, store):
+    (tmp_path / "config.yaml").write_text(f"hosted_rooms:\n  discussion:\n    max_members: {value}\n")
+    assert _service(store).discussion_limits == discussion.DiscussionLimits()
+    assert "hosted_rooms.discussion.max_members" in caplog.text

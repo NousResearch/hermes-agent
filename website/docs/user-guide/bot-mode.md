@@ -160,7 +160,10 @@ The room composer (and the reply-in-thread composer) starts as a single row and 
 
 Use the **Move up** and **Move down** arrows beside a room to choose its position among rooms. Until the first move, the existing pinned-first, recent-activity order is unchanged. After a move, room order is saved on this Desktop and survives reloads; new rooms follow the explicitly ordered rooms within their pinned or unpinned band. Moves cannot cross the pinned boundary, and filtering does not discard hidden rooms from the saved order. These controls reorder actual Group Chat rooms, not user-created Bot folders, and do not change membership or gateway ownership.
 
-**Open chat** on any group row (2–6 Bots) opens a shared room where the whole group coordinates:
+**Open chat** on any group row opens a shared room where the whole group coordinates.
+New native rooms allow 2–6 Bots by default; their gateway can raise that capacity
+to 24 through [native hosted-room settings](./configuration.md#native-hosted-room-discussion-limits).
+The creation picker follows the room-owning gateway's effective capacity:
 
 - **One visible conversation.** Public messages and each member's reply stay readable in arrival order, with the speaker's name and timestamp. Starting another topic does not collapse earlier replies. **Reply in thread** continues that topic without reordering the room; **Activity** is a secondary status view, not a replacement for messages. Private Bot Chats remain separate.
 - Your message triggers up to **three serial rounds** of member turns. @-mentioned Bots respond (everyone responds when nobody is mentioned); each Bot replies briefly or passes, and the room settles when a full round stays silent.

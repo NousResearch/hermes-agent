@@ -7,6 +7,9 @@ export interface GatewayGroupEngine {
 
 export type GroupEngine = 'desktop' | GatewayGroupEngine
 
+export const GROUP_CHAT_MAX_MEMBERS = 6
+export const GROUP_CHAT_MEMBER_CEILING = 24
+
 /** Gateway ownership is room identity, independent of the current membership. */
 export function gatewayGroupEngine(...sources: Array<{ engine?: unknown } | null | undefined>): { engine?: GatewayGroupEngine } {
   for (const source of sources) {

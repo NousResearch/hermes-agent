@@ -2,6 +2,7 @@ import { host, randomUuid } from '@hermes/plugin-sdk'
 
 import { canonicalApprovalPreview } from './canonical-group-approval'
 import type { CanonicalGroupMessages } from './canonical-group-locales'
+import { GROUP_CHAT_MAX_MEMBERS } from './group-engine'
 import type { GroupMember } from './types'
 
 export interface CanonicalGroupRoute {
@@ -241,9 +242,10 @@ function rosterEntry(member: GroupMember, members: GroupMember[], pin: Canonical
 export function canonicalGroupRoster(
   route: CanonicalGroupRoute,
   members: GroupMember[],
-  peer?: (member: GroupMember) => CanonicalPeerPin | undefined
+  peer?: (member: GroupMember) => CanonicalPeerPin | undefined,
+  maxMembers = GROUP_CHAT_MAX_MEMBERS
 ): { roster: CanonicalRoomMember[]; peers: CanonicalPeerSeat[] } | { problem: CanonicalRosterProblem } {
-  if (members.length < 2 || members.length > 6) {
+  if (members.length < 2 || members.length > maxMembers) {
     return { problem: 'groupSize' }
   }
 
@@ -368,13 +370,14 @@ export async function createCanonicalGroup(
   intent: GroupCreationIntent = {},
   /** The room name sent, from the entered one, once per request (New group chat fills a blank one
    *  from the Bots' names and makes it unique among this Desktop's). */
-  sentName: (name: string) => string = entered => entered
+  sentName: (name: string) => string = entered => entered,
+  maxMembers = GROUP_CHAT_MAX_MEMBERS
 ): Promise<{ binding: CanonicalGroupBinding; room: CanonicalRoom }> {
   requireRoute(route)
-  const checked = canonicalGroupRoster(route, members)
+  const checked = canonicalGroupRoster(route, members, undefined, maxMembers)
 
   if ('problem' in checked) {
-    throw Object.assign(new Error('A group chat hosted on this gateway needs two to six different bots on this connection'),
+    throw Object.assign(new Error(`A group chat hosted on this gateway needs two to ${maxMembers} different bots on this connection`),
       { canonicalGroupProblem: checked.problem })
   }
 

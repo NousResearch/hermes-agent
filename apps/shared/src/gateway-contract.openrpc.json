@@ -19899,6 +19899,13 @@
             "title": "Max Log Limit",
             "type": "integer"
           },
+          "max_members": {
+            "default": 6,
+            "maximum": 24,
+            "minimum": 2,
+            "title": "Max Members",
+            "type": "integer"
+          },
           "seatable_profiles": {
             "anyOf": [
               {

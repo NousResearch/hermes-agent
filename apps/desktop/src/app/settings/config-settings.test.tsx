@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
@@ -98,6 +98,21 @@ function renderConfigSettings(activeSectionId = 'safety') {
 }
 
 describe('ConfigSettings autosave', () => {
+  it('edits native room capacity as a number on the selected owner profile', async () => {
+    getHermesConfigRecord.mockResolvedValue({ hosted_rooms: { discussion: { max_members: 6 } } })
+    getHermesConfigSchema.mockResolvedValue({ fields: { 'hosted_rooms.discussion.max_members': { type: 'number' } } })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      renderConfigSettings('advanced')
+      fireEvent.change(await screen.findByRole('spinbutton'), { target: { value: '8' } })
+      await vi.advanceTimersByTimeAsync(700)
+      await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledWith(
+        { hosted_rooms: { discussion: { max_members: 8 } } }, 'default'))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {
     getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, other: 'untouched' })
 

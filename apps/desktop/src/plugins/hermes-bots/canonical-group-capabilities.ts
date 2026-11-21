@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { peerRoute, peerTargetKey, type PeerTargetState, readPeerTargets } from './canonical-group-peers'
 import { canonicalGroupRequest } from './canonical-groups'
+import { GROUP_CHAT_MAX_MEMBERS, GROUP_CHAT_MEMBER_CEILING } from './group-engine'
 import type { GroupEngine } from './group-engine'
 import { resolveBotConnectionRoute } from './routing'
 import type { RosterRow } from './types'
@@ -105,6 +106,13 @@ export function groupSeatableProfiles(value: unknown): null | Set<string> {
   }
 
   return new Set(seatable.filter((name): name is string => typeof name === 'string'))
+}
+
+export function groupMemberCapacity(value: unknown): number {
+  const limit = value && typeof value === 'object' ? (value as Record<string, unknown>).max_members : undefined
+
+  return typeof limit === 'number' && Number.isInteger(limit) && limit >= 2 && limit <= GROUP_CHAT_MEMBER_CEILING
+    ? limit : GROUP_CHAT_MAX_MEMBERS
 }
 
 /** Fence a group-creation flow to the source that approved it. Pass the epoch the

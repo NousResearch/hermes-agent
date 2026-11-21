@@ -188,6 +188,57 @@ class TestBusyHandlerDemotesInterruptForSubagents:
         parent.interrupt.assert_called_once_with("please stop")
 
     @pytest.mark.asyncio
+    async def test_interrupt_demoted_to_queue_when_subagents_run(self) -> None:
+        """The main #30170 case: configured ``interrupt`` + live subagents.
+
+        ``interrupt()`` cascades through ``_active_children``, so the guard
+        must demote the mode to ``queue``: the parent is never interrupted,
+        no child is touched, the follow-up is queued instead, and the ack
+        explains the demotion so the user knows ``/stop`` is the escape hatch.
+        """
+        runner = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="stop that and answer me now")
+        sk = build_session_key(event.source)
+        parent = _make_parent_with_subagents(children=2)
+        runner._running_agents[sk] = parent
+        runner.adapters[event.source.platform] = adapter
+
+        with patch("gateway.platforms.base.merge_pending_message_event"):
+            await runner._handle_active_session_busy_message(event, sk)
+
+        parent.interrupt.assert_not_called()
+        for child in parent._active_children:
+            child.interrupt.assert_not_called()
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        # The #30170 demotion copy, not the plain "Interrupting current task" ack.
+        assert "Subagent working" in content
+        assert getattr(event, "_gateway_accepted", False) is True
+
+    @pytest.mark.asyncio
+    async def test_outcome_reports_demotion_for_subagents(self) -> None:
+        """The resolver itself must report ``queue`` + ``demoted_for_subagents``
+        so the ack layer can tell the user why the message didn't take over."""
+        runner = _make_runner()
+        adapter = _make_adapter()
+        event = _make_event(text="still there?")
+        sk = build_session_key(event.source)
+        parent = _make_parent_with_subagents()
+        runner._running_agents[sk] = parent
+        runner.adapters[event.source.platform] = adapter
+        runner._session_has_compression_in_flight = AsyncMock(return_value=False)
+
+        outcome = await runner._resolve_busy_steer_or_redirect(
+            event, sk, "interrupt", parent
+        )
+
+        assert outcome.effective_mode == "queue"
+        assert outcome.demoted_for_subagents is True
+        assert outcome.redirected is False
+        parent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_queue_mode_unchanged_with_subagents(self) -> None:
         """Configured ``queue`` mode is already subagent-safe; the new
         guard must not change its behaviour or its ack text."""

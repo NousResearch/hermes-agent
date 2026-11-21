@@ -690,9 +690,15 @@ delegation:
 An inline session's `delegate_task` says results return in the call and leaves out the
 live-control parameters (`action` list/steer/stop, `subagent_id`, `message`), the same
 schema as a one-shot run. While it waits, the typing indicator stays on and the turn
-behaves like any long tool call. `/stop` stops the children, and so does a follow-up
-message under the default `busy_input_mode: interrupt` (each child returns an interrupted
-result with its partial output); under `queue` the follow-up waits for the turn.
+behaves like any long tool call. `/stop` stops the children; each returns an interrupted
+completion with its partial output. A plain follow-up message follows `display.busy_input_mode`:
+
+| Mode | What a follow-up while the children run does |
+|------|-----------------------------------------------|
+| `queue` | Waits, then runs as the next turn once the children finish and the parent answers. |
+| `steer` | Injected into the parent and every active child at its next tool-call boundary. No interrupt, no new turn. |
+| `interrupt` (default) | Demoted to `queue` while children run — interrupting the parent would abort them. The ack says the subagent is working and the message is queued. It interrupts only when no child is running. |
+
 Nested delegation is unchanged.
 
 Inline turns that run past `agent.gateway_notify_interval` (180 seconds by default) still

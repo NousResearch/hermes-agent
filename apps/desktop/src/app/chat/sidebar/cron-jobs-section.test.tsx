@@ -5,6 +5,7 @@ import { fmtDayTime } from '@/lib/time'
 import { $cronRunReadOnlyVerdicts, isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import type { CronJob, SessionInfo } from '@/types/hermes'
 
+import type { CronSidebarPresentation } from './cron-presentation'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 
 // The peek's run list comes off the backend; the liveness flags below are the
@@ -47,7 +48,7 @@ beforeEach(() => {
 
 afterEach(cleanup)
 
-async function renderRunsPeek(rows: SessionInfo[]) {
+async function renderRunsPeek(rows: SessionInfo[], presentation?: CronSidebarPresentation) {
   getCronJobRuns.mockResolvedValue(rows)
 
   const onOpenRun = vi.fn()
@@ -61,6 +62,7 @@ async function renderRunsPeek(rows: SessionInfo[]) {
       onToggle={vi.fn()}
       onTriggerJob={vi.fn()}
       open
+      presentation={presentation}
     />
   )
 
@@ -75,9 +77,27 @@ describe('SidebarCronJobsSection run rows', () => {
   // its bare id. The row carries the owning (connection, profile); without it
   // the resume cannot name the backend that holds the run and falls to the
   // ambient one — so an SSH/remote run's transcript never loads.
-  it('opens a run with the run ROW so the resume can pin its owning backend', async () => {
+  const host: CronSidebarPresentation = {
+    Section: ({ open, children }) => open && children,
+    Row: ({ model, children }) => (
+      <>
+        <button type="button" onClick={model.toggle}>
+          {model.toggleLabel}
+        </button>
+        {children}
+      </>
+    ),
+    Runs: ({ rows }) =>
+      rows?.map(row => (
+        <button type="button" key={row.id} disabled={!row.open} onClick={row.open}>
+          {row.label}
+        </button>
+      ))
+  }
+
+  it.each([undefined, host])('opens a run with its exact owning row (presentation %s)', async presentation => {
     const remote = run({ connection_id: 'gw-tailscale', id: 'cron_remote', profile: 'research' })
-    const { onOpenRun } = await renderRunsPeek([remote])
+    const { onOpenRun } = await renderRunsPeek([remote], presentation)
 
     const row = await screen.findByRole('button', { name: runLabel(remote) })
     row.click()

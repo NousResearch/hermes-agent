@@ -24,6 +24,7 @@ import { SidebarRowStack } from '../chrome'
 
 import { ownedNewSessionHandlers, projectOwnerRoute } from './gateway-project-rows'
 import { PROJECT_SESSION_PAGE, useRevealedRows, useWorkspaceNodeOpen } from './model'
+import type { RepositoryPresentation } from './row-presentation'
 import { SidebarWorkspaceGroup } from './workspace-group'
 import {
   mergeRepoWorktreeGroups,
@@ -38,15 +39,9 @@ import { WorkspaceAddButton, WorkspaceHeader, WorkspaceShowMoreRow } from './wor
 // redundant repo/branch header (the breadcrumb already names the project). Only
 // linked worktrees nest, shown by branch. Multi-folder projects keep per-repo
 // headers so the folders stay distinguishable.
-export function EnteredProjectContent({
-  project,
-  renderRows,
-  onNewSession,
-  onNewSessionSplit,
-  repoWorktrees,
-  liveSessions,
-  removedSessionIds
-}: {
+export interface EnteredProjectContentProps {
+  presentation?: RepositoryPresentation
+
   project: SidebarProjectTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   /** `owner` is set for a project another gateway owns: the session starts there. */
@@ -55,7 +50,18 @@ export function EnteredProjectContent({
   repoWorktrees?: Record<string, HermesGitWorktree[]>
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
-}) {
+}
+
+export function EnteredProjectContent({
+  presentation,
+  project,
+  renderRows,
+  onNewSession,
+  onNewSessionSplit,
+  repoWorktrees,
+  liveSessions,
+  removedSessionIds
+}: EnteredProjectContentProps) {
   if (!project.repos.length) {
     return null
   }
@@ -63,7 +69,7 @@ export function EnteredProjectContent({
   // Home's rows aren't anchored to a folder, so there's no repo or worktree
   // structure to show — just the chats, paged so a huge Home stays cheap.
   if (project.isNoProject) {
-    return <HomeSessions project={project} renderRows={renderRows} />
+    return <HomeSessions presentation={presentation} project={project} renderRows={renderRows} />
   }
 
   const single = project.repos.length === 1
@@ -79,6 +85,7 @@ export function EnteredProjectContent({
           onNewSession={owned.onNewSession}
           onNewSessionSplit={owned.onNewSessionSplit}
           owner={projectOwnerRoute(project)}
+          presentation={presentation}
           removedSessionIds={removedSessionIds}
           renderRows={renderRows}
           repo={repo}
@@ -90,15 +97,19 @@ export function EnteredProjectContent({
 }
 
 function HomeSessions({
+  presentation,
   project,
   renderRows
 }: {
+  presentation?: RepositoryPresentation
   project: SidebarProjectTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
 }) {
   const { t } = useI18n()
   const sessions = useMemo(() => project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions)), [project])
   const home = useRevealedRows(sessions, PROJECT_SESSION_PAGE)
+
+  if (presentation) return <>{renderRows(sessions)}</>
 
   return (
     <>
@@ -111,6 +122,7 @@ function HomeSessions({
 }
 
 function RepoFlatSection({
+  presentation: Presentation,
   repo,
   showHeader,
   renderRows,
@@ -121,6 +133,7 @@ function RepoFlatSection({
   owner,
   removedSessionIds
 }: {
+  presentation?: RepositoryPresentation
   repo: SidebarWorkspaceTree
   showHeader: boolean
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
@@ -279,46 +292,59 @@ function RepoFlatSection({
     )
   }
 
+  const actions = onNewSession && (
+    <WorkspaceAddButton
+      label={s.newSessionIn(repo.label)}
+      onClick={() => {
+        // Reveal the repo the new session targets if the user had it
+        // collapsed — the session lands in one of its lanes.
+        setWorkspaceNodeOpen(repo.id, true)
+        onNewSession(repo.path)
+      }}
+      onPointerDown={
+        onNewSessionSplit
+          ? event => {
+              startNewSessionDrag(
+                placement => {
+                  setWorkspaceNodeOpen(repo.id, true)
+                  onNewSessionSplit(placement.dir, {
+                    anchor: placement.anchor,
+                    before: placement.before,
+                    cwd: repo.path
+                  })
+                },
+                event,
+                { cwd: repo.path, label: s.newSessionIn(repo.label) }
+              )
+            }
+          : undefined
+      }
+    />
+  )
+  const icon = <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="repo" size="0.75rem" />
+  const title = repo.path ? displayPath(repo.path) : undefined
+
+  if (Presentation) {
+    return (
+      <Presentation
+        model={{ label: repo.label, title, open, toggle: toggleOpen, emphasis: true, icon, actions }}
+        dialogs={removeDialog}
+      >
+        {body}
+      </Presentation>
+    )
+  }
+
   return (
     <SidebarRowStack>
       <WorkspaceHeader
-        action={
-          onNewSession && (
-            <WorkspaceAddButton
-              label={s.newSessionIn(repo.label)}
-              onClick={() => {
-                // Reveal the repo the new session targets if the user had it
-                // collapsed — the session lands in one of its lanes.
-                setWorkspaceNodeOpen(repo.id, true)
-                onNewSession(repo.path)
-              }}
-              onPointerDown={
-                onNewSessionSplit
-                  ? event => {
-                      startNewSessionDrag(
-                        placement => {
-                          setWorkspaceNodeOpen(repo.id, true)
-                          onNewSessionSplit(placement.dir, {
-                            anchor: placement.anchor,
-                            before: placement.before,
-                            cwd: repo.path
-                          })
-                        },
-                        event,
-                        { cwd: repo.path, label: s.newSessionIn(repo.label) }
-                      )
-                    }
-                  : undefined
-              }
-            />
-          )
-        }
+        action={actions}
         emphasis
-        icon={<Codicon className="shrink-0 text-(--ui-text-tertiary)" name="repo" size="0.75rem" />}
+        icon={icon}
         label={repo.label}
         onToggle={toggleOpen}
         open={open}
-        title={repo.path ? displayPath(repo.path) : undefined}
+        title={title}
       />
       {open && <SidebarRowStack className="pl-2.5">{body}</SidebarRowStack>}
       {removeDialog}

@@ -1,0 +1,34 @@
+manifest_version: 1
+
+name: ams
+description: Read shared channels and coordinate agents through Agent Messaging Service.
+source: https://docs.agentmessagingservice.com/mcp/overview
+
+# Official hosted MCP: no local process, package download, or static API key.
+transport:
+  type: http
+  url: https://api.agentmessagingservice.com/mcp
+
+# Native MCP OAuth discovery, dynamic client registration, S256 PKCE and refresh.
+# Explicit scopes are needed: AMS defaults omitted scopes to read-only access.
+auth:
+  type: oauth
+  oauth:
+    scope: "ams:read ams:write"
+
+suggest:
+  keywords:
+    - agent messaging service
+  hosts:
+    - agentmessagingservice.com
+
+post_install: |
+  Sign in to AMS in the browser and approve only the workspaces you intend
+  Hermes to access. An active AMS workspace membership is required.
+  This connection requests read and write access for messages and channels.
+  If authorization is unfinished, run: hermes mcp login ams
+
+  Verify discovery with: hermes mcp test ams
+  Review enabled tools with: hermes mcp configure ams
+  Start a new session if the tools are not visible in your current session.
+  Ask Hermes to list authorized workspaces and check AMS status before posting.

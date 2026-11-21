@@ -1,0 +1,7 @@
+name: minimax
+version: 1.0.0
+description: "MiniMax H3-Image backend (text-to-image and image editing). Saves generated images to $HERMES_HOME/cache/generated/images/."
+author: NousResearch
+kind: backend
+requires_env:
+  - MINIMAX_API_KEY

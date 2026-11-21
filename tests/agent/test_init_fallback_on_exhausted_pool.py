@@ -25,7 +25,7 @@ def test_init_tries_fallback_when_primary_returns_none():
     fb = _mock_client()
 
     def fake_resolve(provider, model=None, raw_codex=False,
-                     explicit_base_url=None, explicit_api_key=None):
+                     explicit_base_url=None, explicit_api_key=None, **_kwargs):
         if provider == "tencent-token-plan":
             return fb, "kimi2.5"
         return None, None  # primary exhausted
@@ -83,7 +83,7 @@ def test_init_tries_fallback_when_openrouter_pool_exhausted():
                       base_url="http://127.0.0.1:11434/v1")
 
     def fake_resolve(provider, model=None, raw_codex=False,
-                     explicit_base_url=None, explicit_api_key=None):
+                     explicit_base_url=None, explicit_api_key=None, **_kwargs):
         if provider == "custom" and explicit_base_url:
             return fb, "qwen3.5:4b"
         return None, None  # openrouter pool exhausted
@@ -162,7 +162,7 @@ def test_init_fallback_recomputes_api_mode_for_per_model_profile_exception():
     real_get_profile = providers.get_provider_profile
 
     def fake_resolve(provider, model=None, raw_codex=False,
-                     explicit_base_url=None, explicit_api_key=None):
+                     explicit_base_url=None, explicit_api_key=None, **_kwargs):
         if provider == "acme-relay":
             return fb_client, "gpt-5-mini"
         return None, None  # primary (nous) has no usable credentials
@@ -199,7 +199,7 @@ def test_init_fallback_keeps_codex_responses_for_openai_codex():
     fb_client = _mock_client(base_url="https://chatgpt.com/backend-api/codex")
 
     def fake_resolve(provider, model=None, raw_codex=False,
-                     explicit_base_url=None, explicit_api_key=None):
+                     explicit_base_url=None, explicit_api_key=None, **_kwargs):
         if provider == "openai-codex":
             return fb_client, "gpt-5.4-mini"
         return None, None

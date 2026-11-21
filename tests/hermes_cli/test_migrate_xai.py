@@ -108,6 +108,33 @@ class TestApplyReplacement:
         cfg = _parse(trap_config)
         assert cfg["principal"]["model"] == "grok-4.3"
 
+    def test_grok_3_writes_reasoning_effort_none(self, tmp_path: Path):
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(
+            "principal:\n"
+            "  provider: xai\n"
+            "  model: grok-3\n",
+            encoding="utf-8",
+        )
+        issues = find_retired_xai_refs(_parse(cfg_path))
+        apply_migration(cfg_path, issues, backup=False)
+        cfg = _parse(cfg_path)
+        assert cfg["principal"]["model"] == "grok-4.3"
+        assert cfg["principal"]["reasoning_effort"] == "none"
+
+    def test_grok_code_fast_1_does_not_write_reasoning_effort(self, tmp_path: Path):
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(
+            "delegation:\n"
+            "  model: grok-code-fast-1\n",
+            encoding="utf-8",
+        )
+        issues = find_retired_xai_refs(_parse(cfg_path))
+        apply_migration(cfg_path, issues, backup=False)
+        cfg = _parse(cfg_path)
+        assert cfg["delegation"]["model"] == "grok-build-0.1"
+        assert "reasoning_effort" not in cfg["delegation"]
+
 
 
 
@@ -295,3 +322,17 @@ class TestCrashDurability:
         assert "# Hermes config (sample)" in text
         assert "# the main model" in text
         assert "# not affected" in text
+
+
+def test_dry_run_lists_one_guide_per_retirement(capsys, monkeypatch):
+    from hermes_cli.migrate import cmd_migrate_xai
+
+    monkeypatch.setattr("hermes_cli.migrate.load_config", lambda: {
+        "principal": {"model": "grok-3"},
+        "plugins": {"image_gen": {"xai": {"model": "grok-imagine-image-quality"}}},
+    })
+    assert cmd_migrate_xai(type("Args", (), {"apply": False, "no_backup": False})()) == 0
+    guides = [line.split("Migration guide: ")[1] for line in capsys.readouterr().out.splitlines() if "Migration guide:" in line]
+    assert sorted(guides) == sorted(issue.guide_url for issue in find_retired_xai_refs({
+        "principal": {"model": "grok-3"}, "plugins": {"image_gen": {"xai": {"model": "grok-imagine-image-quality"}}}}))
+    assert len(set(guides)) == 2

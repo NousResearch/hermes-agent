@@ -1,10 +1,10 @@
-"""Detect xAI models retired on May 15, 2026 and migrate config.yaml references."""
+"""Detect retired xAI models and migrate config.yaml references."""
 from __future__ import annotations
 
 import io
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 
 MIGRATION_GUIDE_URL = "https://docs.x.ai/developers/migration/may-15-retirement"
@@ -12,16 +12,21 @@ RETIREMENT_DATE = "May 15, 2026"
 
 
 # Official mapping per xAI migration guide. ``grok-4.3`` reasons by default, so ``*-non-reasoning``
-# variants need ``reasoning_effort="none"`` to emulate their behavior.
+# variants and ``grok-3`` (redirected at ``none`` per the guide) need ``reasoning_effort="none"``.
+# Rows default to the May 15 retirement; later ones carry their own ``retires_on`` / ``guide_url``.
 _RETIRED_MODELS: dict[str, dict[str, Optional[str]]] = {
     "grok-4-0709":                  {"replacement": "grok-4.3", "reasoning_effort": None,  "note": None},
     "grok-4-fast-reasoning":        {"replacement": "grok-4.3", "reasoning_effort": None,  "note": None},
     "grok-4-fast-non-reasoning":    {"replacement": "grok-4.3", "reasoning_effort": "none", "note": None},
     "grok-4-1-fast-reasoning":      {"replacement": "grok-4.3", "reasoning_effort": None,  "note": None},
     "grok-4-1-fast-non-reasoning":  {"replacement": "grok-4.3", "reasoning_effort": "none", "note": None},
-    "grok-code-fast-1":             {"replacement": "grok-4.3", "reasoning_effort": None,  "note": None},
-    "grok-3":                       {"replacement": "grok-4.3", "reasoning_effort": None,  "note": None},
-    "grok-imagine-image-pro":       {"replacement": "grok-imagine-image-quality", "reasoning_effort": None, "note": None},
+    "grok-code-fast-1":             {"replacement": "grok-build-0.1", "reasoning_effort": None, "note": None},
+    "grok-3":                       {"replacement": "grok-4.3", "reasoning_effort": "none", "note": None},
+    # pro already redirected to quality, so it follows quality to 2.0.
+    "grok-imagine-image-pro":       {"replacement": "grok-imagine-image-2.0", "reasoning_effort": None, "note": None},
+    "grok-imagine-image-quality":   {"replacement": "grok-imagine-image-2.0", "reasoning_effort": None, "note": None,
+                                     "retires_on": "November 2, 2026",
+                                     "guide_url": "https://docs.x.ai/developers/migration/imagine-image-quality-nov-2"},
 }
 
 
@@ -34,6 +39,8 @@ class RetirementIssue:
     replacement: str
     reasoning_effort: Optional[str] = None  # set for non-reasoning variant migration
     note: Optional[str] = None
+    retires_on: str = RETIREMENT_DATE
+    guide_url: str = MIGRATION_GUIDE_URL
 
 
 def _normalize(model_id: str) -> str:
@@ -53,7 +60,9 @@ def find_retired_xai_refs(config: dict[str, Any]) -> list[RetirementIssue]:
     """Walk all model slots in a Hermes config and return retirement issues.
 
     Slots scanned: ``principal.model``, ``auxiliary.<any>.model`` (introspective, covers future
-    aux slots), ``delegation.model``, ``tts.xai.model``, ``plugins.image_gen.xai.model``.
+    aux slots), ``delegation.model``, ``tts.xai.model``, ``image_gen.model`` (when the provider is xAI;
+    the ``hermes tools`` picker writes it there), ``image_gen.xai.model`` (the plugin's own key) and the
+    legacy ``plugins.image_gen.xai.model``.
     """
     issues: list[RetirementIssue] = []
     if not isinstance(config, dict):
@@ -67,7 +76,9 @@ def find_retired_xai_refs(config: dict[str, Any]) -> list[RetirementIssue]:
                 current_model=model,
                 replacement=entry["replacement"],
                 reasoning_effort=entry.get("reasoning_effort"),
-                note=entry.get("note")))
+                note=entry.get("note"),
+                retires_on=entry.get("retires_on") or RETIREMENT_DATE,
+                guide_url=entry.get("guide_url") or MIGRATION_GUIDE_URL))
 
     def _section(*keys: str) -> Optional[dict[str, Any]]:
         node: Any = config
@@ -86,8 +97,10 @@ def find_retired_xai_refs(config: dict[str, Any]) -> list[RetirementIssue]:
     for slot_name, slot_cfg in (_section("auxiliary") or {}).items():
         if isinstance(slot_cfg, dict):
             _check(f"auxiliary.{slot_name}.model", slot_cfg.get("model"))
-    for path in (("delegation",), ("tts", "xai"), ("plugins", "image_gen", "xai")):
+    for path in (("delegation",), ("tts", "xai"), ("image_gen", "xai"), ("plugins", "image_gen", "xai")):
         _check_section(*path)
+    if str((_section("image_gen") or {}).get("provider") or "").strip().lower() == "xai":
+        _check_section("image_gen")
     return issues
 
 
@@ -98,7 +111,13 @@ def format_issue(issue: RetirementIssue) -> str:
         parts.append(f'(set reasoning_effort: "{issue.reasoning_effort}")')
     if issue.note:
         parts.append(f"[note: {issue.note}]")
+    parts.append(f"[xAI retirement: {issue.retires_on}]")
     return " ".join(parts)
+
+
+def guide_urls(issues: Iterable[RetirementIssue]) -> list[str]:
+    """Distinct migration-guide URLs among ``issues``, sorted for stable output."""
+    return sorted({issue.guide_url for issue in issues if issue.guide_url})
 
 
 @dataclass(frozen=True)

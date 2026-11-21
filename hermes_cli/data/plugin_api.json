@@ -255,6 +255,17 @@
         "hermes_cli.session_worktree:restore",
         "hermes_cli.session_worktree:finish"
       ]
+    },
+    {
+      "source": "developer-guide/session-execution-context-api.md",
+      "entries": [
+        "hermes_cli.session_execution:SessionExecutionContext",
+        "hermes_cli.session_execution:ComputerUseLaunchContext",
+        "hermes_cli.session_execution:SessionExecutionError",
+        "hermes_cli.session_execution:register_session_execution_context",
+        "hermes_cli.session_execution:remove_session_execution_context",
+        "hermes_cli.session_execution:get_session_execution_context"
+      ]
     }
   ]
 }

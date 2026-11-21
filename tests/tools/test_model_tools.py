@@ -510,6 +510,41 @@ class TestBridgeDispatch:
         assert json.loads(out) == {"ok": True}
         assert disp.call_args.args[0] == "mcp_x" and disp.call_args.args[1] == {"a": 1}
 
+    def test_tool_call_error_result_reaches_transform_tool_result(self):
+        """#151243: a tool_call that fails resolution or validation is the final
+        result this call returns, so transform_tool_result must see it just like
+        the dispatched-tool path (post_tool_call already fires for this branch);
+        a hook may replace the error result outright."""
+        with (
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_cli.lifecycle.has_hook", lambda hook: hook == "transform_tool_result"),
+            patch("hermes_cli.plugins.invoke_hook", return_value=["<recovery hint>"]) as mock_invoke,
+        ):
+            out = handle_function_call("tool_call", {})
+        assert out == "<recovery hint>"
+        kwargs = mock_invoke.call_args.kwargs
+        assert kwargs["tool_name"] == "tool_call"
+        assert kwargs["args"] == {}
+        assert json.loads(kwargs["result"]).get("error")
+        assert kwargs["status"] == "error"
+        assert isinstance(kwargs["duration_ms"], int) and kwargs["duration_ms"] >= 0
+
+    def test_tool_search_read_result_reaches_transform_tool_result(self):
+        """The same inline-finish branch also serves tool_search/tool_describe
+        catalog reads; they flow through transform_tool_result under the bridge
+        name, mirroring the post_tool_call observer that already fires there."""
+        with (
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_cli.lifecycle.has_hook", lambda hook: hook == "transform_tool_result"),
+            patch("hermes_cli.plugins.invoke_hook", return_value=["<transformed>"]) as mock_invoke,
+        ):
+            out = handle_function_call("tool_search", {"queries": ["clock"]})
+        assert out == "<transformed>"
+        kwargs = mock_invoke.call_args.kwargs
+        assert kwargs["tool_name"] == "tool_search"
+        assert kwargs["args"] == {"queries": ["clock"]}
+        assert json.loads(kwargs["result"])["queries"] == ["clock"]
+
 
 # ==================================================================
 

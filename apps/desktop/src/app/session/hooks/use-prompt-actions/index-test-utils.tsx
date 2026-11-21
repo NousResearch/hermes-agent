@@ -109,7 +109,7 @@ export function Harness({
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
   openMemoryGraph?: () => void
-  openSideChat?: (seed: BtwSideChat, parentStoredId: null | string) => Promise<boolean>
+  openSideChat?: (seed: BtwSideChat, parentStoredId: null | string, createdStoredId?: string) => Promise<boolean>
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void

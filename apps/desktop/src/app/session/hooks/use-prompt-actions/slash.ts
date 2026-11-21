@@ -151,7 +151,7 @@ interface SlashCommandDeps {
     storedSessionId?: string | null
   ) => void
   branchCurrentSession: () => Promise<boolean>
-  openSideChat?: (seed: BtwSideChat, parentStoredId: null | string) => Promise<boolean>
+  openSideChat?: (seed: BtwSideChat, parentStoredId: null | string, createdStoredId?: string) => Promise<boolean>
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
@@ -748,7 +748,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
               }
 
               renderSlashOutput(result.text?.trim() || '')
-              submitted = await openSideChat(result.side_chat, storedSessionId)
+              submitted = await openSideChat(result.side_chat, storedSessionId, result.stored_session_id ?? undefined)
 
               return
             }

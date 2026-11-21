@@ -255,7 +255,7 @@ interface PromptActionsOptions {
   activeSessionIdRef: MutableRefObject<string | null>
   busyRef: MutableRefObject<boolean>
   branchCurrentSession: () => Promise<boolean>
-  openSideChat?: (seed: BtwSideChat, parentStoredId: null | string) => Promise<boolean>
+  openSideChat?: (seed: BtwSideChat, parentStoredId: null | string, createdStoredId?: string) => Promise<boolean>
   createBackendSessionForSend: CreateBackendSessionForSend
   getRoutedStoredSessionId: () => null | string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string

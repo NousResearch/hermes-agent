@@ -138,7 +138,26 @@ describe('usePromptActions /btw --open', () => {
     )
     await handle!.submitText('/btw --open btw_ab12cd')
 
-    expect(openSideChat).toHaveBeenCalledWith(sideChat, expect.anything())
+    expect(openSideChat).toHaveBeenCalledWith(sideChat, expect.anything(), undefined)
+  })
+
+  it('opens the side chat the shared owner already created', async () => {
+    const openSideChat = vi.fn(async () => true)
+
+    const requestGateway = vi.fn(
+      async (method: string) =>
+        (method === 'prompt.btw'
+          ? { text: '⤢ Opening btw_ab12cd', side_chat: sideChat, fallback_text: 'x', stored_session_id: 'local-child' }
+          : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} openSideChat={openSideChat} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+    await handle!.submitText('/btw --open')
+
+    expect(openSideChat).toHaveBeenCalledWith(sideChat, expect.anything(), 'local-child')
   })
 
   it('shows the fallback line when this window cannot dock a side chat', async () => {

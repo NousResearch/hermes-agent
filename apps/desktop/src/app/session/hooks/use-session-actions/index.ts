@@ -71,7 +71,6 @@ import {
   $sessions,
   $yoloActive,
   idsShareLineage,
-  type NewChatWorkspaceTarget,
   ownerLookupSessionRows,
   resolveComposerSessionKey,
   restoreComposerModelSelection,
@@ -159,6 +158,7 @@ import { branchCreateKey } from './branch-create-key'
 import type { SessionCreateOverrides } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
+import { type FreshSessionDraftOptions, normalizeNewChatWorkspaceTarget } from './fresh-draft'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { rememberedOwnerForResume } from './remembered-owner'
@@ -196,6 +196,7 @@ import { backgroundRuntimeOptions, runtimeOwner, runtimeOwnerProfile } from './r
 import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
 import { branchCreateParams, sideChatBranchMessages } from './session-create-request'
 import { applyStoredUsage, publishWarmSessionRuntime } from './session-usage'
+import { openSideChatTab } from './side-chat-tab'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
@@ -272,17 +273,6 @@ export interface BranchLoadedSessionOptions {
 // How long we keep creatingSessionRef after create/fork navigate before giving up
 // if the router never lands on the pending stored id (stuck navigate / lost race).
 const CREATE_GUARD_RELEASE_MS = 3_000
-
-interface FreshSessionDraftOptions {
-  preserveRoute?: boolean
-  replaceRoute?: boolean
-  rotateFreshDraftKey?: boolean
-  workspaceTarget?: NewChatWorkspaceTarget
-}
-
-function normalizeNewChatWorkspaceTarget(target: NewChatWorkspaceTarget): NewChatWorkspaceTarget {
-  return typeof target === 'string' ? target.trim() || null : target
-}
 
 export function useSessionActions({
   activeSessionId,
@@ -2929,12 +2919,17 @@ export function useSessionActions({
     [activeSessionIdRef, branchLoadedSession, busyRef, getRouteToken, selectedStoredSessionIdRef]
   )
 
-  // `/btw --open`: a finished side thread becomes a child chat in a tab docked to the RIGHT of this
-  // one (main never moves), owned by the parent's backend like any branch.
+  // `/btw --open`: a finished side thread as a child chat in a tab docked to the RIGHT of this one
+  // (main never moves). The shared owner creates it (`createdStoredId`); the legacy sidecar is seeded.
   const openSideChat = useCallback(
-    async (seed: BtwSideChat, parentStoredId: null | string): Promise<boolean> => {
-      const profile = parentStoredId ? await resolveSessionProfile(parentStoredId) : undefined
+    async (seed: BtwSideChat, parentStoredId: null | string, createdStoredId?: string): Promise<boolean> => {
       const ownerRoute = parentStoredId ? sessionOwnerRouteFromRow(cachedSessionRow(parentStoredId)) : undefined
+
+      if (createdStoredId) {
+        return openSideChatTab(createdStoredId, ownerRoute)
+      }
+
+      const profile = parentStoredId ? await resolveSessionProfile(parentStoredId) : undefined
       const beside = { dock: 'right' as const, title: seed.title }
 
       return forkBranch(sideChatBranchMessages(seed), null, parentStoredId, $currentCwd.get().trim(), profile, undefined, ownerRoute, undefined, beside)

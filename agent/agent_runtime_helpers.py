@@ -32,7 +32,7 @@ from agent.credential_pool import (
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
-from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
+from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot, restored_request_overrides
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 from session_rules.turns import _msg_has_payload, repair_message_sequence
 logger = logging.getLogger(__name__)
@@ -694,7 +694,7 @@ def _apply_primary_runtime_fields(agent, rt: dict[str, Any]) -> None:
         agent._transport_cache.clear()
     agent.api_key = rt["api_key"]
     agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
-    agent.request_overrides = dict(rt.get("request_overrides") or {})
+    agent.request_overrides = restored_request_overrides(agent, rt)
     agent._client_kwargs = dict(rt["client_kwargs"])
 
 

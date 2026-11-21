@@ -141,6 +141,25 @@ def test_redirect_guard_is_wired(monkeypatch, method_name):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("url, allowed", [
+    # Every allowlisted host also routes /api/<method> to the Web API (probed live:
+    # invalid_auth JSON for a fake token), so a forged file URL must not reach it.
+    ("https://files-origin.slack.com/api/auth.test", False),
+    ("https://slack.com/api/chat.postMessage", False),
+    ("https://files.slack.com//api/auth.test", False),
+    ("https://acme.slack.com/%61pi/auth.test", False),
+    ("https://slack.com/files-pri/T1-F1/../../api/auth.test", False),
+    ("https://slack.com/API/auth.test", False),
+    ("https://files.slack.com/files-pri/T0123-F0456/api.pdf", True),
+    ("https://files.slack.com/files-pri/T0123-F0456/download/report.pdf", True),
+    ("https://files-origin.slack.com/files-pri/T0123-F0456/image.png", True),
+    ("https://files.slack-files.com/files-tmb/T0123-F0456/x_360.png", True),
+])
+def test_cdn_allowlist_refuses_web_api_paths(url, allowed):
+    """The bot token goes to Slack file paths only, never to a Web API method (centaur#2164)."""
+    assert SlackAdapter._is_slack_cdn_url(url) is allowed
+
+
 # ---------------------------------------------------------------------------
 # Connect-time DNS pinning (composition with #57860): a Slack-CDN hostname
 # whose DNS answer flips from public at preflight to a metadata IP at connect

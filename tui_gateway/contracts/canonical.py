@@ -500,6 +500,48 @@ canonical_method("cron.cancel", params=CronAdmissionParams, result=CronCancelRes
                  doc="Cancel a queued cron admission or latch cancellation on a started one.")
 
 
+# ── inbox (gateway/session_inbox.py) ──────────────────────────────────────────────────────────
+
+
+class InboxListParams(ProfileParams):
+    limit: int = 50
+
+
+class InboxItem(Result):
+    """A scheduled job's finished (or still running) run session filed into the profile's Inbox."""
+
+    session_id: str
+    job_id: str
+    job_name: str
+    delivered_at: float
+    preview: str
+    unread: bool
+    running: bool
+
+
+class InboxListResult(Result):
+    items: list[InboxItem]
+    unread_count: int
+
+
+canonical_method("inbox.list", params=InboxListParams, result=InboxListResult,
+                 doc="The owning profile's Inbox: cron run sessions filed by deliver=inbox, newest first.")
+
+
+class InboxReadParams(ProfileParams):
+    session_id: str
+    read: bool = True
+
+
+class InboxReadResult(Result):
+    session_id: str
+    unread: bool
+
+
+canonical_method("inbox.read", params=InboxReadParams, result=InboxReadResult,
+                 doc="Mark one Inbox item read (or unread): the session's shared last_read_at watermark.")
+
+
 class KanbanRunParams(Params):
     board: str
     task_id: str

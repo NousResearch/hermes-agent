@@ -688,6 +688,7 @@ When scheduling jobs, you specify where the output goes:
 | `"weixin"` | Weixin (WeChat) | |
 | `"bluebubbles"` | BlueBubbles (iMessage) | |
 | `"qqbot"` | QQ Bot (Tencent QQ) | |
+| `"inbox"` | The Desktop/Web Inbox: the run's own session, unread, continuable | Default for jobs created in a Desktop/Web chat (not Bot Chat) |
 | `"bot-chat"` | This profile's canonical Bot Chat — the bot reads the output and responds | Machine-local |
 | `"bot-chat:research"` | Another local profile's Bot Chat | Validated at create time |
 | `"all"` | Fan out to every connected home channel | Resolved at fire time |
@@ -717,6 +718,26 @@ issue, and a manual `cronjob run` reports `success: false` with the delivery
 error. A delivery failure does not count toward the job's `failure_streak`
 (the agent did its job); the next fully successful run returns the status to
 `ok`.
+
+### Inbox delivery (`inbox`)
+
+`inbox` files each run's own session (the transcript the scheduler already writes for that
+fire) into the profile's **Inbox**, a sidebar entry in the Desktop app and the Web app with an
+unread badge and a notification when a new result lands. Nothing is copied: the inbox item IS
+the run session, and its read state is the session's normal unread watermark on the backend,
+so every client sees the same unread items.
+
+**Default.** A job created from a Desktop or Web chat that is not the canonical Bot Chat, with
+`deliver` omitted or `origin`, delivers to `inbox`. Before this, such a job wrote its result
+into the creating chat as a note. Jobs created in the Bot Chat keep Bot Chat delivery, and
+CLI/TUI jobs keep the local-chat note.
+
+**Continuing.** Open an item and reply. A run that finished becomes an ordinary chat on the
+surface you reply from: on that first message the session's frozen cron policy is rebuilt once
+as a fresh chat of that client (the Desktop gets its normal toolset, `desktop_ui` included, and
+the Desktop platform hint), and the run's stored system prompt is rebuilt for it. That one turn
+re-sends the prompt prefix uncached; afterwards the conversation is cached like any other chat.
+A run that is still executing stays read-only until it finishes.
 
 ### Bot Chat delivery (`bot-chat`)
 

@@ -308,6 +308,8 @@ class AuthorityConnection:
         handlers.update(onboarding_handlers(self))
         from gateway.session_stored_reads import handlers as stored_read_handlers
         handlers.update(stored_read_handlers(self))
+        from gateway.session_inbox import handlers as inbox_handlers
+        handlers.update(inbox_handlers(self))
         return handlers
 
     async def dispatch(self, request):
@@ -825,8 +827,12 @@ class AuthorityConnection:
         if self._voice_stop_replay(ref, params) or await self._typed_voice_stop(ref, params):
             self._record_voice_stop(ref, params)
             return {'voice_stopped': True}
+        submission = self.submission(ref, params)  # an attached viewer's well-formed input only
+        self.authority.authorize(self.actor, ref, 'session:submit')
+        from gateway.session_inbox import continue_if_inbox
+        await continue_if_inbox(self, ref)  # a finished inbox run becomes this client's chat, once
         # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
-        receipt = await self.authority.submit(self.actor, self.submission(ref, params),
+        receipt = await self.authority.submit(self.actor, submission,
                                               queue_while_restarting=self._operator is True)
         return asdict(receipt)
 

@@ -26,6 +26,10 @@ export const zhNotifications = {
       label: '后台任务完成',
       description: '后台终端命令已完成。'
     },
+    inbox: {
+      label: '定时任务结果',
+      description: '定时任务已完成，结果已送达收件箱。'
+    },
     credits: {
       label: '额度提醒',
       description: '额度访问被暂停或恢复。'

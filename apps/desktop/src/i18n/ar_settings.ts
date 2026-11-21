@@ -268,6 +268,10 @@ export const arSettings = {
         backgroundDone: {
           label: 'اكتملت مهمة الخلفية',
           description: 'اكتمل أمر طرفية يعمل في الخلفية.'
+        },
+        inbox: {
+          label: 'نتائج المهام المجدولة',
+          description: 'انتهت مهمة مجدولة ووصلت نتيجتها إلى صندوق الوارد.'
         }
       },
       browserPermission: {

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, List, Optional
 
 from gateway.inbound_reply_context import record_cron_delivery, recording_cron_delivery
+from cron import inbox as _inbox
 
 
 # Log-record parity with the origin module.
@@ -620,6 +621,8 @@ def _resolve_single_delivery_target(
     origin = _resolve_origin(job)
     if deliver_value == "local":
         return None
+    if _inbox.is_inbox_token(deliver_value):
+        return _inbox.inbox_target()
     room_address = parse_room_deliver_token(deliver_value)
     if room_address is not None:
         return resolve_room_target(job, room_address)
@@ -1740,7 +1743,8 @@ def _deliver_result(
     external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER", "")
     if (external_execution and adapters is None
             and external_execution == str(job.get("execution_id") or "")
-            and any(target["platform"] not in (BOT_CHAT_PLATFORM, ROOM_PLATFORM) for target in targets)):
+            and any(target["platform"] not in (BOT_CHAT_PLATFORM, ROOM_PLATFORM, _inbox.INBOX_PLATFORM)
+                    for target in targets)):
         from cron.delivery_queue import enqueue_and_wait
 
         _record_delivery_verification(job, [])
@@ -1851,6 +1855,11 @@ def _deliver_result(
             room_error = deliver_to_room(job, content, target["chat_id"], for_failure=for_failure)
             delivery_errors.extend([room_error] if room_error else [])
             reached += not room_error
+            continue
+        if target["platform"] == _inbox.INBOX_PLATFORM:
+            inbox_error = _inbox.file_run(job, mirror_text)
+            delivery_errors.extend([inbox_error] if inbox_error else [])
+            reached += not inbox_error
             continue
         if target["platform"] == "local":
             from gateway.session_cron import deliver_to_local_chat

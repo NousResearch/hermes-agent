@@ -87,7 +87,8 @@ export const zhHantChrome = {
       capabilities: '技能與工具',
       messaging: '訊息平台',
       artifacts: '成品',
-      cron: '排程工作'
+      cron: '排程工作',
+      inbox: '收件匣'
     },
     searchAria: '搜尋工作階段',
     searchPlaceholder: '搜尋工作階段…',

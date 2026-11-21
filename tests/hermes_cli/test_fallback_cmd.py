@@ -1,6 +1,7 @@
 """Tests for `hermes fallback` — chain reading, add/remove/clear, legacy migration."""
 from __future__ import annotations
 
+import io
 import types
 from pathlib import Path
 from unittest.mock import patch
@@ -97,6 +98,42 @@ class TestListCommand:
 # ---------------------------------------------------------------------------
 
 class TestAddCommand:
+    def test_add_accepts_noninteractive_route_flags(self, isolated_home):
+        """Regression for #139609: automation can append a route without a TTY picker."""
+        _write_config(isolated_home, {
+            "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
+        })
+
+        from hermes_cli.fallback_cmd import cmd_fallback_add
+        cmd_fallback_add(types.SimpleNamespace(
+            fallback_provider="openrouter",
+            fallback_model="anthropic/claude-haiku-4-5",
+            fallback_base_url="https://openrouter.ai/api/v1",
+            fallback_api_mode="chat_completions",
+        ))
+
+        assert _read_config(isolated_home)["fallback_providers"] == [{
+            "provider": "openrouter",
+            "model": "anthropic/claude-haiku-4-5",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        }]
+
+    def test_add_noninteractive_partial_flags_name_the_missing_field(self, capsys, monkeypatch):
+        from hermes_cli.fallback_cmd import cmd_fallback_add
+
+        monkeypatch.setattr("sys.stdin", io.StringIO())
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_fallback_add(types.SimpleNamespace(
+                fallback_provider="openrouter",
+                fallback_model=None,
+                fallback_base_url=None,
+                fallback_api_mode=None,
+            ))
+
+        assert exc_info.value.code == 2
+        assert "missing: --model" in capsys.readouterr().err
+
     def test_add_appends_new_entry(self, isolated_home):
         _write_config(isolated_home, {
             "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
@@ -326,3 +363,18 @@ class TestDispatcher:
 # ---------------------------------------------------------------------------
 # argparse wiring — verify the subparser is registered
 # ---------------------------------------------------------------------------
+
+def test_fallback_add_parser_accepts_noninteractive_route_flags():
+    from hermes_cli.main import _build_cli_parser
+
+    parser, _subparsers = _build_cli_parser()
+
+    args = parser.parse_args([
+        "fallback", "add", "--provider", "openrouter", "--model", "anthropic/claude-haiku-4-5",
+        "--base-url", "https://openrouter.ai/api/v1", "--api-mode", "chat_completions",
+    ])
+
+    assert args.fallback_provider == "openrouter"
+    assert args.fallback_model == "anthropic/claude-haiku-4-5"
+    assert args.fallback_base_url == "https://openrouter.ai/api/v1"
+    assert args.fallback_api_mode == "chat_completions"

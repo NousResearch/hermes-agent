@@ -997,10 +997,10 @@ DEFAULT_CONFIG = {
         # IPs / bounded CIDRs of reverse proxies trusted to supply X-Forwarded-Proto/-For. Loopback
         # always trusted; wildcards and /0 rejected (spoofing guard).
         "trusted_proxies": [],
-        # WebSocket keepalive (seconds), NON-loopback binds only: loopback always disables the
-        # protocol ping so an event-loop stall never kills a healthy local connection.
+        # WebSocket keepalive (s), NON-loopback only: loopback never pings (a loop stall can't kill it).
         "ws_ping_interval": 20.0,
         "ws_ping_timeout": 20.0,
+        "replay_coalesce_deltas": False,  # reconnect replay: one entry per streamed block, not per token
         # Grace (seconds) before a WS-orphaned gateway session is interrupted/reaped after its
         # client disconnects. 0 = park forever. Env: HERMES_TUI_WS_ORPHAN_REAP_GRACE_S.
         "ws_orphan_reap_grace_s": 20.0,

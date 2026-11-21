@@ -2069,6 +2069,21 @@ The same field is included by the shared outbound-webhook payload builder.
 // Silent no-op — any empty / non-matching output is fine:
 ```
 
+Hook scripts written for other agents' hook systems run unchanged: Hermes also reads the nested `hookSpecificOutput` reply and the flat `permission` reply, and lowers them onto the shapes above:
+
+| Reply | Event | Hermes meaning |
+|---|---|---|
+| `{"hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": "…"}}` | `pre_tool_call` | block with that reason |
+| `{"permission": "deny", "agent_message": "…", "user_message": "…"}` | `pre_tool_call` | block; `agent_message` (else `user_message`) is the reason |
+| `permissionDecision` / `permission` = `"ask"` | `pre_tool_call` | escalate to the human-approval gate |
+| `"allow"` with `updatedInput` / `updated_input` | `pre_tool_call` | modify the tool args |
+| `"allow"` alone | any | no-op: a hook never auto-approves |
+| `hookSpecificOutput.additionalContext` / `additional_context` | `pre_llm_call` | inject context |
+| `{"continue": false, "user_message": "…"}` | `pre_llm_call` | block the turn |
+| nested `{"decision": "block", "reason": "…"}` / `{"followup_message": "…"}` | `pre_verify` | keep the agent going with that message |
+
+A Hermes key in the same reply (`action`, `decision`, `message`, `context`) wins over the lowered one.
+
 Except for `pre_tool_call` exit code 2 described below, malformed JSON, ordinary non-zero exit codes, and timeouts fail open by default: they log a warning but do not abort the agent loop. A `fail_closed` hook changes the behavior as described below.
 
 ### Exit code 2 = block (Claude Code / Cursor compatible)

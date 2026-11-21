@@ -690,6 +690,70 @@ _RESPONSE_PARSERS: dict[str, Callable[[dict[str, Any]], Optional[dict[str, Any]]
 }
 
 
+def _lower_permission(verdict: Any, reason: Any, updated: Any) -> dict[str, Any]:
+    """A permission verdict (``deny``/``ask``/``allow``) in the flat dialect: ``deny`` blocks, ``ask``
+    is "route to the human" (the Hermes approval-gate escalation), ``allow`` is a no-op (hooks never
+    auto-allow, same ruling as the flat ``decision: approve``) unless it carries a rewrite."""
+    if verdict == "deny":
+        return {"decision": "block", "reason": reason}
+    if verdict == "ask":
+        return {"action": "approve", "message": reason}
+    return {"decision": "modify", "tool_input": updated} if isinstance(updated, dict) else {}
+
+
+def _lowered_directives(event: str, data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every directive the reply carries in either foreign shape, each read on its own."""
+    nested = data.get("hookSpecificOutput")
+    nested = nested if isinstance(nested, dict) else {}
+    reason = data.get("agent_message") or data.get("user_message") or data.get("stopReason")
+    found = [
+        _lower_permission(nested.get("permissionDecision"), nested.get("permissionDecisionReason"),
+                          nested.get("updatedInput")),
+        _lower_permission(data.get("permission"), reason, data.get("updated_input")),
+    ]
+    if nested.get("decision") == "block":  # Stop / SubagentStop nested form
+        found.append({"decision": "block", "reason": nested.get("reason")})
+    if event == "pre_llm_call" and data.get("continue") is False:
+        found.append({"decision": "block", "reason": reason})
+    if event == "pre_verify" and isinstance(data.get("followup_message"), str) and data["followup_message"].strip():
+        found.append({"action": "continue", "message": data["followup_message"]})
+    return [d for d in found if d]
+
+
+# Most severe first. One table ranks every directive a reply carries, Hermes-native ones included.
+_DIRECTIVE_RANK = ("block", "approve", "continue", "modify")
+_FOREIGN_KEYS = frozenset({"hookSpecificOutput", "permission", "agent_message", "user_message", "updated_input",
+                           "additional_context", "continue", "followup_message", "stopReason"})
+
+
+def _directive_rank(directive: dict[str, Any]) -> int:
+    verb = directive.get("action") or directive.get("decision")
+    return _DIRECTIVE_RANK.index(verb) if verb in _DIRECTIVE_RANK else len(_DIRECTIVE_RANK)
+
+
+def _flatten_reply_dialects(event: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Lower the two other agent-hook reply shapes onto the flat dialect the parsers read.
+
+    The nested shape: ``{"hookSpecificOutput": {"permissionDecision", "permissionDecisionReason",
+    "updatedInput", "additionalContext"}}`` (Stop: nested ``decision: block``). The flat permission shape
+    uses its own keys: ``{"permission", "agent_message", "user_message", "updated_input"}``, ``additional_context``,
+    ``continue: false`` to refuse a submitted prompt, and a stop hook's ``followup_message`` to keep going.
+    A reply mixing shapes yields exactly one directive: the most severe of every directive it carries
+    (block > approval escalation > continue > modify), Hermes-native ones included; a tie goes to the
+    Hermes directive so its own fields (``message``, ``rule_key``, ``args``) survive. Contexts are kept."""
+    if not _FOREIGN_KEYS & data.keys():
+        return data
+    native = _RESPONSE_PARSERS.get(event, _parse_context)({k: v for k, v in data.items() if k not in _FOREIGN_KEYS})
+    # Native first: on a tie the reply's own directive (with its message, rule_key, args) wins.
+    candidates = ([native] if native and _directive_rank(native) < len(_DIRECTIVE_RANK) else []) + _lowered_directives(event, data)
+    winner = {k: v for k, v in min(candidates, key=_directive_rank, default={}).items() if k != "context"}
+    nested = data.get("hookSpecificOutput")
+    contexts = [c for c in ((native or {}).get("context"),
+                            nested.get("additionalContext") if isinstance(nested, dict) else None,
+                            data.get("additional_context")) if isinstance(c, str) and c.strip()]
+    return {**winner, "context": "\n\n".join(contexts)} if contexts else winner
+
+
 def _parse_response(event: str, stdout: str) -> Optional[dict[str, Any]]:
     """Translate stdout JSON into a Hermes wire-shape dict, or ``None``."""
     stdout = (stdout or "").strip()
@@ -700,7 +764,9 @@ def _parse_response(event: str, stdout: str) -> Optional[dict[str, Any]]:
     except json.JSONDecodeError:
         logger.warning("shell hook stdout was not valid JSON (event=%s): %s", event, stdout[:200])
         return None
-    return _RESPONSE_PARSERS.get(event, _parse_context)(data) if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    return _RESPONSE_PARSERS.get(event, _parse_context)(_flatten_reply_dialects(event, data))
 
 
 # --- Allowlist / consent ---

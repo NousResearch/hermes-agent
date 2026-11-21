@@ -1,0 +1,18 @@
+name: kyte
+title: Kyte
+repo: https://github.com/usekyte-org/hermes-kyte
+sha: 5cf75ac2d857d21fb5b0d7e23b63a1db6bdce512
+version: "1.0.0"
+description: "Kyte, the non-custodial, fully collateralised options market on Robinhood Chain, through its public MCP server (Streamable HTTP at https://kyte.sh/api/mcp, no sign-in, no keys in config): live offers, prices with stock-token session state, a wallet's positions and stake, protocol stats and fee proof, Pons and FOBO launchpad tokens, USDG trading rewards and Autopilot rules; prepares covered calls, cash-secured puts, exercises, stakes and Autopilot rules as kyte.sh links the user signs in their own wallet. Bundles two skills: kyte-options (how to read the market and prepare an action, every number from the tools) and kyte-autopilot-watch (a read-only cron recipe that posts new Autopilot triggers to the user's chat and answers [SILENT] otherwise). Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to kyte.sh, which keeps a per-IP rate limit and logs the MCP client name on initialize; the wallet address the user types is sent as a tool parameter. The server never holds keys and has no tool that can sign, send or spend. Fifteen tools are annotated read-only; the six prepare_* tools and design_strategy are not, so Hermes asks before each and refuses them in unattended runs; the package marks the server untrusted. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Kyte
+tier: community
+category: tools
+docs_url: https://github.com/usekyte-org/hermes-kyte
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

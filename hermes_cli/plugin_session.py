@@ -47,7 +47,9 @@ def turn_client() -> dict | None:
     (``version`` / ``kind`` only when sent; a kind this Hermes does not know is left out). ``None``
     outside a turn, in a delegated child (it runs in its parent turn's context, not under an admission
     of its own), for a client that announced nothing, and for a messaging, cron or other automation
-    turn. A label the client chose, not an authentication: never grant anything on it."""
+    turn. Answers only inside the gateway process: under ``plugins.isolation: host`` it is always
+    ``None`` in the plugin's own process, where ``ctx.turn_client()`` asks the gateway instead. A label
+    the client chose, not an authentication: never grant anything on it."""
     if _in_delegated_child():
         return None
     from gateway.session_surface import surface_turn_client
@@ -64,9 +66,11 @@ def session_viewers() -> list[dict]:
     that leaves it out says ``True``). The calling session is the one this context bound: a
     turn's, or the one a plugin's own slash command was typed in (no turn runs there, so
     ``turn_client()`` is ``None``). ``[]`` when none is bound (a context that bound only a route, such
-    as a session open or a built-in slash command), in a delegated child, in a managed worker or under
-    ``plugins.isolation: host`` (no gateway in that process), and when the session is not live. Labels
-    and reports the clients chose, not an authentication: never grant anything on them."""
+    as a session open or a built-in slash command), in a delegated child, in a managed worker, and
+    when the session is not live. Answers only inside the gateway process: under
+    ``plugins.isolation: host`` it is always ``[]`` in the plugin's own process (no gateway there),
+    where ``ctx.session_viewers()`` asks the gateway instead. Labels and reports the clients chose,
+    not an authentication: never grant anything on them."""
     from gateway.session_context import bound_session_env, bound_session_key
     # Only what this context bound, never ``os.environ``: the live session the turn runner itself
     # binds (``TurnRunner._approval_owner``) and a plugin command's scope binds the same way: a local

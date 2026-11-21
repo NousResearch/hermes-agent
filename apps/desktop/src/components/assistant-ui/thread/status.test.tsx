@@ -71,6 +71,60 @@ describe('ResponseLoadingIndicator timer', () => {
     expect(screen.getByText('⏳ waiting on local-model — 30s with no output yet')).toBeTruthy()
   })
 
+  it('shows prefill counts and percent instead of a bare percent', () => {
+    $activeSessionId.set('session-a')
+    $turnStartedAt.set(Date.now())
+    setSessionProviderWait('session-a', '⚙ processing prompt — 46,500 / 80,000 tokens (58%)')
+
+    renderIndicator()
+
+    expect(screen.getByText('Processing prompt — 46,500 / 80,000 tokens')).toBeTruthy()
+    expect(screen.getByText('58%')).toBeTruthy()
+  })
+
+  it('marks an estimated prefill total with ~', () => {
+    $activeSessionId.set('session-a')
+    $turnStartedAt.set(Date.now())
+    setSessionProviderWait('session-a', '⚙ processing prompt — 12,288 / ~39,551 tokens (31%)')
+
+    renderIndicator()
+
+    expect(screen.getByText('Processing prompt — 12,288 / ~39,551 tokens')).toBeTruthy()
+    expect(screen.getByText('31%')).toBeTruthy()
+  })
+
+  it('shows the processed count with no bar when no honest total exists', () => {
+    $activeSessionId.set('session-a')
+    $turnStartedAt.set(Date.now())
+    setSessionProviderWait('session-a', '⚙ processing prompt — 12,288 tokens read')
+
+    renderIndicator()
+
+    expect(screen.getByText('Processing prompt — 12,288 tokens read')).toBeTruthy()
+    expect(screen.queryByText(/%$/)).toBeNull()
+  })
+
+  it('names queue waiting distinctly from active input processing', () => {
+    $activeSessionId.set('session-a')
+    $turnStartedAt.set(Date.now())
+    setSessionProviderWait('session-a', '⏳ waiting for a free slot — the local server is busy with another request')
+
+    renderIndicator()
+
+    expect(screen.getByText('Waiting for a free slot — another request is using the local server')).toBeTruthy()
+  })
+
+  it('names a generic first-chunk wait honestly, without its frozen seconds', () => {
+    $activeSessionId.set('session-a')
+    $turnStartedAt.set(Date.now())
+    setSessionProviderWait('session-a', '⏳ waiting on qwen — 60s waiting for the first stream chunk')
+
+    renderIndicator()
+
+    expect(screen.getByText('Waiting on qwen for the first response — no progress info yet')).toBeTruthy()
+    expect(screen.queryByText(/60s waiting for the first stream chunk/)).toBeNull()
+  })
+
   it('keeps the ticking timer out of the live region accessibility tree', () => {
     $activeSessionId.set('session-a')
     $turnStartedAt.set(Date.now())

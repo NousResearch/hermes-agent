@@ -147,7 +147,8 @@ class StreamingWaitMonitor:
         """Prompt progress straight from the stream's own progress chunks (llama-server with
         ``return_progress``), at most once a second until the first token. Clears the line
         when the first token arrives. True when it showed progress."""
-        from agent.local_prompt_progress import prompt_progress_percent
+        from agent.local_prompt_progress import (
+            format_prompt_progress_notice, prompt_progress_counts)
 
         m = self._mon
         state = getattr(self, "prompt_progress", None)
@@ -163,11 +164,13 @@ class StreamingWaitMonitor:
         if now - state["t"] > 60.0 or now - m.last_load_poll < 1.0:
             return False
         m.last_load_poll = now
-        percent = prompt_progress_percent(state["progress"])
+        # The server's own counts: its total is real (no estimate mark), so the
+        # line can carry "46,500 / 80,000 tokens (58%)" instead of a bare percent.
+        counts = prompt_progress_counts(state["progress"])
         m.wait_notice_started_ts = None  # The prompt-progress line owns the display.
         m.wait_notice.reset()
-        self.agent._emit_wait_notice(
-            f"⚙ processing prompt — {percent}%" if percent is not None else "⚙ processing prompt")
+        self.agent._emit_wait_notice(format_prompt_progress_notice(
+            counts["processed"] if counts else None, counts["total"] if counts else None))
         m.load_notice_shown, m.load_notice_misses, m.last_heartbeat = True, 0, now
         return True
 

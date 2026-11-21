@@ -12,7 +12,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.local_prompt_progress import prompt_progress, prompt_progress_percent, with_prompt_progress
+from agent.local_prompt_progress import (
+    format_prompt_progress_notice, prompt_progress, prompt_progress_counts,
+    prompt_progress_percent, with_prompt_progress)
 
 
 def _delta(**fields):
@@ -65,6 +67,31 @@ class TestPromptProgressHelpers:
         assert prompt_progress_percent({"total": 200, "processed": 50}) == 25
         assert prompt_progress_percent({"total": 0, "processed": 50}) is None
         assert prompt_progress_percent({"total": "x"}) is None
+
+    def test_counts(self):
+        assert prompt_progress_counts({"total": 80000, "processed": 46500}) == {
+            "processed": 46500, "total": 80000}
+        assert prompt_progress_counts({"total": 0, "processed": 12288}) == {
+            "processed": 12288, "total": None}
+        assert prompt_progress_counts({"processed": "x"}) is None
+        assert prompt_progress_counts({}) is None
+        assert prompt_progress_counts(None) is None
+
+    def test_notice_format(self):
+        # Server total is real: no "~". Estimate totals carry the mark.
+        assert format_prompt_progress_notice(46500, 80000) == \
+            "⚙ processing prompt — 46,500 / 80,000 tokens (58%)"
+        assert format_prompt_progress_notice(12288, 39551, total_estimated=True) == \
+            "⚙ processing prompt — 12,288 / ~39,551 tokens (31%)"
+        # No usable total: the count alone, never a fabricated percent.
+        assert format_prompt_progress_notice(12288, None) == \
+            "⚙ processing prompt — 12,288 tokens read"
+        assert format_prompt_progress_notice(12288, 0) == \
+            "⚙ processing prompt — 12,288 tokens read"
+        # Counter past the total: no honest denominator, count alone.
+        assert format_prompt_progress_notice(12288, 100) == \
+            "⚙ processing prompt — 12,288 tokens read"
+        assert format_prompt_progress_notice(None, 80000) == "⚙ processing prompt"
 
 
 def _local_agent(provider="llamacpp", base_url="http://127.0.0.1:18434/v1"):
@@ -220,8 +247,16 @@ class TestPromptProgressNotice:
     def test_shows_percent_before_first_token(self):
         mon = self._monitor()
         assert mon._show_prompt_progress(51.0) is True
-        mon.agent._emit_wait_notice.assert_called_once_with("⚙ processing prompt — 40%")
+        mon.agent._emit_wait_notice.assert_called_once_with(
+            "⚙ processing prompt — 400 / 1,000 tokens (40%)")
         assert mon._show_prompt_progress(51.5) is False  # at most once a second
+
+    def test_shows_count_without_total(self):
+        mon = self._monitor()
+        mon.prompt_progress = {"progress": {"processed": 12288}, "t": 50.0}
+        assert mon._show_prompt_progress(51.0) is True
+        mon.agent._emit_wait_notice.assert_called_once_with(
+            "⚙ processing prompt — 12,288 tokens read")
 
     def test_clears_line_at_first_token(self):
         mon = self._monitor()

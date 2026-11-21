@@ -130,15 +130,9 @@ def get_loading_progress() -> dict[str, dict]:
                 for m, e in _snapshot.items() if now - e["ts"] < _STALE_ENTRY_TTL_S}
 
 
-def get_prefill_progress(model: str) -> dict | None:
-    """{"processed": tokens} while the managed server is prompt-processing for ``model``, or None
-    (idle, decoding, unreachable, or foreign server).
-
-    /slots exposes ``n_prompt_tokens_processed`` but no total, so callers supply the denominator.
-    The busiest processing slot wins: a parallel small request freezes its counter during decode
-    while a live prefill keeps climbing. One HTTP call per poll; every failure reads as "no
-    prefill" — garnish, never load-bearing.
-    """
+def _read_slots(model: str) -> list | None:
+    """Raw /slots list for the model-scoped child, or None when unknowable.
+    One authenticated read; every failure reads as "no slots"."""
     ep = _endpoint()
     if ep is None:
         return None
@@ -148,9 +142,42 @@ def get_prefill_progress(model: str) -> dict | None:
         slots = managed_get_json(*ep, f"/slots?{child_query(model)}", timeout_s=2)
     except Exception:
         return None
+    return slots if isinstance(slots, list) else None
+
+
+def get_prefill_progress(model: str) -> dict | None:
+    """{"processed": tokens} while the managed server is prompt-processing for ``model``, or None
+    (idle, decoding, unreachable, or foreign server).
+
+    /slots exposes ``n_prompt_tokens_processed`` but no total, so callers supply the denominator.
+    The busiest processing slot wins: a parallel small request freezes its counter during decode
+    while a live prefill keeps climbing. One HTTP call per poll; every failure reads as "no
+    prefill" — garnish, never load-bearing.
+    """
+    slots = _read_slots(model)
+    if slots is None:
+        return None
     best = 0
-    for slot in slots if isinstance(slots, list) else []:
+    for slot in slots:
         with suppress(TypeError, ValueError):
             if slot.get("is_processing"):
                 best = max(best, int(slot.get("n_prompt_tokens_processed") or 0))
     return {"processed": best} if best > 0 else None
+
+
+def get_slot_pressure(model: str) -> dict | None:
+    """{"processing": slots busy, "total": slots} for the model-scoped child, or None
+    (unreachable, or foreign server).
+
+    The queue signal: all-busy (processing == total > 0) means a new request
+    for this model has no free slot and MUST be queued. A free slot proves
+    nothing about the request (it may not have arrived yet), so callers must
+    not claim "queued" from anything else. One HTTP call per poll; every
+    failure reads as "no pressure" — garnish, never load-bearing.
+    """
+    slots = _read_slots(model)
+    if slots is None:
+        return None
+    total = len(slots)
+    processing = sum(1 for slot in slots if isinstance(slot, dict) and slot.get("is_processing"))
+    return {"processing": processing, "total": total}

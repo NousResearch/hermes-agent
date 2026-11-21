@@ -69,14 +69,17 @@ def retry_recovered_local_server(agent) -> bool:
 
 def _managed_local_load_notice(agent, api_kwargs: dict) -> Optional[str]:
     """Live phase notice ("⏳ loading <model> into memory — N%" / "⚙ processing
-    prompt — P%") while the managed local server works before the first token;
-    None when neither applies. Otherwise a cold load reads as a generic stall."""
+    prompt — P / ~T tokens (P%)" / "⏳ waiting for a free slot — …") while the
+    managed local server works before the first token; None when neither
+    applies. Otherwise a cold load reads as a generic stall."""
     try:
         base = str(getattr(agent, "base_url", "") or "")
         if not base:
             return None
         from agent.chat_completion_helpers import estimate_request_context_tokens
-        from hermes_cli.local_runtime.load_progress import get_loading_progress, get_prefill_progress
+        from agent.local_prompt_progress import format_prompt_progress_notice
+        from hermes_cli.local_runtime.load_progress import (
+            get_loading_progress, get_prefill_progress, get_slot_pressure)
         from hermes_cli.local_runtime.supervisor import state_path
         state = json.loads(state_path().read_text(encoding="utf-8-sig"))
         managed = urlparse(str(state.get("base_url", ""))).netloc.lower()
@@ -88,14 +91,25 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> Optional[str]:
             return (f"⏳ loading {model} into memory — {progress['percent']}% "
                 "(responses start once the model is loaded)")
         prefill = get_prefill_progress(model)
-        if prefill is None:
-            return None
-        processed = int(prefill["processed"])
-        total = estimate_request_context_tokens(api_kwargs)
-        if total and total >= processed:
-            return f"⚙ processing prompt — {max(0, min(100, round(processed / total * 100)))}%"
-        # Counter past the estimate (estimator undercounted): no honest denominator, label-only.
-        return "⚙ processing prompt"
+        if prefill is not None:
+            processed = int(prefill["processed"])
+            total = estimate_request_context_tokens(api_kwargs)
+            # The /slots counter is real; the denominator is only an estimate,
+            # so it carries the "~" mark. Past the estimate there is no honest
+            # denominator — the count alone, never a percent over 100%.
+            return format_prompt_progress_notice(
+                processed, total if total else None, total_estimated=True)
+        # No slot is prompt-processing for this call. When every slot of the
+        # model-scoped child is busy, this request MUST be queued behind
+        # another call — name that wait instead of the generic stall. A free
+        # slot proves nothing about this request (it may not have arrived
+        # yet), so no queue is claimed then.
+        pressure = get_slot_pressure(model)
+        if pressure is not None and pressure["total"] > 0 \
+                and pressure["processing"] >= pressure["total"]:
+            return ("⏳ waiting for a free slot — "
+                "the local server is busy with another request")
+        return None
     except Exception:
         # A status line must never break the stream it describes.
         logger.debug("local load notice unavailable", exc_info=True)

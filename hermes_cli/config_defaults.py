@@ -728,12 +728,12 @@ DEFAULT_CONFIG = {
         # fallback is not meaningful recovery.
         "transient_retries": 2,
         # When true, the auto-chain's OpenRouter step is skipped unless the fallback model ends in
-        # ":free" — a PAID lane is never used for background aux traffic even with
-        # OPENROUTER_API_KEY set.
+        # ":free" — a PAID lane is never used for background aux traffic, even with OPENROUTER_API_KEY.
         "free_only": False,
-        # Override the auto-chain's OpenRouter fallback model (default google/gemini-3.6-flash,
-        # PAID). Pair e.g. "nvidia/nemotron-3-ultra-550b-a55b:free" with free_only: true. A one-time
-        # WARNING is logged whenever a non-":free" model is engaged.
+        # Providers aux calls may use, e.g. ["openrouter"]; [] = any. A pin outside the list fails.
+        "allowed_providers": [],
+        # Override the auto-chain's OpenRouter fallback model (default google/gemini-3.6-flash, PAID). Pair
+        # e.g. "nvidia/nemotron-3-ultra-550b-a55b:free" with free_only: true; non-":free" logs one WARNING.
         "openrouter_model": "",
         # Endpoints that reject NON-streaming chat (HTTP 400): aux calls are sent with stream=True
         # and aggregated. Case-insensitive URL substrings; some vendor endpoints are always

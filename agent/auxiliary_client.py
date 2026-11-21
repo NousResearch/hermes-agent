@@ -6,6 +6,7 @@ provider (if a supported vision backend) → OpenRouter → Nous → Anthropic �
 ``auxiliary.free_only`` restricts the OpenRouter lane to ``:free`` SKUs. Codex OAuth is
 in neither chain (undocumented, shifting allow-list): main provider or explicit
 ``auxiliary.<task>.provider`` only. HTTP 402 in call_llm() falls through the chain.
+``auxiliary.allowed_providers`` keeps every chain, fallback and pin on the listed providers.
 """
 
 import contextlib
@@ -37,6 +38,7 @@ from agent.auxiliary_custom_credentials import (
     _normalize_api_key, declared_custom_credential_identity, declared_custom_key_for_base_url, fast_catalog_provider)
 from agent.errors import InvalidProviderResponseError
 from agent.auxiliary_fallback_recovery import reapply_repairs
+from agent.auxiliary_call_outcome import _AuxiliaryCancellationDecision, _captured_aux_cancel_requested
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_profile_gates import (
@@ -135,7 +137,8 @@ from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_lengt
 from hermes_cli.config import get_hermes_home
 from hermes_cli.config_providers import _canonical_api_mode
 from agent.auxiliary_health import (
-    _custom_health_base_url, _unhealthy_cache_key, fallback_candidate_quarantine_ttl,
+    _custom_health_base_url, _unhealthy_cache_key, aux_client_allowed, aux_route_allowed,
+    fallback_candidate_quarantine_ttl, require_aux_client_allowed, require_aux_route_allowed,
 )
 from agent.auxiliary_unavailable import (
     AuxiliaryClientUnavailable, clear_nous_credential_failure, missing_provider_credentials_message,
@@ -270,38 +273,6 @@ def _capture_aux_cancel_check() -> Optional[Callable[[], Any]]:
     # Return the callable itself so attempt-local decision objects keep begin_timeout_cleanup().
     check = getattr(_aux_interrupt_protection, "cancel_check", None)
     return check if callable(check) else None
-
-
-def _captured_aux_cancel_requested(cancel_check: Callable[[], Any]) -> bool:
-    """Read a request-thread cancellation source without leaking its failures."""
-    try:
-        return bool(cancel_check())
-    except Exception:
-        logger.debug("captured aux cancel check failed", exc_info=True)
-        return False
-
-
-class _AuxiliaryCancellationDecision:
-    """Atomically choose explicit cancellation or provider timeout per attempt."""
-
-    def __init__(self, source_cancel_check: Callable[[], Any]) -> None:
-        self._source_cancel_check = source_cancel_check
-        self._lock = threading.Lock()
-        self._outcome = "active"
-
-    def __call__(self) -> bool:
-        with self._lock:
-            if self._outcome == "active" and _captured_aux_cancel_requested(self._source_cancel_check):
-                self._outcome = "cancelled"
-            return self._outcome == "cancelled"
-
-    def begin_timeout_cleanup(self) -> bool:
-        """Return whether timeout won and destructive cleanup is permitted."""
-        with self._lock:
-            if self._outcome == "active":
-                cancelled = _captured_aux_cancel_requested(self._source_cancel_check)
-                self._outcome = "cancelled" if cancelled else "timed_out"
-            return self._outcome == "timed_out"
 
 
 # Forward-progress hooks for streamed aux calls: a fixed host deadline kills a SLOW model
@@ -2117,7 +2088,7 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
         return None, None
     from hermes_cli.auth_plugin_providers import canonical_registry_rows
     for provider_id, pconfig in canonical_registry_rows():
-        if pconfig.auth_type != "api_key":
+        if pconfig.auth_type != "api_key" or not aux_route_allowed(provider_id):
             continue
         if _is_provider_unhealthy(provider_id):
             logger.debug("Auxiliary api-key chain: %s is unhealthy, skipping", provider_id)
@@ -3094,10 +3065,10 @@ def _get_provider_chain() -> list[tuple]:
 
     ``openai-codex`` is deliberately absent (shifting allow-list breaks guessed-model fallback).
     """
-    return [
+    return [(label, fn) for label, fn in (
         ("openrouter", _try_openrouter), ("nous", _try_nous),
         ("local/custom", _try_custom_endpoint), ("api-key", _resolve_api_key_provider),
-    ]
+    ) if label == "api-key" or aux_route_allowed(label)]  # the api-key lane checks each provider it tries
 
 
 # "Recently 402'd" unhealthy-provider cache: a depleted provider stays so for hours, so hiding it
@@ -4099,7 +4070,8 @@ def _try_main_agent_model_fallback(
         if not _agg_provider or not _agg_model:
             return None, None, ""
         main_provider, main_model = _agg_provider, _agg_model
-    if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
+    if (not main_provider or not main_model or main_provider.lower() in {"auto", ""}
+            or not aux_route_allowed(main_provider)):
         return None, None, ""
     if task == "vision" and (
             main_provider in _PROVIDERS_WITHOUT_VISION or not _main_model_supports_vision(main_provider, main_model)):
@@ -4120,7 +4092,7 @@ def _try_main_agent_model_fallback(
         client, resolved_model = resolve_provider_client(provider=main_provider, model=main_model)
     except Exception:
         client, resolved_model = None, None
-    if client is None:
+    if client is None or not aux_client_allowed(client, main_provider):
         return None, None, ""
     label = f"main-agent({main_provider})"
     logger.info("Auxiliary %s: %s on %s — falling back to main agent model %s (%s)",
@@ -4253,13 +4225,15 @@ def _resolve_fallback_entry(entry: dict[str, Any]) -> tuple[Optional[Any], Optio
     """Resolve one fallback entry through the central provider router."""
     provider = str(entry.get("provider") or "").strip()
     model = str(entry.get("model") or "").strip() or None
-    if not provider or not model:
+    if not provider or not model or not aux_route_allowed(provider, entry.get("base_url")):
         return None, None
     client, resolved_model = resolve_provider_client(
         provider, model=model, explicit_base_url=str(entry.get("base_url") or "").strip() or None,
         explicit_api_key=_fallback_entry_api_key(entry),
         api_mode=str(entry.get("api_mode") or entry.get("transport") or "").strip() or None,
     )
+    if client is not None and not aux_client_allowed(client, provider, entry.get("base_url")):
+        return None, None
     if client is not None:
         with contextlib.suppress(Exception):
             client._hermes_fallback_destination = _fallback_destination_from_entry(entry, client, resolved_model)
@@ -4373,7 +4347,8 @@ def _try_main_provider_route(
     main_provider: str, main_model: str, runtime_base_url: str, runtime_api_key: Any, runtime_api_mode: str,
 ) -> Optional[tuple[Any, str, str]]:
     """Step 1: route aux onto the main provider + main model; None if unusable."""
-    if not (main_provider and main_model and main_provider not in {"auto", ""}):
+    if not (main_provider and main_model and main_provider not in {"auto", ""}
+            and aux_route_allowed(main_provider, endpoint=runtime_base_url or None)):
         return None
     resolved_provider = main_provider
     explicit_base_url = runtime_base_url or None
@@ -5311,10 +5286,15 @@ def resolve_provider_client(
 def get_text_auxiliary_client(task: str = "", *, main_runtime: Optional[dict[str, Any]] = None) -> tuple[Optional[OpenAI], Optional[str]]:
     """Return (client, default_model_slug) for text-only aux tasks; ``task`` selects auxiliary.<task> overrides."""
     provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
-    return resolve_provider_client(
+    if (provider != "auto" or base_url) and not aux_route_allowed(provider, base_url):
+        return None, None
+    client, default_model = resolve_provider_client(
         provider, model=model, explicit_base_url=base_url, explicit_api_key=api_key,
         api_mode=api_mode, main_runtime=main_runtime,
     )
+    if client is not None and not aux_client_allowed(client, provider, base_url):
+        return None, None
+    return client, default_model
 
 
 _VISION_AUTO_PROVIDER_ORDER = ("openrouter", "nous", "deepinfra")
@@ -5372,7 +5352,7 @@ def get_available_vision_backends() -> list[str]:
     """
     available: list[str] = []
     main_provider = _read_main_provider()
-    if main_provider and main_provider not in {"auto", ""}:
+    if main_provider and main_provider not in {"auto", ""} and aux_route_allowed(main_provider):
         if main_provider in _VISION_AUTO_PROVIDER_ORDER:
             main_ok = _resolve_strict_vision_backend(main_provider)[0] is not None
         else:
@@ -5380,7 +5360,7 @@ def get_available_vision_backends() -> list[str]:
         if main_ok:
             available.append(main_provider)
     for p in _VISION_AUTO_PROVIDER_ORDER:  # skip if already covered by main provider
-        if p not in available and _resolve_strict_vision_backend(p)[0] is not None:
+        if p not in available and aux_route_allowed(p) and _resolve_strict_vision_backend(p)[0] is not None:
             available.append(p)
     return available
 
@@ -5390,7 +5370,7 @@ def _finalize_vision_client(
     resolved_model: Optional[str], async_mode: bool,
 ) -> tuple[Optional[str], Optional[Any], Optional[str]]:
     """Apply the explicit model override (and async wrapping) to a resolved vision client."""
-    if sync_client is None:
+    if sync_client is None or not aux_client_allowed(sync_client, resolved_provider):
         return resolved_provider, None, None
     final_model = resolved_model or default_model
     if async_mode:
@@ -5461,16 +5441,18 @@ def _vision_auto_route(
         if _agg_provider and _agg_model:
             main_provider, main_model = _agg_provider, _agg_model
             runtime = dict(runtime, base_url="", api_key="", api_mode="")
-    if main_provider and main_provider not in {"auto", "", "moa"}:
+    main_tried = bool(main_provider and main_provider not in {"auto", "", "moa"}
+                      and aux_route_allowed(main_provider, endpoint=runtime.get("base_url") or None))
+    if main_tried:
         client, default_model = _vision_main_provider_client(main_provider, main_model, runtime, resolved_model, resolved_api_mode)
-        if client is not None:
+        if client is not None and aux_client_allowed(client, main_provider):
             return _finalize_vision_client(main_provider, client, default_model, resolved_model, async_mode)
     # Aggregators use their dedicated vision model, not the user's main model.
     for candidate in _VISION_AUTO_PROVIDER_ORDER:
-        if candidate == main_provider:
-            continue  # already tried above
+        if (candidate == main_provider and main_tried) or not aux_route_allowed(candidate):
+            continue  # already tried above, or not in auxiliary.allowed_providers
         sync_client, default_model = _resolve_strict_vision_backend(candidate)
-        if sync_client is not None:
+        if sync_client is not None and aux_client_allowed(sync_client, candidate):
             return _finalize_vision_client(candidate, sync_client, default_model, resolved_model, async_mode)
     logger.debug("Auxiliary vision client: none available")
     return None, None, None
@@ -5497,6 +5479,8 @@ def resolve_vision_provider_client(
     )
     # The raw name keeps a llama.cpp alias distinguishable from bare ``custom`` for the last resolve.
     raw_requested, requested = requested, _normalize_vision_provider(requested)
+    if (resolved_base_url or requested != "auto") and not aux_route_allowed(requested, resolved_base_url):
+        return ("custom" if resolved_base_url else requested), None, None
     if resolved_base_url:
         provider_for_base_override = requested if requested and requested not in {"", "auto"} else "custom"
         client, final_model = resolve_provider_client(
@@ -5523,6 +5507,8 @@ def resolve_vision_provider_client(
     client, final_model = _get_cached_client(
         raw_requested, resolved_model, async_mode, api_mode=resolved_api_mode, main_runtime=runtime, is_vision=True,
     )
+    if client is not None and not aux_client_allowed(client, requested):
+        client = None
     return requested, client, (final_model if client is not None else None)
 
 
@@ -7288,6 +7274,7 @@ def _prepare_aux_request(
     back to the resolved base_url when the client exposes none."""
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    require_aux_route_allowed(resolved_provider, task, resolved_base_url)
     if api_mode:
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
@@ -7306,6 +7293,7 @@ def _prepare_aux_request(
         if isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)) else None
     )
     request_provider = effective_provider or resolved_provider
+    require_aux_client_allowed(client, request_provider, task, resolved_base_url)
     if not async_mode:
         compression_config = _get_auxiliary_task_config(task) if task == "compression" else {}  # authoritative: no aux route
         _, effective_extra_body = _compression_fast_lane_controls(

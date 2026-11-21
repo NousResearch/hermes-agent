@@ -345,6 +345,25 @@ auxiliary:
 
 `base_url` takes precedence over `provider`. Hermes uses the configured `api_key` for authentication; without one it falls back to `OPENAI_API_KEY` only for OpenAI hosts (`*.openai.com`, `*.openai.azure.com`) or the exact `OPENAI_BASE_URL` it is paired with. It does **not** reuse `OPENROUTER_API_KEY` for custom endpoints.
 
+### Restricting Auxiliary Providers
+
+`auxiliary.allowed_providers` limits auxiliary routing (titles, compression, vision, MCP sampling, plugin LLM calls and the other side tasks that go through the auxiliary client) to the providers you list. It is off by default (`[]`; an empty value is the same):
+
+```yaml
+auxiliary:
+  allowed_providers: [my-gateway]   # a providers: entry, or a built-in name such as openrouter
+```
+
+With a list set, the router skips a provider that is not on it before resolving or calling it: in the auto chain (each API-key provider is checked by name), in a task's or the top-level fallback chain, in the main-agent fallback, and for vision. Each resolved client is checked again where it is handed over (fallback resolution, the text and vision client getters, and before each `call_llm` / `async_call_llm` request): a client whose provider is not on the list, or that names no provider, is not used, and a `providers:` entry must be at its own `base_url` (built-in providers are matched by name). An explicit task pin to an unlisted provider fails with an error that names the setting instead of being replaced by another provider. Use it when side tasks must stay on one gateway, for example a self-hosted endpoint. `auxiliary.free_only` cannot do this; it only filters the OpenRouter lane.
+
+- Names match the provider identity: `custom:<name>` and `<name>` are the same, and aliases such as `codex` are normalized.
+- A task pin or fallback entry with its own `base_url` counts as `custom`, whatever its `provider` says, so list `custom` only if any custom endpoint is acceptable.
+- A `providers:` entry is allowed only at its own `base_url`. The main agent's runtime for that entry, which is recorded as `custom` plus the entry's URL, counts as the entry.
+- A value that is set but names nothing allows nothing.
+- A main agent set to `provider: auto` resolves its client through the same router, so its auto-detection is limited the same way.
+- The route labels `auto` and `api-key` name no provider; listing them allows nothing.
+- Built-in providers are identified by name: the list does not check which URL your configuration gives a built-in provider.
+
 ---
 
 ## Auxiliary Capacity-Error Fallback

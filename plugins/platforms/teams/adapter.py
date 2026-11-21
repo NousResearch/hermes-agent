@@ -59,7 +59,7 @@ from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
     describe_proxy_error, env_proxy_for_redaction)
-from gateway.platforms.base import approval_expired_text, approval_kind, card_kind_scope, ea_header_text, is_schedule_kind
+from gateway.platforms.base import approval_expired_text, approval_kind, approval_kind_scope, ea_header_text, is_schedule_kind
 from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_deadline_line
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent, MessageType
@@ -377,9 +377,9 @@ class TeamsAdapter(BasePlatformAdapter):
         self._require_mention: bool = self._parse_require_mention(config)
         # Outbound activity ids (bounded) so require_mention can exempt replies to our own messages.
         self._sent_ids: deque = deque(maxlen=500)
-        # prompt id → (command preview, reason) for the resolved card; button data carries only the id,
-        # because a copy per button can push a long non-ASCII command past Teams' ~28 KB card cap.
-        self._approval_previews: dict[str, tuple[str, str]] = {}
+        # prompt id → (command preview, reason, card kind) for the resolved card; button data carries only the
+        # id, because a copy per button can push a long non-ASCII command past Teams' ~28 KB card cap.
+        self._approval_previews: dict[str, tuple[str, str, str]] = {}
 
     @staticmethod
     def _parse_require_mention(config) -> bool:
@@ -665,10 +665,11 @@ class TeamsAdapter(BasePlatformAdapter):
                                          choice=choice):
             return self._invoke_message(refusal_text(requester))  # shown to the clicker; card keeps its buttons
         # Cards from an older build carry cmd/desc in the button data instead.
-        cmd, desc = self._approval_previews.get(data.get("prompt_id", ""), (data.get("cmd", ""), data.get("desc", "")))
+        cmd, desc, kind = self._approval_previews.get(
+            data.get("prompt_id", ""), (data.get("cmd", ""), data.get("desc", ""), "command"))
         resolved = has_blocking_approval(session_key) and resolve_gateway_approval_card(
             session_key, choice, data.get("request_id"), actor_id=clicker, extra=self.config.extra)
-        with card_kind_scope(data.get("request_id")):  # the click runs outside the send's binding
+        with approval_kind_scope(kind):  # the click runs outside the send's binding
             body = _approval_body(cmd, desc)
             footer = t(_APPROVAL_LABEL_KEYS[choice]) if resolved else approval_expired_text("platform.shared.approval_expired")
         if not resolved:
@@ -709,7 +710,7 @@ class TeamsAdapter(BasePlatformAdapter):
         # The resolved card shows the prompt's own command preview, looked up by id on click.
         cmd = self._truncate_preview(prompt.command, self._EA_CMD_BUDGET)
         prompt_id = uuid.uuid4().hex
-        self._approval_previews[prompt_id] = (cmd, prompt.description)
+        self._approval_previews[prompt_id] = (cmd, prompt.description, prompt.kind)
         if len(self._approval_previews) > self._EA_PREVIEWS_KEPT:
             self._approval_previews.pop(next(iter(self._approval_previews)))
         btn_data_base = {"session_key": prompt.session_key, "prompt_id": prompt_id}

@@ -440,8 +440,8 @@ from gateway.platforms.helpers import fence_state_after, reply_file_off, try_rep
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import (
     finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
-from gateway.platforms.base_exec_approval import (  # approval_kind / is_schedule_kind / ea_key / ea_t: published to adapters
-    approval_expired_text, approval_kind, is_schedule_kind, approval_timeout_seconds, card_kind_scope, ea_action_labels, ea_default_reason_text, ea_header_text, ea_key, ea_t,
+from gateway.platforms.base_exec_approval import (  # approval_kind(_scope) / is_schedule_kind / ea_key / ea_t: published to adapters
+    approval_expired_text, approval_kind, is_schedule_kind, approval_timeout_seconds, approval_kind_scope, ea_action_labels, ea_default_reason_text, ea_header_text, ea_key, ea_t,
     ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
     card_shows_whole_command, render_exec_approval)
 from gateway.platforms.base_streaming_tts import (
@@ -1560,6 +1560,9 @@ class ExecApprovalPrompt:
     smart_denied: bool
     metadata: Optional[dict[str, Any]] = None
     request_id: Optional[str] = None  # the ``tools.approval`` request this card answers (and only that one)
+    # The card kind it was rendered as: a click handler runs outside the send's binding and rebuilds the
+    # resolved card under ``approval_kind_scope(kind)``, kept beside the adapter's other per-card data.
+    kind: str = "command"
 
     @property
     def choices(self) -> list[str]:
@@ -2761,7 +2764,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             actions = [row for row in actions if row[1] == "deny"]
         return await self._send_exec_approval_prompt(ExecApprovalPrompt(
             chat_id=chat_id, session_key=session_key, metadata=metadata, command=command, description=description,
-            smart_denied=smart_denied, request_id=request_id, text=text, actions=actions))
+            smart_denied=smart_denied, request_id=request_id, text=text, actions=actions, kind=approval_kind()))
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Render ``prompt`` with the platform's native buttons; the default has none."""

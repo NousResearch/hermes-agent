@@ -142,7 +142,7 @@ import sys
 
 from gateway.authz_mixin import _coerce_allow_set
 from agent.i18n import get_language, t
-from gateway.platforms.base import approval_expired_text, card_kind_scope, ea_t
+from gateway.platforms.base import approval_expired_text, approval_kind_scope, ea_t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
@@ -600,6 +600,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._choice_picker_state: dict[str, dict] = {}
         self._approval_state: dict[int, str] = {}  # message_id → session_key
         self._approval_request_ids: dict[int, str] = {}  # message_id → tools.approval request id
+        self._approval_kinds: dict[int, str] = {}  # message_id → card kind, when not a command
         self._slash_confirm_state: dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: dict[str, ClarifyPrompt] = {}  # clarify_id → prompt bound to its sent message
         self._clarify_multi: dict[str, set[int]] = {}  # clarify_id → checked indices (multi-select only)
@@ -3855,6 +3856,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 self._approval_state[approval_id] = prompt.session_key
                 if prompt.request_id:
                     self._approval_request_ids[approval_id] = prompt.request_id
+                if prompt.kind != "command":
+                    self._approval_kinds[approval_id] = prompt.kind
             return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), on_sent
         return await self._send_prompt(
             "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
@@ -4365,6 +4368,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if not self._approval_state.pop(approval_id, None):  # a concurrent tap claimed it first
             return await answer_callback(query, resolved)
         self._approval_request_ids.pop(approval_id, None)
+        kind = self._approval_kinds.pop(approval_id, "command")
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
         try:  # resolve FIRST, render after: a tap after the wait timed out (count == 0) is not "Approved" (#63501)
             from tools.approval import resolve_gateway_approval_card
@@ -4374,7 +4378,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
             count = 0
-        with card_kind_scope(request_id):  # the tap runs outside the send's binding: rebuild as the card was sent
+        with approval_kind_scope(kind):  # the tap runs outside the send's binding: rebuild as the card was sent
             if count:
                 label_key = {"once": "resolved_once", "session": "resolved_session", "always": "resolved_always", "deny": "resolved_deny"}.get(
                     choice, "resolved_generic")

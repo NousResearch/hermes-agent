@@ -109,25 +109,6 @@ async def with_approval_kind(kind: str, awaitable: Awaitable[_T]) -> _T:
     with approval_kind_scope(kind):
         return await awaitable
 
-# request id -> kind of the card sent for it. A click handler runs after the send, outside the runner's
-# binding, and rebuilds the resolved card from it (``card_kind_scope``); request ids are fresh uuids.
-_CARD_KINDS: dict[str, str] = {}
-_CARD_KINDS_KEPT = 1024
-
-
-def remember_card_kind(request_id: Optional[str]) -> None:
-    """Record the bound kind for the card answering ``request_id`` (a command needs no entry)."""
-    if request_id and _APPROVAL_KIND.get() != "command":
-        _CARD_KINDS[request_id] = _APPROVAL_KIND.get()
-        while len(_CARD_KINDS) > _CARD_KINDS_KEPT:
-            _CARD_KINDS.pop(next(iter(_CARD_KINDS)))
-
-
-def card_kind_scope(request_id: Optional[str]):
-    """Bind the kind the card for ``request_id`` was sent with, for its post-click rendering."""
-    return approval_kind_scope(_CARD_KINDS.get(request_id or "", "command"))
-
-
 def approval_expired_text(key: str, **kwargs: Any) -> str:
     """``t(key)`` (a platform's "expired: the command was not run"), or the kind-neutral expiry line on a
     schedule card, which ran no command."""
@@ -310,7 +291,6 @@ async def card_shows_whole_command(adapter: Any, chat_id: str, session_key: str,
     tap that lands before this, or during the send, can only deny it; on any failure (or a raise) the
     mark stays."""
     from tools.approval import restrict_gateway_approval_card_to_deny
-    remember_card_kind(request_id)  # every button card passes here, inside the runner's kind binding
     if truncated:
         restrict_gateway_approval_card_to_deny(session_key, request_id)  # a re-render starts Deny-only too
         if not await send_full_command(adapter, chat_id, command, metadata):

@@ -29,6 +29,7 @@ def _ns(**kw):
 class TestDashboardStatus:
     def test_status_no_processes(self, capsys):
         with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[]), \
+             patch("hermes_cli.main_dashboard._host_backend_attachment", return_value=None), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0
@@ -47,6 +48,7 @@ class TestDashboardStatus:
         with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=processes), \
              patch("gateway.status._pid_exists", return_value=True), \
              patch("hermes_cli.main_dashboard._dashboard_listening", return_value=True), \
+             patch("hermes_cli.main_dashboard._host_backend_attachment", return_value=None), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
         # Status is informational — always exits 0.
@@ -74,6 +76,7 @@ class TestDashboardStatus:
             monkeypatch.setattr(process_identity, "ledger_entries", lambda: [
                 {"pid": pid, "purpose": "serve", "host": "127.0.0.1", "port": real_port}])
             monkeypatch.setattr("gateway.status._pid_exists", lambda p: p == pid)
+            monkeypatch.setattr("hermes_cli.main_dashboard._host_backend_attachment", lambda: None)
 
             assert _find_stale_dashboard_pids() == [pid]
             with pytest.raises(SystemExit) as exc:
@@ -92,10 +95,68 @@ class TestDashboardStatus:
             return orig_import(name, *a, **kw)
 
         with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[]), \
+             patch("hermes_cli.main_dashboard._host_backend_attachment", return_value=None), \
              patch("builtins.__import__", side_effect=fake_import), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0
+
+    @staticmethod
+    def _host_record(pid: int):
+        from gateway.host_rendezvous import HostRecord
+        return HostRecord(
+            role="serve", pid=pid, create_time=None, host="127.0.0.1", port=9119,
+            protocol_version=1, token_fingerprint="fp", profiles=("default",),
+            updated_at="2026-10-18T00:00:00Z")
+
+    def test_status_lists_host_owner_the_argv_scan_missed(self, capsys):
+        """A backend whose argv the scan cannot match (e.g. a re-exec'd owner) still appears
+        when its host rendezvous record proves it live — the same authority ``hermes serve``
+        attaches to. The argv-only report denied a backend the start guard itself proved (#140913)."""
+        from gateway import host_rendezvous as hr
+
+        record = self._host_record(90222)
+        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[]), \
+             patch("hermes_cli.main_dashboard._host_backend_attachment", return_value=record), \
+             patch.object(hr, "probe_owner",
+                          return_value={"pid": 90222, "role": "serve", "servesSpa": False}), \
+             pytest.raises(SystemExit) as exc:
+            cmd_dashboard(_ns(status=True))
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "PID 90222" in out and "[serve]" in out
+        assert "127.0.0.1:9119" in out and "default" in out
+
+    def test_status_does_not_duplicate_a_host_owner_the_argv_scan_found(self, capsys):
+        """The record row only supplements the argv scan: the same pid is listed once, and a
+        record already covered by a scanned row is not even probed."""
+        from gateway import host_rendezvous as hr
+
+        record = self._host_record(12347)
+        processes = [(12347, "hermes serve --host 127.0.0.1 --port 9119")]
+        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=processes), \
+             patch("gateway.status._pid_exists", return_value=True), \
+             patch("hermes_cli.main_dashboard._dashboard_listening", return_value=True), \
+             patch("hermes_cli.main_dashboard._host_backend_attachment", return_value=record), \
+             patch.object(hr, "probe_owner", return_value=None) as probe, \
+             pytest.raises(SystemExit):
+            cmd_dashboard(_ns(status=True))
+        probe.assert_not_called()
+        assert capsys.readouterr().out.count("PID 12347") == 1
+
+    def test_status_omits_host_owner_that_cannot_prove_itself(self, capsys):
+        """A record whose endpoint fails the token-authenticated identity probe (stale record,
+        foreign listener) gets no row: the owner did not prove itself."""
+        from gateway import host_rendezvous as hr
+
+        record = self._host_record(90222)
+        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[]), \
+             patch("hermes_cli.main_dashboard._host_backend_attachment", return_value=record), \
+             patch.object(hr, "probe_owner", return_value=None), \
+             pytest.raises(SystemExit) as exc:
+            cmd_dashboard(_ns(status=True))
+        assert exc.value.code == 0
+        assert "No hermes dashboard or serve processes running" in capsys.readouterr().out
 
 class TestDashboardStop:
 

@@ -2,7 +2,9 @@
 
 import os
 import struct
+import threading
 import time
+import types
 import wave
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -443,6 +445,50 @@ class TestAudioRecorder:
         mock_sd.InputStream.return_value.close.assert_called_once_with()
         assert recorder._stream is None
         assert recorder._starting is False  # the failed start released the slot
+
+    def test_del_does_not_close_at_interpreter_exit(self, mock_sd, monkeypatch):
+        """A close started by __del__ during exit races sounddevice's Pa_Terminate."""
+        from tools import voice_mode
+        from tools.voice_mode import AudioRecorder
+
+        monkeypatch.setattr(voice_mode, "_EXITING", True)
+        stream = MagicMock()
+        recorder = AudioRecorder()
+        recorder._stream = stream
+
+        recorder.__del__()
+
+        stream.close.assert_not_called()
+        assert recorder._stream is stream
+
+    def test_exit_guard_skips_portaudio_terminate_when_a_close_is_wedged(self, monkeypatch):
+        """Pa_Terminate destroys PortAudio's mutex; a close still holding it aborts."""
+        import sys
+
+        from tools import voice_mode
+
+        # sounddevice is an optional audio extra: the guard must work without it installed.
+        exit_handler = object()
+        stub_sd = types.SimpleNamespace(_exit_handler=exit_handler)
+        monkeypatch.setitem(sys.modules, "sounddevice", stub_sd)
+
+        release = threading.Event()
+        wedged = threading.Thread(target=release.wait, daemon=True)
+        wedged.start()
+        unregistered = []
+        monkeypatch.setattr(voice_mode, "atexit", types.SimpleNamespace(
+            register=lambda _fn: None, unregister=unregistered.append))
+        monkeypatch.setattr(voice_mode, "_CLOSE_THREADS", voice_mode.deque([wedged]))
+        monkeypatch.setattr(voice_mode, "_EXITING", False)
+
+        try:
+            voice_mode._shutdown_audio_at_exit()
+        finally:
+            release.set()
+            wedged.join(timeout=5)
+
+        assert unregistered == [exit_handler]
+        assert voice_mode._EXITING is True
 
     def test_ensure_stream_rebuilds_when_liveness_probe_fails(self, mock_sd):
         from tools.voice_mode import AudioRecorder

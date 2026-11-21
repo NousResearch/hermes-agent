@@ -5,6 +5,7 @@ playback via sounddevice or system players. Optional deps: the ``audio-io`` / ``
 extras, installed through PM (``hermes tools`` configures speech-to-text).
 """
 
+import atexit
 import logging
 import math
 import os
@@ -58,6 +59,7 @@ def _import_audio():
             raise ImportError(str(exc)) from exc
     import sounddevice as sd
     import numpy as np
+    _register_exit_guard()
     return sd, np
 
 
@@ -672,6 +674,42 @@ class TermuxAudioRecorder(_RecorderBase):
 # the close, and sounddevice clears ``_callback`` once PortAudio finishes the stream.
 
 
+# ── Exit ordering ────────────────────────────────────────────────────
+# sounddevice's atexit handler calls Pa_Terminate, which destroys PortAudio's global mutex.
+# A close still inside Pa_StopStream at that moment holds it, and the destructor aborts the
+# process: PaUnixMutex_Terminate: Assertion '0 == paUtilErr_' failed.  Wait for the closes
+# here first, and when one is wedged in the driver, skip Pa_Terminate instead of aborting on
+# the way out.
+_CLOSE_THREADS: Any = deque(maxlen=32)
+_EXIT_GUARD_REGISTERED = False
+_EXITING = False
+
+
+def _shutdown_audio_at_exit() -> None:
+    """Wait for in-flight stream closes, then let sounddevice terminate PortAudio."""
+    global _EXITING
+    _EXITING = True  # __del__ must not start a close while atexit handlers run
+    for thread in list(_CLOSE_THREADS):
+        with suppress(Exception):
+            thread.join(timeout=2.0)
+    if not any(thread.is_alive() for thread in _CLOSE_THREADS):
+        return
+    try:
+        import sounddevice as sd
+        atexit.unregister(sd._exit_handler)
+        logger.warning("Audio stream close still running at exit; skipping PortAudio termination")
+    except Exception:
+        logger.debug("Could not skip PortAudio termination at exit", exc_info=True)
+
+
+def _register_exit_guard() -> None:
+    """Register the exit guard after sounddevice, so it runs before Pa_Terminate."""
+    global _EXIT_GUARD_REGISTERED
+    if not _EXIT_GUARD_REGISTERED:
+        _EXIT_GUARD_REGISTERED = True
+        atexit.register(_shutdown_audio_at_exit)
+
+
 class AudioRecorder(_RecorderBase):
     """Thread-safe sounddevice.InputStream recorder: ``start(on_silence_stop=cb)`` ...
     ``stop()`` -> WAV path or None; ``cancel()`` discards. With a callback the recording
@@ -892,6 +930,7 @@ class AudioRecorder(_RecorderBase):
                 stream.close()
 
         t = threading.Thread(target=_do_close, daemon=True)
+        _CLOSE_THREADS.append(t)  # before start(): the exit guard must see a close that has begun
         t.start()
         clock = __import__("time")  # real clock even when tests patch this module's ``time``
         deadline = clock.monotonic() + timeout
@@ -957,7 +996,12 @@ class AudioRecorder(_RecorderBase):
         (see the Stream lifetime note above). Closing here is the fallback; callers should
         close explicitly, because this runs on whichever thread drops the last reference —
         including PortAudio's callback thread, where the close would just wait for itself.
+
+        Not at interpreter exit: the close would race sounddevice's ``Pa_Terminate``,
+        which then aborts on a mutex the close still holds.
         """
+        if _EXITING:
+            return
         with suppress(Exception):
             self.shutdown()
 

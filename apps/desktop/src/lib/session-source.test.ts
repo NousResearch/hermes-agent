@@ -29,3 +29,11 @@ describe('photon messaging source registration', () => {
     expect(isMessagingSource(undefined)).toBe(false)
   })
 })
+
+// The hermes-petasos plugin creates its chats with source "petasos"; they get their own
+// "Petasos" section rather than mixing into local recents.
+describe('petasos messaging source registration', () => {
+  it('treats petasos as a messaging source (own sidebar section)', () => {
+    expect(isMessagingSource('petasos')).toBe(true)
+  })
+})

@@ -34,10 +34,16 @@ def delete_failed_error(canon: str, profile_dir: Path, error: Exception) -> Runt
 
 def record_delete_finished(profile_dir: Path) -> None:
     """After a successful rmtree: a plain delete, so a shell a stale writer re-makes is replaceable.
-    Best-effort: with the directory gone, an ``incomplete`` record left by a failed write matches nothing."""
-    from hermes_constants import mark_named_profile_deleted
+    Rewrites the existing record only (no ``O_CREAT``): a same-name create in another process may already
+    have cleared it, and recreating it would tombstone the new profile. Best-effort: an ``incomplete``
+    record left by a failed write matches nothing once the directory is gone."""
+    from hermes_constants import profile_tombstone_path
     with contextlib.suppress(OSError):
-        mark_named_profile_deleted(profile_dir)
+        fd = os.open(profile_tombstone_path(profile_dir), os.O_WRONLY | os.O_TRUNC)
+        try:
+            os.write(fd, b"deleted\n")
+        finally:
+            os.close(fd)
 
 
 def wait_profile_unowned(profile_dir: Path, *, timeout: float | None = None) -> bool:

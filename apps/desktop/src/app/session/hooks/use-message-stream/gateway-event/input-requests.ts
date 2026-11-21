@@ -180,14 +180,21 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
 
     clearClarifyRequest(id, sessionId)
 
+    // 'resolved' means another attached client answered this request; the
+    // authoritative result arrives as tool.complete, so the pending part must
+    // stay open rather than be stamped cancelled/unanswered by the settle below.
+    const answeredElsewhere = payload?.reason === 'resolved'
+
     if (sessionId && request) {
       deps.updateSessionState(sessionId, state => {
-        const projection = settlePendingClarifyToolCall(
-          state.messages,
-          pendingClarifyToolPayload(request),
-          state.busy,
-          occurredAt
-        )
+        const projection = answeredElsewhere
+          ? { messages: state.messages, streamId: null }
+          : settlePendingClarifyToolCall(
+              state.messages,
+              pendingClarifyToolPayload(request),
+              state.busy,
+              occurredAt
+            )
 
         return {
           ...state,

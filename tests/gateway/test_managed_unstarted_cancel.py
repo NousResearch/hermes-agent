@@ -21,7 +21,7 @@ async def test_cancel_before_worker_reservation_settles_interrupted(tmp_path, mo
     entered, release = threading.Event(), threading.Event()
     children = []
     original_spawn = subprocess.Popen
-    def environment(owner):
+    def environment(owner, policy):
         if phase == 'environment':
             entered.set()
             assert release.wait(10)

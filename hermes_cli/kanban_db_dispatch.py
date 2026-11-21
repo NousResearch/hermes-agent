@@ -2749,6 +2749,16 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # hermes_constants is imported.
     if profile_home:
         env["HERMES_HOME"] = profile_home
+    else:
+        # A worker resolving its profile later must not inherit launch terminal policy.
+        # Instance-managed dotenv values remain authoritative; task pins follow below.
+        from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+        from hermes_cli.env_loader import managed_dotenv_keys
+        managed_names = {key.upper() for key in managed_dotenv_keys()}
+        terminal_names = {key.upper() for key in TERMINAL_CONFIG_ENV_MAP.values()} - managed_names
+        for key in list(env):
+            if key.upper() in terminal_names:
+                env.pop(key, None)
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

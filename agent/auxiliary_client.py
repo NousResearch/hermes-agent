@@ -38,6 +38,7 @@ from agent.auxiliary_custom_credentials import (
 from agent.errors import InvalidProviderResponseError
 from agent.auxiliary_fallback_recovery import reapply_repairs
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
+from agent.auxiliary_timeouts import _is_local_aux_base_url, task_no_progress_timeout
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_profile_gates import (
     PROFILE_REASONING_KEYS, contains_profile_reasoning_fields, profile_forwards_max_tokens,
@@ -3839,7 +3840,7 @@ def _fallback_request_kwargs(
 
 def _plan_fallback_candidate(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str],
-    effective_timeout: float, apply_fast_lane: bool, **request,
+    effective_timeout: float, apply_fast_lane: bool, timeout_override: Optional[float] = None, **request,
 ) -> tuple[_FallbackDestination, dict[str, Any], Callable[[str, Any, Optional[str]], dict[str, Any]]]:
     """Resolve the destination + first-attempt kwargs for a fallback candidate.
 
@@ -3856,6 +3857,8 @@ def _plan_fallback_candidate(
         )
         effective_timeout = fb_timeout
     destination = _fallback_destination(task, fb_client, fb_model, fb_label)
+    if fb_timeout is None and task == "compression" and timeout_override is None:
+        effective_timeout = _effective_aux_timeout(task, None, base_url=destination.base_url)
     task_config = _get_auxiliary_task_config(task) if task == "compression" else {}
     fallback_entry = _fallback_chain_entry(task, fb_label) or {}
     common = dict(
@@ -3949,6 +3952,7 @@ def _call_fallback_candidate_sync(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str], messages: list,
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
+    timeout_override: Optional[float] = None,
 ) -> Optional[Any]:
     """Call one fallback candidate with stale-credential recovery (``_fallback_candidate_ladder``).
 
@@ -3958,7 +3962,7 @@ def _call_fallback_candidate_sync(
     """
     destination, fb_kwargs, rebuild = _plan_fallback_candidate(
         fb_client, fb_model, fb_label, task=task, effective_timeout=effective_timeout,
-        apply_fast_lane=True, messages=messages, tools=tools, temperature=temperature,
+        apply_fast_lane=True, timeout_override=timeout_override, messages=messages, tools=tools, temperature=temperature,
         max_tokens=max_tokens, effective_extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
     )
@@ -3991,11 +3995,12 @@ async def _call_fallback_candidate_async(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str], messages: list,
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict], classify_as: str,
+    timeout_override: Optional[float] = None,
 ) -> Optional[Any]:
     """Async mirror of :func:`_call_fallback_candidate_sync` (no fast-lane cap on this wire)."""
     destination, fb_kwargs, rebuild = _plan_fallback_candidate(
         fb_client, fb_model, fb_label, task=task, effective_timeout=effective_timeout,
-        apply_fast_lane=False, messages=messages, tools=tools, temperature=temperature,
+        apply_fast_lane=False, timeout_override=timeout_override, messages=messages, tools=tools, temperature=temperature,
         max_tokens=max_tokens, effective_extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
     )
@@ -6129,21 +6134,10 @@ def _get_task_no_progress_timeout(task: str) -> Optional[float]:
     overall request timeout — see #108104."""
     if not task:
         return None
-    raw = _get_auxiliary_task_config(task).get("no_progress_timeout")
-    if raw is None:
-        return None
-    try:
-        value = float(raw)
-    except (ValueError, TypeError):
-        value = 0.0
-    if isinstance(raw, bool) or value <= 0:
-        # Fail clearly: a typo here silently leaving the 60s default is exactly the
-        # "why did my 600s request abort after 60s" confusion the key exists to remove.
-        logger.warning(
-            "auxiliary.%s.no_progress_timeout=%r is not a positive number of seconds; "
-            "using the built-in %.0fs default", task, raw, _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS)
-        return None
-    return value
+    return task_no_progress_timeout(
+        task, _get_auxiliary_task_config(task).get("no_progress_timeout"),
+        default=_AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS, logger=logger,
+    )
 
 
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
@@ -6157,13 +6151,13 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
     return default
 
 
-def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
+def _effective_aux_timeout(task: str, timeout: Optional[float], *, base_url: Optional[str] = None) -> float:
     """Explicit ``timeout`` wins, else config; compression gets a floor so a reasoning model
     summarising a large context isn't cut off."""
     if timeout is not None:
         return timeout
     effective = _get_task_timeout(task)
-    return max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS) if task == "compression" else effective
+    return max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS) if task == "compression" and not _is_local_aux_base_url(base_url) else effective
 
 
 def _with_custom_endpoint_extra_body(
@@ -7298,7 +7292,9 @@ def _prepare_aux_request(
         resolved_base_url=resolved_base_url, resolved_api_key=resolved_api_key,
         resolved_api_mode=resolved_api_mode, main_runtime=main_runtime, async_mode=async_mode,
     )
-    effective_timeout = _effective_aux_timeout(task, timeout)
+    effective_timeout = _effective_aux_timeout(
+        task, timeout, base_url=str(getattr(client, "base_url", "") or resolved_base_url or ""),
+    )
     # Codex-Responses-only: real SDK clients reject an unrecognized ``no_progress_timeout``
     # kwarg, so only resolve/forward it when the route is actually a Codex stream (#108104).
     no_progress_timeout = (
@@ -7946,6 +7942,7 @@ def _plan_aux_call(
         resolved_api_key=req.resolved_api_key, resolved_api_mode=req.resolved_api_mode,
         main_runtime=main_runtime, final_model=req.final_model, extra_headers=extra_headers,
     )
+    candidate_kwargs["timeout_override"] = timeout
     return req, retry_kwargs, candidate_kwargs
 
 

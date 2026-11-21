@@ -323,32 +323,34 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 from gateway.stream_consumer import GatewayStreamConsumer
                 adapter = self._runner._delivery_adapter_for(ctx.source)
                 if adapter:
-                    supports_incremental_stream = (
-                        getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
-                        or bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False))
-                    )
-                    consumer_stream_deltas = want_stream_deltas and supports_incremental_stream
-                    consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
-                        ctx.source, scfg, adapter,
-                        # A complete commentary message needs no edit cursor.  Keeping it on the
-                        # consumer records what reached non-editable platforms, so an interim
-                        # callback carrying the final answer participates in final-send dedup.
-                        on_missing_cursor="fallback" if want_interim_messages else "raise",
-                    )
-                    stream_consumer = GatewayStreamConsumer(
-                        adapter=adapter, chat_id=ctx.source.chat_id, config=consumer_cfg,
-                        metadata=ctx._status_thread_metadata,
-                        on_new_message=(
-                            (lambda: ctx.progress_queue.put(("__reset__",))) if ctx.progress_queue is not None else None
-                        ),
-                        on_before_finalize=pause_typing_before_finalize,
-                        initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,
-                    )
-                    ctx.stream_consumer_holder[0] = stream_consumer
-                    # #105341: a consumer created only for interim commentary (text streaming off)
-                    # is never fed the final reply's deltas — mark it so the duplicate-risk
-                    # diagnostic in ``_run_agent_mark_streamed_delivery`` stays silent.
-                    stream_consumer.stream_deltas_enabled = consumer_stream_deltas
+                    if getattr(adapter, "SUPPORTS_BUBBLE_STREAMING", False):
+                        from gateway.bubble_stream_consumer import BubbleStreamConsumer
+                        stream_consumer = BubbleStreamConsumer(
+                            adapter=adapter, chat_id=ctx.source.chat_id, reply_to=ctx.event_message_id,
+                            run_still_current=ctx._run_still_current, metadata=ctx._status_thread_metadata,
+                        )
+                        ctx.stream_consumer_holder[0] = stream_consumer
+                    else:
+                        supports_incremental_stream = (
+                            getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                            or bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False))
+                        )
+                        consumer_stream_deltas = want_stream_deltas and supports_incremental_stream
+                        consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
+                            ctx.source, scfg, adapter,
+                            on_missing_cursor="fallback" if want_interim_messages else "raise",
+                        )
+                        stream_consumer = GatewayStreamConsumer(
+                            adapter=adapter, chat_id=ctx.source.chat_id, config=consumer_cfg,
+                            metadata=ctx._status_thread_metadata,
+                            on_new_message=(
+                                (lambda: ctx.progress_queue.put(("__reset__",))) if ctx.progress_queue is not None else None
+                            ),
+                            on_before_finalize=pause_typing_before_finalize,
+                            initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,
+                        )
+                        ctx.stream_consumer_holder[0] = stream_consumer
+                        stream_consumer.stream_deltas_enabled = consumer_stream_deltas
             except Exception as err:
                 logger.debug("Could not set up stream consumer: %s", err)
         # Deltas tee to the stream consumer (when text streaming is on) and to streaming TTS.

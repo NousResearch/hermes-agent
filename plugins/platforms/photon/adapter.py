@@ -42,8 +42,7 @@ from gateway.platforms._shared import (
 )
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.helpers import compile_mention_patterns, spoken_mention_clips, strip_markdown
-from gateway.platforms.helpers import bypasses_chat_order, chat_ordered_work, voice_mention_gate_enabled
+from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
 from gateway.platforms.helpers import MessageDeduplicator, bounded_put, cancel_task
 from gateway.platforms.send_targets import regex_stripped_parser
 from utils import atomic_json_write
@@ -362,6 +361,27 @@ def _markdown_enabled() -> bool:
 # choice implies.
 _SIDECAR_URL_RE = re.compile(r"https?://[^\s)'\"<>]+", re.IGNORECASE)
 
+_OPEN_PUNCT = r'[《〈“‘（(\[【「『〔〖{<]'
+_CLOSE_PUNCT = r'[》〉”’）\)\]】」』〕〗}>]'
+
+
+def _normalize_cjk_markdown(text: str) -> str:
+    """Fix CommonMark left/right-flanking delimiter restrictions adjacent to CJK punctuation.
+
+    In CommonMark, delimiter runs adjacent to punctuation are only flanking when bounded
+    by whitespace or punctuation on the outside. In Chinese/CJK text, opening punctuation
+    (e.g. 《 or “) preceded by a CJK character, or closing punctuation (e.g. 》 or ”) followed
+    by a CJK character, fails the flanking rules and marked renders literal asterisks.
+    Adding a single whitespace on the word boundary makes CommonMark parse bold/italic cleanly.
+    """
+    if not text:
+        return ""
+    # Space before * / ** / *** when preceded by a word/CJK character and followed by opening punctuation
+    text = re.sub(rf'(\w)(?<!\*)(\*{{1,3}})(?!\*)({_OPEN_PUNCT})', r'\1 \2\3', text)
+    # Space after * / ** / *** when preceded by closing punctuation and followed by a word/CJK character
+    text = re.sub(rf'({_CLOSE_PUNCT})(?<!\*)(\*{{1,3}})(?!\*)(\w)', r'\1\2 \3', text)
+    return text
+
 
 def _sidecar_payload_text(text: str, send_markdown: bool) -> str:
     """The ``/send`` text: verbatim only when the sidecar will really use spectrum-ts' markdown builder.
@@ -372,7 +392,7 @@ def _sidecar_payload_text(text: str, send_markdown: bool) -> str:
     iMessage auto-links those and nothing else.
     """
     if send_markdown and not _SIDECAR_URL_RE.search(text or ""):
-        return text
+        return _normalize_cjk_markdown(text)
     return strip_markdown(text, keep_link_targets=True)
 
 
@@ -453,35 +473,18 @@ def _parse_timestamp(ts_str: str) -> datetime:
 _Normalized = tuple[str, MessageType, list[str], list[str]]  # text, type, media_urls, media_types
 
 
-def _is_voice_payload(payload: dict[str, Any]) -> bool:
-    """A ``voice`` payload, or an attachment that is one: iMessage voice notes are CAF and may arrive
-    "(unnamed)", so MIME is a signal too."""
-    if payload.get("type") == "voice":
-        return True
-    return payload.get("type") == "attachment" and (
-        str(payload.get("name") or "").lower().endswith(".caf") or payload.get("mimeType") == "audio/x-caf")
-
-
-def _cached_media_type(payload: dict[str, Any], mime: str, is_voice: bool) -> str:
-    """A voice payload is cached as audio, so its media type says audio too (a ``.caf`` sent as
-    ``application/octet-stream`` would otherwise count as voice yet never reach STT)."""
-    if not is_voice:
-        return mime or "application/octet-stream"
-    if mime.lower().startswith("audio/"):
-        return mime
-    return "audio/x-caf" if str(payload.get("name") or "").lower().endswith(".caf") else "audio/mp4"
-
-
 def _normalize_binary_payload(payload: dict[str, Any]) -> _Normalized:
     """Cache an inline attachment/voice payload; fall back to a text marker."""
-    is_voice = _is_voice_payload(payload)
+    is_voice = payload.get("type") == "voice"
     name = payload.get("name") or ("voice" if is_voice else "(unnamed)")
     mime = payload.get("mimeType") or ""
+    # iMessage voice notes are CAF and may arrive "(unnamed)", so MIME is a signal too.
+    is_voice = is_voice or name.lower().endswith(".caf") or mime == "audio/x-caf"
     mtype = MessageType.VOICE if is_voice else _attachment_message_type(mime)
     label = "voice" if is_voice else "attachment"
     cached = _cache_inbound_attachment(payload, name, mime, force_audio=is_voice)
     if cached:
-        return f"({label})", mtype, [cached], [_cached_media_type(payload, mime, is_voice)]
+        return f"({label})", mtype, [cached], [mime or ("audio/mp4" if is_voice else "application/octet-stream")]
     duration = payload.get("duration")
     duration_text = f", duration: {duration}s" if isinstance(duration, (int, float)) else ""
     return f"[Photon {label} received: {name} ({mime or 'unknown MIME'}{duration_text})]", mtype, [], []
@@ -521,19 +524,6 @@ _CONTENT_NORMALIZERS: dict[Any, Callable[[dict[str, Any]], _Normalized]] = {
     "group": _normalize_group_content,
 }
 _BINARY_CONTENT_TYPES = {"attachment", "voice", "group"}  # may decode/cache media bytes → run off the event loop
-
-
-def _reply_inner(content: dict[str, Any]) -> dict[str, Any]:
-    """The user's own payload of a threaded reply (``{type: "reply", content}``), else *content*."""
-    inner = content.get("content") if content.get("type") == "reply" else None
-    return inner if isinstance(inner, dict) else content
-
-
-def _carries_voice(content: dict[str, Any]) -> bool:
-    """A voice note, alone or inside a ``group`` envelope: only speech can hold a spoken wake word."""
-    if content.get("type") == "group":
-        return any(map(_is_voice_payload, _group_item_contents(content)))
-    return _is_voice_payload(content)
 
 
 def _mention_gate_text(content: dict[str, Any]) -> str:
@@ -596,6 +586,11 @@ def _attachment_body(space_id: str, safe_path: str, *, kind: str, name: Optional
 
 
 def _guess_mime(path: str) -> Optional[str]:
+    p = (path or "").lower()
+    if p.endswith(".loc.vcf") or p.endswith(".vcf"):
+        return "text/vcard"
+    if p.endswith(".ics"):
+        return "text/calendar"
     import mimetypes
     return mimetypes.guess_type(path)[0] or None
 
@@ -609,6 +604,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = _MAX_MESSAGE_LENGTH
     SUPPORTS_MESSAGE_EDITING = False  # no edit API: streaming must not leave a stale cursor (▉)
+    SUPPORTS_BUBBLE_STREAMING = True  # delivers streaming deltas as discrete iMessage bubbles
     serial_receive_loop = True  # the /inbound NDJSON loop awaits each line before reading the next
 
     def __init__(self, config: PlatformConfig):
@@ -844,26 +840,10 @@ class PhotonAdapter(BasePlatformAdapter):
         msg_id = event.get("messageId")
         if msg_id and self._dedup.is_duplicate(msg_id):
             return
-        # A group voice note may wait on gate-time STT: run it off this single reader, FIFO per chat.
-        chat, transcribes = self._gate_stt_chat(event)
-        work = chat_ordered_work(self)
-        content = _reply_inner(event.get("content") or {})  # a threaded /stop is still an escape hatch
-        command = content.get("type") == "text" and bypasses_chat_order(content.get("text"))
-        if transcribes or (chat and work.busy(chat) and not command):
-            work.submit(chat, lambda: self._dispatch_inbound(event), transcribes=transcribes)
-            return
         try:
             await self._dispatch_inbound(event)
         except Exception:
             logger.exception("[photon] inbound dispatch failed")
-
-    def _gate_stt_chat(self, event: dict[str, Any]) -> tuple[str, bool]:
-        """``(space id, True when the spoken-wake-word gate will transcribe it)``."""
-        space = event.get("space") or {}
-        content = _reply_inner(event.get("content") or {})
-        return space.get("id") or "", bool(
-            space.get("type") == "group" and self.require_mention and _carries_voice(content)
-            and voice_mention_gate_enabled(self.config.extra))
 
     async def _fffc_timeout_handler(self, chat_key: str, message_id: str) -> None:
         await asyncio.sleep(_FFFC_WAIT_SECONDS)
@@ -953,7 +933,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # Preview art for a just-received URL must not become a second user prompt;
         # suppress before recording it as reactable or decoding image bytes.
         if self._is_recent_richlink_preview(space_id, content):
-            logger.debug("[photon] suppressing rich-link preview attachment: %s", _richlink_preview_label(content))
+            logger.info("[photon] suppressing rich-link preview attachment: %s", _richlink_preview_label(content))
             return
         # Everything past here is a real (reactable) message. Recorded before the mention
         # gate: reacting to a non-wake-word group message is valid.
@@ -973,9 +953,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # Mention gate BEFORE normalising: _normalize_content persists inline attachment
         # bytes to the media cache, and a dropped group message must not leave files behind.
         gated = chat_type == "group" and self.require_mention
-        typed = gated and self._message_matches_mention_patterns(_mention_gate_text(content))
-        spoken = gated and not typed and _carries_voice(content) and voice_mention_gate_enabled(self.config.extra)
-        if gated and not (typed or spoken):  # spoken: #102330
+        if gated and not self._message_matches_mention_patterns(_mention_gate_text(content)):
             logger.debug("[photon] ignoring group message (require_mention=true, no mention pattern matched)")
             return
         if ctype in _BINARY_CONTENT_TYPES:
@@ -983,18 +961,6 @@ class PhotonAdapter(BasePlatformAdapter):
             text, mtype, media_urls, media_types = await asyncio.to_thread(_normalize_content, content)
         else:
             text, mtype, media_urls, media_types = _normalize_content(content)
-        # A group envelope may carry photos beside the speech: only its audio enters STT, and a
-        # rejected envelope's other cached files are deleted with it.
-        audio = [u for u, m in zip(media_urls, media_types) if ctype == "voice" or m.lower().startswith("audio/")]
-        if spoken and not await spoken_mention_clips(audio, self._mention_patterns, adapter=self,
-                                                     source=_event("").source):
-            for path in set(media_urls) - set(audio):
-                with contextlib.suppress(OSError):
-                    os.remove(path)
-            logger.debug("[photon] ignoring group voice note (require_mention=true, no wake word spoken)")
-            return
-        if spoken:  # speech admitted it: a DOCUMENT-first envelope must still send its audio to STT
-            mtype = MessageType.VOICE
         if gated:
             text = self._clean_mention_text(text)
         self._record_recent_richlink(space_id, _richlink_url_from_content(content) or text)
@@ -1336,7 +1302,101 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        return await self._sidecar_send(chat_id, self.format_message(content))
+        formatted = self.format_message(content)
+        if not formatted or not formatted.strip():
+            return SendResult(success=True)
+
+        _PARSE_TRIGGERS = (
+            "<bubble>", "<<<bubble>>>", "<weather", "<forecast",
+            "<cheat_sheet", "<visual_table", "<sheet",
+            "<movie", "<film", "<tv", "<drama",
+            "<word", "<dict", "<dictionary", "<lexicon",
+            "<image", "<img", "<photo", "<media", "<meme",
+            "<tapback", "<reaction", "<poll", "<effect",
+            "<calendar", "<map", "<contact", "<action",
+            "MEDIA:", "IMAGE:", "FILE:",
+        )
+        if any(tag in formatted for tag in _PARSE_TRIGGERS):
+            from gateway.bubble_parser import BubbleParser
+            parser = BubbleParser(paragraph_fallback=False)
+            bubbles = [b for b in (parser.feed(formatted) + parser.finish()) if not b.startswith("TAPBACK:")]
+            if bubbles:
+                import json
+                last_res = SendResult(success=True)
+                for b in bubbles:
+                    if b.startswith("IMAGE:"):
+                        try:
+                            data = json.loads(b[len("IMAGE:"):])
+                            img_path = data.get("path") or ""
+                            caption = data.get("caption") or ""
+                            delay = float(data.get("delay", 1.5))
+                            if hasattr(self, "send_image_file") and os.path.exists(img_path):
+                                logger.info("[photon] Delivering card/image %s to %s", img_path, chat_id)
+                                last_res = await self.send_image_file(chat_id, img_path, caption=caption)
+                                if not last_res.success:
+                                    return last_res
+                                if delay > 0:
+                                    await asyncio.sleep(delay)
+                                continue
+                            elif hasattr(self, "send_image") and img_path:
+                                last_res = await self.send_image(chat_id, img_path, caption=caption)
+                                if not last_res.success:
+                                    return last_res
+                                if delay > 0:
+                                    await asyncio.sleep(delay)
+                                continue
+                        except Exception as e:
+                            logger.warning("[photon] failed to dispatch IMAGE bubble: %s", e)
+
+                    if b.startswith("FILE:"):
+                        file_path = b[len("FILE:"):].strip()
+                        if hasattr(self, "send_document") and os.path.exists(file_path):
+                            logger.info("[photon] Delivering document %s to %s", file_path, chat_id)
+                            try:
+                                file_name = os.path.basename(file_path)
+                                last_res = await self.send_document(chat_id, file_path, file_name=file_name)
+                            except TypeError:
+                                last_res = await self.send_document(chat_id, file_path)
+                            if not last_res.success:
+                                return last_res
+                            await asyncio.sleep(0.400)
+                            continue
+
+                    if b.startswith("POLL:"):
+                        try:
+                            data = json.loads(b[len("POLL:"):])
+                            title = data.get("title") or "请选择"
+                            options = data.get("options") or []
+                            if hasattr(self, "_sidecar_send_poll"):
+                                last_res = await self._sidecar_send_poll(chat_id, title, options)
+                                if not last_res.success:
+                                    return last_res
+                                await asyncio.sleep(0.400)
+                                continue
+                        except Exception as e:
+                            logger.warning("[photon] failed to dispatch POLL bubble: %s", e)
+
+                    if b.startswith("EFFECT:"):
+                        try:
+                            data = json.loads(b[len("EFFECT:"):])
+                            eff = data.get("effect") or "confetti"
+                            eff_text = data.get("text") or ""
+                            if hasattr(self, "_sidecar_send_effect"):
+                                last_res = await self._sidecar_send_effect(chat_id, eff_text, eff)
+                                if not last_res.success:
+                                    return last_res
+                                await asyncio.sleep(0.400)
+                                continue
+                        except Exception as e:
+                            logger.warning("[photon] failed to dispatch EFFECT bubble: %s", e)
+
+                    last_res = await self._sidecar_send(chat_id, b)
+                    if not last_res.success:
+                        return last_res
+                    await asyncio.sleep(0.400)
+                return last_res
+            return SendResult(success=True)
+        return await self._sidecar_send(chat_id, formatted)
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
                            session_key: str, metadata: Optional[dict[str, Any]] = None) -> SendResult:
@@ -1465,13 +1525,15 @@ class PhotonAdapter(BasePlatformAdapter):
         lost on restart). Soft-fails (False), never raises."""
         return await self._sidecar_try("/unreact", {"spaceId": chat_id, "messageId": message_id}, "remove_reaction")
 
-    # -- Agent-facing reactions: deliberate intents, so NOT
+    # -- Agent-facing reactions (send_message action="react"): deliberate intents, so NOT
     # gated by PHOTON_REACTIONS.
 
     async def add_reaction(self, chat_id: str, emoji: str, message_id: Optional[str] = None) -> dict[str, Any]:
         """Tapback ``emoji`` onto a message (default: the chat's latest inbound). iMessage
         maps ❤️👍👎😂‼️❓ to native tapbacks; anything else is a custom-emoji reaction."""
         target = message_id or self._last_inbound_by_chat.get(self._normalize_chat_key(chat_id))
+        if target and ":reaction:" in target:
+            target = target.split(":reaction:")[0]
         if not target:
             return {"success": False, "error": "no message to react to — pass message_id (no "
                     "inbound message seen in this chat since the gateway started)"}
@@ -1507,6 +1569,11 @@ class PhotonAdapter(BasePlatformAdapter):
         return {"name": chat_id, "type": "dm", "id": chat_id}
 
     def format_message(self, content: str) -> str:
+        # Strip tapback / poll / effect / calendar / map / spoiler control tags so they never leak as literal text
+        content = re.sub(
+            r'<(?:tapback|reaction|poll|effect|calendar|map|location|spoiler)(?:\s+[^>]*?)?>.*?</(?:tapback|reaction|poll|effect|calendar|map|location|spoiler)>|<(?:tapback|reaction|poll|effect|calendar|map|location|spoiler)\s+[^>]*?/>',
+            '', content, flags=re.IGNORECASE | re.DOTALL,
+        )
         # Markdown passes through verbatim (sidecar markdown() builder); PHOTON_MARKDOWN=false strips.
         return content if _markdown_enabled() else strip_markdown(content, keep_link_targets=True)
 
@@ -1592,6 +1659,19 @@ class PhotonAdapter(BasePlatformAdapter):
         body = {"spaceId": space_id, "title": title.strip()[: self.MAX_MESSAGE_LENGTH], "options": opts}
         return await self._post_send("/send-poll", body, sent_text=body["title"])
 
+    async def _sidecar_send_effect(self, space_id: str, text: str, effect: str) -> SendResult:
+        """POST a message with native Apple iMessage effect to ``/send-effect``."""
+        eff = str(effect or "").strip().lower()
+        eff_map = {
+            "invisible_ink": "invisible", "ink": "invisible", "hidden": "invisible", "secret": "invisible",
+            "firework": "fireworks", "laser": "lasers", "balloon": "balloons",
+            "sparkle": "sparkles", "hearts": "heart", "love": "heart",
+            "impact": "slam", "shout": "loud", "whisper": "gentle",
+        }
+        eff = eff_map.get(eff, eff)
+        body = {"spaceId": space_id, "text": text.strip()[: self.MAX_MESSAGE_LENGTH], "effect": eff}
+        return await self._post_send("/send-effect", body, sent_text=body["text"])
+
     async def _sidecar_send_attachment(self, space_id: str, path: str, *, name: Optional[str] = None,
                                        mime_type: Optional[str] = None, caption: Optional[str] = None,
                                        kind: str = "attachment") -> SendResult:
@@ -1655,10 +1735,24 @@ def _cache_inbound_attachment(content: dict[str, Any], name: str, mime: str, *,
     suffix = Path(name).suffix if name else ""  # prefer the real extension
     try:
         if mime.startswith("image/"):
+            if mime in {"image/heic", "image/heif"} or suffix.lower() in {".heic", ".heif"}:
+                try:
+                    import io
+                    from PIL import Image
+                    import pillow_heif
+                    pillow_heif.register_heif_opener()
+                    img = Image.open(io.BytesIO(raw))
+                    buf = io.BytesIO()
+                    img.convert("RGB").save(buf, format="JPEG", quality=90)
+                    raw = buf.getvalue()
+                    suffix = ".jpg"
+                    mime = "image/jpeg"
+                except Exception as conv_exc:
+                    logger.warning("[photon] failed to convert HEIC image to JPEG: %s", conv_exc)
             ext = suffix or _IMAGE_EXT_BY_MIME.get(mime, ".jpg")
             try:
                 return cache_image_from_bytes(raw, ext)
-            except ValueError:  # unsupported image bytes (e.g. HEIC magic): deliver as a document
+            except ValueError:  # unsupported image bytes: deliver as a document
                 return cache_document_from_bytes(raw, name)
         if force_audio or mime.startswith("audio/"):
             ext = suffix or _AUDIO_EXT_BY_MIME.get(mime, ".m4a" if force_audio else ".mp3")
@@ -1680,15 +1774,15 @@ def _standalone_error(resp: Any) -> dict[str, Any]:
         data = resp.json() or {}
     data = data if isinstance(data, dict) else {}
     error_class = str(data.get("error_class") or "sidecar_error")
+    retryable = bool(data.get("retryable"))
     if error_class == "target_not_allowed":
         error = _TARGET_NOT_ALLOWED_MESSAGE
+        retryable = False
     elif resp.status_code != 200:
         error = f"sidecar returned {resp.status_code}: {resp.text[:200]}"
     else:
         error = str(data.get("error") or "sidecar reported failure")
-    # A standalone result's ``retryable`` means "nothing reached the chat" (cron replays only
-    # those). The sidecar's own flag also covers timeouts that may have delivered, so never pass it on.
-    return {**send_error(error), "error_class": error_class, "retryable": False}
+    return {**send_error(error), "error_class": error_class, "retryable": retryable}
 
 
 def _standalone_token_from_record(port: int) -> tuple[Optional[str], int, str]:
@@ -1811,8 +1905,9 @@ def register(ctx) -> None:
             "in your response (images and video appear inline, audio as voice notes, other files as "
             "attachments). Recipient identifiers are E.164 phone numbers; never expose them in responses "
             "unless the user asked."),
-        # Permanent-message iMessage inboxes (no edit).
+        # Permanent-message iMessage inboxes (no edit, but supports discrete bubble streaming).
         display_tier="low",
+        display_overrides={"streaming": True},
     )
     ctx.register_cli_command(
         name="photon", help="Set up and manage the Photon iMessage integration",

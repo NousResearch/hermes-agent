@@ -163,9 +163,7 @@ def _pin_executable(path) -> None:
 
 
 def test_a_missing_pinned_browser_is_named_in_the_hint(browser_store, tmp_path):
-    """The pin wins over pm's Chromium, so "install chromium" cannot help: the hint names the pinned path."""
-    _, _, publish = browser_store
-    publish("chromium")
+    """With no installed fallback, keep the pin and explain how to repair it."""
     missing = tmp_path / "moved away" / "chrome"
     _pin_executable(missing)
     ok, hint = launcher.chromium_ready()
@@ -190,9 +188,23 @@ def test_external_chromium_override_survives_pm_composition(browser_store, monke
     publish("chromium")
     override = tmp_path / "user browser"
     override.write_bytes(b"external")
+    override.chmod(0o755)
     _pin_executable(override)
     assert launcher.chromium_ready() == (True, "")
     assert launcher._resolve_executable() == str(override)
+
+
+@pytest.mark.platforms("posix")
+def test_bare_command_pin_resolves_via_path_lookup(browser_store, monkeypatch, tmp_path):
+    bin_dir = tmp_path / "chrome-bin"
+    bin_dir.mkdir()
+    binary = bin_dir / "google-chrome"
+    binary.write_text("#!/bin/sh\necho fake-chrome\n")
+    binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    _pin_executable("google-chrome")
+    assert launcher.chromium_ready() == (True, "")
+    assert launcher._resolve_executable() == str(binary)
 
 
 _FAKE_PM_CHROMIUM = """#!{python}
@@ -267,6 +279,7 @@ def test_chromium_acquisition_policy(browser_store, monkeypatch, policy, tmp_pat
     if policy == "override":
         override = tmp_path / "external-chrome"
         override.touch()
+        override.chmod(0o755)
         _pin_executable(override)
         assert launcher._resolve_executable() == str(override)
         override.unlink()

@@ -39,6 +39,12 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _gateway_session_db_inner(gateway):
+    """The raw SessionDB behind ``gateway._session_db`` (unwrapping the async facade), or None."""
+    session_db = getattr(gateway, "_session_db", None)
+    return getattr(session_db, "_db", session_db)
+
+
 class GatewayTurnHygieneMixin:
     @dataclasses.dataclass
     class _HygienePlan:

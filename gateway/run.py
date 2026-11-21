@@ -2155,6 +2155,7 @@ from gateway.run_voice import GatewayVoiceMixin
 from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.run_topics import GatewayTopicThreadsMixin
 from gateway.run_turn import GatewayTurnMixin, is_context_overflow_failure_result
+from gateway.run_turn_hygiene import _gateway_session_db_inner
 from gateway.run_shutdown import GatewayShutdownMixin, _resolve_gateway_exit_verdict
 from gateway.run_busy import GatewayBusySessionMixin
 from gateway.run_config_loaders import GatewayConfigLoadersMixin
@@ -4140,6 +4141,7 @@ class GatewayRunner(
         progress_grouping: Any = None
         _display_surface_mode: Any = None
         tool_progress_enabled: Any = None
+        feishu_progress_card_enabled: Any = None
         _live_status_mode: Any = None
         _live_status_adapter: Any = None
         log_mode_enabled: Any = None

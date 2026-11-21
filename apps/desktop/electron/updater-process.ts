@@ -55,9 +55,11 @@ export function resolveInstallationLauncher(
 
 /**
  * resolveInstallationLauncher for callers on Electron's main thread that run
- * repeatedly (the About/version refresh): the historical user-bin rung proves
+ * repeatedly (the About/version refresh, and the source update check every
+ * window's passive check reaches): the historical user-bin rung proves
  * identity with the launcher's own `--version`, which may take seconds, so it
- * runs asynchronously here and never stalls the event loop.
+ * runs asynchronously here, once per launcher and root for this process
+ * (launcherIdentity), and never stalls the event loop.
  */
 export async function resolveInstallationLauncherAsync(
   updateRoot: string,
@@ -73,7 +75,7 @@ export async function resolveInstallationLauncherAsync(
   const realRoot: string | null = realpathOrNull(updateRoot)
 
   for (const candidate of realRoot ? historicalLauncherCandidates(updateRoot, isWindows, hermesHome) : []) {
-    if ((await launcherInstallDirectoryAsync(candidate, updateRoot)) === realRoot) {
+    if ((await launcherIdentity(candidate, updateRoot)) === realRoot) {
       return candidate
     }
   }
@@ -203,6 +205,56 @@ export function launcherInstallRoot(launcher: string): Promise<string | undefine
   })
 
   launcherInstallRoots.set(launcher, flight)
+
+  return flight
+}
+
+// The same holds for the identity a historical user-bin launcher reports when
+// probed for a given root: the update check (once per window that mounts) and
+// the version refresh both ask it, and each `--version` costs a process start
+// (seconds when it runs its own update check). Memoized per launcher and root,
+// shared by concurrent callers; a miss is cached for LAUNCHER_ROOT_MISS_TTL_MS.
+// The key carries the launcher file's stamp, so a launcher replaced in place
+// (re-pointed at another checkout while Desktop stays open) is proved again.
+const launcherIdentities = new Map<string, Promise<string | null>>()
+const launcherIdentityMisses = new Map<string, number>()
+
+function launcherFileStamp(launcher: string): string {
+  try {
+    const { ino, mtimeMs, size } = statSync(launcher)
+
+    return `${ino}:${mtimeMs}:${size}`
+  } catch {
+    return 'missing'
+  }
+}
+
+function launcherIdentity(launcher: string, root: string): Promise<string | null> {
+  const key = `${launcher}\u0000${root}\u0000${launcherFileStamp(launcher)}`
+  const missedAt = launcherIdentityMisses.get(key)
+
+  if (missedAt !== undefined && Date.now() - missedAt < LAUNCHER_ROOT_MISS_TTL_MS) {
+    return Promise.resolve(null)
+  }
+
+  const cached = launcherIdentities.get(key)
+
+  if (cached) {
+    return cached
+  }
+
+  const flight = launcherInstallDirectoryAsync(launcher, root).then(reported => {
+    if (reported === null) {
+      launcherIdentities.delete(key)
+      launcherIdentityMisses.set(key, Date.now())
+    } else {
+      launcherIdentityMisses.delete(key)
+    }
+
+    return reported
+  })
+
+  launcherIdentities.set(key, flight)
 
   return flight
 }

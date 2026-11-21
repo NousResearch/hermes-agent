@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import mimetypes
+import re
 from typing import Any, Dict, List, Optional, Tuple
 from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import exact_mcp_identifier, mcp_field
@@ -32,6 +33,48 @@ _MCP_RESOURCE_MAX_B64_CHARS = _MCP_RESOURCE_MAX_BYTES * 4 // 3 + 4
 def _truncate_mcp_text_result(text: str, max_chars: int = _MCP_HARD_RESULT_CAP_CHARS) -> str:
     """Bound pathological MCP text before it propagates (#56059)."""
     return truncate_head_tail(text, max_chars, label="MCP RESULT")
+
+
+# A ``\uXXXX`` escape preceded by an odd run of backslashes (an even run is an escaped backslash
+# followed by a literal "u"). Surrogate pairs are matched first so astral characters decode whole.
+_JSON_SURROGATE_PAIR_ESCAPE = re.compile(r"(\\+)u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", re.IGNORECASE)
+_JSON_BMP_ESCAPE = re.compile(r"(\\+)u([0-9a-f]{4})", re.IGNORECASE)
+
+
+def _literal_json_unicode(text: str) -> str:
+    """A JSON text block with non-ASCII ``\\uXXXX`` escapes written as the characters themselves.
+
+    Servers that serialize with an ASCII-only encoder (Python's default ``ensure_ascii=True``, e.g.
+    Slack's MCP server) turn every Thai, CJK, Cyrillic or emoji character into a six-character escape,
+    which costs the model several times the tokens of the literal text. The rewrite only touches
+    escapes of characters at U+00A0 and above (ASCII, C0/C1 controls and lone surrogates stay escaped),
+    runs only when the block parses as JSON, and is kept only if the result parses to the identical
+    value, so it is lossless. Anything else passes through unchanged."""
+    if "\\u" not in text or text.lstrip()[:1] not in ("{", "[", '"'):
+        return text
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return text
+
+    def pair(match: re.Match) -> str:
+        slashes, high, low = match.groups()
+        if len(slashes) % 2 == 0:
+            return match.group(0)
+        return slashes[:-1] + chr(0x10000 + ((int(high, 16) - 0xD800) << 10) + (int(low, 16) - 0xDC00))
+
+    def single(match: re.Match) -> str:
+        slashes, code = match.groups()
+        point = int(code, 16)
+        if len(slashes) % 2 == 0 or point < 0xA0 or 0xD800 <= point <= 0xDFFF:
+            return match.group(0)
+        return slashes[:-1] + chr(point)
+
+    literal = _JSON_BMP_ESCAPE.sub(single, _JSON_SURROGATE_PAIR_ESCAPE.sub(pair, text))
+    try:
+        return literal if json.loads(literal) == value else text
+    except ValueError:
+        return text
 
 
 def _is_reserved_mcp_meta_key(key: str) -> bool:

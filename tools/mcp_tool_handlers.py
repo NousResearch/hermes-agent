@@ -19,7 +19,8 @@ from tools.thread_context import capture_thread_callbacks
 from tools.mcp_tool_common import _exc_str, _sanitize_error, exact_mcp_identifier, mcp_field, _core
 from tools import mcp_tool_loop as _loop
 from tools.mcp_tool_content import (
-    _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block, _mcp_result_with_native_images,
+    _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block, _literal_json_unicode,
+    _mcp_result_with_native_images,
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
     _truncate_mcp_text_result)
 from tools.mcp_tool_errors import (
@@ -684,7 +685,8 @@ def _render_content_blocks(result, server_name: str) -> tuple[str, int, list[str
     # tag + cache_image_from_bytes) was the cleaner of the two — plugs into existing infrastructure.
     for block in (result.content or []):
         if getattr(block, "text", None):
-            parts.append(strip_unicode_tags(block.text))
+            # Decode first, then strip: an escaped TAG character must not survive as an invisible literal.
+            parts.append(strip_unicode_tags(_literal_json_unicode(block.text)))
             if block.text.strip():
                 usable_parts += 1
             continue

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 
 import pytest
 
@@ -165,6 +166,52 @@ def test_failed_config_migration_is_owed_and_later_maintenance_runs(tmp_path, mo
     assert "⚠ Update follow-up 'config_migration'" in capsys.readouterr().out
     update_receipt.finalize_update_receipt("success")
     assert [f["step"] for f in _latest(tmp_path)["followups"]] == ["config_migration"]
+
+
+def test_post_update_revalidates_provider_catalogs_without_losing_offline_fallback(
+    tmp_path, monkeypatch,
+):
+    from hermes_cli import models, update_cmd, update_cmd_maint as maint
+
+    sibling = tmp_path / "profiles" / "work"
+    sibling.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda home: [("work", sibling)])
+    for home in (tmp_path, sibling):
+        (home / "provider_models_cache.json").write_text(json.dumps({
+            "copilot": {"fp": "account", "at": time.time(), "models": ["old-model"]},
+        }))
+
+    monkeypatch.setattr("hermes_cli.update_windows_acl.repair_windows_home_acl", lambda: None)
+    for name in ("_verify_and_restore_state_dbs_post_update", "_invalidate_live_plugin_catalog_caches",
+                 "_report_catalog_plugin_updates", "_print_bundled_skills_sync_report",
+                 "_sync_profiles_after_update", "_print_post_update_notices_and_self_heals"):
+        monkeypatch.setattr(maint, name, lambda: None)
+    monkeypatch.setattr("hermes_cli.gitlock.fetch_full_commit_graph", lambda *a, **kw: False)
+    monkeypatch.setattr("hermes_cli.model_catalog.seed_cache_from_checkout", lambda root: False)
+    monkeypatch.setattr("hermes_cli.git_commit_graph.spawn_commit_graph_refresh", lambda root: None)
+    monkeypatch.setattr("hermes_cli.default_plugins.install_and_record", lambda: None)
+    monkeypatch.setattr(update_cmd, "_check_and_apply_config_migration", lambda **kw: None)
+    monkeypatch.setattr(maint, "_print_verified_update_completion", lambda message: True)
+    assert maint._run_post_update_maintenance(
+        assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
+        had_desktop_app_before_update=False, pre_update_version=None,
+    ) is True
+
+    monkeypatch.setattr(models, "_credential_fingerprint", lambda provider: "account")
+    monkeypatch.setattr(models, "provider_model_ids", lambda provider, **kw: ["new-model"])
+    assert models.cached_provider_model_ids("copilot") == ["new-model"]
+
+    monkeypatch.setenv("HERMES_HOME", str(sibling))
+    probes = []
+
+    def offline(provider, **kw):
+        probes.append(provider)
+        return []
+
+    monkeypatch.setattr(models, "provider_model_ids", offline)
+    assert models.cached_provider_model_ids("copilot") == ["old-model"]
+    assert probes == ["copilot"]
 
 
 def test_owed_restart_names_its_gateways_so_a_dead_fleet_cannot_discharge_it(tmp_path, monkeypatch):

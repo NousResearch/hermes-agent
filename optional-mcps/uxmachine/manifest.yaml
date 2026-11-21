@@ -1,0 +1,43 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: uxmachine
+description: Measure a web page in a real browser and get verifiable UX observations, each with its evidence and limits.
+source: https://uxmachine.app/en/agents/hermes
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration:
+# 401 with RFC 9728 resource_metadata -> AS metadata with
+# registration_endpoint, PKCE S256 and public clients (auth method "none").
+# Verified with Hermes Agent v0.22.5 on 2026-10-27: `hermes mcp add` registered
+# its own client, the user signed in in the browser and 4 tools loaded.
+transport:
+  type: http
+  url: https://uxmachine.app/mcp
+
+auth:
+  type: oauth
+
+# Tools: medir (start a measurement), estado (poll until it finishes),
+# memoria (what was measured on a site before), tunel (measure a local
+# server through a temporary tunnel). All four are enabled by default.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - uxmachine
+    - ux audit
+    - accessibility audit
+  hosts:
+    - uxmachine.app
+  examples:
+    - Measure https://your-site.example with UXMachine and tell me what was observed and what could not be checked.
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to UXMachine
+  (or run `hermes mcp login uxmachine`). Approve access, then restart
+  the session so the tools load.
+
+  Each measurement uses one credit of your UXMachine account. Guide:
+  https://uxmachine.app/en/agents/hermes

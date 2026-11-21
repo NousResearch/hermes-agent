@@ -143,11 +143,38 @@ const DEFAULT_VALUES: Record<'mac' | 'windows', Record<Appearance, TranslucencyV
 }
 
 /**
- * The untouched values for an appearance on this platform. Linux never reaches
- * here — translucency is unsupported there, so nothing resolves.
+ * The untouched values for an appearance on this platform.
+ *
+ * These are GLASS defaults — the tint a frosted sidebar starts at. Clear mode
+ * shares the lever but not its meaning (see `clearModeDefault`), so callers
+ * must not hand these straight to a clear-mode state.
  */
 export function defaultTranslucencyValues(appearance: Appearance, isWindows: boolean): TranslucencyValues {
   return DEFAULT_VALUES[isWindows ? 'windows' : 'mac'][appearance]
+}
+
+/**
+ * Clear mode's own default: off.
+ *
+ * The two modes share one 0–100 lever but not one meaning — under glass
+ * `intensity` is the tint the renderer keeps; under clear it IS the native
+ * window opacity. So a glass default must never stand in for a clear one: 29
+ * reads as a 29% tint over a frosted sidebar, and as `opacityRamp(29) = 0.94113`
+ * on the whole window, text included. Any platform that cannot back glass
+ * resolves `mode: 'clear'`, and the sidebar tint default leaked into a
+ * whole-window fade on both of them.
+ *
+ * Windows 10 is the one left: its row is offered (`translucencySupportedOn` is
+ * true on win32) so the "hidden row resolves to off" rule cannot cover it, and
+ * a fresh profile faded to 94% with no indication that a *tint* default was the
+ * cause. Linux is handled where its row is hidden; this is the shared default
+ * that was wrong for every clear-mode platform in the first place.
+ *
+ * An untouched clear-mode profile starts fully opaque; raising the lever is the
+ * user's own call.
+ */
+function clearModeDefault(values: TranslucencyValues, mode: TranslucencyMode): TranslucencyValues {
+  return mode === 'glass' ? values : { ...values, intensity: 0 }
 }
 
 /**
@@ -286,9 +313,11 @@ export function defaultTranslucencyState(
   glassSupported: boolean,
   isWindows: boolean
 ): TranslucencyState {
+  const mode = normalizeMode(undefined, glassSupported)
+
   return {
-    ...defaultTranslucencyValues(appearance, isWindows),
-    mode: normalizeMode(undefined, glassSupported)
+    ...clearModeDefault(defaultTranslucencyValues(appearance, isWindows), mode),
+    mode
   }
 }
 
@@ -352,7 +381,7 @@ export function resolveTranslucency(
   appearance: Appearance,
   isWindows: boolean
 ): TranslucencyState {
-  const fallback = defaultTranslucencyValues(appearance, isWindows)
+  const fallback = clearModeDefault(defaultTranslucencyValues(appearance, isWindows), book.mode)
   const slot = book[appearance]
 
   return {

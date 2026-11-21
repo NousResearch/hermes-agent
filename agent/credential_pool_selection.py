@@ -85,7 +85,9 @@ class CredentialPoolSelectionMixin:
             rotated = [candidate for candidate in self._entries if candidate.id != entry.id]
             rotated.append(replace(entry, priority=len(self._entries) - 1))
             self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
-            self._persist()
+            # #72413: this rotation persists a runtime reordering; preserve the
+            # newer disk order instead of overwriting it from stale state.
+            self._persist(preserve_disk_order=False)
             entry = self._find(lambda candidate: candidate.id == entry.id) or entry
         self._current_id = entry.id
         return entry

@@ -80,6 +80,20 @@ class SubagentMonitor:
             self._local = LocalSubagents(self.cli)
         return self._local
 
+    def _agents_nudge(self, rows_present: bool) -> None:
+        """One-time ``display.tui_agents_nudge`` hint on the first delegation with live rows."""
+        if not rows_present or getattr(self, "_agents_nudge_fired", False):
+            return
+        try:
+            from cli import CLI_CONFIG, _DIM, _RST, _cprint
+            if not CLI_CONFIG.get("display", {}).get("tui_agents_nudge", False):
+                return
+            self._agents_nudge_fired = True
+            from agent.i18n import t
+            _cprint(f"  {_DIM}{t('cli.subagents.nudge_hint')}{_RST}")
+        except Exception:
+            pass
+
     def refresh(self, now=None):
         now = time.time() if now is None else now
         entries = self.subagents().subagent_rows(busy=bool(getattr(self.cli, '_agent_running', False)))
@@ -91,6 +105,7 @@ class SubagentMonitor:
         processes = procs.process_rows(now)
         session_rows.sync_automation(self.cli)
         goal = session_rows.goal_line(self.cli)
+        self._agents_nudge(bool(entries or processes))
         loop_badge, loop, loop_prompt = session_rows.loop_row(self.cli, now)
         queued = session_rows.queued_prompts(self.cli)
         signature = json.dumps([entries, processes, goal, loop, queued], sort_keys=True, default=str)

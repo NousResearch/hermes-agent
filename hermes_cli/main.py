@@ -1316,6 +1316,25 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
                     sys.exit(1)
 
 
+def _apply_tui_auto_resume(args, use_tui: bool) -> None:
+    """display.tui_auto_resume_recent: a bare ``hermes --tui`` continues the most recent
+    human-facing session (like ``hermes -c``). Explicit --resume/-c and HERMES_TUI_RESUME win."""
+    if not use_tui or getattr(args, "resume", None):
+        return
+    if os.environ.get("HERMES_TUI_RESUME", "").strip():
+        return
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        return
+    if not cfg.get("display", {}).get("tui_auto_resume_recent", False):
+        return
+    last_id = _latest_session_id(use_tui)
+    if last_id:
+        args.resume = last_id
+
+
 def _resolve_chat_session_args(args, use_tui: bool) -> None:
     """Normalize --in / --resume / --continue on ``args`` before agent init.
 
@@ -1327,6 +1346,7 @@ def _resolve_chat_session_args(args, use_tui: bool) -> None:
     --no-restore-cwd, skipped under --worktree).
     """
     _apply_in_dir(args)
+    _apply_tui_auto_resume(args, use_tui)
 
     # --resume latest: same resolution as bare `-c`. The keyword wins over a
     # session literally titled "latest" (still reachable by ID or `-c latest`).

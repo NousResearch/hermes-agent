@@ -7,6 +7,7 @@ import { TitlebarIcon } from '@/app/shell/titlebar-icon'
 import { PageLoader } from '@/components/page-loader'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { ErrorState } from '@/components/ui/error-state'
 import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
@@ -121,13 +122,12 @@ export function InboxView(props: InboxViewProps) {
       tabs={[{ id: 'all', label: copy.title, meta: loaded ? items.length : null }]}
     >
       {!loaded && loadError ? (
-        <div className="grid h-full place-items-center px-6 text-center">
-          <div className="flex flex-col items-center gap-2">
-            <div className="text-sm font-medium">{copy.loadFailed}</div>
+        <div className="grid h-full place-items-center px-6">
+          <ErrorState title={copy.loadFailed}>
             <Button disabled={refreshing} onClick={() => void refresh()} size="sm" variant="outline">
               {t.common.retry}
             </Button>
-          </div>
+          </ErrorState>
         </div>
       ) : !loaded ? (
         <PageLoader label={copy.loading} />

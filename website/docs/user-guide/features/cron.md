@@ -322,7 +322,7 @@ hermes cron tick
 What they do:
 
 - `pause` — keep the job but stop scheduling it
-- `resume` — re-enable the job. A recurring job whose slot came due while it was paused keeps that slot due, so the next tick fires one catch-up run (or logs the skip when `cron.catch_up_missed: false`) instead of silently jumping to the next occurrence; otherwise the next future run is computed
+- `resume` — re-enable the job. A recurring job whose slot came due while it was paused keeps that slot due, so the next tick fires one catch-up run (or logs the skip when `cron.catch_up_missed: false`) instead of silently jumping to the next occurrence; otherwise the next future run is computed. Editing the schedule while the job is paused discards that elapsed slot (it belongs to the old schedule), so resume computes the next run from the new schedule, as the same edit does on an unpaused job
 - `run` — trigger the job on the next scheduler tick. A manual run is an extra fire: the scheduled run still happens and the `repeat` count is not spent, so test-firing an `in 30m` reminder keeps the real one (a run once the slot is already due is that scheduled run)
 - `cancel` — stop the job's **current** run (see [Stopping a run in flight](#stopping-a-run-in-flight))
 - `remove` — delete it entirely
@@ -1318,6 +1318,8 @@ cronjob(
     repeat=5,
 )
 ```
+
+Editing a recurring job into a one-shot (for example `hermes cron edit <job_id> --schedule "in 30m"`) makes it run once: earlier runs and a recurring `repeat` count do not carry over. The edit is refused while the job is running; retry once the run finishes.
 
 ## Managing jobs programmatically
 

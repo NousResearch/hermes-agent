@@ -29,6 +29,7 @@ from the dedicated arguments and win over the same key in ``metadata``, so
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -73,17 +74,21 @@ class PluginDetachedCtxMixin:
                 STATE_DETACHED_RESULT_CAPABILITY,
             )
 
-    def _write_detached(self, session_id: str, write) -> Optional[int]:  # type: ignore[no-untyped-def] -- SessionDB is lazy
-        """Resolve *session_id* to the live continuation tip (a parent closed by compression never
-        receives rows), then run ``write(db, tip)`` on the shared registry-owned ``SessionDB`` of this
-        manager's profile home."""
-        from hermes_state_registry import acquire, release
+    def _write_detached(self, session_id: str, write) -> Optional[int]:  # type: ignore[no-untyped-def] -- the store is lazy
+        """Run ``write(store, session_id)`` on the store handle of this manager's profile home.
 
-        db = acquire(self._manager.home_path / "state.db")
+        The store's own detached-result verbs own the two correctness steps the old ``SessionDB``
+        made the caller do: they resolve the live continuation tip (a parent closed by compression
+        never receives rows) and they run the transcript write guards inside the write
+        transaction (``SessionTurnLeaseLostError`` under a live turn, nothing recorded).
+        """
+        from persistence_assembly import open_persistence, profile_scope
+
+        store = open_persistence(profile_scope(home=self._manager.home_path))
         try:
-            return write(db, db.resolve_resume_session_id(session_id))
+            return write(store, session_id)
         finally:
-            release(db)
+            store.close()
 
     def record_delegation_delivery(
         self,
@@ -112,7 +117,12 @@ class PluginDetachedCtxMixin:
             raise ValueError("record detached result requires delivery_notice to be a string")
         meta = {**_caller_metadata(metadata, RESERVED_DELIVERY_KEYS),
                 "delegation_id": delegation_id, "delivery_notice": delivery_notice}
-        return self._write_detached(session_id, lambda db, tip: db.append_delegation_delivery(tip, content, meta))
+        from persistence.conversation.messages import DelegationDelivery
+
+        return self._write_detached(
+            session_id,
+            lambda store, sid: store.messages.append_delegation_delivery(
+                sid, DelegationDelivery(content, meta)))
 
     def record_completion_note(
         self,
@@ -145,5 +155,10 @@ class PluginDetachedCtxMixin:
         if admission_id is not None:
             _require_text(admission_id, "admission_id")
         meta = _caller_metadata(metadata, RESERVED_NOTE_KEYS)
+        # The store keys the row by ``admission_id`` and always writes it; a caller that passes
+        # None asked for "one row per call", so it gets a fresh key instead of a shared empty one.
+        key = admission_id if admission_id is not None else f"anonymous-{uuid.uuid4().hex}"
         return self._write_detached(
-            session_id, lambda db, tip: db.append_completion_note(tip, admission_id, content, display_kind, meta))
+            session_id,
+            lambda store, sid: store.messages.append_completion_note(
+                sid, key, content, display_kind, meta))

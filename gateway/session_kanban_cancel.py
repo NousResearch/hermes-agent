@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import asyncio
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal as RuntimeStoreError
 
 
 def _require_control(connection):

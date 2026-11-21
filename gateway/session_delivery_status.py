@@ -24,7 +24,7 @@ import logging
 import time
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal as RuntimeStoreError
 
 _log = logging.getLogger(__name__)
 
@@ -44,19 +44,25 @@ _SOURCE_MAP = {
 }
 
 
-def _lineage_map(db, session_ids):
+def _lineage_map(store, session_ids):
     """``{session_id: its resume lineage}``: the tip a pre-rotation id resolves to, then every
     compression ancestor a resume loads. A delivery recorded before a compaction lives on the
     parent segment; without the lineage the verb would go blind exactly when a long session
-    compacts."""
+    compacts.
+
+    Both halves are the store's own lineage verbs: ``resolve_resume_target`` is the tip a
+    resume loads and ``resume_lineage_ids`` the segments it reads (the same pair
+    ``conversation.lineage`` serves every other reader)."""
+    from persistence.core.identity import SessionId
+
     out = {}
     for session_id in session_ids:
-        tip = db.resolve_resume_session_id(session_id)
-        out[session_id] = db._resume_lineage_ids(tip)
+        tip = store.lineage.resolve_resume_target(SessionId(session_id))
+        out[session_id] = store.lineage.resume_lineage_ids(SessionId(tip))
     return out
 
 
-def _transcript_statuses(db, lineages, window_seconds, now):
+def _transcript_statuses(store, db_path, lineages, window_seconds, now):
     """Per-session detached-delivery aggregates over the session's resume lineage.
 
     Returns ``{session_id: (pending, oldest_pending_ts, recent, last_ts, total)}``. The pending cut
@@ -66,8 +72,12 @@ def _transcript_statuses(db, lineages, window_seconds, now):
     compaction that carries the protected tail writes the same logical row again under a new
     id, and the superseded original is the one the filter drops.
     """
+    from contextlib import closing
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    path = Path(db_path).resolve()
     out = {}
-    with db._read_ctx() as conn:
+    with closing(connect_tracked(path.as_uri() + "?mode=ro", uri=True, tracking_path=path)) as conn:
         for session_id, lineage in lineages.items():
             marks = ",".join("?" * len(lineage))
             last_assistant = conn.execute(
@@ -202,7 +212,7 @@ async def delivery_status(connection, ref, params):
         scope_name = "session"
     else:
         from gateway.session_live_listing import live_entries
-        from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+        from persistence.conversation.sessions import INTERNAL_LISTING_SOURCES
 
         # The same visible feed ``session.list`` defaults to: live sessions this actor may
         # read, minus internal sources, closed-and-unviewed rows and hidden/archived ones.
@@ -220,13 +230,17 @@ async def delivery_status(connection, ref, params):
             if len(session_ids) >= limit:
                 break
         scope_name = "all"
-    home = Path(authority.db.db_path).parent.resolve()
-    lineages = await asyncio.to_thread(_lineage_map, authority.db, session_ids)
+    store = authority.persistence
+    from persistence_assembly import store_location
+
+    home = Path(store.scope.profile_dir).resolve()
+    db_path = store_location(store.scope)
+    lineages = await asyncio.to_thread(_lineage_map, store, session_ids)
     # Lineages of live sessions are disjoint (a compression-ended parent is never live);
     # a member names the one session it is counted under.
     owner_of = {member: sid for sid, lineage in lineages.items() for member in lineage}
     transcript = await asyncio.to_thread(
-        _transcript_statuses, authority.db, lineages, window, now
+        _transcript_statuses, store, db_path, lineages, window, now
     )
     settled_recent, dead_letter, last_settled = await _relay_statuses(
         home, owner_of, window, now

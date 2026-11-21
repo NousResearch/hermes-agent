@@ -23,6 +23,7 @@ from typing import Any
 from agent.auxiliary_client import call_llm
 from session_rules.turns import flatten_message_text
 from agent.message_metadata import DATA_USE
+from agent.message_sanitization import native_finish_reason
 from agent.moa_alternation import destination_key, is_role_alternation_rejection, merge_same_role_messages
 from agent.transports import get_transport
 from agent.usage_pricing import CanonicalUsage
@@ -1020,6 +1021,7 @@ def _completed_response_as_stream_chunk(response: Any) -> Any:
     )
     choice = SimpleNamespace(
         index=getattr(first_choice, "index", 0), delta=delta, finish_reason=getattr(first_choice, "finish_reason", None) or "stop",
+        native_finish_reason=native_finish_reason(first_choice),
     )
     return SimpleNamespace(
         id=getattr(response, "id", None), model=getattr(response, "model", None), choices=[choice], usage=getattr(response, "usage", None),

@@ -658,6 +658,7 @@ def _bind_turn_identity(
 # verifier). ``_turns_since_memory`` / ``_iters_since_skill`` are deliberately NOT reset.
 _PER_TURN_RESET_STATE: tuple[tuple[str, Any], ...] = (
     ("_invalid_tool_retries", 0), ("_invalid_json_retries", 0), ("_empty_content_retries", 0),
+    ("_malformed_response_retries", 0),
     ("_incomplete_scratchpad_retries", 0), ("_codex_incomplete_retries", 0),
     # Consecutive Codex reasoning-only (no answer, no tool call) responses, kept apart from
     # the aggregate incomplete count so a visible partial resets it (#67321).

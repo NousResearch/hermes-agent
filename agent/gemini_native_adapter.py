@@ -726,7 +726,10 @@ def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespa
     message = SimpleNamespace(role="assistant", content="".join(pieces[False]) if pieces[False] else ("" if cand is None else None),
                               tool_calls=tool_calls or None, reasoning=reasoning, reasoning_content=reasoning, reasoning_details=None,
                               extra_content=_tool_call_extra_from_part({"thoughtSignature": text_signature}))
-    return _envelope(model, "chat.completion", SimpleNamespace(index=0, message=message, finish_reason=finish_reason), usage)
+    # The raw reason rides along so the loop can tell MALFORMED_RESPONSE (mapped to "stop") from a real empty stop.
+    native = str((cand or {}).get("finishReason") or "").lower() or None
+    return _envelope(model, "chat.completion", SimpleNamespace(
+        index=0, message=message, finish_reason=finish_reason, native_finish_reason=native), usage)
 
 
 class _GeminiStreamChunk(SimpleNamespace): ...
@@ -734,7 +737,7 @@ class _GeminiStreamChunk(SimpleNamespace): ...
 
 def _make_stream_chunk(
     *, model: str, content: str = "", tool_call_delta: Optional[dict[str, Any]] = None, finish_reason: Optional[str] = None, reasoning: str = "",
-    text_signature: Optional[str] = None,
+    text_signature: Optional[str] = None, native_finish_reason: Optional[str] = None,
 ) -> _GeminiStreamChunk:
     d = tool_call_delta
     tool_calls = None if d is None else [
@@ -743,7 +746,7 @@ def _make_stream_chunk(
     delta = SimpleNamespace(role="assistant", content=content or None, tool_calls=tool_calls, reasoning=reasoning or None,
                             reasoning_content=reasoning or None,
                             extra_content=_tool_call_extra_from_part({"thoughtSignature": text_signature}))
-    choice = SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)
+    choice = SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason, native_finish_reason=native_finish_reason)
     return _envelope(model, "chat.completion.chunk", choice, None, cls=_GeminiStreamChunk)
 
 
@@ -843,7 +846,7 @@ def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices:
     if finish_reason_raw := str(cand.get("finishReason") or ""):
         mapped_finish = _FINISH_REASON_MAP.get(finish_reason_raw.upper(), "stop")
         finish_reason = "tool_calls" if tool_call_indices and mapped_finish == "stop" else mapped_finish
-        finish_chunk = _make_stream_chunk(model=model, finish_reason=finish_reason)
+        finish_chunk = _make_stream_chunk(model=model, finish_reason=finish_reason, native_finish_reason=finish_reason_raw.lower())
         if usage_meta := event.get("usageMetadata") or {}:  # rides on the finish chunk so the stream loop records tokens
             finish_chunk.usage = _usage_from_metadata(usage_meta)
         chunks.append(finish_chunk)

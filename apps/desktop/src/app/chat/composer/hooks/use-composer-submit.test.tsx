@@ -2,8 +2,10 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { type Dispatch, type PropsWithChildren, type SetStateAction, useLayoutEffect, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import * as sessionOwnerUtils from '@/app/session/hooks/use-session-actions/utils'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
+import { host } from '@/sdk'
 import { $clarifyRequests } from '@/store/clarify'
 import {
   clearComposerTerminalSelections,
@@ -16,7 +18,7 @@ import { $gateway } from '@/store/gateway'
 import { $notifications } from '@/store/notifications'
 import { $onboardingPhase } from '@/store/onboarding-phase'
 import { $onboardingSession } from '@/store/onboarding-session'
-import { continueReplyPause, endReplyPause, markReplyPaused } from '@/store/paused-replies'
+import { continueReplyPause, endContinuedReplyPause, endReplyPause, isReplyPaused, markReplyPaused } from '@/store/paused-replies'
 import {
   clearAllPrompts,
   hasBlockingPromptRequest,
@@ -25,12 +27,13 @@ import {
   setSudoRequest
 } from '@/store/prompts'
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
-import { $connection } from '@/store/session'
+import { $activeSessionId, $connection, $selectedStoredSessionId, $sessions, setSessionsLoading } from '@/store/session'
 import { $setupBeatRequests, parkSetupBeat } from '@/store/setup-beat'
 
-import { type ComposerTarget, requestComposerSubmit } from '../focus'
+import { type ComposerTarget, requestComposerSubmit, requestNativeComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
+import { useComposerQueue } from './use-composer-queue'
 import { useComposerSubmit } from './use-composer-submit'
 
 interface SubmitHarnessOptions {
@@ -75,7 +78,13 @@ function renderSubmitHook({
   const onCancel = vi.fn()
   const onSteer = vi.fn(async () => true)
   const onSteerHidden = vi.fn(async () => true)
-  const onSubmit = vi.fn(async () => true)
+
+  const onSubmit = vi.fn(async (_text: string, options?: SubmitTextOptions) => {
+    options?.onExternalAccepted?.(false)
+
+    return true
+  })
+
   const queueCurrentDraft = vi.fn(() => true)
   let updatePaneVisible: Dispatch<SetStateAction<boolean>> | undefined
 
@@ -167,6 +176,164 @@ function renderSubmitHook({
 }
 
 describe('useComposerSubmit external request routing', () => {
+  it('bounds a missing native acknowledgement as unknown without retrying', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const main = renderSubmitHook()
+      let release!: (accepted: boolean) => void
+      main.onSubmit.mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            release = resolve
+          })
+      )
+      const receipt = requestNativeComposerSubmit('confirmed', { sessionId: 'runtime-session', target: 'main' })
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(await receipt).toEqual({ status: 'unknown' })
+      expect(main.onSubmit).toHaveBeenCalledTimes(1)
+      release(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('public SDK checks exact focused ownership before the native surface can accept', async () => {
+    $activeSessionId.set('runtime-session')
+    $selectedStoredSessionId.set('stored-session')
+    $sessions.set([{ id: 'stored-session', connection_id: 'local', profile: 'default' } as never])
+    const main = renderSubmitHook({ text: 'preserved draft' })
+    const options = { sessionId: 'runtime-session', connectionId: 'local', profile: 'default', text: 'confirmed' }
+    const location = window.location.hash
+
+    expect(host.state.focusedSessionId.get()).toBe('runtime-session')
+    expect(host.state.focusedSessionOwner.get()).toEqual({ connectionId: 'local', profile: 'default' })
+
+    for (const invalid of [
+      { sessionId: 'another-runtime' },
+      { connectionId: 'other-source' },
+      { profile: 'other-profile' },
+      { text: '/stop' },
+      { text: ' ' }
+    ]) {
+      expect(await host.submitPrompt({ ...options, ...invalid })).toEqual({ status: 'rejected' })
+    }
+
+    expect(main.onSubmit).not.toHaveBeenCalled()
+
+    await act(async () => {
+      expect(await host.submitPrompt(options)).toEqual({ status: 'accepted' })
+    })
+    expect(main.onSubmit).toHaveBeenCalledTimes(1)
+    expect(main.clearDraft).not.toHaveBeenCalled()
+    expect(main.onSteer).not.toHaveBeenCalled()
+    expect(window.location.hash).toBe(location)
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
+    $sessions.set([])
+  })
+
+  it('reports real queue acknowledgement, refuses false and preserves accepted after local cleanup failure', async () => {
+    const main = renderSubmitHook()
+    const send = () => requestNativeComposerSubmit('confirmed', { sessionId: 'runtime-session', target: 'main' })
+    main.onSubmit.mockImplementationOnce(async (_text, options) => {
+      options?.onExternalAccepted?.(true)
+
+      return true
+    })
+    await act(async () => {
+      expect(await send()).toEqual({ status: 'queued' })
+    })
+    main.onSubmit.mockResolvedValueOnce(false)
+    await act(async () => {
+      expect(await send()).toEqual({ status: 'rejected' })
+    })
+    main.onSubmit.mockImplementationOnce(async (_text, options) => {
+      options?.onExternalAccepted?.(false)
+      throw new Error('local cleanup failed after acknowledgement')
+    })
+    await act(async () => {
+      expect(await send()).toEqual({ status: 'accepted' })
+    })
+    main.onSubmit.mockResolvedValueOnce(true)
+    await act(async () => {
+      expect(await send()).toEqual({ status: 'unknown' })
+    })
+    expect(main.onSubmit).toHaveBeenCalledTimes(4)
+  })
+
+  it('acknowledges only the addressed native submit without consuming the local draft or attachments', async () => {
+    const main = renderSubmitHook({
+      text: 'unsent local draft',
+      attachments: [{ id: 'private', kind: 'file', label: 'local.txt' }]
+    })
+
+    const hidden = renderSubmitHook({ visible: false })
+
+    const send = (sessionId = 'runtime-session') =>
+      requestNativeComposerSubmit('confirmed instruction', { sessionId, target: 'main' })
+
+    expect(await send('wrong-runtime')).toEqual({ status: 'rejected' })
+    expect(main.onSubmit).not.toHaveBeenCalled()
+    expect(await send()).toEqual({ status: 'accepted' })
+    expect(main.onSubmit).toHaveBeenCalledExactlyOnceWith(
+      'confirmed instruction',
+      expect.objectContaining({
+        attachments: [],
+        composerScope: 'stored-session',
+        confirmedExternal: true,
+        sessionId: 'runtime-session',
+        storedSessionId: 'stored-session'
+      })
+    )
+    expect(hidden.onSubmit).not.toHaveBeenCalled()
+    expect(main.clearDraft).not.toHaveBeenCalled()
+    main.onSubmit.mockRejectedValueOnce(new Error('connection lost after dispatch'))
+    expect(await send()).toEqual({ status: 'unknown' })
+    expect(main.onSubmit).toHaveBeenCalledTimes(2)
+    let release!: (accepted: boolean) => void
+    main.onSubmit.mockImplementationOnce(
+      (_text, options) =>
+        new Promise(resolve => {
+          release = accepted => {
+            if (accepted) {
+              options?.onExternalAccepted?.(false)
+            }
+
+            resolve(accepted)
+          }
+        })
+    )
+    const pending = send()
+    expect((await send()).status).toBe('queued')
+    expect(main.onSubmit).toHaveBeenCalledTimes(3)
+    release(true)
+    expect((await pending).status).toBe('accepted')
+    $queuedPromptsBySession.set({})
+    act(() => main.setPaneVisible(false))
+    expect(await send()).toEqual({ status: 'rejected' })
+  })
+
+  it('queues native requests in order while busy without steering or bypassing disabled input', async () => {
+    $queuedPromptsBySession.set({})
+    const main = renderSubmitHook({ busy: true })
+    const first = await requestNativeComposerSubmit('first', { sessionId: 'runtime-session', target: 'main' })
+    const second = await requestNativeComposerSubmit('second', { sessionId: 'runtime-session', target: 'main' })
+    expect(first.status).toBe('queued')
+    expect(second.status).toBe('queued')
+    expect(getQueuedPrompts('stored-session').map(entry => entry.text)).toEqual(['first', 'second'])
+    expect(main.onSubmit).not.toHaveBeenCalled()
+    expect(main.onSteer).not.toHaveBeenCalled()
+    expect(main.onCancel).not.toHaveBeenCalled()
+    main.hook.unmount()
+    const disabled = renderSubmitHook({ inputDisabled: true })
+    expect(await requestNativeComposerSubmit('blocked', { sessionId: 'runtime-session', target: 'main' })).toEqual({
+      status: 'rejected'
+    })
+    expect(disabled.onSubmit).not.toHaveBeenCalled()
+    $queuedPromptsBySession.set({})
+  })
+
   afterEach(() => {
     cleanup()
     clearQueuedPrompts('stored-session')
@@ -682,8 +849,96 @@ describe('useComposerSubmit while the reply is paused for an automatic continuat
   afterEach(() => {
     cleanup()
     endReplyPause('stored-session')
+    endReplyPause('runtime-session')
     clearQueuedPrompts('stored-session')
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
+    $sessions.set([])
+    $connection.set(null)
+    setSessionsLoading(true)
     vi.restoreAllMocks()
+  })
+
+  it.each([
+    ['stored-session', false],
+    ['runtime-session', false],
+    ['stored-session', true],
+    ['runtime-session', true]
+  ] as const)('holds SDK confirmed text in FIFO until continuation completes (pause %s, after render %s)', async (pauseId, afterRender) => {
+    $activeSessionId.set('runtime-session')
+    $selectedStoredSessionId.set('stored-session')
+    $sessions.set([{ id: 'stored-session', connection_id: 'local', profile: 'default' } as never])
+    $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as never)
+    setSessionsLoading(false)
+
+    if (!afterRender) {
+      markReplyPaused(pauseId)
+    }
+
+    const attachments: ComposerAttachment[] = [{ id: 'draft-file', kind: 'file', path: '/draft.txt', label: 'draft.txt' }]
+    const h = renderSubmitHook({ attachments, text: 'unfinished draft' })
+
+    const queue = renderHook(() => useComposerQueue({
+      activeQueueSessionKey: 'stored-session',
+      attachments,
+      busy: false,
+      clearDraft: h.clearDraft,
+      draftRef: { current: 'unfinished draft' },
+      focusInput: h.focusInput,
+      loadIntoComposer: h.loadIntoComposer,
+      onCancel: h.onCancel,
+      onSteer: h.onSteer,
+      onSubmit: h.onSubmit,
+      queueEditRef: { current: null },
+      queueSessionKey: 'stored-session',
+      sessionId: 'runtime-session'
+    }))
+
+    let receipt!: ReturnType<typeof host.submitPrompt>
+
+    act(() => {
+      if (afterRender) {
+        // The event arrives in the same stack, before React can render the pause.
+        markReplyPaused(pauseId)
+      }
+
+      receipt = host.submitPrompt({
+        connectionId: 'local', profile: 'default', sessionId: 'runtime-session', text: 'confirmed follow-up'
+      })
+      expect(isReplyPaused('stored-session', 'runtime-session')).toBe(true)
+      expect(h.onSubmit).not.toHaveBeenCalled()
+    })
+
+    const [entry] = getQueuedPrompts('stored-session')
+    expect(entry).toMatchObject({ text: 'confirmed follow-up', attachments: [], confirmedExternal: true })
+    expect(await receipt).toEqual({ status: 'queued', queueId: entry.id })
+    expect(h.onSubmit).not.toHaveBeenCalled()
+
+    act(() => continueReplyPause(pauseId))
+    await act(async () => {
+      expect(await queue.result.current.drainNextQueued()).toBe(false)
+    })
+    expect(isReplyPaused('stored-session', 'runtime-session')).toBe(true)
+    expect(getQueuedPrompts('stored-session')).toEqual([entry])
+    expect(h.onSubmit).not.toHaveBeenCalled()
+
+    act(() => endContinuedReplyPause(pauseId))
+    await waitFor(() => expect(getQueuedPrompts('stored-session')).toEqual([]))
+    expect(h.onSubmit).toHaveBeenCalledExactlyOnceWith('confirmed follow-up', expect.objectContaining({
+      attachments: [], confirmedExternal: true, fromQueue: true,
+      sessionId: 'runtime-session', storedSessionId: 'stored-session', submission_id: entry.id
+    }))
+    queue.rerender()
+    await act(async () => { await queue.result.current.drainNextQueued() })
+    expect(h.onSubmit).toHaveBeenCalledTimes(1)
+    expect(h.onSteer).not.toHaveBeenCalled()
+    expect(h.onSteerHidden).not.toHaveBeenCalled()
+    expect(h.onCancel).not.toHaveBeenCalled()
+    expect(h.clearDraft).not.toHaveBeenCalled()
+    expect(h.loadIntoComposer).not.toHaveBeenCalled()
+    expect(h.stashAt).not.toHaveBeenCalled()
+    expect(h.editor.textContent).toBe('unfinished draft')
+    expect(attachments).toEqual([{ id: 'draft-file', kind: 'file', path: '/draft.txt', label: 'draft.txt' }])
   })
 
   // A host plugin stopped the turn to apply a grant and continues it by itself

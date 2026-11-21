@@ -1152,6 +1152,14 @@ class OpenAICompatRoutesMixin:
         await response.prepare(request)
         return response
 
+    async def _write_status_frame(self, response, payload) -> None:
+        """A ``hermes.status`` frame, under the same opt-out as tool progress: an OpenAI SDK turns any
+        named frame into a chunk with ``choices=None``, and status frames fire exactly during
+        provider retries."""
+        from gateway.platforms.api_server import _sse_frame
+        if self._tool_progress_events:
+            await response.write(_sse_frame(payload, event="hermes.status"))
+
     async def _write_sse_chat_completion(
         self, request: web.Request, completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str | None = None,
@@ -1183,8 +1191,10 @@ class OpenAICompatRoutesMixin:
                     # opencode and the Vercel AI SDK render as a thinking block.
                     await response.write(_sse_frame(_chunk({"reasoning_content": delta[1]})))
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__status__":
-                    await response.write(_sse_frame(delta[1], event="hermes.status"))
+                    await self._write_status_frame(response, delta[1])
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__approval__":
+                    # Never opted out: it is the only signal that the turn is parked until
+                    # POST /v1/runs/{id}/approval answers it (#51871).
                     await response.write(_sse_frame(delta[1], event="approval.request"))
                 else:
                     if delta:

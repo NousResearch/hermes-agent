@@ -50,6 +50,7 @@ with a name allows that one name only.
 | `gateway.platforms.base` | whole module | developer-guide / plugins docs |
 | `gateway.platforms.event` | whole module | developer-guide / plugins docs |
 | `gateway.platforms.helpers` | whole module | developer-guide / plugins docs |
+| `gateway.platforms.send_targets` | `StandaloneSendPolicy` | developer-guide / plugins docs |
 | `gateway.status` | whole module | developer-guide / plugins docs |
 | `hermes_cli.auth_oauth_pkce_plugin` | whole module | developer-guide / plugins docs |
 | `hermes_cli.config` | whole module | developer-guide / plugins docs |

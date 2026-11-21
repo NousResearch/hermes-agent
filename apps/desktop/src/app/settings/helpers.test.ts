@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { BUILTIN_PERSONALITIES } from './constants'
+import { BUILTIN_PERSONALITIES, ENUM_OPTIONS } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
   clearsEnabledToolsets,
@@ -180,6 +180,52 @@ describe('settings helpers', () => {
 
   describe('enumOptionsFor — backend selector dropdowns', () => {
     const config: HermesConfigRecord = {}
+
+    it('merges backend voice providers without duplicates or changing model-specific voices', () => {
+      for (const kind of ['tts', 'stt'] as const) {
+        const key = `${kind}.provider`
+        const builtins = ENUM_OPTIONS[key]
+        const plugin = kind === 'tts' ? 'fish-audio' : 'plugin-asr'
+
+        const withCommand: HermesConfigRecord = {
+          [kind]: { providers: { custom: { type: 'command', command: 'voice-command' } } }
+        }
+
+        const schemaOptions = [
+          ...builtins,
+          builtins[0].toUpperCase(),
+          'custom',
+          'CUSTOM',
+          ` ${plugin} `,
+          plugin.toUpperCase(),
+          '',
+          '   ',
+          null,
+          42,
+          {},
+          false
+        ]
+
+        expect(enumOptionsFor(key, 'unlisted-current', withCommand, undefined, schemaOptions)).toEqual([
+          ...builtins,
+          'custom',
+          plugin,
+          'unlisted-current'
+        ])
+      }
+
+      // A stored name that differs only in case from the backend's is offered once, as stored.
+      expect(enumOptionsFor('tts.provider', 'FISH-AUDIO', {}, undefined, ['fish-audio'])).toEqual([
+        ...ENUM_OPTIONS['tts.provider'],
+        'FISH-AUDIO'
+      ])
+
+      const narrowedConfig = { tts: { openai: { model: 'tts-1' } } }
+      const voices = enumOptionsFor('tts.openai.voice', 'alloy', narrowedConfig, undefined, ['marin'])
+
+      expect(voices).toEqual(enumOptionsFor('tts.openai.voice', 'alloy', narrowedConfig))
+      expect(voices).not.toContain('marin')
+    })
 
     it('narrows OpenAI TTS voice suggestions to what the selected model supports', () => {
       // gpt-4o-mini-tts (and unset/unknown models): full 13-voice set.

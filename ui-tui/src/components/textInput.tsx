@@ -1936,6 +1936,7 @@ export const shouldPassThroughToGlobalHandler = (
 ): boolean =>
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
+  (key.ctrl && input === 's') ||
   (key.ctrl && input === 'o') ||
   (key.ctrl && (input === 'p' || input === 'r' || input === 't')) ||
   key.tab ||

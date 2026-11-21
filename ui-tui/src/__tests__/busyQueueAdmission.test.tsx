@@ -24,7 +24,8 @@ const row = (admission_id: string, input_id: string, text: string, status = 'que
   ref: { profile_id: '/tmp/profile', session_id: 'stored-owner' }
 })
 
-function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel: () => Promise<unknown> = () => Promise.resolve({ status: 'terminal', outcome: 'cancelled' })) {
+function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel: () => Promise<unknown> = () => Promise.resolve({ status: 'terminal', outcome: 'cancelled' }),
+  steer: () => Promise<unknown> = () => Promise.resolve({ status: 'started', outcome: null })) {
   // macOS: tmpdir() is /var/..., a symlink to /private/var; captureDestination() realpaths
   // HERMES_HOME, so receipts must carry the canonical home or target_profile_home never matches.
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'ink-busy-admit-')))
@@ -48,6 +49,7 @@ function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel:
     }
 
     if (method === 'prompt.cancel') { return cancel() }
+    if (method === 'prompt.steer_queued') { return steer() }
     throw new Error(`unexpected RPC: ${method}`)
   })
 
@@ -286,5 +288,36 @@ it('re-admits an edited row to the session it was edited in, even when the user 
     release({ admission_id: 'adm-orig', status: 'terminal', outcome: 'cancelled' })
     await expect.poll(() => h.calls.filter(c => c.method === 'prompt.submit').length).toBe(1)
     expect(h.calls.find(c => c.method === 'prompt.submit')!.params).toMatchObject({ session_id: 'owner', text: 'EDITED_A' })
+  } finally { h.cleanup() }
+})
+
+it('steers a server-queued row into the running turn through prompt.steer_queued, only where the owner serves it', async () => {
+  const refused = () => Promise.reject(new Error('steer_unavailable'))
+  const h = mount('queue', undefined, refused)
+
+  try {
+    h.fanout([{ ...row('adm-1', 'in-1', 'steer me'), controls: ['steer', 'replace'] }, row('adm-2', 'in-2', 'no controls')])
+    await expect.poll(() => h.queue.queuedDisplay).toEqual(['steer me', 'no controls'])
+
+    // An owner that lists no `steer` for the row is never asked: the row just stays queued.
+    expect(await h.queue.steerQ(1)).toBe(false)
+    expect(h.calls.filter(c => c.method === 'prompt.steer_queued')).toEqual([])
+
+    // A refusal (no running turn, started first) is reported as not steered; the owner keeps the row queued.
+    expect(await h.queue.steerQ(0)).toBe(false)
+    expect(h.calls.find(c => c.method === 'prompt.steer_queued')!.params).toEqual({ session_id: 'owner', admission_id: 'adm-1' })
+    expect(h.queue.queuedDisplay).toEqual(['steer me', 'no controls'])
+  } finally { h.cleanup() }
+})
+
+it('reports a queued row steered when the owner accepts the transfer', async () => {
+  const h = mount('queue')
+
+  try {
+    h.fanout([{ ...row('adm-1', 'in-1', 'steer me'), controls: ['steer', 'replace'] }])
+    await expect.poll(() => h.queue.queuedDisplay).toEqual(['steer me'])
+    expect(await h.queue.steerQ(0)).toBe(true)
+    // The row leaves the list only on the owner's next fanout, never by a local splice.
+    expect(h.queue.queuedDisplay).toEqual(['steer me'])
   } finally { h.cleanup() }
 })

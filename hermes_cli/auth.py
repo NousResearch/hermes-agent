@@ -1512,6 +1512,47 @@ def _openrouter_auto_detected(scoped_key_env: Callable[[str], str]) -> bool:
         return False
 
 
+def get_openrouter_auth_status() -> dict[str, Any]:
+    """Status snapshot for OpenRouter.
+
+    OpenRouter is absent from PROVIDER_REGISTRY on purpose (see _config_model_provider and
+    #109397), so get_auth_status() falls through to ``{"logged_in": False}`` even when a
+    credential exists — while inference happily uses it via _openrouter_auto_detected().
+    That mismatch made `hermes auth status openrouter` report "logged out" right after
+    `hermes auth add openrouter`. Mirror the detection rungs here (env -> legacy sk-or-
+    OPENAI_API_KEY -> credential pool) so status agrees with inference.
+    """
+    from hermes_cli.config import get_env_value_prefer_dotenv
+
+    def _dotenv(name: str) -> str:
+        return get_env_value_prefer_dotenv(name) or ""
+
+    key, key_source = "", ""
+    candidate = _usable_declared_secret("openrouter", _dotenv("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY")
+    if candidate:
+        key, key_source = candidate, "OPENROUTER_API_KEY"
+    else:
+        legacy = _dotenv("OPENAI_API_KEY")
+        if legacy and looks_like_openrouter_key(legacy):
+            legacy_ok = _usable_declared_secret("openrouter", legacy, "OPENAI_API_KEY")
+            if legacy_ok:
+                key, key_source = legacy_ok, "OPENAI_API_KEY"
+    if not key:
+        try:
+            from agent.credential_pool import load_pool as _load_pool
+            pool = _load_pool("openrouter")
+            if pool and pool.has_credentials():
+                key_source = "credential_pool:openrouter"
+                key = "pooled"
+        except Exception as e:
+            logger.debug("Could not check OpenRouter credential pool: %s", e)
+    if not key:
+        return {"logged_in": False, "provider": "openrouter"}
+    return {
+        "logged_in": True, "provider": "openrouter", "auth_type": "api_key",
+        "key_source": key_source, "api_base_url": OPENROUTER_BASE_URL}
+
+
 def _logged_in_oauth_active_provider(*, skip_free_tier: bool = False) -> Optional[str]:
     """auth.json ``active_provider`` when it is a registry provider that reports logged in."""
     try:
@@ -2131,7 +2172,10 @@ def get_auth_status(provider_id: Optional[str] = None) -> dict[str, Any]:
 # auth_type-keyed fallbacks below.
 _BESPOKE_STATUS_FUNCTIONS: dict[str, str] = {
     **{pid: flow.status_fn for pid, flow in OAUTH_PROVIDER_FLOWS.items()},
-    "azure-foundry": "_get_azure_foundry_auth_status"}
+    "azure-foundry": "_get_azure_foundry_auth_status",
+    # openrouter is absent from PROVIDER_REGISTRY on purpose, so it needs a bespoke status
+    # builder or get_auth_status() always reports logged out (registry miss at line ~2134).
+    "openrouter": "get_openrouter_auth_status"}
 _STATUS_BY_AUTH_TYPE: dict[str, str] = {
     "external_process": "get_external_process_provider_status",
     "api_key": "get_api_key_provider_status",

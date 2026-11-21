@@ -426,3 +426,64 @@ def test_older_owner_seen_input_never_moves_the_clock_back():
     presence.seen('home', 's', 50)
     assert presence.read('home', 's', 102) == (2.0, 'input', None)
 
+
+
+class _BrokenPresence:
+    """A presence whose every write fails: observing must change no answer."""
+
+    def seen(self, *args):
+        raise RuntimeError('presence is broken')
+
+    def read(self, *args, **kwargs):
+        return None
+
+
+async def _escaped(call):
+    """What a failing call let out (None when it answered): the socket would answer -32603 for it."""
+    try:
+        return None, await call
+    except RuntimeError as exc:
+        return exc, None
+
+
+@pytest.mark.asyncio
+async def test_a_failing_presence_does_not_fail_the_input_request(tmp_path, monkeypatch, clock):
+    conn = await _connect(tmp_path, monkeypatch)
+    client = _Client(conn)
+    try:
+        sid = await _session(client, 'a')
+        await _attach(client, sid)
+        client.transport.client_presence = _BrokenPresence()
+        escaped, stale = await _escaped(client.call('session.interrupt', session_id=sid, execution_generation=10 ** 6))
+        assert escaped is None
+        assert stale['error']['message'] == 'stale_generation', stale
+    finally:
+        await client.connection.close()
+        await conn.connection.close()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_presence_still_settles_the_answered_request(tmp_path, monkeypatch, clock):
+    from gateway.session_server_requests import ask_viewer_result, open_requests
+    conn = await _connect(tmp_path, monkeypatch)
+    client = _Client(conn)
+    try:
+        sid = await _session(client, 'a')
+        await _attach(client, sid)
+        events = conn.authority.sessions[sid].event_stream
+        client.transport.client_presence = _BrokenPresence()
+        clarify = {'questions': [{'qid': 'q', 'question': 'Proceed?'}]}
+        asking = asyncio.create_task(asyncio.to_thread(
+            lambda: ask_viewer_result(events, sid, 'clarify', clarify, qids=['q'], timeout=5)))
+
+        def frame():
+            return next((f for f in client.transport.frames if isinstance(f, dict)
+                         and str(f.get('id', '')).startswith('srq-')), None)
+        sent = await async_wait_until(frame, timeout=10)
+        escaped, _ = await _escaped(client.connection.dispatch(
+            {'jsonrpc': '2.0', 'id': sent['id'], 'result': {'answers': {'q': 'yes'}}}))
+        result = await asking  # the waiter's own timeout if nothing woke it
+        assert (escaped, open_requests(events, sid), (result or {}).get('answers')) == (None, [], {'q': 'yes'})
+    finally:
+        await client.connection.close()
+        await conn.connection.close()

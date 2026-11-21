@@ -98,11 +98,14 @@ def resolve(frame, *, session_ok=lambda session_id, events: True) -> bool:
 
 
 def ask_viewer(events, session_id, method, params, *, cancelled=lambda: False, timeout=REQUEST_TIMEOUT_S,
-               replay=True) -> str:
+               replay=True, wait_for_viewer=False) -> str:
     """Send one one-string server→client request (``sudo``, ``secret``: ``ValueResult``) to the
     session's attached viewers and wait for its ``value``; "" on skip, interrupt, timeout or no viewer.
-    ``replay=False``: a reconnecting viewer is not handed it again (``open_requests``)."""
-    pending = _ask(events, session_id, method, params, cancelled=cancelled, timeout=timeout, replay=replay)
+    ``replay=False``: a reconnecting viewer is not handed it again (``open_requests``).
+    ``wait_for_viewer=True``: with no viewer attached the request still opens and waits out *timeout*
+    for one that attaches and gets it through ``open_requests`` (main's sidecar), instead of "" at once."""
+    pending = _ask(events, session_id, method, params, cancelled=cancelled, timeout=timeout, replay=replay,
+                   wait_for_viewer=wait_for_viewer)
     return pending.value if pending is not None else ""
 
 
@@ -168,8 +171,8 @@ def lock_answer(request_id, question_id, answer, *, session_ok=lambda session_id
     return remaining
 
 
-def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None, replay=True):
-    if not events.fanout.transports():
+def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None, replay=True, wait_for_viewer=False):
+    if not wait_for_viewer and not events.fanout.transports():
         return None
     request_id = f"srq-{uuid.uuid4().hex[:12]}"
     pending = _Pending(session_id, qids, events, method, {"session_id": session_id, **params}, replay)

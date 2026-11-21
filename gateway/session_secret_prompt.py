@@ -31,8 +31,10 @@ def secret_prompt_scope(turn, agent):
     if not local_viewer_turn(turn):
         yield
         return
+    from gateway.session_finite import finite_turn_required
     from tools.skills_tool import bind_turn_secret_capture
     authority, session_id, _generation = turn._approval_owner
+    wait = finite_turn_required() is not True  # as sudo_prompt_scope: a finite turn stays headless
 
     def callback(var_name, prompt, metadata=None):
         from gateway.session_server_requests import ask_viewer
@@ -41,7 +43,8 @@ def secret_prompt_scope(turn, agent):
             return _skipped(var_name, "cancelled", "Secret setup was skipped.")
         params = {"env_var": var_name, "prompt": prompt, **({"metadata": metadata} if metadata else {})}
         value = ask_viewer(live.event_stream, session_id, "secret", params, timeout=SECRET_TIMEOUT_S,
-                           cancelled=lambda: bool(getattr(agent, "_interrupt_requested", False)))
+                           cancelled=lambda: bool(getattr(agent, "_interrupt_requested", False)),
+                           wait_for_viewer=wait)
         if not value:
             return _skipped(var_name, "cancelled", "Secret setup was skipped.")
         from hermes_cli.config import save_env_value_secure

@@ -1,13 +1,13 @@
 name: oc-free-provider
 repo: https://github.com/anpicasso/hermes-oc-free-provider
-sha: ae705c692dd83c5eb0e871053722838af39e213e
-description: "Unofficial OpenCode Zen free-model transport for Hermes. Discovers live zero-cost tool-capable models by intersecting OpenCode Zen and models.dev over HTTPS, persists only the last successful intersection for restart fallback, and bidirectionally translates compatible OpenCode and Hermes tool schemas, calls, choices, and replayed history while Hermes executes tools locally. No OpenCode CLI, Node.js, npm, or npx dependency. Disclosure — prompts, tool schemas, tool results, and other conversation content leave the machine for OpenCode and the selected model provider; model availability, retention, data use, and permission are governed by their current terms."
+sha: f4e6210e5af25dd9cd9a9d577aa7ff184c907826
+description: "Unofficial OpenCode Zen free-model transport for Hermes. Discovers live zero-cost tool-capable models from the official OpenCode binary's own catalog (free pricing enforced per tier, no third-party model registry), and bidirectionally translates compatible OpenCode and Hermes tool schemas, calls, choices, and replayed history while Hermes executes tools locally. No OpenCode CLI, Node.js, npm, or npx dependency. Disclosure — prompts, tool schemas, tool results, and other conversation content leave the machine for OpenCode and the selected model provider; the official binary's own system preamble additionally conveys the working directory, git repository status and operating system with every request; model availability, retention, data use, and permission are governed by their current terms."
 maintainer: anpicasso
 tier: community
 category: models
-requires_hermes: ">=0.21.3"
+requires_hermes: ">=0.23.1"
 docs_url: https://github.com/anpicasso/hermes-oc-free-provider#readme
-version: "3.0.0"
+version: "4.3.0"
 platforms: []
 capabilities:
   provides_tools: []

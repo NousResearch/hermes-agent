@@ -4,6 +4,7 @@ export const zhHantInbox: InboxCopy = {
   title: '收件匣',
   unreadCount: (count: number) => `${count} 則未讀`,
   loading: '正在載入收件匣…',
+  loadFailed: '無法載入收件匣',
   emptyTitle: '尚無結果',
   emptyDesc: '排程工作完成後，結果會出現在這裡。',
   running: '執行中',

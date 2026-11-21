@@ -730,14 +730,16 @@ so every client sees the same unread items.
 **Default.** A job created from a Desktop or Web chat that is not the canonical Bot Chat, with
 `deliver` omitted or `origin`, delivers to `inbox`. Before this, such a job wrote its result
 into the creating chat as a note. Jobs created in the Bot Chat keep Bot Chat delivery, and
-CLI/TUI jobs keep the local-chat note.
+CLI/TUI jobs keep the local-chat note. A script-only job (`no_agent`) writes no run session, so it
+keeps its old default.
 
-**Continuing.** Open an item and reply. A run that finished becomes an ordinary chat on the
-surface you reply from: on that first message the session's frozen cron policy is rebuilt once
-as a fresh chat of that client (the Desktop gets its normal toolset, `desktop_ui` included, and
-the Desktop platform hint), and the run's stored system prompt is rebuilt for it. That one turn
-re-sends the prompt prefix uncached; afterwards the conversation is cached like any other chat.
-A run that is still executing stays read-only until it finishes.
+**Continuing.** Open an item and reply from the Desktop or the Web app. A run that finished becomes
+an ordinary chat on the surface you reply from: on that first message the session's frozen cron
+policy is rebuilt once as a fresh chat of that client (the Desktop gets its normal toolset,
+`desktop_ui` included, and the Desktop platform hint), and the run's stored system prompt is
+rebuilt for it. That one turn re-sends the prompt prefix uncached; afterwards the conversation is
+cached like any other chat. A run that is still executing stays read-only until it finishes, and
+a reply from the CLI or TUI keeps the run read-only.
 
 ### Bot Chat delivery (`bot-chat`)
 

@@ -4,6 +4,7 @@ export const jaInbox: InboxCopy = {
   title: '受信トレイ',
   unreadCount: (count: number) => `未読 ${count} 件`,
   loading: '受信トレイを読み込み中…',
+  loadFailed: '受信トレイを読み込めませんでした',
   emptyTitle: 'まだ結果はありません',
   emptyDesc: 'スケジュール済みジョブが完了すると、その結果がここに届きます。',
   running: '実行中',

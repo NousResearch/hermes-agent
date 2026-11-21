@@ -4,6 +4,7 @@ export const arInbox: InboxCopy = {
   title: 'صندوق الوارد',
   unreadCount: (count: number) => `${count} غير مقروءة`,
   loading: 'جارٍ تحميل صندوق الوارد…',
+  loadFailed: 'تعذّر تحميل صندوق الوارد',
   emptyTitle: 'لا توجد نتائج بعد',
   emptyDesc: 'عند انتهاء مهمة مجدولة، تصل نتيجتها إلى هنا.',
   running: 'قيد التشغيل',

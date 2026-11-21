@@ -4,6 +4,7 @@ export const frInbox: InboxCopy = {
   title: 'Boîte de réception',
   unreadCount: (count: number) => `${count} non lus`,
   loading: 'Chargement de la boîte de réception…',
+  loadFailed: 'Impossible de charger la boîte de réception',
   emptyTitle: 'Aucun résultat pour l’instant',
   emptyDesc: 'Quand une tâche planifiée se termine, son résultat arrive ici.',
   running: 'En cours',

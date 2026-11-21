@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils'
 import {
   $inboxItems,
   $inboxLoaded,
+  $inboxLoadError,
   type InboxItem,
   markInboxItemRead,
   refreshInbox
@@ -64,6 +65,7 @@ export function InboxView(props: InboxViewProps) {
   const copy = t.inbox
   const items = useStore($inboxItems)
   const loaded = useStore($inboxLoaded)
+  const loadError = useStore($inboxLoadError)
   const profile = useStore($activeGatewayProfile)
   const now = useMinuteClock()
   const [refreshing, setRefreshing] = useState(false)
@@ -118,7 +120,16 @@ export function InboxView(props: InboxViewProps) {
       }
       tabs={[{ id: 'all', label: copy.title, meta: loaded ? items.length : null }]}
     >
-      {!loaded ? (
+      {!loaded && loadError ? (
+        <div className="grid h-full place-items-center px-6 text-center">
+          <div className="flex flex-col items-center gap-2">
+            <div className="text-sm font-medium">{copy.loadFailed}</div>
+            <Button disabled={refreshing} onClick={() => void refresh()} size="sm" variant="outline">
+              {t.common.retry}
+            </Button>
+          </div>
+        </div>
+      ) : !loaded ? (
         <PageLoader label={copy.loading} />
       ) : items.length === 0 ? (
         <div className="grid h-full place-items-center px-6 text-center">

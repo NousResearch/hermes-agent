@@ -4,6 +4,7 @@ export const ruInbox: InboxCopy = {
   title: 'Входящие',
   unreadCount: (count: number) => `Непрочитанных: ${count}`,
   loading: 'Загрузка входящих…',
+  loadFailed: 'Не удалось загрузить входящие',
   emptyTitle: 'Результатов пока нет',
   emptyDesc: 'Когда запланированная задача завершится, её результат появится здесь.',
   running: 'Выполняется',

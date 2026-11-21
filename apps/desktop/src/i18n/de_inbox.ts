@@ -4,6 +4,7 @@ export const deInbox: InboxCopy = {
   title: 'Posteingang',
   unreadCount: (count: number) => `${count} ungelesen`,
   loading: 'Posteingang wird geladen…',
+  loadFailed: 'Posteingang konnte nicht geladen werden',
   emptyTitle: 'Noch keine Ergebnisse',
   emptyDesc: 'Wenn ein geplanter Job fertig ist, landet sein Ergebnis hier.',
   running: 'Läuft',

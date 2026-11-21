@@ -20,7 +20,7 @@ import { INBOX_ROUTE } from '@/app/routes'
 import { translateNow } from '@/i18n'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { $activeConnectionId } from '@/store/connections'
-import { requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { $changeEventsAvailable, $sessionsChangeTick } from '@/store/live-sync'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
@@ -48,7 +48,10 @@ interface InboxReadResponse {
   unread: boolean
 }
 
-const INBOX_LIST_LIMIT = 50
+// The whole server window: `inbox.list` reads only the newest 200
+// runs (`LIST_MAX`, gateway/session_inbox.py) and counts `unread_count` over that same
+// window, so asking for all of it keeps every counted unread run listed.
+const INBOX_LIST_LIMIT = 200
 // A cron run's finish moves state.db several times in a row; one list read
 // after the burst settles is enough.
 const TICK_COALESCE_MS = 1_500
@@ -62,6 +65,9 @@ export const $inboxUnreadCount = atom(0)
 export const $inboxAvailable = atom(false)
 /** True once the current scope's first list landed (the page's loading gate). */
 export const $inboxLoaded = atom(false)
+/** True when the current scope's first list failed (nothing to show yet), so
+ *  the page offers Retry instead of loading forever. Cleared by a landed list. */
+export const $inboxLoadError = atom(false)
 
 interface ScopeState {
   scope: string
@@ -77,10 +83,23 @@ let announces = true
 let inFlight: null | Promise<void> = null
 let rerunRequested = false
 
-function currentScope(): { profile: string; scope: string } {
+interface InboxScope {
+  connectionId: null | string
+  profile: string
+  scope: string
+}
+
+function currentScope(): InboxScope {
+  const connectionId = $activeConnectionId.get() ?? null
   const profile = $activeGatewayProfile.get()
 
-  return { profile, scope: `${$activeConnectionId.get() ?? ''}\u0000${profile}` }
+  return { connectionId, profile, scope: `${connectionId ?? ''}\u0000${profile}` }
+}
+
+/** A reply belongs on screen only while its scope is both the cached one and
+ *  the one the window is on NOW (a switch may not have re-entered yet). */
+function isLive(scope: string): boolean {
+  return state.scope === scope && currentScope().scope === scope
 }
 
 function enterScope(scope: string): void {
@@ -92,6 +111,7 @@ function enterScope(scope: string): void {
   $inboxItems.set([])
   $inboxUnreadCount.set(0)
   $inboxLoaded.set(false)
+  $inboxLoadError.set(false)
 }
 
 function announce(fresh: InboxItem[]): void {
@@ -155,23 +175,24 @@ function commit(response: InboxListResponse): void {
   $inboxUnreadCount.set(Math.max(0, unreadCount))
   $inboxAvailable.set(true)
   $inboxLoaded.set(true)
+  $inboxLoadError.set(false)
 }
 
 async function fetchOnce(): Promise<void> {
-  const { profile, scope } = currentScope()
+  const { connectionId, profile, scope } = currentScope()
 
   enterScope(scope)
 
   try {
-    const response = await requestGatewayForProfile<InboxListResponse>(profile, 'inbox.list', {
+    const response = await requestGatewayForAgent<InboxListResponse>(connectionId, profile, 'inbox.list', {
       limit: INBOX_LIST_LIMIT
     })
 
-    if (state.scope === scope) {
+    if (isLive(scope)) {
       commit(response)
     }
   } catch (error) {
-    if (state.scope !== scope) {
+    if (!isLive(scope)) {
       return
     }
 
@@ -179,8 +200,10 @@ async function fetchOnce(): Promise<void> {
       $inboxAvailable.set(false)
       $inboxItems.set([])
       $inboxUnreadCount.set(0)
+    } else if (!$inboxLoaded.get()) {
+      $inboxLoadError.set(true)
     }
-    // Anything else is transient: keep the last list; the next tick retries.
+    // After a landed list a failure is transient: keep it; the next tick retries.
   }
 }
 
@@ -225,7 +248,7 @@ function paintUnread(sessionId: string, unread: boolean): boolean {
 /** Mark one run read (or unread): paint now, write `inbox.read`, roll back if
  *  the backend refuses. No-op when the row is unknown or already in that state. */
 export async function markInboxItemRead(sessionId: string, read = true): Promise<void> {
-  const { profile, scope } = currentScope()
+  const { connectionId, profile, scope } = currentScope()
 
   if (state.scope !== scope || !paintUnread(sessionId, !read)) {
     return
@@ -234,9 +257,12 @@ export async function markInboxItemRead(sessionId: string, read = true): Promise
   state.pendingWrites.set(sessionId, !read)
 
   try {
-    await requestGatewayForProfile<InboxReadResponse>(profile, 'inbox.read', { read, session_id: sessionId })
+    await requestGatewayForAgent<InboxReadResponse>(connectionId, profile, 'inbox.read', {
+      read,
+      session_id: sessionId
+    })
   } catch (error) {
-    if (state.scope !== scope) {
+    if (!isLive(scope)) {
       return
     }
 
@@ -284,6 +310,9 @@ export function watchInbox({ announce: raiseAlerts = true }: { announce?: boolea
   }
 
   const onScopeOrState = () => {
+    // Drop the old scope's cache now, socket open or not: an in-flight reply
+    // for it then fails the scope check instead of painting or announcing.
+    enterScope(currentScope().scope)
     syncPoll()
     refreshIfOpen()
   }
@@ -321,4 +350,5 @@ export function _resetInboxForTests(): void {
   $inboxUnreadCount.set(0)
   $inboxAvailable.set(false)
   $inboxLoaded.set(false)
+  $inboxLoadError.set(false)
 }

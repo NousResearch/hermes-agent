@@ -4,6 +4,7 @@ export const esInbox: InboxCopy = {
   title: 'Bandeja de entrada',
   unreadCount: (count: number) => `${count} sin leer`,
   loading: 'Cargando la bandeja de entrada…',
+  loadFailed: 'No se pudo cargar la bandeja de entrada',
   emptyTitle: 'Aún no hay resultados',
   emptyDesc: 'Cuando termina una tarea programada, su resultado llega aquí.',
   running: 'En curso',

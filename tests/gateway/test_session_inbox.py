@@ -113,14 +113,77 @@ async def test_a_continued_item_never_badges_the_inbox_again(owner, tmp_path, mo
     """Once the user replies in an item it is their chat: its own turns postdate the read watermark,
     which must not turn it back into an unread Inbox result."""
     from gateway.session_contract import SessionRef
-    from gateway.session_inbox import continue_if_inbox, list_items
+    from gateway.session_inbox import continue_if_inbox, list_items, mark_read
+    import gateway.session_policy_refresh as refresh
+    monkeypatch.setattr(refresh, '_publish', lambda authority, ref, moved=False: None)
+    sid = _filed_run(owner, tmp_path)
+    await mark_read(_connection(owner), None, {'session_id': sid})
+    await continue_if_inbox(_connection(owner), SessionRef(owner.profile_id, sid))
+    from persistence.conversation.messages import NewMessage
+    owner.persistence.messages.append(sid, NewMessage(role='user', content='thanks', timestamp=4e9))
+    listed = await list_items(_connection(owner), None, {})
+    assert listed['unread_count'] == 0 and listed['items'][0]['unread'] is False
+
+
+@pytest.mark.asyncio
+async def test_a_continued_item_keeps_an_explicit_mark_unread(owner, tmp_path, monkeypatch):
+    from gateway.session_contract import SessionRef
+    from gateway.session_inbox import continue_if_inbox, list_items, mark_read
     import gateway.session_policy_refresh as refresh
     monkeypatch.setattr(refresh, '_publish', lambda authority, ref, moved=False: None)
     sid = _filed_run(owner, tmp_path)
     await continue_if_inbox(_connection(owner), SessionRef(owner.profile_id, sid))
-    owner.persistence.sessions.set_read(sid, False)  # what the continued turns' activity amounts to
-    listed = await list_items(_connection(owner), None, {})
-    assert listed['unread_count'] == 0 and listed['items'][0]['unread'] is False
+    await mark_read(_connection(owner), None, {'session_id': sid, 'read': False})
+    assert (await list_items(_connection(owner), None, {}))['unread_count'] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_conversion_stopped_before_its_policy_commit_finishes_on_the_next_reply(
+        owner, tmp_path, monkeypatch):
+    """A stop between the policy commit and the prompt/tool clear must not strand a half-converted chat
+    (desktop policy, cron prompt): the clear lands first, so a stop there leaves the item on its cron
+    policy and the next reply converts it fully."""
+    from gateway.session_contract import SessionRef
+    from gateway import session_inbox
+    import gateway.session_policy_refresh as refresh
+    monkeypatch.setattr(refresh, '_publish', lambda authority, ref, moved=False: None)
+    sid = _filed_run(owner, tmp_path)
+    ref = SessionRef(owner.profile_id, sid)
+    real_clear = session_inbox._clear_prompt_snapshot
+
+    def stopped(store, session_id):
+        raise RuntimeError('gateway stopped')
+    monkeypatch.setattr(session_inbox, '_clear_prompt_snapshot', stopped)
+    with pytest.raises(RuntimeError):
+        await session_inbox.continue_if_inbox(_connection(owner), ref)
+    monkeypatch.setattr(session_inbox, '_clear_prompt_snapshot', real_clear)
+    await session_inbox.continue_if_inbox(_connection(owner), ref)
+    assert owner.persistence.bindings.receipt(sid).policy['source'] == 'gui'
+    assert owner.persistence.sessions.get(sid).system_prompt is None
+
+
+@pytest.mark.asyncio
+async def test_two_first_replies_at_once_both_proceed(owner, tmp_path, monkeypatch):
+    """The second first-reply loses the policy compare-and-swap to the first; the item is converted, so
+    its message is admitted after the first instead of failing ``revision_conflict``."""
+    import asyncio
+    import threading
+    from gateway.session_contract import SessionRef
+    from gateway import session_inbox
+    import gateway.session_policy_refresh as refresh
+    monkeypatch.setattr(refresh, '_publish', lambda authority, ref, moved=False: None)
+    sid = _filed_run(owner, tmp_path)
+    ref = SessionRef(owner.profile_id, sid)
+    both_read = threading.Barrier(2, timeout=20)  # both callers read the cron policy before either commits
+    real_policy = session_inbox._interactive_policy
+
+    def gated_policy(*args):
+        both_read.wait()
+        return real_policy(*args)
+    monkeypatch.setattr(session_inbox, '_interactive_policy', gated_policy)
+    await asyncio.wait_for(asyncio.gather(session_inbox.continue_if_inbox(_connection(owner), ref),
+                                          session_inbox.continue_if_inbox(_connection(owner), ref)), 30)
+    assert owner.persistence.bindings.receipt(sid).policy['source'] == 'gui'
 
 
 @pytest.mark.asyncio

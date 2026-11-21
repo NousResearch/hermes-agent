@@ -8,8 +8,9 @@ job name, delivery time and a preview of the final response) and marks the row u
 RPCs and the one-time continuation of a finished item as an interactive chat.
 
 Default: a job created from a Desktop/Web chat that is not the canonical Bot Chat, with ``deliver``
-omitted or ``origin``, delivers to ``inbox`` (``default_deliver``). Bot Chat origins keep bot-chat
-delivery; CLI/TUI origins keep the local-chat note.
+omitted or ``origin``, delivers to ``inbox`` (``default_deliver``; the cronjob tool skips it for a
+script-only job, which writes no run session). Bot Chat origins keep bot-chat delivery; CLI/TUI
+origins keep the local-chat note.
 """
 from __future__ import annotations
 

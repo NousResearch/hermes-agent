@@ -1755,6 +1755,7 @@
     "gatewayGroupOpen.opening",
     "inbox.emptyDesc",
     "inbox.emptyTitle",
+    "inbox.loadFailed",
     "inbox.loading",
     "inbox.markReadFailed",
     "inbox.newResultsBody",

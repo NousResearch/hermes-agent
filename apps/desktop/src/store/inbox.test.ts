@@ -1,29 +1,39 @@
-import { atom } from 'nanostores'
+import { atom, type WritableAtom } from 'nanostores'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { dispatchNativeNotification, notify, requestGatewayForProfile } = vi.hoisted(() => ({
+const { dispatchNativeNotification, notify, requestGatewayForAgent } = vi.hoisted(() => ({
   dispatchNativeNotification: vi.fn(),
   notify: vi.fn(),
-  requestGatewayForProfile: vi.fn()
+  requestGatewayForAgent: vi.fn()
 }))
 
 vi.mock('@/app/routes', () => ({ INBOX_ROUTE: '/inbox' }))
 vi.mock('@/store/connections', () => ({ $activeConnectionId: atom<null | string>('local') }))
-vi.mock('@/store/gateway', () => ({ requestGatewayForProfile }))
+vi.mock('@/store/gateway', () => ({ requestGatewayForAgent }))
 vi.mock('@/store/profile', () => ({ $activeGatewayProfile: atom('default') }))
 vi.mock('@/store/session', () => ({ $gatewayState: atom('open') }))
 vi.mock('@/store/native-notifications', () => ({ dispatchNativeNotification }))
 vi.mock('@/store/notifications', () => ({ notify }))
 
+import { $activeConnectionId as activeConnectionId } from '@/store/connections'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $gatewayState } from '@/store/session'
+
 import {
   $inboxAvailable,
   $inboxItems,
+  $inboxLoaded,
+  $inboxLoadError,
   $inboxUnreadCount,
   _resetInboxForTests,
   type InboxItem,
   markInboxItemRead,
-  refreshInbox
+  refreshInbox,
+  watchInbox
 } from './inbox'
+
+// The real atom is read-only; the mock above is writable so tests can switch source.
+const $activeConnectionId = activeConnectionId as WritableAtom<null | string>
 
 const item = (id: string, over: Partial<InboxItem> = {}): InboxItem => ({
   delivered_at: 1_700_000_000,
@@ -37,17 +47,20 @@ const item = (id: string, over: Partial<InboxItem> = {}): InboxItem => ({
 })
 
 function serveList(items: InboxItem[]) {
-  requestGatewayForProfile.mockImplementationOnce(async () => ({
+  requestGatewayForAgent.mockImplementationOnce(async () => ({
     items,
     unread_count: items.filter(entry => entry.unread).length
   }))
 }
 
 beforeEach(() => {
+  $activeConnectionId.set('local')
+  $activeGatewayProfile.set('default')
+  $gatewayState.set('open')
   _resetInboxForTests()
   dispatchNativeNotification.mockReset()
   notify.mockReset()
-  requestGatewayForProfile.mockReset()
+  requestGatewayForAgent.mockReset()
 })
 
 describe('inbox store', () => {
@@ -81,7 +94,7 @@ describe('inbox store', () => {
     serveList([item('a'), item('b')])
     await refreshInbox()
 
-    requestGatewayForProfile.mockRejectedValueOnce(new Error('boom'))
+    requestGatewayForAgent.mockRejectedValueOnce(new Error('boom'))
     await expect(markInboxItemRead('a')).rejects.toThrow('boom')
 
     expect($inboxItems.get().find(entry => entry.session_id === 'a')?.unread).toBe(true)
@@ -89,7 +102,7 @@ describe('inbox store', () => {
 
     // A successful read whose ack races an older list page that still says unread.
     let ack!: () => void
-    requestGatewayForProfile.mockImplementationOnce(() => new Promise(resolve => (ack = () => resolve({}))))
+    requestGatewayForAgent.mockImplementationOnce(() => new Promise(resolve => (ack = () => resolve({}))))
     const write = markInboxItemRead('a')
 
     expect($inboxUnreadCount.get()).toBe(1)
@@ -101,7 +114,7 @@ describe('inbox store', () => {
     expect($inboxUnreadCount.get()).toBe(1)
     ack()
     await write
-    expect(requestGatewayForProfile).toHaveBeenCalledWith(expect.any(String), 'inbox.read', {
+    expect(requestGatewayForAgent).toHaveBeenCalledWith('local', 'default', 'inbox.read', {
       read: true,
       session_id: 'a'
     })
@@ -112,7 +125,7 @@ describe('inbox store', () => {
     await refreshInbox()
     expect($inboxAvailable.get()).toBe(true)
 
-    requestGatewayForProfile.mockRejectedValueOnce(Object.assign(new Error('unknown method'), { code: -32601 }))
+    requestGatewayForAgent.mockRejectedValueOnce(Object.assign(new Error('unknown method'), { code: -32601 }))
     await refreshInbox()
 
     expect($inboxAvailable.get()).toBe(false)
@@ -123,7 +136,7 @@ describe('inbox store', () => {
 
   it('coalesces refreshes requested while one is in flight into a single follow-up', async () => {
     let release!: () => void
-    requestGatewayForProfile.mockImplementationOnce(
+    requestGatewayForAgent.mockImplementationOnce(
       () => new Promise(resolve => (release = () => resolve({ items: [], unread_count: 0 })))
     )
     serveList([item('a')])
@@ -134,7 +147,75 @@ describe('inbox store', () => {
     release()
     await first
 
-    expect(requestGatewayForProfile).toHaveBeenCalledTimes(2)
+    expect(requestGatewayForAgent).toHaveBeenCalledTimes(2)
     expect($inboxItems.get().map(entry => entry.session_id)).toEqual(['a'])
+  })
+
+  it('routes inbox.list and inbox.read through the active connection, not the profile name alone', async () => {
+    $activeConnectionId.set('homelab')
+    $activeGatewayProfile.set('marina')
+    serveList([item('a')])
+    await refreshInbox()
+    requestGatewayForAgent.mockResolvedValueOnce({})
+    await markInboxItemRead('a')
+
+    expect(requestGatewayForAgent).toHaveBeenNthCalledWith(1, 'homelab', 'marina', 'inbox.list', { limit: 200 })
+    expect(requestGatewayForAgent).toHaveBeenNthCalledWith(2, 'homelab', 'marina', 'inbox.read', {
+      read: true,
+      session_id: 'a'
+    })
+  })
+
+  it('drops the old scope at once on a switch, and its late reply neither paints nor announces', async () => {
+    const stop = watchInbox()
+    serveList([item('a')])
+    await refreshInbox()
+    expect($inboxItems.get()).toHaveLength(1)
+
+    let releaseA!: () => void
+    requestGatewayForAgent.mockImplementationOnce(
+      () => new Promise(resolve => (releaseA = () => resolve({ items: [item('late'), item('a')], unread_count: 2 })))
+    )
+    const pending = refreshInbox()
+
+    $activeGatewayProfile.set('work')
+
+    expect($inboxItems.get()).toEqual([])
+    expect($inboxUnreadCount.get()).toBe(0)
+
+    serveList([item('b')])
+    releaseA()
+    await pending
+
+    expect(notify).not.toHaveBeenCalled()
+    expect($inboxItems.get().map(entry => entry.session_id)).toEqual(['b'])
+    stop()
+  })
+
+  it('asks for the whole server window so every counted unread run is listed', async () => {
+    serveList([item('a')])
+    await refreshInbox()
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith('local', 'default', 'inbox.list', { limit: 200 })
+  })
+
+  it('flags a failed first load (not a missing method) and clears it once a list lands', async () => {
+    requestGatewayForAgent.mockRejectedValueOnce(new Error('socket hang up'))
+    await refreshInbox()
+
+    expect($inboxLoaded.get()).toBe(false)
+    expect($inboxLoadError.get()).toBe(true)
+
+    serveList([item('a')])
+    await refreshInbox()
+
+    expect($inboxLoaded.get()).toBe(true)
+    expect($inboxLoadError.get()).toBe(false)
+
+    // A failure after a landed list keeps the list and raises no error state.
+    requestGatewayForAgent.mockRejectedValueOnce(new Error('socket hang up'))
+    await refreshInbox()
+    expect($inboxLoadError.get()).toBe(false)
+    expect($inboxItems.get()).toHaveLength(1)
   })
 })

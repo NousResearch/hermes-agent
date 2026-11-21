@@ -4,6 +4,8 @@ export interface InboxCopy {
   /** Badge aria-label on the sidebar row. */
   unreadCount: (count: number) => string
   loading: string
+  /** First list failed; shown above a Retry button. */
+  loadFailed: string
   emptyTitle: string
   emptyDesc: string
   /** Chip on a run the scheduler is still executing. */

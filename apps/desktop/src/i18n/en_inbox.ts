@@ -4,6 +4,7 @@ export const enInbox: InboxCopy = {
   title: 'Inbox',
   unreadCount: (count: number) => `${count} unread`,
   loading: 'Loading inbox…',
+  loadFailed: "Couldn't load the inbox",
   emptyTitle: 'No results yet',
   emptyDesc: 'When a scheduled job finishes, its result lands here.',
   running: 'Running',

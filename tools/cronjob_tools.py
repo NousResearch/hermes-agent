@@ -714,8 +714,10 @@ def _action_create(a: dict[str, Any]) -> str:
     try:
         job = create_job_with_scheduler_registration(
             prompt=prompt or "", schedule=a["schedule"], name=a["name"], repeat=a["repeat"],
-            # A Desktop/Web chat that is not the Bot Chat files results into the Inbox (cron/inbox.py).
-            deliver=_inbox_default_deliver(_resolve_cron_context_deliver(deliver)),
+            # A Desktop/Web chat that is not the Bot Chat files agent results into the Inbox
+            # (cron/inbox.py); a script-only job writes no run session to file, so it keeps its default.
+            deliver=(_resolve_cron_context_deliver(deliver) if _no_agent
+                     else _inbox_default_deliver(_resolve_cron_context_deliver(deliver))),
             origin=_origin_from_env(a["schedule"]),
             skills=canonical_skills,
             model=_normalize_optional_job_value(a["model"]), provider=_normalize_optional_job_value(a["provider"]),

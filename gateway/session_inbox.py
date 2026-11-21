@@ -60,13 +60,14 @@ def _item(store, session_id):
         return None
     summary = store.sessions.summary(session_id, compact_rows=True)
     # Unread means a result not yet seen. A continued item is the user's own chat now: its turns move
-    # the watermark's activity past the read time, which must not re-badge the Inbox.
+    # the watermark's activity past the read time, which must not re-badge the Inbox; only an explicit
+    # mark-unread (``set_read(False)`` writes the 0 watermark) does.
     continued = bool((record.model_config or {}).get(CONTINUED))
+    unread = record.last_read_at == 0 if continued else bool(summary is not None and summary.unread)
     return {'session_id': str(session_id), 'job_id': str(marker.get('job_id') or ''),
             'job_name': str(marker.get('job_name') or marker.get('job_id') or ''),
             'delivered_at': float(marker.get('delivered_at') or 0), 'preview': str(marker.get('preview') or ''),
-            'unread': bool(summary is not None and summary.unread and not continued),
-            'running': record.ended_at is None and not continued}
+            'unread': unread, 'running': record.ended_at is None and not continued}
 
 
 def _list(store, limit):
@@ -133,7 +134,9 @@ def _interactive_policy(authority, session_id, stored, surface, desktop_local):
 
 
 def _clear_prompt_snapshot(store, session_id):
-    """The cron surface's stored prompt and tools[] pin: the next turn builds both for the new surface."""
+    """The cron surface's stored prompt and tools[] pin (the next turn builds both for the new surface)
+    and the continued mark. Idempotent, and written BEFORE the policy commit: a stop between the two
+    leaves the policy ``cron``, so the next reply finds the item continuable and finishes the job."""
     target = store.bindings.receipt(session_id).current_target
     store.sessions.update_system_prompt(target, None)
     store.sessions.update_tool_pin(target, None)
@@ -157,8 +160,13 @@ async def continue_if_inbox(connection, ref):
     with owner_scope(authority):
         policy = await asyncio.to_thread(_interactive_policy, authority, ref.session_id, stored, surface,
                                          getattr(connection.transport, 'desktop_local', False))
-    await tracked_write(authority, partial(store.runtime.commit_refreshed_policy, authority.epoch,
-                                           session_id=ref.session_id, old=stored, new=asdict(policy),
-                                           generation=generation),
-                        then=lambda _generation: _publish(authority, ref))
     await asyncio.to_thread(_clear_prompt_snapshot, store, ref.session_id)
+    try:
+        await tracked_write(authority, partial(store.runtime.commit_refreshed_policy, authority.epoch,
+                                               session_id=ref.session_id, old=stored, new=asdict(policy),
+                                               generation=generation),
+                            then=lambda _generation: _publish(authority, ref))
+    except AuthorityRefusal as refusal:
+        # Two first replies at once: the other one converted it, and this message is admitted after it.
+        if refusal.reason != 'revision_conflict' or await asyncio.to_thread(_continuable, store, ref.session_id):
+            raise

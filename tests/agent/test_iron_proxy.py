@@ -13,6 +13,7 @@ smoke test.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import sys
 from pathlib import Path
@@ -99,6 +100,52 @@ def test_build_proxy_config_custom_allowed_hosts(tmp_path):
     # Custom allowed_hosts wins as the base; mapping's hosts get appended.
     assert "custom-host.test" in domains
     assert "openrouter.ai" in domains  # comes from the mapping
+
+
+def test_normalize_allowed_hosts_drops_unmatchable_entries_with_fix():
+    """iron-proxy globs the port-stripped host, so URL / host:port / path entries can never match
+    (silent 403s). They are dropped with one warning naming the entry and the fix; valid globs, IP
+    literals and case variants survive normalized."""
+    warnings: list[str] = []
+    hosts = ip.normalize_allowed_hosts(
+        ["API.Example.com", "api.example.com", "*.ollama.test", "my_ollama", "10.0.0.5", "[2001:DB8::1]",
+         "host.docker.internal:11434", "https://api.example.com/v1", "api.example.com/v1", "", 42],
+        warn=warnings.append,
+    )
+    assert hosts == ["api.example.com", "*.ollama.test", "my_ollama", "10.0.0.5", "2001:db8::1"]
+    assert len(warnings) == 5
+    port_warning = next(w for w in warnings if "host.docker.internal:11434" in w)
+    assert "proxy.extra_allowed_hosts" in port_warning
+    assert 'use the bare host name "host.docker.internal"' in port_warning
+    assert any("not URLs" in w and '"api.example.com"' in w for w in warnings)
+
+
+def test_ip_and_cidr_allowed_hosts_become_native_cidr_rules_reachable_through_deny_list(tmp_path):
+    """IP / CIDR entries land in the allowlist's ``cidrs`` rule (any port) instead of ``domains``
+    (where a CIDR never matches), and are carved out of the default dial-time deny list so a
+    private LAN upstream is reachable; loopback / metadata overlaps are refused with a hint, and an
+    explicit ``upstream_deny_cidrs`` that would still refuse the entry is named too."""
+    warnings: list[str] = []
+    hosts = ip.normalize_allowed_hosts(
+        ["192.168.1.0/24", "10.0.0.5", "203.0.113.7", "127.0.0.1", "169.254.169.254/32", "api.example.com"],
+        warn=warnings.append,
+    )
+    assert hosts == ["192.168.1.0/24", "10.0.0.5", "203.0.113.7", "api.example.com"]
+    assert len(warnings) == 2 and all("stays denied" in w for w in warnings)
+
+    cfg = ip.build_proxy_config(mappings=[], ca_cert=tmp_path / "ca.crt", ca_key=tmp_path / "ca.key", allowed_hosts=hosts)
+    allow = cfg["transforms"][0]["config"]
+    assert allow["domains"] == ["api.example.com"]
+    assert allow["cidrs"] == ["192.168.1.0/24", "10.0.0.5/32", "203.0.113.7/32"]
+    deny = [ipaddress.ip_network(c) for c in cfg["proxy"]["upstream_deny_cidrs"]]
+    for reachable in ("192.168.1.40", "10.0.0.5"):
+        assert not any(ipaddress.ip_address(reachable) in n for n in deny)
+    for still_denied in ("192.168.2.1", "10.0.0.6", "127.0.0.1", "169.254.169.254"):
+        assert any(ipaddress.ip_address(still_denied) in n for n in deny)
+
+    warnings.clear()
+    assert ip.normalize_allowed_hosts(["10.0.0.5"], warn=warnings.append, upstream_deny_cidrs=["10.0.0.0/8"]) == []
+    assert "proxy.upstream_deny_cidrs denies 10.0.0.0/8" in warnings[0]
 
 
 # ---------------------------------------------------------------------------

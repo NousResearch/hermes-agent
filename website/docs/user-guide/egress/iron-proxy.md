@@ -97,7 +97,7 @@ proxy:
   upstream_deny_cidrs: null
 
   # Extra allowed upstream hosts beyond the bundled defaults.
-  # Wildcards (`*.foo.com`) are supported. The defaults cover OpenRouter,
+  # Wildcards (`*.foo.com`), IPs and CIDRs (`10.0.0.0/24`, any port) are supported. The defaults cover OpenRouter,
   # OpenAI, Anthropic, Google, xAI, Mistral, Groq, Together, DeepSeek,
   # and Nous Research.
   extra_allowed_hosts: []
@@ -114,11 +114,20 @@ api.groq.com            api.together.xyz
 api.deepseek.com        inference.nousresearch.com
 ```
 
-If your agent needs an upstream that isn't on the list — a self-hosted inference endpoint, an extra cloud LLM, an MCP server — add it to `proxy.extra_allowed_hosts`. Wildcards are matched against the full hostname (`*.example.com` matches `api.example.com` and `staging.example.com` but not `example.com` itself).
+If your agent needs an upstream that isn't on the list — a self-hosted inference endpoint, an extra cloud LLM, an MCP server — add it to `proxy.extra_allowed_hosts`. Entries are **bare host names, IP addresses or CIDR ranges**, matched against the request's hostname with the port stripped: `api.example.com`, `*.example.com` (any subdomain depth, and `example.com` itself), `api-*.example.com`, `10.0.0.5`, `192.168.1.0/24`, `2001:db8::/32`. IP and CIDR entries match requests whose host is a literal IP in that range, on **any port** (a host name is never resolved to check it against a CIDR). Never a URL, a `host:port` or a `host/path` — iron-proxy could never match those, so `hermes egress setup` skips such an entry with a warning naming the fix (e.g. `host.docker.internal:11434` → `host.docker.internal`) and writes the rest.
+
+### IP / CIDR entries and the deny list
+
+The deny list below is enforced when iron-proxy *connects*, after the allowlist, so an allowed private address would still be refused. `hermes egress setup` therefore carves every IP/CIDR entry out of the **default** deny list (allowing `192.168.1.0/24` keeps the rest of `192.168.0.0/16` denied). Two cases are skipped with a `⚠ skipping allowed host …` line instead:
+
+- An entry overlapping loopback, link-local / cloud metadata or IPv4-mapped IPv6 (`127.0.0.0/8`, `::1/128`, `169.254.0.0/16`, `fe80::/10`, `::ffff:0:0/96`). Those stay denied; to reach one anyway, set `proxy.upstream_deny_cidrs` to an explicit list without that range.
+- With an explicit `proxy.upstream_deny_cidrs`, an entry that list still denies. The explicit list is never edited for you; remove the range from it.
+
+A carved-out range is reachable through any allowlisted host name that resolves into it, not only by IP; keep CIDR entries as narrow as the upstream needs.
 
 ### Default SSRF deny CIDRs
 
-Applied regardless of allowlist. These ranges are refused by iron-proxy at the network boundary, so a DNS rebinding attack via an allowlisted hostname can't reach IMDS or your internal network:
+Applied regardless of the host-name allowlist (only IP/CIDR allow entries are carved out, see above). These ranges are refused by iron-proxy at the network boundary, so a DNS rebinding attack via an allowlisted hostname can't reach IMDS or your internal network:
 
 | CIDR | Purpose |
 |---|---|
@@ -503,6 +512,8 @@ proxy:
 ```
 
 Then `hermes egress setup` (to regenerate `proxy.yaml`) and `hermes egress stop && hermes egress start`.
+
+If the host *is* listed and still 403s, check the entry's shape: `https://api.example.com`, `api.example.com:8443` or `api.example.com/v1` never match (the allowlist compares bare host names). `hermes egress setup` prints a `⚠ skipping allowed host …` line with the corrected entry for each one it had to drop.
 
 ### Sandbox sees SSL verification errors
 

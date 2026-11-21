@@ -45,6 +45,7 @@ on:
       - 'uv.lock'
       - 'pyproject.toml'
       - '.github/workflows/pm-bundle.yml'
+      - 'hermes_re/**'
 
 permissions:
   contents: read
@@ -187,4 +188,5 @@ jobs:
             "$HERMES_PYTHON" -S scripts/ci/setup_toolchain.py dependencies --toolchain python --extras "[]" --home "$HERMES_HOME"
             load_env
             "$HERMES_PYTHON" -c "from re2 import _re2; print(_re2.RE2)"
+            "$HERMES_PYTHON" scripts/gen_hermes_re_tables.py --check
           '

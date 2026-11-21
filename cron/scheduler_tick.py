@@ -116,6 +116,11 @@ def _tick_admitted(
         with contextlib.suppress(ImportError):
             from agent.estop import check_paused as _estop_check_paused
             if _estop_check_paused("cron", _sched.logger):
+                # A pause holds dispatch like a drain does: stamp the hold so a one-shot due during
+                # it counts its grace from the end of the pause and fires once after `hermes resume`
+                # (#153683). MAX_EXTENSION_SECONDS still ages out a reminder due far into it.
+                from cron.dispatch_hold import note_held
+                note_held()
                 return 0
 
         if can_dispatch is not None and not can_dispatch():

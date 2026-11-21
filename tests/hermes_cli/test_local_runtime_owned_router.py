@@ -144,14 +144,18 @@ def test_stop_after_a_router_crash_still_stops_its_surviving_model_child(monkeyp
         process_identity.release_process_groups([pgid])
 
 
-def test_a_crash_restart_stops_the_old_routers_survivors_and_releases_its_group(monkeypatch, tmp_path):
-    """The watcher restarts a crashed router: the old group's model child must not outlive the restart."""
+@pytest.mark.parametrize("budget_exhausted", [False, True])
+def test_a_crash_restart_stops_the_old_routers_survivors_and_releases_its_group(
+        monkeypatch, tmp_path, budget_exhausted):
+    """A crashed router's model child must die even when no restart budget remains."""
     from hermes_cli import process_identity
     from hermes_cli.local_runtime import supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
     monkeypatch.setattr(supervisor, "_RESTART_BACKOFF_S", (0,))
     sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=59996)
+    sup._restarts = supervisor._MAX_RESTARTS if budget_exhausted else 0
+    monkeypatch.setattr(sup, "_restart_blocker", lambda: None)
     monkeypatch.setattr(sup, "_reap_orphaned_children", lambda: None)
     monkeypatch.setattr(sup, "_wait_health", lambda timeout: None)
     monkeypatch.setattr(sup, "_spawn", lambda: setattr(sup, "proc", None))  # the replacement; ends the watch
@@ -168,6 +172,7 @@ def test_a_crash_restart_stops_the_old_routers_survivors_and_releases_its_group(
                                               what="model child receipt")))
         sup.proc = old
         sup._watch()
+        assert (sup.proc is old) is budget_exhausted, "only an available budget permits a replacement"
         wait_until(lambda: not model.is_running() or model.status() == psutil.STATUS_ZOMBIE, timeout=10,
                    what="the restart to stop the crashed router's surviving model child")
         assert old.pid not in process_identity._supervised_pgids

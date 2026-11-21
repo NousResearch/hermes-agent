@@ -65,8 +65,12 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     try:
         kwargs.setdefault("turn_id", _approval_turn_id.get())
         kwargs.setdefault("tool_call_id", _approval_tool_call_id.get())
-        if _approval_session_id.get():
-            kwargs.setdefault("session_id", _approval_session_id.get())
+        # Bound observability context first; else the session-scoped HERMES_SESSION_ID (contextvar-first via
+        # gateway.session_context, so concurrent gateway turns resolve their own id). Without this fallback the
+        # payload carries only the routing session_key — plugins keying state on session_id (the identity every
+        # other hook hands them) cannot attribute an approval event to a session at all (#137558).
+        if session_id := (_approval_session_id.get() or _session_env("HERMES_SESSION_ID")):
+            kwargs.setdefault("session_id", session_id)
         invoke_hook(hook_name, **kwargs)
     except Exception as exc:
         # invoke_hook() swallows per-callback errors; this is the dispatch layer itself failing.

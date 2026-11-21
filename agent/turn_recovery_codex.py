@@ -29,29 +29,54 @@ def reset_codex_reasoning_replay(agent: Any) -> None:
     agent._codex_reasoning_replay_rejected = False
 
 
+def _strip_codex_message_ids(*message_lists: Any) -> int:
+    """Remove resource-bound message IDs, preserving message bodies and tool-call IDs."""
+    removed = 0
+    for messages in message_lists:
+        for msg in messages if isinstance(messages, list) else []:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            items = msg.get("codex_message_items")
+            for item in items if isinstance(items, list) else []:
+                if isinstance(item, dict) and item.get("type") == "message" and item.get("role") == "assistant" and "id" in item:
+                    item.pop("id")
+                    removed += 1
+    return removed
+
+
 def _recover_stale_codex_reasoning(
     agent: Any, _retry: TurnRetryState, messages: list[dict[str, Any]], api_messages: Any,
+    *, allow_message_only: bool = False,
 ) -> bool:
     """Stale ``codex_reasoning_items`` blob rejected by the provider: strip cached items (mutates
     persisted ``messages``) and retry once. The first rung drops only the replayed blobs not stamped by
     exactly this endpoint+model (it consumes its own precondition, so it cannot loop); a repeat goes on
     to strip every item. The first full strip keeps replay on, since blobs the
     route mints from now on are sealed with its current key; a repeat rejection means the route
-    cannot round-trip its own blobs, so replay is disabled until the route changes."""
-    if (
-        _retry.invalid_encrypted_content_retry_visit == route_visit(agent)
-        or agent.api_mode != "codex_responses"
-        or not bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
-        or not any(
-            isinstance(_m, dict)
-            and _m.get("role") == "assistant"
-            and isinstance(_m.get("codex_reasoning_items"), list)
-            and _m.get("codex_reasoning_items")
-            for _m in messages
-        )
-    ):
+    cannot round-trip its own blobs, so replay is disabled until the route changes.
+
+    Message IDs are stripped on both rungs: removing reasoning must not expose a linked ID on the
+    rebuilt request. ``allow_message_only`` also repairs ID-only histories for format rejections;
+    the 401 token-expired path still requires cached reasoning before it can bypass auth recovery.
+    """
+    if _retry.invalid_encrypted_content_retry_visit == route_visit(agent) or agent.api_mode != "codex_responses":
+        return False
+    has_reasoning = bool(getattr(agent, "_codex_reasoning_replay_enabled", True)) and any(
+        isinstance(msg, dict) and msg.get("role") == "assistant"
+        and isinstance(msg.get("codex_reasoning_items"), list) and msg.get("codex_reasoning_items")
+        for msg in messages
+    )
+    if not has_reasoning and not allow_message_only:
         return False
     from agent.turn_recovery import _vlines  # facade owns the verbose printer; late import breaks the cycle
+
+    removed_ids = _strip_codex_message_ids(messages, api_messages)
+    if removed_ids:
+        _vlines(agent, f"⚠️  Replay was rejected — stripped {removed_ids} message ID occurrence(s) from history/request copies.")
+    if not has_reasoning:
+        if removed_ids:
+            _retry.invalid_encrypted_content_retry_visit = route_visit(agent)
+        return bool(removed_ids)
 
     transport = agent._get_transport()
     if transport is not None and (removed := transport.drop_unverified_replay(messages, api_messages)):

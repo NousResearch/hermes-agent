@@ -915,7 +915,7 @@ async def issue_file_ticket(payload: FileTicketRequest, request: Request):
         # may be outside that home, but the ticket must still die with its owner.
         owner = await asyncio.to_thread(owner_home)
         # Before the backend is chosen: an SSH profile's ticket checks its session too.
-        session = await _fs_owned_session(payload.session_id, payload.profile)
+        session = await _fs_owned_session(request, payload.session_id, payload.profile)
         if payload.route == "download":
             authority = await _fs_download_authority(
                 request, payload.path, payload.profile, payload.session_id, owner, session,
@@ -925,7 +925,7 @@ async def issue_file_ticket(payload: FileTicketRequest, request: Request):
             authority = await _remote_file_authority(payload.path, payload.profile, owner, _remote_stream_target)
             path = payload.path
             if authority is None and (payload.session_id is not None or path.lower().startswith("file:")):
-                path = str(await _fs_download_path(path, payload.profile, payload.session_id, session=session))
+                path = str(await _fs_download_path(request, path, payload.profile, payload.session_id, session=session))
             if authority is None:
                 authority = await asyncio.to_thread(capture)
     except FileNotFoundError as exc:
@@ -972,7 +972,7 @@ async def stream_managed_file(
     ticket route does. An SSH profile's clip streams from its SSH machine
     (``_remote_fs_backend``, the rule download uses), one Range at a time.
     Every request checks its ``session_id`` first, a ticketed one included."""
-    session = await _fs_owned_session(session_id, profile)
+    session = await _fs_owned_session(request, session_id, profile)
     authority = getattr(request.state, "file_ticket_authority", None)
     if authority is not None and authority.workspace is not None:
         target, size = await _ticketed_remote_target(authority, _remote_stream_target)
@@ -983,7 +983,7 @@ async def stream_managed_file(
             target, size = await asyncio.to_thread(_remote_stream_target, backend, path)
             return remote_media_response(request, backend, target, size, _fs_mime_type(Path(target)))
         if session_id is not None or path.lower().startswith("file:"):
-            path = str(await _fs_download_path(path, profile, session_id, session=session))
+            path = str(await _fs_download_path(request, path, profile, session_id, session=session))
     return await _managed_file_response(request, path, content_disposition_type="inline", media_only=True)
 
 
@@ -1172,7 +1172,7 @@ async def fs_list(path: str, request: Request, profile: Optional[str] = None):
 async def fs_read_text(
     path: str, request: Request = None, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
-    session = await _fs_owned_session(session_id, profile)
+    session = await _fs_owned_session(request, session_id, profile)
     # A staged paste or pick previews from this host, as read-data-url reads it back to send.
     backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
     if backend is not None:
@@ -1198,7 +1198,7 @@ async def fs_read_text(
         }
     profile_home = _fs_profile_home(profile)
     # A session's /workspace is its own sandbox, resolved as download resolves it.
-    target = await _fs_download_path(path, profile, session_id, session=session)
+    target = await _fs_download_path(request, path, profile, session_id, session=session)
     # The same staged-file exception read-data-url makes under a locked files root.
     if not await asyncio.to_thread(_is_host_file, str(target), profile):
         await asyncio.to_thread(_hosted_fs_read_guard, target, request)
@@ -1222,7 +1222,7 @@ async def fs_read_text(
 
 
 @router.post("/api/fs/write-text")
-async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
+async def fs_write_text(request: Request, payload: FsWriteText, profile: Optional[str] = None):
     """Overwrite (or create) a UTF-8 text file for the in-app spot editor.
 
     Mirrors the Electron ``hermes:fs:writeText`` hardening: path validated by
@@ -1243,7 +1243,7 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
             raw = _file_url_path(raw)
     if get_nt_namespace_error(raw, verb="Write"):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
-    session = await _fs_owned_session(payload.session_id, profile)
+    session = await _fs_owned_session(request, payload.session_id, profile)
     # Save where read-text read: a staged paste or pick on this host, all else on the SSH machine.
     backend = await asyncio.to_thread(_remote_fs_backend, payload.path, profile)
     if backend is not None:
@@ -1269,7 +1269,7 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
         return {"ok": True, "path": target, "byteSize": byte_size}
 
     target = await _fs_download_path(
-        payload.path, profile, payload.session_id, session=session, decode_fallback=False, own_sandbox_only=True,
+        request, payload.path, profile, payload.session_id, session=session, decode_fallback=False, own_sandbox_only=True,
     )
     # A relative path resolved against the session's cwd (else the process's), so walk its chain from there.
     cwd = (session or {}).get("cwd") or "" if payload.session_id is not None else os.getcwd()
@@ -1308,7 +1308,7 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
 
 
 async def _fs_download_path(
-    path: str, profile: Optional[str], session_id: Optional[str], *, session: Optional[dict] = None,
+    request: Request, path: str, profile: Optional[str], session_id: Optional[str], *, session: Optional[dict] = None,
     decode_fallback: bool = True, own_sandbox_only: bool = False,
 ) -> Path:
     # Resolve container paths in the requested profile's sandbox, not the active one's.
@@ -1320,7 +1320,7 @@ async def _fs_download_path(
     profile_home = _fs_profile_home(profile)
     if session_id is not None:
         if session is None:
-            session = await _fs_owned_session(session_id, profile)
+            session = await _fs_owned_session(request, session_id, profile)
         # Validate ownership even for absolute paths; never trust a client cwd.
         cwd = (session or {}).get("cwd") or ""
         # The profile's scope qualifies the key its turns registered the session's workspace under.
@@ -1333,7 +1333,7 @@ async def _fs_download_path(
     return _agent_fs_path(path, profile_home=profile_home, decode_fallback=decode_fallback)
 
 
-async def _fs_owned_session(session_id: Optional[str], profile: Optional[str]) -> Optional[dict]:
+async def _fs_owned_session(request: Request, session_id: Optional[str], profile: Optional[str]) -> Optional[dict]:
     """The session *session_id* names, looked up in *profile*'s own sessions, or None when the
     request names none. A blank id, or one that profile does not own, is 404. A route that takes a
     ``session_id`` calls this before it picks a backend, so an SSH profile refuses the same
@@ -1344,7 +1344,7 @@ async def _fs_owned_session(session_id: Optional[str], profile: Optional[str]) -
 
     if not session_id.strip():
         raise HTTPException(status_code=404, detail="Session not found")
-    return await get_session_detail(session_id, profile)
+    return await get_session_detail(request, session_id, profile)
 
 
 def _fs_profile_home(profile: Optional[str]) -> Optional[Path]:
@@ -1364,7 +1364,7 @@ async def fs_read_data_url(
     path: str, request: Request, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
     from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
-    session = await _fs_owned_session(session_id, profile)
+    session = await _fs_owned_session(request, session_id, profile)
     backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
     if backend is not None:
         try:
@@ -1375,7 +1375,7 @@ async def fs_read_data_url(
             _raise_fs_backend_error(exc)
         encoded = base64.b64encode(data).decode("ascii")
         return {"dataUrl": f"data:{_fs_mime_type(_fs_preview_type_path(path, target))};base64,{encoded}"}
-    target = await _fs_download_path(path, profile, session_id, session=session)
+    target = await _fs_download_path(request, path, profile, session_id, session=session)
     # A browser paste or pick reads back to be sent wherever a locked files root sits: the server
     # wrote it into the profile's own image cache or staged uploads, outside the managed tree.
     if not await asyncio.to_thread(_is_host_file, str(target), profile):
@@ -1490,7 +1490,7 @@ async def _fs_download_authority(
     remote = await _remote_file_authority(path, profile, owner, _remote_download_target)
     if remote is not None:
         return remote
-    local = await _fs_download_path(path, profile, session_id, session=session)
+    local = await _fs_download_path(request, path, profile, session_id, session=session)
 
     def capture():
         _hosted_fs_read_guard(local, request)
@@ -1537,7 +1537,7 @@ async def fs_download(
 ):
     """A workspace file as an attachment: from the profile's SSH workspace when it has one, else
     from this host. A browser download link authenticates with a path-bound ``?ticket=``."""
-    session = await _fs_owned_session(session_id, profile)
+    session = await _fs_owned_session(request, session_id, profile)
     authority = getattr(getattr(request, "state", None), "file_ticket_authority", None)
     if authority is not None:
         return await _ticketed_fs_download(request, authority, profile)
@@ -1545,7 +1545,7 @@ async def fs_download(
     if backend is not None:
         target, size = await asyncio.to_thread(_remote_download_target, backend, path)
         return _remote_download_response(request, backend, target, size)
-    target = await _fs_download_path(path, profile, session_id, session=session)
+    target = await _fs_download_path(request, path, profile, session_id, session=session)
     await asyncio.to_thread(_hosted_fs_read_guard, target, request)
     target, _st = await asyncio.to_thread(_fs_regular_file, target, _fs_profile_home(profile))
     await asyncio.to_thread(_refuse_live_database, target)

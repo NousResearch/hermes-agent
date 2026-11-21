@@ -31,6 +31,7 @@ status_router = APIRouter()
 _dashboard_local_update_managed_externally = late("_dashboard_local_update_managed_externally", "hermes_cli.web_server_files")
 _spawn_gateway_restart = late("_spawn_gateway_restart")
 _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gateway")
+_require_dashboard_admin = late("_require_dashboard_admin")
 detect_install_method = late("detect_install_method", "hermes_cli.config")
 get_hermes_home = late("get_hermes_home", "hermes_cli.config")
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
@@ -158,9 +159,13 @@ def _persisted_action_id(log_dir: Path, name: str) -> Optional[str]:
 
 
 @router.post("/api/gateway/restart")
-async def restart_gateway(profile: Optional[str] = None):
+async def restart_gateway(request: Request, profile: Optional[str] = None):
     """Kick off a ``hermes gateway restart --interrupt`` in the background: the user-commanded force
-    path that supersedes a drain (D6, 19b26244046), so live sessions do not refuse it."""
+    path that supersedes a drain (D6, 19b26244046), so live sessions do not refuse it.
+
+    Mini App token route (required=False), admin-tier only.
+    """
+    _require_dashboard_admin(request)
     with http_failure("Failed to spawn gateway restart", 500, "Failed to restart gateway"):
         proc, _reused = _spawn_gateway_restart(profile, interrupt=True)
     return {"ok": True, "pid": proc.pid, "name": "gateway-restart"}
@@ -239,8 +244,12 @@ def _update_refused(error: str, message: str, update_command: str) -> dict[str, 
 
 
 @router.post("/api/hermes/update")
-async def update_hermes():
-    """Kick off ``hermes update`` in the background."""
+async def update_hermes(request: Request):
+    """Kick off ``hermes update`` in the background.
+
+    Mini App token route (required=False), admin-tier only.
+    """
+    _require_dashboard_admin(request)
     if is_commit_build(_server_path("PROJECT_ROOT")):
         return _update_refused("commit-build", COMMIT_BUILD_UPDATE_MESSAGE, "")
 

@@ -86,7 +86,7 @@ def test_verify_detects_pre_pr_commit_and_emits_legacy_flag(tmp_path, monkeypatc
             return "def is_commit_tag(tag): return True\n"
         if argv[2].endswith("msix-shared.mjs"):
             return "export const COMMIT_TAG_RE = /commit/\n"
-        return 'return "commit"\n'
+        return 'r"^(?:(?P<kind>canary|commit)\\."\n'
 
     out_new = tmp_path / "new-output"
     stable.verify({
@@ -100,6 +100,14 @@ def test_verify_detects_pre_pr_commit_and_emits_legacy_flag(tmp_path, monkeypatc
     # Mismatched bundle defaults are refused before any build runs.
     with pytest.raises(ValueError, match="Bundle environment differs"):
         stable.verify({"GITHUB_OUTPUT": str(tmp_path / "bad"), "BUNDLE_ENV_JSON": "{}"}, run=new_git)
+
+
+def test_a_commit_of_this_tree_builds_as_a_claim():
+    """Only trees from before commit claims take the legacy path; this one must not."""
+    def git(argv):
+        return subprocess.check_output(argv, cwd=ROOT, text=True, encoding="utf-8")
+
+    assert stable.commit_supports_claim_tag("HEAD", run=git)
 
 
 def test_legacy_commit_record_and_candidate_validation_round_trip(tmp_path):

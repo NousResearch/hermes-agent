@@ -28,6 +28,7 @@ def _load_fal_client() -> Any:
     return fal_client
 
 
+from hermes_logging import truncate_for_log
 from tools.debug_helpers import DebugSession
 from tools.fal_common import (
     _ManagedFalSyncClient, _extract_http_status, _managed_fal_billing_error, direct_fal_client,
@@ -538,7 +539,9 @@ def image_generate_tool(
             "upscaled": bool(formatted_images[0].get("upscaled"))})
     except Exception as e:
         error_msg = f"Error generating image: {e!s}"
-        logger.error("%s", error_msg, exc_info=True)
+        # Truncate + drop exc_info so large HTTP bodies are not written twice
+        # (message + traceback tail). Full detail still returned to the agent.
+        logger.error("Error generating image: %s", truncate_for_log(e))
         debug_call_data["error"] = error_msg
         generation_time = (datetime.datetime.now() - start_time).total_seconds()
         return finish(generation_time,

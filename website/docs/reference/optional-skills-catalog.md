@@ -38,6 +38,7 @@ hermes skills uninstall <skill-name>
 | [**grok**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok.md) | Delegate coding to xAI Grok Build CLI (features, PRs). |
 | [**opencode**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-opencode.md) | Delegate coding to OpenCode CLI (features, PR review). |
 | [**openhands**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands.md) | Delegate coding to OpenHands CLI (model-agnostic, LiteLLM). |
+| [**workspace-resume**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-workspace-resume.md) | Land in the right repo when Hermes starts, not home. |
 
 ## blockchain
 

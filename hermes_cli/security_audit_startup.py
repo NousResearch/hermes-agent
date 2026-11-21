@@ -51,9 +51,73 @@ def _iter_sshd_config_lines() -> list[str]:
     return lines
 
 
+def _sshd_config_ports(lines: list[str]) -> set[int]:
+    """Ports sshd is told to listen on (the daemon defaults to 22 without a Port directive)."""
+    matches = (re.match(r"(?i)^Port\s+(\d{1,5})\b", line) for line in lines)
+    return {int(m.group(1)) for m in matches if m} or {22}
+
+
+def _listening_tcp_ports(
+    paths: tuple[Path, ...] = (Path("/proc/net/tcp"), Path("/proc/net/tcp6")),
+) -> Optional[set[int]]:
+    """Local ports in LISTEN state across the given /proc/net tables, or None when none is readable
+    (macOS/Windows have no /proc, so the caller falls back to keeping the warning).
+    """
+    ports: set[int] = set()
+    readable = False
+    for path in paths:
+        try:
+            rows = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+        except OSError:
+            continue
+        readable = True
+        for row in rows[1:]:  # first line is the column header
+            fields = row.split()
+            if len(fields) < 4 or fields[3] != "0A":  # TCP_LISTEN
+                continue
+            try:
+                ports.add(int(fields[1].rsplit(":", 1)[1], 16))
+            except (IndexError, ValueError):
+                continue
+    return ports if readable else None
+
+
+def _sshd_process_running(proc_root: Path = Path("/proc")) -> Optional[bool]:
+    """True when a process named sshd exists, False when none does, None when /proc is unlistable."""
+    try:
+        pid_dirs = [p for p in proc_root.iterdir() if p.name.isdigit()]
+    except OSError:
+        return None
+    if not pid_dirs:
+        return None
+    for pid_dir in pid_dirs:
+        try:
+            if (pid_dir / "comm").read_text(encoding="utf-8-sig", errors="replace").strip() == "sshd":
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _sshd_serving(lines: list[str]) -> Optional[bool]:
+    """True when an SSH daemon can accept connections on this host, False when it definitively
+    cannot (no listener on any configured Port and no sshd process), None when that cannot be
+    determined — no /proc to inspect, or tables that cannot be read. Never guesses "not serving";
+    the macOS Remote-Login lane is a separate check (PR #78073).
+    """
+    listening = _listening_tcp_ports()
+    if listening is None:
+        return None
+    if _sshd_config_ports(lines) & listening:
+        return True
+    # A daemon started with an explicit -p (or moved listener) still serves, so the process wins.
+    return _sshd_process_running()
+
+
 def _ssh_password_auth_enabled() -> Optional[str]:
     """Warn when sshd has password auth enabled — the classic brute-force surface, which pairs
-    badly with a root-capable agent box. None when there is no sshd config to read.
+    badly with a root-capable agent box. None when there is no sshd config to read, and None for a
+    stock config (no directive) on a host where no daemon is serving — there is nothing to brute-force.
     """
     lines = _iter_sshd_config_lines()
     if not lines:
@@ -62,6 +126,8 @@ def _ssh_password_auth_enabled() -> Optional[str]:
     directives = [m.group(1).lower() for m in map(re.compile(r"(?i)^PasswordAuthentication\s+(\w+)").match, lines) if m]
     if directives and directives[-1] == "no":
         return None
+    if not directives and _sshd_serving(lines) is False:
+        return None  # an explicit opt-in still warns: it bites the moment sshd is started
     qualifier = "" if directives else " (default — no explicit directive)"
     return (f"SSH password authentication is ENABLED{qualifier}. Password auth is brute-forceable and dangerous "
             "on an internet-facing box. Set 'PasswordAuthentication no' in sshd_config and use key-based auth.")

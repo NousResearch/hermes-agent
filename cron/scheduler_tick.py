@@ -14,6 +14,62 @@ logger = logging.getLogger("cron.scheduler")
 _YIELD_LOG_INTERVAL_SECONDS = 3600.0
 _last_yield_log: dict[str, object] = {}
 
+# After downtime every missed slot is due in the same tick. Jobs chained only by their schedule
+# (plan -> review -> commit) would all start at once and read each other's stale output, so with
+# cron.catch_up_serial a catch-up replays clock-anchored (cron) slots one at a time in slot order;
+# cron jobs falling due while it drains queue behind. Interval and one-shot jobs have no place on
+# the clock and keep the shared pool.
+_OVERDUE_KINDS = frozenset({"late", "catch_up"})
+
+
+def _clock_anchored(job: dict) -> bool:
+    schedule = job.get("schedule")
+    return isinstance(schedule, dict) and schedule.get("kind") == "cron"
+
+
+def _catch_up_lane(_sched, due_jobs: list):
+    """The profile's catch-up lane while a replay is queued or, with ``cron.catch_up_serial``, two
+    cron slots are due and one of them is overdue; else None."""
+    home = _sched.hermes_home_key(_sched._get_hermes_home())
+    lane = _sched._catch_up_lanes.get(home)
+    if lane is not None:
+        lane[1][:] = [f for f in lane[1] if not f.done()]
+        if lane[1]:
+            return lane
+    # A slot under five minutes late still reads on_time (ticker slack), so an outage across
+    # a 05:20/05:25 chain can make only the first slot overdue: one overdue slot is enough.
+    cron_due = [j for j in due_jobs if _clock_anchored(j)]
+    overdue = sum(1 for j in cron_due if (j.get("last_dispatch") or {}).get("kind") in _OVERDUE_KINDS)
+    if len(cron_due) < 2 or not overdue:
+        return None
+    from cron.jobs import _cron_config_number
+    if not _cron_config_number("catch_up_serial", False, lambda raw: raw is True):
+        return None
+    _sched.logger.info("Catch-up: replaying %d due cron slot(s) one at a time in slot order", len(cron_due))
+    return _sched._get_catch_up_lane()
+
+
+def _submit_due_jobs(_sched, due_jobs: list, pool, process_job) -> list:
+    """Submit every due job not already in flight; returns their futures."""
+    lane = _catch_up_lane(_sched, due_jobs)
+    if lane is not None:
+        due_jobs = sorted(due_jobs, key=_slot_order)
+    futures = []
+    for job in due_jobs:
+        in_lane = lane is not None and _clock_anchored(job)
+        fut = _sched._submit_with_guard(job, lane[0] if in_lane else pool, process_job)
+        if fut is None:
+            continue
+        if in_lane:
+            lane[1].append(fut)
+        futures.append(fut)
+    return futures
+
+
+def _slot_order(job: dict):
+    instant = job.get("_scheduled_instant")
+    return instant is None, instant or "", job.get("name") or job["id"]
+
 
 def _log_tick_yield_once(reason: str) -> None:
     """Log the yield at error level once per episode (skew signature)."""
@@ -177,16 +233,9 @@ def _tick_admitted(
 
         # Persistent pool, non-blocking dispatch. Already-running jobs are skipped; mark_job_run
         # re-arms next_run_at on completion, so no catch-up queue is needed.
-        _results: list = []
-        _all_futures: list = []
         pool = _sched._get_parallel_pool(_max_workers)
-        for job in due_jobs:
-            fut = _sched._submit_with_guard(job, pool, _process_job)
-            if fut is None:
-                continue
-            _all_futures.append(fut)
-            if not sync:
-                _results.append(True)  # optimistically counted
+        _all_futures = _submit_due_jobs(_sched, due_jobs, pool, _process_job)
+        _results: list = [] if sync else [True] * len(_all_futures)  # async: optimistically counted
 
         if sync:
             for f in concurrent.futures.as_completed(_all_futures):

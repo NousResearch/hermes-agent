@@ -580,6 +580,9 @@ def _is_cron_silence_response(text: str) -> bool:
 # and then imposes that limit on all the others.
 _parallel_pools: dict[str, concurrent.futures.ThreadPoolExecutor] = {}
 _parallel_pool_max_workers: dict[str, Optional[int]] = {}
+# Per-profile single-worker lane a catch-up replays missed cron slots through, with its queued
+# futures; see ``cron.scheduler_tick._catch_up_lane``.
+_catch_up_lanes: dict[str, tuple[concurrent.futures.ThreadPoolExecutor, list]] = {}
 
 
 def _inflight_key(job_id: str, home: Optional[Path | str] = None) -> tuple:
@@ -1220,6 +1223,16 @@ def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadP
     return pool
 
 
+def _get_catch_up_lane() -> tuple[concurrent.futures.ThreadPoolExecutor, list]:
+    """Return (or create) the active profile's catch-up lane and its still-queued futures."""
+    home = hermes_home_key(_remember_inflight_home(_get_hermes_home()))
+    lane = _catch_up_lanes.get(home)
+    if lane is None:
+        lane = _catch_up_lanes[home] = (
+            concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="cron-catch-up"), [])
+    return lane
+
+
 def discard_parallel_pools(home_keys) -> None:
     """Drop the parallel pools of homes this process no longer ticks.
 
@@ -1231,15 +1244,18 @@ def discard_parallel_pools(home_keys) -> None:
     for key in list(home_keys):
         pool = _parallel_pools.pop(key, None)
         _parallel_pool_max_workers.pop(key, None)
-        if pool is not None:
-            pool.shutdown(wait=False, cancel_futures=False)
+        lane = _catch_up_lanes.pop(key, None)
+        for executor in (pool, lane and lane[0]):
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=False)
 
 
 def _shutdown_parallel_pool() -> None:
     """Shut down every profile's persistent pool on process exit."""
-    for pool in list(_parallel_pools.values()):
+    for pool in [*_parallel_pools.values(), *(lane for lane, _ in _catch_up_lanes.values())]:
         pool.shutdown(wait=True, cancel_futures=False)
     _parallel_pools.clear()
+    _catch_up_lanes.clear()
     _parallel_pool_max_workers.clear()
 
 

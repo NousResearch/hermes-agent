@@ -447,3 +447,37 @@ async def test_a_live_mount_detaches_when_its_lane_publishes_another_conversatio
     cold.authority.authorize(writer, _ref('unrouted'), 'session:submit')
     assert cold.authority.sessions['unrouted'].route == 'agent:main:detached:unrouted'
     cold.authority.authorize(writer, _ref(fresh.session_id), 'session:submit')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reason', ['cli_close', 'tui_close'])
+async def test_a_viewer_closing_a_messaging_chat_leaves_the_chats_delegations_alone(tmp_path, reason):
+    """A CLI/TUI viewer that opened a Telegram chat (``hermes -r``, the TUI picker) and then exits or
+    switches leaves the chat itself running: its background work keeps going and the chat can still
+    start more (#139685: messaging is unchanged by a viewer's close). Only a local session's own
+    close stops and refuses its delegations."""
+    import tools.async_delegation as delegation
+    from gateway.session_controls import AuthorityConnection
+    delegation._reset_for_tests()
+    _seed(tmp_path, 'chat', _source())
+    cold = await _cold(tmp_path)
+    viewer = AuthorityConnection(cold.authority, SimpleNamespace(write=lambda frame: None), {
+        'provider': 'local', 'user_id': 'native', 'profile_id': 'fixture', 'instance_id': 'cold'})
+    resumed = await viewer.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 'chat'}})
+    lane = cold.authority.sessions['chat'].route
+    assert lane == cold.store._generate_session_key(_source()), resumed
+    stopped = []
+    delegation._records['deleg_chat'] = {
+        'delegation_id': 'deleg_chat', 'status': 'running', 'parent_session_id': 'chat', 'session_key': lane,
+        'interrupt_fn': lambda: stopped.append('deleg_chat')}
+
+    closed = await viewer.dispatch({'id': 2, 'method': 'session.detach', 'params': {
+        'session_id': 'chat', 'subscription_id': resumed['result']['subscription_id'], 'end_reason': reason}})
+
+    assert 'result' in closed, closed
+    assert stopped == [], 'the chat keeps its running background work'
+    later = delegation.dispatch_async_delegation(
+        goal='later', context=None, toolsets=None, role='leaf', model=None, session_key=lane,
+        parent_session_id='chat', runner=lambda: {'status': 'completed'})
+    assert later['status'] == 'dispatched', later
+    delegation._reset_for_tests()

@@ -68,6 +68,16 @@ class _PendingClose:
         return cls(reason, record)
 
 
+def _messaging_chat_lane(live):
+    """*live* is the conversation a messaging chat's lane currently names, opened by a local viewer
+    (TUI-8). That viewer leaving ends none of the chat's work: messaging is unchanged by a viewer's
+    close (#139685), and ``end_idle_viewer_session`` already ends only local rows. A conversation the
+    chat moved past (``detached``) is app-only and closes like a local session."""
+    from gateway.session_route_recovery import _messaging_platform
+    platform = getattr(getattr(live.source, 'platform', None), 'value', None)
+    return platform is not None and _messaging_platform(platform) is not None and not live.detached
+
+
 async def close_viewer_session(authority, session_id, reason):
     """``session.detach {end_reason}`` left *session_id* without viewers: close it now, or once idle.
     Its own async delegations end now, mid-turn too, as main's CLI exit and TUI close ended them
@@ -78,6 +88,8 @@ async def close_viewer_session(authority, session_id, reason):
         return  # a viewer attached while the detach was off the loop: nothing closes or ends
     if is_history_mount(live):
         return  # stored history: no route, agent or delegation of its own
+    if _messaging_chat_lane(live):
+        return  # the chat goes on without this viewer: its work, its route and its row stay the chat's
     from tools.async_delegation import interrupt_for_session, refuse_for_session
     route = live.route
     parents = tuple(dict.fromkeys((session_id, _physical_target(authority, session_id))))

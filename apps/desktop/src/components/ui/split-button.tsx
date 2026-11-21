@@ -56,7 +56,7 @@ export function SplitButton({
   return (
     <div className={cn('inline-flex min-w-0', className)}>
       <Button
-        className="min-w-0 flex-1 rounded-r-none"
+        className="min-w-0 flex-1 rounded-e-none"
         disabled={disabled}
         onClick={() => onTrigger(active.id)}
         size={size}
@@ -69,7 +69,7 @@ export function SplitButton({
         <DropdownMenuTrigger asChild>
           <Button
             aria-label="More actions"
-            className="rounded-l-none border-l border-current/25 px-2"
+            className="rounded-s-none border-s border-current/25 px-2"
             disabled={disabled}
             size={size}
             variant={variant}

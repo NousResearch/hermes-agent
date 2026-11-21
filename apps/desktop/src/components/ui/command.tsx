@@ -181,7 +181,7 @@ function CommandItemCheck({ checked }: { checked: boolean }) {
 function CommandShortcut({ className, ...props }: React.ComponentProps<'span'>) {
   return (
     <span
-      className={cn('ml-auto text-xs tracking-widest text-muted-foreground', className)}
+      className={cn('ms-auto text-xs tracking-widest text-muted-foreground', className)}
       data-slot="command-shortcut"
       {...props}
     />

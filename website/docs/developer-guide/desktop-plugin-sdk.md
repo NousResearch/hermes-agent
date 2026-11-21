@@ -252,6 +252,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Kanban card badges | `KANBAN_CARD_AREAS.badges` | `data: KanbanCardBadgeContribution` — short text labels per card, painted by the board |
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
 | Tool media | `TOOL_MEDIA_RENDERER_AREA` (`'transcript.toolMedia'`) | `data: { tools, render }` — draw the `MEDIA:` files your package's own tools produced ([Tool media renderers](#tool-media-renderers)) |
+| Local file opener | `FILE_OPENER_AREA` (`'preview.fileOpener'`) | `data: { claims, open }` — route user-opened local files to your plugin ([Local file openers](#local-file-openers)) |
 | Plugin settings page | `SETTINGS_PLUGINS_AREA` (`'settings.plugins'`) | Use `ctx.registerSettingsPage({ id, title, render, icon?, order?, children? })` — your own entry (with sub-pages) under Settings → Plugins |
 
 ### Panes
@@ -319,6 +320,34 @@ ctx.registerMany([
 
 `codicon` is a [VS Code codicon](https://microsoft.github.io/vscode-codicons/dist/codicon.html)
 id. Navigate to a route from anywhere with `host.navigate('/my-page')`.
+
+### Local file openers
+
+Register a data contribution when your plugin owns a file domain, such as a
+Markdown vault. The host calls `claims(path)` for user-opened absolute local
+paths in contribution order. The first `true` result receives the path in
+`open(path)`, and the built-in preview does not open. If nobody claims it, or
+`open` fails, Hermes uses the built-in preview. Remote gateway files and URLs
+are not offered to this area. Inline image, audio, and video rendering does not
+change. A plugin can navigate to its own route with `host.navigate`. When a
+plugin claims a path, its page owns any additional actions it wants to provide,
+such as opening the file in another application.
+
+```javascript
+import { FILE_OPENER_AREA, host } from '@hermes/plugin-sdk'
+
+ctx.register({
+  id: 'vault-notes',
+  area: FILE_OPENER_AREA,
+  data: {
+    claims: path => path.startsWith('/Users/me/Documents/Agent Vault/') && path.endsWith('.md'),
+    open: path => host.navigate(`/vault?path=${encodeURIComponent(path)}`)
+  }
+})
+```
+
+`claims` must be synchronous and should be fast. Keep it narrow to the files
+your plugin can display. The path passed to `open` is the local absolute path.
 
 ### Status bar and title bar
 

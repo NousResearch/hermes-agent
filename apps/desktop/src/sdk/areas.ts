@@ -31,6 +31,11 @@ export {
   type KanbanCardBadgeTone,
   type KanbanCardBoard
 } from '@/contrib/kanban-card-badges'
+/** Claim user-initiated opens of absolute local file paths before the built-in preview. */
+export {
+  FILE_OPENER_AREA,
+  type FileOpenerContribution
+} from '@/lib/file-openers'
 /** Draw the `MEDIA:` files your package's OWN tools produced, in place of the
  *  built-in player (ownership is checked against the backend's tool registry). */
 export {

@@ -2,6 +2,10 @@ import { randomUuid } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
+import { registry } from '@/contrib/registry'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
+import { FILE_OPENER_AREA, tryOpenFileWithPlugin } from '@/lib/file-openers'
+import { isWindowsAbsolutePath } from '@/lib/path-compare'
 import {
   capturePreviewAnnotateDestination,
   clearPreviewAnnotateDestination,
@@ -955,15 +959,10 @@ export function setPreviewRenderMode(tabId: string, renderMode: PreviewRenderMod
  *  session's tab; a reused tab keeps its owner and pin. Opening for a session
  *  that is not focused does not touch the focused drawer's selection — the
  *  tab is fronted when that session's drawer shows. */
-export function openPreview(
+function openPreviewBuiltIn(
   target: PreviewTarget,
-  requestedOwner: null | string = $focusedStoredSessionId.get(),
-  /** The runtime asking: an ownerless tab is handed to it once its stored id
-   *  binds. An agent event passes its own session id; anything else is the
-   *  primary's runtime. */
-  runtimeId: null | string = $activeSessionId.get(),
-  /** The asking agent's profile, when it is not the chat on screen: only that
-   *  profile's pins may be reused. Omitted = the viewed profile. */
+  requestedOwner: null | string,
+  runtimeId: null | string,
   profile?: null | string
 ) {
   // Stamp the tip, not an alias: the alias map is memory-only, so a tab
@@ -1012,6 +1011,26 @@ export function openPreview(
 
   noteExplicitPreviewOpen(id)
   selectRightRailTab(id)
+}
+
+export function openPreview(
+  target: PreviewTarget,
+  requestedOwner: null | string = $focusedStoredSessionId.get(),
+  runtimeId: null | string = $activeSessionId.get(),
+  profile?: null | string
+) {
+  const path = target.kind === 'file' ? target.path : null
+  const isLocalPath = path?.startsWith('/') || (path ? isWindowsAbsolutePath(path) : false)
+
+  if (path && isLocalPath && !isDesktopFsRemoteMode()) {
+    tryOpenFileWithPlugin(path, registry.getArea(FILE_OPENER_AREA), () =>
+      openPreviewBuiltIn(target, requestedOwner, runtimeId, profile)
+    )
+
+    return
+  }
+
+  openPreviewBuiltIn(target, requestedOwner, runtimeId, profile)
 }
 
 const blankPage = (): PreviewTarget => ({ kind: 'url', label: 'Browser', source: 'about:blank', url: 'about:blank' })

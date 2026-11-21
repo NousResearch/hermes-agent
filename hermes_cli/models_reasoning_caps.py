@@ -331,6 +331,7 @@ def nous_model_supports_vision(
     if not model:
         return None
     src = _NOUS_CAPS
+    _drop_caps_from_other_endpoint(src)
     if allow_fetch and not src.get("vision_refreshed"):
         caps_by_id = src.get("cache")
         if caps_by_id is None or not _records_vision(caps_by_id):
@@ -360,6 +361,27 @@ def _vision_read_lock() -> threading.Lock:
     key = hermes_home_key()
     with _VISION_READ_LOCKS_GUARD:
         return _VISION_READ_LOCKS.setdefault(key, threading.Lock())
+
+
+def _drop_caps_from_other_endpoint(src: _CapsSource) -> None:
+    """Forget the cached catalog once the profile's Portal URL changes (re-login to staging,
+    ``NOUS_INFERENCE_BASE_URL`` edited under a running gateway): the cache slots are per profile,
+    not per URL, and the old endpoint's modalities must not decide what the new one is sent."""
+    from hermes_constants import hermes_home_key
+
+    url, home = src.url(), hermes_home_key()
+    previous = _CATALOG_URL_BY_HOME.setdefault(home, url)
+    if previous == url:
+        return
+    for slot in ("cache", "failed_at"):
+        src.set(slot, None)
+    for slot in ("disk_checked", "vision_refreshed"):
+        src.set(slot, False)
+    _CATALOG_URL_BY_HOME[home] = url
+
+
+# Profile home -> the Portal URL its Nous catalog slots were last read for.
+_CATALOG_URL_BY_HOME: dict[str, str] = {}
 
 
 def _needs_vision_read(src: _CapsSource, caps_by_id: Optional[Caps]) -> bool:

@@ -12,6 +12,7 @@ voice bubble). The fix passes an explicit output path from
 
 import asyncio
 import json
+import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -114,3 +115,22 @@ async def test_base_auto_tts_skips_playback_when_tool_reports_failure():
     adapter.play_tts.assert_not_awaited()
     # Text reply still goes out.
     assert adapter.sent and adapter.sent[0]["content"] == "reply text"
+
+
+# #80386: Docker sets HERMES_WRITE_SAFE_ROOT to the home; auto-TTS output must land inside it.
+@pytest.mark.parametrize("home_inside_root", [True, False])
+def test_auto_tts_path_is_writable_under_write_safe_root(tmp_path, monkeypatch, home_inside_root):
+    from agent.file_safety import is_write_denied
+    from gateway.platforms.base import build_auto_tts_output_path
+
+    root = tmp_path / "opt" / "data"
+    home = root if home_inside_root else tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(root))
+
+    path = build_auto_tts_output_path("telegram")
+
+    assert os.path.realpath(path).startswith(os.path.realpath(root) + os.sep)
+    assert not is_write_denied(path)

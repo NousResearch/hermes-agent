@@ -1,0 +1,48 @@
+name: hacmdn
+title: HACMDN-Net Decentralized Node Network
+repo: https://github.com/Jpalmer95/hacmdn-net
+sha: 7bd30019c63b5a54b7269ebcd0a4c919e2479f6d
+description: >-
+  Hermes Agent Community Microtuned Decentralized Node Network (HACMDN-Net) —
+  routes narrow tasks across a neighborhood mesh of consumer-grade micro-to-32B and sparse-MoE
+  specialists (10M classifiers/translators up to 32B/30B-A3B Apache-2.0 models) with semantic-entropy
+  conformal abstention, confidence-weighted and proxy bidding, a 6-tier
+  progressive escalation ladder, a Hugging Face ZeroGPU community buffer,
+  4 sharded compute pools with Game-Guard hardware protection, self-healing missing-expertise gap sensing, validator health checks and
+  generational base-model renewal, an execution-verified distillation factory, Iroh QUIC P2P
+  hole-punching and BLAKE3 LoRA blob gossip, and an value-backed 70/10/10/10 attribution ledger with a
+  Community Fair-Share Cap and Patron Compute Overflow for DeSci with L402 Lightning
+  micropayment settlement. Disclosure — stores neighborhood descriptors,
+  bounties, work queues, and attribution receipts in a profile-scoped SQLite
+  database via plugins.plugin_storage.plugin_db("hacmdn"); writes HTML
+  preview widgets and synthetic distillation curricula to
+  ~/.hermes/cache/scratch/; reads /proc/meminfo on Linux to check available
+  RAM for Game-Guard profiling; mounts /api/plugins/hacmdn/* REST routes and
+  a dashboard tab on the Hermes web dashboard plus a right-docked pane and
+  status-bar chip in Hermes Desktop via @hermes/plugin-sdk; and optionally
+  starts a loopback HTTP server on 127.0.0.1:8765 only when the user
+  explicitly runs `hermes hacmdn gui --serve`.
+maintainer: Jpalmer95
+tier: community
+category: models
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Jpalmer95/hacmdn-net#readme
+version: "1.0.0"
+image: https://raw.githubusercontent.com/Jpalmer95/hacmdn-net/7bd30019c63b5a54b7269ebcd0a4c919e2479f6d/docs/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Jpalmer95/hacmdn-net/7bd30019c63b5a54b7269ebcd0a4c919e2479f6d/docs/assets/contributor-hub.png
+  - https://raw.githubusercontent.com/Jpalmer95/hacmdn-net/7bd30019c63b5a54b7269ebcd0a4c919e2479f6d/docs/assets/banner.png
+platforms: []
+readme: true
+capabilities:
+  provides_tools:
+    - hacmdn_route_query
+    - hacmdn_publish_specialist
+    - hacmdn_bid_task
+    - hacmdn_bounty_flywheel
+    - hacmdn_network_status
+    - hacmdn_worker_pool
+    - hacmdn_contributor_hub
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

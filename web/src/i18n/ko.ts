@@ -469,6 +469,8 @@ export const ko: Translations = {
     customKeyNamePlaceholder: "예: MY_SERVICE_API_KEY",
     add: "추가",
     invalidKeyName: "문자, 숫자, 밑줄만 사용하세요(문자 또는 밑줄로 시작해야 합니다).",
+    channelManagedKey: "{key}은(는) 메시징 플랫폼 자격 증명이며 Channels 페이지에서 설정합니다.",
+    openChannels: "Channels 열기",
   },
 
   oauth: {

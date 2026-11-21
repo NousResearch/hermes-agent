@@ -470,6 +470,8 @@ export const ru: Translations = {
     customKeyNamePlaceholder: "напр. MY_SERVICE_API_KEY",
     add: "Добавить",
     invalidKeyName: "Используйте только буквы, цифры и подчёркивания (должно начинаться с буквы или подчёркивания).",
+    channelManagedKey: "{key} относится к платформе сообщений и задаётся на странице Channels.",
+    openChannels: "Открыть Channels",
   },
 
   oauth: {

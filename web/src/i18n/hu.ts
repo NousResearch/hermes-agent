@@ -470,6 +470,8 @@ export const hu: Translations = {
     customKeyNamePlaceholder: "pl. MY_SERVICE_API_KEY",
     add: "Hozzáadás",
     invalidKeyName: "Csak betűket, számokat és aláhúzásokat használj (betűvel vagy aláhúzással kell kezdődnie).",
+    channelManagedKey: "A(z) {key} egy üzenetküldő platform hitelesítő adata, a Channels oldalon állítható be.",
+    openChannels: "Channels megnyitása",
   },
 
   oauth: {

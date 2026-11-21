@@ -470,6 +470,8 @@ export const tr: Translations = {
     customKeyNamePlaceholder: "örn. MY_SERVICE_API_KEY",
     add: "Ekle",
     invalidKeyName: "Yalnızca harf, rakam ve alt çizgi kullanın (bir harf veya alt çizgi ile başlamalıdır).",
+    channelManagedKey: "{key} bir mesajlaşma platformu kimlik bilgisidir ve Channels sayfasında ayarlanır.",
+    openChannels: "Channels'ı aç",
   },
 
   oauth: {

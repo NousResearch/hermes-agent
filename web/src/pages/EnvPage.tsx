@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { Link } from "react-router";
 import {
   Eye,
   EyeOff,
@@ -504,6 +505,7 @@ function CustomKeysCard({
   onReveal,
   onCancelEdit,
   onAddKey,
+  isChannelManaged,
   clearDialogOpen = false,
 }: {
   entries: [string, EnvVarInfo][];
@@ -516,6 +518,7 @@ function CustomKeysCard({
   onReveal: (key: string) => void;
   onCancelEdit: (key: string) => void;
   onAddKey: (key: string) => void;
+  isChannelManaged: (key: string) => boolean;
   clearDialogOpen?: boolean;
 }) {
   const { t } = useI18n();
@@ -524,6 +527,8 @@ function CustomKeysCard({
   const alreadyEditing = edits[trimmed] !== undefined;
   const nameValid = ENV_VAR_NAME_RE.test(trimmed);
   const showInvalid = trimmed.length > 0 && !nameValid;
+  // Platform credentials live on the Channels page, which this page never lists.
+  const channelManaged = nameValid && isChannelManaged(trimmed);
 
   const rowProps = {
     edits,
@@ -538,7 +543,7 @@ function CustomKeysCard({
   };
 
   const handleAdd = () => {
-    if (!nameValid || alreadyEditing) return;
+    if (!nameValid || alreadyEditing || channelManaged) return;
     onAddKey(trimmed);
     setNewKey("");
   };
@@ -588,12 +593,20 @@ function CustomKeysCard({
                   {t.env.invalidKeyName}
                 </p>
               )}
+              {channelManaged && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t.env.channelManagedKey.replace("{key}", trimmed)}{" "}
+                  <Link to="/channels" className="text-primary hover:underline">
+                    {t.env.openChannels}
+                  </Link>
+                </p>
+              )}
             </div>
             <Button
               size="sm"
               prefix={<Plus />}
               onClick={handleAdd}
-              disabled={!nameValid || alreadyEditing}
+              disabled={!nameValid || alreadyEditing || channelManaged}
             >
               {t.env.add}
             </Button>
@@ -614,6 +627,8 @@ export default function EnvPage() {
   const [revealed, setRevealed] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(true); // Show all providers by default
+  // Catalog keys opened from the add-key form (see handleAddKey).
+  const [addedKnown, setAddedKnown] = useState<ReadonlySet<string>>(() => new Set());
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setAfterTitle } = usePageHeader();
@@ -776,7 +791,13 @@ export default function EnvPage() {
   // editing. The value isn't persisted until the user types one and saves
   // (reusing the normal handleSave → PUT /api/env path); on save the backend
   // surfaces it back as a custom row, so the new entry is durable.
+  // A name the catalog already knows keeps its own row, but that row can sit in
+  // a collapsed provider group or under "Show more", so it is also listed here
+  // while its editor is open; otherwise Add would open an editor nobody sees.
   const handleAddKey = (key: string) => {
+    if (vars?.[key] && vars[key].category !== "custom") {
+      setAddedKnown((prev) => new Set(prev).add(key));
+    }
     setVars((prev) =>
       prev && prev[key]
         ? prev
@@ -866,9 +887,15 @@ export default function EnvPage() {
 
     // Custom keys: user-added vars the backend flagged as not in any catalog.
     // Sorted alphabetically; an in-flight (just-added, unsaved) row carries the
-    // custom category locally so it shows here immediately.
+    // custom category locally so it shows here immediately, and a catalog key
+    // added from the form shows here while its editor is open.
     const customEntries = Object.entries(vars)
-      .filter(([, info]) => info.category === "custom" && !info.channel_managed)
+      .filter(
+        ([key, info]) =>
+          !info.channel_managed &&
+          (info.category === "custom" ||
+            (addedKnown.has(key) && edits[key] !== undefined)),
+      )
       .sort(([a], [b]) => a.localeCompare(b));
 
     return {
@@ -876,7 +903,7 @@ export default function EnvPage() {
       nonProviderGrouped: nonProvider,
       customEntries,
     };
-  }, [vars, showAdvanced, t]);
+  }, [vars, showAdvanced, t, addedKnown, edits]);
 
   if (!vars) {
     return (
@@ -998,6 +1025,7 @@ export default function EnvPage() {
         onReveal={handleReveal}
         onCancelEdit={cancelEdit}
         onAddKey={handleAddKey}
+        isChannelManaged={(key) => vars[key]?.channel_managed === true}
         clearDialogOpen={keyClear.isOpen}
       />
       <PluginSlot name="env:bottom" />

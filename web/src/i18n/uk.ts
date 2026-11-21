@@ -471,6 +471,8 @@ export const uk: Translations = {
     customKeyNamePlaceholder: "напр. MY_SERVICE_API_KEY",
     add: "Додати",
     invalidKeyName: "Використовуйте лише літери, цифри та підкреслення (має починатися з літери або підкреслення).",
+    channelManagedKey: "{key} належить до платформи повідомлень і задається на сторінці Channels.",
+    openChannels: "Відкрити Channels",
   },
 
   oauth: {

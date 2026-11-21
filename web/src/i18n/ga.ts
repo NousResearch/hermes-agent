@@ -478,6 +478,8 @@ export const ga: Translations = {
     customKeyNamePlaceholder: "m.sh. MY_SERVICE_API_KEY",
     add: "Cuir leis",
     invalidKeyName: "Úsáid litreacha, uimhreacha agus fostríoca amháin (caithfidh sé tosú le litir nó fostríoc).",
+    channelManagedKey: "Is dintiúr ardáin teachtaireachtaí é {key}; socraítear é ar an leathanach Channels.",
+    openChannels: "Oscail Channels",
   },
 
   oauth: {

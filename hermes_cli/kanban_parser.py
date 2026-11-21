@@ -15,6 +15,22 @@ from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_notify as kbn
 
 
+_PRIORITY_ALIASES = {"high": 3, "h": 3, "medium": 2, "m": 2, "low": 1, "l": 1}
+
+
+def _parse_priority(raw: str) -> int:
+    """Accept case-insensitive aliases while preserving arbitrary integers."""
+    alias = _PRIORITY_ALIASES.get(raw.strip().lower())
+    if alias is not None:
+        return alias
+    try:
+        return int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid priority {raw!r}: expected an integer or high/h, medium/m, low/l"
+        ) from None
+
+
 def _arg(*flags: str, **kw):
     return (flags, kw)
 
@@ -82,7 +98,8 @@ _TASK_ID = _arg("task_id")
 _TASK_IDS = _arg("task_ids", nargs="+")
 _SLUG = _arg("slug")
 _TENANT = _arg("--tenant", help="Tenant namespace")
-_PRIORITY = _arg("--priority", type=int, default=0, help="Priority tiebreaker")
+_PRIORITY = _arg("--priority", type=_parse_priority, default=0,
+                 help="Priority tiebreaker (3/high/h, 2/medium/m, 1/low/l, or any integer)")
 _RECLAIM_REASON = _reason("Human-readable reason (recorded on the reclaimed event)")
 _NOTIFY_TARGET = (
     _arg("--platform", required=True),
@@ -308,7 +325,7 @@ _SPECS = [
         _TASK_ID,
         _arg("--title", help="Replace the task title"),
         _arg("--body", help="Replace the task body"),
-        _arg("--priority", type=int, help="Replace the task priority"),
+        _arg("--priority", type=_parse_priority, help="Replace priority (integer or high/h, medium/m, low/l)"),
         _arg("--result", help="Backfilled task result text for a done task"),
         *_STEP_HANDOFF,
     ], help="Edit task fields or recovery fields on an already-completed task"),

@@ -1,3 +1,5 @@
+import { Readable } from 'node:stream'
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import App from './components/App.js'
@@ -97,6 +99,90 @@ describe('App.handleReadable error recovery (issue #31486)', () => {
 
     expect((app as any).processInput).toHaveBeenCalledTimes(2)
     expect((app as any).processInput).toHaveBeenLastCalledWith('queued-keystroke')
+  })
+
+  it('re-arms a zero-high-water-mark stream after a throw with no JS-buffered bytes', async () => {
+    vi.useRealTimers()
+    const source = ['boom', 'later-keystroke']
+
+    const stdin = new Readable({
+      highWaterMark: 0,
+      read() {
+        const chunk = source.shift()
+
+        if (chunk !== undefined) {
+          setImmediate(() => this.push(chunk))
+        }
+      }
+    })
+
+    stdin.setEncoding('utf8')
+    const app = makeApp(stdin as unknown as ReturnType<typeof makeFakeStdin>)
+    const delivered: string[] = []
+
+    let bufferedAtFailure = -1
+
+    ;(app as any).processInput = (chunk: string) => {
+      delivered.push(chunk)
+
+      if (chunk === 'boom') {
+        // Like a TTY: the chunk has been consumed, native reads stop at
+        // highWaterMark=0, and no further 'readable' event can arrive until
+        // the consumer calls read() again. readableLength is already zero.
+        bufferedAtFailure = stdin.readableLength
+        throw new Error('synthetic input dispatch failure')
+      }
+    }
+
+    stdin.on('readable', (app as any).handleReadable)
+
+    try {
+      await vi.waitFor(() => expect(delivered).toEqual(['boom', 'later-keystroke']))
+      expect(bufferedAtFailure).toBe(0)
+    } finally {
+      stdin.destroy()
+    }
+  })
+
+  it('does not spin when read itself persistently throws', () => {
+    const stdin = makeFakeStdin([])
+    stdin.read.mockImplementation(() => {
+      throw new Error('terminal read failed')
+    })
+
+    const app = makeApp(stdin)
+
+    ;(app as any).handleReadable()
+    vi.runAllTimers()
+    expect(stdin.read).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not steal input if the readable listener is detached before recovery', () => {
+    const stdin = makeFakeStdin(['boom', 'external-editor-input', null])
+
+    const app = makeApp(stdin)
+
+    ;(app as any).processInput = vi.fn(() => {
+      throw new Error('synthetic dispatch failure')
+    })
+    ;(app as any).handleReadable()
+    stdin.listeners.mockReturnValue([])
+    vi.runAllTimers()
+    expect((app as any).processInput).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not retry a stream destroyed before recovery', () => {
+    const stdin = Object.assign(makeFakeStdin(['boom', 'queued', null]), { destroyed: false })
+
+    const app = makeApp(stdin)
+
+    ;(app as any).processInput = vi.fn(() => {
+      throw new Error('synthetic dispatch failure')
+    })
+    ;(app as any).handleReadable()
+    stdin.destroyed = true
+    vi.runAllTimers()
+    expect((app as any).processInput).toHaveBeenCalledTimes(1)
   })
 
   it('does not re-pump when raw mode has been fully disabled during recovery', () => {

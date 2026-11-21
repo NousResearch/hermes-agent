@@ -223,6 +223,8 @@ registry.registerMany([
     // Live-retitled to the loaded session by syncWorkspaceTitle below.
     title: NEW_SESSION_TITLE,
     data: {
+      tabTitle: () => <SessionDraftTitle scope={null} />,
+      tabTitleText: () => translateNow('sidebar.nav.new-session'),
       placement: 'main',
       minWidth: '22vw',
       tabDrag: workspaceTabDrag,
@@ -516,6 +518,7 @@ const syncWorkspaceTitle = () => {
       // label subscribes to it directly — typing renames the tab without
       // re-registering the pane.
       tabTitle: stored ? undefined : () => <SessionDraftTitle scope={selected} />,
+      tabTitleText: stored ? undefined : () => translateNow('sidebar.nav.new-session'),
       // Pages aren't tab-able: the main zone's bar stands down while one shows.
       headerVeto: $workspaceIsPage.get(),
       // Page-owned controls take the vetoed tab row. Deliberately NOT the

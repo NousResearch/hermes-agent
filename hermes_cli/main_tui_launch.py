@@ -437,15 +437,18 @@ def _launch_tui(
     os.close(active_session_fd)
     env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
+    try:
+        from hermes_cli.config import load_config
+        from utils import is_truthy_value
+        display = load_config().get("display", {})
+        display = display if isinstance(display, dict) else {}
+    except Exception:
+        display, is_truthy_value = {}, bool
     if native_mode is None:
-        try:
-            from hermes_cli.config import load_config
-            from utils import is_truthy_value
-            display = load_config().get("display", {})
-            native_mode = is_truthy_value(display.get("tui_native", False)) if isinstance(display, dict) else False
-        except Exception:
-            native_mode = False
+        native_mode = is_truthy_value(display.get("tui_native", False))
     env["HERMES_TUI_NATIVE"] = "1" if native_mode else "0"
+    if "HERMES_TUI_CTRL_Z_SUSPEND" not in env:
+        env["HERMES_TUI_CTRL_Z_SUSPEND"] = "1" if is_truthy_value(display.get("tui_ctrl_z_suspend", False)) else "0"
 
     wt_info = None
     if worktree:

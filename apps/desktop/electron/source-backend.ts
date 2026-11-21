@@ -43,17 +43,35 @@ export async function resolveSourceInstallationBackend(
   const command: string = shell ? `"${launcher}"` : launcher
   const env: NodeJS.ProcessEnv = buildDesktopBackendEnv({ currentEnv: options.env ?? process.env })
 
+  // PM still performs its normal bootstrap, without CLI update checks
+  // or boot maintenance consuming the liveness probe's timeout budget.
+  const probeArgs: string[] =
+    existsSync(path.join(root, 'pm')) && existsSync(path.join(root, 'hermes_cli', '_startup_fast.py'))
+      ? ['--run-module', 'hermes_cli._startup_fast']
+      : ['--version']
+  const probeOptions: Parameters<typeof execProbe>[2] = {
+    cwd: root,
+    env: { ...process.env, ...options.env, ...env },
+    shell,
+    stdio: 'ignore',
+    timeout: PROBE_TIMEOUT_MS,
+    windowsHide: true
+  }
+
   try {
-    await execProbe(command, ['--version'], {
-      cwd: root,
-      env: { ...process.env, ...options.env, ...env },
-      shell,
-      stdio: 'ignore',
-      timeout: PROBE_TIMEOUT_MS,
-      windowsHide: true
-    })
+    await execProbe(command, probeArgs, probeOptions)
   } catch {
-    return null
+    if (probeArgs[0] !== '--run-module') {
+      return null
+    }
+
+    // A launcher can predate --run-module even after its checkout updates.
+    // Retain the old validation contract; never accept an unprobed fallback.
+    try {
+      await execProbe(command, ['--version'], probeOptions)
+    } catch {
+      return null
+    }
   }
 
   return {

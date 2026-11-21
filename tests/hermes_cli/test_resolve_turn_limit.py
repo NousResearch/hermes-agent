@@ -54,6 +54,31 @@ class TestUnlimitedSpellings:
         assert resolve_turn_limit(0.0) == TURN_LIMIT_UNLIMITED
 
 
+class TestFloatSpecials:
+    """YAML loads ``.inf``/``-.inf``/``.nan`` as float infinity/NaN (#132075): the numeric
+    branch must not raise (startup crashed with OverflowError/ValueError before this guard),
+    and float-parseable infinity spellings join the unlimited semantics of ``"inf"``."""
+
+    def test_pos_inf_float_is_unlimited(self):
+        assert resolve_turn_limit(float("inf")) == TURN_LIMIT_UNLIMITED
+
+    def test_neg_inf_float_is_unlimited(self):
+        assert resolve_turn_limit(float("-inf")) == TURN_LIMIT_UNLIMITED
+
+    def test_nan_float_returns_default(self):
+        assert resolve_turn_limit(float("nan")) == TURN_LIMIT_UNLIMITED
+        assert resolve_turn_limit(float("nan"), default=500) == 500
+
+    @pytest.mark.parametrize("spelling", ["1e999", "+inf", "+infinity", "-1e999"])
+    def test_overflowing_float_strings_are_unlimited(self, spelling):
+        # int(float(s)) alone raises OverflowError for these
+        assert resolve_turn_limit(spelling) == TURN_LIMIT_UNLIMITED
+
+    def test_nan_string_returns_default(self):
+        assert resolve_turn_limit("nan") == TURN_LIMIT_UNLIMITED
+        assert resolve_turn_limit("nan", default=500) == 500
+
+
 class TestAbsentAndDefault:
     def test_none_returns_default(self):
         # Default is now unlimited (max_turns caused more problems than it solved).

@@ -317,8 +317,11 @@ def _normalize_string_set(values) -> set[str]:
     return {name.strip() for name in parse_config_string_list(values) if name.strip()}
 
 
-# config identity -> resolved external dirs. Called once per skill during
-# banner / tool-registry scans; re-resolving each time dominated cold-start.
+# config identity -> expanded external_dirs entries. Called once per skill during
+# banner / tool-registry scans; re-parsing config each time dominated cold-start.
+# Only the parse is cached: symlink resolution and existence are re-read per call,
+# because an installer that retargets a ``current`` symlink (or creates a dir after
+# startup) leaves config.yaml untouched and a cached resolve pinned the old target.
 _EXTERNAL_DIRS_CACHE: dict[tuple[str, int, int, int, int], list[Path]] = {}
 
 
@@ -344,26 +347,25 @@ def get_external_skills_dirs() -> list[Path]:
     config_path = get_config_path()
     if not config_exists(config_path):
         return []
-    full_key = _config_cache_key(config_path)
-    cache_key = full_key
-    cached = _EXTERNAL_DIRS_CACHE.get(cache_key) if cache_key is not None else None
-    if cached is not None:
-        return list(cached)  # copy so callers can't mutate the cache
-    skills_cfg = _skills_cfg()
-    if skills_cfg is None:
-        return []
+    cache_key = _config_cache_key(config_path)
+    entries = _EXTERNAL_DIRS_CACHE.get(cache_key) if cache_key is not None else None
+    if entries is None:
+        skills_cfg = _skills_cfg()
+        if skills_cfg is None:
+            return []
+        entries = [_home_relative(_expand_path(e)) for e in _config_str_list(skills_cfg.get("external_dirs"))]
+        if cache_key is not None:
+            _EXTERNAL_DIRS_CACHE[cache_key] = entries
     local_skills = get_skills_dir().resolve()
     result: list[Path] = []
-    for entry in _config_str_list(skills_cfg.get("external_dirs")):
-        p = _home_relative(_expand_path(entry)).resolve()
+    for entry in entries:
+        p = entry.resolve()
         if p == local_skills or p in result:
             continue
         if p.is_dir():
             result.append(p)
         else:
             logger.debug("External skills dir does not exist, skipping: %s", p)
-    if cache_key is not None:
-        _EXTERNAL_DIRS_CACHE[cache_key] = list(result)
     return result
 
 

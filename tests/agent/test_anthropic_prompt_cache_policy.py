@@ -1033,3 +1033,105 @@ class TestExplicitOverrides:
 # ─────────────────────────────────────────────────────────────────────
 # Long-lived prefix cache policy (cross-session 1h tier)
 # ─────────────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Z.AI coding-plan endpoint (envelope markers on the OpenAI wire)
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestZAICodingPlanWireMarkers:
+    """GLM on Z.AI's OpenAI-wire coding endpoint takes envelope cache_control.
+
+    Measured 2026-10-27 on ``api.z.ai/api/coding/paas/v4`` with glm-5.3:
+    Anthropic-style ``cache_control`` markers inside block-array content are
+    accepted (200) with ``usage.prompt_tokens_details.cached_tokens``
+    accounting, plain and ``ttl: 1h`` variants alike. The endpoint serves
+    only GLM models, so the route (host + ``/coding/`` path) is the gate —
+    no model-name matcher. Without markers the implicit per-API-key cache is
+    node-local and eviction-prone under concurrent same-key load
+    (deepseek-harness discussion #5227: 70% hit → 0% with a byte-stable
+    prefix and ~100k-token sibling sessions); OpenCode ships the markers
+    unconditionally on this endpoint. Explicit ``prompt_caching`` config
+    still wins (the capability lookup runs before the route opt-in).
+    """
+
+    def test_glm_on_zai_coding_endpoint_envelopes(self):
+        agent = _make_agent(
+            provider="zai",
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            api_mode="chat_completions",
+            model="glm-5.3",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_custom_provider_at_zai_coding_url_envelopes(self):
+        # The deployed shape: a custom provider entry pointed at the coding
+        # endpoint. Host+path match alone must opt the route in.
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            api_mode="chat_completions",
+            model="glm-5.3",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_bigmodel_cn_coding_endpoint_envelopes(self):
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://open.bigmodel.cn/api/coding/paas/v4",
+            api_mode="chat_completions",
+            model="glm-5.3-flash",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_zai_std_pay_as_you_go_endpoint_stays_off(self):
+        # The claim is scoped to the coding endpoint: /api/paas/v4 was not
+        # measured for marker acceptance, so it stays conservative.
+        agent = _make_agent(
+            provider="zai",
+            base_url="https://api.z.ai/api/paas/v4",
+            api_mode="chat_completions",
+            model="glm-5.3",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_zai_anthropic_wire_stays_off(self):
+        # GLM via z.ai's /api/anthropic (anthropic_messages) is a separate,
+        # unmeasured wire — not covered by the coding-endpoint evidence.
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://api.z.ai/api/anthropic",
+            api_mode="anthropic_messages",
+            model="glm-5.3",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_explicit_capability_false_beats_route_opt_in(self):
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            api_mode="chat_completions",
+            model="glm-5.3",
+        )
+        agent._custom_providers = [
+            {
+                "name": "zcoding",
+                "base_url": "https://api.z.ai/api/coding/paas/v4",
+                "models": {"glm-5.3": {"prompt_caching": False}},
+            }
+        ]
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_glm_on_openrouter_stays_off(self):
+        # Measured 2026-10-27 on z-ai/glm-5.3 via OpenRouter: automatic
+        # prefix caching already serves ~99% cached tokens without markers,
+        # and a marked request cost MORE than an unmarked rehit. Markers
+        # there are pure downside.
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="z-ai/glm-5.3",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)

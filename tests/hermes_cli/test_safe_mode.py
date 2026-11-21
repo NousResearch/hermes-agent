@@ -218,8 +218,10 @@ def test_canonical_safe_launch_is_frozen_policy_executed_in_isolated_worker(tmp_
             worker = workers[0]
             worker_records = [r for r in records() if r['kind'] == 'open' and r['pid'] == worker]
             assert worker_records, 'audit hook not live in the worker'
+            bundled_providers = str(root / 'plugins' / 'model-providers') + os.sep  # Hermes's own provider rules
             leaked = [(r['path'], r.get('stack')) for r in worker_records
-                      if '/plugins/' in r['path'] or r['path'].endswith(('config.yaml', '.env', 'SOUL.md', 'AGENTS.md', 'SKILL.md'))]
+                      if ('/plugins/' in r['path'] and not r['path'].startswith(bundled_providers))
+                      or r['path'].endswith(('config.yaml', '.env', 'SOUL.md', 'AGENTS.md', 'SKILL.md'))]
             assert leaked == [], json.dumps(leaked, indent=1)
             assert not [name for name in os.listdir(events) if name.endswith(f'-{worker}')], sorted(os.listdir(events))
             def inferences(tag):

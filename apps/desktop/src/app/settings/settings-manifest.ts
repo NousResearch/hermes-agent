@@ -135,6 +135,11 @@ export const SETTINGS_MANIFEST = {
       ['code', 'diff', 'patch', 'file edits', 'inline', 'added', 'removed'],
       'hideCodeDiffs'
     ),
+    chatLinksRequireModifier: appearanceSetting(
+      'chat-display',
+      ['links', 'paths', 'urls', 'click', 'cmd', 'command', 'ctrl', 'modifier', 'select text', 'open'],
+      'chatLinksRequireModifier'
+    ),
     reasoningCollapsed: appearanceSetting(
       'chat-display',
       ['thinking', 'reasoning', 'collapse', 'expand', 'chain of thought'],

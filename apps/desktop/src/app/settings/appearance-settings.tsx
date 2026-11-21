@@ -16,6 +16,7 @@ import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
+import { $chatLinksRequireModifier, setChatLinksRequireModifier } from '@/store/chat-link-open'
 import { $chatTextScale, CHAT_TEXT_SCALE_PRESETS, setChatTextScale } from '@/store/chat-text-scale'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
@@ -417,6 +418,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const toolViewShadowed = useStore($modeShadowed('toolViewMode'))
   const hideCodeDiffs = useStore($hideCodeDiffs)
   const hideCodeDiffsShadowed = useStore($modeShadowed('hideCodeDiffs'))
+  const chatLinksRequireModifier = useStore($chatLinksRequireModifier)
   const hideThreadTimeline = useStore($hideThreadTimeline)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const reasoningCollapsedShadowed = useStore($modeShadowed('reasoningCollapsedByDefault'))
@@ -1047,6 +1049,16 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               id={settingElementId(ids.hideCodeDiffs)}
               label={a.hideCodeDiffsTitle}
               onChange={setHideCodeDiffs}
+            />
+          )}
+
+          {show('chat-display') && (
+            <ToggleRow
+              checked={chatLinksRequireModifier}
+              description={a.chatLinksRequireModifierDesc}
+              id={settingElementId(ids.chatLinksRequireModifier)}
+              label={a.chatLinksRequireModifierTitle}
+              onChange={setChatLinksRequireModifier}
             />
           )}
 

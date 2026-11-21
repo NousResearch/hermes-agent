@@ -1,5 +1,6 @@
 import { normalizeMathDelimiters } from '@assistant-ui/react-streamdown'
 
+import { linkifyBarePaths } from '@/lib/bare-path-refs'
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
 import { clampHtmlNestingDepth } from '@/lib/markdown-html-depth'
 import { mediaKind, mediaMarkdownHref } from '@/lib/media'
@@ -470,10 +471,13 @@ function linkBareUrls(text: string): string {
   })
 }
 
+// Bare URLs become autolinks and bare absolute paths become `#path/` links
+// (#48313), both only outside the markdown links that already own their text.
+// URLs go first so a path inside a URL is already behind `<…>` and skipped.
 function autoLinkRawUrls(text: string): string {
   return text
     .split(MARKDOWN_LINK_SPLIT_RE)
-    .map((part, index) => (index % 2 === 1 ? part : linkBareUrls(part)))
+    .map((part, index) => (index % 2 === 1 ? part : linkifyBarePaths(linkBareUrls(part))))
     .join('')
 }
 

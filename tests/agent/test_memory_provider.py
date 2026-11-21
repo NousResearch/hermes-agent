@@ -447,6 +447,94 @@ class TestMemoryManager:
         r2 = json.loads(mgr.handle_tool_call("ext_tool", {"b": 2}))
         assert r2["handled"] == "ext_tool"
 
+    def test_initialize_failure_drops_provider_and_preserves_builtin(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Failed providers lose their hooks and tools while builtin memory stays active."""
+        import logging
+        import agent.memory_manager as mm
+
+        class FailingMemoryProvider(FakeMemoryProvider):
+            def __init__(self):
+                super().__init__(
+                    "external",
+                    tools=[{"name": "ext_tool", "description": "External", "parameters": {}}],
+                )
+                self.shutdown_calls = 0
+
+            def initialize(self, session_id, **kwargs):
+                raise RuntimeError("secret initialization detail")
+
+            def shutdown(self):
+                self.shutdown_calls += 1
+                raise ValueError("secret cleanup detail")
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"memory": {}})
+        monkeypatch.setattr(mm, "get_spill_config", lambda: {"max_chars": 100})
+        manager = MemoryManager()
+        external = FailingMemoryProvider()
+        builtin = FakeMemoryProvider(
+            "builtin",
+            tools=[{"name": "builtin_tool", "description": "Builtin", "parameters": {}}],
+        )
+        manager.add_provider(external)
+        manager.add_provider(builtin)
+        home = tmp_path / "hermes_test"
+
+        with caplog.at_level(logging.ERROR, logger="agent.memory_manager"):
+            manager.initialize_all("session", hermes_home=str(home))
+
+        assert external not in manager._providers
+        assert builtin in manager._providers and builtin.initialized
+        assert manager._has_external is False
+        assert not manager.has_tool("ext_tool")
+        assert "ext_tool" not in manager._tool_to_provider
+        assert manager.provider_initialization_failures == {
+            "external": {
+                "status": "failed",
+                "error_type": "RuntimeError",
+                "cleanup_error_type": "ValueError",
+            }
+        }
+        assert "secret initialization detail" not in caplog.text
+        assert "secret cleanup detail" not in caplog.text
+
+        manager.on_turn_start(1, "still working")
+        assert builtin.turn_starts == [(1, "still working")]
+        result = json.loads(manager.handle_tool_call("builtin_tool", {"safe": True}))
+        assert result["handled"] == "builtin_tool"
+        manager.shutdown_all()
+        assert external.shutdown_calls == 1
+        assert builtin.shutdown_called
+
+    def test_initialize_for_agent_reports_failure_without_exception_text(
+        self, tmp_path, monkeypatch
+    ):
+        import agent.memory_manager as mm
+
+        class FailingMemoryProvider(FakeMemoryProvider):
+            def initialize(self, session_id, **kwargs):
+                raise RuntimeError("secret initialization detail")
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"memory": {}})
+        monkeypatch.setattr(mm, "get_spill_config", lambda: {"max_chars": 100})
+        manager = MemoryManager()
+        manager.add_provider(FailingMemoryProvider("external"))
+        manager.add_provider(FakeMemoryProvider("builtin"))
+        warnings = []
+
+        initialized = manager.initialize_for_agent(
+            say=warnings.append,
+            session_id="session",
+            hermes_home=str(tmp_path / "hermes_test"),
+        )
+
+        assert initialized is False
+        assert len(warnings) == 1
+        assert "failed to initialize" in warnings[0]
+        assert "another profile already uses" not in warnings[0]
+        assert "secret initialization detail" not in warnings[0]
+
     # -- Lifecycle hooks -----------------------------------------------------
 
 

@@ -877,6 +877,8 @@ def _default_on(dir_path, source: str) -> bool:
 
 def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: int, seen: dict) -> None:
     """Recursive directory scan matching PluginManager._scan_directory_level."""
+    from hermes_cli.plugins_discovery import is_skipped_plugin_dir
+
     if not base.is_dir():
         return
     try:
@@ -885,6 +887,8 @@ def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: in
         logger.warning("Skipping unreadable plugin directory %s: %s", base, exc)
         return
     for d in children:
+        if is_skipped_plugin_dir(d.name):
+            continue
         try:
             if not d.is_dir() or (depth == 0 and skip_names and d.name in skip_names):
                 continue

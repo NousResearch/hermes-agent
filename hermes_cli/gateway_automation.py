@@ -108,6 +108,11 @@ class GatewayGoalManager(_Remote):
     def resume(self, *, reset_budget=True):
         return self._rpc("resume", reset_budget=reset_budget)
 
+    def resume_for_user_input(self):
+        """Revive a judge-BLOCKED pause where the goal row lives. Asked every user turn: the mirror
+        may predate another viewer's verdict, and the gateway's own revive skips this session."""
+        return bool(self._rpc("resume_for_user_input"))
+
     def clear(self):
         self._rpc("clear")
 

@@ -4275,6 +4275,20 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if not is_ephemeral_response:
                 local_files, text_content = self.extract_local_files(text_content)
                 local_files = self.filter_local_delivery_paths(local_files, session_key=session_key)
+            # Cross-dedup within THIS response: a file already queued via an explicit MEDIA:
+            # tag (or markdown image) must not be uploaded a second time just because its bare
+            # path also appears in the response text. This happens when show_reasoning prepends
+            # the model's reasoning — which often names the very files it is about to attach —
+            # so extract_local_files re-finds them alongside the MEDIA tags. MEDIA tags are the
+            # explicit delivery intent; the redundant bare-path copy is dropped. Both sides are
+            # normalized by _validated_delivery_path, so identical files compare equal.
+            if local_files and (media_files or images):
+                already_queued = {p for p, _ in media_files} | {url for url, _ in images}
+                dupes = [p for p in local_files if p in already_queued]
+                if dupes:
+                    logger.info("[%s] Suppressing %d bare local path(s) already queued via "
+                                "MEDIA/image in this response: %s", self.name, len(dupes), dupes)
+                    local_files = [p for p in local_files if p not in already_queued]
             from gateway.platforms.docker_media_paths import hand_back_unreadable_media
             await hand_back_unreadable_media([p for p, _ in media_files] + local_files)
         history = (await self._bounded_history_media_paths_for_session(session_key)

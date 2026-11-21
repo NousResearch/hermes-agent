@@ -79,13 +79,66 @@ def transaction(conn: sqlite3.Connection, *, immediate: bool = False) -> Iterato
         conn.close()
 
 
+def get_user_version(conn: sqlite3.Connection) -> int:
+    """The file's ``PRAGMA user_version`` — 0 on a database no migration has stamped."""
+    row = conn.execute("PRAGMA user_version").fetchone()
+    try:
+        return int(row[0])
+    except (TypeError, ValueError):
+        return 0
+
+
+def set_user_version(conn: sqlite3.Connection, version: int) -> None:
+    conn.execute(f"PRAGMA user_version = {int(version)}")
+    conn.commit()
+
+
+def initialize_if_outdated(conn: sqlite3.Connection, *, version: int,
+                           migrate: Callable[[sqlite3.Connection], None]) -> bool:
+    """Run ``migrate`` only when the on-disk schema is behind ``version``; True when it ran.
+
+    A per-connection DDL sequence takes the schema write lock several times and, under normal
+    multi-job concurrency, spends the connection's whole busy budget on work that adds nothing:
+    cron/executions.db acquired it nine times per execution and lost 7.1% of the day's runs to
+    ``database is locked`` (#155907). ``user_version`` is a cheap read that needs no write lock,
+    and it also re-runs the migration for a database restored from an older backup — which a
+    "first connection only" flag in this process would not.
+    """
+    if get_user_version(conn) >= version:
+        return False
+    migrate(conn)
+    set_user_version(conn, version)
+    return True
+
+
+def _column_names(conn: sqlite3.Connection, table: str) -> list[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    names = []
+    for row in rows:
+        try:
+            names.append(str(row["name"]))       # sqlite3.Row
+        except (TypeError, IndexError):
+            names.append(str(row[1]))            # plain tuple
+    return names
+
+
 def add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> bool:
     """``ALTER TABLE <table> ADD COLUMN <ddl>``, idempotent across races: True when this call added
-    it, False on the ``duplicate column name`` a concurrent migrator caused.
+    it, False when the column was already there or a concurrent migrator won the race.
 
     ``column`` is the human-readable name for the call site; ``ddl`` carries the actual definition. See
     #21708.
+
+    The ``PRAGMA table_info`` check runs first on purpose: an unconditional ``ALTER`` takes the
+    schema write lock even when SQLite is about to reject it with ``duplicate column name``, so
+    every call on an up-to-date table was a lock acquisition guaranteed to accomplish nothing
+    (#155907).
     """
+    try:
+        if column.lower() in (name.lower() for name in _column_names(conn, table)):
+            return False
+    except sqlite3.OperationalError:
+        pass  # no such table: let the ALTER below report it
     try:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
         return True

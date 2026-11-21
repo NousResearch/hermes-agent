@@ -54,6 +54,14 @@ DEFAULT = frozenset(lane.name for lane in LANES if lane.default)
 # base a canary claim starts from; --only/--with/--without narrow or widen it exactly as they do
 # DEFAULT for a stable claim.
 CANARY = frozenset(NAMES) - {"upgrade"}
+# A commit build runs only the bundle and smoke lanes (no shared CI/Docker/Nix/E2E/Store/upgrade
+# suites). Those shared suites run reusable workflows on the default branch whose cache-save gates
+# assume trusted branch commits, and a commit build publishes nowhere: its builds page lives in its
+# claim archive. COMMIT is the base a commit claim starts from (Termux stays opt-in via --with
+# termux, like DEFAULT); --only/--with/--without narrow or widen it within COMMIT_ALLOWED.
+COMMIT_ALLOWED = frozenset({"windows", "macos-arm64", "termux", "smoke"})
+COMMIT_REFUSED = frozenset(NAMES) - COMMIT_ALLOWED
+COMMIT = DEFAULT - COMMIT_REFUSED
 
 DESKTOP = ("windows", "macos-arm64")
 WINDOWS = ("windows", "windows-store")
@@ -90,6 +98,8 @@ JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs i
     "publish-bundles": ("bundles",),
     # A canary only advances channels, so it publishes only the full desktop set they serve.
     "publish-canary": ("desktop-channel",),
+    # A commit build publishes nowhere; its builds page lists whatever bundles it built.
+    "publish-commit": ("bundles",),
     "transitions-darwin-arm64": ("macos-arm64", "upgrade"),
     "transitions-win32": ("windows", "upgrade"),
     "macos-packaged-arm64": ("macos-arm64", "upgrade"),
@@ -103,16 +113,25 @@ DIAGNOSTIC_CALLS = frozenset({"candidates-linux-x64", "candidates-linux-arm64"})
 CANDIDATE_CALLS = tuple(job for job in JOB_LANES
                         if job.startswith("candidates-") and job not in DIAGNOSTIC_CALLS)
 
-# The release policies stable-release.yml runs. Every build and test job is shared; only these
-# publication jobs belong to one policy, and each runs only under its own. A stable release
-# publishes its bundles to the stable channels and the Store; a canary publishes the same accepted
-# candidate to the canary channels and never touches a stable head or the Store.
-POLICIES = ("stable", "canary")
-POLICY_JOBS = {"publish-bundles": "stable", "publish-canary": "canary"}
+# The release policies stable-release.yml runs. Build and smoke jobs are shared; publication jobs
+# belong only to the policies named here (POLICY_JOBS), and a policy's refused lanes
+# (POLICY_REFUSED) never run under it. A stable release publishes to the stable channels, Docker
+# Hub and the Store; a canary publishes the same accepted candidate to the canary channels and
+# Docker Hub; a commit build runs only bundles + smoke and renders its own builds page in its
+# claim archive, touching no channel, feed, Docker tag, APT repository or Store.
+POLICIES = ("stable", "canary", "commit")
+POLICY_JOBS: dict[str, frozenset[str]] = {
+    "publish-bundles": frozenset({"stable"}),
+    "publish-canary": frozenset({"canary"}),
+    "publish-commit": frozenset({"commit"}),
+    "publish-docker": frozenset({"stable", "canary"}),
+}
 # The lane set a claim of each policy starts from, and the lanes it can never run: a canary is its
-# own app identity, so no signed package of it can upgrade anything (see CANARY).
-POLICY_BASE = {"stable": DEFAULT, "canary": CANARY}
-POLICY_REFUSED = {"stable": frozenset(), "canary": frozenset({"upgrade"})}
+# own app identity, so no signed package of it can upgrade anything (see CANARY); a commit build
+# runs only COMMIT_ALLOWED (bundles + smoke) so untrusted branch commits never enter shared CI/
+# Docker/Nix/E2E/Store/upgrade workflows.
+POLICY_BASE = {"stable": DEFAULT, "canary": CANARY, "commit": COMMIT}
+POLICY_REFUSED = {"stable": frozenset(), "canary": frozenset({"upgrade"}), "commit": COMMIT_REFUSED}
 
 # Candidate handoff group and manifest target, each with the lane that builds it.
 HANDOFF_LANE = {"win32-x64": "windows-build", "win32-arm64": "windows-build", "windows-universal": "windows-build",
@@ -188,13 +207,12 @@ def from_flags(raw: object) -> frozenset[str]:
 def jobs_to_run(lanes: Iterable[str], policy: str = "stable") -> dict[str, bool]:
     """Whether each lane-controlled job runs. Every ``if`` in the workflow reads this.
 
-    ``policy`` only removes the other policy's publication job (POLICY_JOBS); it never adds or
-    removes a build or test job, so a canary and a stable release with the same lanes run the
-    same graph."""
+    ``policy`` enforces POLICY_REFUSED and POLICY_JOBS so a policy can never run a refused lane or
+    another policy's publication job."""
     if policy not in POLICIES:
         raise ValueError(f"unknown release policy {policy!r}")
-    on = effective(lanes)
-    return {job: needs <= on and POLICY_JOBS.get(job, policy) == policy
+    on = effective(frozenset(lanes) - POLICY_REFUSED[policy])
+    return {job: needs <= on and policy in POLICY_JOBS.get(job, frozenset({policy}))
             for job, needs in JOB_LANES.items()}
 
 

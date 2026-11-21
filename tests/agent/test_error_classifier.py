@@ -1853,13 +1853,12 @@ class TestThrottleVsOverflowDisambiguation:
 class TestExpandedOverflowPatterns:
     """New provider overflow wordings route into compression recovery."""
 
-    def test_maximum_allowed_input_length_is_overflow(self):
-        # Together/Fireworks-style wording — matched no pattern before.
-        e = Exception(
-            "Input length 131393 exceeds the maximum allowed input length "
-            "of 131040 tokens."
-        )
-        result = classify_api_error(e, provider="together", model="m")
+    @pytest.mark.parametrize("msg", [
+        "Input length 131393 exceeds the maximum allowed input length of 131040 tokens.",  # Together/Fireworks
+        "Input exceeds the context limit (1048568 tokens). Please shorten the input.",  # BytePlus Ark (kilocode#15479)
+    ])
+    def test_provider_overflow_wording_is_overflow(self, msg):
+        result = classify_api_error(MockAPIError(msg, status_code=400), provider="custom", model="m")
         assert result.reason == FailoverReason.context_overflow
         assert result.should_compress is True
 

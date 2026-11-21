@@ -123,6 +123,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
+| [**0xarchive-backtest**](../user-guide/skills/optional/finance/finance-0xarchive-backtest.md) | Test trading ideas with reproducible backtest evidence. |
 | [**3-statement-model**](../user-guide/skills/optional/finance/finance-3-statement-model.md) | Build integrated IS/BS/CF financial workbooks in Excel. |
 | [**comps-analysis**](../user-guide/skills/optional/finance/finance-comps-analysis.md) | Build comparable-company valuation workbooks in Excel. |
 | [**dcf-model**](../user-guide/skills/optional/finance/finance-dcf-model.md) | Build discounted cash flow valuation workbooks in Excel. |

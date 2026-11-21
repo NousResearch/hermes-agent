@@ -558,7 +558,9 @@ forward. `--restore` also removes the drop-in.
 Nothing is changed (exit 3) while another old backend for this home is running, enabled or (on macOS)
 loaded (also when `--address` picks one of them), when the old unit's enablement could not be put back
 exactly (for example a `linked` unit), when a hand-started backend's start time cannot be read, when
-`config.yaml` or `.env` is a symbolic link (replace it with a copy first), when the gateway's unit or
+`config.yaml` or `.env` is a symbolic link (replace it with a copy first), when `backend_migration/` or
+`backend_migration.json` is a symbolic link (also for `--restore` and the rollback of an unfinished run: the
+backups would land outside the home; put a real folder or file in its place), when the gateway's unit or
 LaunchAgent of the same name belongs to another Hermes home, when a legacy `hermes.service` is installed
 (run `hermes gateway migrate-legacy` first), when a config backend other than the file one is selected
 (`HERMES_CONFIG_BACKEND`, for example `remote`: the backups and the undo cover `config.yaml` only; `--apply

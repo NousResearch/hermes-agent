@@ -662,9 +662,23 @@ def _discard_launcher_snapshot(m: dict) -> None:
             m["backups"][key] = None
 
 
+def _store_symlinked(home: Path) -> Optional[str]:
+    """Why no run may use this home's migration record now (``backend_migration/`` or ``backend_migration.json``
+    is a symbolic link: the backups of ``.env`` and the launcher copies would be written to, and read from,
+    wherever it points, outside the guards the Files routes keep on the real folder), else None."""
+    if links := [n for n in (BACKUP_DIR, MANIFEST_NAME) if (Path(home) / n).is_symlink()]:
+        return (f"{', '.join(links)} in {home} is a symbolic link; the migration keeps its backups of .env and "
+                f"config.yaml there, and through the link they would land outside this home. Put a real folder "
+                f"(or file) with the same contents in place of the link, then run this again")
+    return None
+
+
 def _symlinked(home: Path) -> Optional[str]:
     """Why ``config.yaml`` / ``.env`` may not be touched now (a symbolic link: restoring would replace the
-    link with a copy, and a mode change would reach its shared target), else None."""
+    link with a copy, and a mode change would reach its shared target), or the migration record is a link
+    (:func:`_store_symlinked`), else None."""
+    if (store := _store_symlinked(home)) is not None:
+        return store
     if links := [n for n in ("config.yaml", ".env") if (Path(home) / n).is_symlink()]:
         return (f"{', '.join(links)} in {home} is a symbolic link now; restoring would replace it with a "
                 f"copy. Put the file back in place of the link, then run this again")
@@ -1281,6 +1295,8 @@ def _owner_blockers(host, plan: BackendPlan, *, force_interrupt: bool = False) -
             plan.blockers.append(f"{Path(host.home) / name} is a symbolic link: the migration would change the "
                                  f"file it points to, which may be shared. Replace the link with a copy of the "
                                  f"file (or move this home off the shared file), then run this again.")
+    if (store := _store_symlinked(host.home)) is not None:
+        plan.blockers.append(f"{store}.")
     unit = (plan.gateway or {}).get("unit")
     if unit and host.own_unit() in (unit, f"{unit}.service"):
         plan.blockers.append(f"This command runs inside {host.own_unit()}, which the migration restarts and a "
@@ -1484,6 +1500,8 @@ def cmd_backends(args) -> None:
     if getattr(args, "status", False):
         sys.exit(print_status(host, bool(getattr(args, "json", False))))
     if not getattr(args, "dry_run", False):
+        if (store := _store_symlinked(host.home)) is not None:  # before the run lock is made in the folder
+            sys.exit(_refuse_store_symlinked(store, args))
         from hermes_cli.gateway_migrate_backends_lock import prune_stale_acks
         prune_stale_acks(host.home)
     if (getattr(args, "restore", False) and not getattr(args, "detach", False)
@@ -1494,6 +1512,19 @@ def cmd_backends(args) -> None:
     if getattr(args, "restore", False):
         sys.exit(cmd_restore(host, args))
     sys.exit(cmd_apply(host, args))
+
+
+def _refuse_store_symlinked(reason: str, args) -> int:
+    """Exit 3 before anything is read from or written to a linked migration record (no refusal record either:
+    it would be written through the link)."""
+    mode = "restore" if getattr(args, "restore", False) else "apply"
+    message = f"Nothing changed: {reason}."
+    if getattr(args, "json", False):
+        print(json.dumps({"applied": False, "detached": False, "mode": mode, "outcome": "refused",
+                          "error": "store_symlinked", "message": message}))
+    else:
+        print(f"✗ {message}")
+    return EXIT_BLOCKED
 
 
 def _take_run_lock(host, args) -> Optional[int]:

@@ -84,11 +84,18 @@ _BUZZ_PRESENTATION_MENTION_SEPARATOR = "\u200b"
 _HEX64_RE = re.compile(r"[0-9a-f]{64}")
 
 
-def _escape_presentation_mention(content: str, name: str) -> str:
+def _escape_presentation_mention(content: str, name: str, *, member_boundary: bool = False) -> str:
     """Make every ``@name`` token presentation-only via an invisible separator after the ``@`` (Buzz
     p-tags whitespace-prefixed @tokens at publish, so an inserted separator keeps the text readable
-    while the relayer no longer sees a member mention)."""
-    token = re.compile(rf"(?<!\S)@{re.escape(name)}(?=$|[^A-Za-z0-9._-])", re.IGNORECASE)
+    while the relayer no longer sees a member mention).
+
+    ``member_boundary=True`` applies the publish-side boundary for a known member: a period ends the
+    name there (the CLI tags ``@Name.`` / ``@Name.rest``), which the interim downgrade must match to
+    keep such narration non-summoning. The default keeps the token-continuation boundary (``.`` stays
+    inside the token) used by the CLI-rejected-token recovery, whose escape is driven by the CLI's own
+    error message, not by member matching."""
+    tail = r"$|[^A-Za-z0-9_-]" if member_boundary else r"$|[^A-Za-z0-9._-]"
+    token = re.compile(rf"(?<!\S)@{re.escape(name)}(?={tail})", re.IGNORECASE)
     escaped, _ = token.subn(lambda m: "@" + _BUZZ_PRESENTATION_MENTION_SEPARATOR + m.group(0)[1:], content)
     return escaped
 
@@ -824,7 +831,7 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
                 names.append(name)
         out = content
         for name in sorted(set(names), key=len, reverse=True):
-            out = _escape_presentation_mention(out, name)
+            out = _escape_presentation_mention(out, name, member_boundary=True)
         return out
 
     async def _run_message_send(self, args: list[str], content: str, mention_pubkeys: Optional[list[str]] = None):

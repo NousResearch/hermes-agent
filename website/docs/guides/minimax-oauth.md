@@ -18,7 +18,7 @@ The transport reuses the `anthropic_messages` adapter (MiniMax exposes an Anthro
 | Display name | MiniMax (OAuth) |
 | Auth type | Browser OAuth (PKCE redirect flow) |
 | Transport | Anthropic Messages-compatible (`anthropic_messages`) |
-| Models | `MiniMax-M2.7`, `MiniMax-M2.7-highspeed` |
+| Models | Live catalog from the account (`GET {endpoint}/v1/models`), merged with a curated floor of `MiniMax-M3`, `MiniMax-M3.1-Flash`, `MiniMax-M2.7`, `MiniMax-M2.7-highspeed` |
 | Global endpoint | `https://api.minimax.io/anthropic` |
 | China endpoint | `https://api.minimaxi.com/anthropic` |
 | Requires env var | No (`MINIMAX_API_KEY` is **not** used for this provider) |
@@ -165,10 +165,14 @@ hermes --provider minimax-oauth
 
 | Model | Best for |
 |-------|----------|
+| `MiniMax-M3` | Long-context reasoning, complex tool-calling |
+| `MiniMax-M3.1-Flash` | Fast, cost-efficient general work (1M-token context) |
 | `MiniMax-M2.7` | Long-context reasoning, complex tool-calling |
 | `MiniMax-M2.7-highspeed` | Lower latency, lighter tasks, auxiliary calls |
 
-Both models support up to 200,000 tokens of context.
+The picker lists the models your account can actually run: Hermes reads the live catalog
+from `GET {endpoint}/v1/models` with your OAuth token and merges it with a curated floor,
+so a newly released model appears without waiting for a Hermes update.
 
 `MiniMax-M2.7` is also used automatically as the auxiliary model for vision and delegation tasks when `minimax-oauth` is the primary provider.
 

@@ -8,6 +8,7 @@ which needs MiniMax-specific reasoning controls in extra_body.
 from typing import Any
 from urllib.parse import urlparse
 
+from hermes_cli.models_minimax import minimax_oauth_catalog
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -54,6 +55,9 @@ minimax_oauth = MiniMaxProfile(
     signup_url="https://api.minimax.io/",
     env_vars=(),  # OAuth — tokens in auth.json, not env
     base_url="https://api.minimax.io/anthropic", auth_type="oauth_external", default_aux_model="MiniMax-M2.7",
+    # Live catalog: the OAuth account's real model list, so a newly released MiniMax model
+    # reaches the picker without waiting for a Hermes release.
+    picker_catalog=lambda force_refresh: minimax_oauth_catalog(force_refresh),
 )
 
 register_provider(minimax)

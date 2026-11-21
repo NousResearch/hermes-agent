@@ -116,6 +116,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/kanban-worker-lanes',
             'user-guide/features/kanban-multi-gateway',
             'user-guide/features/goals',
+            'user-guide/features/side-threads',
             'user-guide/features/heartbeat',
             'user-guide/features/loops',
             'user-guide/features/code-execution',

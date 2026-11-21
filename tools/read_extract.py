@@ -476,13 +476,17 @@ def _extract_docx(path: str) -> str:
         root = _zip_xml(zf, "word/document.xml")
     w = f"{{{_NS_W}}}"
     breaks = {f"{w}tab": "\t", f"{w}br": "\n", f"{w}cr": "\n"}
+    # Read current text: moved-away/deleted runs and ruby guides are not body content.
+    # Collect exclusions across the document so nested text-box paragraphs stay excluded too.
+    excluded = {n for tag in ("del", "moveFrom", "rt")
+                for region in root.iter(f"{w}{tag}") for n in region.iter()}
     lines: list[str] = []
     for para in root.iter(f"{w}p"):
-        # w:rt is the ruby (phonetic) guide over w:rubyBase; it annotates the text, it is not text.
-        guide = {n for rt in para.iter(f"{w}rt") for n in rt.iter()}
+        if para in excluded:
+            continue
         text = "".join(
             (n.text or "") if n.tag == f"{w}t" else breaks.get(n.tag, "")
-            for n in para.iter() if n not in guide)
+            for n in para.iter() if n not in excluded)
         lines.extend(text.split("\n"))
     return _joined(lines, "DOCX contains no extractable text")
 

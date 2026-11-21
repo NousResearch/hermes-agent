@@ -6,11 +6,15 @@ must never import that module at module level (import cycle).
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
 from agent.model_metadata import estimate_messages_tokens_rough
 from agent.model_metadata_token_memo import forget_message_token_memo
+
+# Same logger as the compressor, so its "dispatched" and "finished" lines sit together.
+logger = logging.getLogger("agent.context_compressor")
 
 
 def _safe_int(value: Any) -> int | None:
@@ -77,6 +81,11 @@ class CompressionTelemetryMixin:
         aux_provider: str | None = None, aux_model: str | None = None,
         effective_aux_context: int | None = None, phase_timings: dict[str, Any] | None = None,
     ) -> None:
+        # Names the route call_llm actually used; the "dispatched" line can only say "auto" (#143576).
+        logger.info(
+            "Compression summary call finished: provider=%s model=%s duration_ms=%s",
+            aux_provider or "unknown", aux_model or "unknown", duration_ms,
+        )
         telemetry = getattr(self, "_active_compression_telemetry", None)
         if not isinstance(telemetry, dict):
             return

@@ -45,6 +45,64 @@ def test_claim_oneshot_cannot_be_double_claimed(temp_home):
     assert claim_job_for_fire(job["id"]) is False
 
 
+
+
+def test_recurring_job_not_due_while_fire_claim_is_live(temp_home):
+    """t_30f68d08: a recurring job with a LIVE fire_claim held by another
+    process/host must not be returned by get_due_jobs(). Before the fix,
+    _evaluate_due_job() only guarded one-shots against a live run_claim and had
+    no equivalent guard for fire_claim on cron/interval jobs: every tick kept
+    re-selecting the job as due while another replica still held a fresh claim,
+    so claim_job_for_fire() lost every single time, producing a "Fire claim
+    lost; execution was not started." failure once per tick until the claim's
+    FIRE_CLAIM_TTL_SECONDS (300s) finally lapsed.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from cron.jobs import create_job, get_due_jobs, load_jobs, save_jobs
+
+    job = create_job(prompt="x", schedule="every 1h", name="recurring")
+    jid = job["id"]
+
+    now = datetime.now(UTC)
+    jobs = load_jobs()
+    rec = next(j for j in jobs if j["id"] == jid)
+    rec["next_run_at"] = (now - timedelta(seconds=5)).isoformat()
+    rec["fire_claim"] = {"at": now.isoformat(), "by": "other-host:other-pid"}
+    save_jobs(jobs)
+
+    due_ids = [j["id"] for j in get_due_jobs()]
+    assert jid not in due_ids, (
+        "recurring job with a live fire_claim held elsewhere must not be "
+        "re-dispatched this tick"
+    )
+
+
+def test_recurring_job_due_again_once_fire_claim_expires(temp_home):
+    """Once the held fire_claim ages past FIRE_CLAIM_TTL_SECONDS, the job
+    becomes due again (the guard is a liveness window, not a permanent lock)."""
+    from datetime import datetime, timedelta, timezone
+
+    from cron.constants import FIRE_CLAIM_TTL_SECONDS
+    from cron.jobs import create_job, get_due_jobs, load_jobs, save_jobs
+
+    job = create_job(prompt="x", schedule="every 1h", name="recurring")
+    jid = job["id"]
+
+    now = datetime.now(UTC)
+    jobs = load_jobs()
+    rec = next(j for j in jobs if j["id"] == jid)
+    rec["next_run_at"] = (now - timedelta(seconds=5)).isoformat()
+    rec["fire_claim"] = {
+        "at": (now - timedelta(seconds=FIRE_CLAIM_TTL_SECONDS + 5)).isoformat(),
+        "by": "other-host:other-pid",
+    }
+    save_jobs(jobs)
+
+    due_ids = [j["id"] for j in get_due_jobs()]
+    assert jid in due_ids, "job must become due again once the stale claim expires"
+
+
 def test_claim_unknown_job_returns_false(temp_home):
     from cron.jobs import claim_job_for_fire
 

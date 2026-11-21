@@ -6,6 +6,7 @@ export const jaProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   home: 'ホーム',
   autoDiscovered: '自動検出',
   showAllCount: count => `${count} 件のセッションをすべて表示`,
+  showFewer: '表示を減らす',
   newButton: '新規プロジェクト',
   createTitle: '新規プロジェクト',
   createDesc: 'ワークスペースに名前を付け、1つ以上のフォルダを追加します。',

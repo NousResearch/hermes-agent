@@ -99,18 +99,30 @@ def _row_cwd(policy):
     return policy['cwd'] if not isinstance(value, str) else (value or None)
 
 
+def _on_a_lane(rows, lanes):
+    return {owner: (target, source) for owner, (target, source) in rows.items() if source in lanes}
+
+
 def release_handed_off_receipts(holder, *, epoch, lanes):
     """Boot heal for #143286: an older build's ``/handoff`` (or a platform ``/resume``) moved a local
     session onto a messaging lane but kept its local receipt, so every open, pin or rename refused it
     (``stored identity mismatch``) and its title never resolved. Retire each such receipt, so the row
     restores from its route like any other platform session, and move the rest of its conversation
     there with it (``hand_off_conversations``). Only receipts whose CURRENT target a messaging lane
-    now holds (a source in *lanes*): any other refused receipt stays as it is, logged when it is touched."""
+    now holds (a source in *lanes*): any other refused receipt stays as it is, logged when it is touched.
+
+    The scan joins every local receipt to its session row (seconds on a large cold store), so it runs
+    on a read connection: nearly every boot finds nothing and opens no write transaction. When it
+    finds receipts, the write re-probes just those by key, so a receipt that stopped being moved in
+    between is kept."""
+    with holder._read_ctx() as conn:
+        found = _on_a_lane(moved_receipts(conn), lanes)
+    if not found:
+        return {}
+
     def write(conn):
         _epoch(conn, epoch)
-        moved = {owner: (target, source) for owner, (target, source) in moved_receipts(conn).items()
-                 if source in lanes}
-        return hand_off_conversations(conn, moved)
+        return hand_off_conversations(conn, _on_a_lane(moved_receipts(conn, owners=list(found)), lanes))
     return holder._execute_write(write)
 
 

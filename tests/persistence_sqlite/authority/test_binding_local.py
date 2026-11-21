@@ -11,7 +11,8 @@ from typing import Any
 
 from persistence.authority.bindings import NewSessionBinding, local_session_id
 from persistence.core.identity import SessionId
-from tests.persistence_sqlite.authority._admission_support import begin_epoch
+from tests.persistence_sqlite.authority._admission_support import assert_rolls_back, begin_epoch
+from tests.persistence_sqlite.authority._support import counted_transactions
 from tests.persistence_sqlite.authority.test_runtime_picks import assert_one_write, build_seed
 
 PROFILE = "default"
@@ -138,7 +139,13 @@ def _handed_off(db: Any) -> None:
         "UPDATE sessions SET session_key='agent:main:telegram:dm:42', source='telegram', chat_id='42' WHERE id='child-1'"))
 
 
-def test_release_handed_off_receipts_is_one_write(store):
+def test_release_handed_off_receipts_scans_on_a_read_then_writes_once(store):
+    """The whole-store scan is a read (a boot with nothing to release opens no write at all); the transaction
+    that hands the receipts off is still exactly one write, and a failure inside it rolls every table back."""
     _lineage_seed(store)
     build_seed(store, _handed_off)
-    assert_one_write(store, lambda: store.bindings.release_handed_off_receipts(epoch=1, lanes=frozenset({"telegram"})))
+    call = lambda: store.bindings.release_handed_off_receipts(epoch=1, lanes=frozenset({"telegram"}))
+    assert_rolls_back(store.store_path, store.holder(), call)
+    with counted_transactions(store.holder()) as counts:
+        call()
+    assert counts == {"write": 1, "read": 1}

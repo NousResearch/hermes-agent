@@ -10,6 +10,7 @@ import { arConnectors } from './ar_connectors'
 import { arDiagnostics } from './ar_diagnostics'
 import { arFirstRun } from './ar_first_run'
 import { arSettings } from './ar_settings'
+import { arWebhookTest } from './ar_webhook_test'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
 export const arOverrides = {
@@ -155,7 +156,8 @@ export const arOverrides = {
       signIn: 'تسجيل الدخول',
       notNow: 'ليس الآن'
     }
-  }
+  },
+  webhooks: { test: arWebhookTest }
 } satisfies TranslationOverrides
 
 export const ar = defineLocale(arOverrides)

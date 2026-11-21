@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   createWebhook: vi.fn(),
   deleteWebhook: vi.fn(),
   setWebhookEnabled: vi.fn(),
+  sendWebhookTest: vi.fn(),
   runGatewayRestart: vi.fn(),
   notify: vi.fn(),
   notifyError: vi.fn()
@@ -20,7 +21,8 @@ vi.mock('@/hermes', () => ({
   createWebhook: (body: unknown, profile?: string) => mocks.createWebhook(body, profile),
   deleteWebhook: (name: string, profile?: string) => mocks.deleteWebhook(name, profile),
   setWebhookEnabled: (name: string, enabled: boolean, profile?: string) =>
-    mocks.setWebhookEnabled(name, enabled, profile)
+    mocks.setWebhookEnabled(name, enabled, profile),
+  sendWebhookTest: (name: string, profile?: string) => mocks.sendWebhookTest(name, profile)
 }))
 
 vi.mock('@/store/profile', async () => {
@@ -173,5 +175,69 @@ describe('WebhooksView signature pin', () => {
         'alpha'
       )
     )
+  })
+})
+
+describe('WebhooksView test delivery', () => {
+  const route = {
+    created_at: null,
+    deliver: 'log',
+    deliver_only: false,
+    description: '',
+    enabled: true,
+    events: [],
+    name: 'deploy',
+    prompt: '',
+    secret_set: true,
+    signature: 'github',
+    skills: [],
+    url: 'http://localhost:8644/webhooks/deploy'
+  }
+
+  it('shows a signed curl for the route and sends a test through the owning profile', async () => {
+    mocks.getWebhooks.mockResolvedValue({ enabled: true, subscriptions: [route] })
+    mocks.sendWebhookTest.mockResolvedValue({
+      delivery_id: 'hermes-test-abc',
+      ok: true,
+      outcome: 'accepted',
+      response: '{"status":"accepted"}',
+      status: 202,
+      url: route.url
+    })
+    renderView()
+
+    const command = await screen.findByText(/curl -sS -X POST 'http:\/\/localhost:8644\/webhooks\/deploy'/)
+    expect(command.textContent).toContain('X-Hub-Signature-256: sha256=$SIG')
+    expect(command.textContent).toContain('X-Request-ID: ')
+    expect(command.textContent).not.toContain('X-Webhook-Signature-V2')
+
+    fireEvent.click(screen.getByRole('button', { name: /send test/i }))
+
+    await waitFor(() => expect(mocks.sendWebhookTest).toHaveBeenCalledWith('deploy', 'alpha'))
+    await waitFor(() =>
+      expect(mocks.notify).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'success', message: expect.stringContaining('hermes-test-abc') })
+      )
+    )
+  })
+
+  it('drops a test completion after the row that sent it is no longer shown', async () => {
+    const other = { ...route, name: 'other', url: 'http://localhost:8644/webhooks/other' }
+    const pending = deferred<unknown>()
+    mocks.getWebhooks.mockResolvedValue({ enabled: true, subscriptions: [route, other] })
+    mocks.sendWebhookTest.mockReturnValue(pending.promise)
+    renderView()
+
+    fireEvent.click(await screen.findByRole('button', { name: /send test/i }))
+    await waitFor(() => expect(mocks.sendWebhookTest).toHaveBeenCalledWith('deploy', 'alpha'))
+    expect(screen.getByRole('button', { name: /sending/i })).toBeTruthy()
+
+    fireEvent.click(screen.getByText('other'))
+    expect(await screen.findByRole('button', { name: /send test/i })).toBeTruthy()
+
+    await act(async () =>
+      pending.resolve({ delivery_id: 'late', ok: true, outcome: 'accepted', response: '', status: 202, url: route.url })
+    )
+    expect(mocks.notify).not.toHaveBeenCalled()
   })
 })

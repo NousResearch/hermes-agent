@@ -27,6 +27,7 @@ import { jaProjects } from './ja_projects'
 import { jaSharedMetrics } from './ja_shared_metrics'
 import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
+import { jaWebhookTest } from './ja_webhook_test'
 
 export const jaOverrides = {
   gatewayGroupOpen: {
@@ -3843,7 +3844,8 @@ export const jaOverrides = {
       signIn: 'サインイン',
       notNow: '今はしない'
     }
-  }
+  },
+  webhooks: { test: jaWebhookTest }
 } satisfies TranslationOverrides
 
 export const ja = defineLocale(jaOverrides)

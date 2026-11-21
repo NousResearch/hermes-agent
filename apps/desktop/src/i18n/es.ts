@@ -26,6 +26,7 @@ import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
 import { esThemePicker } from './es_theme_picker'
 import { esUpdateChannel } from './es_update_channel'
+import { esWebhookTest } from './es_webhook_test'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
@@ -3173,6 +3174,7 @@ export const esOverrides = {
     platformIntro: {}
   },
   webhooks: {
+    test: esWebhookTest,
     search: 'Buscar webhooks…',
     loading: 'Cargando webhooks…',
     loadFailed: 'No se pudieron cargar los webhooks',

@@ -138,5 +138,6 @@ export type {
   WebhookEnableResponse,
   WebhookRoute,
   WebhookSignature,
-  WebhooksResponse
+  WebhooksResponse,
+  WebhookTestResponse
 } from '@/types/webhooks'

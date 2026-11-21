@@ -384,6 +384,7 @@ hint when it isn't.
 - **Create** — name, description, event filter, delivery target, optional direct-delivery mode, and an agent prompt. On creation the page surfaces the route URL and the one-time HMAC secret to copy.
 - **Enable / disable** — toggle a subscription on or off. Disabled routes stay in the subscriptions file but the gateway rejects their incoming events (403). The gateway hot-reloads the file, so the change takes effect on the next event — no restart needed.
 - **List** — each subscription shows its URL, events, and delivery target
+- **Test** — each subscription has a copy-paste `curl` that signs one test event the way the route's pin expects (the shell computes the HMAC with `openssl`; the secret is filled in on the create result and is a placeholder afterwards) and a **Send test** button that has the dashboard sign and POST the event server-side, so the stored secret never reaches the browser. Every test carries a fresh `X-Request-ID`, which the receiver records as its delivery id, so a repeat test is a new delivery rather than a duplicate.
 - **Delete** — remove a subscription
 
 ![Webhooks admin page — subscriptions with enable/disable toggles](/img/dashboard/admin-webhooks.png)
@@ -684,6 +685,7 @@ same auth gate as the rest of `/api/`.
 | `POST /api/ops/prompt-size` · `/dump` · `/config-migrate` | Diagnostics (backgrounded) |
 | `POST /api/ops/debug-share` | Upload the allowlisted debug summary (no log lines or message text) to a public paste and return the URL (synchronous). Body: `{consent: true, redact?, lines?}`; without `"consent": true` it returns `400` and uploads nothing |
 | `PUT /api/webhooks/{name}/enabled` | Enable / disable a webhook route |
+| `POST /api/webhooks/{name}/test` | Sign and send one test event server-side (same signing as `hermes webhook test`); returns `{ok, url, delivery_id, status, response}`, `502` when the receiver is unreachable |
 | `POST /api/skills/hub/install` · `/uninstall` · `/update` | Skills hub actions (backgrounded) |
 | `GET /api/skills/hub/search` | Search the skill hub across all sources |
 | `GET /api/sessions/stats` | Session-store statistics |

@@ -25,6 +25,7 @@ import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
 import { deThemePicker } from './de_theme_picker'
 import { deUpdateChannel } from './de_update_channel'
+import { deWebhookTest } from './de_webhook_test'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
@@ -3182,6 +3183,7 @@ export const deOverrides = {
     platformIntro: {}
   },
   webhooks: {
+    test: deWebhookTest,
     search: 'Webhooks suchen …',
     loading: 'Webhooks werden geladen …',
     loadFailed: 'Webhooks konnten nicht geladen werden',

@@ -7,6 +7,7 @@ reached through the late-binding seam (cycle-safe).
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import re
@@ -301,6 +302,40 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle, profile: Op
 
     key = await config_scoped_to_thread(profile, _run)
     return {"ok": True, "name": key, "enabled": bool(body.enabled)}
+
+
+@router.post("/api/webhooks/{name}/test")
+async def send_webhook_test(name: str, profile: Optional[str] = None):
+    """Sign and POST a test event server-side (the route secret never reaches the browser), the way
+    ``hermes webhook test`` does. A test starts a real agent run, so it names its profile."""
+    profile = destructive_profile(profile, "POST /api/webhooks/{name}/test")
+
+    def _run():
+        import hermes_cli.webhook as wh
+
+        subscriptions = wh._load_subscriptions()
+        key = _webhook_key_in(subscriptions, name)
+        try:
+            return wh.send_test_delivery(key, subscriptions[key])
+        except OSError as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Webhook receiver unreachable ({exc}). Is the gateway running?",
+            ) from exc
+
+    result = await config_scoped_to_thread(profile, _run)
+    outcome = _receiver_outcome(result.body)
+    # A 200 "ignored" (event filter, route filter, script) means nothing ran: not a passing test.
+    return {"ok": 200 <= result.status < 300 and outcome != "ignored", "outcome": outcome, "url": result.url,
+            "delivery_id": result.delivery_id, "status": result.status, "response": result.body}
+
+
+def _receiver_outcome(body: str) -> Optional[str]:
+    """The webhook receiver's ``status`` field (accepted / ignored / duplicate / ...), if it sent one."""
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return None
+    return parsed.get("status") if isinstance(parsed, dict) else None
 
 
 # --- Gateway lifecycle: spawn the real `hermes gateway <verb>` so behaviour

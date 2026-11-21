@@ -33,6 +33,7 @@ import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
 import { enUninstallSection } from './en_uninstall_section'
 import { enUpdateChannel } from './en_update_channel'
+import { enWebhookTest } from './en_webhook_test'
 import type { Translations } from './types'
 
 export const en: Translations = {
@@ -2744,6 +2745,7 @@ export const en: Translations = {
   },
 
   webhooks: {
+    test: enWebhookTest,
     search: 'Search webhooks...',
     loading: 'Loading webhooks...',
     loadFailed: 'Webhooks failed to load',

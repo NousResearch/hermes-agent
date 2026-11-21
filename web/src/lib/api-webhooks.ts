@@ -1,4 +1,4 @@
-// Dashboard webhook subscription CRUD (/api/webhooks); re-exported from ./api.
+// Dashboard webhook subscription CRUD (/api/webhooks): types plus the calls `api` spreads in.
 
 export interface WebhookRoute {
   name: string;
@@ -44,4 +44,45 @@ export interface WebhookCreate {
   deliver_only?: boolean;
   deliver_chat_id?: string;
   signature?: WebhookSignature;
+}
+
+// POST /api/webhooks/{name}/test: the backend signs and sends one test event. `ok` is a 2xx answer
+// that the receiver did not ignore; `outcome` is the receiver's own status (accepted, ignored, ...).
+export interface WebhookTestResponse {
+  ok: boolean;
+  outcome: string | null;
+  url: string;
+  delivery_id: string;
+  status: number;
+  response: string;
+}
+
+type FetchJSON = <T>(url: string, init?: RequestInit) => Promise<T>;
+
+const routePath = (name: string, tail = "") =>
+  `/api/webhooks/${encodeURIComponent(name)}${tail}`;
+
+export function webhookApi(fetchJSON: FetchJSON) {
+  return {
+    getWebhooks: () => fetchJSON<WebhooksResponse>("/api/webhooks"),
+    enableWebhooks: () =>
+      fetchJSON<WebhookEnableResponse>("/api/webhooks/enable", { method: "POST" }),
+    createWebhook: (body: WebhookCreate) =>
+      fetchJSON<WebhookRoute & { secret: string }>("/api/webhooks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    deleteWebhook: (name: string) =>
+      fetchJSON<{ ok: boolean }>(routePath(name), { method: "DELETE" }),
+    setWebhookEnabled: (name: string, enabled: boolean) =>
+      fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(routePath(name, "/enabled"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      }),
+    // Signed server-side with the stored secret, which never reaches the browser.
+    sendWebhookTest: (name: string) =>
+      fetchJSON<WebhookTestResponse>(routePath(name, "/test"), { method: "POST" }),
+  };
 }

@@ -537,7 +537,7 @@ hermes webhook test github-issues
 hermes webhook test github-issues --payload '{"issue": {"number": 42, "title": "Test"}}'
 ```
 
-`test` signs the way the route's `signature` pin expects: `X-Hub-Signature-256` for `github`, `X-Gitlab-Token` for `gitlab`, `Linear-Signature` for `linear`, and `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` for `generic` or unpinned routes.
+`test` signs the way the route's `signature` pin expects: `X-Hub-Signature-256` for `github`, `X-Gitlab-Token` for `gitlab`, `Linear-Signature` for `linear`, and `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` for `generic` or unpinned routes. Each test sends a fresh `X-Request-ID`, which the adapter uses as the delivery id, so repeating a test is never answered as a duplicate. The dashboard and desktop Webhooks pages offer the same test (a **Send test** button signed server-side) plus a copy-paste `curl` that signs the event in your shell.
 
 ### How dynamic subscriptions work
 

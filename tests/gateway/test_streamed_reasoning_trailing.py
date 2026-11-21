@@ -68,6 +68,26 @@ async def test_show_reasoning_suppresses_live_answer_streaming(monkeypatch):
     assert runner._show_reasoning_for_source(local) is False
 
 
+@pytest.mark.asyncio
+async def test_webhook_never_prepends_reasoning_even_globally_enabled(monkeypatch):
+    """A global display.show_reasoning must not move a webhook final's first line: the
+    urgent-only response policy matches the escalation header on line 0, and a prepended
+    reasoning fence would suppress a real page with a successful admission."""
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config",
+                        lambda: {"display": {"show_reasoning": True}})
+    adapter = ProgressCaptureAdapter(platform=Platform.WEBHOOK)
+    runner = _make_runner(adapter)
+    wh = SessionSource(platform=Platform.WEBHOOK, chat_id="webhook:incident:x", chat_type="webhook")
+
+    assert runner._show_reasoning_for_source(wh) is False
+    result = {"final_response": "[NEEDS-APPROVAL] disk full", "last_reasoning": "thinking hard",
+              "already_sent": False}
+    body = "[NEEDS-APPROVAL] disk full\nAction required: purge the WAL archive"
+    assert runner._hmwa_prepend_reasoning(result, body, wh, False) == body
+
+
 class _Consumer:
     """Captures stream_deltas_enabled the way the real consumer carries it."""
 

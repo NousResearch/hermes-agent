@@ -1,9 +1,13 @@
 """Print the release.py command and receipt identity for this bundle run.
 
 The print is a log. It must not fail the build, and it must not invent a
-command the dispatcher does not send. A commit or channel run also gets a
-post-build receipt tag. This step runs before that tag exists, so it prints
-the tag shape and names the step that writes the real tag.
+command the dispatcher does not send. A channel run also gets a post-build
+receipt tag. This step runs before that tag exists, so it prints the tag shape
+and names the step that writes the real tag.
+
+A tagless commit dispatch is the legacy mode: release.py --build-commit now
+claims a commit.<stamp>-v<version> tag and runs Stable Release instead, so no
+release.py command recreates such a run and it writes no receipt.
 """
 from __future__ import annotations
 
@@ -92,13 +96,13 @@ def describe(env: Mapping[str, str]) -> dict[str, object]:
 def release_command(env: Mapping[str, str]) -> list[str] | None:
     """The gh workflow command for a dispatch release.py can recreate.
 
-    Stable and canary dispatches mint a tag before they start a workflow, so
-    no release.py command recreates those runs. Return None for them.
+    Stable, canary and commit builds mint a claim tag before they start a
+    workflow, so no release.py command recreates those runs. Return None for them.
     """
     facts = describe(env)
     repository = facts["repository"]
     branch = _text(env.get("DEFAULT_BRANCH"))
-    if not repository or not branch or facts["kind"] not in {"commit", "channel"}:
+    if not repository or not branch or facts["kind"] != "channel":
         return None
     if facts["disposable_channel"] or facts["disposable_run"] or facts["disposable_receivers"]:
         return None
@@ -110,25 +114,21 @@ def release_command(env: Mapping[str, str]) -> list[str] | None:
     baked = facts["bundle_env"]
     if not isinstance(baked, dict):
         return None
-    if facts["kind"] == "channel":
-        from scripts.releases.channel_build import dispatch_command
+    from scripts.releases.channel_build import dispatch_command
 
-        return dispatch_command(str(facts["channel"]), commit, str(repository), branch, baked or None,
-                                str(facts["branding"]))
-    from scripts.releases.commit_build import dispatch_command
-
-    return dispatch_command(commit, str(repository), branch, baked or None)
+    return dispatch_command(str(facts["channel"]), commit, str(repository), branch, baked or None,
+                            str(facts["branding"]))
 
 
 def receipt_shape(facts: Mapping[str, object]) -> str | None:
-    """The post-build receipt tag shape for a commit or channel run.
+    """The post-build receipt tag shape for a channel run.
 
     The real tag needs the run's creation time, which this step does not have.
     Show the shape from receipt_tag so the log and the publisher agree.
     """
     kind = facts["kind"]
     run_id = facts["run_id"]
-    if kind not in {"commit", "channel"} or not isinstance(run_id, str) or not run_id:
+    if kind != "channel" or not isinstance(run_id, str) or not run_id:
         return None
     if facts["disposable_run"]:
         return None
@@ -146,7 +146,10 @@ def report(env: Mapping[str, str]) -> str:
         "kind: " + str(facts["kind"]),
     ]
     command = release_command(env)
-    if command is None:
+    if facts["kind"] == "commit":
+        lines.append("release.py: a legacy tagless commit build; release.py --build-commit now claims "
+                     "commit.<stamp>-v<version> and runs Stable Release")
+    elif command is None:
         lines.append("release.py: this dispatch is not a release.py --build-commit run")
     else:
         lines.append("release.py: " + shlex.join(["python", "scripts/release.py", "--publish", "--remote", "<remote>", *command_flags(facts)]))

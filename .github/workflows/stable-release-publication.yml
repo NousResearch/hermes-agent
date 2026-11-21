@@ -18,7 +18,7 @@ on:
 # rerun waits as pending behind this job instead of deadlocking it: the
 # sequencer only confirms the new attempt is queued, never that it finished.
 # Concurrency applies before reconcile's if, so a run that will skip — every
-# Canary release completion, a successful stable run, or a non-dispatch/fork
+# Canary or Commit release completion, a successful stable run, or a non-dispatch/fork
 # workflow_run — gets a group of its own so it cannot displace a pending stable
 # run or queued rerun in the shared stable-release group.
 concurrency:
@@ -27,7 +27,8 @@ concurrency:
     (github.event.workflow_run.conclusion != 'success' &&
      github.event.workflow_run.event == 'workflow_dispatch' &&
      github.event.workflow_run.head_repository.full_name == github.repository &&
-     !startsWith(github.event.workflow_run.display_title, 'Canary release ')))
+     !startsWith(github.event.workflow_run.display_title, 'Canary release ') &&
+     !startsWith(github.event.workflow_run.display_title, 'Commit release ')))
     && 'stable-release' || github.run_id }}
   cancel-in-progress: false
 
@@ -37,14 +38,16 @@ permissions:
 
 jobs:
   reconcile:
-    # A canary runs Stable Release too (titled "Canary release <tag>"); it has no stable draft
-    # or head to reconcile, and a red canary must never rerun its jobs from here.
+    # A canary and a commit build run Stable Release too (titled "Canary release <tag>" /
+    # "Commit release <tag>"); neither has a stable draft or head to reconcile, and a red one must
+    # never rerun its jobs from here.
     if: >-
       github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion != 'success' &&
        github.event.workflow_run.event == 'workflow_dispatch' &&
        github.event.workflow_run.head_repository.full_name == github.repository &&
-       !startsWith(github.event.workflow_run.display_title, 'Canary release '))
+       !startsWith(github.event.workflow_run.display_title, 'Canary release ') &&
+       !startsWith(github.event.workflow_run.display_title, 'Commit release '))
     # imagetools needs no BuildKit, but it reads the current builder's buildkitd.toml
     # registry config. Not useblacksmith/setup-docker-builder: its no-cache-key fallback marks
     # docker.io `http = true`, Docker Hub 301s the plain-HTTP manifest PUT to HTTPS, Go replays

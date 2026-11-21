@@ -1,0 +1,57 @@
+manifest_version: 1
+name: agentearth
+description: The all-in-one toolkit. Access tools for social media analytics, e-commerce product research, AI image, video, and audio generation, financial data, search and research, maps, weather, and document processing.
+source: https://agentearth.ai
+
+transport:
+  type: http
+  url: https://agentearth.ai/mcp-server/r/OeLv6mHB
+
+# Hermes 负责浏览器授权、令牌保存和刷新。
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - agentearth
+  hosts:
+    - agentearth.ai
+
+post_install: |
+  Open the authorization link, sign in to AgentEarth, and approve access.
+  Start a new Hermes session and try any of these prompts:
+
+  1. Social media analytics - Reddit travel advice
+     "Use AgentEarth to find five popular Reddit discussions about visiting Japan for the first time.
+     Summarize the places people recommend most, common mistakes, and one piece of advice people
+     disagree on. Link to the original threads."
+
+  2. E-commerce research - TikTok Shop product discovery
+     "Use AgentEarth to find five top-selling travel packing cubes on US TikTok Shop over the past
+     30 days. Compare prices, units sold, and key selling points, and link to each listing."
+
+  3. Content generation - Cinematic short video
+     "Use AgentEarth to create a five-second vertical video of an iced matcha floating in space.
+     Ice cubes and green droplets drift in zero gravity as the camera pushes in toward the glass,
+     with the blue Earth behind it. Use cinematic commercial lighting and slow motion.
+     No text or logos."
+
+  4. Financial data - NVIDIA vs. the S&P 500
+     "Use AgentEarth to get adjusted closing prices for NVIDIA (NVDA) and the SPDR S&P 500 ETF (SPY)
+     over the last 90 trading days. Set both series to 100 on the first day, plot them on one chart,
+     and report each return over the period. Cite the data sources."
+
+  5. Web research - Broadway on a budget
+     "Use AgentEarth to find three Broadway shows in New York City with lottery or same-day rush
+     tickets. Compare prices, when to enter or buy, and how to collect tickets. Link to the official
+     ticket pages."
+
+  6. Everyday tools - A half-day walk in London
+     "Use AgentEarth to plan a walk from King's Cross Station to Camden Market via St Pancras
+     Station and Regent's Canal. Give me the walking time for each leg and suggest one cafe
+     along the way."
+
+  To reauthorize from the terminal, run `hermes mcp login agentearth`.
+  If the tools do not load, run `hermes mcp test agentearth` to check the connection.
+
+  Search queries and tool inputs are sent to AgentEarth. Tool calls may consume AgentEarth credits.

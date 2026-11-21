@@ -237,9 +237,12 @@ class LearningNodeEdit(BaseModel):
     profile: Optional[str] = None
 
 class DebugShareRequest(BaseModel):
-    # Redaction scrubs credential-shaped tokens before logs leave the machine; opt-out only.
+    # Set by the client only after the user confirmed the public upload; missing/false is refused
+    # so an empty POST can never publish logs (#94876).
+    consent: bool = False
+    # Accepted for compatibility: the public summary carries no log text, so it is always "redacted".
     redact: bool = True
-    lines: int = 200  # recent log lines in the summary tail (full logs are separate)
+    lines: int = 200  # recent log lines scanned for the summary's error counts
 
 class TTSSpeakRequest(BaseModel):
     text: str
@@ -257,9 +260,9 @@ class TTSLeaseRequest(BaseModel):
     active: bool = True
 
 class STTLeaseRequest(BaseModel):
-    """POST /api/audio/stt-lease: ``lease`` names the voice-input session holding the lease
-    (``desktop:voice-input:<renderer>``); ``active`` True acquires + pre-loads the local
-    STT model, False releases. Unlike TTS, release never unloads (shared engine)."""
+    """POST /api/audio/stt-lease: ``lease`` names the voice-input session
+    (``desktop:voice-input:<renderer>``); ``active`` True pre-loads the local STT model,
+    False is a no-op. Unlike TTS, nothing unloads (shared engine)."""
     lease: str
     active: bool = True
 
@@ -346,6 +349,10 @@ class CronJobCreate(BaseModel):
     # Validated in cron.jobs.create_job (unknown IANA zone / out-of-range grace -> 400).
     timezone: Optional[str] = None
     grace_minutes: Optional[int | str] = None
+    # Missed-run policy: true runs one catch-up, false skips; omitted follows the default.
+    catch_up: Optional[StrictBool] = None
+    # Header/footer wrapping: None inherits cron.wrap_response; a bool overrides it per job.
+    wrap_response: Optional[StrictBool] = None
 
 class CronJobUpdate(BaseModel):
     updates: dict
@@ -402,6 +409,8 @@ class WebhookCreate(BaseModel):
     deliver_only: bool = False
     deliver_chat_id: Optional[str] = None
     secret: Optional[str] = None  # omit to auto-generate
+    # Omitted: new routes are pinned to generic, an edit keeps the stored pin.
+    signature: Optional[Literal["generic", "github", "gitlab", "linear"]] = None
 
 class WebhookEnabledToggle(BaseModel):
     enabled: bool
@@ -425,6 +434,8 @@ class ImportRequest(BaseModel):
     # --force: the spawned `hermes import` has stdin=DEVNULL, so its "Continue? [y/N]" prompt would
     # hit EOF and abort; the dashboard confirms in its own modal.
     force: bool = False
+    # --keep-host: replace the agent but keep what its host provisioned (Hermes Cloud transfer/undo).
+    keep_host: bool = False
 
 class HookCreate(BaseModel):
     event: str
@@ -465,6 +476,9 @@ class ProfileCreate(BaseModel):
     # Profile-builder additions, applied best-effort AFTER the profile dir exists (a hiccup never 500s).
     mcp_servers: list[MCPServerCreate] = []
     keep_skills: list[str] = []  # skills to KEEP: non-empty = replace semantics (unlisted seeded ones disabled)
+    # The Desktop bot page's "Share keys & accounts" defaults (hermes_cli.profile_provision).
+    mirror_credentials: bool = True
+    share_auth: bool = True
     # Installed async via `hermes -p <name> skills install` (skills_hub.SKILLS_DIR is import-time-bound,
     # so HERMES_HOME can't redirect it); PIDs go back for the UI to poll.
     hub_skills: list[str] = []
@@ -499,6 +513,11 @@ class ProfileDescribeAuto(BaseModel):
 class SkillToggle(BaseModel):
     name: str
     enabled: bool
+    profile: Optional[str] = None
+
+class SkillLock(BaseModel):
+    name: str
+    locked: bool
     profile: Optional[str] = None
 
 class SkillCreate(BaseModel):
@@ -578,4 +597,7 @@ class _PluginProvidersPutBody(BaseModel):
 
 class _PluginVisibilityBody(BaseModel):
     hidden: bool
+
+class _PluginAutoUpdateBody(BaseModel):
+    enabled: bool
 

@@ -13,7 +13,7 @@ def test_resumed_chunks_clear_wait_without_erasing_local_load(monkeypatch, local
     notices, touches = [], []
     now = [1000.0]
     call.agent = SimpleNamespace(
-        base_url="http://localhost:1234" if local_loading else "https://example.com",
+        base_url="http://localhost:1234" if local_loading else "https://example.com", provider="custom",
         _interrupt_requested=False,
         _emit_wait_notice=lambda text: notices.append((now[0], text)),
         _touch_activity=lambda text: touches.append((now[0], text)),

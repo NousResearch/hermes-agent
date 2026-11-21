@@ -1,0 +1,23 @@
+name: pickwise-photos
+repo: https://github.com/ardianreffa/pickwise-photos
+sha: 14a07d0d6b1d6d707926f1ad02cf79ca573349ee
+title: Pickwise Photos
+description: "A correction tool, not an art critic: culls a folder of photos locally. Flags blurry and unrecoverable shots, labels what an edit could rescue, keeps the best frame of every burst and explains every decision. Follows a brief in your own words (\"concert, dark is fine, best 30\", \"moody low-key shots\") and learns gradually from your corrections. Treats RAW+JPEG pairs as one photo, handles folders of thousands of photos in resumable steps, and reads JPEG, HEIC and camera or iPhone RAW (DNG, ARW, CR3, NEF and more) through their embedded previews, using only Pillow and pillow-heif. On request it makes local previews so Hermes can take a visual second look for closed eyes, a blurred subject or clear composition mistakes. Disclosure — reads image files in the folder you name (any folder the agent can reach; symlinks and hidden files skipped); writes only a Pickwise/ subfolder inside that folder (copy or reversible move) or .xmp rating sidecars that never replace existing ones; never deletes, overwrites or edits photos. The dry-run-then-confirm step is a tool argument the agent sets, not a Hermes approval prompt. Stores per-photo measurements, reports, learned preferences and (only when asked) downsized previews in its plugin data folder; no network calls, model calls, shell commands or telemetry. A visual check sends the chosen previews to the model provider through Hermes' own vision tool. Raises Pillow's image-size limit to 300 MP for the whole Hermes process."
+maintainer: ardianreffa
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/ardianreffa/pickwise-photos#readme
+version: "0.2.1"
+platforms: []
+capabilities:
+  provides_tools:
+    - pickwise_review
+    - pickwise_apply
+    - pickwise_feedback
+    - pickwise_preferences
+    - pickwise_undo
+    - pickwise_preview
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

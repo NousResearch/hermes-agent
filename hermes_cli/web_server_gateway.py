@@ -331,17 +331,28 @@ def _terminate_desktop_managed_gateway() -> None:
         pass  # exited between poll() and terminate()
 
 
-def _named_profile_from_action(subcommand: list[str]) -> Optional[str]:
-    """Return the named-profile selector that :func:`_profile_cli_args` puts in front of an action.
+def _split_profile_selector(subcommand: list[str]) -> tuple[Optional[str], list[str]]:
+    """The named-profile selector that :func:`_profile_cli_args` puts in front of an action, and
+    the arguments after it.
 
     Deliberately inspects only the leading selector: values after the real subcommand may
     legitimately contain ``-p`` / ``--profile`` for a nested process (``mcp add --args ...``).
     """
-    if len(subcommand) >= 2 and subcommand[0] in {"-p", "--profile"}:
-        return str(subcommand[1]).strip() or None
-    if subcommand and str(subcommand[0]).startswith("--profile="):
-        return str(subcommand[0]).split("=", 1)[1].strip() or None
-    return None
+    args = list(subcommand)
+    if len(args) >= 2 and args[0] in {"-p", "--profile"}:
+        return str(args[1]).strip() or None, args[2:]
+    if args and str(args[0]).startswith("--profile="):
+        return str(args[0]).split("=", 1)[1].strip() or None, args[1:]
+    return None, args
+
+
+def _named_profile_from_action(subcommand: list[str]) -> Optional[str]:
+    return _split_profile_selector(subcommand)[0]
+
+
+def _is_gateway_action(subcommand: list[str]) -> bool:
+    """True for a ``gateway`` command after the selector: a profile may be called ``gateway``."""
+    return _split_profile_selector(subcommand)[1][:1] == ["gateway"]
 
 
 def _is_host_gateway_spawn(subcommand: list[str]) -> bool:
@@ -350,16 +361,7 @@ def _is_host_gateway_spawn(subcommand: list[str]) -> bool:
     ``hermes gateway restart`` and ``hermes -p default gateway restart`` are the host.
     ``hermes -p coder gateway stop`` is not.
     """
-    profile = _named_profile_from_action(subcommand)
-    if profile not in (None, "default"):
-        return False
-    args = list(subcommand)
-    if profile is not None:
-        if args and args[0] in {"-p", "--profile"}:
-            args = args[2:]
-        elif args and str(args[0]).startswith("--profile="):
-            args = args[1:]
-    return bool(args) and args[0] == "gateway"
+    return _named_profile_from_action(subcommand) in (None, "default") and _is_gateway_action(subcommand)
 
 
 def _profile_action_environment(
@@ -379,7 +381,7 @@ def _profile_action_environment(
     normal startup then loads that profile's own ``.env``. A host-gateway verb (bare ``gateway``
     or ``-p default gateway``) starts from ``host_gateway_child_env`` so a named-profile dashboard
     cannot donate its dotenv to the multiplexer. Other actions without a profile selector keep
-    the historical environment exactly.
+    the historical environment, less the deployment's stamps unless the action is ``update``.
     """
     profile = _named_profile_from_action(subcommand)
     if _is_host_gateway_spawn(subcommand):
@@ -387,12 +389,15 @@ def _profile_action_environment(
         action_env = host_gateway_child_env()
     elif profile is None:
         action_env = dict(os.environ)
+        if subcommand[:1] != ["update"]:  # update restarts gateways and keeps the deployment's stamps
+            from tools.environments.local import drop_deployment_stamps
+            drop_deployment_stamps(action_env)
     else:
         from hermes_cli.env_loader import (
             _PROFILE_MANAGED_ENV_KEYS, _env_keys_defined_in_dotenv, get_secret_source_values,
         )
         from hermes_cli.web_server_profiles import _resolve_profile_dir
-        from hermes_constants import apply_subprocess_home_env, get_default_hermes_root
+        from hermes_constants import apply_subprocess_home_env, get_default_hermes_root, is_launch_only_env_key
         from tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
         target_home = _resolve_profile_dir(profile)
@@ -408,6 +413,9 @@ def _profile_action_environment(
             # Secret managers contribute locally named credentials that never appear in .env;
             # the dashboard already hydrated its own sources, so their key names are a boundary too.
             profile_keys.update(get_secret_source_values(source_home).keys())
+        # Launch-only keys are never loaded from .env or a source (#135200): the value here is the
+        # launch environment's, so a planted line naming one must not strip it from the child.
+        profile_keys = {key for key in profile_keys if not is_launch_only_env_key(key)}
         for key in profile_keys:
             action_env.pop(key, None)
         # Authorization gates that reached this process outside any dotenv (unit-file
@@ -419,6 +427,9 @@ def _profile_action_environment(
         # and resolves to the same validated directory.
         action_env["HERMES_HOME"] = str(target_home)
         apply_subprocess_home_env(action_env)
+        if _is_gateway_action(subcommand):  # as host_gateway_child_env does: install can start one too
+            from tools.environments.local import keep_deployment_stamps
+            keep_deployment_stamps(action_env)
 
     action_env["HERMES_NONINTERACTIVE"] = "1"
     # A config.yaml allow_all_users grant bridged into os.environ must not outlive the config that

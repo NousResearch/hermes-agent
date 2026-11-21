@@ -11,9 +11,7 @@
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import { $activeTreeGroup, $layoutTree } from '@/components/pane-shell/tree/store'
 import type { RightRailTabId } from '@/store/layout'
-
-/** Pane id prefix for a preview tab. Must match `preview-tile.tsx`. */
-export const PREVIEW_TILE_PREFIX = 'preview-tile'
+import { PREVIEW_TILE_PREFIX } from '@/store/preview-tile-id'
 
 type ExplicitOpen = {
   tabId: RightRailTabId

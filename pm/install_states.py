@@ -146,16 +146,25 @@ def _remove_contents(state: Path) -> bool:
     return not any(child.name not in _KEPT_UNTIL_LAST for child in state.iterdir())
 
 
-def collect_orphan_install_states(installs: Path) -> list[Path]:
+def collect_orphan_install_states(installs: Path, *, dry_run: bool = False) -> list[Path]:
     """Remove every unheld orphan state dir under *installs*; returns what was removed.
 
-    Each candidate is re-checked under its install lock right before removal: removing a large
-    orphan takes long enough for another state to be synced or launched (lease taken and
-    released) since the candidates were listed, and that use must keep it."""
+    With ``dry_run`` the candidates are returned without removal, filtered by the same
+    predicates the removal loop checks. Each candidate is re-checked under its install lock
+    right before removal: removing a large orphan takes long enough for another state to be
+    synced or launched (lease taken and released) since the candidates were listed, and that
+    use must keep it."""
     if not installs.is_dir():
         return []
     data_root = installs.resolve().parent
     retention = _retention_seconds(installs.parent)
+    if dry_run:
+        candidates: list[Path] = []
+        for state in [s for s in sorted(installs.iterdir()) if _is_orphan(s, data_root, retention)]:
+            with _install_lock(state) as locked:
+                if locked and _is_orphan(state, data_root, retention) and not _leased(state):
+                    candidates.append(state)
+        return candidates
     removed: list[Path] = []
     for state in [s for s in sorted(installs.iterdir()) if _is_orphan(s, data_root, retention)]:
         with _install_lock(state) as locked:

@@ -18,3 +18,8 @@ def _prefix_wrapped_rows(wrap, label, width, first_prefix, indent) -> list[str]:
     """
     rows = wrap(label, width)
     return [(first_prefix if i == 0 else indent) + row for i, row in enumerate(rows)]
+
+
+def _num_prefix(i: int) -> str:
+    """Quick-select key label: 1-9 for items 1-9, 0 for the 10th, blank beyond."""
+    return str(i + 1) if i < 9 else ("0" if i == 9 else " ")

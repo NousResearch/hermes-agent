@@ -6,6 +6,7 @@ import { translateNow } from '@/i18n'
 import { desktopFsCacheKey, isReadFileErrorResult, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { hostHas } from '@/lib/host-capabilities'
 import { LruCache } from '@/lib/lru-cache'
+import { pathExtension } from '@/lib/path-extension'
 import { capitalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
@@ -36,36 +37,6 @@ const MEDIA_BY_EXT: Record<string, MediaInfo> = {
   wav: { kind: 'audio', mime: 'audio/wav' },
   webm: { kind: 'video', mime: 'video/webm' },
   webp: { kind: 'image', mime: 'image/webp' }
-}
-
-// A native path may contain a literal `#` or `?` (`C:\Music\track #07.mp3`).
-// Cutting the path there drops the extension, so a playable file is typed as
-// a plain file. A real URL still loses its query and fragment first.
-function pathExtension(path: string, known: (ext: string) => boolean): string | undefined {
-  const extOf = (value: string): string | undefined => {
-    const base = value.split(/[\\/]/).pop() ?? ''
-    const dot = base.lastIndexOf('.')
-
-    if (dot <= 0 || dot === base.length - 1) {
-      return undefined
-    }
-
-    return base.slice(dot + 1).toLowerCase()
-  }
-
-  const isUrl = /^[a-z][a-z0-9+.-]*:/i.test(path) && !/^[a-z]:[\\/]/i.test(path)
-
-  if (isUrl) {
-    return extOf(path.split(/[?#]/, 1)[0] ?? '')
-  }
-
-  const literal = extOf(path)
-
-  if (literal && known(literal)) {
-    return literal
-  }
-
-  return extOf(path.split(/[?#]/, 1)[0] ?? '')
 }
 
 function mediaInfo(path: string): MediaInfo | undefined {

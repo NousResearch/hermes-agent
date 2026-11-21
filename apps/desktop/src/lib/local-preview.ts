@@ -8,6 +8,7 @@ import {
   readDesktopFileText
 } from '@/lib/desktop-fs'
 import { isWindowsAbsolutePath } from '@/lib/path-compare'
+import { pathExtension } from '@/lib/path-extension'
 import type { PreviewTarget } from '@/store/preview'
 
 const HTML_EXTENSIONS = new Set(['.htm', '.html'])
@@ -56,11 +57,22 @@ function basename(value: string) {
   return value.split(/[\\/]/).filter(Boolean).pop() || value
 }
 
-function extension(value: string) {
-  const clean = value.split(/[?#]/, 1)[0] || value
-  const idx = clean.lastIndexOf('.')
+function isPreviewExtension(ext: string) {
+  const dotted = `.${ext}`
 
-  return idx >= 0 ? clean.slice(idx).toLowerCase() : ''
+  return (
+    Object.hasOwn(LANGUAGE_BY_EXT, dotted) ||
+    HTML_EXTENSIONS.has(dotted) ||
+    IMAGE_EXTENSIONS.has(dotted) ||
+    PDF_EXTENSIONS.has(dotted)
+  )
+}
+
+// Read from the file name: a native path may contain a literal `#` or `?`.
+function extension(value: string) {
+  const ext = pathExtension(value, isPreviewExtension)
+
+  return ext ? `.${ext}` : ''
 }
 
 // Collapses `.`/`..` so a note's `../other.md` lands on the sibling, not on a

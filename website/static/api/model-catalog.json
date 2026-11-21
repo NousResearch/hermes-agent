@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-19T11:17:17Z",
+  "updated_at": "2026-11-21T01:38:38Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -111,6 +111,14 @@
         {
           "id": "openai/gpt-6.1-terra",
           "description": ""
+        },
+        {
+          "id": "openai/gpt-6.1-terra-fast",
+          "description": "2x price, priority tier"
+        },
+        {
+          "id": "openai/gpt-6.1-terra-flex",
+          "description": "0.5x price, flex tier"
         },
         {
           "id": "openai/gpt-6-sol",

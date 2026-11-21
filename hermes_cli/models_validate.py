@@ -16,7 +16,23 @@ from difflib import get_close_matches
 from typing import Any, Callable, Optional
 
 from utils import base_url_host_matches
-from hermes_constants import openrouter_variant_base
+from hermes_constants import openrouter_openai_tier_alias, openrouter_variant_base
+
+
+def _openrouter_lookup_base(model: str | None) -> str | None:
+    """Base id whose catalog listing proves an OpenRouter request-time alias."""
+    base = openrouter_variant_base(model or "")
+    if base is not None:
+        return base
+    alias = openrouter_openai_tier_alias(model)
+    return alias[0] if alias else None
+
+
+def _openrouter_alias_rules_apply(req: _Request) -> bool:
+    """OpenRouter itself, or any provider pointed at OpenRouter's API."""
+    return req.normalized == "openrouter" or bool(
+        req.base_url and base_url_host_matches(req.base_url, "openrouter.ai")
+    )
 
 
 # ── Verdicts ─────────────────────────────────────────────────────────────
@@ -643,9 +659,10 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     match = _match_in_catalog(req.lookup, api_models)
     if match.exact:
         return _accept()
-    # OpenRouter routing variants (":nitro", ":floor", ...) are request-time modifiers, not
-    # catalog entries — validate the BASE but keep the suffixed id.
-    variant_base = openrouter_variant_base(req.lookup) if req.normalized == "openrouter" else None
+    # OpenRouter routing variants (":nitro", ":floor", ...) and OpenAI tier aliases
+    # ("-fast", "-flex") are request-time modifiers, not catalog entries — validate
+    # the BASE but keep the suffixed id.
+    variant_base = _openrouter_lookup_base(req.lookup) if _openrouter_alias_rules_apply(req) else None
     if variant_base is not None and variant_base in set(api_models):
         return _accept()
     # Listed but not found: the account may reach models absent from the public listing
@@ -730,9 +747,9 @@ def _validate_catalog_fallback(req: _Request) -> dict[str, Any]:
     match = _match_in_catalog(req.lookup, catalog, case_insensitive=True)
     if match.exact:
         return _accept()
-    # Same OpenRouter routing-variant rule as the live-listing path.
-    if req.normalized == "openrouter":
-        variant_base = openrouter_variant_base(req.lookup)
+    # Same OpenRouter request-time alias rule as the live-listing path.
+    if _openrouter_alias_rules_apply(req):
+        variant_base = _openrouter_lookup_base(req.lookup)
         if variant_base is not None and variant_base.lower() in {m.lower() for m in catalog}:
             return _accept()
     return _soft_accept(

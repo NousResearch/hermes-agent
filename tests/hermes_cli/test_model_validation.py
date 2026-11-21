@@ -634,6 +634,70 @@ class TestValidateOpenRouterVariantSuffixes:
         assert result.get("corrected_model") is None
 
 
+class TestValidateOpenRouterTierAliases:
+    """OpenAI ``-fast``/``-flex`` aliases are request-time modifiers, not catalog entries.
+    Validation must check the base id while preserving the suffixed alias on the wire."""
+
+    _LISTING = ["openai/gpt-6.2-astra", "openai/gpt-6.1-terra"]
+
+    def _validate(self, model):
+        return _validate(model, "openrouter", api_models=self._LISTING)
+
+    @pytest.mark.parametrize("suffix", ["fast", "flex"])
+    @pytest.mark.parametrize("base", ["openai/gpt-6.2-astra", "openai/gpt-6.1-terra"])
+    def test_tier_alias_on_listed_base_accepted_unmodified(self, base, suffix):
+        result = self._validate(f"{base}-{suffix}")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result.get("corrected_model") is None
+
+    def test_tier_alias_on_unknown_base_rejected(self):
+        assert self._validate("openai/gpt-9.9-notreal-flex")["accepted"] is False
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "openai/-flex",
+            "openai/gpt-6.1-terra-fast-flex",
+            "openai/gpt-6.1-terra-flex:floor",
+        ],
+    )
+    def test_malformed_aliases_keep_old_behavior(self, model):
+        assert self._validate(model)["accepted"] is False
+
+    def test_non_openai_fast_model_is_a_real_catalog_entry(self):
+        # anthropic/claude-opus-5-fast is a real model id, not a tier alias:
+        # validation must accept it unmodified via the normal catalog path.
+        result = self._validate("anthropic/claude-opus-5-fast")
+        assert result.get("corrected_model") is None
+
+    def test_custom_openrouter_provider_accepts_tier_alias(self):
+        # The owner uses a custom provider whose base URL is OpenRouter.
+        result = _validate(
+            "openai/gpt-6.1-terra-flex",
+            "openrouter-capped",
+            api_models=self._LISTING,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+    def test_static_catalog_fallback_accepts_tier_alias(self):
+        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
+             patch(
+                 "hermes_cli.models.provider_model_ids",
+                 return_value=["openai/gpt-6.1-terra", "anthropic/claude-opus-4.6"],
+             ):
+            result = validate_requested_model(
+                "openai/gpt-6.1-terra-flex",
+                "openrouter",
+                base_url="https://openrouter.ai/api/v1",
+            )
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result.get("corrected_model") is None
+
+
 class TestValidateRequestedModelNousPortalRecommendations:
     """Regression tests for issue #71312: the Nous Telegram picker (and any
     other messaging-platform /model validation, since they all share

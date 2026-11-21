@@ -116,6 +116,7 @@ class TestTrustGateAtCallTime:
         args = {
             "job": "release",
             "api_key": "sk-supersecretcredential123456",
+            "aws_secret_access_key": "aws-opaque-access-key-123456",
             "db_password": "hunter2-correct-horse-battery",
             "headers": {"Authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.cGF5bG9hZA.c2lnbmF0dXJl",
                         "x-api-key": "opaqueheadervalue77"},
@@ -133,7 +134,8 @@ class TestTrustGateAtCallTime:
 
         message = consent.call_args.args[0]
         assert '"job": "release"' in message
-        for secret in ("sk-supersecretcredential123456", "hunter2-correct-horse-battery",
+        for secret in ("sk-supersecretcredential123456", "aws-opaque-access-key-123456",
+                       "hunter2-correct-horse-battery",
                        "eyJhbGciOiJIUzI1NiJ9.cGF5bG9hZA.c2lnbmF0dXJl", "opaqueheadervalue77", "987654321",
                        "opaque-credential-value", "\u202e"):
             assert secret not in message

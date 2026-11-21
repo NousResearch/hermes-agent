@@ -740,6 +740,45 @@ def _forget(key: str, browser: LaunchedBrowser, *, drop_record: bool = True) -> 
             shutil.rmtree(browser.user_data_dir, ignore_errors=True)
 
 
+# How long a browser this process spawned gets to quit on CDP ``Browser.close`` before the signal teardown.
+_CLOSE_GRACE_S = 5.0
+
+
+def _request_close(cdp_url: str) -> bool:
+    """Ask the browser to quit itself over CDP ``Browser.close``; True once the command was sent.
+
+    A browser that quits on its own cleans up after itself; a signalled one may not. macOS Google Chrome
+    copies its app bundle to ``$TMPDIR/../X/com.google.Chrome.code_sign_clone/`` at every launch and
+    removes that copy only on a normal exit, so a SIGTERM leaves one behind per launch."""
+    if not cdp_url.startswith("ws://"):
+        return False
+    try:
+        from websockets.sync.client import connect
+
+        from agent.proxy_bypass import loopback_connect_kwargs
+        with connect(cdp_url, open_timeout=2, close_timeout=1, **loopback_connect_kwargs(cdp_url)) as ws:
+            ws.send(json.dumps({"id": 1, "method": "Browser.close"}))
+            with contextlib.suppress(Exception):  # the browser may drop the socket instead of replying
+                ws.recv(timeout=2)
+    except Exception as exc:  # health: allow BLE001 -- best effort: the signal teardown still runs
+        logger.debug("browser: CDP Browser.close to %s failed: %s", cdp_url, exc)
+        return False
+    return True
+
+
+def _closed_gracefully(browser: LaunchedBrowser, proc: Optional[subprocess.Popen]) -> bool:
+    """True when ``browser``, spawned by this process (``proc``), quit on CDP ``Browser.close`` within
+    :data:`_CLOSE_GRACE_S`; the caller signals it (:func:`_terminate`) otherwise."""
+    if proc is None or proc.poll() is not None or not _request_close(browser.cdp_url):
+        return False
+    try:
+        proc.wait(timeout=_CLOSE_GRACE_S)
+    except subprocess.TimeoutExpired:
+        logger.debug("browser: Chromium pid %s ignored Browser.close; signalling it", browser.pid)
+        return False
+    return True
+
+
 def _terminate(pid: Optional[int], start_time: Optional[int], proc: Optional[subprocess.Popen]) -> None:
     """Parent-first teardown (tools/AGENTS.md): SIGTERM the browser alone, then its snapshot survivors."""
     if not pid:
@@ -773,7 +812,7 @@ def _stop_locked(key: str) -> None:
         return
     record = None if browser.ephemeral else _record_path(browser)
     if record is None:
-        if browser.owned:
+        if browser.owned and not _closed_gracefully(browser, proc):
             _terminate(browser.pid, browser.start_time, proc)
         with _lock:
             _forget(key, browser)
@@ -781,7 +820,8 @@ def _stop_locked(key: str) -> None:
     from tools.browser_launcher_holders import records_lock
     with records_lock(record.parent):  # the decision and the forget are one step: another key may be the heir
         if _heir_key(browser) is None and _last_holder_out(record, browser):
-            _terminate(browser.pid, browser.start_time, proc)
+            if not _closed_gracefully(browser, proc):
+                _terminate(browser.pid, browser.start_time, proc)
             record.unlink(missing_ok=True)
         with _lock:
             _forget(key, browser, drop_record=False)

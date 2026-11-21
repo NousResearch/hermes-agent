@@ -15,6 +15,10 @@
     ["Email me at user@example.com.", [], ["user@example.com"]],
     ["COVID-19 and well-known facts stay.", [], ["COVID-19", "well-known"]],
     ["Due 2026/06/02 and status N/A here.", [], ["2026/06/02", "N/A"]],
-    ["The final score was 3:2.", [], ["3:2"]]
+    ["The final score was 3:2.", [], ["3:2"]],
+    ["Offer valid until 16/11, Dell expires 17/11/2026.", [], ["16/11", "17/11/2026"]],
+    ["Delivery on 16-11-2026, pickup 5.3.2027.", [], ["16-11-2026", "5.3.2027"]],
+    ["Invoice 978303529 for deal 32721495.", [], ["978303529", "32721495"]],
+    ["Delivery on 2026-11-16.", [], ["2026-11-16"]]
   ]
 }

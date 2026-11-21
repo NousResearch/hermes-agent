@@ -50,6 +50,17 @@ def _terminal_columns(default: int = 80) -> int:
         return default
 
 
+def _cell_prefix_len(text: str, cells: int) -> int:
+    """How many leading characters of *text* fit in *cells* terminal cells."""
+    from prompt_toolkit.utils import get_cwidth
+    used = 0
+    for index, char in enumerate(text):
+        used += get_cwidth(char)
+        if used > cells:
+            return index
+    return len(text)
+
+
 class CLIStreamMixin:
     """Streaming output, reasoning preview, tool progress callbacks, and busy-command spinner for the interactive CLI"""
 
@@ -164,15 +175,23 @@ class CLIStreamMixin:
                 line_break >= min_newline_flush
                 or buf.endswith(("\n\n", ".\n", "!\n", "?\n", ":\n"))):
                 flush_text, buf = buf[: line_break + 1], buf[line_break + 1 :]
-            elif len(buf) >= target_width:
-                search_start = max(20, target_width // 2)
-                search_end = min(
-                    len(buf), max(target_width + (target_width // 3), target_width + 8))
+            elif _cell_prefix_len(buf, target_width - 1) < len(buf):
+                # Widths are terminal cells, not characters: CJK and emoji take two, so a character
+                # count lets them run to twice the line before a cut is even looked for.
+                search_start = _cell_prefix_len(buf, max(20, target_width // 2))
+                search_end = _cell_prefix_len(
+                    buf, max(target_width + (target_width // 3), target_width + 8))
                 cut = max(
                     buf.rfind(b, search_start, search_end)
                     for b in (" ", "\t", ".", "!", "?", ",", ";", ":"))
                 if cut != -1:
                     flush_text, buf = buf[: cut + 1], buf[cut + 1 :]
+                elif search_end < len(buf):
+                    # The whole window passed without a boundary (text without spaces, a long
+                    # URL): no later delta can add one, so break at the line width instead of
+                    # holding the preview back until the next newline.
+                    hard = max(1, _cell_prefix_len(buf, target_width))
+                    flush_text, buf = buf[:hard], buf[hard:]
 
         self._reasoning_preview_buf = buf.lstrip() if flush_text else buf
         if flush_text:

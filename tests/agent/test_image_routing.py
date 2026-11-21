@@ -670,3 +670,50 @@ class TestCodexContextVariantVisionLookup:
         # Ineligible alias: looked up verbatim, no capability gained.
         assert image_routing._probe_models_dev("openai-codex", "gpt-5.5-900k", {}) is None
         assert seen[-1] == "gpt-5.5-900k"
+
+
+class TestVisionCapabilityFirstToggle:
+    """agent.vision_capability_first: true makes resolved capability decide
+    before the aux de-facto rule, so a configured auxiliary.vision backend only
+    covers text-only or unknown-capability models."""
+
+    def test_capability_on_bypasses_aux(self):
+        cfg = {
+            "agent": {"vision_capability_first": True},
+            "auxiliary": {"vision": {"provider": "openrouter", "model": "gemini"}},
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("custom", "vision-model", cfg) == "native"
+
+    def test_capability_off_still_uses_aux(self):
+        """Default (toggle absent) preserves #97339: aux backend is de-facto
+        route even for catalog-vision models."""
+        cfg = {
+            "auxiliary": {"vision": {"provider": "openrouter", "model": "gemini"}},
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "text"
+
+    def test_capability_false_routes_text(self):
+        cfg = {
+            "agent": {"vision_capability_first": True},
+            "auxiliary": {"vision": {"provider": "openrouter", "model": "gemini"}},
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
+            assert decide_image_input_mode("openrouter", "text-only", cfg) == "text"
+
+    def test_unknown_capability_fails_closed_to_text(self):
+        cfg = {
+            "agent": {"vision_capability_first": True},
+            "auxiliary": {"vision": {"provider": "openrouter", "model": "gemini"}},
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None) as lk:
+            assert decide_image_input_mode("custom", "brand-new", cfg) == "text"
+            lk.assert_called_once()  # single probe, no second round
+
+    def test_no_aux_capability_on_routes_native(self):
+        """With no auxiliary.vision configured and capability-on, a vision model
+        still routes native as before."""
+        cfg = {"agent": {"vision_capability_first": True}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"

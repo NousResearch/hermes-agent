@@ -140,6 +140,24 @@ def test_x_search_extracts_inline_url_citations(monkeypatch):
         }
     ]
 
+def test_x_search_answer_excludes_commentary_narration(monkeypatch):
+    """xAI returns the model's pre-search narration as its own ``phase: commentary`` message item
+    (sometimes also glued into a top-level ``output_text``); the answer is the final message only."""
+    from tools.x_search_tool import x_search_tool
+
+    def _msg(phase, text):
+        return {"type": "message", "phase": phase, "content": [{"type": "output_text", "text": text}]}
+
+    payload = {
+        "output_text": "I'll search X for that.\n\nxAI shipped Grok 5.",
+        "output": [_msg("commentary", "I'll search X for that."), _msg("final_answer", "xAI shipped Grok 5.")],
+    }
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr("requests.post", lambda *a, **k: _FakeResponse(payload))
+
+    assert json.loads(x_search_tool(query="what did xai ship"))["answer"] == "xAI shipped Grok 5."
+
+
 def test_x_search_returns_structured_http_error(monkeypatch):
     from tools.x_search_tool import x_search_tool
 

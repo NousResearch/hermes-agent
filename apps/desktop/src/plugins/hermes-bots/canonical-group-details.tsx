@@ -99,7 +99,7 @@ interface ApprovalLabels {
 function CanonicalApprovalDetails({ action, labels }: { action: CanonicalPendingAction; labels: ApprovalLabels }) {
   const { actualCommand, description, reviewable } = canonicalApprovalPreview(action)
 
-  return <div className="grid min-w-0 gap-2 text-xs">
+  return <div className="grid min-w-0 grid-cols-1 gap-2 text-xs">
     {description && description !== actualCommand && <div>
       <p className="text-(--ui-text-secondary)">{labels.approvalAction}</p>
       <p className="whitespace-pre-wrap break-words">{description}</p>

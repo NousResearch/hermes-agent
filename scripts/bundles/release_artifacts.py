@@ -170,7 +170,9 @@ def _record_termux(root: Path, tag: str, commit: str, *, legacy_commit_build: bo
         text=True, encoding="utf-8", timeout=60,
     )
     parsed = dict(line.split(": ", 1) for line in fields.splitlines())
-    expected_version = f"{tag_core(tag)}-1" if legacy_commit_build else deb_version_for_tag(tag)
+    # A legacy claim builds through the tagless --commit path, which versions X.Y.Z+commit<sha12>.
+    expected_version = (f"{tag_core(tag)}+commit{commit[:12]}" if legacy_commit_build
+                        else deb_version_for_tag(tag))
     if parsed["Version"] != expected_version:
         raise ValueError("Termux artifact version differs from release tag")
     if parsed["Architecture"] != "aarch64":

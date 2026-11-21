@@ -132,7 +132,10 @@ class GatewayBackgroundMixin:
             images, media_files, text_content = [], [], ""
             if response:
                 media_files, response = adapter.extract_media(response)
-                media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+                media_files = BasePlatformAdapter.filter_media_delivery_paths(
+                    media_files, session_key=self._session_key_for_source(source),
+                    profile=getattr(source, "profile", None),
+                )
                 from gateway.platforms.docker_media_paths import hand_back_unreadable_media
                 await hand_back_unreadable_media([p for p, _ in media_files])
                 images, text_content = adapter.extract_images(response)

@@ -25,7 +25,7 @@ def _send_media_via_adapter(
     job_ref = {"id": job.get("id", "?")}
     errors: list = []
     requested = [(str(p), v) for p, v in (media_files or [])]
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files, session_key=str(job.get("id") or ""))
     # Report paths the safety filter dropped (missing file, denied prefix, strict-mode miss).
     kept = {p for p, _ in media_files}
     for raw_path, _v in requested:

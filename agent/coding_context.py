@@ -494,7 +494,10 @@ def detect_project_facts(root: Path) -> ProjectFacts:
         js_pm = next((pm for lock, pm in _JS_LOCKFILES if (root / lock).is_file()), "npm")
         verify.extend(f"{js_pm} run {name}" for name in _VERIFY_TARGETS if name in scripts)
     if (root / "pytest.ini").is_file() or "[tool.pytest" in _read_small(root / "pyproject.toml"):
-        verify.append("pytest")
+        # Route pytest through the package manager so a uv/poetry/pipenv venv is used
+        # (bare `pytest` resolves to a foreign interpreter without the project's deps).
+        py_pm = next((pm for lock, pm in _PY_LOCKFILES if (root / lock).is_file()), None)
+        verify.append(f"{py_pm} run pytest" if py_pm else "pytest")
     makefile = _read_small(root / "Makefile")
     verify.extend(
         f"make {name}" for name in _VERIFY_TARGETS

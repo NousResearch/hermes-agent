@@ -170,6 +170,10 @@ def _detect_node_recipe(root: Path, pkg: dict[str, Any]) -> Recipe:
 
 
 _PYTHON_INSTALL = {"uv": "uv sync", "poetry": "poetry install", "pipenv": "pipenv install"}
+# Test command per package manager: bare ``pytest`` resolves to whatever interpreter
+# is first on PATH (often a system python without the project's venv deps), so route
+# through the manager's run prefix when one is detected.
+_PYTHON_TEST = {"uv": "uv run pytest", "poetry": "poetry run pytest", "pipenv": "pipenv run pytest"}
 
 
 def _detect_python_recipe(root: Path) -> Recipe | None:
@@ -180,10 +184,11 @@ def _detect_python_recipe(root: Path) -> Recipe | None:
         return None
 
     lower = f"{pyproject or ''}\n{requirements or ''}".lower()
-    install = _PYTHON_INSTALL.get(detect_package_manager(root) or "") or (
+    pm = detect_package_manager(root)
+    install = _PYTHON_INSTALL.get(pm or "") or (
         "pip install -e ." if pyproject and not requirements else "pip install -r requirements.txt"
     )
-    pytest_or_empty = ["pytest"] if (root / "tests").exists() else []
+    pytest_or_empty = [_PYTHON_TEST.get(pm or "", "pytest")] if (root / "tests").exists() else []
 
     # Precedence: Django, then FastAPI/uvicorn, then Flask, then generic.
     if manage_py or "django" in lower:

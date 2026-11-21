@@ -32,6 +32,20 @@ _SUBPROCESS_KW: dict[str, Any] = dict(
 )
 
 
+def _project_env() -> dict[str, str]:
+    """Environment for running the project's own commands.
+
+    Strip the agent's own ``PYTHONPATH``/``PYTHONHOME`` so a uv/poetry/pipenv-managed
+    project's venv does not inherit the agent interpreter's site-packages (a foreign,
+    ABI-incompatible ``pydantic_core``/``structlog`` that breaks import at collection).
+    Mirrors what the project's own run script already does (``env -u PYTHONPATH``).
+    """
+    env = dict(os.environ)
+    for var in ("PYTHONPATH", "PYTHONHOME"):
+        env.pop(var, None)
+    return env
+
+
 @dataclass
 class PhaseResult:
     phase: str
@@ -97,7 +111,10 @@ def _run_phase_command(
 ) -> PhaseResult:
     started = time.monotonic()
     try:
-        proc = subprocess.run(command, cwd=str(root), timeout=timeout, **_SUBPROCESS_KW, check=False)
+        proc = subprocess.run(
+            command, cwd=str(root), timeout=timeout, env=_project_env(),
+            **_SUBPROCESS_KW, check=False,
+        )
         output, exit_code, timed_out = proc.stdout or "", proc.returncode, False
     except subprocess.TimeoutExpired as exc:
         raw = exc.output
@@ -175,7 +192,7 @@ def _run_start_phase(
     started = time.monotonic()
     # Owned: the app leads its own group (clean group teardown below) and that group dies with this
     # process if it is killed mid-poll, instead of leaving the dev server running on the port.
-    proc = spawn_owned(recipe.start, purpose="verify-app", cwd=str(root), **_SUBPROCESS_KW)
+    proc = spawn_owned(recipe.start, purpose="verify-app", cwd=str(root), env=_project_env(), **_SUBPROCESS_KW)
     output = ""
     try:
         ready, status, error = _poll_readiness(url, ready_timeout)

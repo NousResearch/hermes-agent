@@ -151,6 +151,13 @@ class TestPythonDetection:
         recipe = detect_recipe(tmp_path)
         assert recipe.test == ["pytest"]
 
+    def test_pytest_routed_through_package_manager(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+        (tmp_path / "uv.lock").touch()
+        (tmp_path / "tests").mkdir()
+        recipe = detect_recipe(tmp_path)
+        assert recipe.test == ["uv run pytest"]
+
 
 class TestOtherEcosystems:
     def test_go(self, tmp_path):

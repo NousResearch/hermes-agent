@@ -2,11 +2,12 @@ import { act, cleanup, render } from '@testing-library/react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $diskPluginsScanPending } from '@/contrib/plugins-store'
 import { getLatestSessionMessages, type SessionInfo } from '@/hermes'
 import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import * as gateways from '@/store/gateway'
-import { $activeGatewayProfile, $showAllProfiles } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, $showAllProfiles } from '@/store/profile'
 import { _resetSessionOwnerHintsForTests, setConnection, setSessions } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
@@ -46,29 +47,41 @@ const workRow = { id: 'work-chat', profile: 'work', title: 'work chat', message_
 
 // One multiplexer serving `default` (the tab's own profile) and `work`.
 function stubGateway() {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (url: URL) => {
-      const path = url.pathname
+  const fetch = vi.fn(async (url: URL) => {
+    const path = url.pathname
 
-      const body = path.endsWith('/api/status')
-        ? { gateway_running: true, gateway_shared_with: ['default', 'work'] }
-        : path.endsWith('/api/profiles')
-          ? { profiles: [{ name: 'default' }, { name: 'work' }] }
-          : path.endsWith('/api/profiles/sessions')
-            ? { sessions: [workRow], total: 1 }
-            : path.endsWith('/api/sessions/work-chat')
-              ? workRow
-              : {}
+    if (path.endsWith('/api/sessions/kanban')) {
+      return new Response(JSON.stringify({ detail: 'Session not found' }), { status: 404 })
+    }
 
-      return new Response(JSON.stringify(body), { status: 200 })
-    })
-  )
+    const body = path.endsWith('/api/status')
+      ? { gateway_running: true, gateway_shared_with: ['default', 'work'] }
+      : path.endsWith('/api/profiles')
+        ? { profiles: [{ name: 'default' }, { name: 'work' }] }
+        : path.endsWith('/api/profiles/sessions')
+          ? { sessions: [workRow], total: 1 }
+          : path.endsWith('/api/sessions/work-chat')
+            ? workRow
+            : {}
+
+    return new Response(JSON.stringify(body), { status: 200 })
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  return fetch
 }
 
 type Resume = ReturnType<typeof useSessionActions>['resumeSession']
 
-function Harness({ onReady }: { onReady: (resume: Resume) => void }) {
+function Harness({
+  navigate = vi.fn(),
+  onReady,
+  routedSessionId = null
+}: {
+  navigate?: ReturnType<typeof vi.fn>
+  onReady: (resume: Resume) => void
+  routedSessionId?: string | null
+}) {
   const states = useRef(new Map<string, ClientSessionState>())
   const activeSessionIdRef = useRef<string | null>(null)
   const busyRef = useRef(false)
@@ -83,11 +96,11 @@ function Harness({ onReady }: { onReady: (resume: Resume) => void }) {
     creatingSessionRef,
     ensureSessionState: () => createClientSessionState(null),
     getRouteToken: () => 'token',
-    getRoutedStoredSessionId: () => null,
-    navigate: vi.fn() as never,
+    getRoutedStoredSessionId: () => routedSessionId,
+    navigate: navigate as never,
     requestGateway: vi.fn(async () => ({}) as never),
     resetViewSync: vi.fn(),
-    routedSessionId: null,
+    routedSessionId,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId: null,
     selectedStoredSessionIdRef,
@@ -107,9 +120,11 @@ function Harness({ onReady }: { onReady: (resume: Resume) => void }) {
   return null
 }
 
-describe('a Webapp tab resuming a row its sidebar listed', () => {
+describe('Webapp tab session resume', () => {
   beforeEach(() => {
+    vi.mocked(getLatestSessionMessages).mockReset()
     clearAllSessionStates()
+    $profiles.set([])
     _resetSessionOwnerHintsForTests()
     $showAllProfiles.set(false)
     $activeGatewayProfile.set('default')
@@ -118,11 +133,13 @@ describe('a Webapp tab resuming a row its sidebar listed', () => {
 
   afterEach(() => {
     cleanup()
+    $diskPluginsScanPending.set(false)
     gateways.closeSecondaryGateways()
     gateways.setPrimaryGateway(null)
     setConnection(null)
     setSessions([])
     clearAllSessionStates()
+    $profiles.set([])
     _resetSessionOwnerHintsForTests()
     delete win.__HERMES_DASHBOARD_PROFILE__
     clearWebappSession()
@@ -194,4 +211,51 @@ describe('a Webapp tab resuming a row its sidebar listed', () => {
     expect(getLatestSessionMessages).toHaveBeenCalledWith('work-chat', { connectionId: 'local', profile: 'work' })
     expect(sockets).toHaveLength(0)
   })
+
+  it.each([
+    { pending: false, reads: 1 },
+    { pending: true, reads: 2 }
+  ])(
+    'reads missing bookmark metadata $reads time(s) with plugin discovery pending=$pending',
+    async ({ pending, reads }) => {
+      $diskPluginsScanPending.set(pending)
+      const fetch = stubGateway()
+      $profiles.set([{ name: 'default' } as never])
+      win.__HERMES_DASHBOARD_PROFILE__ = 'default'
+      seedWebappSession('served-token')
+      expect(installBrowserDesktopBridge()).toBe(true)
+      const tab = await win.hermesDesktop!.getConnection!()
+      const primary = {
+        connectionState: 'open',
+        request: vi.fn(async () => {
+          throw new Error('Session not found')
+        })
+      }
+      gateways.setPrimaryGateway(primary as never, 'default')
+      gateways.setPrimaryGatewayConnection(tab)
+      setConnection(tab)
+      vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error('404: Session not found'))
+
+      let resume!: Resume
+      const navigate = vi.fn()
+      render(
+        <Harness
+          navigate={navigate}
+          onReady={ready => {
+            resume = ready
+          }}
+          routedSessionId="kanban"
+        />
+      )
+      await act(() => resume('kanban', true))
+
+      expect(navigate).toHaveBeenCalledWith('/', { replace: true })
+      expect(fetch.mock.calls.filter(([url]) => url.pathname === '/api/sessions/kanban')).toHaveLength(reads)
+
+      if (!pending) {
+        expect(getLatestSessionMessages).not.toHaveBeenCalled()
+        expect(primary.request).not.toHaveBeenCalled()
+      }
+    }
+  )
 })

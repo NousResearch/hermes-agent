@@ -1970,8 +1970,8 @@ class TestConcurrentToolExecution:
         assert secret not in repr(starts + completes + progress)
 
 
-    def test_sequential_blocked_tool_skips_checkpoints_and_callbacks(self, agent, monkeypatch):
-        """Sequential path: blocked tool should not trigger checkpoints or start callbacks."""
+    def test_sequential_blocked_tool_skips_checkpoints_but_announces_start(self, agent, monkeypatch):
+        """Sequential path: a blocked tool takes no checkpoint but does open its row."""
         tool_call = _mock_tool_call(name="write_file",
                                     arguments='{"path":"test.txt","content":"hello"}',
                                     call_id="c1")
@@ -1994,7 +1994,7 @@ class TestConcurrentToolExecution:
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
 
         agent._checkpoint_mgr.ensure_checkpoint.assert_not_called()
-        assert starts == []
+        assert [a[:2] for a in starts] == [("c1", "write_file")]
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
         assert json.loads(messages[0]["content"]) == {"error": "Blocked by policy"}

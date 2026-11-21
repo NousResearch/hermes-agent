@@ -375,7 +375,7 @@ DEFAULT_CONTEXT_LENGTHS = {
 # /v1/responses). Unlisted Grok models still reason natively but 400 on the
 # parameter, so callers must send no `reasoning` key rather than a default `medium`.
 # grok-4.5/4.6 accept low/medium/high (default high) but REJECT "none", unlike grok-4.3.
-_GROK_EFFORT_CAPABLE_PREFIXES = ("grok-3-mini", "grok-4.20-multi-agent", "grok-4.3", "grok-4.5", "grok-4.6")
+_GROK_EFFORT_CAPABLE_PREFIXES = ("grok-3-mini", "grok-4.20-multi-agent", "grok-4.3", "grok-4.5", "grok-4.6", "grok-4.7")
 
 
 def grok_supports_reasoning_effort(model: str) -> bool:

@@ -9,6 +9,7 @@ import itertools
 import logging
 import random
 import secrets
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, TypeVar
@@ -86,6 +87,8 @@ class StatusReporter:
         self._goodbyes: set[asyncio.Task] = set()
         self._pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._taking: set[concurrent.futures.Future] = set()  # lock confirmations still on a thread
+        self._release_owed = False  # a lock taken after a cancel, given back once none is out
+        self._closed_loop_decisions = threading.Lock()
 
     async def run(self, is_running: Callable[[], bool], *, tick: float = _TICK_S) -> None:
         """Poll until the gateway stops. The sleep between polls only bounds how soon a due report
@@ -217,6 +220,12 @@ class StatusReporter:
             taking.add_done_callback(lambda done: self._give_back_on_loop(loop, done))
             raise
         except OSError:
+            acquired = None
+        finally:
+            if taking.done():  # else a cancel left it to _give_back_unless_sending
+                self._taking.discard(taking)
+        if acquired is None:
+            self._settle_owed_release()
             # Permissions (gateway.status has logged the directory and its repair), a read-only or
             # full disk, a file where the directory goes. One fixed reason: the error's text is a path.
             # A sender keeps sending: no other gateway can take the lock from this directory either.
@@ -225,10 +234,8 @@ class StatusReporter:
             self._stand_by(logging.WARNING, "the gateway lock directory is not usable (it must be writable "
                            "by this user, on a disk with free space)")
             return False
-        finally:
-            if taking.done():  # else a cancel left it to _give_back_unless_sending
-                self._taking.discard(taking)
         self._is_sender = acquired
+        self._settle_owed_release()
         if acquired:
             self._standing_by_for = None
         else:
@@ -238,21 +245,30 @@ class StatusReporter:
     def _give_back_on_loop(self, loop: asyncio.AbstractEventLoop, taking: concurrent.futures.Future) -> None:
         """Decide on the event loop, one after run()'s own release and never beside it: a release
         reads the owner and then unlinks, so two at once could unlink a lock another gateway took
-        in between. A loop that has closed runs nothing more, so then it is decided here."""
+        in between. A loop that has closed runs nothing more, so then it is decided here, under
+        a lock, since the two reporter threads can both get here."""
         try:
             loop.call_soon_threadsafe(self._give_back_unless_sending, taking)
         except RuntimeError:  # the loop has closed
-            self._give_back_unless_sending(taking)
+            with self._closed_loop_decisions:
+                self._give_back_unless_sending(taking)
 
     def _give_back_unless_sending(self, taking: concurrent.futures.Future) -> None:
         """A lock taken after its caller was cancelled is this process's lock file, whichever run
-        took it: kept while this reporter is the sender (a goodbye cancelled alone, or a respawned
-        watcher that took it since), or while another confirmation is out and will decide; given
-        back otherwise."""
+        took it. While another confirmation is still out, the release is owed and decided once the
+        last of them is done (``_settle_owed_release``)."""
         self._taking.discard(taking)
-        if taking.cancelled() or taking.exception() is not None or not taking.result()[0]:
+        if not (taking.cancelled() or taking.exception() is not None or not taking.result()[0]):
+            self._release_owed = True
+        self._settle_owed_release()
+
+    def _settle_owed_release(self) -> None:
+        """Give back a lock taken after a cancel once no confirmation is out, unless this reporter
+        is the sender by then (a goodbye cancelled alone, or a respawned watcher)."""
+        if not self._release_owed or self._taking:
             return
-        if not self._is_sender and not self._taking:
+        self._release_owed = False
+        if not self._is_sender:
             release_scoped_lock(_LOCK_SCOPE, self._target.url)
 
     def _stand_by(self, level: int, why: str) -> None:

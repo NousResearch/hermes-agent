@@ -427,9 +427,7 @@ def _profile_action_environment(
         # and resolves to the same validated directory.
         action_env["HERMES_HOME"] = str(target_home)
         apply_subprocess_home_env(action_env)
-        # Every gateway verb, as for the host's (host_gateway_child_env): install can start one too.
-        # The scrub removed the deployment's stamps.
-        if _is_gateway_action(subcommand):
+        if _is_gateway_action(subcommand):  # as host_gateway_child_env does: install can start one too
             from tools.environments.local import keep_deployment_stamps
             keep_deployment_stamps(action_env)
 

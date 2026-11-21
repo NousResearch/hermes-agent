@@ -455,7 +455,7 @@ def served_profile_child_env(
     profile. ``False`` keeps the provider scrub; the caller re-adds the few keys the child needs via
     ``get_secret``. ``target_home`` defaults to the active override; ``base`` replaces the
     ``hermes_subprocess_env`` snapshot. The deployment's launch stamps (``DEPLOYMENT_STAMP_ENV``) are
-    removed last, whatever *base* or the profile overlay carried: only ``gateway_child_env`` keeps them."""
+    removed last, whatever *base* or the profile overlay carried; ``gateway_child_env`` keeps them."""
     return drop_deployment_stamps(_profile_child_env(base, target_home, inherit_credentials))
 
 
@@ -502,8 +502,7 @@ def _profile_child_env(
 def keep_deployment_stamps(env: dict, source: Mapping[str, str] | None = None) -> dict:
     """Put the deployment's launch stamps (``DEPLOYMENT_STAMP_ENV``) from *source* (the process env)
     into the env of a gateway this process starts, where the scrub removed them. A value already in
-    *env* (the target profile's own ``GATEWAY_RELAY_SLEEP_URL``) is kept, as it was before stamps
-    were scrubbed. Without them a respawned gateway stops reporting and loses the brokered suspend."""
+    *env* (the target profile's own ``GATEWAY_RELAY_SLEEP_URL``) is kept."""
     source = os.environ if source is None else source
     for name in DEPLOYMENT_STAMP_ENV:
         if source.get(name) and not env.get(name):

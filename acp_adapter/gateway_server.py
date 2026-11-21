@@ -21,6 +21,23 @@ from acp_adapter.session import _translate_acp_cwd, _normalize_cwd_for_compare
 
 logger = logging.getLogger(__name__)
 
+# ``message.start`` cards that name an async wake: their turn is the report of background work an
+# earlier turn started, so the roster holds that work's exit until this turn settles.
+_WAKE_DISPLAY_KINDS = {"process_complete", "async_delegation_complete"}
+
+
+def _client_wants_state_update(params):
+    """The editor's opt-in for ``_hermes-agent/state_update``: ``stateUpdate >= 1`` under
+    ``clientCapabilities._meta["hermes-agent"]`` or the ``bb.dev`` alias (the same unstable
+    capability convention ``initialize``'s typed model drops)."""
+    meta = ((params or {}).get("clientCapabilities") or {}).get("_meta") or {}
+    for namespace in ("hermes-agent", "bb.dev"):
+        wants = meta.get(namespace)
+        if isinstance(wants, dict) and isinstance(wants.get("stateUpdate"), int) \
+                and wants["stateUpdate"] >= 1:
+            return True
+    return False
+
 
 def _slash_command(text):
     """Canonical Hermes command name ``text`` invokes, or None for ordinary text.
@@ -111,6 +128,15 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         # Editor-held compression-tip id -> logical session id (see ``_resume``).
         self._aliases = {}
         self._form_elicitation = False
+        # ``initialize`` opted this editor into ``_hermes-agent/state_update`` (run boundaries +
+        # background roster); sessions whose async wake turn is running; exited processes held
+        # past their finish until that wake settles (ACP v2's known-follow-up rule).
+        self._state_update = False
+        self._wake_inflight = set()
+        self._exited_seen = {}
+        # Sessions' finalized exits (their wake settled): reported once more if the owner's
+        # finished registry still lists them, then never again; bounded, insertion-ordered.
+        self._finalized = {}
         from hermes_cli.gateway_mutations import PreparedMutations
         self._mutations = PreparedMutations()
         # Session -> title the editor was last shown (``session_info_update`` fires on a change).
@@ -130,12 +156,14 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             add_observer(self._observe_client_message)
 
     def _observe_client_message(self, event):
-        """``initialize``'s raw capabilities (the SDK's typed model drops ``elicitation``)."""
+        """``initialize``'s raw capabilities (the SDK's typed model drops ``elicitation`` and
+        every ``_meta`` namespace)."""
         message = getattr(event, "message", None)
         if getattr(event, "direction", None) == "incoming" and isinstance(message, dict) \
                 and message.get("method") == "initialize":
             from acp_adapter.elicitation import client_supports_form_elicitation
             self._form_elicitation = client_supports_form_elicitation(message.get("params"))
+            self._state_update = _client_wants_state_update(message.get("params"))
 
     async def initialize(self, **kwargs):
         from hermes_cli import __version__
@@ -214,6 +242,12 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 self._adopted[session_id] = resumes
             self._changed.notify_all()
         await self._project_mode(session_id, self._editor_id(session_id), snapshot.get("info") or {}, client=client)
+        # A fresh adopt is a state boundary for opted-in editors: running if the snapshot shows a
+        # started turn (ours or a queued admission's), idle otherwise, with the live roster.
+        started = next((row for row in snapshot.get("pending", []) if row.get("status") == "started"), None)
+        await self._send_state_update(session_id, self._editor_id(session_id),
+            "running" if started else "idle",
+            run_id=started.get("admission_id") if started else None, gateway=client)
 
     async def _request_live_reasoning(self, client, session_id):
         """Ask the owner to stream this session's reasoning (``show_reasoning``), as the CLI does.
@@ -970,6 +1004,64 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 self._failure = exc
                 self._changed.notify_all()
 
+    def _background_item(self, row):
+        """One owner process row in ACP v2 ``state_update.background`` item shape."""
+        item = {"type": "terminal", "id": row["session_id"], "status": "running"}
+        if row.get("status") == "exited":
+            code = row.get("exit_code")
+            item["status"] = "completed" if code == 0 else "failed"
+            if code is not None:
+                item["exitCode"] = code
+        return item
+
+    async def _background_roster(self, sid, gateway=None):
+        """The session's background roster, recomputed from ``process.list`` ground truth; exited
+        processes stay listed (``known follow-up``: reported finished, removed only once the wake
+        that delivers their result settles). ``None`` when no owner connection can read it — the
+        caller then omits the key (unreported), never an empty list (quiet)."""
+        gateway = gateway or self._gateway
+        if gateway is None:
+            return None
+        try:
+            rows = (await gateway.rpc("process.list", session_id=sid)).get("processes") or []
+        except Exception:
+            # Boundary: a roster read must not fail the boundary notification; fall back to the
+            # last known rows (a stale roster for one beat beats lying "quiet").
+            logger.debug("state_update roster read failed for %s", sid, exc_info=True)
+            rows = []
+        finalized = self._finalized.setdefault(sid, {})
+        for row in rows:
+            if row.get("status") == "exited":
+                if row["session_id"] not in finalized:
+                    self._exited_seen.setdefault(sid, {})[row["session_id"]] = row
+            else:
+                finalized.pop(row["session_id"], None)  # a respawned id is new work
+        merged = {row["session_id"]: row for row in rows if row["session_id"] not in finalized}
+        merged.update({pid: row for pid, row in (self._exited_seen.get(sid) or {}).items()
+                       if pid not in merged})
+        return [self._background_item(row) for row in merged.values()]
+
+    async def _send_state_update(self, sid, editor_id, state, stop_reason=None, run_id=None,
+            gateway=None):
+        """One ``_hermes-agent/state_update`` notification (opt-in extension): the session's run
+        boundary plus its background roster, for editors that declared
+        ``clientCapabilities._meta["hermes-agent"|"bb.dev"].stateUpdate``."""
+        if not (self._state_update and self._conn):
+            return
+        update = {"sessionId": editor_id, "state": state}
+        if stop_reason is not None:
+            update["stopReason"] = stop_reason
+        if run_id is not None:
+            update["_meta"] = {"runId": run_id}
+        roster = await self._background_roster(sid, gateway)
+        if roster is not None:
+            update["background"] = roster
+        try:
+            await self._conn.ext_notification("hermes-agent/state_update", update)
+        except Exception:
+            # Boundary: an editor that hung up mid-notification must not fail the projection.
+            logger.debug("state_update notification failed for %s", sid, exc_info=True)
+
     async def _project(self, event):
         kind, payload = event.get("type"), event.get("payload", {})
         sid, editor_id = event["session_id"], self._editor_id(event["session_id"])
@@ -993,6 +1085,14 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if kind in {"tool.start", "tool.complete"}:
             await self._project_tool(kind, sid, editor_id, aid, payload)
             return
+        if kind == "message.start":
+            # Run boundaries for editors that opted into ``_hermes-agent/state_update``. The
+            # claim's card (``admission_display``) names the async wakes: their exited work is
+            # held in the roster until this turn settles.
+            if payload.get("display_kind") in _WAKE_DISPLAY_KINDS:
+                self._wake_inflight.add(sid)
+            await self._send_state_update(sid, editor_id, "running", run_id=aid)
+            return
         if kind == "message.delta":
             text = _text(payload)
             self._streamed[aid] = self._streamed.get(aid, "") + text
@@ -1010,6 +1110,16 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                     await self._conn.session_update(session_id=editor_id, update=self._chunk(sid, text + "\n\n"))
                 self._end_message(sid)
         elif kind == "message.complete":
+            if sid in self._wake_inflight:
+                # The wake turn settled: the exits it reported are finalized — they leave the
+                # roster for good, even while the owner's finished registry still lists them.
+                self._wake_inflight.discard(sid)
+                finalized = self._finalized.setdefault(sid, {})
+                finalized.update(dict.fromkeys(self._exited_seen.pop(sid, {})))
+                while len(finalized) > 32:  # ponytail: fixed cap; a per-process ack if it grows
+                    finalized.pop(next(iter(finalized)))
+            await self._send_state_update(sid, editor_id, "idle",
+                stop_reason="cancelled" if payload.get("outcome") == "cancelled" else "end_turn")
             if aid in self._settling or aid in self._receipted:
                 # A retry's terminal receipt claimed this reply; it is shown once, from there.
                 self._streamed.pop(aid, None)

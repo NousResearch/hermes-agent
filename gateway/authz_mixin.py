@@ -12,7 +12,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from gateway.bot_loop_guard import BotLoopGuard
 from gateway.config import Platform
@@ -310,7 +310,34 @@ class GatewayAuthorizationMixin:
         # No identity, or one whose transport was only inferred (hand-built source, pre-column row):
         # the unique owner of ``(platform, runtime_profile)`` delivers.
         # ``getattr``: test fixtures build bare SimpleNamespace sources without ``profile``.
-        return self._authorization_adapter(getattr(source, "platform", None), getattr(source, "profile", None))
+        profile = getattr(source, "profile", None)
+        if not profile:
+            # A source whose ``profile`` was never stamped still carries its lane in the session key
+            # (``agent:<profile>:<platform>:...``). Reading it here keeps an identity-less SECONDARY
+            # lane on its own bot; without it the lookup below falls through to the PRIMARY map and
+            # the lane's status bubbles / notices go out the default bot (the "wrong bot" row the
+            # pinned identity exists to close, reachable whenever a reconnect drops the identity).
+            profile = self._lane_profile(source)
+        return self._authorization_adapter(getattr(source, "platform", None), profile)
+
+    def _lane_profile(self, source: Any) -> Optional[str]:
+        """Profile named by *source*'s session key, ``None`` for the primary/default lane.
+
+        Only the runtime lane is read here — never used to *pin* a transport: a routed lane can run
+        as one profile while another bot receives it, and that case is answered by
+        ``identity.transport_profile`` above. This is the weaker, last-resort signal for rows that
+        carry no identity at all.
+        """
+        key = str(getattr(source, "session_key", "") or "")
+        parts = key.split(":")
+        if len(parts) < 2 or parts[0] != "agent" or parts[1] in ("", "main"):
+            return None
+        try:
+            from gateway.session import profile_from_session_key_namespace
+            return profile_from_session_key_namespace(parts[1])
+        except Exception:
+            return None
+
 
     def _owning_profile(self, adapter, platform):
         """Return (registered, profile) for a live adapter: profile is None for primary."""

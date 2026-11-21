@@ -71,12 +71,14 @@ def _builtin_base_url(identity, base_url, get_secret_str) -> str:
 
 
 def _self_hosted(base_url) -> bool:
-    """A loopback (``localhost.`` too), private-network or tailnet (``*.ts.net``) server, which may pick its own model."""
+    """A loopback (``localhost.`` too), private-network, tailnet (``*.ts.net``) or private-use DNS (``*.home.arpa``,
+    ``*.internal``, ``*.lan``) server, which may pick its own model."""
     from agent.model_metadata import is_local_endpoint  # loads the provider registry: only a model-less URL pays
     from hermes_cli.runtime_provider import _loopback_hostname
     from utils import base_url_hostname
     host = base_url_hostname(base_url)
-    return bool(_loopback_hostname(host)) or host.endswith('.ts.net') or is_local_endpoint(base_url)
+    return (bool(_loopback_hostname(host)) or host.endswith(('.ts.net', '.home.arpa', '.internal', '.lan'))
+            or is_local_endpoint(base_url))
 
 
 class ProfileConfigUnavailable(RuntimeError):

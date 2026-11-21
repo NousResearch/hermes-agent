@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from contextlib import suppress
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -232,27 +233,158 @@ class TestSkillManageBatch(unittest.TestCase):
         r = self._call("delta", [{"action": "create", "content": SK.format(n="delta")}])
         self.assertTrue(r["success"], r)
 
-    def test_failed_restore_never_destroys_the_skill(self):
-        """Rollback used to rmtree the live skill directory BEFORE
-        copytree restored the snapshot. When copytree failed (disk full,
-        locked file) the except only appended a note and the finally then
-        deleted the snapshot too: nothing survived. The broken state must
-        be moved aside and only deleted once the restore succeeded."""
-        from unittest.mock import patch as _patch
+    def _fail_batch(self, ops):
+        """Run ``ops`` on 'probe' followed by an op that always fails."""
+        return self._call("probe", [*ops, {"action": "write_file", "file_path": "bad/nope.md",
+                                           "file_content": "x"}])
 
-        import shutil as _shutil
+    def _probe(self, *rel):
+        return os.path.join(self.home, "skills", "probe", *rel)
+
+    def test_rollback_with_a_process_holding_a_cwd_inside_the_skill(self):
+        """The real bug: Windows can't rename a dir while a process has its cwd in it,
+        so the old move-aside rollback died with ROLLBACK FAILED [WinError 5]."""
+        import subprocess
+        self._call("probe", [
+            {"action": "create", "content": SK.format(n="probe")},
+            {"action": "write_file", "file_path": "scripts/a.py", "file_content": "a"},
+        ])
+        holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                  cwd=self._probe("scripts"))
+        try:
+            r = self._fail_batch([
+                {"action": "patch", "old_string": "Step 1.", "new_string": "Step ONE."},
+                {"action": "write_file", "file_path": "scripts/a.py", "file_content": "CHANGED"},
+                {"action": "write_file", "file_path": "references/new.md", "file_content": "n"},
+            ])
+        finally:
+            holder.kill()
+            holder.wait()
+        self.assertNotIn("ROLLBACK FAILED", r["error"])
+        with open(self._probe("SKILL.md"), encoding="utf-8") as fh:
+            self.assertIn("Step 1.", fh.read())
+        with open(self._probe("scripts", "a.py"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "a")
+        self.assertFalse(os.path.exists(self._probe("references")))  # batch-added dir gone
+        self.assertFalse(os.path.exists(self._probe() + ".rollback-broken"))
+        # #118691: nothing parked as a sibling inside the skills root.
+        self.assertEqual(sorted(n for n in os.listdir(os.path.join(self.home, "skills"))
+                                if not n.startswith(".")), ["probe"])
+
+    def test_rollback_never_moves_the_skill_dir(self):
+        """#118691: the old rollback renamed the live dir to a `.rollback-broken` sibling INSIDE
+        the skills root, where the loader offers it as a second skill if the process dies
+        mid-restore. The restore must never rename the skill dir at all."""
+        from pathlib import Path
+        self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
+        renamed = []
+        real_rename = Path.rename
+
+        def spy(self_, target):
+            renamed.append(str(target))
+            return real_rename(self_, target)
+
+        with patch("pathlib.Path.rename", spy):
+            r = self._fail_batch([{"action": "patch", "old_string": "Step 1.",
+                                   "new_string": "Step ONE."}])
+        self.assertNotIn("ROLLBACK FAILED", r["error"])
+        self.assertFalse([t for t in renamed if "rollback" in t], renamed)
+        with open(self._probe("SKILL.md"), encoding="utf-8") as fh:
+            self.assertIn("Step 1.", fh.read())
+
+    def test_rollback_restores_a_removed_file(self):
+        self._call("probe", [
+            {"action": "create", "content": SK.format(n="probe")},
+            {"action": "write_file", "file_path": "references/keep.md", "file_content": "k"},
+        ])
+        r = self._fail_batch([{"action": "remove_file", "file_path": "references/keep.md"}])
+        self.assertNotIn("ROLLBACK FAILED", r["error"])
+        with open(self._probe("references", "keep.md"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "k")
+
+    def test_rollback_restores_a_read_only_file(self):
+        """Windows refuses to replace or delete a read-only file."""
+        import stat as _stat
+        self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
+        md = self._probe("SKILL.md")
+        added = self._probe("references", "added.md")
+        real = self.smt._skill_manage_from
+
+        def lock_files_before_rollback(payload, **kw):
+            if payload.get("file_path") == "bad/nope.md":  # last op: rollback runs next
+                os.chmod(md, _stat.S_IREAD)
+                os.chmod(added, _stat.S_IREAD)
+            return real(payload, **kw)
+
+        try:
+            with patch.object(self.smt, "_skill_manage_from", side_effect=lock_files_before_rollback):
+                r = self._fail_batch([
+                    {"action": "patch", "old_string": "Step 1.", "new_string": "Step ONE."},
+                    {"action": "write_file", "file_path": "references/added.md", "file_content": "a"},
+                ])
+            self.assertNotIn("ROLLBACK FAILED", r["error"])
+            with open(md, encoding="utf-8") as fh:
+                self.assertIn("Step 1.", fh.read())
+            self.assertFalse(os.path.exists(added))
+        finally:
+            with suppress(OSError):
+                os.chmod(md, _stat.S_IWRITE | _stat.S_IREAD)
+
+    def test_rollback_keeps_a_symlinked_file_a_symlink(self):
+        self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
+        real_file = os.path.join(self.home, "shared.md")
+        with open(real_file, "w", encoding="utf-8") as fh:
+            fh.write("shared")
+        os.makedirs(self._probe("references"))
+        link = self._probe("references", "shared.md")
+        try:
+            os.symlink(real_file, link)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks not available")
+        r = self._fail_batch([{"action": "write_file", "file_path": "references/shared.md",
+                               "file_content": "CHANGED"}])
+        self.assertNotIn("ROLLBACK FAILED", r["error"])
+        self.assertTrue(os.path.islink(link))
+        with open(real_file, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "shared")
+
+    def test_unrestorable_file_is_named_and_everything_else_restored(self):
+        """A file another process holds exclusively can't be written by anyone. Rollback
+        must restore every other file, name the stuck one, and keep the snapshot."""
+        import tools.skill_manager_batch as smb
+        self._call("probe", [
+            {"action": "create", "content": SK.format(n="probe")},
+            {"action": "write_file", "file_path": "references/locked.md", "file_content": "L"},
+        ])
+        real_write = smb.atomic_write_bytes
+
+        def locked(path, *a, **k):
+            if str(path).endswith("locked.md"):
+                raise PermissionError(13, "file is locked")
+            return real_write(path, *a, **k)
+
+        with patch.object(smb, "atomic_write_bytes", side_effect=locked):
+            r = self._fail_batch([
+                {"action": "patch", "old_string": "Step 1.", "new_string": "Step ONE."},
+                {"action": "write_file", "file_path": "references/locked.md", "file_content": "X"},
+            ])
+        self.assertIn("ROLLBACK FAILED", r["error"])
+        self.assertIn("references/locked.md", r["error"])
+        snap = r["error"].split("snapshot preserved at '")[1].split("'")[0]
+        self.assertTrue(os.path.isfile(os.path.join(snap, "references", "locked.md")))
+        with open(self._probe("SKILL.md"), encoding="utf-8") as fh:
+            self.assertIn("Step 1.", fh.read())  # the restorable file WAS restored
+        shutil.rmtree(os.path.dirname(snap), ignore_errors=True)
+
+    def test_failed_restore_never_destroys_the_skill(self):
+        """Rollback used to rmtree the live skill directory BEFORE restoring the snapshot;
+        when the restore failed (disk full) nothing survived. A failed write must leave the
+        skill dir and its files in place, and say so."""
+        import tools.skill_manager_batch as smb
 
         self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
-        state = {"n": 0}
-        real_copytree = _shutil.copytree
 
-        def flaky_copytree(src, dst, *a, **k):
-            state["n"] += 1
-            if state["n"] == 2:  # call 1 snapshots, call 2 is the restore
-                raise OSError("disk full")
-            return real_copytree(src, dst, *a, **k)
-
-        with _patch("shutil.copytree", side_effect=flaky_copytree):
+        with patch.object(smb, "atomic_write_bytes", side_effect=OSError(28, "disk full")):
             r = self._call("probe", [
                 {"action": "patch",
                  "old_string": "Step 1.", "new_string": "Step ONE."},
@@ -261,6 +393,7 @@ class TestSkillManageBatch(unittest.TestCase):
             ])
         self.assertFalse(r["success"], r)
         self.assertIn("ROLLBACK FAILED", r["error"])
+        self.assertIn("disk full", r["error"])
         # The skill directory was NOT destroyed by the failed rollback:
         # the half applied state survives instead of nothing at all.
         skill_md = os.path.join(self.home, "skills", "probe", "SKILL.md")

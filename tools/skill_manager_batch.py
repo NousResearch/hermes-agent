@@ -3,12 +3,17 @@
 through ``tools.skill_manager_tool`` so that module owns it."""
 
 from contextlib import suppress
+import filecmp
 import json
 import logging
+import os
 import posixpath
 import shutil
+import stat
 import tempfile
 from pathlib import Path
+
+from utils import _preserve_file_mode, atomic_write_bytes
 
 logger = logging.getLogger("tools.skill_manager_tool")
 
@@ -155,21 +160,85 @@ def _snapshot_skills(names, snap_root, find_skill, create_targets):
     return snapshots, None
 
 
+def _restore_tree(snap: Path | None, dest: Path) -> list[str]:
+    """Make the files under ``dest`` match ``snap`` (None = no files), in place.
+
+    ``dest`` itself is never renamed or removed: Windows refuses both while any process
+    holds a handle inside it (a shell cwd). Only files that differ are touched, so a file
+    the batch never changed can't fail just because something has it open. Writes go
+    through ``atomic_write_bytes`` (symlink-preserving, never torn, retries Windows
+    handle contention). Failures are collected, not raised mid-way: everything
+    restorable gets restored, and the caller reports the rest."""
+    failed = []
+    for src in snap.rglob("*") if snap is not None else ():
+        rel = src.relative_to(snap)
+        dst = dest / rel
+        try:
+            if src.is_dir():
+                dst.mkdir(parents=True, exist_ok=True)
+                continue
+            if dst.is_file() and filecmp.cmp(src, dst, shallow=False):
+                continue
+            _make_writable(dst)
+            # Symlink-preserving, torn-write-safe, retries Windows handle contention.
+            atomic_write_bytes(dst, src.read_bytes(), mode=_preserve_file_mode(src))
+        except OSError as exc:
+            failed.append(f"{rel.as_posix()} ({exc.strerror or exc})")
+    # Remove what the batch added. followlinks=False: never delete outside the skill.
+    for root, dirs, files in os.walk(dest, topdown=False):
+        here = Path(root)
+        for n in files:
+            p = here / n
+            rel = p.relative_to(dest)
+            if snap is not None and (snap / rel).exists():
+                continue
+            try:
+                _make_writable(p)
+                p.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                failed.append(f"{rel.as_posix()} ({exc.strerror or exc})")
+        for n in dirs:
+            if snap is None or not (snap / here.relative_to(dest) / n).exists():
+                # ponytail: an emptied dir still held as a cwd stays behind (no OS can remove
+                # it). It holds no files, so the restore is complete; a retry `create` of a
+                # batch-created skill is refused until the holder lets go.
+                with suppress(OSError):
+                    (here / n).rmdir()
+    return failed
+
+
+def _make_writable(p: Path) -> None:
+    """Windows can't replace or delete a read-only file; clear the flag first."""
+    if os.name == "nt":
+        with suppress(OSError):
+            os.chmod(p, stat.S_IWRITE | stat.S_IREAD)
+
+
 def _restore_snapshot(pre_dir, snap, post_dir, dir_pre_existed=False, written=()) -> None:
-    post_exists = post_dir is not None and post_dir.is_dir()
-    if snap is None:
-        if not post_exists:
-            return
-        if not dir_pre_existed:  # Batch created this skill: remove the partial result.
-            shutil.rmtree(post_dir)
-            return
+    if snap is not None:  # The skill existed: put its files back where they were.
+        failed = _restore_tree(snap, pre_dir)
+    elif post_dir is None or not post_dir.is_dir():
+        return
+    elif not dir_pre_existed:  # Batch created this skill: remove the partial result.
+        failed = _restore_tree(None, post_dir)
+        with suppress(OSError):
+            post_dir.rmdir()
+    else:
         # The dir predates the batch (adopted empty leftover): unlink exactly the files the
         # batch wrote there, then rmdir() the now-empty dirs up to and including the skill dir.
         # rmdir() fails on anything left, so a file that landed out-of-band survives.
+        failed = []
         for rel in ("SKILL.md", *written):
             target = post_dir / rel
-            with suppress(OSError):
+            try:
+                _make_writable(target)
                 target.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                failed.append(f"{rel} ({exc.strerror or exc})")
             for parent in target.parents:
                 if parent == post_dir or not parent.is_relative_to(post_dir):
                     break
@@ -177,23 +246,8 @@ def _restore_snapshot(pre_dir, snap, post_dir, dir_pre_existed=False, written=()
                     parent.rmdir()
         with suppress(OSError):
             post_dir.rmdir()
-        return
-    if not post_exists:
-        shutil.copytree(snap, pre_dir)
-        return
-    # Move the broken state aside and delete it only after the snapshot is
-    # back, so a failed copytree (disk full, locked file) can't mean total loss.
-    aside = post_dir.with_name(post_dir.name + ".rollback-broken")
-    shutil.rmtree(aside, ignore_errors=True)
-    post_dir.rename(aside)
-    try:
-        shutil.copytree(snap, pre_dir)
-    except Exception:
-        # Restore failed: put the half-applied state back rather than nothing.
-        shutil.rmtree(pre_dir, ignore_errors=True)
-        aside.rename(pre_dir)
-        raise
-    shutil.rmtree(aside, ignore_errors=True)
+    if failed:
+        raise OSError("could not restore " + ", ".join(failed))
 
 
 def _rollback(snapshots, find_skill, results):

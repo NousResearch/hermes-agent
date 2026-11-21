@@ -10,6 +10,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { COMPOSER_AREAS, type ComposerAtCompletionSource } from '@/app/chat/composer/contrib'
 import { registry } from '@/contrib/registry'
 import { queryClient } from '@/lib/query-client'
+import { $sessions } from '@/store/session'
+import type { SessionInfo } from '@/types/hermes'
 
 import { useAtCompletions } from './use-at-completions'
 
@@ -56,6 +58,7 @@ async function searchAndRead(
 afterEach(() => {
   disposers.splice(0).forEach(d => d())
   queryClient.clear()
+  $sessions.set([])
   vi.useRealTimers()
 })
 
@@ -182,5 +185,33 @@ describe('contributed @ completion sources', () => {
     const rows = await searchAndRead(result, 'rese')
     expect(rows[0]).toBe('@researcher')
     expect(rows.length).toBeGreaterThan(1)
+  })
+
+  it('surfaces @session: starter on bare @ and live session suggestions on @session: query', async () => {
+    vi.useFakeTimers()
+    $sessions.set([
+      {
+        id: 'local-abc123456789',
+        title: '引用原会话图文快速开启新会话的方法与插件',
+        preview: '需要加上',
+        profile: 'default'
+      } as SessionInfo
+    ])
+
+    const gateway = gatewayStub([
+      { text: '@diff', display: '@diff', meta: 'git diff' },
+      { text: '@file:', display: '@file:', meta: 'attach file' }
+    ])
+
+    const { result } = renderHook(() => useAtCompletions({ gateway: gateway as never, sessionId: 's1', cwd: '/repo' }))
+
+    const rootRows = await searchAndRead(result, '')
+    expect(rootRows).toContain('@session:')
+
+    const sessionRows = await searchAndRead(result, 'session:')
+    expect(sessionRows).toContain('引用原会话图文快速开启新会话的方法与插件')
+
+    const filteredRows = await searchAndRead(result, 'session:图文')
+    expect(filteredRows).toEqual(['引用原会话图文快速开启新会话的方法与插件'])
   })
 })

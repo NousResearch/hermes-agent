@@ -14,7 +14,7 @@ import { ExternalLink, openLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { downscaleDataUrlForPreview, FALLBACK_PLACEHOLDER } from '@/lib/image-resize'
 import { gatewayMediaDataUrl, isRemoteGateway } from '@/lib/media'
-import { useSessionLinkTitle } from '@/lib/session-link-title'
+import { lookupLocalSessionTitle, useSessionLinkTitle } from '@/lib/session-link-title'
 import { parseSessionRefValue, sessionRefFallbackLabel } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
 
@@ -309,7 +309,7 @@ export function refChipLabel(type: string, id: string): string {
   }
 
   if (type === 'session') {
-    return sessionRefFallbackLabel(id)
+    return lookupLocalSessionTitle(id) || sessionRefFallbackLabel(id)
   }
 
   if (type === 'url') {

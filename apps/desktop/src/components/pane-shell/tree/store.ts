@@ -615,14 +615,31 @@ export const isMainStripPane = (paneId: string): boolean =>
 export const hostsSessionDropTarget = (paneIds: readonly string[]): boolean =>
   paneIds.some(isSessionStripPane) || paneIds.some(isMainStripPane)
 
-/** The zone the session-tab verbs (⌘T / ⌘⇧T / the strip's "+") act on: the
- *  first of hovered / focused / workspace that hosts a chat strip. Same ladder
- *  ⌘1…⌘9 indexes, so the number keys and the tab verbs can't disagree about
- *  which strip is "the" strip. A target parked in the sidebar / terminal /
- *  files must NOT retarget them — those zones fall through to main rather
- *  than letting ⌘T dock a session into the file tree. */
+/** The zone a NEW session tab docks into (⌘T / ⌘⇧T / the strip's "+"):
+ *  the FOCUSED zone first, then the hovered one (fresh-boot fallback), then
+ *  the workspace. Deliberately NOT the same ladder the in-place tab verbs
+ *  use — those resolve tabTargetGroup() directly (hover-first) because they
+ *  act on the zone you're pointing at. Placement acts on the zone you
+ *  CLICKED INTO; a pointer drifting over a neighbour column on the way to
+ *  "+" must not retarget the dock. A zone parked in the sidebar / terminal /
+ *  files still falls through to the workspace. */
 function focusedSessionGroup(): GroupNode | null {
-  return tabTargetGroup(group => group.panes.some(isSessionStripPane))
+  const tree = $layoutTree.get()
+  if (!tree) {
+    return null
+  }
+  // Active-first: placement follows where the user CLICKED, not where the
+  // pointer happens to drift. Hover stays as fallback for fresh boot (no
+  // interaction yet). In-place tab verbs (⌘1…⌘9, ⌃Tab, ⌘W) call
+  // tabTargetGroup() directly and keep their hover-first ladder.
+  for (const groupId of [$activeTreeGroup.get(), $hoveredTreeGroup.get()]) {
+    const group = groupId ? findGroup(tree, groupId) : null
+    if (group && group.panes.some(isSessionStripPane)) {
+      return group
+    }
+  }
+  const main = findGroupOfPane(tree, 'workspace')
+  return main && main.panes.some(isSessionStripPane) ? main : null
 }
 
 /** The pane a NEW session tab should dock beside (⌘T): the focused chat zone's

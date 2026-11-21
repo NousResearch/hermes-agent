@@ -114,9 +114,19 @@ _EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles", *SECRET_CACHE_FILES}
 _KEPT_CACHE_SUBDIRS = {
     "images", "audio", "videos", "documents", "screenshots", "citations", GENERATED_SUBDIR}
 
+# Regenerable bulk excluded by exact relative path, not by bare name (a nested models/ dir
+# elsewhere is user data). Model weights are re-downloadable; the surrounding work/ tree
+# (recordings, asset packs) is NOT.
+_EXCLUDED_PATHS = frozenset({
+    Path("work/goat_banner/models"),
+    Path("plexmedia-backup"),
+})
+
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
     """True when *rel_path* is inside a regenerable tree at a profile-home root, or is the bridge log."""
+    if any(rel_path == p or p in rel_path.parents for p in _EXCLUDED_PATHS):
+        return True
     root_entry = profile_root_entry(rel_path.parts)
     if root_entry in _EXCLUDED_ROOT_DIRS or root_entry in _EXCLUDED_BACKUP_ROOT_DIRS:
         return True
@@ -380,13 +390,34 @@ def _discard_failed_zip_members(zf: zipfile.ZipFile, filelist_len: int) -> None:
 
 
 def _write_zip_file(zf: zipfile.ZipFile, path: Path, arcname: str) -> None:
-    """Write one member while keeping a failed partial write out of the central directory."""
+    """Write one member while keeping a failed partial write out of the central directory.
+
+    Pre-1980 mtimes (e.g. gbrain's postgres files with truncated timestamps) cannot be
+    represented in ZIP; clamp them to the 1980 epoch instead of failing the archive."""
     filelist_len = len(zf.filelist)
     try:
-        zf.write(path, arcname=arcname)
+        zinfo = zipfile.ZipInfo.from_file(path, arcname, strict_timestamps=False)
+        zinfo.compress_type = zf.compression
+        zinfo.date_time = max(zinfo.date_time, (1980, 1, 1, 0, 0, 0))
+        with open(path, "rb") as src, zf.open(zinfo, "w") as dst:
+            shutil.copyfileobj(src, dst)
     except Exception:
         _discard_failed_zip_members(zf, filelist_len)
         raise
+
+
+_SQLITE_HEADER = b"SQLite format 3\x00"
+
+
+def _is_sqlite_file(path: Path) -> bool:
+    """True when *path* begins with the SQLite file header. A ``.db`` extension alone is not
+    proof: Streamer.bot mirrors LiteDB files (and some tools ship empty placeholders) under a
+    ``.db`` name, which the SQLite snapshot API rejects as "file is not a database"."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(16) == _SQLITE_HEADER
+    except OSError:
+        return False
 
 
 def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, out_path: Path) -> Optional[int]:
@@ -414,7 +445,7 @@ def _write_zip_entries(
     total_bytes = 0
     for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
         try:
-            if abs_path.suffix == ".db":
+            if abs_path.suffix == ".db" and _is_sqlite_file(abs_path):
                 size = _zip_sqlite_snapshot(zf, abs_path, rel_path, out_path)
                 if size is None:
                     on_db_failure(rel_path)
@@ -425,6 +456,8 @@ def _write_zip_entries(
                 _write_zip_file(zf, abs_path, str(rel_path))
                 if track_bytes:
                     total_bytes += abs_path.stat().st_size
+        except FileNotFoundError:
+            continue  # vanished between scan and archive — nothing to back up
         except (PermissionError, OSError, ValueError) as exc:
             on_error(rel_path, exc)
             continue
@@ -548,6 +581,8 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
             try:
                 _write_zip_file(zf, abs_path, arcname)
                 total_bytes += abs_path.stat().st_size
+            except FileNotFoundError:
+                continue  # vanished between scan and archive
             except (PermissionError, OSError, ValueError) as exc:
                 errors.append(f"{arcname}: {exc}")
     elapsed = time.monotonic() - t0

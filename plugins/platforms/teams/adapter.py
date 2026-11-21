@@ -59,7 +59,7 @@ from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
     describe_proxy_error, env_proxy_for_redaction)
-from gateway.platforms.base import approval_kind, ea_header_text
+from gateway.platforms.base import approval_expired_text, approval_kind, card_kind_scope, ea_header_text
 from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_deadline_line
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent, MessageType
@@ -666,12 +666,14 @@ class TeamsAdapter(BasePlatformAdapter):
             return self._invoke_message(refusal_text(requester))  # shown to the clicker; card keeps its buttons
         # Cards from an older build carry cmd/desc in the button data instead.
         cmd, desc = self._approval_previews.get(data.get("prompt_id", ""), (data.get("cmd", ""), data.get("desc", "")))
-        if not has_blocking_approval(session_key) or not resolve_gateway_approval_card(
-                session_key, choice, data.get("request_id"), actor_id=clicker, extra=self.config.extra):
+        resolved = has_blocking_approval(session_key) and resolve_gateway_approval_card(
+            session_key, choice, data.get("request_id"), actor_id=clicker, extra=self.config.extra)
+        with card_kind_scope(data.get("request_id")):  # the click runs outside the send's binding
             body = _approval_body(cmd, desc)
-            return self._invoke_card([*body, TextBlock(text=t("platform.shared.approval_expired"), wrap=True)])
-        body = _approval_body(cmd, desc)
-        body.append(TextBlock(text=t(_APPROVAL_LABEL_KEYS[choice]), wrap=True, weight="Bolder"))
+            footer = t(_APPROVAL_LABEL_KEYS[choice]) if resolved else approval_expired_text("platform.shared.approval_expired")
+        if not resolved:
+            return self._invoke_card([*body, TextBlock(text=footer, wrap=True)])
+        body.append(TextBlock(text=footer, wrap=True, weight="Bolder"))
         return self._invoke_card(body)
 
     @staticmethod

@@ -128,7 +128,8 @@ def test_a_schedule_approval_shows_the_job_not_a_command(monkeypatch):
     _notify(dict(_SCHEDULE), _Failing())
     for text in (prompt.text, sent[0]):
         assert "Hermes wants to schedule a job" in text and _SCHEDULE["description"] in text
-        assert "<cronjob_manage>" not in text and "```" not in text and "Why it was flagged" not in text
+        assert "<cronjob_manage>" not in text and "Why it was flagged" not in text
+        assert f"```\n{_SCHEDULE['description']}\n```" in text  # model-written: fenced like a command
         assert "the job will NOT be created" in text
     assert [(label, choice) for label, choice, _ in prompt.actions] == [
         ("Allow", "once"), ("Allow for this chat", "session"), ("Always allow new jobs", "always"), ("Deny", "deny")]
@@ -150,3 +151,17 @@ def test_a_command_approval_renders_the_same_with_an_unknown_kind():
     assert cards[0] == cards[1]
     assert "```\nrm -rf /tmp/x\n```" in cards[0][0] and "schedule" not in cards[0][0]
     assert [label for label, _, _ in cards[0][1]] == ["Allow Once", "Allow Session", "Always Allow", "Deny"]
+
+
+def test_a_schedule_cards_model_written_markup_stays_inside_the_fence(monkeypatch):
+    """A job name/prompt is model-written; spoiler, link or small-print markup in it must render as text
+    inside the fence, and a backtick run in it cannot close the fence early."""
+    monkeypatch.setattr("gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
+    plan = 'Schedule "x" (daily): ||hidden|| [ok](https://e.example) ``` \n-# small print'
+    card = _Buttons()
+    _notify({**_SCHEDULE, "description": plan}, card)
+    (prompt,) = card.prompts
+    fence = "````"
+    assert f"{fence}\n{plan}\n{fence}" in prompt.text, prompt.text
+    assert prompt.text.index(fence) < prompt.text.index("||hidden||")
+

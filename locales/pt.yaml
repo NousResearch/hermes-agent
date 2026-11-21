@@ -668,7 +668,7 @@ gateway:
     schedule_truncated_full_above: "Prévia encurtada: a tarefa completa ({total} caracteres) está na mensagem acima."
     schedule_truncated_deny_only: "Prévia encurtada ({total} caracteres) e a tarefa completa não pôde ser exibida aqui, então só Negar é oferecido. Revise-a na CLI ou no app desktop."
     schedule_timed_out_card_body: "{notice}\n\n{command}"
-    schedule_text_body: "{heading}\n\n{command}\n\n"
+    schedule_text_body: "{heading}\n```\n{command}\n```\n\n"
   notify:
     media_kind:
       audio: "áudio"

@@ -142,7 +142,7 @@ import sys
 
 from gateway.authz_mixin import _coerce_allow_set
 from agent.i18n import get_language, t
-from gateway.platforms.base import ea_t
+from gateway.platforms.base import approval_expired_text, card_kind_scope, ea_t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
@@ -4374,16 +4374,17 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
             count = 0
-        if count:
-            label_key = {"once": "resolved_once", "session": "resolved_session", "always": "resolved_always", "deny": "resolved_deny"}.get(
-                choice, "resolved_generic")
-            label = t(f"platform.telegram.approval.{label_key}")
-            edit_text = t("platform.telegram.approval.resolved_by_user", label=label, user=user_display)
-        else:
-            label = t("platform.telegram.approval.expired")
-            edit_text = t("platform.telegram.approval.expired_detail", label=label)
-        await answer_callback(query, label[:_TOAST_LIMIT])
-        await edit_keeping_prompt(self, query, edit_text)
+        with card_kind_scope(request_id):  # the tap runs outside the send's binding: rebuild as the card was sent
+            if count:
+                label_key = {"once": "resolved_once", "session": "resolved_session", "always": "resolved_always", "deny": "resolved_deny"}.get(
+                    choice, "resolved_generic")
+                label = t(f"platform.telegram.approval.{label_key}")
+                edit_text = t("platform.telegram.approval.resolved_by_user", label=label, user=user_display)
+            else:
+                label = t("platform.telegram.approval.expired")
+                edit_text = approval_expired_text("platform.telegram.approval.expired_detail", label=label)
+            await answer_callback(query, label[:_TOAST_LIMIT])
+            await edit_keeping_prompt(self, query, edit_text)
         # Typing was paused when the approval was sent; the text /approve and /deny paths resume it too.
         if count and cb["chat_id"] is not None:
             self.resume_typing_for_chat(str(cb["chat_id"]))

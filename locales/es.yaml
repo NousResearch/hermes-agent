@@ -668,7 +668,7 @@ gateway:
     schedule_truncated_full_above: "Vista previa acortada: la tarea completa ({total} caracteres) está en el mensaje de arriba."
     schedule_truncated_deny_only: "Vista previa acortada ({total} caracteres) y la tarea completa no se pudo mostrar aquí, así que solo se ofrece Denegar. Revísala en la CLI o en la app de escritorio."
     schedule_timed_out_card_body: "{notice}\n\n{command}"
-    schedule_text_body: "{heading}\n\n{command}\n\n"
+    schedule_text_body: "{heading}\n```\n{command}\n```\n\n"
   notify:
     media_kind:
       audio: "audio"

@@ -668,7 +668,7 @@ gateway:
     schedule_truncated_full_above: "미리보기가 줄었습니다: 전체 작업({total}자)은 위 메시지에 있습니다."
     schedule_truncated_deny_only: "미리보기가 줄었고({total}자) 전체 작업을 여기에 표시할 수 없어 거부만 제공됩니다. CLI 또는 데스크톱 앱에서 확인하세요."
     schedule_timed_out_card_body: "{notice}\n\n{command}"
-    schedule_text_body: "{heading}\n\n{command}\n\n"
+    schedule_text_body: "{heading}\n```\n{command}\n```\n\n"
   notify:
     media_kind:
       audio: "오디오"

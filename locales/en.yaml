@@ -672,7 +672,7 @@ gateway:
     schedule_truncated_full_above: "Preview shortened: the full job ({total} characters) is in the message above."
     schedule_truncated_deny_only: "Preview shortened ({total} characters) and the full job could not be shown here, so only Deny is offered. Review it in the CLI or Desktop app."
     schedule_timed_out_card_body: "{notice}\n\n{command}"
-    schedule_text_body: "{heading}\n\n{command}\n\n"
+    schedule_text_body: "{heading}\n```\n{command}\n```\n\n"
   notify:
     media_kind:
       audio: "audio"

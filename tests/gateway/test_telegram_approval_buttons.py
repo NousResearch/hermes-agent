@@ -408,3 +408,31 @@ async def test_resolved_approval_network_error_does_not_overwrite_the_prompt():
             patch("tools.approval.resolve_gateway_approval", return_value=1):
         await adapter._handle_callback_query(MagicMock(callback_query=query), MagicMock())
     assert query.edit_message_text.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [1, 0])
+async def test_a_tapped_schedule_card_keeps_the_schedule_wording(count):
+    """The tap runs outside the runner's kind binding: the resolved schedule card must still drop the
+    schedule deadline line and, when expired, not claim a command was waiting."""
+    from gateway.platforms.base_exec_approval import with_approval_kind
+    adapter = _make_adapter()
+    adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=42))
+    plan = 'Schedule "check-in" (tomorrow at 09:00): remind me to check in'
+    with patch("gateway.platforms.base_exec_approval.approval_timeout_seconds", return_value=300):
+        await with_approval_kind("schedule", adapter.send_exec_approval(
+            chat_id="12345", command=plan, session_key="agent:main:telegram:dm:12345", description=plan,
+            request_id="req-job"))
+        sent = adapter._bot.send_message.call_args.kwargs["text"]
+        approval_id = next(iter(adapter._approval_state))
+        query = AsyncMock()
+        query.data = f"ea:once:{approval_id}"
+        query.message = MagicMock(chat_id=12345, text_html=sent)
+        query.from_user = MagicMock(first_name="Ana", id="12345")
+        query.edit_message_text = AsyncMock()
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False), \
+                patch("tools.approval.resolve_gateway_approval_card", return_value=count):
+            await adapter._handle_callback_query(MagicMock(callback_query=query), MagicMock())
+    final = query.edit_message_text.call_args.kwargs["text"]
+    assert "the job will NOT be created" in sent and "the job will NOT be created" not in final
+    assert "no command was waiting" not in final

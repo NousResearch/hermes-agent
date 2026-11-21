@@ -668,7 +668,7 @@ gateway:
     schedule_truncated_full_above: "Попередній перегляд скорочено: повне завдання ({total} символів) — у повідомленні вище."
     schedule_truncated_deny_only: "Попередній перегляд скорочено ({total} символів), а повне завдання тут показати не вдалося, тож доступне лише «Відхилити». Перегляньте його в CLI або настільному застосунку."
     schedule_timed_out_card_body: "{notice}\n\n{command}"
-    schedule_text_body: "{heading}\n\n{command}\n\n"
+    schedule_text_body: "{heading}\n```\n{command}\n```\n\n"
   notify:
     media_kind:
       audio: "аудіо"

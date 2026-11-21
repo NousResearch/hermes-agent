@@ -1041,12 +1041,18 @@ class SQLiteSessionRepository:
     def live_listing_facts(self, session_ids: Sequence[SessionId]) -> LiveListingFacts:
         holder = self._store.holder()
         ids = json.dumps(list(session_ids))
+        # ``continued``: a reset or compression child carried the row's conversation on. No receipt names a
+        # target for a messaging ``/new`` (nothing advances ``advance_local_target`` without one), so the
+        # receipt read alone leaves that ended parent reading as a live session (#143767).
+        reset_child = _RESET_CHILD_SQL.format(a='c')
         with refusals(holder), holder._read_ctx() as conn:
             rows = conn.execute(
                 "SELECT s.id, s.source, s.title, s.started_at, s.ended_at, s.message_count, s.model, s.hidden, "
                 "s.archived, s.runtime_revision, s.runtime_generation, "
                 "(SELECT t.ended_at FROM state_meta m JOIN sessions t ON t.id = CASE WHEN json_valid(m.value) "
-                "THEN json_extract(m.value, '$.entry.session_id') END WHERE m.key = ? || s.id) AS target_ended_at "
+                "THEN json_extract(m.value, '$.entry.session_id') END WHERE m.key = ? || s.id) AS target_ended_at, "
+                "CASE WHEN s.end_reason = 'compression' OR EXISTS (SELECT 1 FROM sessions c "
+                f"WHERE c.parent_session_id = s.id AND ({reset_child})) THEN 1 ELSE 0 END AS continued "
                 "FROM sessions s WHERE s.id IN (SELECT value FROM json_each(?))", (POLICY_PREFIX, ids)).fetchall()
             pending = conn.execute(
                 "SELECT target_session_id, admission_id, seq, status FROM session_admissions "
@@ -1064,6 +1070,7 @@ class SQLiteSessionRepository:
                     message_count=row['message_count'], model=row['model'], hidden=bool(row['hidden']),
                     archived=bool(row['archived']), runtime_revision=int(row['runtime_revision'] or 0),
                     runtime_generation=int(row['runtime_generation'] or 0), target_ended_at=row['target_ended_at'],
+                    continued=bool(row['continued']),
                 )
                 for row in rows
             },

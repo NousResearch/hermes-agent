@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isMessagingSource, sessionSourceSearchTerms } from './session-source'
+import { isMessagingSource, sessionSourceLabel, sessionSourceSearchTerms } from './session-source'
 
 // Regression guard for #46761 / PR #47395: Photon (iMessage) must keep its own
 // sidebar section. refreshMessagingSessions() filters rows through
@@ -27,5 +27,25 @@ describe('photon messaging source registration', () => {
     expect(isMessagingSource('cli')).toBe(false)
     expect(isMessagingSource(null)).toBe(false)
     expect(isMessagingSource(undefined)).toBe(false)
+  })
+})
+
+// Same contract one level out: platforms registered through the plugin path
+// (`kind: platform`, e.g. an OneBot v11 / QQ adapter) are messaging platforms
+// too, so they must keep their own sidebar section instead of falling into the
+// generic recents list. isMessagingSource() is again the sole condition.
+describe('plugin-registered messaging source registration', () => {
+  it('treats onebot as a messaging source (own sidebar section)', () => {
+    expect(isMessagingSource('onebot')).toBe(true)
+  })
+
+  it('exposes the QQ/napcat search aliases so OneBot sessions are findable', () => {
+    const terms = sessionSourceSearchTerms('onebot')
+    expect(terms).toContain('qq')
+    expect(terms).toContain('napcat')
+  })
+
+  it('still labels the plugin platform for the section header', () => {
+    expect(sessionSourceLabel('onebot')).toBe('QQ (OneBot)')
   })
 })

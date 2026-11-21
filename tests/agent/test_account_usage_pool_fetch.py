@@ -24,9 +24,11 @@ def _b64(part: dict) -> str:
     return base64.urlsafe_b64encode(json.dumps(part).encode()).decode().rstrip("=")
 
 
-def _codex_jwt(account_id: str, sub: str) -> str:
-    return (f"{_b64({'alg': 'none'})}."
-            f"{_b64({'sub': sub, 'https://api.openai.com/auth': {'chatgpt_account_id': account_id}})}.sig")
+def _codex_jwt(account_id: str, sub: str, email: str = "") -> str:
+    claims = {"sub": sub, "https://api.openai.com/auth": {"chatgpt_account_id": account_id}}
+    if email:
+        claims["https://api.openai.com/profile"] = {"email": email}
+    return f"{_b64({'alg': 'none'})}.{_b64(claims)}.sig"
 
 
 class _LoopbackUsageServer:
@@ -91,7 +93,7 @@ def test_read_only_fetch_routes_to_entries_own_host_and_parses(monkeypatch, tmp_
     monkeypatch.setattr(auth_mod, "resolve_codex_runtime_credentials",
                         lambda **kw: rotations.append(kw) or (_ for _ in ()).throw(AssertionError(
                             "read-only per-credential fetch must never consult the singleton resolver")))
-    token = _codex_jwt("acct-9", "user-9")
+    token = _codex_jwt("acct-9", "user-9", email="nine@example.com")
     with _LoopbackUsageServer() as server:
         server.responses[token] = (200, _usage_payload(session_used=44.0))
         snapshot = fetch_account_usage(
@@ -101,6 +103,7 @@ def test_read_only_fetch_routes_to_entries_own_host_and_parses(monkeypatch, tmp_
     assert [(w.label, w.used_percent, w.scope) for w in snapshot.windows] == [
         ("Session", 44.0, "account"), ("Weekly", 5.0, "account")]
     assert snapshot.identity == "codex:acct-9:user-9"
+    assert (snapshot.plan, snapshot.email) == ("Pro", "nine@example.com")
     assert server.requests[0]["path"].endswith("/wham/usage"), \
         "a /backend-api base routes to the ChatGPT wham usage path"
     assert server.requests[0]["token"] == f"Bearer {token}"
@@ -165,6 +168,32 @@ def test_anthropic_fetch_honors_explicit_api_key_and_marks_model_scoped_windows(
                       "Opus week": "model", "Sonnet week": "model"}
     percents = {w.label: w.used_percent for w in snapshot.windows}
     assert percents["Opus week"] == 100.0 and percents["Current session"] == 30.0
+
+
+def test_anthropic_fetch_names_the_plan_and_email_of_the_account(monkeypatch):
+    profile = {"account": {"email": "seat@example.com"},
+               "organization": {"rate_limit_tier": "default_claude_max_20x"}}
+    monkeypatch.setattr(account_usage, "_get_json", lambda url, headers, *, timeout: (
+        profile if url.endswith("/profile") else {"seven_day": {"utilization": 40.0, "resets_at": None}}))
+
+    snapshot = fetch_account_usage("anthropic", api_key="cc-access-token")
+
+    assert snapshot is not None
+    assert (snapshot.plan, snapshot.email) == ("Max 20x", "seat@example.com")
+
+
+def test_anthropic_usage_survives_a_failed_profile_read(monkeypatch):
+    def get_json(url, headers, *, timeout):
+        if url.endswith("/profile"):
+            raise httpx.ConnectError("profile down")
+        return {"seven_day": {"utilization": 40.0, "resets_at": None}}
+
+    monkeypatch.setattr(account_usage, "_get_json", get_json)
+
+    snapshot = fetch_account_usage("anthropic", api_key="cc-access-token")
+
+    assert snapshot is not None and snapshot.plan is None and snapshot.email is None
+    assert [w.used_percent for w in snapshot.windows] == [40.0]
 
 
 def test_read_only_fetch_remembered_under_identity_slot(monkeypatch, tmp_path):

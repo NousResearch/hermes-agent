@@ -76,3 +76,30 @@ it('only presents a pool-wide wall when every account is limited, preserving unk
   expect(screen.getByText('10 accounts')).toBeTruthy()
   expect(screen.queryByText(/Limited until|accounts limited/)).toBeNull()
 })
+
+it('shows every window of a ready account and says why an idle account is blank', async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(NOW)
+
+  const row = provider([
+    {
+      id: 'busy',
+      label: 'Busy seat',
+      state: 'ready',
+      resets_at: null,
+      token_expires_at: iso(180),
+      windows: [
+        { label: 'Current session', used_percent: 51, resets_at: iso(120) },
+        { label: 'Current week', used_percent: 12, resets_at: iso(5 * 24 * 60) }
+      ]
+    },
+    { id: 'idle', label: 'Idle seat', state: 'unknown', resets_at: null, token_expires_at: iso(-60), windows: [] }
+  ])
+
+  render(view(row))
+  fireEvent.pointerMove(screen.getByText('2 accounts'), { pointerType: 'mouse' })
+  const tip = await screen.findByRole('tooltip')
+
+  expect(tip.textContent).toContain('Current session: 49% left')
+  expect(tip.textContent).toContain('Current week: 88% left')
+  expect(tip.textContent).toContain('Idle: token expired')
+})

@@ -33,6 +33,33 @@ class CredentialPoolAdminMixin:
             self._replace_entry(entry, cleared)
             self._persist(status_cleared_ids=[cleared.id])
             return cleared
+
+    def renew_token(self, credential_id: str) -> Optional[PooledCredential]:
+        """Refresh the target's expiring access token for a read such as ``hermes usage``, leaving its
+        status as it was: a live grant says nothing about quota, and a read that fails to renew must
+        not bench the account. Only a dead grant (terminal refresh error) changes it, since it is final.
+        Returns the entry (unchanged when its token is still fresh), None when the refresh failed."""
+        from agent.credential_pool import _CLEAR_STATUS, STATUS_DEAD
+
+        with self._lock:
+            entry = self._find(lambda e: e.id == credential_id)
+            if entry is None or not self._entry_needs_refresh(entry):
+                return entry
+            status = {field: getattr(entry, field) for field in _CLEAR_STATUS}
+            reason = entry.extra.get("failure_reason")
+            renewed = self._refresh_entry(entry, force=False)
+            current = self._find(lambda e: e.id == credential_id)
+            if current is None or current.last_status == STATUS_DEAD:
+                return renewed
+            if {field: getattr(current, field) for field in _CLEAR_STATUS} != status:
+                extra = {k: v for k, v in current.extra.items() if k != "failure_reason"}
+                kept = replace(current, **status, extra={**extra, **({"failure_reason": reason} if reason else {})})
+                self._replace_entry(current, kept)
+                # Declared cleared so the merge takes this row's status over the one the refresh wrote.
+                self._persist(status_cleared_ids=[kept.id])
+                return kept if renewed is not None else None
+            return renewed
+
     def reset_statuses(self) -> int:
         """Clear exhaustion state on every entry. Returns how many were cleared.
 

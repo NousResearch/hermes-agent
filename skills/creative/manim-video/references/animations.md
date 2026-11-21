@@ -152,7 +152,7 @@ Rebuild a mobject from scratch every frame — essential when its geometry depen
 
 ```python
 # Brace that follows a resizing square
-brace = always_redraw(Brace, square, UP)
+brace = always_redraw(lambda: Brace(square, UP))
 self.add(brace)
 self.play(square.animate.scale(2))  # brace auto-adjusts
 

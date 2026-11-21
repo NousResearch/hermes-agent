@@ -1549,3 +1549,20 @@ class TestAzureFoundryPickerCatalog:
         monkeypatch.setattr(_models_mod, "_get_model_config_dict",
                             lambda: {"provider": "azure-foundry", "base_url": "https://b.openai.azure.com/openai/v1"})
         assert _models_mod._credential_fingerprint("azure-foundry") != fp_a
+
+
+class TestOpenCodeGoCatalogCoherence:
+    """The offline session.create gate must not reject models the Go subscription serves (#158106)."""
+
+    def test_gemini_4_argon_is_served_by_opencode_go(self):
+        from hermes_cli.models_validate import static_model_provider_conflict
+
+        assert static_model_provider_conflict("gemini-4-argon", "opencode-go") is None
+
+    def test_foreign_family_model_is_still_rejected(self):
+        # The fix adds one drifted row, it does not disable the family gate.
+        from hermes_cli.models_validate import static_model_provider_conflict
+
+        verdict = static_model_provider_conflict("claude-fable-5", "opencode-go")
+        assert verdict is not None
+        assert "not served by provider" in verdict["message"]

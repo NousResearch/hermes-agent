@@ -126,10 +126,6 @@ function RouteFallback({ label = "Loading…" }: { label?: string }) {
   );
 }
 
-function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
-}
-
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
   if (pluginsLoading) {
     // Render nothing during the plugin-load window — a spinner here would just flash.
@@ -157,7 +153,12 @@ const CHAT_NAV_ITEM: NavItem = {
  * keep working.
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
-  "/": RootRedirect,
+  // Render the sessions page directly rather than redirecting to it. The
+  // redirect ran once per mount, so any navigation that returned the app to
+  // "/" stranded it here: "/" rendered a <Navigate> (null), leaving a blank
+  // <main> with no spinner and no error. Reproduced whenever the app was opened
+  // straight after login, which is the path a fresh visit always takes.
+  "/": SessionsPage,
   "/sessions": SessionsPage,
   "/files": FilesPage,
   "/analytics": AnalyticsPage,

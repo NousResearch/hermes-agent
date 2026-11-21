@@ -5,11 +5,14 @@ and the durable retirement candidates. File checks and unlinks stay with the own
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 
 from persistence.sqlite._state.keys import prefix_range
 from session_rules.media import hosted_document_references
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "drop_retired_candidates",
@@ -117,7 +120,26 @@ def retired_candidates(holder, kind):
         # Primary-key range, not LIKE: the common no-candidate case costs one index probe.
         rows = conn.execute('SELECT key,value FROM state_meta WHERE key>=? AND key<?',
                             prefix_range(PREFIX if kind == 'media' else SPILLOVER_PREFIX)).fetchall()
-    return [(key, json.loads(raw)) for key, raw in rows]
+    # Tolerate malformed rows: a single corrupt/partial state_meta entry must not abort every
+    # post-commit delete/prune pass (that transaction has already committed, so the failure
+    # surface is orphaned transcripts and a poisoned row that re-breaks each later pass).
+    # Such a row can never match a real reference, so drop it with a warning instead of raising.
+    out, malformed = [], []
+    for key, raw in rows:
+        try:
+            value = json.loads(raw)
+            if kind == 'media' and (not isinstance(value, dict) or not isinstance(value.get('path'), str)):
+                raise ValueError('not a media reference')
+            if kind == 'spillover' and not isinstance(value, str):
+                raise ValueError('not a spillover name')
+        except (ValueError, TypeError):
+            malformed.append(key)
+            continue
+        out.append((key, value))
+    if malformed:
+        logger.warning('dropping %d malformed retired candidate(s) (kind=%s)', len(malformed), kind)
+        drop_retired_candidates(holder, malformed)
+    return out
 
 
 def drop_retired_candidates(holder, keys):

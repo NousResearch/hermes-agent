@@ -1731,6 +1731,8 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
     mark_named_profile_deleted(profile_dir, incomplete=True)  # until rmtree succeeds
+    # 5. The name no longer resolves; clear active_profile now, since Ctrl-C skips the code after rmtree
+    _retarget_active_profile(canon, "default", "✓ Active profile reset to default")
     # The multiplexer sees the tombstone, stops this profile's adapters and releases its handles
     # into the directory before we remove it. Identity settlement is a separate delete-only
     # operation below: an ordinary unserve must preserve identity, because a rename's old name
@@ -1787,8 +1789,6 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         print(f"⚠ Could not remove {profile_dir}: {e}")
         remove_error = e
 
-    # 5. Clear active_profile if it pointed to this profile
-    _retarget_active_profile(canon, "default", "✓ Active profile reset to default")
     if remove_error is not None:
         raise delete_failed_error(canon, profile_dir, remove_error) from remove_error
     print(f"\nProfile '{canon}' deleted.")
@@ -2239,17 +2239,17 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
     gw_running = _check_gateway_running(old_dir)
     service_removed = live_mux = renamed = False
-    old_identity = None
+    old_identity, unfinished_delete = None, named_profile_is_deleted(old_dir)
     try:
         service_removed = _cleanup_gateway_service(old_canon, old_dir)
         _maybe_unregister_gateway_service(old_canon)
         if gw_running:
             _stop_gateway_process(old_dir)
         _stop_bot_desktop(old_dir)
-        live_mux = _live_default_multiplexer()
-        old_identity = old_dir.lstat()
+        live_mux, old_identity = _live_default_multiplexer(), old_dir.lstat()
         if live_mux:
-            mark_named_profile_deleted(old_dir)
+            if not unfinished_delete:  # an unfinished delete's own record stays as it is
+                mark_named_profile_deleted(old_dir)
             _notify_multiplexer(old_canon)
         shutdown_mcp_servers(scope=hermes_home_key(old_dir))
         if live_mux and not wait_profile_unowned(old_dir):  # same owner wait as delete_profile
@@ -2264,7 +2264,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         if moved:
             clear_named_profile_deleted(old_dir)
             clear_named_profile_deleted(new_dir)
-        else:
+        elif not unfinished_delete:  # a delete that did not finish stays tombstoned and unregistered
             if live_mux:
                 clear_named_profile_deleted(old_dir)
                 _notify_multiplexer(old_canon)

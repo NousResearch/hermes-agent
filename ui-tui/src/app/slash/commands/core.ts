@@ -3,6 +3,7 @@ import type {
   ConfigFullResponse,
   ConfigGetValueResponse,
   ConfigSetResponse,
+  SessionDeleteResponse,
   SessionExportResponse,
   SessionSaveResponse,
   SessionStatusResponse,
@@ -20,6 +21,7 @@ import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from 
 import { t } from '../../../i18n/runtime.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
+import { asRpcResult, rpcErrorMessage } from '../../../lib/rpc.js'
 import { writeSessionExport } from '../../../lib/sessionExport.js'
 import {
   configureDetectedTerminalKeybindings,
@@ -32,6 +34,7 @@ import { patchOverlayState } from '../../overlayStore.js'
 import { getUiState, patchUiState, sessionCwd } from '../../uiStore.js'
 import { openRewindPicker } from '../canonicalRewindPicker.js'
 import { canonicalRewind, canonicalTitle } from '../canonicalSessionCommands.js'
+import { mutateCanonical } from '../canonicalSessionControls.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 
 // The JSON spellings `session.save` (the pre-export RPC) can honour.
@@ -160,7 +163,7 @@ export const coreCommands: SlashCommand[] = [
     aliases: ['exit'],
     help: 'exit hermes',
     name: 'quit',
-    run: (_arg, ctx) => {
+    run: (arg, ctx) => {
       // In the hosted dashboard chat there is no in-page restart path after
       // the PTY child exits, so quitting bricks the tab until a refresh. The
       // keyboard idle-exit (Ctrl+C / Ctrl+D) and SIGINT handling already refuse
@@ -174,7 +177,95 @@ export const coreCommands: SlashCommand[] = [
         return
       }
 
-      ctx.session.die()
+      // `/quit --delete` (and `/exit -d`): the classic CLI has deleted the session on the way out
+      // since #27101 — it arms `_delete_session_on_exit` and the shutdown path calls
+      // `SessionDB.delete_session()`. The TUI received the argument as an unused `_arg`, so the flag
+      // was silently dropped and the session survived the exit. Parse it, delete, then die.
+      const tokens = arg.trim().split(/\s+/).filter(Boolean)
+      const unknown = tokens.filter(token => !/^-{1,2}delete$/i.test(token) && !/^-d$/i.test(token))
+
+      if (unknown.length > 0) {
+        ctx.transcript.sys(t('slashCmd.core.quit.deleteUsage'))
+
+        return
+      }
+
+      if (tokens.length === 0) {
+        return ctx.session.die()
+      }
+
+      const sid = ctx.sid
+      const gw = ctx.gateway.gw
+
+      if (!sid || !gw) {
+        // Nothing durable to delete; quit the way a bare /quit would.
+        return ctx.session.die()
+      }
+
+      const failed = (reason: string) => {
+        // A refusal leaves the user in the session: drop the transient "deleting…" status so the
+        // status bar does not keep claiming work that will never finish.
+        patchUiState({ status: 'ready' })
+        ctx.transcript.sys(t('slashCmd.core.quit.deleteFailed', reason))
+      }
+
+      // The legacy sidecar's `session.delete` is the stored-row verb: it deletes by the STORED id
+      // (`SessionDeleteParams`), while `ui.sid` is this process's runtime id, and it refuses (4023) a
+      // session this process still holds live. So close the live view first — the `session.close` the
+      // switcher's ^d sends, which pops it out of the live set — then delete the stored row that
+      // leaves behind. A close that fails for its own reasons is not fatal: the delete below is what
+      // reports the outcome, and it succeeds whenever the session was not live after all.
+      const deleteLegacy = async (): Promise<boolean> => {
+        const target = ctx.ui.storedSid || sid
+
+        await gw.request('session.close', { session_id: sid }).catch(() => null)
+
+        const raw = await gw.request<SessionDeleteResponse>('session.delete', { session_id: target })
+
+        return asRpcResult<SessionDeleteResponse>(raw)?.deleted === target
+      }
+
+      const finish = () => {
+        patchUiState({ status: t('slashCmd.core.quit.deleting') })
+
+        // The shared gateway has no `session.delete`: its delete is the revision-fenced
+        // `session.mutate operation=delete` over the whole lineage, the same verb the session
+        // picker's delete and the classic CLI send.
+        const deleted = gw.isCanonical
+          ? mutateCanonical(gw, sid, 'delete', {}, ctx.stale).then(mutation => Boolean(mutation?.result))
+          : deleteLegacy()
+
+        deleted
+          .then(ok => {
+            if (!ok) {
+              return failed(t('slashCmd.core.quit.refused'))
+            }
+
+            // Let the confirmation paint before Ink unmounts, as /update does before its re-exec.
+            ctx.transcript.sys(t('slashCmd.core.quit.deleted'))
+            setTimeout(() => ctx.session.die(), 100)
+          })
+          .catch((rejection: unknown) => {
+            // A refused or failed delete must not look like a successful one: stay in the session so
+            // the message is read, and so a privacy-motivated exit never silently leaves the row.
+            failed(rpcErrorMessage(rejection))
+          })
+      }
+
+      if (NO_CONFIRM_DESTRUCTIVE || !ctx.ui.destructiveSlashConfirm) {
+        return finish()
+      }
+
+      patchOverlayState({
+        confirm: {
+          cancelLabel: t('slashCmd.core.quit.cancelLabel'),
+          confirmLabel: t('slashCmd.core.quit.confirmLabel'),
+          danger: true,
+          detail: t('slashCmd.core.quit.confirmDetail'),
+          onConfirm: finish,
+          title: t('slashCmd.core.quit.confirmTitle')
+        }
+      })
     }
   },
 

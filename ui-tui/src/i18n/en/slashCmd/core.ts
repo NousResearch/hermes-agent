@@ -15,7 +15,18 @@ export const slashCmdCoreEn = {
       tuiSection: 'TUI'
     },
     quit: {
-      dashboardDisabled: 'exit is disabled in hosted dashboard chat — use /new to start a fresh session'
+      dashboardDisabled: 'exit is disabled in hosted dashboard chat — use /new to start a fresh session',
+      deleteUsage: 'usage: /quit [--delete]  —  --delete (or -d) also removes this session from disk',
+      confirmTitle: 'Exit and delete this session?',
+      confirmLabel: 'Yes, delete and exit',
+      cancelLabel: 'No, stay in the session',
+      confirmDetail:
+        "Exits Hermes and permanently deletes this session's SQLite history and on-disk transcripts. This cannot be undone.",
+      deleting: 'deleting session…',
+      deleted: 'session deleted — exiting',
+      refused: 'the gateway refused the delete',
+      deleteFailed: (reason: string) =>
+        `session was NOT deleted (${reason}) — nothing was removed, so you are still in this session. Run /quit to leave without deleting.`
     },
     update: {
       dashboardDisabled: 'update is disabled in hosted dashboard chat — the hosted environment is managed separately',

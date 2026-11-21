@@ -219,10 +219,11 @@ def warming_rule(provider: str, base_url: str, model: str, marked: bool, *, tier
     markers were dropped because the explicit cache never read back is ``no-cache`` too, until its
     automatic cache proves a read of its own."""
     data = _store(time.time() if now is None else now)
-    rule = _rule(data.get(route_key(provider, base_url, model, marked)) or {}, tier_s)
-    if rule is not None or marked or (data.get(route_key(provider, base_url, model, False)) or {}).get("reads"):
-        return rule
-    return "no-cache" if _rule(data.get(route_key(provider, base_url, model, True)) or {}, None) == "no-cache" else None
+    explicit, implicit = (data.get(route_key(provider, base_url, model, e)) or {} for e in (True, False))
+    rule = _rule(explicit if marked else implicit, tier_s)
+    if rule is None and not marked and not implicit.get("reads") and _rule(explicit, None) == "no-cache":
+        return "no-cache"
+    return rule
 
 
 def _rule(entry: dict[str, Any], tier_s: Optional[float]) -> Optional[str]:

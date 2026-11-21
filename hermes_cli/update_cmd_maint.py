@@ -43,6 +43,13 @@ def _resolve_pre_update_snapshot_max_file_size() -> int:
     raw = _load_updates_cfg().get("pre_update_snapshot_max_mb", None)
     if raw is None:
         return _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE
+    # YAML true/false become bool; int(True)==1 would silently cap at 1 MiB.
+    if isinstance(raw, bool):
+        logger.warning(
+            "Ignoring boolean updates.pre_update_snapshot_max_mb %r — using default 1 GiB cap",
+            raw,
+        )
+        return _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -685,14 +692,17 @@ def _verify_state_db_after_snapshot(snapshot_id: str, snap_cap: int | None = Non
     """Verify live state.db after the snapshot: a concurrent process (antivirus, killed
     gateway, Windows filter driver) can corrupt it and we'd otherwise exit 0 silently.
 
-    The integrity scan stays bounded when the copy cap is disabled (``snap_cap`` 0 / None).
+    Integrity ``max_bytes`` stays at the 1 GiB default even when the copy cap is raised.
+    A raised copy cap must not switch the live check from the O(1) schema probe to a full
+    ``PRAGMA integrity_check`` (measured minutes on a ~1 GiB ``state.db`` during update).
+    ``snap_cap`` is kept for call-site compatibility; it does not scale the verify bound.
     """
     from hermes_cli.backup import _quick_snapshot_root, verify_sqlite_integrity
     from hermes_cli.config import get_hermes_home
     _src_path = get_hermes_home() / "state.db"
     if not _src_path.exists():
         return
-    _integrity_max = snap_cap if isinstance(snap_cap, int) and snap_cap > 0 else _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE
+    _integrity_max = _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE
     _integrity = verify_sqlite_integrity(
         _src_path, check_header=True, run_pragma=True, max_bytes=_integrity_max,
     )

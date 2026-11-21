@@ -16,6 +16,7 @@ import importlib.metadata
 import importlib.util
 import logging
 import sys
+from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Iterator, List, Optional, Tuple, TYPE_CHECKING
@@ -35,6 +36,14 @@ ENTRY_POINTS_GROUP = "hermes_agent.memory_providers"
 _REGISTERED_MEMORY_PROVIDER_SKILLS: dict[str, dict[str, Path]] = {}
 # Native extensions whose first import must not race another thread (#58083 warm-up).
 _NATIVE_WARM_IMPORTS: tuple[str, ...] = ("numpy",)
+
+# Live registry-tool registration per (scope, provider, tool) from the most recent collector. Memory
+# providers are re-collected on every agent build, so each load registers the same tools again; the
+# newest generation supersedes the previous one, which is disposed instead of accumulating forever.
+_MEMORY_PROVIDER_TOOL_REGISTRATIONS: dict[tuple[str, str, str], object] = {}
+# A temporary inspection must restore the live tool it temporarily overrides on release.
+# Capture this at collector creation; isolated plugin hosts can register on another thread.
+_TRANSIENT_MEMORY_PROVIDER_LOAD: ContextVar[bool] = ContextVar("transient_memory_provider_load", default=False)
 
 
 def _registered_skills_for_active_home() -> dict[str, Path]:
@@ -445,6 +454,7 @@ class _ProviderCollector:
         self._register_skills = register_skills
         self._context = None
         self._hook_source = None
+        self._transient_tool_registrations = _TRANSIENT_MEMORY_PROVIDER_LOAD.get()
 
     def collect(self, register, *, source=None):
         """Run ``register`` with this collector; hooks it registers form the fallback group that
@@ -493,8 +503,37 @@ class _ProviderCollector:
         process-wide singleton serves the refused profile the owner's store (#147659)."""
         # After handler: check_fn, requires_env, is_async (PluginContext.register_tool order).
         is_async = kwargs.get("is_async", args[2] if len(args) > 2 else False)
-        return self.__getattr__("register_tool")(
+        registration = self.__getattr__("register_tool")(
             name, toolset, schema, _ClaimGatedHandler(self, name, handler, bool(is_async)), *args, **kwargs)
+        if not self._transient_tool_registrations:
+            self._supersede_tool_registration(name, registration)
+        return registration
+
+    def _supersede_tool_registration(self, name, registration) -> None:
+        """Dispose this provider's previous registration of tool *name* once a new one is live.
+
+        ``load_memory_provider`` collects a fresh provider instance on every agent build, and each
+        collect re-registers the provider's registry tools. Without this, every generation's lease
+        stayed in the replacement coordinator and the plugin ledger, each pinning its handler -- and,
+        through ``_ClaimGatedHandler``, its collector and provider instance with whatever it holds
+        open (SQLite connections, threads) -- for the life of a long-running gateway. The earlier
+        generation no longer owns the registry slot (the newer registration replaced it), so
+        disposing it is identity-conditional and never touches the live entry."""
+        if registration is None:
+            return
+        try:
+            scope = self._plugin_context()._manager.scope_key
+        except Exception:  # health: allow BLE001 -- bookkeeping must never cost the registration
+            scope = ""
+        key = (str(scope), self.name, name)
+        previous = _MEMORY_PROVIDER_TOOL_REGISTRATIONS.get(key)
+        _MEMORY_PROVIDER_TOOL_REGISTRATIONS[key] = registration
+        if previous is not None and previous is not registration:
+            try:
+                previous.dispose()
+            except Exception as exc:  # health: allow BLE001 -- a stale handle must not break a load
+                logger.debug("Memory provider '%s': could not release superseded tool %s: %s",
+                             self.name, name, exc)
 
     def register_skill(self, *args, **kwargs):
         """Forward skills to the plugin registry, tracking qualified name + path so
@@ -567,7 +606,11 @@ def provider_registration_scope(name: str) -> Iterator[Callable[[], None]]:
             made = [r for r in manager._ownership_ledger.get(key, ()) if id(r) not in before]
             manager._dispose_registrations(made)
 
-    yield release
+    token = _TRANSIENT_MEMORY_PROVIDER_LOAD.set(True)
+    try:
+        yield release
+    finally:
+        _TRANSIENT_MEMORY_PROVIDER_LOAD.reset(token)
 
 
 def _get_active_memory_provider() -> Optional[str]:

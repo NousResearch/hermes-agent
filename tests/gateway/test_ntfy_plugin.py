@@ -247,6 +247,31 @@ class TestSend:
         assert posted_url.endswith("/override-out")
 
 
+    def _posted_url(self, adapter, chat_id, metadata=None):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        adapter._http_client = mock_client
+        result = _run(adapter.send(chat_id, "Hi!", metadata=metadata))
+        assert result.success is True
+        return mock_client.post.call_args[0][0]
+
+    def test_send_explicit_chat_id_beats_publish_topic(self):
+        adapter = self._make_adapter(topic="hermes-in", publish_topic="hermes-out")
+        assert self._posted_url(adapter, "other-topic").endswith("/other-topic")
+
+    def test_send_reply_to_subscription_topic_uses_publish_topic(self):
+        adapter = self._make_adapter(topic="hermes-in", publish_topic="hermes-out")
+        assert self._posted_url(adapter, "hermes-in").endswith("/hermes-out")
+        assert self._posted_url(adapter, "").endswith("/hermes-out")
+
+    def test_send_metadata_override_beats_explicit_chat_id(self):
+        adapter = self._make_adapter(topic="hermes-in", publish_topic="hermes-out")
+        url = self._posted_url(adapter, "other-topic", metadata={"publish_topic": "override-out"})
+        assert url.endswith("/override-out")
+
     def test_send_handles_timeout(self):
         adapter = self._make_adapter(topic="hermes-in")
 
@@ -390,6 +415,27 @@ class TestStandaloneSend:
         result = _run(_standalone_send(pconfig, "", "hello"))
         assert "error" in result
 
+
+    def test_prefers_chat_id_over_publish_topic(self, monkeypatch):
+        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        monkeypatch.setenv("NTFY_PUBLISH_TOPIC", "hermes-out")
+        pconfig = MagicMock()
+        pconfig.extra = {"topic": "hermes-in"}
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "id-1"}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(_ntfy, "httpx") as mock_httpx:
+            mock_httpx.AsyncClient.return_value = mock_client
+            result = _run(_standalone_send(pconfig, "other-topic", "hi"))
+
+        assert mock_client.post.call_args[0][0].endswith("/other-topic")
+        assert result["chat_id"] == "other-topic"
 
     def test_emits_echo_tag_header(self, monkeypatch):
         """Out-of-process cron / send_message deliveries also carry the echo

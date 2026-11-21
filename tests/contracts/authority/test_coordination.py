@@ -178,6 +178,27 @@ def test_turn_lease_dead_pid_holder_is_reclaimed_before_expiry(backend, scope_a)
     assert coord.try_acquire_turn_lease(session_id=OTHER, holder=dead_holder("turn=t4:platform=cli"), ttl_seconds=300.0) is False
 
 
+def test_session_turn_leases_reads_the_row_a_dead_holder_left_behind(backend, scope_a):
+    # CONTRACT: the read-only view of the conversation's lease rows. Empty session is ();
+    # after an acquire the row is returned with its holder and float expiry; the row a dead
+    # holder left behind (expired or not) is visible — no sweep or reclaim on the read path;
+    # release removes it again.
+    coord = backend.open(scope_a).coordination
+    assert coord.session_turn_leases(session_id=SessionId("")) == ()
+    assert coord.session_turn_leases(session_id=ROOT) == ()
+    gone = dead_holder("turn=t5:platform=cli")
+    before = time.time()
+    assert coord.try_acquire_turn_lease(session_id=ROOT, holder=gone, ttl_seconds=300.0) is True
+    rows = coord.session_turn_leases(session_id=ROOT)
+    assert len(rows) == 1, rows
+    holder, expires_at = rows[0]
+    assert holder == gone
+    assert isinstance(expires_at, float) and before < expires_at <= time.time() + 300.0
+    assert coord.session_turn_leases(session_id=OTHER) == ()
+    coord.release_turn_lease(session_id=ROOT, holder=gone)
+    assert coord.session_turn_leases(session_id=ROOT) == ()
+
+
 def test_turn_lease_unstamped_or_foreign_namespace_holder_defers_to_its_expiry(backend, scope_a):
     # CONTRACT: where PID namespaces exist, a holder without this namespace's stamp, or with another's, is never probed; it keeps its row until expiry.
     if not pidns_token():

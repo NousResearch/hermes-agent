@@ -1024,6 +1024,8 @@ Exit status: `0` when the report lists no unresolved problems, `1` when at least
 
 The **API Connectivity** section includes an `IPv6 route` check: it opens one short (2 s) IPv6 TCP connection to a known dual-stack host. A route that is advertised but only times out (a blackholed IPv6 prefix) is reported as a warning naming the remedy, `network.force_ipv4: true`. Having no IPv6 route at all is healthy and reported as OK; the check is skipped when `force_ipv4` is already set.
 
+The **Regex Settings (RE2 engine change)** section lists the regular expressions you wrote in settings (shell-hook and outbound-webhook `matcher`, Matrix `ignore_user_patterns`, webhook route and subscription `regex` filters, platform `mention_patterns`, and the environment-variable forms of these) that the RE2 regex engine Hermes is moving to will refuse (RE2 has no backreferences and no lookahead or lookbehind) or will read differently (a `\b` next to non-ASCII text), each with what will then happen to that setting, for example "the Matrix adapter will not start". A pattern the engine will refuse counts as an issue, so `hermes doctor` exits 1 as for the other upcoming-change sections; a pattern only read differently is a warning. `--fix` does not rewrite patterns. The section covers the active profile; run `hermes -p <name> doctor` for each other profile. It is skipped when the `google-re2` package is not installed.
+
 Custom-endpoint config checks (both warn-only; `--fix` does not rewrite them):
 
 - `custom_providers` that is not a YAML list (for example a string left by a bad `config set`) is reported as an error naming the key and the received type — the runtime ignores every custom endpoint until it is a list again.

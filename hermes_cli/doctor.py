@@ -33,6 +33,7 @@ from hermes_cli.doctor_config import (
     _check_xai_retirement,
     _check_retired_session_reset,
 )
+from hermes_cli.doctor_regex import _check_user_regex_settings
 from hermes_cli.doctor_platform import (
     _check_certificates,
     _check_command_installation,
@@ -119,6 +120,7 @@ DOCTOR_CHECKS = (
     (None, _check_config_file), (None, _check_config_drift),
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
     ('Session Reset (timers removed Sep 7, 2026)', _check_retired_session_reset),
+    ('Regex Settings (RE2 engine change)', _check_user_regex_settings),
     ('Auth Providers', _check_auth_providers),
     ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_cron_store),
     (None, _check_checkpoint_store),

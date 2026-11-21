@@ -195,7 +195,7 @@ empty-content failures stay on a flat 30 s cooldown. Three paths run a real
 attempt anyway:
 
 - Manual `/compress` (`force=True`) — clears the cooldown and retries.
-- The same-turn `fallback_chain` retry after a stalled primary route — the
+- The same-turn `fallback_providers` / `fallback_chain` retry after a stalled primary route — the
   cancelled primary's own stall cooldown must not suppress it (`bypass_cooldown`).
   If that pinned route's summary call fails, compress() still commits its
   deterministic fallback summary (default `abort_on_summary_failure: false`);

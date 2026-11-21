@@ -18,6 +18,10 @@ export const zhHantSettings = {
 
   settings: {
     memoryLayers: zhHantMemoryLayers,
+    connections: {
+      updateSkippedExternal: (command: string) =>
+        command ? `由外部工具管理。請執行 ${command} 更新` : '由外部工具管理。請使用其自身的工具更新。'
+    },
     subpages: {
       appearanceTheme: '主題',
       appearanceTypography: '字體與縮放',

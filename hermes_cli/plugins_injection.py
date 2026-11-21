@@ -84,3 +84,27 @@ def plugin_submission(ctx, *, content, session_key, expected_session_id, request
         return {**refused, "error": "gateway_unavailable"}
     return callback(content=content, session_key=session_key, expected_session_id=expected_session_id,
                     request_id=request_id, plugin_id=ctx.plugin_id, plugin_home=ctx._manager.home_path)
+
+
+def plugin_tools(ctx, *, session_key, expected_session_id, calls=None, request_id='tool-discovery',
+                 text=None, require_background=False, discover=False):
+    """Use the same profile consent and host routing as receipt-bearing submissions."""
+    import json
+    refused = dict(ok=False, status='refused', outputs=[])
+    if not ctx._gateway_injection_allowed():
+        return {**refused, 'error': 'permission_denied'}
+    registered = ctx._manager._gateway_message_injector
+    callback = getattr(registered[0], '_plugin_submission', None) if registered else None
+    if callback is None:
+        return {**refused, 'error': 'gateway_unavailable'}
+    content = None
+    if not discover:
+        from gateway.plugin_submission.execution import validate
+        try:
+            content = json.dumps(validate(dict(calls=calls, text=text, require_background=require_background)),
+                                 sort_keys=True, separators=(',', ':'), allow_nan=False)
+        except (ValueError, TypeError):
+            return {**refused, 'error': 'invalid_params'}
+    return callback(content=content, session_key=session_key, expected_session_id=expected_session_id,
+                    request_id=request_id, plugin_id=ctx.plugin_id, plugin_home=ctx._manager.home_path,
+                    operation='tools' if discover else 'execute')

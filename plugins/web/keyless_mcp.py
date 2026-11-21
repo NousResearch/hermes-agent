@@ -50,6 +50,24 @@ def _is_rate_limitish(message: str) -> bool:
     return any(marker in (message or "").lower() for marker in _RATE_LIMIT_MARKERS)
 
 
+# Exa's free MCP tier answers a throttle as **HTTP 200 with an ordinary text item** — no JSON-RPC
+# ``error`` and no ``result.isError`` — so ``_parse_mcp_body`` hands the notice back as if it were
+# content: ``web_search`` returns ``success: true`` with zero rows, and ``web_extract`` returns the
+# throttle sentence as the page (#146853). The notice is ~246 chars and carries the phrase
+# ``free MCP rate limit``; the length bound keeps a real page that merely quotes the sentence
+# (a docs page about Exa, a bug report like this one) from being mistaken for a throttle.
+_EXA_THROTTLE_RE = re.compile(r"free mcp rate limit", re.IGNORECASE)
+
+# Comfortably above the notice, far below any page worth extracting.
+_EXA_THROTTLE_MAX_CHARS = 800
+
+
+def _is_exa_throttle_notice(text: str) -> bool:
+    """True when *text* is Exa's free-tier throttle notice standing in for real content."""
+    stripped = (text or "").strip()
+    return len(stripped) < _EXA_THROTTLE_MAX_CHARS and bool(_EXA_THROTTLE_RE.search(stripped))
+
+
 # A free tier that refuses this client (401/402/403: anonymous access revoked, IP reputation gate)
 # or errors server-side (5xx) fails every query from here, while another vendor may still serve it.
 # Anchored to the status the error starts with (after the ``Keyless <Vendor> search failed:`` prefix),
@@ -205,7 +223,13 @@ def mcp_call(url: str, tool: str, arguments: dict[str, Any], timeout: int = _TIM
         raise KeylessMCPError(f"request failed: {exc}") from exc
     if response.status_code >= 400:
         raise KeylessMCPError(f"HTTP {response.status_code}: {_response_text(response)[:300]}")
-    return _parse_mcp_body(_response_text(response))
+    text = _parse_mcp_body(_response_text(response))
+    # Exa answers its free-tier throttle with a 200 and a plain text item, so without this the ring
+    # never sees an error: a search "succeeds" with zero rows and an extract returns the notice as the
+    # page. Surfacing it as a rate-limit error lets `_is_rate_limitish` advance to the next vendor.
+    if url.startswith(EXA_MCP_URL) and _is_exa_throttle_notice(text):
+        raise KeylessMCPError(f"rate limit: {text.strip()[:200]}")
+    return text
 
 
 # --- Parallel (search.parallel.ai) — JSON text payloads -----------------------

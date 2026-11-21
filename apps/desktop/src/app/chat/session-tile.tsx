@@ -228,7 +228,7 @@ function buildTileView(storedSessionId: string): SessionView {
 // transcription needs no per-tile state.
 const noop = () => undefined
 
-const tileTranscribeAudio = async (audio: Blob, owner?: ResolvedOwner) => {
+const tileTranscribeAudio = async (audio: Blob, owner?: ResolvedOwner, timeoutMs?: number) => {
   // Client-direct first (profile's own STT provider, no gateway audio hop);
   // relay when the provider is not client-callable. Same ladder as the main
   // composer's transcribeVoiceAudio. `owner` is the recording's owner — the
@@ -239,7 +239,7 @@ const tileTranscribeAudio = async (audio: Blob, owner?: ResolvedOwner) => {
     return direct
   }
 
-  return (await transcribeAudio(await blobToDataUrl(audio), audio.type, owner)).transcript
+  return (await transcribeAudio(await blobToDataUrl(audio), audio.type, owner, timeoutMs)).transcript
 }
 
 /** Toggle pin for a tile's session, keyed on the durable lineage-root id —

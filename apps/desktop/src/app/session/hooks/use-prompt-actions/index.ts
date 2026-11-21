@@ -723,7 +723,7 @@ export function usePromptActions({
   )
 
   const transcribeVoiceAudio = useCallback(
-    async (audio: Blob, owner?: ResolvedOwner) => {
+    async (audio: Blob, owner?: ResolvedOwner, timeoutMs?: number) => {
       if (!sttEnabled) {
         throw new Error(copy.sttDisabled)
       }
@@ -743,7 +743,7 @@ export function usePromptActions({
       }
 
       const dataUrl = await blobToDataUrl(audio)
-      const result = await transcribeAudio(dataUrl, audio.type, owner)
+      const result = await transcribeAudio(dataUrl, audio.type, owner, timeoutMs)
 
       return result.transcript
     },

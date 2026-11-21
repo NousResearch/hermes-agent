@@ -31,6 +31,15 @@ export {
   type KanbanCardBadgeTone,
   type KanbanCardBoard
 } from '@/contrib/kanban-card-badges'
+/** Draw a file the preview rail opens, claimed by extension or MIME type, in
+ *  place of the built-in viewer. */
+export {
+  FILE_PREVIEW_RENDERER_AREA,
+  type FilePreviewFile,
+  type FilePreviewReadResult,
+  type FilePreviewRendererContribution,
+  type FilePreviewRendererProps
+} from '@/lib/file-preview-renderers'
 /** Draw the `MEDIA:` files your package's OWN tools produced, in place of the
  *  built-in player (ownership is checked against the backend's tool registry). */
 export {

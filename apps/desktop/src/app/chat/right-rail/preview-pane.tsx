@@ -76,6 +76,7 @@ import { type ConsoleEntry, type PreviewConsoleState } from './preview-console-s
 import { previewConsoleState } from './preview-console-store'
 import { runPreviewGuestScript, usePreviewDriveChannels, withPreviewDeadline } from './preview-drive-channels'
 import { LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './preview-file'
+import { FilePreviewSlot } from './preview-file-renderer'
 import { usePreviewGuestOffscreen } from './preview-guest-offscreen'
 import { type PreviewInputEvent } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
@@ -286,7 +287,7 @@ function PreviewDocumentBody(props: ComponentProps<typeof LocalFilePreview>) {
   return props.target.kind === 'artifact' ? (
     <ArtifactPreview onClose={props.onClose} target={props.target} />
   ) : (
-    <LocalFilePreview {...props} />
+    <FilePreviewSlot fallback={<LocalFilePreview {...props} />} sessionId={props.sessionId} target={props.target} />
   )
 }
 

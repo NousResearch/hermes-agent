@@ -1,4 +1,3 @@
-import { fileUrlToNativePath } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import type {
@@ -11,7 +10,6 @@ import type {
 import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { defaultRehypePlugins, defaultRemarkPlugins, Streamdown } from 'streamdown'
 
-import { getApiRequestConnection } from '@/api/client'
 import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
@@ -28,6 +26,7 @@ import {
   DesktopFileMissingError,
   desktopFsCacheKey,
   desktopGitRoot,
+  fileEditScopeKey,
   isReadFileErrorResult,
   readDesktopFileDataUrl,
   readDesktopFileText,
@@ -37,7 +36,7 @@ import { ExternalLink } from '@/lib/external-link'
 import { Check, Pencil, X } from '@/lib/icons'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { isComposerChord } from '@/lib/keybinds/chords'
-import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { filePathForTarget, normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { normalizeFilePreviewMath } from '@/lib/markdown-preprocess'
 import {
@@ -190,20 +189,6 @@ function isTypableElement(el: Element | null): boolean {
   const tag = el.tagName
 
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (el as HTMLElement).isContentEditable
-}
-
-function fileEditScopeKey() {
-  // The REST wrapper has its own routing authority. Include it while the
-  // resolved connection descriptor is catching up with an activation.
-  return JSON.stringify([desktopFsCacheKey(), getApiRequestConnection()])
-}
-
-function filePathForTarget(target: PreviewTarget) {
-  if (target.path) {
-    return target.path
-  }
-
-  return fileUrlToNativePath(target.url) ?? target.url
 }
 
 function formatBytes(bytes: number | undefined) {

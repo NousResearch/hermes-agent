@@ -814,11 +814,13 @@ class AIAgent(
         kwargs = dict(messages_snapshot=_clone_background_review_messages(messages_snapshot),
                       review_memory=review_memory, review_skills=review_skills, focus=focus, task_cfg=task_cfg,
                       explicit=explicit)
-        if focus is None and not explicit and _review_should_defer(self, task_cfg):
-            from agent.review_idle_queue import QUEUE
-            QUEUE.enqueue(self, _review_queue_key(self), kwargs)
-            return
-        self._spawn_background_review_now(**kwargs)
+        from agent.voice_turn_route import review_reasoning_scope
+        with review_reasoning_scope(self):
+            if focus is None and not explicit and _review_should_defer(self, task_cfg):
+                from agent.review_idle_queue import QUEUE
+                QUEUE.enqueue(self, _review_queue_key(self), kwargs)
+                return
+            self._spawn_background_review_now(**kwargs)
 
     def _spawn_background_review_now(self, messages_snapshot: list[dict], review_memory: bool = False,
                                      review_skills: bool = False, focus: Optional[str] = None,

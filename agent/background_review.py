@@ -943,6 +943,12 @@ def _same_model_parity_kwargs(agent: Any) -> dict[str, Any]:
         "ephemeral_system_prompt": getattr(agent, "ephemeral_system_prompt", None),
         **{attr: val for attr in _PROVIDER_PIN_ATTRS if (val := getattr(agent, attr, None))},
     }
+    # Voice routing is restored before post-turn work. Only the same runtime can reuse
+    # that turn's effort; another model/provider has a different cache and vocabulary.
+    from agent.voice_turn_route import review_reasoning
+    voice = review_reasoning(agent)
+    if voice and voice["route"] == (agent.provider, agent.model, agent.base_url, agent.api_mode):
+        kwargs["reasoning_config"] = copy.deepcopy(voice["reasoning_config"])
     # Prefill sits right after the system message, so a parent with prefill would diverge at
     # index 1. Deep copy: unicode-error recovery sanitizes prefill entries IN PLACE and must not
     # rewrite the parent's bytes.

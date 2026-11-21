@@ -1811,6 +1811,7 @@ def run_conversation(
 
     # Steer / redirect / interrupt set this mid-turn; the result reports whether the turn ran untouched.
     agent._turn_user_intervened = False
+    agent._voice_review_reasoning = None
     # Images attached natively to this user turn stay visible to vision_analyze for the turn, so
     # it does not embed the same pixels a second time into the same request (#76411).
     with native_turn_images(user_message):

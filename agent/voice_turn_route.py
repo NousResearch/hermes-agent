@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import copy
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 
 from agent.route_verdicts import ROUTE_VERDICT_FIELDS
@@ -33,6 +35,24 @@ _EXTRA_FIELDS = (
     "_rate_limit_backoff_count", "_credential_pool", "_credential_pool_entry_id", "_config_context_length",
     *ROUTE_VERDICT_FIELDS,
 )
+
+
+_REVIEW_REASONING: ContextVar[Optional[tuple[Any, Any]]] = ContextVar("voice_review_reasoning", default=None)
+
+
+@contextmanager
+def review_reasoning_scope(agent: Any):
+    """Capture the voice effort alongside the review's queued/threaded context."""
+    token = _REVIEW_REASONING.set((agent, copy.deepcopy(getattr(agent, "_voice_review_reasoning", None))))
+    try:
+        yield
+    finally:
+        _REVIEW_REASONING.reset(token)
+
+
+def review_reasoning(agent: Any) -> Any:
+    captured = _REVIEW_REASONING.get()
+    return captured[1] if captured is not None and captured[0] is agent else getattr(agent, "_voice_review_reasoning", None)
 
 
 def _route_target(agent: Any, cfg: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -203,6 +223,11 @@ def end_voice_turn_route(agent: Any) -> None:
     state = getattr(agent, "_voice_route_state", None)
     if not state:
         return
+    if getattr(agent, "_turn_received_provider_response", False):
+        agent._voice_review_reasoning = {
+            "route": (agent.provider, agent.model, agent.base_url, agent.api_mode),
+            "reasoning_config": copy.deepcopy(agent.reasoning_config),
+        }
     agent._voice_route_state = None
     agent._turn_route_task = ""
     try:

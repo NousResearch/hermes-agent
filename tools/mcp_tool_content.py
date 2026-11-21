@@ -270,8 +270,23 @@ def _mcp_resource_filename(uri: str, mime_type: str, data: bytes = b"") -> str:
         # PNG it can open. The bytes say what the file is (Claude Code 2.1.329 parity).
         mime = _base_mime(mime_type)
         guessed = None if mime in _GENERIC_MIMES else mimetypes.guess_extension(mime)
-        name += guessed or _sniff_document_extension(data) or ".bin"
+        ext = guessed or _sniff_document_extension(data)
+        if ext is None and not _looks_like_text(data):
+            ext = ".bin"
+        name += ext or ""  # text keeps its bare name: read_file sniffs and reads it
     return name
+
+
+def _looks_like_text(data: bytes) -> bool:
+    """UTF-8 with no NUL in the head: CSV/JSON/log downloads must stay readable, not ``.bin``."""
+    head = data[:8192]
+    if b"\x00" in head:
+        return False
+    try:
+        head.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        return exc.start >= len(head) - 3  # only a multibyte char cut by the 8 KiB window
+    return True
 
 
 _GENERIC_MIMES = frozenset({"", "application/octet-stream", "binary/octet-stream", "application/unknown"})
@@ -292,7 +307,8 @@ def _sniff_document_extension(data: bytes) -> Optional[str]:
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
                 names = archive.namelist()
-        except (zipfile.BadZipFile, ValueError):
+        except (zipfile.BadZipFile, NotImplementedError, ValueError, OSError, EOFError, RuntimeError):
+            # NotImplementedError = an unsupported zip version; the resource keeps .bin
             return None
         if "[Content_Types].xml" in names:
             for prefix, ext in _OOXML_EXTENSIONS.items():

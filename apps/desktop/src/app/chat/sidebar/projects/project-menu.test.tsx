@@ -5,6 +5,8 @@ import { dismissAutoProject, restoreAutoProject } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import { revealPath } from '@/store/projects'
 
+import { openProjectRemoveFolder } from '@/store/projects'
+
 import { ProjectMenu } from './project-menu'
 import type { SidebarProjectTree } from './workspace-groups'
 
@@ -38,6 +40,7 @@ vi.mock('@/i18n', () => ({
           menu: 'Actions',
           menuAddFolder: 'Add folder',
           menuAppearance: 'Appearance',
+          menuRemoveFolder: 'Remove folder',
           menuDelete: 'Delete',
           menuRename: 'Rename',
           menuSetActive: 'Set active',
@@ -74,6 +77,7 @@ vi.mock('@/store/projects', () => ({
   copyPath: vi.fn(),
   deleteProject: vi.fn(),
   openProjectAddFolder: vi.fn(),
+  openProjectRemoveFolder: vi.fn(),
   openProjectRename: vi.fn(),
   revealPath: vi.fn(),
   setActiveProject: vi.fn(),
@@ -127,6 +131,22 @@ describe('ProjectMenu', () => {
     // real button through the full Tip > PopoverAnchor > DropdownMenuTrigger
     // chain rather than getting silently dropped on an intermediate wrapper.
     expect(await screen.findByRole('button', { name: 'No color' })).toBeTruthy()
+  }, 15000)
+
+  it('opens the remove-folder dialog for an explicit project, and not for an auto one', async () => {
+    const { unmount } = render(<ProjectMenu isActive={false} project={project} />)
+
+    openTriggerMenu(screen.getByRole('button', { name: 'Actions' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove folder' }))
+
+    expect(openProjectRemoveFolder).toHaveBeenCalledWith({ id: 'p1', name: 'Test D' })
+    unmount()
+
+    render(<ProjectMenu isActive={false} project={autoProject} />)
+    openTriggerMenu(screen.getByRole('button', { name: 'Actions' }))
+    await screen.findByRole('menuitem', { name: 'Remove from sidebar' })
+
+    expect(screen.queryByRole('menuitem', { name: 'Remove folder' })).toBeNull()
   }, 15000)
 
   // #73091: "Hide from sidebar" on an auto project used to be one-way — the

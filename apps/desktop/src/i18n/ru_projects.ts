@@ -26,6 +26,13 @@ export const ruProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   menuAppearance: 'Внешний вид',
   noColor: 'Без цвета',
   menuAddFolder: 'Добавить папку',
+  menuRemoveFolder: 'Убрать папку…',
+  removeFolderTitle: 'Убрать папку',
+  removeFolderDesc:
+    'Убирает папку из этого проекта. Файлы не удаляются; чаты, начатые в ней, перестанут отображаться в этом проекте.',
+  removeFolderNewPrimary: path => `${path} становится основной папкой.`,
+  removeFolderLast: 'В проекте должна остаться хотя бы одна папка.',
+  removeFolderFailed: 'Не удалось убрать папку',
   menuSetActive: 'Сделать активным',
   menuDelete: 'Удалить',
   moveToProject: 'Переместить в проект',

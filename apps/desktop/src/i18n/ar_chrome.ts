@@ -250,6 +250,13 @@ export const arChrome = {
       menuAppearance: 'المظهر',
       noColor: 'بلا لون',
       menuAddFolder: 'إضافة مجلد',
+      menuRemoveFolder: 'إزالة مجلد…',
+      removeFolderTitle: 'إزالة مجلد',
+      removeFolderDesc:
+        'يزيل المجلد من هذا المشروع. لا تُحذف أي ملفات؛ ولن تظهر المحادثات التي بدأت فيه ضمن هذا المشروع.',
+      removeFolderNewPrimary: path => `سيصبح ${path} المجلد الأساسي.`,
+      removeFolderLast: 'يحتاج المشروع إلى مجلد واحد على الأقل.',
+      removeFolderFailed: 'تعذّرت إزالة المجلد',
       menuSetActive: 'تعيين كنشط',
       menuDelete: 'حذف',
       reveal: 'إظهار في المجلد',

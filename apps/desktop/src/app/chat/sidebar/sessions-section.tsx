@@ -120,7 +120,7 @@ interface SidebarSessionsSectionProps {
    *  showed, so it decides Archive vs Unarchive. */
   onArchiveSession: (sessionId: string, session?: SessionInfo) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
-  onTogglePin: (sessionId: string) => void
+  onTogglePin: (sessionId: string, session: SessionInfo) => void
   onToggleUnread: (sessionId: string) => void
   onNewSessionInWorkspace?: (path: null | string, owner?: AgentProfileRoute) => void
   /** Create a new session as a tile at a drop target (drag from a project "+"). */
@@ -292,7 +292,7 @@ export function SidebarSessionsSection({
         onArchive: () => onArchiveSession(session.id, session),
         onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
         onDelete: () => onDeleteSession(session.id),
-        onPin: () => onTogglePin(sessionPinId(session)),
+        onPin: () => onTogglePin(sessionPinId(session), session),
         onToggleUnread: () => onToggleUnread(session.id),
         onResume: () => onResumeSession(session.id, session),
         reorderable: draggable && !branchStem,

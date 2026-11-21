@@ -53,7 +53,7 @@ export interface VirtualSessionListProps {
   onBranchSession?: (sessionId: string, profile?: string) => void
   onDeleteSession: (sessionId: string) => void
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
-  onTogglePin: (sessionId: string) => void
+  onTogglePin: (sessionId: string, session: SessionInfo) => void
   onToggleUnread: (sessionId: string) => void
   pinned: boolean
   showProfileTags?: boolean
@@ -169,7 +169,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       onArchive: () => onArchiveSession(session.id, session),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
       onDelete: () => onDeleteSession(session.id),
-      onPin: () => onTogglePin(sessionPinId(session)),
+      onPin: () => onTogglePin(sessionPinId(session), session),
       onToggleUnread: () => onToggleUnread(session.id),
       onResume: () => onResumeSession(session.id, session),
       reorderable,

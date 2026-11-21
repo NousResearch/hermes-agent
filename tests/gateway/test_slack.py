@@ -2490,6 +2490,12 @@ class TestFormatMessage:
     def test_italic_asterisk_conversion(self, adapter):
         assert adapter.format_message("*hello*") == "_hello_"
 
+    def test_bold_url_keeps_closing_marker_outside_autolink(self, adapter):
+        """A zero-width separator stops Slack from absorbing the closing marker."""
+        assert adapter.format_message("**Open https://example.com/pull/94**") == (
+            "*Open https://example.com/pull/94\u200b*"
+        )
+
 
     def test_header_with_bold_content(self, adapter):
         # **bold** inside a header should not double-wrap

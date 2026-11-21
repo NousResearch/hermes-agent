@@ -448,11 +448,16 @@ function useSessionActions({
     })
   ]
 
-  // TAB — verbs that act on the strip (tabs only; a row isn't a tab).
-  const closeTargets = surface === 'tab' && tabPaneId ? treeTabCloseTargets(tabPaneId) : null
+  // TAB — verbs that act on the strip (tabs only; a row isn't a tab). Built
+  // when the menu OPENS (from `renderItems`), never in this hook's render body:
+  // every open tab mounts this hook and re-renders on each session switch, and
+  // the close counts scan the tab's whole group, so resolving them eagerly made
+  // a switch cost grow with the square of the open tabs (#157767). Same
+  // contract as the zone tab menu in `tree-group.tsx`.
+  const tabItems = (): ActionItemSpec[] => {
+    const closeTargets = surface === 'tab' && tabPaneId ? treeTabCloseTargets(tabPaneId) : null
 
-  const tabItems: ActionItemSpec[] =
-    surface === 'tab'
+    return surface === 'tab'
       ? [
           ...(tabPaneId
             ? [
@@ -516,6 +521,7 @@ function useSessionActions({
             : [])
         ]
       : []
+  }
 
   // DANGER — put it away / destroy it (delete stays last, destructive-red).
   const dangerItems: ActionItemSpec[] = [
@@ -555,6 +561,17 @@ function useSessionActions({
     }
   ]
 
+  const renderTabItems = (kit: MenuKit) => {
+    const items = tabItems()
+
+    return items.length > 0 ? (
+      <>
+        <kit.Separator />
+        {items.map(item => renderActionItem(kit, item))}
+      </>
+    ) : null
+  }
+
   const renderItems = (kit: MenuKit) => (
     <>
       {openItems.map(item => renderActionItem(kit, item))}
@@ -590,12 +607,7 @@ function useSessionActions({
           <MoveToProjectItems kit={kit} profile={profile} sessionId={sessionId} />
         </kit.SubContent>
       </kit.Sub>
-      {tabItems.length > 0 && (
-        <>
-          <kit.Separator />
-          {tabItems.map(item => renderActionItem(kit, item))}
-        </>
-      )}
+      {renderTabItems(kit)}
       <kit.Separator />
       {dangerItems.map(item => renderActionItem(kit, item))}
       {onHideTabBar && (

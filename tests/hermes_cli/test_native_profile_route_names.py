@@ -80,3 +80,22 @@ def test_launch_home_guard_compares_home_keys_not_raw_paths(root, tmp_path):
         native_http._check_registry_scope(_request('DELETE', '/api/profiles/beta'),
                                           str(root / 'profiles' / 'beta'), str(link))
     assert Path(link).resolve() == root / 'profiles' / 'beta'
+
+
+def _json_request(method, path, body):
+    async def json():
+        return body
+    return SimpleNamespace(method=method, url=SimpleNamespace(path=path), query_params=QueryParams(''),
+                           headers=Headers({'content-type': 'application/json'}), json=json)
+
+
+def test_kanban_reassign_may_name_another_profile_as_assignee(root):
+    """The shared board's reassign body names the new ASSIGNEE; a window attached to one profile
+    must still assign a task to another (it was refused with profile_scope_mismatch)."""
+    own = str(root / 'profiles' / 'active')
+    asyncio.run(native_http._check_profile_scope(
+        _json_request('POST', '/api/plugins/kanban/tasks/t_abc/reassign', {'profile': 'beta'}), own))
+    # Any other route still checks body.profile against the grant.
+    with pytest.raises(PermissionError, match='profile_scope_mismatch'):
+        asyncio.run(native_http._check_profile_scope(
+            _json_request('POST', '/api/config', {'profile': 'beta'}), own))

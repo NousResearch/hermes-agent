@@ -28,7 +28,6 @@ import {
   globalShortcut,
   ipcMain,
   type IpcMainEvent,
-  type IpcMainInvokeEvent,
   Menu,
   type MenuItemConstructorOptions,
   nativeTheme,
@@ -44,6 +43,7 @@ import {
 import type { Session } from 'electron'
 
 import { type ActiveRuntimeState, classifyActiveRuntime } from './active-runtime-state'
+import { registerAmbientCueIpc } from './ambient-ipc'
 import { HERMES_API_EXPECTED_404 } from './api-expected-404'
 import {
   destroyKeepaliveAgents,
@@ -249,7 +249,6 @@ import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { preReadyDockLaunchSteps } from './dock-launch-order'
 import { embedHostOrigin } from './embed-host'
 import { installEmbedReferer } from './embed-referer'
-import { createAmbientClaimArbiter } from './event-dedupe'
 import { openExternalUrl as externalOpen, type ExternalOpenDeps, reportPreOpenStatFailure } from './external-open'
 import {
   buildTerminalScript,
@@ -15803,11 +15802,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   }
 })
 
-// Speech claims outlive instant cues so throttled peer windows cannot replay a reply.
-const ownsAmbientCue: ReturnType<typeof createAmbientClaimArbiter> = createAmbientClaimArbiter()
-ipcMain.handle('hermes:ambient:claim', (_event: IpcMainInvokeEvent, key: unknown): boolean =>
-  ownsAmbientCue(String(key ?? ''))
-)
+registerAmbientCueIpc()
 
 const nativeNotifications = registerNativeNotifications({
   getMainWindow: (): BrowserWindow | null => mainWindow,

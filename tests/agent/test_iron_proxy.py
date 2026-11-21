@@ -79,6 +79,40 @@ def test_management_token_path_is_single_authority(hermes_home):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("extra_secrets, error", [
+    ([{"env_var": "github-token", "hosts": ["api.github.com"]}], "uppercase environment"),
+    ([{"env_var": "GITHUB_TOKEN", "hosts": ["https://api.github.com"]}], "without a scheme"),
+    ([{"env_var": "GITHUB_TOKEN", "hosts": ["*"]}], "fully-qualified"),
+    ([{"env_var": "GITHUB_TOKEN", "hosts": ["*.github.io"]}], "exact DNS hostname"),
+    ([{"env_var": "GITHUB_TOKEN", "hosts": ["api.github.com"], "match_headers": ["Host"]}], "routing, framing"),
+])
+def test_extra_secret_specs_reject_unbounded_or_unsafe_targets(extra_secrets, error):
+    with pytest.raises(ValueError, match=error):
+        ip.parse_extra_secret_specs(extra_secrets)
+
+
+@pytest.mark.parametrize("env_var", [
+    "GOOGLE_API_KEY", "HTTPS_PROXY", "HERMES_IRON_PROXY_MGMT_KEY", "PATH",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
+    "LD_PRELOAD", "HERMES_HOME",
+])
+def test_extra_secret_specs_reject_builtin_aliases_and_egress_control_names(env_var):
+    with pytest.raises(ValueError, match="reserved egress credential name"):
+        ip.parse_extra_secret_specs([{"env_var": env_var, "hosts": ["api.example.com"]}])
+
+
+@pytest.mark.parametrize("extra_secrets", [
+    [
+        {"env_var": "FIRST_SECRET", "hosts": ["api.example.com"]},
+        {"env_var": "SECOND_SECRET", "hosts": ["api.example.com"]},
+    ],
+    [{"env_var": "SERVICE_SECRET", "hosts": ["api.openai.com"]}],
+])
+def test_extra_secret_specs_reject_overlapping_host_scopes(extra_secrets):
+    with pytest.raises(ValueError, match="overlaps mapping"):
+        ip.parse_extra_secret_specs(extra_secrets)
+
+
 def _sample_mapping(env_name: str = "OPENROUTER_API_KEY") -> ip.TokenMapping:
     return ip.TokenMapping(
         proxy_token=ip.mint_proxy_token("test"),
@@ -99,6 +133,82 @@ def test_build_proxy_config_custom_allowed_hosts(tmp_path):
     # Custom allowed_hosts wins as the base; mapping's hosts get appended.
     assert "custom-host.test" in domains
     assert "openrouter.ai" in domains  # comes from the mapping
+
+
+def test_custom_static_headers_disable_query_replacement_but_gemini_keeps_it(
+    hermes_home, tmp_path,
+):
+    custom = ip.discover_provider_mappings(
+        available_env_names=["SERVICE_SECRET"],
+        extra_specs=ip.parse_extra_secret_specs([{
+            "env_var": "SERVICE_SECRET",
+            "hosts": ["api.example.com"],
+            "match_headers": ["x-service-secret"],
+        }]),
+    )[0]
+    gemini = ip.discover_provider_mappings(available_env_names=["GEMINI_API_KEY"])[0]
+    ip.write_mappings([custom, gemini])
+    cfg = ip.build_proxy_config(
+        mappings=ip.load_mappings(),
+        ca_cert=tmp_path / "ca.crt",
+        ca_key=tmp_path / "ca.key",
+    )
+    rules = cfg["transforms"][1]["config"]["secrets"]
+
+    assert {rule["source"]["var"]: rule["replace"]["match_query"] for rule in rules} == {
+        "SERVICE_SECRET": False,
+        "GEMINI_API_KEY": True,
+    }
+
+
+def test_merge_mappings_rotates_token_when_custom_authority_changes():
+    existing = ip.TokenMapping(
+        "old-token", "SERVICE_SECRET", ("api.example.com",),
+        ("x-service-secret",), (), False,
+    )
+    expanded = ip.TokenMapping(
+        "new-token", "SERVICE_SECRET", ("api.example.com", "upload.example.com"),
+        ("x-service-secret",), (), False,
+    )
+
+    merged = ip.merge_mappings(existing=[existing], discovered=[expanded])
+
+    assert merged[0].proxy_token == "new-token"
+    assert merged[0].upstream_hosts == ("api.example.com", "upload.example.com")
+
+
+def test_merge_mappings_preserves_token_for_normalized_unchanged_authority():
+    existing = ip.TokenMapping(
+        "old-token", "SERVICE_SECRET", ("upload.example.com", "api.example.com"),
+        ("X-Service-Secret", "Authorization"), (), False,
+    )
+    unchanged = ip.TokenMapping(
+        "new-token", "SERVICE_SECRET", ("api.example.com", "upload.example.com"),
+        ("authorization", "x-service-secret"), (), False,
+    )
+
+    merged = ip.merge_mappings(existing=[existing], discovered=[unchanged])
+
+    assert merged[0].proxy_token == "old-token"
+
+
+def test_custom_secret_method_and_path_scope_reaches_iron_proxy_rules(hermes_home, tmp_path):
+    """Declared methods/path_prefix survive mappings.json and render as iron-proxy swap rules."""
+    spec = ip.parse_extra_secret_specs([{
+        "env_var": "GITHUB_READ_TOKEN", "hosts": ["api.github.com"],
+        "methods": ["get"], "path_prefix": "/repos/",
+    }])
+    ip.write_mappings(ip.discover_provider_mappings(available_env_names=["GITHUB_READ_TOKEN"], extra_specs=spec))
+    cfg = ip.build_proxy_config(mappings=ip.load_mappings(), ca_cert=tmp_path / "ca.crt", ca_key=tmp_path / "ca.key")
+
+    [rule] = cfg["transforms"][1]["config"]["secrets"]
+    assert rule["rules"] == [{"host": "api.github.com", "methods": ["GET"], "paths": ["/repos", "/repos/*"]}]
+
+
+@pytest.mark.parametrize("path_prefix", ["repos", "/repos/*", "/repos/%2e%2e", "/repos/../admin", "/repos?x=1"])
+def test_custom_secret_path_prefix_refuses_non_literal_scope(path_prefix):
+    with pytest.raises(ValueError, match=r"path_prefix must be"):
+        ip.parse_extra_secret_specs([{"env_var": "GITHUB_READ_TOKEN", "hosts": ["api.github.com"], "path_prefix": path_prefix}])
 
 
 # ---------------------------------------------------------------------------

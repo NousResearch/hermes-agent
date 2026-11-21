@@ -244,6 +244,7 @@ of every suite that reads it.
 | Docs Site | `docs-site-checks.yml` | `site` | no site change |
 | Repository guards | `repo-guards.yml` (one job) | **always** | never |
 | ↳ No committed infographics / profile archives / case collisions / large blobs / lazy_deps imports / stale icons (steps) | | always | never |
+| ↳ Regex patterns build on RE2 (step) | | `python` | no Python change |
 | ↳ Deny unrelated histories (step) | | `pull_request` only | push, dispatch, release |
 | ↳ Check contributors (step) | | `python` or `catalog` | neither |
 | ↳ Check uv.lock (step) | | `uv_lock` | neither lockfile nor pyproject changed |

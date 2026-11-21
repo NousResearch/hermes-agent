@@ -10,13 +10,21 @@ next tool-call turn fails with HTTP 400::
     The content[].thinking in the thinking mode must be passed back to the
     API.
 
-DeepSeek's compatibility matrix lists ``thinking`` as supported but
-``redacted_thinking`` and ``cache_control`` on thinking blocks as not
-supported.  Handling is the same as Kimi's ``/coding`` endpoint: strip
-Anthropic-signed blocks (DeepSeek can't validate them) but preserve unsigned
-blocks that Hermes synthesises from ``reasoning_content``.
+DeepSeek signs its OWN thinking blocks — the signature is a UUID, not an
+Anthropic-proprietary one — and still requires them replayed.  Measured live
+against ``api.deepseek.com/anthropic`` with the same assistant-turn-with-
+tool_use shape Hermes sends: thinking block present (signed, unsigned, or with
+empty ``thinking`` text) -> 200; block absent -> the 400 above.  Removing the
+block because it carried a truthy ``signature`` (the #17510 policy) was
+therefore the bug: it turned every multi-step tool loop into a 400 and a
+silent provider fallback.
 
-See hermes-agent#16748.
+``redacted_thinking`` is the one shape DeepSeek cannot parse (422 "unknown
+variant ``redacted_thinking``"), so that variant is still dropped.  Relays
+fronting a DeepSeek id keep the old strip-signed / keep-unsigned policy —
+they cannot verify Anthropic signatures.
+
+See hermes-agent#47685, #17992, #16748.
 """
 
 from __future__ import annotations
@@ -28,12 +36,11 @@ class TestDeepSeekAnthropicPreservesThinking:
     """convert_messages_to_anthropic must replay DeepSeek thinking blocks."""
 
 
+    def test_presigned_deepseek_thinking_block_is_replayed(self) -> None:
+        """DeepSeek's own signed blocks must round-trip.
 
-    def test_signed_anthropic_thinking_block_is_stripped(self) -> None:
-        """Anthropic-signed blocks (that leaked through) must still be stripped.
-
-        DeepSeek issues its own signatures and cannot validate Anthropic's —
-        the strip-signed / keep-unsigned split matches the Kimi policy.
+        DeepSeek puts a UUID in ``signature``; the server accepts and requires
+        those blocks back (measured: 200 with the block, 400 without it).
         """
         from agent.anthropic_message_convert import convert_messages_to_anthropic
 
@@ -44,8 +51,8 @@ class TestDeepSeekAnthropicPreservesThinking:
                 "content": [
                     {
                         "type": "thinking",
-                        "thinking": "anthropic-signed payload",
-                        "signature": "anthropic-sig-xyz",
+                        "thinking": "deepseek-signed payload",
+                        "signature": "0188d6a3-ad7b-43df-954b-6c4c60f7699b",
                     },
                     {"type": "text", "text": "hello"},
                 ],
@@ -61,10 +68,54 @@ class TestDeepSeekAnthropicPreservesThinking:
             b for b in assistant_msg["content"]
             if isinstance(b, dict) and b.get("type") == "thinking"
         ]
-        assert thinking_blocks == [], (
-            "Signed Anthropic thinking blocks must be stripped on DeepSeek — "
-            "DeepSeek cannot validate Anthropic-proprietary signatures."
+        assert len(thinking_blocks) == 1, (
+            "DeepSeek's own signed thinking blocks must be replayed — dropping "
+            "them makes the next tool-loop call 400 "
+            "'content[].thinking ... must be passed back to the API'."
         )
+        assert thinking_blocks[0]["thinking"] == "deepseek-signed payload"
+
+    def test_redacted_thinking_is_dropped_for_deepseek(self) -> None:
+        """redacted_thinking is the one variant DeepSeek rejects (422)."""
+        from agent.anthropic_message_convert import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "redacted_thinking", "data": "Emx0ZXN0"},
+                    {"type": "thinking", "thinking": "kept", "signature": "uuid-1"},
+                    {"type": "text", "text": "hello"},
+                ],
+            },
+            {"role": "user", "content": "again"},
+        ]
+        _system, converted = convert_messages_to_anthropic(
+            messages, base_url="https://api.deepseek.com/anthropic"
+        )
+        assistant_msg = next(m for m in converted if m["role"] == "assistant")
+        types = [b.get("type") for b in assistant_msg["content"] if isinstance(b, dict)]
+        assert "redacted_thinking" not in types
+        assert "thinking" in types
+
+    def test_relay_with_deepseek_model_keeps_strip_signed_policy(self) -> None:
+        """A relay cannot verify Anthropic signatures: unchanged #17510 policy."""
+        from agent.anthropic_message_convert import _manage_thinking_signatures
+
+        messages = [{
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "unsigned"},
+                {"type": "thinking", "thinking": "foreign signed", "signature": "sig"},
+                {"type": "redacted_thinking", "data": "blob"},
+                {"type": "text", "text": "answer"},
+            ],
+        }]
+        _manage_thinking_signatures(messages, "https://proxy.example/anthropic", "vendor/deepseek-v4")
+        types = [b.get("type") for b in messages[0]["content"]]
+        assert types.count("thinking") == 1
+        assert messages[0]["content"][0]["thinking"] == "unsigned"
 
     def test_cache_control_stripped_from_thinking_block(self) -> None:
         """cache_control must still be stripped even when the block is preserved.
@@ -90,10 +141,6 @@ class TestDeepSeekAnthropicPreservesThinking:
             },
             {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
         ]
-        # Inject cache_control on the synthesised thinking block after-the-fact
-        # by running conversion once, mutating, then re-running would be
-        # indirect.  Instead check the simpler invariant: no thinking block in
-        # the converted output carries cache_control.
         _system, converted = convert_messages_to_anthropic(
             messages, base_url="https://api.deepseek.com/anthropic"
         )

@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 from agent.display import KawaiiSpinner
 from tools.delegate_tool import _build_child_progress_callback
+from tools.delegate_tool_progress import CHILD_TOOL_COMPLETED
 
 
 # =========================================================================
@@ -209,6 +210,75 @@ class TestBatchFlush:
         cb = _build_child_progress_callback(0, "test goal", parent)
         cb("tool.started", "web_search", "test", {})
         cb._flush()  # Should not crash
+
+
+# =========================================================================
+# Child tool completion relay
+# =========================================================================
+
+class TestChildToolCompletion:
+    """A child's tool.completed reaches the parent as its outcome only."""
+
+    @staticmethod
+    def _relay():
+        parent = MagicMock()
+        parent._delegate_spinner = None
+        parent_cb = MagicMock()
+        parent.tool_progress_callback = parent_cb
+        return _build_child_progress_callback(0, "test goal", parent, subagent_id="sa-1", depth=1), parent_cb
+
+    def test_completion_relays_outcome_without_the_result(self):
+        cb, parent_cb = self._relay()
+        cb("tool.started", "terminal", "ls", {"command": "ls"})
+        cb("tool.completed", "terminal", None, None, duration=1.5, is_error=True, result="result-marker")
+
+        started, completed = parent_cb.call_args_list
+        assert completed.args[0] == CHILD_TOOL_COMPLETED
+        assert completed.args[1] == "terminal"
+        assert completed.kwargs["duration"] == 1.5 and completed.kwargs["is_error"] is True
+        assert completed.kwargs["subagent_id"] == "sa-1" and completed.kwargs["depth"] == 1
+        assert completed.kwargs["tool_index"] == started.kwargs["tool_index"] == 1
+        assert "result-marker" not in repr(completed)
+
+    def test_completions_pair_with_starts_of_the_same_tool_in_order(self):
+        cb, parent_cb = self._relay()
+        cb("tool.started", "terminal", "a", {})
+        cb("tool.started", "read_file", "b", {})
+        cb("tool.started", "terminal", "c", {})
+        cb("tool.completed", "terminal", None, None, duration=0.1, is_error=False)
+        cb("tool.completed", "terminal", None, None, duration=0.1, is_error=False)
+
+        done = [c.kwargs["tool_index"] for c in parent_cb.call_args_list if c.args[0] == CHILD_TOOL_COMPLETED]
+        assert done == [1, 3]
+
+    def test_completions_pair_by_call_id_when_they_finish_out_of_order(self):
+        cb, parent_cb = self._relay()
+        cb("tool.started", "terminal", "a", {}, tool_call_id="call-a")
+        cb("tool.started", "terminal", "b", {}, tool_call_id="call-b")
+        cb("tool.completed", "terminal", None, None, duration=0.1, is_error=False, tool_call_id="call-b")
+        cb("tool.completed", "terminal", None, None, duration=0.1, is_error=True, tool_call_id="call-a")
+
+        done = [(c.kwargs["tool_call_id"], c.kwargs["tool_index"])
+                for c in parent_cb.call_args_list if c.args[0] == CHILD_TOOL_COMPLETED]
+        assert done == [("call-b", 2), ("call-a", 1)]
+
+    def test_tool_call_id_is_relayed_when_the_producer_supplies_one(self):
+        cb, parent_cb = self._relay()
+        cb("tool.started", "terminal", "ls", {}, tool_call_id="call-1")
+        cb("tool.started", "terminal", "ls")
+        cb("tool.completed", "terminal", None, None, duration=0.1, is_error=False, tool_call_id="call-1")
+
+        started_a, started_b, completed = parent_cb.call_args_list
+        assert started_a.kwargs["tool_call_id"] == completed.kwargs["tool_call_id"] == "call-1"
+        assert "tool_call_id" not in started_b.kwargs
+
+    def test_completion_without_parent_callback_does_not_crash(self):
+        parent = MagicMock()
+        parent._delegate_spinner = KawaiiSpinner("test")
+        parent.tool_progress_callback = None
+        cb = _build_child_progress_callback(0, "test goal", parent)
+        cb("tool.started", "terminal", "ls", {})
+        cb("tool.completed", "terminal", None, None, duration=0.1, is_error=False)
 
 
 if __name__ == "__main__":

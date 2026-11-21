@@ -7,6 +7,7 @@ import enum
 import os
 import posixpath
 import threading
+from collections import deque
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
@@ -114,6 +115,11 @@ _LEGACY_EVENT_MAP: dict[str, DelegateEvent] = {
     "subagent_progress": DelegateEvent.TASK_PROGRESS,
 }
 
+# Relayed to the parent when a child's tool finishes. Deliberately outside the ``subagent.`` namespace (TUI and
+# viewer consumers key on that prefix) and not a DelegateEvent value (a nested relay would mistake a grandchild's
+# completion for its own). Carries the outcome only, never the child's result.
+CHILD_TOOL_COMPLETED = "delegate.child_tool_completed"
+
 # Event → _ChildProgressRelay method name. Lifecycle strings are emitted by the orchestrator itself (not
 # DelegateEvent). Any other DelegateEvent (TASK_TOOL_STARTED) takes the tool-started
 # path; None means "recognised but ignored".
@@ -125,7 +131,7 @@ _EVENT_HANDLERS: dict[Any, Optional[str]] = {
     "subagent.text": "_on_text",
     DelegateEvent.TASK_THINKING: "_on_thinking",
     DelegateEvent.TASK_PROGRESS: "_on_progress",
-    DelegateEvent.TASK_TOOL_COMPLETED: None,
+    DelegateEvent.TASK_TOOL_COMPLETED: "_on_tool_completed",
 }
 
 def _normalize_event(event_type: Any) -> Any:
@@ -339,6 +345,11 @@ class _ChildProgressRelay:
         self.batch: list[str] = []
         self.parent_scope: Any = None  # owning parent agent; set by _build_child_progress_callback
         self.tool_count = 0  # per-subagent running counter
+        # Tool starts awaiting their completion as (tool_index, tool_call_id), per tool name in start order (the
+        # pairing the ACP adapter uses), so a completion carries the ``tool_index`` of the start it closes: the one
+        # with its ``tool_call_id`` when it has one, else the oldest. Child tools run on worker threads.
+        self._open_tools: dict[str, deque[tuple[int, Any]]] = {}
+        self._tool_lock = threading.Lock()
 
     def _prefix(self) -> str:
         # The batch tag is resolved lazily from session_ref: the relay is built
@@ -430,7 +441,10 @@ class _ChildProgressRelay:
                 self.parent_cb("subagent_progress", f"{self._prefix()}{summary_text}")
 
     def _on_tool_started(self, tool_name, preview, args, kwargs):
-        self.tool_count += 1
+        with self._tool_lock:
+            self.tool_count += 1
+            tool_index = self.tool_count
+            self._open_tools.setdefault(tool_name or "", deque()).append((tool_index, kwargs.get("tool_call_id")))
         if self.subagent_id is not None:
             with _active_subagents_lock:
                 rec = _active_subagents.get(self.subagent_id)
@@ -443,10 +457,28 @@ class _ChildProgressRelay:
             short = _short(preview, 35) if preview else ""
             self._tree_line(f'{line}  "{short}"' if short else line)
         if self.parent_cb:
-            self._relay("subagent.tool", tool_name, preview, args)
+            ids = {"tool_call_id": kwargs["tool_call_id"]} if kwargs.get("tool_call_id") else {}
+            self._relay("subagent.tool", tool_name, preview, args, tool_index=tool_index, **ids)
             self.batch.append(tool_name or "")
             if len(self.batch) >= self._BATCH_SIZE:
                 self._flush()
+
+    def _on_tool_completed(self, tool_name, preview, args, kwargs):
+        with self._tool_lock:
+            open_starts = self._open_tools.get(tool_name or "")
+            tool_index = None
+            if open_starts:
+                call_id = kwargs.get("tool_call_id")
+                match = next((entry for entry in open_starts if call_id and entry[1] == call_id), open_starts[0])
+                open_starts.remove(match)
+                tool_index = match[0]
+        if not self.parent_cb:
+            return
+        # Outcome only: ``result`` is tool output and stays in the child.
+        outcome = {key: kwargs[key] for key in ("tool_call_id", "duration", "is_error") if kwargs.get(key) is not None}
+        if tool_index is not None:
+            outcome["tool_index"] = tool_index
+        self._relay(CHILD_TOOL_COMPLETED, tool_name, None, None, **outcome)
 
     def __call__(self, event_type, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs):
         key = _normalize_event(event_type)

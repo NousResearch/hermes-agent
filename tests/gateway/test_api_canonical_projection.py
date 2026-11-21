@@ -404,3 +404,41 @@ async def test_canonical_sse_projects_the_turn_reasoning(api, owner, path, body,
         text = await response.text()
     assert response.status == 200, text
     assert marker in text and 'THINKING' in text, text
+
+
+async def _run_events_with_child_tool(api, owner, session_id):
+    """Run an admitted /v1/runs turn whose agent reports a child's lifecycle and one child tool step."""
+    admitted = admit_api_turn(api, session_id=session_id, user_message='hello', conversation_history=[])
+    _, ref, _row = admitted
+    launch, queue = _launch(api, admitted)
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        progress = _wired_agent(_turn_runner(owner, ref)).tool_progress_callback
+        child = {'subagent_id': 'sa-1', 'task_index': 0, 'depth': 1}
+        progress('subagent.start', None, 'a goal', None, **child)
+        progress('subagent.tool', 'terminal', 'ls', {'command': 'ls'}, tool_index=1, **child)
+        progress('subagent.text', None, 'streamed token', None, **child)
+        progress('delegate.child_tool_completed', 'terminal', None, None, tool_index=1, duration=0.5, is_error=False, **child)
+        progress('subagent.complete', None, 'done', None, status='completed', **child)
+        execution_result.get()['result'] = {'final_response': 'ok'}
+        return 'ok'
+    owner.runner._handle_message = handle
+    await _execute_run(api, launch, _api_server=_api_server)
+    await asyncio.sleep(0)  # call_soon_threadsafe projections land on the loop
+    return [e['event'] for e in _events(queue)]
+
+
+@pytest.mark.asyncio
+async def test_child_lifecycle_and_tool_steps_reach_the_run_sse_when_enabled(api, owner):
+    api._subagent_tool_events = True
+    names = await _run_events_with_child_tool(api, owner, 'child-tools')
+    assert names == ['subagent.start', 'subagent.tool.started', 'subagent.tool.completed',
+                     'subagent.complete', 'run.completed']
+
+
+@pytest.mark.asyncio
+async def test_child_events_stay_off_the_run_sse_by_default(api, owner):
+    assert api._subagent_tool_events is False
+    names = await _run_events_with_child_tool(api, owner, 'child-quiet')
+    assert not [name for name in names if name.startswith('subagent.')]

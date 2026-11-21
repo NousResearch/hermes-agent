@@ -20,7 +20,7 @@ api_execution: ContextVar[dict | None] = ContextVar('api_execution', default=Non
 _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
 # Request-owned sinks an API observer may register for its admission's execution.
 _OBSERVER_KEYS = ('stream_delta_callback', 'tool_start_callback', 'tool_complete_callback',
-                  'reasoning_callback', 'status_callback', 'interim_assistant_callback')
+                  'reasoning_callback', 'status_callback', 'interim_assistant_callback', 'subagent_callback')
 _TOOL_SINKS = {'tool_start_callback', 'tool_complete_callback'}
 _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provider',
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
@@ -479,10 +479,14 @@ def wire_api_observers(agent, owner, want_interim):
         if interim is not None:
             interim(text, already_streamed=already_streamed)
     progress = agent.tool_progress_callback
+    from tools.delegate_tool_progress import CHILD_TOOL_COMPLETED
+    subagent_events = frozenset(('subagent.start', 'subagent.complete', 'subagent.tool', CHILD_TOOL_COMPLETED))
 
     def tool_progress_callback(event_type, *args, **kwargs):
         if event_type in ('tool.started', 'tool.completed'):
             publish_api_tool_progress(authority, session_id, generation, event_type, *args, **kwargs)
+        elif event_type in subagent_events:
+            publish('subagent_callback', event_type, *args, **kwargs)
         if progress is not None:
             return progress(event_type, *args, **kwargs)
     agent.reasoning_callback = lambda text: publish('reasoning_callback', text)

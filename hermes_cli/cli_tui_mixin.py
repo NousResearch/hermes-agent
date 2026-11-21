@@ -364,6 +364,7 @@ class CLITuiMixin:
         clarify_widget,
         model_picker_widget=None,
         command_palette_widget=None,
+        temp_chat_widget=None,
         spinner_widget=None,
         spacer,
         status_bar,
@@ -385,6 +386,7 @@ class CLITuiMixin:
             clarify_widget,
             model_picker_widget,
             command_palette_widget,
+            temp_chat_widget,
             spinner_widget,
             spacer,
             *self._get_extra_tui_widgets(),
@@ -1076,8 +1078,12 @@ class CLITuiMixin:
             pass
 
     def _tui_handle_escape_modal(self, event):
-        """ESC cancels active secret/sudo/connection/slash-confirm prompts."""
-        if self._connection_state:
+        """ESC cancels active secret/sudo/connection/slash-confirm/temp-chat prompts."""
+        if self._temp_chat_state is not None:
+            self._close_temp_chat()
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+        elif self._connection_state:
             self._connection_cancel()
             event.app.current_buffer.reset()
             event.app.invalidate()
@@ -1466,6 +1472,10 @@ class CLITuiMixin:
               or self._should_handle_background_command_inline(text, has_images=has_images)
               or self._should_handle_stop_command_inline(text, has_images=has_images)):
             self.process_command(text)
+        elif self._should_handle_temp_chat_command_inline(text, has_images=has_images):
+            # The popup is UI-thread state and never touches the foreground turn, so open it
+            # directly instead of queueing — mid-run /tmp must not wait for the turn to finish.
+            self._open_temp_chat()
         else:
             return False
         event.app.current_buffer.reset(append_to_history=True)
@@ -1540,6 +1550,9 @@ class CLITuiMixin:
         """Enter while a modal overlay is up: submit it. True when handled."""
         from cli import _cprint
         buf = event.app.current_buffer
+        if self._temp_chat_state is not None:
+            self._tui_temp_chat_submit(event)
+            return True
         if self._connection_state:
             state = self._connection_state
             fields = state.get("fields") or []
@@ -1910,7 +1923,7 @@ class CLITuiMixin:
         _normal_input = Condition(
             lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state
             and not self._sudo_state and not self._secret_state and not self._connection_state
-            and not self._model_picker_state and not self._command_palette_state)
+            and not self._model_picker_state and not self._command_palette_state and not self._temp_chat_state)
         kb.add('up', filter=_normal_input)(self._tui_history_up)
         kb.add('down', filter=_normal_input)(self._tui_history_down)
         kb.add('c-l')(self._tui_handle_ctrl_l)
@@ -1921,7 +1934,7 @@ class CLITuiMixin:
         kb.add('c-d')(self._tui_handle_ctrl_d)
         _modal_prompt_active = Condition(
             lambda: bool(self._secret_state or self._sudo_state or self._slash_confirm_state
-                         or self._connection_state))
+                         or self._connection_state or self._temp_chat_state))
         kb.add('escape', filter=_modal_prompt_active, eager=True)(self._tui_handle_escape_modal)
         kb.add('escape', 'escape', filter=~_modal_prompt_active)(self._tui_handle_double_escape)
         kb.add('c-z')(self._tui_handle_ctrl_z)
@@ -2120,6 +2133,8 @@ class CLITuiMixin:
             self._get_model_picker_display_fragments, "_model_picker_state")
         command_palette_widget = self._tui_overlay_widget(
             self._get_command_palette_display_fragments, "_command_palette_state")
+        temp_chat_widget = self._tui_overlay_widget(
+            self._get_temp_chat_display_fragments, "_temp_chat_state")
         # Rules above/below the input; narrow terminals hide the bottom one to recover a row.
         input_rule_top = Window(
             char='─', height=lambda: cli_ref._tui_input_rule_height("top"), style='class:input-rule',
@@ -2163,6 +2178,7 @@ class CLITuiMixin:
             clarify_widget=clarify_widget,
             model_picker_widget=model_picker_widget,
             command_palette_widget=command_palette_widget,
+            temp_chat_widget=temp_chat_widget,
             spinner_widget=spinner_widget,
             spacer=spacer,
             status_bar=status_bar,
@@ -2291,6 +2307,10 @@ class CLITuiMixin:
             'sudo-border': '#CD7F32',
             'sudo-title': '#FF6B6B bold',
             'sudo-text': '#FFF8DC',
+            'temp-chat-you': '#87CEEB bold',
+            'temp-chat-reply': '#98FB98',
+            'temp-chat-pending': '#FFA500 italic',
+            'temp-chat-hint': '#888888 italic',
             'approval-border': '#CD7F32',
             'approval-title': '#FF8C00 bold',
             'approval-desc': '#FFF8DC bold',

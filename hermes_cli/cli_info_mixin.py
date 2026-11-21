@@ -519,6 +519,13 @@ class CLIInfoMixin:
         ``busy_policy="interrupt_then_dispatch"``, and queued it would only run after the turn it stops."""
         return self._busy_inline_command(text, has_images, ("stop",))
 
+    def _should_handle_temp_chat_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when /tmp should open its popup while the agent is running.
+
+        The ephemeral popup never touches the foreground turn, so it can open mid-run; it is
+        dispatched inline on the UI thread like /bg rather than queued through _pending_input."""
+        return self._busy_inline_command(text, has_images, ("tmp",))
+
     def handle_bang_shell(self, text: str) -> bool:
         """Run a ``!<command>`` submission. Returns True when it was handled.
 

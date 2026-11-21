@@ -953,6 +953,8 @@ Check if nginx is running. If everything is healthy, respond with only [SILENT].
 Otherwise, report the issue.
 ```
 
+A whole reply that is a damaged marker also stays silent: one dropped, extra, swapped or wrong letter (`[SLENT]`, `[SLIENT]`), a missing closing bracket, padding or invisible characters inside the brackets, code formatting (`` `[SILENT]` ``), or a reply cut off mid-marker (`[`, `[SIL`). A reply with any other words in it (`[SLENT] extra words`) or a different bracketed word (`[URGENT]`, `[SILVER]`) is delivered.
+
 Failed jobs always deliver regardless of the `[SILENT]` marker — only successful runs can be silenced. For quiet monitoring jobs, prompt the agent to reply with only `[SILENT]` when there is nothing to report.
 
 ### Declaring a failed run

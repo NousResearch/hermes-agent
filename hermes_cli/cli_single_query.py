@@ -129,17 +129,16 @@ def _sync_cli_session_id_from_agent(cli) -> None:
         cli.session_id = cli.agent.session_id
 
 
-# ``failure_reason`` values that say nothing about the task itself: the provider is walled,
-# down or unreachable, or the account is out of credit, so a Kanban worker signals "try
-# later" instead of "I failed" and the dispatcher does not spend the task's retry budget on it.
+# Transient provider failures and ambiguous billing reports requeue a Kanban worker
+# without spending the task's retry budget; explicitly verified billing parks it.
 from hermes_cli.turn_exit import TRANSIENT_PROVIDER_REASONS as _TRANSIENT_PROVIDER_REASONS
 
 
 # ``failure_reason`` values a retry can never heal: the credential was rejected, the model does
 # not exist for this account, or the TLS chain is broken. A Kanban worker exits
 # ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE`` so the dispatcher parks the card after ONE spawn with
-# the provider's words as the reason, instead of re-spawning into the same wall until
-# ``kanban.failure_limit`` is spent. ``billing`` stays transient: credit comes back.
+# a provider diagnostic, instead of re-spawning into the same wall until
+# ``kanban.failure_limit`` is spent. The shared policy separately parks verified billing.
 # ``upstream_blocked`` (a WAF/CDN refusing the SDK's User-Agent) is terminal too: only a
 # header change heals it, never a retry.
 from hermes_cli.turn_exit import TERMINAL_PROVIDER_REASONS as _TERMINAL_PROVIDER_REASONS
@@ -152,9 +151,10 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
     0 only when the turn completed; 130 when it was interrupted; 1 when it failed, stopped
     partway (`partial`, `completed: False`) or never ran at all (credentials / agent init
     failed, so ``result`` is not a dict). A Kanban worker (``HERMES_KANBAN_TASK`` set) that
-    failed purely on a provider rate-limit / billing wall exits ``KANBAN_RATE_LIMIT_EXIT_CODE``
-    (EX_TEMPFAIL): the dispatcher books that run ``rate_limited`` and requeues the task
-    WITHOUT counting a failure, so a quota window or a provider outage cannot trip the breaker.
+    failed on a rate limit, outage, or ambiguous billing report exits ``KANBAN_RATE_LIMIT_EXIT_CODE``
+    (EX_TEMPFAIL): the dispatcher requeues without counting a failure. A final billing failure
+    explicitly marked ``billing_unverified: False`` exits ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``
+    and parks the card.
     The same sentinel applies when credential resolution itself is a quota/rate-limit
     AuthError (no turn result object is produced). One that failed on a terminal provider
     error (credential revoked, model gone) exits ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``

@@ -3,7 +3,8 @@
 Worker identity is supplied by the caller, not inferred from a daemon's environment.
 """
 
-# Provider walls do not spend a Kanban task's retry budget.
+# Provider walls do not spend a Kanban task's retry budget. Billing stays retryable
+# unless the final result explicitly verifies it below.
 TRANSIENT_PROVIDER_REASONS = frozenset({
     "rate_limit", "upstream_rate_limit", "billing", "overloaded", "server_error", "timeout",
 })
@@ -33,6 +34,9 @@ def turn_exit_code(
         return 0
     if kanban_worker:
         reason = result.get("failure_reason")
+        if reason == "billing" and result.get("billing_unverified") is False:
+            from hermes_cli.kanban_db import KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+            return KANBAN_TERMINAL_PROVIDER_EXIT_CODE
         if reason in transient_reasons:
             from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
             return KANBAN_RATE_LIMIT_EXIT_CODE

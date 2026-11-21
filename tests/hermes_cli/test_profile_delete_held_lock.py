@@ -184,6 +184,35 @@ def test_partial_delete_preserves_markerless_files_for_rename(profile, monkeypat
     assert profiles.create_profile('owned-delete', no_alias=True, no_skills=True).is_dir()
 
 
+@pytest.mark.parametrize("attempt", ["first_delete", "retry"])
+def test_an_interrupted_delete_keeps_its_leftovers_from_create(profile, monkeypatch, attempt):
+    """Ctrl-C (or a kill) inside rmtree, after the identity files are gone, skips every ``except
+    Exception``: the tombstone written before rmtree must already say the delete did not finish."""
+    def interrupted(path, _onexc):
+        for filename in ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db"):
+            (path / filename).unlink(missing_ok=True)
+        raise KeyboardInterrupt
+
+    (profile / "preserved-note.txt").write_text("keep me")
+    if attempt == "retry":
+        def failed(path, _onexc):
+            (path / "config.yaml").unlink(missing_ok=True)
+            raise OSError(errno.EBUSY, "file is in use", str(path / "preserved-note.txt"))
+        with monkeypatch.context() as fail:
+            fail.setattr(profiles, "_rmtree_with_retry", failed)
+            with pytest.raises(RuntimeError, match="did not finish"):
+                profiles.delete_profile("owned-delete", yes=True)
+    with monkeypatch.context() as stop:
+        stop.setattr(profiles, "_rmtree_with_retry", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            profiles.delete_profile("owned-delete", yes=True)
+    from hermes_constants import named_profile_delete_incomplete
+    assert named_profile_delete_incomplete(profile)
+    with pytest.raises(FileExistsError, match="did not finish"):
+        profiles.create_profile("owned-delete", no_alias=True, no_skills=True)
+    assert (profile / "preserved-note.txt").read_text() == "keep me"
+
+
 def test_a_retried_partial_delete_leaves_a_replaceable_post_delete_shell(profile, monkeypatch):
     """The retry that finishes a partial delete records a plain delete again, so a shell a stale
     writer re-creates afterwards is replaced by ``create`` instead of refused as unfinished."""

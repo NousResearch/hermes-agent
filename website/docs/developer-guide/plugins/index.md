@@ -2468,7 +2468,7 @@ def register(ctx):
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `action_id` | `str \| re.Pattern \| dict` | Whatever `slack_bolt.App.action()` accepts: a literal `action_id`, a compiled regex matching multiple ids, or a constraint dict like `{"action_id": "...", "block_id": "..."}` |
+| `action_id` | `str \| re.Pattern \| dict` | Whatever `slack_bolt.App.action()` accepts: a literal `action_id`, a compiled regex matching multiple ids, or a constraint dict like `{"action_id": "...", "block_id": "..."}`. A compiled regex must come from the standard library's `re.compile()`: slack_bolt checks for a stdlib `re.Pattern`, so a pattern compiled with `hermes_re` is not matched as a regex. |
 | `callback` | async callable | Receives `(ack, body, action)` per the slack_bolt convention |
 
 **Runtime behavior:**

@@ -78,10 +78,29 @@ _CHAT_KIND = 9  # ``messages get`` also returns housekeeping kinds, never dispat
 # the Buzz forum kinds — 45001 is a forum post (thread root) and 45003 a comment reply on it. Block's own
 # ACP harness documents this set (``buzz-acp --kinds 9,46010,40007,45001, 45002,45003``); the stream kinds
 # (46010/40007/45002) are left out until their dispatch semantics are confirmed.
-_DISPATCH_KINDS = frozenset({_CHAT_KIND, 45001, 45003})
+_REACTION_KIND = 7  # NIP-25: a one-tap answer, not a chat message
+_DISPATCH_KINDS = frozenset({_CHAT_KIND, 45001, 45003, _REACTION_KIND})
 _UNRESOLVED_MENTION_ERROR_RE = re.compile(r"mention '@(?P<name>[^']+)' does not match a current channel member")
 _BUZZ_PRESENTATION_MENTION_SEPARATOR = "\u200b"
 _HEX64_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _reaction_target(event: dict) -> Optional[str]:
+    """The event a NIP-25 reaction points at: the last ``e`` tag, which is the most specific one."""
+    target = None
+    for tag in event.get("tags") or []:
+        if isinstance(tag, list) and len(tag) >= 2 and tag[0] == "e" and isinstance(tag[1], str):
+            target = tag[1]
+    return target
+
+
+def _reaction_text(emoji: str, quoted: str) -> str:
+    """What the agent sees for a reaction. NIP-25 uses ``+`` for a plain like."""
+    mark = "👍" if emoji == "+" else emoji
+    quote = f' to "{quoted[:120]}"' if quoted.strip() else ""
+    return f"[reaction {mark}{quote}]"
+
+
 
 
 def _escape_unresolved_presentation_mention(content: str, error: str) -> Optional[str]:
@@ -1449,7 +1468,8 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
             return
         state["seen"][event_id] = None
         state["last_ts"] = max(state["last_ts"], created_at)
-        if int(event.get("kind") or 0) not in _DISPATCH_KINDS:
+        kind = int(event.get("kind") or 0)
+        if kind not in _DISPATCH_KINDS:
             return
         pubkey = str(event.get("pubkey") or "").lower()
         content = event.get("content")
@@ -1460,6 +1480,12 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         self._remember_event(state, event)
         # See #75826.
         if pubkey == self._self_pubkey:
+            return
+        # A reaction carries no text and no mention, so the channel gate below would drop it — and the
+        # gate is exactly where a one-tap approval has to arrive. It is dispatched only when it answers
+        # a message this agent wrote, so human-to-human reactions never wake it.
+        if kind == _REACTION_KIND:
+            await self._handle_reaction(channel_id, state, event)
             return
         # Reclassify a leaked DM before gating so its first un-mentioned message both latches and dispatches.
         self._maybe_latch_dm(channel_id, state, event)
@@ -1715,6 +1741,45 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         if not cleaned_text:
             cleaned_text = "(attachment)" if media_urls else "(Buzz media attachment unavailable)"
         return cleaned_text, media_urls, media_types, message_type
+
+    async def _handle_reaction(self, channel_id: str, state: dict, event: dict) -> None:
+        """Dispatch a NIP-25 reaction as an inbound answer to one of this agent's own messages.
+
+        Two reasons for the strict scope: a reaction to someone else's message is social noise the
+        agent has no business acting on, and a reaction to a message we never saw cannot be reasoned
+        about (there is nothing to quote back). The quoted text travels with it so the agent knows
+        *what* was approved without having to reconstruct the thread.
+        """
+        target = _reaction_target(event)
+        emoji = str(event.get("content") or "").strip()
+        if not target or not emoji:
+            return
+        meta = self._lookup_event_meta(state, target)
+        if meta is None or meta[0].lower() != self._self_pubkey:
+            return
+        pubkey = str(event.get("pubkey") or "").lower()
+        if self._allowed_pubkeys and pubkey not in self._allowed_pubkeys:
+            return
+        quoted = (meta[1] or "").strip()
+        thread_id = self._thread_roots.get(target) or target
+        await self._dispatch_message(
+            text=_reaction_text(emoji, quoted),
+            chat_id=channel_id,
+            chat_type="dm" if state.get("chat_type") == "dm" else "group",
+            user_id=pubkey,
+            user_name=await self._resolve_user_name(pubkey),
+            message_id=str(event.get("id") or ""),
+            created_at=int(event.get("created_at") or 0),
+            thread_id=thread_id,
+            reply_to_message_id=target,
+            reply_to_text=quoted or None,
+            reply_to_author_id=self._self_pubkey,
+            reply_to_is_own_message=True,
+            media_urls=[],
+            media_types=[],
+            message_type=MessageType.TEXT,
+            raw_message=event,
+        )
 
     async def _dispatch_message(
         self, text: str, chat_id: str, chat_type: str, user_id: str, user_name: str,

@@ -29,6 +29,7 @@ from hermes_cli.dashboard_auth.cookies import (
     clear_session_cookies, clear_sso_attempt_cookie, detect_https, read_session_cookies,
     read_session_provider, read_sso_attempt_cookie, set_session_cookies,
     set_session_provider_cookie, set_sso_attempt_cookie)
+from hermes_cli.dashboard_auth.login_page import login_notice_text
 from hermes_cli.dashboard_auth.prefix import prefix_from_request
 from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 from hermes_cli.dashboard_auth.refresh_singleflight import refresh_session_coalesced
@@ -131,9 +132,10 @@ def _auto_sso_response(request: Request) -> Response | None:
     Only for a document load (not ``/api/*``) when exactly one interactive OAuth-style provider is
     registered (a password provider must render the form) and the one-shot loop-guard cookie is
     absent — a present marker means the portal had no session last time: clear it and fall back
-    to ``/login`` rather than ping-pong. Convenience, not a security check.
+    to ``/login`` rather than ping-pong. Convenience, not a security check. Off while an operator
+    sign-in notice is set (``login_notice_text``): ``/login`` shows it before the provider.
     """
-    if request.url.path.startswith("/api/"):
+    if request.url.path.startswith("/api/") or login_notice_text():
         return None
     gateway = webapp_sign_in.cookie_gateway(request)
     if read_sso_attempt_cookie(request, gateway):

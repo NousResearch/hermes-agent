@@ -8,10 +8,16 @@ mount, which the gate allowlists pre-auth.
 
 The ``class="provider-btn"`` anchor is test-stable: the suite extracts its
 href to walk the OAuth flow.
+
+An operator notice (env ``HERMES_DASHBOARD_LOGIN_NOTICE``, plain text; URLs
+become links) is shown under the subtitle of the sign-in and provider-choice
+pages; while it is set the gate never auto-redirects past them.
 """
 from __future__ import annotations
 
 import html
+import os
+import re
 from urllib.parse import quote, urlencode
 
 from hermes_cli.dashboard_auth import list_interactive_providers, list_session_providers
@@ -169,6 +175,14 @@ _LOGIN_HTML_TEMPLATE = """\
     font-size: 0.95rem;
   }}
 
+  .notice {{
+    margin: -0.75rem 0 1.75rem;
+    color: color-mix(in srgb, var(--foreground) 80%, transparent);
+    font-size: 0.85rem;
+    line-height: 1.45;
+  }}
+  .notice a {{ color: var(--midground); }}
+
   .provider-list {{
     display: grid;
     gap: 0.75rem;
@@ -291,7 +305,7 @@ _LOGIN_HTML_TEMPLATE = """\
   <div class="card">
     <h1>Sign in</h1>
     <p class="subtitle">Choose a sign-in method to continue to the Hermes Agent dashboard.</p>
-    <div class="provider-list">
+{login_notice}    <div class="provider-list">
 {provider_buttons}
     </div>
   </div>
@@ -514,6 +528,30 @@ _PASSWORD_FORM_SCRIPT = """\
 """
 
 
+_LOGIN_NOTICE_ENV = "HERMES_DASHBOARD_LOGIN_NOTICE"
+_NOTICE_URL = re.compile(r"https?://[^\s<>\"']+")
+
+
+def login_notice_text() -> str:
+    """The operator's sign-in notice (env ``HERMES_DASHBOARD_LOGIN_NOTICE``), or ``""``."""
+    return os.environ.get(_LOGIN_NOTICE_ENV, "").strip()
+
+
+def _login_notice_html() -> str:
+    """The notice as one escaped paragraph with its http(s) URLs as links, or ``""``."""
+    text = login_notice_text()
+    if not text:
+        return ""
+    parts, last = [], 0
+    for m in _NOTICE_URL.finditer(text):
+        url = m.group(0).rstrip(".,;:)")
+        parts.append(html.escape(text[last:m.start()]))
+        parts.append(f'<a href="{html.escape(url, quote=True)}" rel="noopener noreferrer">{html.escape(url)}</a>')
+        last = m.start() + len(url)
+    parts.append(html.escape(text[last:]))
+    return f'    <p class="notice">{"".join(parts)}</p>\n'
+
+
 def render_login_html(*, next_path: str = "", prefix: str = "") -> str:
     """Return the full HTML for ``GET /login``.
 
@@ -560,6 +598,7 @@ def render_login_html(*, next_path: str = "", prefix: str = "") -> str:
     html_out = _LOGIN_HTML_TEMPLATE.format(
         provider_buttons="\n".join(buttons),
         password_script=_PASSWORD_FORM_SCRIPT if needs_password_script else "",
+        login_notice=_login_notice_html(),
     )
     # Inject the reverse-proxy prefix so the password-login JS can read
     # it from the <main> element's data attribute, and rewrite the font
@@ -611,7 +650,7 @@ def render_native_provider_choice_html(
         return _EMPTY_HTML
     return _apply_proxy_prefix(
         _LOGIN_HTML_TEMPLATE.format(
-            provider_buttons="\n".join(buttons), password_script=""),
+            provider_buttons="\n".join(buttons), password_script="", login_notice=_login_notice_html()),
         prefix)
 
 

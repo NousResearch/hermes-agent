@@ -220,6 +220,10 @@ The adapter monitors the SSE connection and automatically reconnects if:
 - The connection drops (with exponential backoff: 2s → 60s)
 - No activity is detected for 120 seconds (pings signal-cli to verify)
 
+On reconnect the adapter sends `Last-Event-ID`, so a signal-cli daemon that keeps an event buffer (recent releases
+keep the last 1000 events) first replays the messages that arrived while the stream was down. Older daemons ignore
+the header and only new messages are delivered.
+
 ---
 
 ## Troubleshooting

@@ -943,6 +943,105 @@ class TestAdapterBehavior(unittest.TestCase):
         # Reply anchors / slash-command thread checks read source.message_id, not event.message_id.
         self.assertEqual(event.source.message_id, "om_text")
 
+    def test_quoted_bare_mention_is_answered(self):
+        """「引用一条消息 + 只 @我」必须派发：文本剥完为空，但引用本身就是请求。"""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter, _QUOTED_BARE_MENTION_TEXT
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._bot_open_id = "ou_bot"
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter._resolve_sender_name_from_api = AsyncMock(return_value="张三")
+        adapter.get_chat_info = AsyncMock(return_value={"chat_id": "oc_chat", "name": "Group", "type": "group"})
+        adapter._fetch_message_text = AsyncMock(return_value="被引用的那条消息")
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            message_type="text",
+            content='{"text":"@_user_1"}',
+            message_id="om_bare",
+            parent_id="om_parent",
+            root_id="om_parent",
+            mentions=[SimpleNamespace(key="@_user_1", name="Bot",
+                                      id=SimpleNamespace(open_id="ou_bot", user_id=None))],
+        )
+        data = SimpleNamespace(event=SimpleNamespace(message=message), sender=None)
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=data,
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                chat_type="group",
+                message_id="om_bare",
+            )
+        )
+
+        adapter._dispatch_inbound_event.assert_awaited_once()
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertIn(_QUOTED_BARE_MENTION_TEXT, event.text)
+
+    def test_bare_mention_without_quote_is_still_dropped(self):
+        """没有引用的裸 @ 仍要丢弃，否则群里每个 @ 都会触发回复。"""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._bot_open_id = "ou_bot"
+        adapter._dispatch_inbound_event = AsyncMock()
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            message_type="text",
+            content='{"text":"@_user_1"}',
+            message_id="om_plain",
+            mentions=[SimpleNamespace(key="@_user_1", name="Bot",
+                                      id=SimpleNamespace(open_id="ou_bot", user_id=None))],
+        )
+        data = SimpleNamespace(event=SimpleNamespace(message=message), sender=None)
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=data,
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                chat_type="group",
+                message_id="om_plain",
+            )
+        )
+        adapter._dispatch_inbound_event.assert_not_awaited()
+
+    def test_quoted_empty_reply_without_mention_is_dropped(self):
+        """只有引用锚点、没有真正 @ 机器人时，不能凭空造出一轮请求（DM 里的空回复）。"""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._bot_open_id = "ou_bot"
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter._resolve_sender_name_from_api = AsyncMock(return_value="Alex")
+        adapter.get_chat_info = AsyncMock(return_value={"chat_id": "oc_chat", "name": "DM", "type": "dm"})
+        adapter._fetch_message_text = AsyncMock(return_value="Please summarize this")
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            message_type="text",
+            content='{"text":" "}',
+            message_id="om_quoted_blank",
+            parent_id="om_parent",
+            root_id="om_parent",
+            mentions=[],
+        )
+        data = SimpleNamespace(event=SimpleNamespace(message=message), sender=None)
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=data,
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                chat_type="p2p",
+                message_id="om_quoted_blank",
+            )
+        )
+        adapter._dispatch_inbound_event.assert_not_awaited()
+
     @patch.dict(
         os.environ,
         {

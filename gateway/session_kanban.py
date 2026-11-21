@@ -210,7 +210,13 @@ def _watch_submitter(db, run_id):
     """The dispatcher's spawned worker is this attempt's handle: killing it (an operator, a
     timeout, an OOM kill) must end the attempt, as it did when the worker ran the agent itself.
     Exiting hard leaves no ``worker_result``, so the dead-worker sweep books this run's crash.
-    The run row is re-read each tick: the dispatcher records the pid only after its spawn returns."""
+    The run row is re-read each tick: the dispatcher records the pid only after its spawn returns.
+    A CLEARED ``worker_pid`` (NULL) is not "alive": the terminal-worker reaper clears the column
+    as part of reaping, and PR#51's survivor walked past a watch that read its spawn parent as
+    gone-but-uncleared, then merged 3.5 min later. Once the column is cleared the watch defers to
+    the reaper, which now targets this session's ``worker_bound`` identity too — it must not be
+    raced by a self-service exit here, because this session may legitimately be mid-finalisation
+    of its OWN terminal transition when the clear comes from the reap of a sibling pid."""
     import os
     from hermes_cli.kanban_db_dispatch import _worker_alive
 

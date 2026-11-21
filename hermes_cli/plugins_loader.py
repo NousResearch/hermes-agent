@@ -29,7 +29,7 @@ from hermes_cli.plugins_manifest import PluginManifest, manifest_key, portable_m
 from hermes_cli.plugins_state import _plugin_settings_entry
 
 if TYPE_CHECKING:  # pragma: no cover
-    from hermes_cli.plugins import LoadedPlugin, PluginContext
+    from hermes_cli.plugins import LoadedPlugin, PluginContext, PluginManager
 
 logger = logging.getLogger("hermes_cli.plugins")
 
@@ -168,6 +168,22 @@ def _evict_modules(module_name: str) -> None:
     for name in list(sys.modules):  # snapshot first — never iterate the live mapping
         if name == module_name or name.startswith(prefix):
             sys.modules.pop(name, None)
+
+
+def _clear_plugin_submodules(manager: Optional[PluginManager]) -> None:
+    """Purge ``sys.modules`` entries for this manager's directory plugins (package AND submodules —
+    otherwise a same-slug plugin in another profile reuses the previous profile's submodule state).
+    """
+    if manager is None:
+        return
+    for loaded in getattr(manager, "_plugins", {}).values():  # tolerates test-double managers
+        module_name = getattr(getattr(loaded, "module", None), "__name__", None)
+        if not module_name or not module_name.startswith(f"{_NS_PARENT}."):
+            continue
+        _evict_modules(module_name)
+        with _MODULE_NAMESPACE_LOCK:
+            if _BARE_MODULE_SCOPE.get(module_name) == manager.scope_key:
+                _BARE_MODULE_SCOPE.pop(module_name, None)
 
 
 def _serialized_replacement(method):

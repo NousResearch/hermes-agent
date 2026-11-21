@@ -837,6 +837,7 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         _facade().logger.debug("Plugin %s subscribed to event: %s", self.manifest.name, event)
 
     from hermes_cli.plugins_content import register_automation_blueprint, register_skill
+    from hermes_cli.plugins_footer import register_footer_item
     from hermes_cli.plugin_rpc import emit_to_session, register_rpc
 
     # -- scoped provider registrars ----------------------------------------------------------------

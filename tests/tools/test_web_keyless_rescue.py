@@ -211,6 +211,123 @@ class TestSearchRescue:
         ring.assert_not_called()
 
 
+class _EmptyProvider(_KeyedBoomProvider):
+    """Backend that reports success with zero hits (e.g. a scraping-based upstream silently blocked the query)."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def search(self, query, limit=5):
+        self.calls += 1
+        return {"success": True, "data": {"web": []}}
+
+
+class TestEmptySearchRescue:
+    _dispatch = TestSearchRescue._dispatch
+
+    def test_empty_success_rescued_and_annotated(self, monkeypatch):
+        with patch.object(keyless_mcp, "search_with_failover", return_value=_ring_ok()) as ring:
+            out = self._dispatch(monkeypatch, _EmptyProvider())
+        assert out["success"] is True
+        assert out["data"]["web"] == _ring_ok()["data"]["web"]
+        assert out["data"]["rescued_from"] == "keenable"
+        assert "0 results" in out["data"]["backend_error"]
+        ring.assert_called_once()
+
+    def test_empty_rescue_not_cached_next_call_hits_backend(self, monkeypatch):
+        provider = _EmptyProvider()
+        with patch.object(keyless_mcp, "search_with_failover", return_value=_ring_ok()) as ring:
+            self._dispatch(monkeypatch, provider)
+            self._dispatch(monkeypatch, provider)
+        assert provider.calls == 2
+        assert ring.call_count == 2
+
+    def _assert_empty_kept(self, out, again, provider):
+        # An empty success stays a success (it may be genuine) but is marked, never an error.
+        assert out["success"] is True and out["data"]["web"] == []
+        assert "0 results from 'keenable'" in out["data"]["note"]
+        assert "rescued_from" not in out["data"]
+        assert again == out and provider.calls == 2  # empty results are never cached
+
+    def test_ring_also_empty_keeps_empty_success_with_note(self, monkeypatch):
+        provider = _EmptyProvider()
+        ring_resp = {"success": True, "data": {"web": []}}
+        with patch.object(keyless_mcp, "search_with_failover", return_value=ring_resp) as ring:
+            out = self._dispatch(monkeypatch, provider)
+            again = self._dispatch(monkeypatch, provider)
+        self._assert_empty_kept(out, again, provider)
+        assert "found nothing either" in out["data"]["note"]
+        assert ring.call_count == 2
+
+    def test_ring_failing_keeps_empty_success_without_claiming_nothing_found(self, monkeypatch):
+        provider = _EmptyProvider()
+        ring_resp = {"success": False, "error": "all throttled"}
+        with patch.object(keyless_mcp, "search_with_failover", return_value=ring_resp) as ring:
+            out = self._dispatch(monkeypatch, provider)
+            again = self._dispatch(monkeypatch, provider)
+        self._assert_empty_kept(out, again, provider)
+        assert "rescue was attempted but failed" in out["data"]["note"]
+        assert "found nothing either" not in out["data"]["note"]
+        assert ring.call_count == 2
+
+    def test_ring_raising_keeps_empty_success_not_cached_and_retries_primary(self, monkeypatch):
+        """A rescue that RAISES (e.g. a ring parser choking on a malformed payload) is best-effort:
+        the original empty success is preserved, not turned into a tool error, and never cached."""
+        provider = _EmptyProvider()
+        boom = AttributeError("'NoneType' object has no attribute 'get'")
+        with patch.object(keyless_mcp, "search_with_failover", side_effect=boom) as ring:
+            out = self._dispatch(monkeypatch, provider)
+            again = self._dispatch(monkeypatch, provider)
+        self._assert_empty_kept(out, again, provider)
+        assert "error" not in out
+        assert "rescue was attempted but failed" in out["data"]["note"]
+        assert "found nothing either" not in out["data"]["note"]
+        assert ring.call_count == 2  # primary retried, rescue retried: nothing sticky
+
+    def test_ring_parser_crash_on_malformed_payload_keeps_empty_success(self, monkeypatch):
+        """Real ring + parser path: only ring ordering and transport are mocked. A Parallel payload of
+        ``{"results":[null]}`` makes the parser raise; the empty success must survive."""
+        provider = _EmptyProvider()
+        with patch.object(keyless_mcp, "_ring_order", return_value=["parallel"]), \
+                patch.object(keyless_mcp, "mcp_call", return_value='{"results":[null]}'):
+            out = self._dispatch(monkeypatch, provider)
+        assert out["success"] is True and out["data"]["web"] == []
+        assert "0 results from 'keenable'" in out["data"]["note"]
+
+    def test_rescue_does_not_swallow_keyboard_interrupt(self, monkeypatch):
+        provider = _EmptyProvider()
+        with patch.object(keyless_mcp, "search_with_failover", side_effect=KeyboardInterrupt):
+            with pytest.raises(KeyboardInterrupt):
+                web_tools._memoized_search(provider, "interrupt-me", 5)
+
+    def test_ineligible_empty_gets_note_without_ring_call(self, monkeypatch):
+        monkeypatch.setattr(
+            web_tools, "_load_web_config", lambda: {"backend": "keenable", "keyless_rescue": False},
+        )
+        provider = _EmptyProvider()
+        with patch.object(keyless_mcp, "search_with_failover") as ring:
+            out = self._dispatch(monkeypatch, provider)
+            self._dispatch(monkeypatch, provider)
+        ring.assert_not_called()
+        assert out["success"] is True and out["data"]["web"] == []
+        assert "0 results" in out["data"]["note"] and "either" not in out["data"]["note"]
+        assert provider.calls == 2
+
+    def test_nonempty_success_still_cached_without_ring(self, monkeypatch):
+        class _Hit(_EmptyProvider):
+            def search(self, query, limit=5):
+                self.calls += 1
+                return {"success": True, "data": {"web": [{"url": "https://hit.example"}]}}
+
+        provider = _Hit()
+        with patch.object(keyless_mcp, "search_with_failover") as ring:
+            out = self._dispatch(monkeypatch, provider)
+            self._dispatch(monkeypatch, provider)
+        ring.assert_not_called()
+        assert "note" not in out["data"]
+        assert provider.calls == 1
+
+
 class TestExtractRescue:
     async def _dispatch(self, monkeypatch, provider, urls):
         monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)

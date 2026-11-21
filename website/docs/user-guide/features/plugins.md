@@ -1166,13 +1166,29 @@ They target an existing gateway-owned conversation with committed provenance; th
 sessions or fall back to the classic CLI or a separate TUI host.
 
 These methods block until admission or observation, **not until the agent finishes**. Call them
-from a worker thread; calling them on the gateway event loop returns `requires_worker_thread`.
-For an async plugin:
+from an independent worker thread; calling them on the gateway event loop returns
+`requires_worker_thread`. A synchronous hosted callback that blocks that loop also refuses.
+Do **not** use `asyncio.to_thread()` or the gateway loop's default executor: admission and
+storage use that pool too, so concurrent blocking callers can exhaust the workers they need.
+For an async plugin, own a separate waiter pool for the plugin's lifetime:
 
 ```python
 import asyncio
+import contextvars
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
-receipt = await asyncio.to_thread(
+# Create during register(ctx), not at module import.
+waiters = ThreadPoolExecutor(max_workers=4, thread_name_prefix="plugin-receipts")
+ctx.on_unload(partial(waiters.shutdown, wait=False, cancel_futures=True))
+
+async def host_call(method, *args, **kwargs):
+    context = contextvars.copy_context()
+    return await asyncio.get_running_loop().run_in_executor(
+        waiters, partial(context.run, method, *args, **kwargs)
+    )
+
+receipt = await host_call(
     ctx.submit_message,
     "Review the failing tests and report the cause",
     session_key=session_key,
@@ -1180,13 +1196,17 @@ receipt = await asyncio.to_thread(
     request_id=request_id,
 )
 # Later, using the same captured identities:
-receipt = await asyncio.to_thread(
+receipt = await host_call(
     ctx.submission_status,
     session_key=session_key,
     expected_session_id=session_id,
     request_id=request_id,
 )
 ```
+
+Preserve the caller's context when offloading. Pool shutdown cancels only calls that have not
+started; it does not cancel an admission already scheduled on the gateway. A cancelled wait or
+lost response leaves the outcome uncertain until the same request identity is observed again.
 
 Capture the session and a stable, nonempty request ID (at most 256 characters) before submitting.
 IDs are scoped to the plugin,

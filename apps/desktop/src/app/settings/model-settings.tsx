@@ -32,7 +32,7 @@ import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
-import { catalogProviderMatches, findCatalogProvider } from '@/lib/model-options'
+import { catalogProviderMatches, catalogProviderSelectionId, findCatalogProvider } from '@/lib/model-options'
 import { composerServiceTier } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { showLargeModelNotice } from '@/store/agent-notices'
@@ -175,15 +175,17 @@ function switchProviderFor(
 ) {
   return (slug: string) => {
     const epoch = profileEpoch.current
+    const row = providers.find(provider => provider.slug === slug)
+    const selectionId = row ? catalogProviderSelectionId(row) : slug
 
     setSelectedProvider((prev: string) => {
-      if (prev === slug) {
+      if (prev === selectionId) {
         return prev
       }
 
       setSelectedModel('')
 
-      return slug
+      return selectionId
     })
 
     refreshEmptyProviderModels(slug, providers, scopeProfile, () => profileEpoch.current === epoch, setCatalogProviders)

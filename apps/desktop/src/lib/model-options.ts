@@ -19,6 +19,22 @@ export function catalogProviderMatches(provider: CatalogProviderIdentity, curren
   )
 }
 
+/** Emit a known row's explicit custom identity, not an ambiguous saved-pick migration.
+ *  Inventory supplies aliases for user-defined endpoints. Only the alias derived
+ *  from this row's slug is authoritative; display-name aliases may name other keys.
+ *  Rows without that alias (including native providers) keep their original slug. */
+export function catalogProviderSelectionId(provider: CatalogProviderIdentity): string {
+  const slug = provider.slug
+
+  if (slug === 'custom' || slug.startsWith('custom:')) {
+    return slug
+  }
+
+  const customId = `custom:${slug.trim().toLowerCase().replaceAll(' ', '-')}`
+
+  return provider.aliases?.includes(customId) ? customId : slug
+}
+
 /** The catalog row for `currentProvider`, matched the same way as
  *  `catalogProviderMatches` (so a saved `custom:<key>` finds its row). */
 export function findCatalogProvider<T extends CatalogProviderIdentity>(

@@ -1,0 +1,14 @@
+name: rook-agent-utils
+repo: https://github.com/zColdWater/rook-agent-utils-plugin
+sha: 4eef3a7fa335a9306239e9705ef00c8227c225b2
+subdir: ""
+description: Pay-per-call wallet utilities over one remote MCP server - gas timing, USDC spend report (x402/MPP), verifiable drand draws, x402 seller launch check.
+maintainer: zColdWater
+tier: community
+category: tools
+title: Rook Agent Utils
+version: "1.0.0"
+readme: true
+known_issues:
+  - Paid tools charge $0.001-$0.05 in USDC per call (x402 on Base or MPP on Tempo); an unpaid call returns the price and charges nothing.
+  - Portable Agent Plugins package (plugin.json + skills/ + mcp.json); no Python entrypoint.

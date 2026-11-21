@@ -582,8 +582,7 @@ def _format_exec_approval_fallback(
     steps a surface without buttons needs. The command is never cut: ``/approve`` must only ever
     answer a command the user could read in full (#62359)."""
     from gateway.platforms.base_exec_approval import (
-        approval_timeout_seconds, code_fence, ea_header_text, ea_reason_label_text, ea_t,
-        format_approval_deadline_line)
+        approval_timeout_seconds, ea_fenced_t, ea_header_text, ea_reason_label_text, ea_t, format_approval_deadline_line)
     heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
                else f"⚠️ **{ea_header_text()}**")
 
@@ -593,16 +592,9 @@ def _format_exec_approval_fallback(
         if allow_permanent:
             choices.append(ea_t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
     choices.append(t("gateway.exec_approval.text_choice_deny", prefix=command_prefix))
-    # The catalog fence is ```; a body holding its own ``` run gets the longer fence the cards use, so a
-    # model-written job or command cannot close it early. Placeholders are filled after the swap, so only
-    # the template's own fences change.
-    fill = {"heading": heading, "command": command, "reason_label": ea_reason_label_text(), "reason": description}
-    body = ea_t("gateway.exec_approval.text_body", **{k: f"\x00{k}\x00" for k in fill}).replace(
-        "```", code_fence(command))
-    for key, value in fill.items():
-        body = body.replace(f"\x00{key}\x00", str(value))
-    return (  # the bound approval kind picks the wording (a schedule body is the job); whole: send() splits it
-        body
+    return (  # the bound kind picks the wording; the fence outgrows any ``` in the body; whole: send() splits it
+        ea_fenced_t("gateway.exec_approval.text_body", command, heading=heading, command=command,
+                    reason_label=ea_reason_label_text(), reason=description)
         + t("gateway.exec_approval.text_choice_joiner").join(choices[:-1])
         + t("gateway.exec_approval.text_choice_last", choice=choices[-1])
         + format_approval_deadline_line(approval_timeout_seconds()))

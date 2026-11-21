@@ -58,26 +58,25 @@ def _route_base_url(identity, held, entry) -> str:
 
 
 def _builtin_base_url(identity, base_url, get_secret_str) -> str:
-    """Where a built-in provider's turn goes: its scoped ``*_BASE_URL`` ahead of ``model.base_url`` (the env-seeded
-    credential pool and ``expand_direct_api_alias`` both take it first), then its registry default. An env URL that
-    is just the registry default yields to ``model.base_url``, as the pool row does (``_pool_entry_mode_and_url``)."""
+    """Where a built-in provider's turn may go. Its scoped ``*_BASE_URL``, ``model.base_url`` and registry default win
+    in a different order on each runtime branch (pool row, alias, Anthropic, Foundry), so a self-hosted one of them
+    decides; otherwise the first one set, which is public like the rest."""
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.runtime_provider_custom import _DIRECT_API_BASE_URLS
     pconfig = PROVIDER_REGISTRY.get(identity)
     env_var = getattr(pconfig, 'base_url_env_var', '') or ('OPENAI_BASE_URL' if identity in _DIRECT_API_BASE_URLS else '')
-    env_url = get_secret_str(env_var).strip() if env_var else ''
-    default_url = str(getattr(pconfig, 'inference_base_url', '') or '')
-    if env_url and default_url and env_url.rstrip('/') == default_url.rstrip('/'):
-        env_url = ''
-    return env_url or base_url or default_url
+    urls = [url for url in ((get_secret_str(env_var).strip() if env_var else ''), base_url,
+                            str(getattr(pconfig, 'inference_base_url', '') or '')) if url]
+    return next((url for url in urls if _self_hosted(url)), urls[0] if urls else '')
 
 
 def _self_hosted(base_url) -> bool:
-    """A loopback (``localhost.`` too) or private-network server, which may pick its own model."""
+    """A loopback (``localhost.`` too), private-network or tailnet (``*.ts.net``) server, which may pick its own model."""
     from agent.model_metadata import is_local_endpoint  # loads the provider registry: only a model-less URL pays
     from hermes_cli.runtime_provider import _loopback_hostname
     from utils import base_url_hostname
-    return bool(_loopback_hostname(base_url_hostname(base_url))) or is_local_endpoint(base_url)
+    host = base_url_hostname(base_url)
+    return bool(_loopback_hostname(host)) or host.endswith('.ts.net') or is_local_endpoint(base_url)
 
 
 class ProfileConfigUnavailable(RuntimeError):

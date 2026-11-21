@@ -167,7 +167,7 @@ function selectBrowserFiles(
   return new Promise<string[]>((resolve, reject) => {
     const input = document.createElement('input')
     input.type = 'file'
-    input.multiple = Boolean(options?.multiple)
+    input.multiple = options?.multiple !== false
     input.style.display = 'none'
 
     const extensions = (options?.filters || []).flatMap(filter => filter.extensions || [])

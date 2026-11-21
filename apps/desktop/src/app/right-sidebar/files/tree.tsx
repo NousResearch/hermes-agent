@@ -35,6 +35,8 @@ function withTreeInset(paddingLeft: number | string | undefined): string {
 }
 
 interface ProjectTreeProps {
+  /** File open in the preview: highlighted and scrolled into view. */
+  activePath?: string | null
   collapseNonce: number
   cwd: string
   data: TreeNode[]
@@ -47,6 +49,7 @@ interface ProjectTreeProps {
 }
 
 export function ProjectTree({
+  activePath,
   collapseNonce,
   cwd,
   data,
@@ -62,6 +65,28 @@ export function ProjectTree({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const treeRef = useRef<TreeApi<TreeNode> | null>(null)
   const [size, setSize] = useState({ height: 0, width: 0 })
+
+  // Keep the tree pointed at the open file. This runs after `data` changes
+  // because the ancestor folders load lazily: the row does not exist until
+  // its parents have resolved, and selecting a missing id is a no-op.
+  //
+  // `scrollTo` only when the row is newly revealed — re-scrolling on every
+  // data tick would fight the user scrolling elsewhere in the tree.
+  const lastRevealedRef = useRef<string | null>(null)
+  useEffect(() => {
+    const tree = treeRef.current
+    if (!tree || !activePath) {
+      if (!activePath) lastRevealedRef.current = null
+      return
+    }
+    if (!tree.get(activePath)) return
+
+    tree.select(activePath, { align: 'auto' })
+    if (lastRevealedRef.current !== activePath) {
+      lastRevealedRef.current = activePath
+      tree.scrollTo(activePath, 'auto')
+    }
+  }, [activePath, data])
 
   const syncTreeSize = useCallback((entries: readonly ResizeObserverEntry[]) => {
     const el = containerRef.current
@@ -333,6 +358,9 @@ function ProjectTreeRow({
           node.toggle()
         } else {
           node.select()
+          // Single click opens, as in VS Code. Double-click still works and is
+          // now a no-op repeat rather than the only way in.
+          onPreviewFile?.(node.data.id)
         }
       }}
       onDoubleClick={event => {

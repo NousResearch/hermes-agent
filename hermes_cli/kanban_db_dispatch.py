@@ -1554,6 +1554,32 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def _worker_profile_names(conn: sqlite3.Connection, task_id: str) -> set[str]:
+    """Profiles that could have opened this card's PR: every profile that ran
+    on it (``task_runs``) or was moved to/from it by an ``assigned`` event
+    (recorded even for no-op reassigns/unassigns, so a shuffle cannot launder
+    the protection). The current assignee joins at the call site. A PR URL
+    from any of these duplicates the worker's own output; from another author
+    (a handoff underlay, human pointer, reviewer reference) it is an input."""
+    names: set[str] = set()
+    for prow in conn.execute(
+        "SELECT DISTINCT profile FROM task_runs WHERE task_id = ? AND profile IS NOT NULL",
+        (task_id,),
+    ):
+        names.add(str(prow[0]))
+    for prow in conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'assigned'",
+        (task_id,),
+    ):
+        data = _kb._json_or(prow[0], {})
+        if isinstance(data, dict):
+            for key in ("assignee", "from"):
+                value = data.get(key)
+                if value:
+                    names.add(str(value))
+    return names
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -1571,12 +1597,15 @@ def check_respawn_guard(
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
     (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
     handoff event followed the comment: the named profile must work on that
-    PR). The review lane skips the last two: they are the *inputs* to a review
-    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
-    passes own those.
+    PR). ``active_pr`` attributes a PR-URL comment to the card's OWN worker
+    only — its current assignee, a profile that has run on it, or one it was
+    assigned to (see ``_worker_profile_names``); references by other authors
+    are work inputs and never guard. The review lane skips the last two: they
+    are the *inputs* to a review handoff. Stale / dead claim locks are NOT a
+    guard reason — the reclaim passes own those.
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, assignee FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -1584,11 +1613,10 @@ def check_respawn_guard(
 
     now = int(time.time())
 
-    # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
-    #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
-    #    An infrastructure spawn refusal (#114720) shares the cooldown: the host
-    #    condition is not the card's, so it retries forever, spaced, and never
-    #    reaches the breaker.
+    # 1. Rate-limit cooldown — the docstring says why this precedes
+    #    blocker_auth. LATEST run only: a newer run supersedes it. An
+    #    infrastructure spawn refusal (#114720) shares the cooldown — the host
+    #    condition is not the card's, so it retries forever, spaced.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
     latest_run = conn.execute(
         "SELECT outcome, ended_at, metadata FROM task_runs "
@@ -1638,15 +1666,23 @@ def check_respawn_guard(
             conn, "task_events", task_id, success, "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed')")):
         return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    #    Exception: a handoff AFTER the newest PR comment (operator reassign,
-    #    reviewer changes_requested, review reopen) names the profile that must
-    #    now work on THAT PR — a closer or the implementer finishing it, not a
-    #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
-    #    so the worker that opened the PR is still not re-spawned against it.
-    pr_times = [t for t, c in _rows_since(conn, "task_comments", task_id, now - _RESPAWN_GUARD_PR_WINDOW,
-                                          cols=", body", unreadable=now)  # duplicate-PR risk: fail closed
-                if _RESPAWN_GUARD_PR_URL_RE.search(_kb._lossy_text(c["body"]) or "")]
+    # 4. GitHub PR URL in a recent comment by THIS card's own worker — its
+    #    output, so re-spawning risks a duplicate PR. From any other author it
+    #    is work INPUT (a handoff underlay on a QA card, a human pointer, a
+    #    reviewer reference): those cards must start against the open PR, not
+    #    age it out of the window. Exception: a handoff AFTER the newest
+    #    own-worker PR comment (operator reassign, changes_requested, review
+    #    reopen) names the profile that must now work on THAT PR (#111910). A
+    #    crash/reclaim is not a handoff, so the PR-opening worker stays held.
+    own_workers = {row["assignee"]} if row["assignee"] else set()
+    own_workers |= _worker_profile_names(conn, task_id)
+    pr_times = [
+        t for t, c in _rows_since(
+            conn, "task_comments", task_id, now - _RESPAWN_GUARD_PR_WINDOW,
+            cols=", body, author", unreadable=now)  # duplicate-PR risk: fail closed
+        if (c["author"] or "") in own_workers
+        and _RESPAWN_GUARD_PR_URL_RE.search(_kb._lossy_text(c["body"]) or "")
+    ]
     if pr_times:
         # Strictly after: a same-second tie stays guarded (fail closed).
         if any(_is_handoff_event(e["kind"], e["payload"]) for _, e in _rows_since(

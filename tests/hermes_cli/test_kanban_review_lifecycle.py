@@ -573,6 +573,86 @@ def test_active_pr_guard_holds_through_same_profile_reassign_and_unassign(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+def test_active_pr_guards_only_comments_by_the_cards_own_worker(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``active_pr`` is a duplicate-work signal, not a ban on mentioning a PR.
+
+    The incident this pins: a QA card whose entire job is to inspect an OPEN
+    PR got ``active_pr`` for 24h because the implementer's handoff comment —
+    the card's work INPUT — contained the PR URL. A PR URL only signals
+    duplicate work when it was authored by this card's OWN worker (its
+    assignee, a profile that already ran on it, or one it was assigned to):
+    that is the worker that could have opened the PR. PR references from any
+    other author are inputs (implementer handoffs, human instructions,
+    reviewer cross-references) and must not hold the card.
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {})
+    pr_input = (
+        "**QA-underlag: rättnings-PR för Meet the Studio**\n"
+        "- **PR:** https://github.com/example/repo/pull/169 — state OPEN, "
+        "head henry/meet-the-studio-copy-corrections"
+    )
+    with kbc.connect() as conn:
+        qa_id = kb.create_task(
+            conn, title="Ash QA for kerber.ai Meet the Studio PR #169", assignee="ash",
+        )
+        kb.add_comment(conn, qa_id, author="bishop", body=pr_input)
+        # The card has never run; the PR was opened by a different task.
+        assert kbd.check_respawn_guard(conn, qa_id) is None
+
+        res = kbd.dispatch_once(conn, dry_run=True)
+        assert qa_id in [s[0] for s in res.spawned]
+        assert dict(res.respawn_guarded).get(qa_id) is None
+
+        # The card's own worker referencing the PR still guards — it is the
+        # author that could have opened (and now duplicates) it.
+        kb.add_comment(
+            conn, qa_id, author="ash",
+            body="Opened https://github.com/example/repo/pull/169 for review.",
+        )
+        assert kbd.check_respawn_guard(conn, qa_id) == "active_pr"
+
+
+def test_active_pr_scopes_own_worker_to_history_not_current_assignee(
+    kanban_home: Path,
+) -> None:
+    """A PR opened by the card's own run stays guarded after an unassign.
+
+    ``active_pr`` attributes a PR comment to the profiles associated with the
+    card's work history (``task_runs`` + ``assigned`` events) as well as its
+    current assignee, so an operator unassigning a stuck card cannot launder
+    the duplicate-PR protection away while the dispatcher's
+    ``kanban.default_assignee`` fill-in hands the card right back to the same
+    implementer.
+    """
+    pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="dev own pr", assignee="dev")
+        _now = int(__import__("time").time())
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, outcome, "
+                "started_at, ended_at) VALUES (?, 'dev', 'completed', 'crashed', ?, ?)",
+                (tid, _now, _now + 5),
+            )
+        kb.add_comment(conn, tid, author="dev", body=pr_comment)
+        assert kb.assign_task(conn, tid, None) is True
+        # No current assignee, but 'dev' ran on this card: still its own PR.
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+        # A comment by a profile with no history on the card neither adds to
+        # nor lifts the guard: dev's own in-window PR comment still holds it.
+        kb.add_comment(
+            conn, tid, author="henry",
+            body="See https://github.com/example/repo/pull/44 — continue from the CI fix.",
+        )
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+
 def test_active_pr_guard_lifts_for_implementer_after_changes_requested(
     kanban_home: Path,
 ) -> None:

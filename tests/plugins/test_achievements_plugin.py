@@ -337,3 +337,44 @@ def test_scan_sessions_names_the_store_it_could_not_open(plugin_api):
 
     assert result["error"] == "Could not open SessionDB: disk gone"
     assert result["sessions"] == []
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_data_dir_refuses_a_deleted_or_renamed_profile_home(plugin_api, tmp_path, monkeypatch, move):
+    """The standalone fallback refuses too: its ``except Exception`` also catches plugin_data_dir's refusal."""
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path / "dead", move)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        plugin_api._data_dir()
+    assert not home.exists()
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_write_json_does_not_recreate_a_home_removed_after_its_dir_resolved(plugin_api, tmp_path, monkeypatch, move):
+    """_data_file() already made the data dir, so a second mkdir in _write_json could only rebuild a home
+    deleted or renamed in between."""
+    import shutil
+
+    from hermes_constants import mark_named_profile_deleted
+
+    home = tmp_path / "live" / ".hermes" / "profiles" / "b"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    resolve = plugin_api._data_file
+
+    def resolve_then_move(name):
+        path = resolve(name)
+        if move == "delete":
+            mark_named_profile_deleted(home)
+            shutil.rmtree(home)
+        else:
+            home.rename(home.with_name("c"))
+        return path
+
+    monkeypatch.setattr(plugin_api, "_data_file", resolve_then_move)
+    with pytest.raises(FileNotFoundError):
+        plugin_api._write_json("state.json", {"a": 1})
+    assert not home.exists()

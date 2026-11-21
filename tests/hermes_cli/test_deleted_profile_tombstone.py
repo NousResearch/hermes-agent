@@ -91,6 +91,23 @@ class TestDeletedProfileTombstone:
 
         assert not profile_dir.exists()
 
+    def test_plugin_data_write_after_a_real_delete_does_not_recreate_home(self, profile_env):
+        """A session still bound to the profile writes plugin data after ``profile delete``."""
+        from plugins.plugin_storage import plugin_data_dir
+
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        token = set_hermes_home_override(profile_dir)
+        try:
+            plugin_data_dir("probe")
+            _delete("worker")
+            with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+                plugin_data_dir("probe")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert not profile_dir.exists()
+        assert "worker" not in _named_homes(profile_env)
+
     def test_atomic_cache_write_allows_live_profile_home(self, profile_env):
         from hermes_cli.models import _write_json_cache
 

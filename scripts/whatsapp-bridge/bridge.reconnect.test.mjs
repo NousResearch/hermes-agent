@@ -18,6 +18,7 @@ import { strict as assert } from 'node:assert';
 import {
   createReconnectScheduler,
   createVersionResolver,
+  pairCloseFailure,
 } from './bridge_helpers.js';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -131,3 +132,15 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 }
 
 console.log('bridge.reconnect.test.mjs: all assertions passed');
+
+// -- pairCloseFailure ------------------------------------------------------
+
+// Pair-only reconnects only on closes a retry can fix; a refused build (405)
+// and every other close fail at once with the status code in the text.
+{
+  for (const code of [408, 428, 503, 515]) assert.equal(pairCloseFailure(code), null);
+  for (const code of [405, 403, 411, 500, undefined]) {
+    const text = pairCloseFailure(code, 'Connection Failure');
+    assert.match(text, new RegExp(`\\(${code ?? 'no status'} Connection Failure\\)`));
+  }
+}

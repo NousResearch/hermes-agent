@@ -737,6 +737,20 @@ export function createReconnectScheduler(startFn, {
   return scheduleReconnect;
 }
 
+// Pair-only closes a reconnect can fix: QR expired (408), network drop (428),
+// restart after the scan (515), service briefly down (503). Any other close
+// (405 refused build, 403, 411, 500 ...) repeats on every retry, so pairing
+// must stop with the code instead of looping with no QR.
+const PAIR_RETRYABLE_CLOSES = new Set([408, 428, 503, 515]);
+
+/** Error text for a pair-only close no reconnect can fix, or null when a reconnect may. */
+export function pairCloseFailure(reason, message = '') {
+  if (PAIR_RETRYABLE_CLOSES.has(reason)) return null;
+  const detail = `${reason ?? 'no status'} ${message || ''}`.replace(/\s+/g, ' ').trim();
+  return `WhatsApp closed the connection before linking (${detail}). `
+    + 'Run pairing again; if it repeats, run `hermes update` (WhatsApp may have refused this WhatsApp Web version).';
+}
+
 /**
  * Version resolution guard. fetchLatestBaileysVersion() is a plain fetch to
  * raw.githubusercontent.com with no AbortSignal; a stalled connection can

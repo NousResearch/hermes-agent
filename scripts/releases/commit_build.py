@@ -239,6 +239,7 @@ def cmd_build_commit(args) -> None:
     from scripts import release
     from scripts.releases import lanes as lane_set, r2
     from scripts.releases.bundle_env import parse_assignments
+    from scripts.releases.stable import CONTROLLER_BRANCH
 
     try:
         lanes = lane_set.select(only=lane_set.parse_list(args.only),
@@ -254,6 +255,9 @@ def cmd_build_commit(args) -> None:
         branch = release._default_branch(repository)
         if not branch:
             raise ValueError("could not resolve the repository default branch")
+        if branch != CONTROLLER_BRANCH:
+            # Admission would refuse the run after the claim exists; refuse before creating it.
+            raise ValueError(f"Stable Release runs only from {CONTROLLER_BRANCH}; {repository} defaults to {branch}")
         tag = _unused_claim_tag(release, version)
         message = claim_message(version=version, commit=commit, lanes=lanes,
                                 require_green=args.require_green, bundle_env=bundle_env)

@@ -52,7 +52,7 @@ def run(argv, *args, **kwargs):
         if argv[1:3] == ['repo', 'view']:
             assert '--repo' not in argv, 'gh repo view requires a positional repository'
             assert argv[-1].count('/') == 1, argv
-            value = 'main\\n'
+            value = os.environ.get('PROBE_DEFAULT_BRANCH', 'main') + '\\n'
         elif argv[1:3] == ['workflow', 'run']:
             value = 'fixture dispatch accepted\\n'
         elif argv[1] == 'api':
@@ -153,6 +153,17 @@ def test_commit_build_dispatch_is_repository_independent(fixture_repo):
     dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
     assert dispatches == [['gh', 'workflow', 'run', 'stable-release.yml', '--ref', 'main',
                            '--repo', 'NousResearch/hermes-agent', '-f', f'tag={tag}']]
+
+
+def test_commit_build_refuses_before_claiming_when_admission_would_refuse_the_branch(fixture_repo):
+    """Stable Release admits only its controller branch, so a renamed default branch leaves no claim."""
+    repo, upstream, invoke = fixture_repo
+    tip = git(repo, 'rev-parse', 'HEAD')
+    result, calls = invoke('--build-commit', tip, '--publish', extra={'PROBE_DEFAULT_BRANCH': 'trunk'})
+    assert result.returncode != 0 and 'Traceback' not in result.stderr
+    assert 'runs only from main' in result.stderr and 'defaults to trunk' in result.stderr
+    assert claims(upstream) == []
+    assert not any(call[1:3] == ['workflow', 'run'] for call in calls)
 
 
 # (Fork-conditional removal) The disposable routing test retired with it: a

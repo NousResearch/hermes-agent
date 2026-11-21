@@ -1842,6 +1842,19 @@ def cmd_gui(args: argparse.Namespace):
         launch_command = _packaged_desktop_launch_command(
             _installed_desktop_launch_target(desktop_dir, packaged_executable))
         launch_command.extend(config_electron_flags)
+    # Linux: bridge config/env-derived Chromium flags to actual CLI args.
+    # Env vars alone are not reliably consumed by the packaged Electron app,
+    # causing renderer crashes (blinking) on some GPU/driver/display combos.
+    if sys.platform == "linux":
+        if os.environ.get("HERMES_DESKTOP_DISABLE_GPU") == "1" or \
+           os.environ.get("HERMES_DESKTOP_DISABLE_GPU", "").lower() in ("true", "yes", "on"):
+            if "--disable-gpu" not in launch_command:
+                launch_command.append("--disable-gpu")
+        ozone = os.environ.get("ELECTRON_OZONE_PLATFORM_HINT", "").lower()
+        if ozone in ("x11", "wayland") and f"--ozone-platform={ozone}" not in launch_command:
+            launch_command.append(f"--ozone-platform={ozone}")
+        if "--disable-dev-shm-usage" not in launch_command:
+            launch_command.append("--disable-dev-shm-usage")
     if getattr(args, "local", False):
         launch_command.append("--local")
     # Out-of-band preview escape hatch (#97213): a fullscreened preview pane

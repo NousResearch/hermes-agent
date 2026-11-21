@@ -548,6 +548,10 @@ def _start_shared(key: str, executable: str, udd: str, home_key: str, prepare,
             failure = prepare() if prepare is not None else None
             if failure:
                 return None, failure
+            from tools.browser_launcher_version import downgrade_refusal
+            refusal = downgrade_refusal(executable, udd)
+            if refusal:
+                return None, refusal
             return _launch_owned(key, executable, udd, ephemeral=False, home_key=home_key, **launch)
         with _lock:  # registered under the lock too: another key's stop must see this key as its heir
             _browsers[key] = attached

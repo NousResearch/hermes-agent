@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import { defineLocale } from "./define-locale";
 
-export const tr: Translations = {
+export const tr = defineLocale({
   common: {
     save: "Kaydet",
     saving: "Kaydediliyor...",
@@ -98,6 +98,31 @@ export const tr: Translations = {
     noProvider: "yok — yalnızca yerleşik",
     builtinLayer: "Yerleşik katman",
     builtinNote: "MEMORY.md ve USER.md, herhangi bir harici sağlayıcıdan bağımsız olarak Hermes'in kendi belleğidir. Varsayılan olarak ikisi de oturumlara yüklenir; (memory.memory_enabled / memory.user_profile_enabled) yapılandırma anahtarları her birini kapatır. Bir sağlayıcı bunlara ekleme yapar; asla yerlerini almaz.",
+  },
+  systemHooks: {
+    heading: "Kabuk kancaları",
+    newHook: "Yeni kanca",
+    empty: "Tanımlı kabuk kancası yok.",
+    modalTitle: "Yeni kabuk kancası",
+    eventLabel: "Olay",
+    commandLabel: "Komut (tam yol)",
+    matcherLabel: "Eşleştirici (isteğe bağlı)",
+    matcherPlaceholder: "örn. terminal",
+    timeoutLabel: "Zaman aşımı (sn)",
+    approveLabel: "Şimdi onayla (çalışsın diye izin ver; aksi hâlde yapılandırılmış ama etkin olmaz)",
+    warning: "Kabuk kancaları bu makinede rastgele komut çalıştırır. Yalnızca güvendiğiniz betikleri ekleyin. Bir sonraki gateway/oturum yeniden başlatmasında etkin olur.",
+    create: "Kanca oluştur",
+    creating: "Oluşturuluyor",
+    created: "Kanca oluşturuldu",
+    removed: "Kanca kaldırıldı",
+    commandRequired: "Komut gerekli",
+    createFailed: "Kanca oluşturulamadı: {detail}",
+    removeFailed: "Kanca kaldırılamadı: {detail}",
+    matcherInline: "eşleştirici: {value}",
+    notExecutable: "çalıştırılabilir değil",
+    allowed: "izinli",
+    notApproved: "onaylanmadı",
+    removeHook: "Kancayı kaldır",
   },
 
   status: {
@@ -799,4 +824,4 @@ export const tr: Translations = {
     logTruncated: "(son 100 KB gösteriliyor — tam günlük şurada: ",
     logAt: ")",
   },
-};
+});

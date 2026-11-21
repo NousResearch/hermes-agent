@@ -38,6 +38,13 @@ _CATALOG = json.dumps({
     ]
 }).encode()
 
+STAGING = "https://staging-portal.example.test"
+# The same model id, served text-only by another Portal endpoint.
+_TEXT_ONLY_CATALOG = json.dumps({
+    "data": [{"id": SEES, "supported_parameters": ["tools"], "architecture": {"input_modalities": ["text"]}}]
+}).encode()
+
+
 class _Portal:
     """Stands in for the Portal's ``/v1/models`` and counts the reads."""
 
@@ -56,7 +63,7 @@ class _Portal:
         self.release.wait(10)
         if not self.online:
             raise OSError("portal unreachable")
-        body = self.body
+        body = _TEXT_ONLY_CATALOG if req.full_url.startswith(STAGING) else self.body
 
         class _Resp:
             def __enter__(self):
@@ -78,8 +85,9 @@ def cold_process(monkeypatch):
     def _reset():
         for name in ("_nous_reasoning_caps_cache", "_nous_reasoning_caps_failed_at"):
             monkeypatch.setattr(models_mod, name, None)
+        monkeypatch.setattr(models_reasoning_caps, "_CATALOG_URL_BY_HOME", {}, raising=False)
         for name in ("_nous_caps_disk_checked", "_nous_caps_warm_started", "_nous_caps_vision_refreshed"):
-            monkeypatch.setattr(models_mod, name, False)
+            monkeypatch.setattr(models_mod, name, False, raising=False)
 
     _reset()
     return _reset
@@ -90,19 +98,24 @@ def portal(cold_process, monkeypatch):
     return _Portal(monkeypatch)
 
 
-def test_portal_catalog_decides_auto_image_routing(portal):
+def test_portal_catalog_decides_auto_image_routing(portal, monkeypatch):
     """Image-capable Portal model gets the image; text-only and unstated ones are described;
     other providers and other endpoints are not answered from it; a user override still wins."""
     assert decide_image_input_mode("nous", SEES, {}) == "native"
     assert decide_image_input_mode("nous", BLIND, {}) == "text"
     assert _lookup_supports_vision("nous", SILENT, {}) is None
     assert _lookup_supports_vision("custom-gateway", SEES, {}) is None
-    # A run pointed at another Portal endpoint gets no verdict from this catalog.
-    other = {"model": {"base_url": "https://staging.example.test/v1"}}
+    other = {"model": {"base_url": "https://elsewhere.example.test/v1"}}
     assert _lookup_supports_vision("nous", SEES, other) is None
     assert portal.fetches == 1
-
     assert decide_image_input_mode("nous", SEES, {"model": {"supports_vision": False}}) == "text"
+
+    # Same process and profile, Portal A -> B -> A, one model id B serves text-only: each
+    # endpoint's own catalog decides, never the one cached for the other.
+    monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", f"{STAGING}/v1")
+    assert decide_image_input_mode("nous", SEES, {}) == "text"
+    monkeypatch.delenv("NOUS_INFERENCE_BASE_URL")
+    assert decide_image_input_mode("nous", SEES, {}) == "native"
 
 
 def test_mirror_written_before_modalities_were_recorded_is_refreshed(portal, cold_process):

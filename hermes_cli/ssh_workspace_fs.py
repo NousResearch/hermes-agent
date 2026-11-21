@@ -292,7 +292,15 @@ exit 1
 
 def get_ssh_workspace_fs(profile_key: str, terminal_config: dict[str, Any]) -> SshWorkspaceFs | None:
     """Return a cached adapter when this profile selects the SSH backend."""
-    if str(terminal_config.get("backend") or "local").strip().lower() != "ssh":
+    backend = str(terminal_config.get("backend") or "local").strip().lower()
+    if backend != "ssh":
+        from tools.terminal_tool_config import _BUILTIN_BACKENDS
+
+        # None tells callers to use the gateway's filesystem. A plugin backend
+        # (including one whose plugin failed to load) has not established that
+        # host-path contract and must never silently expose same-named files.
+        if backend not in _BUILTIN_BACKENDS:
+            raise SshWorkspaceFsError("EUNSUPPORTED", "Workspace backend has no filesystem adapter")
         return None
 
     config = _SshFsConfig(

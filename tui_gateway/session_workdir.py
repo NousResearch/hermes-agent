@@ -171,6 +171,11 @@ def _profile_default_cwd(profile_home) -> str | None:
 def _workspace_cwd(profile_home, raw: str) -> str:
     """A picked workspace for a session bound to ``profile_home``: an ssh dir raw, else an existing host dir.
     Raises ValueError when a host dir does not exist."""
+    from tools.terminal_tool_config import _BUILTIN_BACKENDS
+
+    backend = _bound_terminal_backend(profile_home)
+    if backend not in _BUILTIN_BACKENDS:
+        raise ValueError(f"Workspace cwd switching is unavailable for terminal backend {backend!r}")
     if _cwd_is_remote(profile_home):
         if _is_remote_cwd_shape(raw):
             return raw

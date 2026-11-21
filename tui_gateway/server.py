@@ -216,10 +216,27 @@ _current_runtime_session_record: contextvars.ContextVar[dict | None] = contextva
 # poll is looping in the 4001 warning); never authorization — the method string is client-supplied.
 _current_rpc_method: contextvars.ContextVar[str] = contextvars.ContextVar("hermes_gateway_rpc_method", default="")
 
-# Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr so stray print() from
-# libraries/tools becomes harmless gateway.stderr instead of corrupting the JSON protocol.
+# Real stdout is the stdio sidecar's JSON-RPC channel. The redirect of Python's stdout to stderr
+# lives in _reserve_stdout_for_rpc() so importing this module has no process-wide effect: gateway,
+# agent and CLI processes import helpers from here (#141984).
 _real_stdout = sys.stdout
-sys.stdout = sys.stderr
+
+
+def _reserve_stdout_for_rpc() -> None:
+    """Sidecar boot: reserve real stdout for JSON-RPC and send stray print() to stderr.
+
+    A stray print() from libraries/tools must land on stderr, not corrupt the JSON protocol on
+    stdout. Only the stdio sidecar may redirect: every other process that imports this module
+    (gateway session controls, agent toolset loading, CLI bootstrap) must keep its stdout —
+    for `hermes chat -q` piped to a file or stream-json, stdout IS the product (#141984).
+    """
+    global _real_stdout
+    if sys.stdout is sys.stderr:
+        # Already reserved: re-running must not re-point _real_stdout at stderr, or the
+        # JSON-RPC channel dies and frames start landing on gateway.stderr.
+        return
+    _real_stdout = sys.stdout
+    sys.stdout = sys.stderr
 
 
 class _DropTransport:

@@ -4,6 +4,12 @@ Covers the model-dropdown feature: kanban_db.set_model_override(),
 create_task(model_override=..., provider_override=...), the dispatcher
 passing task identity to the owner for trusted policy resolution, and the dashboard
 PATCH/bulk/model-options surfaces.
+
+A pin is judged by PROVENANCE (``kanban_db._validate_model_override``): it is accepted
+only when it equals the assignee profile's own configured ``model.default`` or an
+``approved_pins`` entry of that profile. Plumbing tests therefore declare the profile's
+model first via :func:`configure_profile` — pinning a model a profile does not run is the
+defect this guard exists to refuse, not a flow to exercise.
 """
 
 from __future__ import annotations
@@ -39,6 +45,25 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def configure_profile(home, name, model, provider=None, approved_pins=None):
+    """Declare what profile *name* runs — the provenance a model pin is judged against."""
+    lines = ["model:", f"  default: {model}"]
+    if provider:
+        lines.append(f"  provider: {provider}")
+    if approved_pins:
+        lines.append("  approved_pins:")
+        for pin in approved_pins:
+            if isinstance(pin, dict):
+                lines.append(f"    - model: {pin['model']}")
+                lines.append(f"      provider: {pin['provider']}")
+            else:
+                lines.append(f"    - {pin}")
+    profile = home / "profiles" / name
+    profile.mkdir(parents=True, exist_ok=True)
+    profile.joinpath("config.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return profile
+
+
 @pytest.fixture
 def conn(kanban_home):
     c = kbc.connect()
@@ -72,7 +97,8 @@ def client(kanban_home):
 # ---------------------------------------------------------------------------
 
 
-def test_set_and_clear_model_override(conn):
+def test_set_and_clear_model_override(conn, kanban_home):
+    configure_profile(kanban_home, "worker", "gpt-5.6-sol", "openai")
     tid = kb.create_task(conn, title="t", assignee="worker")
     assert kb.set_model_override(conn, tid, "gpt-5.6-sol", provider="openai")
     t = kb.get_task(conn, tid)
@@ -96,7 +122,8 @@ def test_provider_without_model_rejected(conn):
         )
 
 
-def test_create_task_with_model_and_provider(conn):
+def test_create_task_with_model_and_provider(conn, kanban_home):
+    configure_profile(kanban_home, "worker", "qwen-max", "openrouter")
     tid = kb.create_task(
         conn, title="t", assignee="worker",
         model_override="qwen-max", provider_override="openrouter",
@@ -139,7 +166,11 @@ def test_spawn_resolves_claimed_task_policy(
 
     profile = kanban_home / "profiles" / "elias"
     profile.mkdir(parents=True)
-    (profile / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is not a live profile
+    # The provenance gate judges a pin against this file, so elias declares the pair case 1
+    # pins (glm-5/openrouter); the in-memory `config` below stays the owner-side view this
+    # test exercises.
+    (profile / "config.yaml").write_text(
+        "model:\n  default: glm-5\n  provider: openrouter\n", encoding="utf-8")
     workspace = tmp_path / "ws"
     workspace.mkdir()
     tid = kb.create_task(conn, title="t", assignee="elias",
@@ -208,7 +239,8 @@ def _create(client, **kwargs):
     return r.json()["task"]
 
 
-def test_patch_sets_model_override(client):
+def test_patch_sets_model_override(client, kanban_home):
+    configure_profile(kanban_home, "worker", "gpt-5.6-sol", "openai")
     task = _create(client)
     r = client.patch(
         f"/api/plugins/kanban/tasks/{task['id']}",
@@ -220,7 +252,8 @@ def test_patch_sets_model_override(client):
     assert updated["provider_override"] == "openai"
 
 
-def test_bulk_model_override(client):
+def test_bulk_model_override(client, kanban_home):
+    configure_profile(kanban_home, "worker", "fallback-model", "nous")
     t1 = _create(client)
     t2 = _create(client)
     r = client.post(
@@ -274,9 +307,10 @@ def test_reasoning_effort_normalizes_and_rejects(conn):
         kb.set_reasoning_effort(conn, tid, "extremely-hard")
 
 
-def test_reasoning_effort_survives_clearing_the_model(conn):
+def test_reasoning_effort_survives_clearing_the_model(conn, kanban_home):
     """Depth and model are independent knobs: dropping a model override must
     not silently reset the thinking depth the operator chose."""
+    configure_profile(kanban_home, "worker", "glm-5", "openrouter")
     tid = kb.create_task(
         conn, title="t", assignee="worker",
         model_override="glm-5", provider_override="openrouter",
@@ -334,3 +368,133 @@ def test_bulk_reasoning_effort(client):
     for tid in (t1["id"], t2["id"]):
         got = client.get(f"/api/plugins/kanban/tasks/{tid}").json()["task"]
         assert got["reasoning_effort"] == "max"
+
+
+# ---------------------------------------------------------------------------
+# Provenance guard — a pin may only be what the assignee profile actually runs
+#
+# An observed defect: a minted card carried an INVENTED model string — a retired dated
+# snapshot, a duplicated provider prefix, a truncated id, a foreign model on the wrong
+# provider — and the worker ran on it, or died at startup. The gate has to be
+# provenance (what the target profile's own config declares), never membership (a
+# retired dated snapshot is a real catalog entry).
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_provider_prefix_normalized_and_conforming_pair_kept(kanban_home):
+    """RED→GREEN control pair, at the validator."""
+    configure_profile(kanban_home, "pinned-worker", "deepseek/deepseek-v4.1-flash", "nous")
+    # RED: the exact recorded argv shape (`-m nous/deepseek/... --provider nous`).
+    assert kb._validate_model_override(
+        "nous/deepseek/deepseek-v4.1-flash", "nous", target_profile="pinned-worker",
+    ) == ("deepseek/deepseek-v4.1-flash", "nous")
+    # GREEN: the conforming pair passes unchanged.
+    assert kb._validate_model_override(
+        "deepseek/deepseek-v4.1-flash", "nous", target_profile="pinned-worker",
+    ) == ("deepseek/deepseek-v4.1-flash", "nous")
+
+
+def test_retired_dated_snapshot_refused_naming_the_allowed_value(kanban_home):
+    configure_profile(kanban_home, "pinned-worker", "deepseek/deepseek-v4.1-flash", "nous")
+    with pytest.raises(ValueError) as exc:
+        kb._validate_model_override(
+            "deepseek/deepseek-v4-flash-0731", "nous", target_profile="pinned-worker",
+        )
+    message = str(exc.value)
+    assert "deepseek/deepseek-v4.1-flash" in message  # names the allowed value
+    assert "model.approved_pins" in message           # names the deliberate-pin route
+
+
+@pytest.mark.parametrize("model", [
+    "deepseek/deepseek-v4-flash-0731",  # retired dated snapshot (a REAL catalog entry)
+    "deepseek/deepseek-v4.1-fla",       # truncated id
+    "anthropic/claude-sonnet-4.5",      # foreign model on the profile's provider
+    "grok-4.7",                         # another profile's model
+])
+def test_models_the_profile_does_not_run_are_refused(kanban_home, model):
+    configure_profile(kanban_home, "pinned-worker", "deepseek/deepseek-v4.1-flash", "nous")
+    with pytest.raises(ValueError):
+        kb._validate_model_override(model, "nous", target_profile="pinned-worker")
+
+
+def test_profile_default_on_a_foreign_provider_is_refused(kanban_home):
+    """`model X with provider Y` is the classic board-stall — a matching model is not
+    enough when the provider would route it to a backend that profile does not use."""
+    configure_profile(kanban_home, "pinned-worker", "deepseek/deepseek-v4.1-flash", "nous")
+    with pytest.raises(ValueError) as exc:
+        kb._validate_model_override(
+            "deepseek/deepseek-v4.1-flash", "deepseek", target_profile="pinned-worker",
+        )
+    assert "provider" in str(exc.value)
+
+
+def test_approved_pin_allows_a_declared_model(kanban_home):
+    configure_profile(
+        kanban_home, "pinned-worker", "deepseek/deepseek-v4.1-flash", "nous",
+        approved_pins=["deepseek/deepseek-v4-pro",
+                       {"model": "grok-4.7", "provider": "xai-oauth"}],
+    )
+    # A bare-id pin inherits the profile's provider; a mapping pin names its own.
+    assert kb._validate_model_override(
+        "deepseek/deepseek-v4-pro", None, target_profile="pinned-worker",
+    ) == ("deepseek/deepseek-v4-pro", None)
+    assert kb._validate_model_override(
+        "grok-4.7", "xai-oauth", target_profile="pinned-worker",
+    ) == ("grok-4.7", "xai-oauth")
+    # Approved model, unapproved provider -> still refused.
+    with pytest.raises(ValueError):
+        kb._validate_model_override("grok-4.7", "nous", target_profile="pinned-worker")
+
+
+def test_profile_with_no_configured_model_refuses_every_pin(conn, kanban_home):
+    profile = kanban_home / "profiles" / "bare"
+    profile.mkdir(parents=True, exist_ok=True)
+    profile.joinpath("config.yaml").write_text("toolsets:\n  - terminal\n", encoding="utf-8")
+    with pytest.raises(ValueError) as exc:
+        kb.create_task(conn, title="t", assignee="bare", model_override="glm-5")
+    assert "model.default" in str(exc.value)
+
+
+def test_card_with_no_assignee_refuses_a_pin(conn, kanban_home):
+    """Nothing can justify a pin when there is no profile to declare it."""
+    with pytest.raises(ValueError) as exc:
+        kb.create_task(
+            conn, title="t", model_override="deepseek/deepseek-v4.1-flash",
+            provider_override="nous",
+        )
+    assert "no assignee profile" in str(exc.value)
+
+
+def test_refusals_fire_from_create_task_and_set_model_override(conn, kanban_home):
+    configure_profile(kanban_home, "pinned-worker", "deepseek/deepseek-v4.1-flash", "nous")
+    with pytest.raises(ValueError):
+        kb.create_task(
+            conn, title="t", assignee="pinned-worker",
+            model_override="deepseek/deepseek-v4-flash-0731", provider_override="nous",
+        )
+    tid = kb.create_task(conn, title="ok", assignee="pinned-worker")
+    with pytest.raises(ValueError):
+        kb.set_model_override(conn, tid, "deepseek/deepseek-v4-flash-0731", provider="nous")
+    assert kb.get_task(conn, tid).model_override is None
+
+
+def test_clearing_a_pin_and_a_missing_task_never_need_a_policy(conn):
+    """Clearing drops both columns and must work with no profile config at all; an
+    unknown task id still reports False rather than raising a validation error."""
+    tid = kb.create_task(conn, title="t", assignee="worker")
+    assert kb.set_model_override(conn, tid, None)
+    assert kb.get_task(conn, tid).model_override is None
+    assert kb.set_model_override(conn, "t_missing", "deepseek/deepseek-v4.1-flash") is False
+
+
+def test_dashboard_patch_refuses_a_pin_the_profile_does_not_run(client, kanban_home):
+    configure_profile(kanban_home, "worker", "deepseek/deepseek-v4.1-flash", "nous")
+    task = _create(client)
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"model_override": "deepseek/deepseek-v4-flash-0731", "provider_override": "nous"},
+    )
+    assert r.status_code == 400, r.text
+    assert "deepseek/deepseek-v4.1-flash" in r.text
+    got = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()["task"]
+    assert got["model_override"] is None

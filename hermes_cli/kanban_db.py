@@ -1008,15 +1008,175 @@ def _host_prefix() -> str:
 
 # --- Task creation / mutation ---
 
-def _validate_model_override(model: Optional[str], provider: Optional[str]) -> tuple[Optional[str], Optional[str]]:
-    """Strip both; a provider without a model is rejected (a bare ``--provider``
-    would re-resolve the profile's model against another backend — exactly
-    the mismatch the override exists to kill)."""
+def _profile_model_policy(
+    profile: Optional[str],
+) -> tuple[Optional[str], Optional[str], tuple[Any, ...]]:
+    """``(default_model, default_provider, approved_pins)`` declared by *profile*.
+
+    Provenance source for :func:`_validate_model_override`. Which model a profile runs is
+    a property of that profile's own ``config.yaml``, so a pin is justified only against
+    what that file says. Read directly — no merged defaults, no ``HERMES_HOME`` switch, no
+    writes — because a validation question must not mutate process state to be answered,
+    and the profile's own file is authoritative for it (a profile with no declared default
+    simply has nothing a pin can conform to).
+
+    ``(None, None, ())`` when the profile or its config cannot be read: with no declared
+    default there is nothing a pin can conform to, so the caller fails closed.
+    """
+    if not isinstance(profile, str) or not profile.strip():
+        return None, None, ()
+    try:
+        from hermes_cli.profiles import get_profile_dir
+        from utils import fast_safe_load
+
+        config_path = get_profile_dir(profile) / "config.yaml"
+        with open(config_path, encoding="utf-8-sig") as handle:
+            data = fast_safe_load(handle) or {}
+    except Exception:
+        return None, None, ()
+    if not isinstance(data, dict):
+        return None, None, ()
+    model_in = data.get("model")
+    if isinstance(model_in, str):  # ``model: <id>`` shorthand
+        model_in = {"default": model_in}
+    if not isinstance(model_in, dict):
+        return None, None, ()
+
+    raw = model_in.get("default") or model_in.get("model") or model_in.get("name")
+    nested_provider = ""
+    if isinstance(raw, dict):  # ``default: {model: <id>, provider: <p>}``
+        nested_provider = str(raw.get("provider") or "").strip()
+        raw = raw.get("model") or raw.get("default")
+    model = raw.strip() if isinstance(raw, str) and raw.strip() else None
+    provider = str(model_in.get("provider") or "").strip() or nested_provider or None
+    pins = model_in.get("approved_pins")
+    return model, provider, tuple(pins) if isinstance(pins, (list, tuple)) else ()
+
+
+def _approved_pin(entry: Any) -> tuple[Optional[str], Optional[str]]:
+    """``(model, provider)`` from one ``model.approved_pins`` entry (string or mapping)."""
+    if isinstance(entry, str):
+        return (entry.strip() or None), None
+    if isinstance(entry, dict):
+        model = str(entry.get("model") or entry.get("default") or "").strip() or None
+        provider = str(entry.get("provider") or "").strip() or None
+        return model, provider
+    return None, None
+
+
+def _approved_pin_match(
+    model: str,
+    provider: Optional[str],
+    approved_pins: Iterable[Any],
+    default_provider: Optional[str],
+) -> bool:
+    """True when *model* on the provider it would run on is an explicitly approved pin.
+
+    A bare-id pin inherits the profile's own provider; a mapping pin
+    (``{model: …, provider: …}``) names its provider and only matches that pair.
+    """
+    effective_provider = provider or default_provider
+    return any(
+        pin_model == model and (pin_provider or default_provider) == effective_provider
+        for pin_model, pin_provider in (_approved_pin(entry) for entry in approved_pins)
+    )
+
+
+def _validate_model_override(
+    model: Optional[str],
+    provider: Optional[str],
+    *,
+    target_profile: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Normalize a per-task model/provider pin; refuse it unless it is justified.
+
+    The pin travels with the claimed card into the worker's session policy
+    (``gateway/session_kanban.py``), so a pin that does not resolve to what the target
+    profile actually runs buys a whole worker run on the wrong model — or dies at
+    startup. This class of pin error keeps recurring in practice, and every observed
+    instance was an *invented* string: a duplicated provider prefix
+    (``nous/deepseek/deepseek-v4.1-flash`` + ``nous``), a retired dated snapshot
+    (``deepseek/deepseek-v4-flash-0731`` — a REAL catalog entry, so an "is this a known
+    model?" membership check passes it), a truncated id, a foreign model on the wrong
+    provider. So the rule is PROVENANCE, not membership: an override is accepted only when
+    it equals the **target profile's** configured ``model.default``, or one of that
+    profile's explicitly approved pins (``model.approved_pins`` in its own config — an
+    operator declaration, never free text). Anything else is refused loudly, naming the
+    allowed value(s), so the caller re-mints without a pin and the worker falls back to the
+    profile's own model instead of silently running off-policy.
+
+    A model whose leading path segment repeats the supplied provider
+    (``nous/deepseek/deepseek-v4.1-flash`` + ``nous``) is NORMALIZED to the bare id rather
+    than refused, but only when that bare id is itself the profile's configured model (or an
+    approved pin): the duplicated segment is then a pure spelling artifact and the stripped
+    id is the caller's evident intent, so the card runs the profile's own model instead of
+    failing over a typo — the standing rule is that a pin which cannot resolve is
+    worse than no pin. Normalization therefore cannot widen the gate (it only fires on a
+    value rejection would have had to reward anyway), and it never mangles a legitimate
+    vendor-prefixed id: a provider that also heads the model's namespace (``deepseek`` +
+    ``deepseek/deepseek-v4.1-flash``) leaves an unresolvable remainder, so the original
+    string is kept verbatim and refused by the provenance rule below.
+
+    ``target_profile`` is the assignee (canonical profile id). Unknown/absent means nothing
+    can justify a pin, so any override is refused.
+    """
     model = (model or "").strip() or None
     provider = (provider or "").strip() or None
     if provider and not model:
         raise ValueError("provider_override requires a model_override")
-    return model, provider
+    if model is None:
+        return None, None
+
+    default_model, default_provider, approved_pins = _profile_model_policy(target_profile)
+    who = f"profile {target_profile!r}" if target_profile else "this card (no assignee profile)"
+
+    # 1. A duplicated provider prefix is a spelling artifact, not a different model — but
+    #    only strip it when the bare id is a value this profile actually runs. A provider
+    #    whose name also heads the model's vendor namespace (``provider: deepseek`` with
+    #    ``deepseek/deepseek-v4.1-flash``) would otherwise be mangled, so anything that does
+    #    not resolve after stripping is left verbatim for the provenance gate to refuse.
+    if provider and model.startswith(f"{provider}/"):
+        stripped = model[len(provider) + 1:].strip()
+        if stripped and (
+            (default_model and stripped == default_model)
+            or _approved_pin_match(stripped, provider, approved_pins, default_provider)
+        ):
+            model = stripped
+
+    # 2. Provenance: the target profile's own configured model, or an approved pin.
+    if default_model and model == default_model:
+        if provider and provider != default_provider:
+            runs_on = (
+                f"provider {default_provider!r}" if default_provider
+                else "its configured default provider (none declared)"
+            )
+            raise ValueError(
+                f"model_override {model!r} cannot be pinned to provider {provider!r}: "
+                f"{who} runs it on {runs_on}. Omit the provider to inherit the profile's "
+                "own, or declare the pair in the profile's model.approved_pins."
+            )
+        return model, provider
+
+    if _approved_pin_match(model, provider, approved_pins, default_provider):
+        return model, provider
+
+    if not target_profile:
+        allowed = "(this card has no assignee profile, so no configured model can justify a pin)"
+    elif default_model:
+        allowed = f"{default_model!r} (provider {default_provider!r})"
+    else:
+        allowed = "(this profile declares no model.default)"
+    pins = ", ".join(
+        sorted({m for m, _ in (_approved_pin(e) for e in approved_pins) if m})
+    ) or "none"
+    raise ValueError(
+        f"model_override {model!r}"
+        + (f" (provider {provider!r})" if provider else "")
+        + f" is not permitted for {who}: it is neither the profile's configured "
+        f"model.default {allowed} nor an approved pin (approved pins: {pins}). "
+        "Omit the override to run the profile's own model, or declare a deliberate pin in "
+        "that profile's model.approved_pins."
+    )
 
 
 def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
@@ -1188,9 +1348,13 @@ def create_task(
     from hermes_cli.kanban_pr_acceptance import validate_contract
 
     completion_contract = validate_contract(completion_contract)
-    model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
+    # Validated against the ASSIGNEE's own configured model: a pin is provenance, not a
+    # free-form string, so the profile must be resolved before the override is judged.
+    model_override, provider_override = _validate_model_override(
+        model_override, provider_override, target_profile=assignee,
+    )
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -1489,8 +1653,15 @@ def set_model_override(
 ) -> bool:
     """Set (empty ``model`` clears BOTH) the per-task model/provider override.
     Allowed while ``running``: it applies on the NEXT dispatch, which is the
-    rate-limit-recovery flow (set, then reclaim/retry)."""
-    model, provider = _validate_model_override(model, provider)
+    rate-limit-recovery flow (set, then reclaim/retry). The pin is validated
+    against the card's own assignee profile, so a caller cannot stamp a model
+    that profile does not run."""
+    row = conn.execute("SELECT assignee FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        return False
+    model, provider = _validate_model_override(
+        model, provider, target_profile=_row_get(row, "assignee"),
+    )
     return _set_task_override(
         conn, task_id,
         "UPDATE tasks SET model_override = ?, provider_override = ? WHERE id = ?", (model, provider),

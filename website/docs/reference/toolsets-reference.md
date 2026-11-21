@@ -24,7 +24,14 @@ Every tool belongs to exactly one toolset. When you enable a toolset, all tools 
 hermes chat --toolsets web,file,terminal
 hermes chat --toolsets debugging        # composite — expands to file + terminal + web
 hermes chat --toolsets all              # everything
+hermes chat --toolsets none             # nothing: the model answers, it cannot act
 ```
+
+`none` is the opposite of `all`, and it is the only way to ask for a session with no tools at all.
+Reach for it when the prompt carries text you do not trust (scraped pages, job postings, incoming
+mail) and the task is an answer rather than an action, or when a script embeds Hermes as a plain
+model call and a tool call would be a bug rather than a bonus. A mixed value drops the token, so
+`--toolsets none,web` is just `web`.
 
 ### Per-platform (config.yaml)
 

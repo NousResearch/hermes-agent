@@ -177,7 +177,8 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "config.yaml for this run only; the persistent level lives there "
         "(or per-model under agent.reasoning_overrides)."))
     add("-t", "--toolsets", default=None,
-        help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.")
+        help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui. "
+             "Pass 'none' to run with every tool disabled.")
     add("--resume", "-r", metavar="SESSION", default=None, help=(
         "Resume a previous session by ID or title, or pass 'latest' for "
         "the most recent session (workspace-scoped, like -c with no name)"))
@@ -254,7 +255,8 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     add("--image", help="Optional local image path to attach to a single query")
     inherited(chat_parser, "-m", "--model", default=SUPPRESS,
               help="Model to use (e.g., anthropic/claude-sonnet-4)")
-    add("-t", "--toolsets", default=SUPPRESS, help="Comma-separated toolsets to enable")
+    add("-t", "--toolsets", default=SUPPRESS,
+        help="Comma-separated toolsets to enable. 'none' disables every tool")
     inherited(chat_parser, "--reasoning", default=SUPPRESS, metavar="LEVEL", help=(
         "Reasoning effort for this session: none, minimal, low, medium, "
         "high, xhigh, max, or ultra. Overrides agent.reasoning_effort for "

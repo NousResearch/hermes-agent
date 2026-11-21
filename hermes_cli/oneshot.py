@@ -111,12 +111,13 @@ def _oneshot_exit_code(response: Optional[str], result: dict) -> int:
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
-    """Split repeated/comma-separated toolset flags into a clean list (``None`` when empty)."""
-    if not toolsets:
-        return None
-    items = toolsets if isinstance(toolsets, (list, tuple)) else [toolsets]
-    parts = [str(item).split(",") if isinstance(item, str) else [str(item)] for item in items]
-    return [p.strip() for chunk in parts for p in chunk if p.strip()] or None
+    """Split repeated/comma-separated toolset flags into a clean list (``None`` when empty).
+
+    ``none`` comes back as ``[]`` rather than ``None``: the empty list is the caller's explicit
+    "no tools" selection, and ``None`` would fall back to the default surface.
+    """
+    from toolsets import parse_toolset_selection
+    return parse_toolset_selection(toolsets)
 
 
 def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] = None) -> None:

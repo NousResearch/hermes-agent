@@ -488,6 +488,26 @@ def validate_toolset(name: str) -> bool:
             or name in _get_plugin_toolset_names() or name in _get_registry_toolset_aliases())
 
 
+# ``--toolsets none``: the opposite of ``all``. A caller that hands untrusted text to the model
+# needs tools to be impossible, not merely unlikely, so "no tools" has to be an explicit grant.
+NO_TOOLS_TOKEN = "none"
+
+
+def parse_toolset_selection(raw: Any) -> Optional[list[str]]:
+    """Normalize a ``--toolsets`` value into a toolset list.
+
+    ``None`` means the flag was not given, so the caller's own default applies. ``none`` is the
+    explicit empty selection and comes back as ``[]``: ``None`` alone means "all tools"
+    (``_select_tool_names``), while a non-``None`` empty list already means "no tools" everywhere
+    downstream. Mixed values drop the token, so ``none,web`` is just ``web``.
+    """
+    items = raw if isinstance(raw, (list, tuple)) else [raw]
+    names = [part.strip() for item in items if item is not None
+             for part in str(item).split(",")
+             if part.strip() and part.strip().lower() != NO_TOOLS_TOKEN]
+    return names or ([] if raw else None)
+
+
 def create_custom_toolset(name: str, description: str, tools: list[str] | None = None, includes: list[str] | None = None) -> None:
     """Register a runtime toolset in TOOLSETS."""
     TOOLSETS[name] = _ts(description, tools or [], includes or [])

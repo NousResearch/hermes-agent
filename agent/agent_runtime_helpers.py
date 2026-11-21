@@ -1136,10 +1136,10 @@ def dump_api_request_debug(
         safe_sid = _safe_session_filename_component(agent.session_id)
         dump_file = agent.logs_dir / f"request_dump_{safe_sid}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
         # Redact secrets first (this fires on every API error with the full request body), leaf-wise:
-        # a whole-JSON pass can eat a string's closing quote and the dump would be dropped.
+        # a whole-JSON pass can eat a string's closing quote. Owner-only even so: it holds the prompt.
         from agent.redact_structured import redact_structured
         _redacted_payload = redact_structured(dump_payload)
-        atomic_json_write(dump_file, _redacted_payload, default=str)
+        atomic_json_write(dump_file, _redacted_payload, mode=0o600, default=str)
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
         if env_var_enabled("HERMES_DUMP_REQUEST_STDOUT"):
             print(json.dumps(_redacted_payload, ensure_ascii=False, indent=2, default=str))

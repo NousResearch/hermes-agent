@@ -337,7 +337,7 @@ def get_board(
         columns["done"].sort(key=lambda d: d["id"], reverse=True)
         columns["done"].sort(key=lambda d: (d["completed_at"] is None, -(d["completed_at"] or 0)))
 
-        # Queue columns keep list_tasks' dispatch order (priority DESC, created_at ASC).
+        # Queue columns keep list_tasks' dispatch order (priority ASC, created_at ASC).
         tenants = [r["tenant"] for r in conn.execute("SELECT DISTINCT tenant FROM tasks WHERE tenant IS NOT NULL ORDER BY tenant")]
         # List of known assignees for the lane-by-profile sub-grouping.
         # Uses kanban_db.known_assignees so the lane set unions profiles

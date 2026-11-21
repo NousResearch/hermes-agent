@@ -7,6 +7,8 @@ export interface InAppOffer {
   body: string;
   cta_label: string;
   cta_url: string;
+  /** ISO instant the offer's promo stops being claimable; absent with no deadline. */
+  claimable_until?: string;
 }
 
 /** The Nous Portal's in-app offer for the managed profile (null when none). `refresh` fetches the
@@ -33,7 +35,25 @@ export function validOffer(value: unknown): InAppOffer | null {
   } catch {
     return null;
   }
-  return { id: o.id, title: o.title, body: o.body, cta_label: o.cta_label, cta_url: o.cta_url };
+  const offer: InAppOffer = { id: o.id, title: o.title, body: o.body, cta_label: o.cta_label, cta_url: o.cta_url };
+  if (typeof o.claimable_until === "string" && !Number.isNaN(new Date(o.claimable_until).getTime())) {
+    offer.claimable_until = o.claimable_until;
+  }
+  return offer;
+}
+
+/** "Dec 15, 2026, 12:00 PM UTC": the Portal's own deadline wording, in UTC so every surface names
+ * the same instant. */
+export function formatClaimDeadline(iso: string): string {
+  const date = new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "UTC",
+  }).format(new Date(iso));
+  return `${date} UTC`;
 }
 
 /** Close the offer for the profile on every surface (Desktop and the Webapp read the same record).

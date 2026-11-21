@@ -123,6 +123,13 @@ describe("validOffer", () => {
     },
   );
 
+  it("keeps a valid claim deadline and drops a malformed one", () => {
+    expect(validOffer({ ...OK, claimable_until: "2026-12-15T12:00:00.000Z" })?.claimable_until).toBe(
+      "2026-12-15T12:00:00.000Z",
+    );
+    expect(validOffer({ ...OK, claimable_until: "soon" })).toEqual(OK);
+  });
+
   it("rejects blank copy and non-objects", () => {
     expect(validOffer({ ...OK, title: " " })).toBeNull();
     expect(validOffer(null)).toBeNull();

@@ -178,6 +178,16 @@ describe("InAppOfferDialog", () => {
     expect(dismissals.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([{ offer_id: "offer_1" }]);
   });
 
+  it("names the claim deadline in UTC when the offer has one", async () => {
+    vi.spyOn(offers, "getInAppOffer").mockResolvedValue({
+      in_app_offer: { ...OFFER, claimable_until: "2026-12-15T17:30:00.000Z" },
+    });
+    await mount();
+    await act(async () => vi.advanceTimersByTimeAsync(IDLE_SETTLE_MS));
+
+    expect(dialog()?.textContent).toContain("Claim by Dec 15, 2026, 5:30 PM UTC");
+  });
+
   it("re-checks a tab left open past the daily cap and shows the offer then", async () => {
     vi.spyOn(offers, "getInAppOffer").mockResolvedValue({ in_app_offer: OFFER });
     // Another offer was shown an hour ago: inside the cap.

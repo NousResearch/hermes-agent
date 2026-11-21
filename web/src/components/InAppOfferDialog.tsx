@@ -7,6 +7,7 @@ import { useI18n } from "@/i18n";
 import {
   FIRST_REFRESH_DELAY_MS,
   dismissInAppOfferForProfile,
+  formatClaimDeadline,
   getInAppOffer,
   type InAppOffer,
   IDLE_SETTLE_MS,
@@ -179,6 +180,13 @@ export function InAppOfferDialog() {
             >
               {offer.body}
             </p>
+            {offer.claimable_until && (
+              <p className="text-[0.7rem] text-muted-foreground">
+                {(t.app.inAppOfferClaimBy ?? ((deadline: string) => `Claim by ${deadline}`))(
+                  formatClaimDeadline(offer.claimable_until),
+                )}
+              </p>
+            )}
           </div>
           <button
             aria-label={t.app.dismiss ?? "Dismiss"}

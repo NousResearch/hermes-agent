@@ -577,7 +577,7 @@ def _finalize_update_output(state):
             log_file.close()
 
 
-def _report_dashboard_status() -> int:
+def _report_dashboard_status(status_host: str = "127.0.0.1", status_port: int = 0) -> int:
     """Print live listening dashboard/serve processes and return the count.
 
     Serve-mode backends are INCLUDED: ``--stop`` kills them, so hiding them from
@@ -587,10 +587,26 @@ def _report_dashboard_status() -> int:
     augmentation in _scan_dashboard_processes, and the ledger's recorded bind replaces the argv port so
     ``--port 0`` backends are probed on the port the OS actually gave them. See #81564.
     """
-    from hermes_cli.dashboard_procs import _ledger_serve_binds, _scan_dashboard_processes
+    from hermes_cli.dashboard_procs import (
+        _caller_ancestor_pids, _ledger_serve_binds, _process_listens_on, _scan_dashboard_processes,
+    )
     from gateway.status import _pid_exists
     binds = _ledger_serve_binds()
-    live: list[tuple[int, str, str]] = []
+    # A launcher that runs this CLI as its child (the Windows one) has this same `dashboard --status` argv
+    # (a dashboard on 9119 or the --port it names), so the probe below answered for whatever held that
+    # port and the launcher was listed as a backend. An ancestor is listed only while it holds the
+    # listener itself. The installed POSIX launcher execs instead, so the address this --status names
+    # is probed here too, when this machine can listen there (no lookup, no foreign connect). The only
+    # address this home's gateway is asked about is the peer that probe connected to, unless a listed
+    # backend holds a listener covering that peer
+    # (a listed process with no covering listener there is listed, not credited).
+    ancestors: set[int] | None = None
+    own = None
+    if status_port > 0 and _status_host_is_local(status_host):
+        with contextlib.suppress(OSError, UnicodeError, ValueError):
+            own = _dashboard_listening(status_host, status_port)
+    unclaimed: list[tuple[str, int]] = [(own, status_port)] if own else []
+    candidates: list[tuple[int, str, str, tuple[str, int]]] = []
     for pid, command in _scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)
         if runtime is None:
@@ -599,28 +615,71 @@ def _report_dashboard_status() -> int:
         if pid in binds:
             ledger_host, port = binds[pid]
             host = ledger_host or host
-        if port <= 0 or not _pid_exists(pid) or not _dashboard_listening(host, port):
+        if port <= 0 or not _pid_exists(pid) or not (peer := _dashboard_listening(host, port)):
             continue
-        live.append((pid, command, mode))
+        if ancestors is None:
+            ancestors = _caller_ancestor_pids()
+        if pid in ancestors and _process_listens_on(pid, port) is False:
+            unclaimed.append((peer, port))
+            continue
+        candidates.append((pid, command, mode, (peer, port)))
+    live = [(pid, command, mode) for pid, command, mode, _ in candidates]
+    gateway_note = None
+    if unclaimed:
+        from hermes_cli.web_server_port_holder import _binds_overlap, _listening_addresses, gateway_webapp_summary
+        held = {
+            (peer, port) for pid, _, _, (peer, port) in candidates
+            if (peer, port) in unclaimed and any(
+                _binds_overlap(bound, peer, port) for bound in _listening_addresses(pid, port)
+            )
+        }
+        asked = [peer for peer in dict.fromkeys(unclaimed) if peer not in held]
+        gateway_note = next(filter(None, (gateway_webapp_summary(*peer) for peer in asked)), None)
 
     if not live:
         print("No hermes dashboard or serve processes running.")
+        if gateway_note:
+            print(gateway_note)
         return 0
 
     print(f"{len(live)} hermes dashboard/serve process(es) running:")
     for pid, command, mode in live:
         print(f"    PID {pid} [{mode}]: {command}")
+    if gateway_note:
+        print(gateway_note)
     return len(live)
 
 
-def _dashboard_listening(host: str, port: int) -> bool:
-    """True when something accepts TCP connections at host:port (even a 401 proves a dashboard is up)."""
+def _status_host_is_local(host: str) -> bool:
+    """Whether this machine can listen on *host* with no name lookup: ``localhost``, a loopback or
+    wildcard IP literal, or an address one of its interfaces holds. Any other host (a DNS name, another
+    machine's address) is never probed by --status itself, so no resolver or foreign connect can stall it."""
+    import ipaddress
+    name = (host or "").strip().strip("[]")
+    if name == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    if address.is_loopback or address.is_unspecified:
+        return True
+    from hermes_platform.host.facts import has_interface_address
+    try:
+        return has_interface_address(name)
+    except (OSError, ValueError):
+        return False
+
+
+def _dashboard_listening(host: str, port: int) -> str | None:
+    """The numeric address that accepted a TCP connection at host:port (even a 401 proves a dashboard
+    is up), or None when nothing answered."""
     import socket
     try:
-        with socket.create_connection((_dashboard_probe_host(host), port), timeout=1.5):
-            return True
+        with socket.create_connection((_dashboard_probe_host(host), port), timeout=1.5) as client:
+            return client.getpeername()[0]
     except OSError:
-        return False
+        return None
 
 
 def _cancel(message: str = "  Cancelled.") -> NoReturn:

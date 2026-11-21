@@ -1,10 +1,10 @@
 """Live: build a real child through delegate_tool's spawn path (real imports, temp HERMES_HOME) and read the
 trigger it resolves on a 1M-window model. Run against main and the branch."""
-import os, sys, tempfile, shutil
+import os, sys, tempfile
 root = sys.argv[1]
 sys.path.insert(0, root)
-home = tempfile.mkdtemp(prefix="hh-")
-os.environ["HERMES_HOME"] = home
+temp_home = tempfile.TemporaryDirectory(prefix="hh-")
+os.environ["HERMES_HOME"] = temp_home.name
 os.environ["HERMES_STREAM_RETRIES"] = "0"
 try:
     from run_agent import AIAgent
@@ -29,4 +29,4 @@ try:
     print(f"window={cc.context_length:,} threshold_percent={cc.threshold_percent} trigger={cc.threshold_tokens:,} cap={cc.threshold_tokens_cap}")
     print(f"parent trigger={parent.context_compressor.threshold_tokens:,}")
 finally:
-    shutil.rmtree(home, ignore_errors=True)
+    temp_home.cleanup()

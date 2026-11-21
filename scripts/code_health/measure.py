@@ -108,10 +108,11 @@ def _executable_lines(text: str, tree: ast.Module) -> list[str]:
 
 
 class Measurer:
-    def __init__(self, repo: Path, ruff: list[str], known_env: set[str]) -> None:
+    def __init__(self, repo: Path, ruff: list[str], known_env: set[str],
+                 first_party: frozenset[str]) -> None:
         self.repo = repo
         self.ruff = ruff
-        self.ctx = py_rules.Ctx(known_env=known_env)
+        self.ctx = py_rules.Ctx(known_env=known_env, first_party=first_party)
         self.regex_rules = _regex_rules(repo)
 
     def measure(self, tree: str | None, paths: list[str]) -> dict[str, FileMeasure]:

@@ -93,6 +93,7 @@ def replay_one(repo: Path, measurer: Measurer, base: str, head: str) -> list[dic
     if not head_paths:
         return []
     measurer.ctx.known_env = gitio.known_env_names(repo, base)
+    measurer.ctx.first_party = gitio.first_party_names(repo, base) | gitio.first_party_names(repo, head)
     base_m = measurer.measure(base, base_paths)
     head_m = measurer.measure(head, head_paths)
     findings = compare(base_m, head_m, changes, gitio.tree_moves(repo, head))
@@ -116,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         manifest = build_manifest(repo, args.merged, args.limit)
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
-    measurer = Measurer(repo, resolve_ruff(repo), known_env=set())
+    measurer = Measurer(repo, resolve_ruff(repo), known_env=set(), first_party=frozenset())
     per_rule: Counter[str] = Counter()
     prs_per_rule: Counter[str] = Counter()
     blocked = 0

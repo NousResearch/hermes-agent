@@ -16,6 +16,7 @@ _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
 @dataclass
 class Ctx:
     known_env: set[str] = field(default_factory=set)
+    first_party: frozenset[str] = frozenset()
 
 
 def _dotted(node: ast.AST) -> str:

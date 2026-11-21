@@ -542,6 +542,7 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
     # blind splitting — same navigation as ``hermes config set``'s ``_set_nested``; otherwise
     # /model + TUI persistence wrote ``glm-5: {'3': ...}`` phantom siblings.
     # See #91607.
+    # health: allow HX018 -- the config writer's round-trip YAML path; it leaves utils when the YAML helpers get an owner
     from hermes_cli.config import _greedy_literal_match, _split_key_path
 
     path = Path(path)
@@ -612,6 +613,7 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
     users' own comments (#92554).
     """
     from ruamel.yaml.comments import CommentedMap, CommentedSeq
+    # health: allow HX018 -- the config writer's round-trip YAML path; it leaves utils when the YAML helpers get an owner
     from hermes_cli.config import require_readable_config_before_write
 
     path = Path(path)

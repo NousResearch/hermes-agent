@@ -5,7 +5,8 @@
 - ``utils.urls``: base URL hostname, path and origin, and domain matching.
 - ``utils.env``: truthy strings, numeric env vars, and proxy env var normalization.
 
-Callers import from ``utils``; tests patch a name in the module that defines it.
+Existing callers import from ``utils``; new code imports from the submodule. Tests patch a name in
+the module that defines it.
 """
 
 from utils.env import (

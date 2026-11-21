@@ -96,6 +96,19 @@ class TestClassification:
         for name in BRIDGE_TOOL_NAMES:
             assert not is_deferrable_tool_name(name)
 
+    def test_eager_list_keeps_plugin_tool_visible(self):
+        """tools.tool_search.eager pins a plugin/MCP tool as direct (no bridge round trip)."""
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+
+        cfg = ToolSearchConfig.from_raw({"eager": ["semantic_search"]})
+        assert cfg.effective_eager_tools == frozenset({"semantic_search"})
+        assert not is_deferrable_tool_name(
+            "semantic_search", cfg.effective_defer_tools, cfg.effective_eager_tools)
+        # Eager wins over an explicit defer entry, and a scalar is a loud no-op, not a crash.
+        assert not is_deferrable_tool_name(
+            "semantic_search", frozenset({"semantic_search"}), cfg.effective_eager_tools)
+        assert ToolSearchConfig.from_raw({"eager": "semantic_search"}).effective_eager_tools == frozenset()
+
     def test_gui_surface_tools_never_defer(self):
         """Session-gated GUI tools stay direct and stay off the global core list."""
         from tools.registry import discover_builtin_tools, registry

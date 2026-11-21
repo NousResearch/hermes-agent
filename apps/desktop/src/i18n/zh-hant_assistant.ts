@@ -338,6 +338,7 @@ export const zhHantAssistant = {
       skillActivity: {
         loading: '正在載入技能',
         loaded: '已載入技能',
+        unchanged: '技能未變更',
         loadFailed: '技能載入失敗',
         readingResource: '正在讀取技能資源',
         readResource: '已讀取技能資源',

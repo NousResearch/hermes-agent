@@ -86,6 +86,12 @@
      these as `--series-input-token` / `--series-output-token`. */
   --series-input-token: #ffe6cb;
   --series-output-token: #34d399;
+
+  /* Text hierarchy floors (T4.4). The DS default for `--text-disabled` is
+     45% midground alpha — 3.87:1 on this canvas, under WCAG AA. Pin it to
+     60% (5.92:1) at :root; ThemeProvider keeps rewriting `--midground-base`,
+     so this mix follows whichever theme is active. */
+  --text-disabled: color-mix(in srgb, var(--midground-base) 60%, transparent);
 }
 
 /* Theme tokens cascade into the document root so every descendant inherits

@@ -1183,7 +1183,7 @@ export default function ProfilesPage() {
                             "h-1.5 w-1.5 rounded-full",
                             p.gateway_running
                               ? "bg-success"
-                              : "bg-muted-foreground/40",
+                              : "bg-muted-foreground/60",
                           )}
                         />
 

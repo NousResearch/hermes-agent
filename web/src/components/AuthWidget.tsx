@@ -98,7 +98,7 @@ export function AuthWidget({ className }: AuthWidgetProps) {
     return (
       <div
         className={cn(
-          "h-9 px-5 py-2 text-[0.65rem] text-muted-foreground/40",
+          "h-9 px-5 py-2 text-[0.65rem] text-muted-foreground/70",
           className,
         )}
         aria-busy="true"

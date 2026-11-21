@@ -11,7 +11,7 @@ import json
 import math
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from itertools import groupby
+from itertools import groupby, pairwise
 from typing import Any
 
 
@@ -61,15 +61,17 @@ def _project(content: str) -> str | None:
     parsed = _terminal_output(content)
     if parsed is None:
         return None
-    runs = [{"line": line, "repeat": sum(1 for _ in group)}
-            for line, group in groupby(parsed.output.splitlines(keepends=True))]
-    if not any(run["repeat"] > 1 for run in runs):
+    lines = parsed.output.splitlines(keepends=True)
+    # Most diagnostic output is unique. Do not allocate one dictionary per line
+    # when no line-run projection is possible in the first place.
+    if not any(first == second for first, second in pairwise(lines)):
         return None
+    runs = [{"line": line, "repeat": sum(1 for _ in group)} for line, group in groupby(lines)]
     projected = json.dumps({
         "projection": "hermes-terminal-line-runs-v1",
         "result": parsed.fields,
         "output_runs": runs,
-    }, ensure_ascii=False, separators=(",", ":"))
+    }, ensure_ascii=True, separators=(",", ":"))
     # The archive reference costs space too. Let the existing reclaim gate decide
     # whether this becomes a cache-breaking commit, but never propose expansion.
     return projected if len(content) - len(projected) >= 200 else None

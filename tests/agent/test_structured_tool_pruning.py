@@ -32,6 +32,10 @@ def _body(label="fixture"):
         "stderr": "assertion failed", "timed_out": False})
 
 
+def _invalid_json_field(field):
+    return _body()[:-1] + "," + field + "}"
+
+
 def _history(label="fixture"):
     rows = [{"role": "system", "content": "immutable policy"}, {"role": "user", "content": "inspect"}]
     for i in range(8):
@@ -81,16 +85,47 @@ def test_preserves_all_evidence_and_archives_the_exact_original(tmp_path, monkey
     ("read_file", "Rollback migration must remain 016.\n" + "sample\n" * 1000),
     ("mcp_support_ticket", json.dumps({"restriction": "DO NOT RESTART", "noise": ["sample"] * 1000})),
     ("terminal", json.dumps({"exit_code": 1, "output": "\n".join(str(i) for i in range(5000))})),
-    ("terminal", '{"exit_code":0,"output":"first","output":"' + "sample\\n" * 1000 + '"}'),
+    ("terminal", _invalid_json_field('"output":"conflicting output"')),
     ("terminal", json.dumps({"exit_code": True, "output": "sample\n" * 1000})),
-    ("terminal", '{"exit_code":0,"output":"' + "sample\\n" * 1000 + '","elapsed":NaN}'),
-    ("terminal", '{"exit_code":0,"output":"' + "sample\\n" * 1000 + '","elapsed":1e999}'),
-    ("terminal", '{"exit_code":0,"output":"' + "sample\\n" * 1000 + '","value":1.234567890123456789}'),
+    ("terminal", _invalid_json_field('"elapsed":NaN')),
+    ("terminal", _invalid_json_field('"elapsed":1e999')),
+    ("terminal", _invalid_json_field('"value":1.234567890123456789')),
 ])
 def test_unknown_or_ambiguous_content_stays_whole(name, body):
     history = [{"role": "user", "content": "inspect"}] + _round(0, name, body)
+    history += [{"role": "assistant", "content": "Result consumed."}]
     projected, count = _compressor()._prune_old_tool_results(history, protect_tail_count=0)
     assert count == 0 and projected == history
+
+
+def test_the_negative_case_window_actually_admits_a_valid_projection():
+    history = [{"role": "user", "content": "inspect"}] + _round(0, "terminal", _body())
+    history += [{"role": "assistant", "content": "Result consumed."}]
+    projected, count = _compressor()._prune_old_tool_results(history, protect_tail_count=0)
+    assert count == 1 and projected[2] != history[2]
+
+
+@pytest.mark.parametrize("field", ["output", "stderr"])
+def test_projection_remains_utf8_transport_safe_with_escaped_surrogates(field):
+    source = json.loads(_body())
+    source[field] = "diagnostic \ud800\n" * 600
+    history = [{"role": "user", "content": "inspect"}] + _round(0, "terminal", json.dumps(source))
+    history += [{"role": "assistant", "content": "Result consumed."}]
+    projected, count = _compressor()._prune_old_tool_results(history, protect_tail_count=0)
+    assert count == 1
+    content = projected[2]["content"]
+    assert content.encode("utf-8").decode("utf-8") == content
+    decoded = json.loads(content)
+    assert decoded["result"] == {k: v for k, v in source.items() if k != "output"}
+    assert "".join(run["line"] * run["repeat"] for run in decoded["output_runs"]) == source["output"]
+
+
+def test_distinct_results_are_not_dropped_on_a_digest_collision():
+    history = _round(0, "terminal", _body("first assertion")) + _round(1, "terminal", _body("different restriction"))
+    snapshot = copy.deepcopy(history)
+    with patch("agent.context_compressor.hashlib.md5", return_value=SimpleNamespace(hexdigest=lambda: "0" * 32)):
+        assert ContextCompressor._dedupe_tool_results(history) == 0
+    assert history == snapshot
 
 
 def test_running_turn_stays_whole(tmp_path, monkeypatch):

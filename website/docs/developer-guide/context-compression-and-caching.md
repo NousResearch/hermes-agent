@@ -906,7 +906,11 @@ The initial supported format is the terminal tool's JSON result with an integer
 `hermes-terminal-line-runs-v1` projection. Every unique line and every other JSON
 field is retained. A failure followed by hundreds of identical heartbeat lines
 therefore keeps the failure, assertions and later restrictions rather than only
-its last output line. Ambiguous JSON (including duplicate keys or non-finite
+its last output line. The projected JSON uses ASCII escapes so escaped surrogate
+code points in a result cannot make the outgoing context fail UTF-8 encoding.
+Non-repeating output is detected before allocating run dictionaries. Whole-result
+deduplication confirms exact string equality rather than a shortened digest.
+Ambiguous JSON (including duplicate keys or non-finite
 numbers), unknown tools, arbitrary read-file text and non-repetitive results stay
 whole. This mode also leaves image payloads and pressure-demoted tail bodies
 alone during this deterministic pass. Existing exact whole-result deduplication

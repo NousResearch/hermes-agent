@@ -3021,18 +3021,17 @@ class ContextCompressor(
     def _dedupe_tool_results(result: list[dict[str, Any]]) -> int:
         """Pass 1: keep the newest copy of identical tool results, back-reference older ones."""
         pruned = 0
-        content_hashes: set = set()
+        seen_content: set[str] = set()
         for i in range(len(result) - 1, -1, -1):
             msg = result[i]
             content = msg.get("content") or ""
             # Non-string/multimodal-envelope shapes can't be hashed by text.
             if msg.get("role") != "tool" or not isinstance(content, str) or len(content) < _PRUNE_MIN_CHARS:
                 continue
-            h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
-            if h in content_hashes:
+            if content in seen_content:
                 result[i] = {**msg, "content": "[Duplicate tool output — same content as a more recent call]"}
                 pruned += 1
-            content_hashes.add(h)
+            seen_content.add(content)
         return pruned
 
     @staticmethod

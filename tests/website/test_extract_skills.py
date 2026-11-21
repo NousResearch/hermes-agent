@@ -149,6 +149,13 @@ def test_source_url_synthesizes_clawhub_with_owner(mod):
     )
 
 
+def test_source_url_synthesizes_clawhub_from_owner_qualified_identifier(mod):
+    assert (
+        mod._source_url("clawhub", "@somepublisher/go-music-skill", {"owner": "somepublisher"})
+        == "https://clawhub.ai/somepublisher/skills/go-music-skill"
+    )
+
+
 def test_source_url_synthesizes_clawhub_with_owner_strips_prefix(mod):
     # Owner + prefixed identifier: prefix is stripped, owner is used.
     assert (

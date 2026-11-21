@@ -319,8 +319,8 @@ def main():
             except Exception as e:
                 print(f"  Error: {e}", file=sys.stderr)
 
-    # Enrich ClawHub skills with owner handles. The listing API does not
-    # include owner info, so we fetch each skill's detail page concurrently.
+    # Enrich ClawHub skills that their listing left without an owner handle
+    # (``ownerHandle``) by fetching each one's detail page concurrently.
     # This is needed to build valid "View source" URLs on the Skills Hub page:
     # https://clawhub.ai/{owner}/skills/{slug}. Without the owner segment the
     # URL leads to a 404.

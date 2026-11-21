@@ -108,6 +108,7 @@ import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from '../gateway/hooks/use-gateway-request'
 import { useHermesConfigRecord } from '../hooks/use-config-record'
 import { useKeybinds } from '../hooks/use-keybinds'
+import { useRouteContributions } from '../hooks/use-route-contributions'
 import { useHudHandoff } from '../hud/handoff'
 import { ModelPickerOverlay } from '../model-picker-overlay'
 import { ModelVisibilityOverlay } from '../model-visibility-overlay'
@@ -121,10 +122,8 @@ import { closeAllTerminals } from '../right-sidebar/terminal/terminals'
 import {
   CRON_ROUTE,
   navigateToWorkspacePage,
-  routeSessionId,
   sessionRoute,
-  SETTINGS_ROUTE,
-  syncWorkspaceRoute
+  SETTINGS_ROUTE
 } from '../routes'
 import { SessionImportView } from '../session-import'
 import { SessionPickerOverlay } from '../session-picker-overlay'
@@ -353,7 +352,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const profileScope = useStore($profileScope)
   const boot = useStore($desktopBoot)
 
-  const routedSessionId = routeSessionId(location.pathname)
+  // Also points the workspace at the route: the pane contribution re-registers
+  // headerVeto from $workspaceIsPage (so the main zone's tab bar stands down
+  // on pages), and a page route fronts the pane so it can't stay stuck behind
+  // a focused session tile.
+  const routedSessionId = useRouteContributions(location.pathname)
   const routedSessionIdRef = useRef(routedSessionId)
 
   routedSessionIdRef.current = routedSessionId
@@ -367,14 +370,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const clearRoutedSessionIntent = useCallback(() => {
     routedSessionIdRef.current = null
   }, [])
-
-  // Point the workspace at the route: the pane contribution re-registers
-  // headerVeto from $workspaceIsPage (so the main zone's tab bar stands down
-  // on pages), and a page route fronts the pane so it can't stay stuck behind
-  // a focused session tile.
-  useEffect(() => {
-    syncWorkspaceRoute(location.pathname)
-  }, [location.pathname])
 
   const {
     agentsOpen,

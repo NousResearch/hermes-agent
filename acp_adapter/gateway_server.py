@@ -325,7 +325,13 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         from acp_adapter.gateway_session_meta import available_commands_update
         await asyncio.sleep(0)  # after the session reply: the editor routes updates by a known id
         try:
-            await self._conn.session_update(session_id=editor_id, update=available_commands_update())
+            catalog = await (await self._client()).rpc("commands.catalog", session_id=session_id)
+        except Exception:
+            # Boundary: without the owner's catalog the editor still gets the built-in commands.
+            logger.debug("ACP skill commands for %s not discovered", session_id, exc_info=True)
+            catalog = None
+        try:
+            await self._conn.session_update(session_id=editor_id, update=available_commands_update(catalog))
             await self._project_usage(session_id, editor_id,
                                       await (await self._client()).rpc("session.stats", session_id=session_id))
         except Exception:

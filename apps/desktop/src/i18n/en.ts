@@ -3225,6 +3225,7 @@ export const en: Translations = {
     profileRail: 'Profile rail',
     nav: {
       'new-session': 'New session',
+      'drag-hint': 'Drag this onto a tab strip to stack, or onto an edge to split.',
       capabilities: 'Capabilities',
       messaging: 'Messaging',
       artifacts: 'Artifacts',

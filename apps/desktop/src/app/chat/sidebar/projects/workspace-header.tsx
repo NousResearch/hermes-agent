@@ -3,7 +3,7 @@ import type * as React from 'react'
 import { ActionsContextMenu, ActionsMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
-import { Tip } from '@/components/ui/tooltip'
+import { Tip, TipHintLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { cn } from '@/lib/utils'
@@ -56,8 +56,17 @@ export function WorkspaceAddButton({
   onClick: () => void
   onPointerDown?: (event: React.PointerEvent<HTMLButtonElement>) => void
 }) {
+  const { t } = useI18n()
+
+  // The drag gesture is undiscoverable without a pointer-down, so say so on
+  // hover — but only when this "+" actually has a drag handler (present as
+  // `onPointerDown`): a click-only button must not advertise a gesture it lacks.
   return (
-    <Tip label={label}>
+    <Tip
+      label={
+        onPointerDown ? <TipHintLabel hint={t.sidebar.nav?.['drag-hint']} text={label} /> : label
+      }
+    >
       <button
         aria-label={label}
         className={cn(

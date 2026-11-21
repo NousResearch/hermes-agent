@@ -46,6 +46,28 @@ _MAX_SIGNATURE_ERROR_CHARS = 200
 _DURATION_RE = re.compile(
     r"\b\d+(?:\.\d+)?\s*(?:ms|s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?)\b"
 )
+# Timestamps and per-round directory stamps differ run to run for the same failure for exactly
+# the same reason durations do: a no_agent script reports the round directory it just wrote
+# ("apply failed; see .../rounds/20261010T010034Z/apply-output.txt") or logs a clock value, so
+# signing the verbatim text minted a new incident every round and defeated (job_id, error_sig)
+# dedup -- the 2026-10-10 erp-sync outage signed all 9 rounds differently. Masked out of the
+# signature only; the stored error keeps the verbatim text. A bare date is deliberately NOT
+# masked: it can name which backup set or ledger period failed, not just when it was logged.
+_VOLATILE_RES = (
+    # A token embedding a round stamp -- the whole path varies per round -- or the bare stamp
+    # itself outside a path ("round 20261010T010034Z failed").
+    (re.compile(r"[\w./\\-]*\d{8}T\d{6}Z[\w./\\-]*", re.IGNORECASE), "#r"),
+    # A log clock value in ISO or "date time" form, with optional fraction and zone. The end
+    # lookahead (not \b) is load-bearing: "...34.512z" has no boundary between digit and z.
+    (
+        re.compile(
+            r"(?<!\d)\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?"
+            r"(?:Z|[+-]\d{2}:?\d{2})?(?![0-9A-Za-z])",
+            re.IGNORECASE,
+        ),
+        "#t",
+    ),
+)
 
 _lock = threading.RLock()
 
@@ -129,8 +151,12 @@ def _redact_error(error: str) -> str:
 
 
 def _error_signature(job_id: str, error: str) -> str:
-    """Dedup key: stable for same job + same normalized error prefix."""
-    normalized = _DURATION_RE.sub("#s", _normalize_error(error))[:_MAX_SIGNATURE_ERROR_CHARS]
+    """Dedup key: stable for same job + same normalized error prefix, once the per-round
+    volatile tokens (round stamps, log timestamps) are masked out of the text."""
+    normalized = _normalize_error(error)
+    for pattern, replacement in _VOLATILE_RES:
+        normalized = pattern.sub(replacement, normalized)
+    normalized = _DURATION_RE.sub("#s", normalized)[:_MAX_SIGNATURE_ERROR_CHARS]
     return hashlib.sha256(job_id.encode() + normalized.encode()).hexdigest()[:12]
 
 

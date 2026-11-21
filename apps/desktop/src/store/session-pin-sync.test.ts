@@ -2,33 +2,35 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import type { SessionInfo } from '@/types/hermes'
 
-const patch = vi.fn<(id: string, pinned: boolean, profile?: null | string) => Promise<{ ok: boolean }>>(() =>
+const read = vi.fn<(id: string, profile?: null | string) => Promise<SessionInfo>>()
+
+const patch = vi.fn<(id: string, pinned: boolean, profile?: null | string, expectedRevision?: number) => Promise<{ ok: boolean; revision?: number }>>(() =>
   Promise.resolve({ ok: true })
 )
 
 vi.mock('@/hermes', () => ({
-  // The layout store reaches the profile store, which sets the request profile
-  // at import time; this suite only cares about the pin call.
   setApiRequestProfile: () => {},
-  setSessionPinnedRemote: (id: string, pinned: boolean, profile?: null | string) => patch(id, pinned, profile)
+  getSession: (id: string, profile?: null | string) => read(id, profile),
+  setSessionPinnedRemote: (id: string, pinned: boolean, profile?: null | string, expectedRevision?: number) => patch(id, pinned, profile, expectedRevision)
 }))
 
 import { $pinnedSessionIds } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $cronSessions, $messagingSessions, $sessions, applySessionTitle, touchSessionActivity } from '@/store/session'
 
-import { $unconfirmedPinWrites, forgetPinSyncState, resetSessionPinMirror, watchSessionPins } from './session-pin-sync'
+import { $unconfirmedPinWrites, applySessionPinnedChanged, forgetPinSyncState, resetSessionPinMirror, watchSessionPins } from './session-pin-sync'
 
 const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
 
 const flush = () => Promise.resolve()
 
+let stopWatching: (() => void) | undefined
+
 beforeAll(() => {
   ;(globalThis as { window?: unknown }).window ??= {}
   ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {}
-  // Attach the listeners once — module state is process-global.
-  watchSessionPins()
+  stopWatching = watchSessionPins()
 })
 
 beforeEach(() => {
@@ -40,6 +42,7 @@ beforeEach(() => {
   // bookkeeping would otherwise suppress the next test's PATCH (or fence out
   // its page). Same reset the gateway switch uses.
   resetSessionPinMirror()
+  read.mockReset()
   patch.mockClear()
 })
 
@@ -50,13 +53,66 @@ afterEach(() => {
   $pinnedSessionIds.set([])
 })
 
+describe('server-authoritative cross-device pins', () => {
+  it('boot pull-only adopts the server unpin without resurrecting stale localStorage', async () => {
+    // Device B was closed when device A unpinned. Its in-memory pin mirrors
+    // the stale browser cache; the first loaded row is the server's truth.
+    stopWatching?.()
+    $pinnedSessionIds.set(['stale-device-b'])
+    $sessions.set([row('stale-device-b', { pinned: false, runtime_revision: 9 })])
+    stopWatching = watchSessionPins()
+    await flush()
+
+    expect($pinnedSessionIds.get()).not.toContain('stale-device-b')
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('applies a mobile pin on an already-open PC via WS without another write', () => {
+    applySessionPinnedChanged({ session_id: 'mobile-pin', profile: 'default', pinned: true, revision: 11 })
+
+    expect($pinnedSessionIds.get()).toContain('mobile-pin')
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('re-pulls and silently adopts the server value after a 409', async () => {
+    const conflict = Object.assign(new Error('409: {"detail":"revision_conflict"}'), { statusCode: 409 })
+    patch.mockReturnValueOnce(Promise.reject(conflict))
+    read.mockResolvedValueOnce(row('conflicted', { pinned: false, runtime_revision: 8 }))
+    $sessions.set([row('conflicted', { pinned: false, runtime_revision: 4 })])
+    $pinnedSessionIds.set(['conflicted'])
+    await flush()
+    await flush()
+    await flush()
+
+    expect(read).toHaveBeenCalledWith('conflicted', undefined)
+    expect($pinnedSessionIds.get()).not.toContain('conflicted')
+    expect(patch).toHaveBeenCalledTimes(1)
+  })
+
+  it('passes the last-seen revision into a real user-toggle write', async () => {
+    $sessions.set([row('fenced', { pinned: false, runtime_revision: 17 })])
+    $pinnedSessionIds.set(['fenced'])
+    await flush()
+
+    expect(patch).toHaveBeenCalledWith('fenced', true, undefined, 17)
+  })
+
+  it('does not turn a session-list value into user-toggle intent', async () => {
+    $sessions.set([row('list-only', { pinned: true, runtime_revision: 20 })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toEqual(['list-only'])
+    expect(patch).not.toHaveBeenCalled()
+  })
+})
+
 describe('watchSessionPins', () => {
   it('mirrors a new pin as pinned=true with the row profile', async () => {
     $sessions.set([row('a', { profile: 'work' })])
     $pinnedSessionIds.set(['a'])
     await flush()
 
-    expect(patch).toHaveBeenCalledWith('a', true, 'work')
+    expect(patch).toHaveBeenCalledWith('a', true, 'work', undefined)
   })
 
   it('mirrors an unpin as pinned=false', async () => {
@@ -68,7 +124,7 @@ describe('watchSessionPins', () => {
     $pinnedSessionIds.set([])
     await flush()
 
-    expect(patch).toHaveBeenCalledWith('b', false, undefined)
+    expect(patch).toHaveBeenCalledWith('b', false, undefined, undefined)
   })
 
   it('defers a pin whose row is not loaded, then flushes once it appears', async () => {
@@ -80,7 +136,7 @@ describe('watchSessionPins', () => {
     $sessions.set([row('c', { profile: 'p2' })])
     await flush()
 
-    expect(patch).toHaveBeenCalledWith('c', true, 'p2')
+    expect(patch).toHaveBeenCalledWith('c', true, 'p2', undefined)
   })
 
   it('matches a pin id against the lineage root', async () => {
@@ -89,7 +145,7 @@ describe('watchSessionPins', () => {
     $pinnedSessionIds.set(['root'])
     await flush()
 
-    expect(patch).toHaveBeenCalledWith('root', true, undefined)
+    expect(patch).toHaveBeenCalledWith('root', true, undefined, undefined)
   })
 
   it('does not re-PATCH an already-mirrored pin on unrelated session updates', async () => {
@@ -132,7 +188,7 @@ describe('watchSessionPins remote pull', () => {
     $pinnedSessionIds.set([])
     await flush()
 
-    expect(patch).toHaveBeenCalledWith('photon-pin', false, 'messages')
+    expect(patch).toHaveBeenCalledWith('photon-pin', false, 'messages', undefined)
   })
 
   it('adopts and durably unpins a backend-only cron pin', async () => {
@@ -145,7 +201,7 @@ describe('watchSessionPins remote pull', () => {
     $pinnedSessionIds.set([])
     await flush()
 
-    expect(patch).toHaveBeenCalledWith('cron-pin', false, 'jobs')
+    expect(patch).toHaveBeenCalledWith('cron-pin', false, 'jobs', undefined)
   })
 
   it('routes a cross-slice unpin to the active profile', async () => {
@@ -161,7 +217,7 @@ describe('watchSessionPins remote pull', () => {
       $pinnedSessionIds.set([])
       await flush()
 
-      expect(patch).toHaveBeenCalledWith('shared', false, 'work')
+      expect(patch).toHaveBeenCalledWith('shared', false, 'work', undefined)
     } finally {
       $activeGatewayProfile.set('default')
     }
@@ -222,7 +278,7 @@ describe('watchSessionPins remote pull', () => {
     await flush()
 
     expect($pinnedSessionIds.get()).toContain('fresh')
-    expect(patch).toHaveBeenCalledWith('fresh', true, undefined)
+    expect(patch).toHaveBeenCalledWith('fresh', true, undefined, undefined)
   })
 
   it('does not revert a fresh local unpin while the loaded row still says pinned (#74570)', async () => {
@@ -237,7 +293,7 @@ describe('watchSessionPins remote pull', () => {
     await flush()
 
     expect($pinnedSessionIds.get()).not.toContain('sticky')
-    expect(patch).toHaveBeenCalledWith('sticky', false, undefined)
+    expect(patch).toHaveBeenCalledWith('sticky', false, undefined, undefined)
   })
 
   it('keeps a deferred pin (row not yet loaded) when a stale page finally arrives', async () => {
@@ -250,7 +306,7 @@ describe('watchSessionPins remote pull', () => {
     await flush()
 
     expect($pinnedSessionIds.get()).toContain('deferred')
-    expect(patch).toHaveBeenCalledWith('deferred', true, undefined)
+    expect(patch).toHaveBeenCalledWith('deferred', true, undefined, undefined)
   })
 
   it('ignores a stale page that contradicts a write still in flight', async () => {
@@ -261,7 +317,7 @@ describe('watchSessionPins remote pull', () => {
     $sessions.set([row('race')])
     $pinnedSessionIds.set(['race'])
     await flush()
-    expect(patch).toHaveBeenCalledWith('race', true, undefined)
+    expect(patch).toHaveBeenCalledWith('race', true, undefined, undefined)
 
     // A list request issued before the PATCH lands still says pinned=false.
     // Honouring it would silently undo the pin the user just made.
@@ -286,7 +342,7 @@ describe('watchSessionPins remote pull', () => {
     $pinnedSessionIds.set(['acked'])
     await flush()
     await flush()
-    expect(patch).toHaveBeenCalledWith('acked', true, undefined)
+    expect(patch).toHaveBeenCalledWith('acked', true, undefined, undefined)
     patch.mockClear()
 
     // Post-ack, but this page predates the write.
@@ -353,7 +409,7 @@ describe('watchSessionPins remote pull', () => {
 
       $pinnedSessionIds.set([])
       await flush()
-      expect(patch).toHaveBeenCalledWith('survivor', false, undefined)
+      expect(patch).toHaveBeenCalledWith('survivor', false, undefined, undefined)
 
       vi.advanceTimersByTime(11_000)
 
@@ -436,7 +492,7 @@ describe('watchSessionPins remote pull', () => {
     // User unpins; the PATCH is held in flight so the guard stays armed.
     $pinnedSessionIds.set([])
     await flush()
-    expect(patch).toHaveBeenCalledWith('in-use', false, undefined)
+    expect(patch).toHaveBeenCalledWith('in-use', false, undefined, undefined)
 
     // The very next message re-spreads the painted row by VALUE.
     touchSessionActivity('in-use', { at: 12345, preview: 'next message' })
@@ -468,7 +524,7 @@ describe('watchSessionPins remote pull', () => {
 
     $pinnedSessionIds.set([])
     await flush()
-    expect(patch).toHaveBeenCalledWith('renamed', false, undefined)
+    expect(patch).toHaveBeenCalledWith('renamed', false, undefined, undefined)
 
     applySessionTitle('renamed', 'New Title')
     await flush()
@@ -501,7 +557,7 @@ describe('watchSessionPins remote pull', () => {
     await flush()
 
     expect($pinnedSessionIds.get()).toContain('failed')
-    expect(patch).toHaveBeenCalledWith('failed', true, undefined)
+    expect(patch).toHaveBeenCalledWith('failed', true, undefined, undefined)
   })
 
   it('does not oscillate when two profiles share a session id with conflicting pins', async () => {

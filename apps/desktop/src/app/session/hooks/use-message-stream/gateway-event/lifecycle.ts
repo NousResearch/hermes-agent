@@ -19,6 +19,7 @@ import {
 import { clearAllPrompts, clearApprovalRequest } from '@/store/prompts'
 import { markRuntimeGone } from '@/store/runtime-gone'
 import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows, requestSessionResume } from '@/store/session'
+import { applySessionPinnedChanged, type SessionPinnedChangedPayload } from '@/store/session-pin-sync'
 import type { SessionOwnerScope } from '@/store/session-request-router'
 import { $sessionTiles, dropSessionState, sessionTileDelegate, unbindTileRuntime } from '@/store/session-states'
 // Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
@@ -171,6 +172,14 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
 
     // The row's ended_at moved, so refresh the lists that render it.
     notifySessionsChanged()
+
+    return true
+  }
+
+  if (event.type === 'session.pinned_changed') {
+    if (fromActiveSource()) {
+      applySessionPinnedChanged(payload as SessionPinnedChangedPayload)
+    }
 
     return true
   }

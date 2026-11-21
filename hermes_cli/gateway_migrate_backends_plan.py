@@ -365,6 +365,7 @@ def _for_this_home(item: BackendItem, host, plan: Optional[BackendPlan] = None) 
     return not item.running and item.hermes_home is None and host.default_home()
 
 
+_PAIR = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")  # a token that may be env(1)'s NAME=value
 # env(1) options that leave the environment alone; ``-C``/``--chdir`` also takes the next argument.
 _ENV_INERT = frozenset({"-0", "--null", "-v", "--debug", "--list-signal-handling"})
 _ENV_SIGNALS = ("--block-signal", "--default-signal", "--ignore-signal")
@@ -397,6 +398,9 @@ def env_line(host, unit: str, scope: str) -> tuple[Optional[str], frozenset[str]
         rest, problem = _env_line_args(rest[1:], names, opaque)
     if problem is None and rest and "$" in rest[0]:
         problem = "whose command is a $ substitution that could hold an assignment"
+    # The pairs end at the first other token, but a quoted value with a space ("NOTE=two words") ends them
+    # early in the joined line: a NAME= token anywhere after it may still be a pair, so it counts as set.
+    names.update(t.split("=", 1)[0] for t in rest if _PAIR.match(t))
     return problem, frozenset(names), frozenset(opaque)
 
 

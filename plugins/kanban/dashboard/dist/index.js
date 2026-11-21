@@ -3853,16 +3853,17 @@
               "Comments reach the worker on its next run or kanban_show() — no need to block the task first."),
           ),
           h("div", { className: "hermes-kanban-drawer-comment-row" },
-            h(Input, {
+            h("textarea", {
               value: newComment,
+              rows: 3,
               onChange: function (e) { setNewComment(e.target.value); },
               onKeyDown: function (e) {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault(); handleComment();
                 }
               },
-              placeholder: tx(t, "addComment", "Add a comment… (Enter to submit)"),
-              className: "h-8 text-sm flex-1",
+              placeholder: tx(t, "addComment", "Add a comment… (Enter to send, Shift+Enter for a new line)"),
+              className: "hermes-kanban-comment-input text-sm flex-1",
             }),
             h(Button, {
               onClick: handleComment,
@@ -4200,7 +4201,7 @@
         }),
       ),
       h(WorkerLogSection, { taskId: t.id, boardSlug: props.boardSlug }),
-      h(RunHistorySection, { runs: props.data.runs || [] }),
+      h(RunHistorySection, { runs: props.data.runs || [], renderMarkdown: props.renderMarkdown }),
     );
   }
 
@@ -4252,7 +4253,8 @@
               timeAgo ? timeAgo(r.started_at) : ""),
           ),
           r.summary
-            ? h("div", { className: "hermes-kanban-run-summary" }, r.summary)
+            ? h("div", { className: "hermes-kanban-run-summary" },
+                h(MarkdownBlock, { source: r.summary, enabled: props.renderMarkdown }))
             : null,
           r.error
             ? h("div", { className: "hermes-kanban-run-error" }, r.error)

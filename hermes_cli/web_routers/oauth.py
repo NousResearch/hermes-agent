@@ -635,7 +635,17 @@ def _claude_code_disconnect_command(platform: str) -> str:
         )
     rm_file = "rm -f ~/.claude/.credentials.json"
     if platform == "darwin":
-        return f'security delete-generic-password -s "Claude Code-credentials" 2>/dev/null; {rm_file}'
+        # Scoped like Claude Code's own logout: an unscoped delete removes whichever item matches
+        # first, which can be Claude Code's MCP OAuth state (account "unknown") instead of the login.
+        # The account is the one the credential reader uses, written out literally: Desktop types this
+        # into the user's own shell (fish included), and that shell's $USER may be unset.
+        import shlex
+
+        from agent.anthropic_credentials import _claude_code_keychain_account
+
+        account = _claude_code_keychain_account()
+        scope = f"-a {shlex.quote(account)} " if account else ""
+        return f'security delete-generic-password {scope}-s "Claude Code-credentials" 2>/dev/null; {rm_file}'
     return rm_file
 
 

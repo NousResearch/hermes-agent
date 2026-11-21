@@ -154,9 +154,23 @@ def inline_bootstrap_argv(tokens: list[str]) -> list[str] | None:
     index = inline_source_flag_index(tokens)
     if index is None:
         return None
-    for end in range(index + 1, len(tokens)):
-        if tokens[end].rstrip().endswith(")"):
-            entry = _bootstrap_entry(" ".join(tokens[index + 1 : end + 1]), tokens[end + 1 :])
-            if entry is not None:
-                return [tokens[0], *entry]
+    # macOS ``ps`` renders a newline inside an argv element as the four characters ``\012``, so the
+    # source it reports is the same bytes with every line break escaped; undo that one spelling (and
+    # its ``\015``/``\011`` siblings) before matching. Only a ``-c`` program's source is rewritten:
+    # the trailing argv belongs to the inline program, and a spurious escape sequence elsewhere is
+    # left alone. Windows ``list2cmdline`` wraps the source in quotes; drop those too, or the
+    # bootstrap's anchored ``fullmatch`` sees a string that no longer starts at ``import``.
+    unescaped = [t.replace("\\012", "\n").replace("\\015", "\r").replace("\\011", "\t") for t in tokens]
+    # Readers disagree on the split: ``ps``-style sources arrive space-split into hundreds of
+    # fragments, a launchd plist arrives ``shlex.join``ed (one quoted argument), Windows
+    # ``list2cmdline`` quotes it too. The source ends at the LAST token of the inline program, so
+    # walk the candidates from the end: a source whose text runs to the final token is the whole
+    # argument, and the shortest prefix that fullmatches a bootstrap is the split form.
+    for end in range(len(unescaped) - 1, index, -1):
+        source = " ".join(unescaped[index + 1 : end + 1]).strip("\"'")
+        if not source.rstrip().endswith(")"):
+            continue
+        entry = _bootstrap_entry(source, tokens[end + 1 :])
+        if entry is not None:
+            return [tokens[0], *entry]
     return None

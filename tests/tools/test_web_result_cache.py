@@ -81,6 +81,7 @@ def test_search_memo_miss_across_providers_and_buckets():
     assert memo.lookup("keenable", "q", 5) is None        # different provider
     assert memo.lookup("firecrawl", "q", 15) is None      # different bucket
     assert memo.lookup("firecrawl", "other", 5) is None   # different query
+    assert memo.lookup("firecrawl", "q", 5, "deep") is None  # different depth
 
 
 def test_search_memo_expires_after_ttl(monkeypatch):

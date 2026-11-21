@@ -6,6 +6,29 @@ from typing import Any, Optional
 logger = logging.getLogger("gateway.run")
 
 
+def provider_display_label(resolved: Any) -> str:
+    """The banner's provider cell: the endpoint's own name for a bare ``custom``, else the field.
+
+    Runtime resolution reports every named custom endpoint as the literal adapter id ``custom``,
+    so a user with several saved endpoints read ``custom`` for all of them and could not tell
+    which one serves the session. The route's own ``base_url``/``model`` recover the entry: the
+    entry that also declares the model wins over the first one on that URL, because two entries
+    may share one proxy (compare :func:`~hermes_cli.runtime_provider_custom.routed_custom_identity`).
+    No entry (a bare custom profile, the managed local server, an unreadable config) keeps the
+    plain value — this feeds a banner, so failure narrows to what it said before, never raises.
+    """
+    provider = str(getattr(resolved, "provider", None) or "").strip() or "openrouter"
+    if provider != "custom" or not getattr(resolved, "base_url", None):
+        return provider
+    from hermes_cli.runtime_provider_custom import routed_custom_identity
+    try:
+        return routed_custom_identity(getattr(resolved, "base_url", None),
+                                      getattr(resolved, "model", None)) or provider
+    except Exception:  # health: allow BLE001 -- a display must never break /new; logged
+        logger.debug("Session banner could not name the custom endpoint it runs on", exc_info=True)
+        return provider
+
+
 def channel_override_route(config: Any, source: Any) -> tuple[Optional[str], Optional[dict], Optional[str]]:
     """``(model, route, force_provider)`` for ``source``'s channel override, as the turn resolves it
     (``_resolve_session_agent_runtime``): the override model, and the override provider's own

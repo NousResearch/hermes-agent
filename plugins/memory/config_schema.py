@@ -1,10 +1,12 @@
 """Declarative config schema for memory provider plugins: each declares its fields in
 a ``config_schema.py`` beside ``__init__.py``; one generic renderer and one
 ``GET/PUT /api/memory/providers/{name}/config`` pair drive the UI. Schema files are
-loaded in a directory-scoped package shell that leaves the plugin's root
-``__init__`` unexecuted. They may import this module and relative pure-data helpers;
-provider runtime imports belong in ``__init__``. ``web_server`` owns read/write,
-dispatching on ``storage``.
+loaded in a package scoped to the provider directory. They may import this module
+and relative pure-data helpers. Schema discovery skips the provider's root initializer.
+Only ``STORAGE_PROVIDER`` reads/writes load the provider itself (in the plugin host when
+``plugins.isolation`` is ``host``). ``web_server`` owns read/write, dispatching on ``storage``: a flat JSON file
+core reads and writes, or ``provider``, where the provider's ``read_config_fields`` /
+``write_config_fields`` own the file layout (``agent.memory_provider.MemoryProvider``).
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ KIND_JSON = "json"
 
 # Storage backends understood by web_server (see its read/write dispatch).
 STORAGE_FLAT_JSON = "flat_json"
-STORAGE_HONCHO_HOST_BLOCK = "honcho_host_block"
+STORAGE_PROVIDER = "provider"
 
 
 @dataclass(frozen=True)
@@ -42,9 +44,9 @@ class ProviderFieldOption:
 
 @dataclass(frozen=True)
 class ProviderField:
-    """One configurable field. Stored in exactly one place by ``kind``: non-secret
-    kinds under ``key`` in the provider's storage; ``secret`` in the env store under
-    ``env_key``, never read back (only ``is_set``). ``aliases``/``env_fallbacks`` read
+    """One configurable field. Non-secret kinds live under ``key`` in the provider's storage;
+    ``secret`` in the env store under ``env_key`` (a ``STORAGE_PROVIDER`` writer also receives it
+    and may persist it too), never read back (only ``is_set``). ``aliases``/``env_fallbacks`` read
     legacy values; ``inline`` marks the compact-panel subset (rest: modal, by ``group``)."""
 
     key: str
@@ -61,7 +63,8 @@ class ProviderField:
     group: str = ""
     # Longer help text surfaced as an info tooltip next to the field label.
     info: str = ""
-    # Host-block placement: "host" (per-profile) or "root"; flat-json ignores it.
+    # Placement hint a STORAGE_PROVIDER provider may read from its own schema; core ignores it (the
+    # "host" default keeps existing schema files valid).
     scope: str = "host"
 
     @property
@@ -88,6 +91,7 @@ class ProviderConfigSchema:
 
 
 _SCHEMA_CACHE: dict[str, ProviderConfigSchema] = {}
+_SCHEMA_FAILURES_LOGGED: set[str] = set()
 
 
 def load_config_schema_file(path: Path) -> ProviderConfigSchema | None:
@@ -138,8 +142,13 @@ def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
         else:
             schema = load_config_schema_file(path)
     except Exception:
-        # Never cache a failed load: it would pin an empty panel until restart.
-        _log.exception("failed to load config schema for memory provider %r", name)
+        # Never cache a failed load: it would pin an empty panel until restart. Log the traceback
+        # once per file, though: the panel polls, and an outdated plugin fails the same way each time.
+        if key in _SCHEMA_FAILURES_LOGGED:
+            _log.debug("failed to load config schema for memory provider %r", name, exc_info=True)
+        else:
+            _SCHEMA_FAILURES_LOGGED.add(key)
+            _log.exception("failed to load config schema for memory provider %r", name)
         return None
 
     if schema is not None:

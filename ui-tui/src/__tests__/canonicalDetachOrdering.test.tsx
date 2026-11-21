@@ -4,12 +4,12 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 
 import { renderSync, Text } from '@hermes/ink'
+import { canonicalRequest, canonicalResult } from '@hermes/shared/gateway-canonical'
 import React from 'react'
 import { expect, it, vi } from 'vitest'
 
 import { getUiState, resetUiState } from '../app/uiStore.js'
 import { useSessionLifecycle } from '../app/useSessionLifecycle.js'
-import { canonicalRequest, canonicalResult } from '../canonicalGateway.js'
 
 type AttachmentAction = 'resumeById' | 'activateLiveSession'
 
@@ -44,6 +44,10 @@ function fixture() {
       if (detached) {subscriptions.delete(sid)}
 
       return Promise.resolve({ ...wire.params, detached })
+    }
+
+    if (wire.method === 'setup.status') {
+      return Promise.resolve({ provider_configured: true })
     }
 
     throw new Error(`unexpected viewer operation: ${wire.method}`)

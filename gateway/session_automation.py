@@ -7,11 +7,14 @@ from copy import deepcopy
 from datetime import UTC, datetime
 import json
 import logging
+import re
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session_contract import SessionRef
-from hermes_state_runtime import RuntimeStoreError, admit_session_input, list_session_admissions
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal
+from session_rules.automation import automation_descriptor as _descriptor
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +22,7 @@ logger = logging.getLogger(__name__)
 def producer_identity(runner, event):
     identity = runner._completion_delivery_identity(event)
     if identity is None:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     return json.dumps(identity, separators=(',', ':'))
 
 
@@ -32,12 +35,13 @@ def completion_admission(runner, event):
     entry = route_entry(authority, str(event.get('session_key') or ''))
     if entry is None:
         return None
-    from hermes_state_runtime import list_session_admissions
     identity = producer_identity(runner, event)
-    for row in list_session_admissions(authority.db, session_id=_route_owner(authority, entry), pending_only=False):
-        descriptor = row['payload'].get('local_automation_v1') or row['payload'].get('native_text_v1', {}).get('automation', {})
+    rows = authority_persistence(authority).admissions.list(session_id=_route_owner(authority, entry), pending_only=False)
+    for row in rows:
+        descriptor = row.payload.get('local_automation_v1') or row.payload.get('native_text_v1', {}).get('automation', {})
         if identity in descriptor.get('identities', [descriptor.get('identity')]):
-            return row
+            from gateway.session_authority import admission_row
+            return admission_row(row)
     return None
 
 
@@ -74,11 +78,10 @@ async def deliver_heartbeat(runner, event):
 
 def _replaced_tick_claimed(runner, prepared):
     from gateway.session_authorities import active_authority
-    from hermes_state_runtime import get_session_admission
     replaced = prepared.get('_replaces')
     authority = active_authority(runner) if replaced else None
-    row = authority and get_session_admission(authority.db, admission_id=replaced)
-    return bool(row) and row['status'] != 'queued'
+    row = authority and authority_persistence(authority).admissions.get(admission_id=replaced)
+    return bool(row) and row.status != 'queued'
 
 
 async def admit_process_notice(runner, authority, adapter, event, evt):
@@ -94,9 +97,82 @@ async def admit_process_notice(runner, authority, adapter, event, evt):
     if evt.get('type') != 'completion':
         return await authority.admit_automation(adapter, event, identity)
     async with _heartbeat_lock(runner):
-        receipt = await authority.admit_automation(adapter, event, identity)
+        receipt = await _admit_folded_completion(authority, adapter, event, evt, identity)
         await withdraw_process_ticks(runner, evt)
         return receipt
+
+
+async def _admit_folded_completion(authority, adapter, event, evt, identity):
+    """A completion landing behind another completion still waiting at the FIFO tail joins it, so a
+    busy session runs ONE turn for every result that piled up instead of one turn each. The waiting
+    row is cancelled in this admission's own transaction (``replaces``); when it was claimed first,
+    this completion queues alone."""
+    import asyncio
+    waiting = await asyncio.to_thread(_waiting_completion, authority, evt, event)
+    if waiting is not None:
+        unfolded = event.text, dict(event.metadata)
+        _fold_completion(event, waiting, identity)
+        try:
+            return await authority.admit_automation(adapter, event, identity, replaces=waiting['admission_id'],
+                                                    fold=waiting['_skip'])
+        except AuthorityRefusal as exc:
+            if exc.reason != 'stale_generation':
+                raise
+            event.text, event.metadata = unfolded
+    return await authority.admit_automation(adapter, event, identity)
+
+
+def _waiting_completion(authority, evt, event):
+    """The route's own completion row that is the LAST queued input of the session, or None. Only the
+    tail folds: a completion never jumps ahead of, or behind, a prompt queued after it. The finishing
+    process's own queued liveness ticks do not count as the tail: this completion withdraws them
+    (``withdraw_process_ticks``); their admission ids ride the row as ``_skip`` for the write guard."""
+    from gateway.session_detached import route_entry
+    entry = route_entry(authority, str(evt.get('session_key') or ''))
+    if entry is None:
+        return None
+    from gateway.session_authority import admission_row
+    queued = [row for row in authority_persistence(authority).admissions.list(session_id=_route_owner(authority, entry))
+              if row.status == 'queued']
+    process = str(evt.get('session_id') or '')
+    skip = []
+    while queued and _queued_tick(queued[-1], process, entry.session_key):
+        skip.append(queued.pop().admission_id)
+    tail = queued[-1] if queued else None
+    if tail is None or tail.principal_id != 'automation:' + entry.session_key:
+        return None
+    if [identity[0] for identity in _identities([tail.request_id])] != ['completion']:
+        return None
+    descriptor = _descriptor(tail.payload)
+    if (descriptor.get('notification_category', 'result') != event.metadata.get('notification_category', 'result')
+            or descriptor.get('display_kind') != event.metadata.get('display_kind')):
+        return None
+    return {**admission_row(tail), '_skip': skip}
+
+
+_FOLD_HEADER = ('[IMPORTANT: {count} background process results arrived while this session was busy. '
+                'Treat them as one batch and give one consolidated response; preserve failures and '
+                'actionable results.]')
+_FOLD_HEADER_RE = re.compile(r'\[IMPORTANT: \d+ background process results arrived while this session was busy\.'
+                             r'[^\]]*\]\n\n')
+
+
+def _fold_completion(event, waiting, identity):
+    from gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER, _mark_internal_notification
+    from tools.process_registry_notifications import process_completion_display_text
+    descriptor = _descriptor(waiting['payload'])
+    identities = sorted({*(descriptor.get('identities') or [waiting['request_id']]),
+                         *(event.metadata.get('automation_identities') or [identity])})
+
+    def body(text):
+        text = text.rstrip().removesuffix(INTERNAL_NOTIFICATION_FOOTER).rstrip()
+        folded = _FOLD_HEADER_RE.match(text)
+        return text[folded.end():] if folded else text
+    event.text = _mark_internal_notification('\n\n'.join((
+        _FOLD_HEADER.format(count=len(identities)), body(waiting['payload']['text']), body(event.text))))
+    event.metadata['automation_identities'] = identities
+    if 'display_text' in event.metadata:
+        event.metadata['display_text'] = process_completion_display_text([{}] * len(identities))
 
 
 async def prepare_heartbeat(runner, event):
@@ -122,21 +198,17 @@ async def prepare_heartbeat(runner, event):
         logger.debug("Dropped heartbeat %s of process %s: its completion is already admitted",
                      event.get('event_id'), process)
         return None
-    from hermes_state_runtime import find_session_admission
-    if await asyncio.to_thread(find_session_admission, authority.db, principal_id='automation:' + entry.session_key,
+    store = authority_persistence(authority)
+    if await asyncio.to_thread(store.admissions.find, principal_id='automation:' + entry.session_key,
                                session_id=owner, request_id=producer_identity(runner, event)):
         return None  # a retry of a tick already admitted (its acknowledgement lost)
-    pending = await asyncio.to_thread(list_session_admissions, authority.db, session_id=owner)
+    pending = await asyncio.to_thread(store.admissions.list, session_id=owner)
     waiting = next((row for row in pending if _queued_tick(row, process, entry.session_key)), None)
-    earlier = waiting and _descriptor(waiting['payload']).get('tick')
+    earlier = waiting and _descriptor(waiting.payload).get('tick')
     if not isinstance(earlier, dict):
         return event
     from tools.process_registry_notifications import join_heartbeat_outputs
-    return {**event, **join_heartbeat_outputs(earlier, event), '_replaces': waiting['admission_id']}
-
-
-def _descriptor(payload):
-    return payload.get('local_automation_v1') or (payload.get('native_text_v1') or {}).get('automation') or {}
+    return {**event, **join_heartbeat_outputs(earlier, event), '_replaces': waiting.admission_id}
 
 
 def _tick_metadata(metadata):
@@ -146,21 +218,8 @@ def _tick_metadata(metadata):
         return {}
     if (not isinstance(tick, dict) or set(tick) != {'output', 'omitted'} or not isinstance(tick['output'], str)
             or type(tick['omitted']) is not int or tick['omitted'] < 0):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     return {'tick': dict(tick)}
-
-
-def _replace_queued(admission_id, session_id, replaced):
-    """Write guard: cancel the replaced queued tick in the replacement's own transaction; refuse the
-    replacement when that tick was claimed or settled first (its output already ran)."""
-    def guard(conn):
-        changed = conn.execute("UPDATE session_admissions SET status='terminal',outcome='cancelled' "
-                               "WHERE admission_id=? AND target_session_id=? AND status='queued'",
-                               (admission_id, session_id)).rowcount
-        if changed != 1:
-            raise RuntimeStoreError('stale_generation')
-        replaced[:] = [admission_id]
-    return guard
 
 
 async def withdraw_process_ticks(runner, event):
@@ -181,7 +240,7 @@ async def withdraw_process_ticks(runner, event):
             [producer_identity(runner, event), *(event.get('_automation_identities') or ())])
             if identity[0] == 'completion' and len(identity) > 1}
         pending = await asyncio.to_thread(
-            list_session_admissions, authority.db, session_id=_route_owner(authority, entry))
+            authority_persistence(authority).admissions.list, session_id=_route_owner(authority, entry))
         for row in pending:
             if any(_queued_tick(row, process, entry.session_key) for process in finished):
                 await _withdraw(authority, row)
@@ -209,12 +268,11 @@ def _process_completed(runner, authority, owner, event):
     if completion is None:
         return False
     identity = json.dumps(completion, separators=(',', ':'))
-    with authority.db._read_ctx() as conn:
-        if conn.execute('SELECT 1 FROM session_admissions WHERE target_session_id=? AND request_id=?',
-                        (owner, identity)).fetchone():
-            return True
-    for row in list_session_admissions(authority.db, session_id=owner, pending_only=False):
-        descriptor = row['payload'].get('local_automation_v1') or row['payload'].get('native_text_v1', {}).get('automation', {})
+    store = authority_persistence(authority)
+    if store.admissions.match(session_id=owner, request_id=identity):
+        return True
+    for row in store.admissions.list(session_id=owner, pending_only=False):
+        descriptor = row.payload.get('local_automation_v1') or row.payload.get('native_text_v1', {}).get('automation', {})
         if identity in (descriptor.get('identities') or ()):
             return True
     return False
@@ -236,33 +294,33 @@ def _queued_tick(row, process, route):
     """Whether *row* is the gateway's own queued liveness tick of *process* on *route*: the route's
     producer admitted ``["heartbeat", process, event_id]``. A client input whose id merely looks like
     one, and the ``/heartbeat`` wake (four parts), never match."""
-    if row['status'] != 'queued' or row['principal_id'] != 'automation:' + route:
+    if row.status != 'queued' or row.principal_id != 'automation:' + route:
         return False
     return any(len(identity) == 3 and identity[:2] == ['heartbeat', process]
-               for identity in _identities([row['request_id']]))
+               for identity in _identities([row.request_id]))
 
 
 async def _withdraw(authority, row):
     """Cancel the gateway's own queued automation *row*; False when it was claimed or settled first."""
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     # The row's own principal, with the operator access a LOCAL route requires of anyone but its viewer.
-    actor = Principal(row['principal_id'], authority.profile_id,
+    actor = SessionActor(row.principal_id, authority.profile_id,
                       frozenset({'session:submit', 'session:control', 'session:operator'}), 'producer-withdraw')
     try:
         receipt = await authority.cancel_queued(
-            actor, SessionRef(authority.profile_id, row['target_session_id']), row['admission_id'])
-    except RuntimeStoreError:
+            actor, SessionRef(authority.profile_id, row.target_session_id), row.admission_id)
+    except AuthorityRefusal:
         return False
     return receipt.outcome == 'cancelled'
 
 
 def _route_owner(authority, entry):
     # Compression moves the route's transcript to a child; admissions stay on the logical root.
-    return (entry.origin.chat_id if entry.origin.platform == Platform.LOCAL
+    return (entry.origin.chat_id if entry.origin is not None and entry.origin.platform == Platform.LOCAL
             else authority.logical_owner(entry.session_id))
 
 
-def _owned_by(db, session_id, current):
+def _owned_by(store, session_id, current):
     """Whether ``session_id``, or a (nested) delegate_task conversation it runs under, is the route's
     live ``current`` session or compressed into it. The walk stops at the first such hop: a resumed
     delegate run is the chat's own conversation, never the parent it was spawned from. As in the
@@ -271,10 +329,10 @@ def _owned_by(db, session_id, current):
     Likewise a session closed at a user boundary (/new, a resume away) leads nowhere."""
     from gateway.run import _USER_BOUNDARY_END_REASONS
     lineage = [session_id]
-    while lineage[-1] != current and db.get_compression_tip(lineage[-1]) != current:
-        row = db.get_session(lineage[-1]) or {}
-        parent = db.get_session_model_config_value(lineage[-1], '_delegate_from')
-        if (row.get('ended_at') and row.get('end_reason') in _USER_BOUNDARY_END_REASONS) or parent in (None, *lineage):
+    while lineage[-1] != current and store.lineage.tip(lineage[-1]) != current:
+        row = store.sessions.get(lineage[-1])
+        parent = store.sessions.get_model_config_value(lineage[-1], '_delegate_from')
+        if (row is not None and row.ended_at and row.end_reason in _USER_BOUNDARY_END_REASONS) or parent in (None, *lineage):
             return False
         lineage.append(parent)
     return True
@@ -285,14 +343,14 @@ def _owner(runner, event, authority):
     route = event.metadata.get('gateway_session_key') or runner.session_store._generate_session_key(event.source)
     entry = route_entry(authority, route)
     if entry is None or entry.suspended:
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     if runner.session_store._generate_session_key(event.source) != route:
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
     expected = event.metadata.get('gateway_session_id')
     # A completed child may follow compression, and a process a subagent started its parent
     # conversation, but never /new or an unrelated resume.
-    if not expected or not _owned_by(authority.db, expected, entry.session_id):
-        raise RuntimeStoreError('admission_conflict')
+    if not expected or not _owned_by(authority_persistence(authority), expected, entry.session_id):
+        raise AuthorityRefusal('admission_conflict')
     return entry
 
 
@@ -300,7 +358,7 @@ def automation_notification_metadata(metadata):
     """Validate trusted producer category; omit the default from old fingerprints."""
     category = metadata.get('notification_category', 'result')
     if category not in ('result', 'diagnostic'):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     return {'notification_category': category} if category == 'diagnostic' else {}
 
 
@@ -316,7 +374,7 @@ def automation_display_metadata(metadata):
     kind, text = metadata.get('display_kind'), metadata.get('display_text')
     if (kind not in PRODUCER_CARD_KINDS or not isinstance(text, str) or not text.strip()
             or len(text) > _DISPLAY_TEXT_LIMIT):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     return {'display_kind': kind, 'display_text': text}
 
 # notification_origin / original_trigger_message_id are producer debug context (#52694) and are not
@@ -329,7 +387,8 @@ def automation_display_metadata(metadata):
 # proof at execution from the target the pre-claim check validated, and the turn's resolver reads it.
 _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
     'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category',
-    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick'})
+    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick',
+    'completion_wakes_parent', 'completion_resumes_parent', 'requester_user_id'})
 
 
 def admission_display(payload):
@@ -347,16 +406,98 @@ def admission_display(payload):
     return card
 
 
-def committed_route_envelope(authority, entry):
+def committed_route_envelope(authority, entry, *, human_only=False, user_id=None):
     """The route's last committed native envelope with connector provenance (what a producer turn
-    borrows), or ``None`` while no human message was admitted there."""
-    from hermes_state_runtime import list_session_admissions
+    borrows), or ``None`` while no matching message was admitted there. ``human_only`` skips an
+    automation wake's own envelope, so a reused route cannot launder a sender through it;
+    ``user_id`` keeps a shared route's wake on the producer's own authenticated sender."""
     # Admissions belong to the logical root; ``entry.session_id`` is only the transcript tip.
-    prior = list_session_admissions(authority.db, session_id=authority.logical_owner(entry.session_id),
-                                    pending_only=False)
-    envelope = next((r['payload']['native_text_v1'] for r in reversed(prior)
-                     if 'native_text_v1' in r['payload']), None)
-    return envelope if envelope is not None and 'provenance' in envelope else None
+    prior = authority_persistence(authority).admissions.list(session_id=authority.logical_owner(entry.session_id),
+                                                             pending_only=False)
+    for row in reversed(prior):
+        envelope = row.payload.get('native_text_v1')
+        if not envelope or (human_only and 'automation' in envelope):
+            continue
+        if user_id is not None and str((envelope.get('source') or {}).get('user_id') or '') != str(user_id):
+            continue
+        return envelope if 'provenance' in envelope else None
+    return None
+
+
+_MAX_RESET_ANCESTORS = 64
+
+
+def _reset_predecessor(store, session_id, seen):
+    """The raw parent of a reset edge, or ``None`` for a non-reset edge.
+
+    ``parent_session_id`` also records compression children, branches, and delegate runs. A
+    delegate or branch child is excluded by its marker; a compression tip is returned for the
+    caller to normalize with ``logical_owner``; a live parent is a branch, not a conversation the
+    route moved past.
+    """
+    row = store.sessions.get(session_id)
+    if (row is not None and row.source == 'subagent') or any(
+            store.sessions.get_model_config_value(session_id, key) for key in ('_delegate_from', '_branched_from')):
+        return None
+    parent = row.parent_session_id if row is not None else None
+    if not parent or parent in seen:
+        return None
+    parent_row = store.sessions.get(parent)
+    # Pre-marker /branch rows have no _branched_from; 'branched' is not a reset edge.
+    if parent_row is None or parent_row.end_reason in (None, '', 'branched'):
+        return None
+    return parent
+
+
+def wake_route_envelope(authority, entry, requester_user_id=None):
+    """The current conversation's committed envelope, or its predecessor's.
+
+    A conversation created by ``/new`` has no committed input of its own until one of its messages
+    is admitted. Its predecessor on the same route still carries the chat's identity and connector
+    proof, and ``restore_native`` revalidates that proof against the live adapter, so a stale
+    credential or a different chat still refuses. Without this, a background result dispatched from
+    the fresh conversation is refused ``not_found`` and dropped after its delivery budget.
+
+    A shared multi-user route (a Slack channel or a shared group thread) does not put the sender in
+    its session key. There a predecessor's envelope is borrowed only for the producer's authenticated
+    user, or a result could be addressed to the predecessor's last speaker.
+    """
+    from gateway.session import is_shared_multi_user_session
+    config = getattr(getattr(authority.runner, 'session_store', None), 'config', None)
+    origin = getattr(entry, 'origin', None)
+    shared = bool(origin is not None and is_shared_multi_user_session(
+        origin,
+        group_sessions_per_user=getattr(config, 'group_sessions_per_user', True),
+        thread_sessions_per_user=getattr(config, 'thread_sessions_per_user', False),
+    ))
+    requester = str(requester_user_id) if requester_user_id else None
+    prefer_human = requester is not None
+    envelope = committed_route_envelope(authority, entry, human_only=prefer_human, user_id=requester)
+    if envelope is not None:
+        # The conversation's own latest envelope, as before: a route-owned wake (/loop, Kanban, cron)
+        # names no requester and keeps borrowing it tick after tick, its own automation one included.
+        return envelope
+    if shared and requester is None:
+        return None  # a predecessor's last speaker on a shared route is nobody this wake can prove
+    current = authority.logical_owner(entry.session_id)
+    seen = {entry.session_id, current}
+    for _ in range(_MAX_RESET_ANCESTORS):
+        parent = _reset_predecessor(authority_persistence(authority), current, seen)
+        if parent is None:
+            return None
+        # A compression tip is not a conversation of its own; its admissions live on the root.
+        parent = authority.logical_owner(parent)
+        if parent in seen:
+            return None
+        seen.add(parent)
+        envelope = committed_route_envelope(authority, SessionRef(authority.profile_id, parent),
+                                            human_only=prefer_human, user_id=requester)
+        if envelope is not None:
+            return envelope
+        current = parent
+    logger.warning("wake_route_envelope exhausted %d ancestors for route %s",
+                   _MAX_RESET_ANCESTORS, entry.session_key)
+    return None
 
 
 def snapshot_automation(authority, adapter, event, identity):
@@ -365,7 +506,7 @@ def snapshot_automation(authority, adapter, event, identity):
             or not isinstance(event.text, str) or not identity
             or event.media_urls or event.prompt_response or event.source.platform == Platform.API_SERVER
             or set(event.metadata) - _AUTOMATION_METADATA):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     notification = (automation_notification_metadata(event.metadata) | automation_display_metadata(event.metadata)
                     | _tick_metadata(event.metadata))
     entry = _owner(runner, event, authority)
@@ -374,9 +515,9 @@ def snapshot_automation(authority, adapter, event, identity):
         return snapshot_local_automation(authority, adapter, event, identity, entry)
     from gateway.session_envelope import restore_native
     owner = authority.logical_owner(entry.session_id)
-    envelope = committed_route_envelope(authority, entry)
+    envelope = wake_route_envelope(authority, entry, event.metadata.get('requester_user_id'))
     if envelope is None:
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     # Persisted origins deliberately omit relay trust. Borrow only an exact
     # committed source's private proof, revalidated against the live connector.
     # Recheck only the source/provenance: a completed input's retained media is already released.
@@ -387,7 +528,7 @@ def snapshot_automation(authority, adapter, event, identity):
     # the latest committed turn, so compare the route both resolve to now (``_owner`` checked it).
     if (runner.session_store._generate_session_key(restored.source) != entry.session_key
             or runner._adapter_for_source(restored.source) is not adapter):
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
     provenance = deepcopy(envelope['provenance'])
     source = deepcopy(envelope['source'])
     # Never anchor the wake to the stale human message; ``to_dict`` already omits a null anchor.
@@ -418,13 +559,13 @@ def check_automation_route(runner, payload, session_id, available_source, adapte
     from gateway.session_authorities import active_authority
     authority = active_authority(runner)
     if authority is None:  # a late preflight for a profile this runtime no longer serves
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     entry = _owner(runner, event, authority)
     if (entry.session_id != session_id
             or envelope['automation']['owner'] != authority.logical_owner(session_id)
             or runner.session_store._generate_session_key(available_source) != entry.session_key
             or adapter is None or runner._adapter_for_source(event.source) is not adapter):
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
     return event.source, entry.session_key
 
 
@@ -436,14 +577,14 @@ def _local_automation_owner(authority, adapter, event, entry):
         found = detached_live(authority, entry.session_key)
         if (found is None or found[1].source is not event.source or not adapter.authorize_source(event.source)
                 or authority.runner._adapter_for_source(found[1].source) is not adapter):
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         return found
     from gateway.session_local_recovery import restore_local_session
     ref = restore_local_session(authority, event.source.chat_id)
     live = authority.sessions[ref.session_id]
     if (live.source is not event.source or not adapter.authorize_source(event.source)
             or authority.runner._adapter_for_source(live.source) is not adapter):
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     return ref, live
 
 
@@ -454,11 +595,24 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
     descriptor.update(automation_notification_metadata(event.metadata))
     descriptor.update(automation_display_metadata(event.metadata))
     descriptor.update(_tick_metadata(event.metadata))
+    if 'completion_wakes_parent' in event.metadata:
+        # A failed async delegation: the parent must act on it, so it runs as a turn even when no viewer
+        # is attached (gateway/session_completion_notes.py). Only ``True`` is stored, so an older
+        # admission's fingerprint is unchanged.
+        if event.metadata['completion_wakes_parent'] is not True:
+            raise AuthorityRefusal('invalid_params')
+        descriptor['wakes_parent'] = True
+    if 'completion_resumes_parent' in event.metadata:
+        # A result the parent carries on from (a finished delegation, a process exit): a turn with no
+        # viewer attached too, as with one, unless the user closed the chat. Only ``True`` is stored.
+        if event.metadata['completion_resumes_parent'] is not True:
+            raise AuthorityRefusal('invalid_params')
+        descriptor['resumes_parent'] = True
     if event.metadata.get('turn_author') is not None:
         from agent.turn_author import parse_turn_author
         descriptor['turn_author'] = parse_turn_author(event.metadata['turn_author'])
         if descriptor['turn_author'] is None:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
     if event.metadata.get('automation_identities'):
         descriptor['identities'] = sorted(set(event.metadata['automation_identities']))
     if getattr(event, '_heartbeat_session_id', None):
@@ -478,11 +632,11 @@ def check_local_automation(authority, ref, row, *, route=None):
             or row['principal_id'] != 'automation:' + admitted
             or descriptor['owner'] != ref.session_id or descriptor['route'] != admitted
             or descriptor['identity'] != row['request_id']):
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     entry = route_entry(authority, route)
     if (entry is None or entry.suspended or (entry.session_id != descriptor['target']
-            and authority.db.get_compression_tip(descriptor['target']) != entry.session_id)):
-        raise RuntimeStoreError('admission_conflict')
+            and authority_persistence(authority).lineage.tip(descriptor['target']) != entry.session_id)):
+        raise AuthorityRefusal('admission_conflict')
 
 
 def restore_local_automation(authority, ref, row):
@@ -503,10 +657,11 @@ def restore_local_automation(authority, ref, row):
     return event
 
 
-async def admit_automation(authority, adapter, event, identity, replaces=None):
+async def admit_automation(authority, adapter, event, identity, replaces=None, fold=None):
     """``replaces``: a queued automation row of the same session this input supersedes (a liveness
     tick carrying the output of the one still waiting). Its cancellation commits in this admission's
-    own transaction, so neither lands without the other."""
+    own transaction, so neither lands without the other. ``fold``: ``replaces`` is a completion this
+    batch absorbs (``QueuedFold``), given the tick admission ids it may sit behind."""
     authority._require_admission_open()
     payload, entry = snapshot_automation(authority, adapter, event, identity)
     from gateway.session_authority import LiveSession
@@ -521,17 +676,29 @@ async def admit_automation(authority, adapter, event, identity, replaces=None):
     authority.sessions.setdefault(ref.session_id, LiveSession(source, entry.session_key))
     from functools import partial
     from gateway.session_runtime_workers import tracked_write
+    from gateway.session_authority import admission_row
     admitted, replaced = partial(authority._admitted, ref, event), []
     if replaces is not None:
         def admitted(row, admitted=admitted):
-            if replaced:  # the guard ran in the committed write; an exact replay runs no guard
+            if replaced:  # cancelled in the committed write; an exact replay cancels nothing
                 authority._settle_cancelled(ref, replaces)
             return admitted(row)
-    return await tracked_write(authority, partial(
-        admit_session_input, authority.db, epoch=authority.epoch, principal_id='automation:' + entry.session_key,
-        session_id=ref.session_id, request_id=identity, payload=deepcopy(payload),
-        _authorize_write=authority._admission_gate(replaces and _replace_queued(replaces, ref.session_id, replaced))),
-        then=admitted, ordered=True, after=partial(authority._schedule_admitted, ref))
+    store, payload = authority_persistence(authority), deepcopy(payload)
+    from persistence.authority.admissions import QueuedFold
+
+    def admit():
+        # A replaced tick is cancelled in this admission's own transaction; one claimed or settled first
+        # (its output already ran) refuses the replacement. A folded completion must also still be the
+        # queued tail but for the finishing process's ticks.
+        row, created = store.admissions.admit(
+            epoch=authority.epoch, principal_id='automation:' + entry.session_key, session_id=ref.session_id,
+            request_id=identity, payload=payload, gate=authority.gate_refusal(),
+            supersedes=replaces if fold is None else None,
+            fold=None if fold is None else QueuedFold(replaces, frozenset(fold)))
+        replaced[:] = [replaces] if created and replaces is not None else []
+        return admission_row(row)
+    return await tracked_write(authority, admit, then=admitted, ordered=True,
+                               after=partial(authority._schedule_admitted, ref))
 
 
 _ROUTE_WAKE_PRODUCERS = frozenset({'kanban-wake', 'loop-tick'})
@@ -561,39 +728,38 @@ async def move_route_wakes(runner, session_key, old_session_id):
         return
     import asyncio
     from functools import partial
-    from gateway.session_authority import LiveSession
-    from gateway.session_contract import Principal
+    from gateway.session_authority import LiveSession, admission_row
+    from gateway.session_contract import SessionActor
     from gateway.session_detached import lane_source
     from gateway.session_runtime_workers import tracked_write
-    from hermes_state_runtime import list_session_admissions
     old = SessionRef(authority.profile_id, authority.logical_owner(old_session_id))
     new = SessionRef(authority.profile_id, authority.logical_owner(entry.session_id))
     if old.session_id not in authority.sessions or old == new:
         return
-    rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=old.session_id)
-    if any(row['status'] == 'unknown' for row in rows):
+    store = authority_persistence(authority)
+    rows = await asyncio.to_thread(store.admissions.list, session_id=old.session_id)
+    if any(row.status == 'unknown' for row in rows):
         return
-    actor = Principal('messaging-control', authority.profile_id, frozenset({'session:submit', 'session:control'}), 'reset')
+    actor = SessionActor('messaging-control', authority.profile_id, frozenset({'session:submit', 'session:control'}), 'reset')
     for row in rows:
-        automation = row['payload'].get('native_text_v1', {}).get('automation', {})
-        identity = json.loads(row['request_id']) if automation and row['request_id'].startswith('[') else None
-        if (row['status'] != 'queued' or row['principal_id'] != 'automation:' + session_key
+        automation = row.payload.get('native_text_v1', {}).get('automation', {})
+        identity = json.loads(row.request_id) if automation and row.request_id.startswith('[') else None
+        if (row.status != 'queued' or row.principal_id != 'automation:' + session_key
                 or not isinstance(identity, list) or identity[:1] not in ([p] for p in _ROUTE_WAKE_PRODUCERS)):
             continue
         try:
-            await authority.cancel_queued(actor, old, row['admission_id'])
-        except RuntimeStoreError:
+            await authority.cancel_queued(actor, old, row.admission_id)
+        except AuthorityRefusal:
             continue  # claimed meanwhile: it runs where it is
-        payload = deepcopy(row['payload'])
+        payload = deepcopy(row.payload)
         payload['native_text_v1']['automation']['owner'] = new.session_id
         # The old conversation left the route at its rotation (gateway/session_detached.py).
         authority.sessions.setdefault(new.session_id, LiveSession(lane_source(authority.sessions[old.session_id].source),
                                                                   session_key))
-        await tracked_write(authority, partial(
-            admit_session_input, authority.db, epoch=authority.epoch, principal_id=row['principal_id'],
-            session_id=new.session_id, request_id=row['request_id'], payload=payload,
-            _authorize_write=authority._admission_gate()), then=partial(authority._admitted, new, None),
-            ordered=True, after=partial(authority._schedule_admitted, new))
+        await tracked_write(authority, lambda row=row, payload=payload: admission_row(store.admissions.admit(
+            epoch=authority.epoch, principal_id=row.principal_id, session_id=new.session_id,
+            request_id=row.request_id, payload=payload, gate=authority.gate_refusal())[0]),
+            then=partial(authority._admitted, new, None), ordered=True, after=partial(authority._schedule_admitted, new))
 
 
 def _local_owner(authority, session_key):
@@ -611,16 +777,16 @@ async def _reset_and_retarget_local(authority, runner, session_key, old_session_
     in the same ordered worker step as the rotation; left stale, the drain refuses them
     (``admission_conflict``) and the Bot Chat's FIFO pauses for good, across restarts."""
     from gateway.session_runtime_workers import tracked_write
-    from hermes_state_runtime import retarget_local_automation
     live = authority.sessions[owner.session_id]
+    store = authority_persistence(authority)
 
     def rotate_and_retarget():
-        old_targets = authority.db.get_compression_lineage(old_session_id) or [old_session_id]
+        old_targets = store.lineage.lineage(old_session_id) or [old_session_id]
         entry = runner.session_store.reset_session(session_key)
         if entry is None or entry.session_id in old_targets:
             return entry, []
-        return entry, retarget_local_automation(
-            authority.db, epoch=authority.epoch, session_id=owner.session_id,
+        return entry, store.admissions.retarget_local_automation(
+            epoch=authority.epoch, session_id=owner.session_id,
             principal_id='automation:' + session_key, old_targets=old_targets, new_target=entry.session_id)
 
     async with live.mutation_lock:
@@ -657,7 +823,8 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
     import asyncio
     from gateway.session_authority import LiveSession
     from gateway.session_runtime_workers import tracked_write
-    from hermes_state_runtime import rehome_queued_inputs
+    from persistence.conversation.sessions import NewSession
+    store = authority_persistence(authority)
 
     from gateway.session_detached import lane_source
     chat_source = lane_source(live.source)  # the rotation detaches the old conversation off the route
@@ -669,12 +836,12 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
         new = SessionRef(authority.profile_id, authority.logical_owner(entry.session_id))
         if new == old:
             return entry, None, []
-        if authority.db.get_session(new.session_id) is None:
-            authority.db.create_session(new.session_id, source=chat_source.platform.value)
+        if store.sessions.get(new.session_id) is None:
+            store.sessions.create(NewSession(session_id=new.session_id, source=chat_source.platform.value))
         # An admission that reserved the old route before this rotation commits after it.
         authority.rotated_owners[old.session_id] = session_key
-        return entry, new, rehome_queued_inputs(
-            authority.db, epoch=authority.epoch, old_session_id=old.session_id,
+        return entry, new, store.admissions.rehome_queued(
+            epoch=authority.epoch, old_session_id=old.session_id,
             new_session_id=new.session_id, principal_prefix='messaging:')
 
     async def fence(result):
@@ -721,7 +888,7 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
     authority FIFO, like heartbeats and process completions, instead of a classic turn that
     interrupts or races the admitted one. ``False`` when no authority serves the scope or the
     route holds no committed human turn to borrow provenance from: the caller keeps the adapter
-    path (nothing is queued there either). Raises ``RuntimeStoreError`` on a refusal."""
+    path (nothing is queued there either). Raises ``AuthorityRefusal`` on a refusal."""
     from gateway.session_authorities import active_authority
     from gateway.session_local_recovery import restore_completion_route
     from gateway.session_detached import detached_live, detached_route_of, route_entry

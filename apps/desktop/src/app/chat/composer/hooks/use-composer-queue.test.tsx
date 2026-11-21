@@ -16,8 +16,10 @@ import {
   simulateComposerQueueReloadForTests
 } from '@/store/composer-queue'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { endReplyPause, markReplyPaused } from '@/store/paused-replies'
 import { reconcilePendingSubmissions } from '@/store/pending-submissions'
-import { $connection, setSessionsLoading } from '@/store/session'
+import { $connection, $sessions, setSessionsLoading } from '@/store/session'
+import type { SessionInfo } from '@/types/hermes'
 
 import type { QueueEditState } from '../composer-utils'
 import type { ChatBarProps } from '../types'
@@ -247,6 +249,205 @@ describe('useComposerQueue park integration', () => {
 
     expect(onSubmit).not.toHaveBeenCalled()
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+  })
+
+  it('holds the queue while the reply is paused for an automatic continuation, then drains it', async () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'after the continuation' })
+    markReplyPaused(SESSION_KEY)
+
+    try {
+      const { onSubmit } = renderQueueHook()
+
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(onSubmit).not.toHaveBeenCalled()
+
+      act(() => endReplyPause(SESSION_KEY))
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    } finally {
+      endReplyPause(SESSION_KEY)
+    }
+  })
+
+  // The composer's key is the chat's lineage root; a compressed chat's pause is marked under the id its
+  // runtime shows (the compression tip).
+  it('holds a compressed chat\'s queue while its reply is paused under its tip id', async () => {
+    $sessions.set([{ _lineage_root_id: SESSION_KEY, id: 'compression-tip' } as SessionInfo])
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'after the continuation' })
+    markReplyPaused('compression-tip')
+
+    try {
+      const { onSubmit } = renderQueueHook()
+
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(onSubmit).not.toHaveBeenCalled()
+
+      act(() => endReplyPause('compression-tip'))
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    } finally {
+      endReplyPause('compression-tip')
+      $sessions.set([])
+    }
+  })
+
+  // A gateway-owned queue would admit the send into the owner's FIFO at once and
+  // draw it in the thread as the next turn's prompt: a visible row between the
+  // paused reply and its continuation, so the reply read "Response stopped".
+  it('keeps a send made while the reply is paused in the local queue, then sends it after the pause', async () => {
+    $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as HermesConnection)
+    markReplyPaused(SESSION_KEY)
+
+    try {
+      const { draftRef, hook, onSubmit } = renderQueueHook({ draft: 'after the continuation' })
+
+      await act(async () => {
+        await hook.result.current.queueCurrentDraft()
+      })
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(getQueuedPrompts(SESSION_KEY).map(entry => [entry.text, entry.serverStatus])).toEqual([
+        ['after the continuation', undefined]
+      ])
+      expect(draftRef.current).toBe('')
+
+      act(() => endReplyPause(SESSION_KEY))
+
+      await waitFor(() =>
+        expect(onSubmit).toHaveBeenCalledWith(
+          'after the continuation',
+          expect.objectContaining({ fromQueue: true, storedSessionId: SESSION_KEY })
+        )
+      )
+    } finally {
+      endReplyPause(SESSION_KEY)
+      $connection.set(null)
+    }
+  })
+
+  it('does not deliver a held message into the running continuation on a second Enter', async () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'after the continuation' })
+    markReplyPaused(SESSION_KEY)
+    const onSteer = vi.fn(async () => true)
+    const onCancel = vi.fn()
+
+    try {
+      const { hook, onSubmit } = renderQueueHook({ busy: true, onCancel, onSteer })
+      const [head] = getQueuedPrompts(SESSION_KEY)
+
+      await act(async () => {
+        await hook.result.current.deliverQueuedNow(head.id)
+        await hook.result.current.drainNextQueued()
+      })
+
+      expect(onSteer).not.toHaveBeenCalled()
+      expect(onCancel).not.toHaveBeenCalled()
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+    } finally {
+      endReplyPause(SESSION_KEY)
+    }
+  })
+
+  // The queue panel's row buttons call sendQueuedNow / steerQueuedNow themselves (queue-slot.tsx).
+  it.each([
+    ['while the reply waits for its continuation', false],
+    ['while the continuation runs', true]
+  ])("holds a queued row against the panel's send and steer buttons %s", async (_phase, busy) => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'after the continuation' })
+    markReplyPaused(SESSION_KEY)
+    const onSteer = vi.fn(async () => true)
+    const onCancel = vi.fn()
+
+    try {
+      const { hook, onSubmit } = renderQueueHook({ busy, onCancel, onSteer })
+      const [head] = getQueuedPrompts(SESSION_KEY)
+
+      await act(async () => {
+        expect(await hook.result.current.sendQueuedNow(head.id)).toBe(false)
+        expect(await hook.result.current.steerQueuedNow(head.id)).toBe(false)
+      })
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(onCancel).not.toHaveBeenCalled()
+      expect(onSteer).not.toHaveBeenCalled()
+      expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+
+      // Once the pause is over the queue drains by itself.
+      act(() => endReplyPause(SESSION_KEY))
+      hook.rerender({ busy: false })
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+      expect(onCancel).not.toHaveBeenCalled()
+    } finally {
+      endReplyPause(SESSION_KEY)
+    }
+  })
+
+  // The actions ask the store as they run: the panel can still hold the pair it was handed before the reply paused.
+  it('holds a queued row against send and steer actions handed out before the reply paused', async () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'after the continuation' })
+    const onSteer = vi.fn(async () => true)
+    const onCancel = vi.fn()
+
+    try {
+      const { hook, onSubmit } = renderQueueHook({ busy: true, onCancel, onSteer })
+      const [head] = getQueuedPrompts(SESSION_KEY)
+      const { sendQueuedNow, steerQueuedNow } = hook.result.current
+
+      act(() => markReplyPaused(SESSION_KEY))
+
+      await act(async () => {
+        expect(await sendQueuedNow(head.id)).toBe(false)
+        expect(await steerQueuedNow(head.id)).toBe(false)
+      })
+
+      expect(onCancel).not.toHaveBeenCalled()
+      expect(onSteer).not.toHaveBeenCalled()
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+    } finally {
+      endReplyPause(SESSION_KEY)
+    }
+  })
+
+  // A second Enter falls back to send-now's interrupt when its steer is refused. The reply can pause while that
+  // steer is still being answered, and the interrupt would then stop the continuation.
+  it('does not interrupt the continuation when a steer asked before the pause is refused', async () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'after the continuation' })!
+
+    let answer: (accepted: boolean) => void = () => {}
+
+    const onSteer = vi.fn(() => new Promise<boolean>(resolve => (answer = resolve)))
+    const onCancel = vi.fn()
+
+    try {
+      const { hook, onSubmit } = renderQueueHook({ busy: true, onCancel, onSteer })
+
+      let delivered: Promise<unknown> = Promise.resolve()
+
+      await act(async () => {
+        delivered = hook.result.current.deliverQueuedNow(entry.id)
+        await Promise.resolve()
+      })
+      expect(onSteer).toHaveBeenCalledTimes(1)
+
+      act(() => markReplyPaused(SESSION_KEY))
+
+      await act(async () => {
+        answer(false)
+        expect(await delivered).toBe(false)
+      })
+
+      expect(onCancel).not.toHaveBeenCalled()
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(getQueuedPrompts(SESSION_KEY).map(queued => queued.id)).toEqual([entry.id])
+    } finally {
+      endReplyPause(SESSION_KEY)
+    }
   })
 
   it('drainNextQueued sends a parked entry and lifts the park (manual resume)', async () => {

@@ -34,7 +34,6 @@ def _make_runner():
 
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._background_tasks = set()
     runner._session_key_for_source = lambda source: "agent:main:test:dm:1"
     return runner

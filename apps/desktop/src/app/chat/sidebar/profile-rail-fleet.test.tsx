@@ -49,14 +49,10 @@ vi.mock('@/i18n', () => ({
           installDeviceConfirm: 'Install locally',
           installDeviceDesc:
             'This will install Hermes locally, then open a fresh session on this computer. Nothing is installed until you confirm.',
-          installDeviceTitle: 'Switch to This device?',
+          installDeviceTitle: 'Install Hermes on This device?',
           localDevice: 'This device (local backend — installs Hermes if missing, otherwise opens a fresh session)',
           onGateway: (name: string, gateway: string) => `${name} · ${gateway}`,
-          switchDeviceConfirm: 'Switch',
-          switchDeviceDesc:
-            'This opens a fresh session on this computer. The conversation you are in stays on the other gateway.',
-          switchDeviceTitle: 'Switch to This device?',
-          switchTo: (name: string, gateway: string) => `Switch to ${name} on ${gateway}`
+          switchTo: (name: string, gateway: string) => `Open ${name} on ${gateway}`
         },
         importProfile: 'Import profile…',
         manageProfiles: 'Manage profiles…',
@@ -75,6 +71,7 @@ vi.mock('@/i18n', () => ({
         switchToProfile: (name: string) => `Switch to ${name}`,
         title: 'Profiles'
       },
+      composer: { switchProfileFailed: (name: string) => `Couldn’t switch to ${name}` },
       settings: { connections: { kindCloud: 'Cloud', kindLocal: 'This device', kindRemote: 'Remote', kindSsh: 'SSH' } }
     }
   })
@@ -153,6 +150,7 @@ const activeGatewayProfile = $activeGatewayProfile as ReturnType<typeof atom<str
 const profiles = $profiles as ReturnType<typeof atom<Array<{ is_default: boolean; name: string }>>>
 const profileScope = $profileScope as ReturnType<typeof atom<string>>
 const { _resetFleetRosterForTests } = await import('@/store/fleet-roster')
+const { $profileSwitchFailure, $profileSwitchPending } = await import('@/store/profile-switch-state')
 
 const registry: DesktopConnectionsRegistry = {
   connections: [
@@ -337,6 +335,30 @@ describe('ProfileRail overflow', () => {
     expect(mask.mock.calls.at(-1)?.[0]).toContain('transparent')
     fireEvent.click(screen.getByRole('button', { name: 'agent1' }))
     expect(selectProfile).toHaveBeenCalledWith('agent1')
+  })
+})
+
+describe('ProfileRail local profile switch', () => {
+  it('marks the picked square busy while it activates, then failed when the switch rejects', () => {
+    profiles.set([
+      { is_default: true, name: 'default' },
+      { is_default: false, name: 'ops' }
+    ])
+    render(<ProfileRail />)
+    const square = () => screen.getByRole('button', { name: /^ops/ })
+
+    act(() => $profileSwitchPending.set('ops'))
+    expect(square().getAttribute('aria-busy')).toBe('true')
+
+    act(() => {
+      $profileSwitchPending.set(null)
+      $profileSwitchFailure.set({ profile: 'ops', retry: vi.fn() })
+    })
+    expect(square().getAttribute('aria-busy')).toBeNull()
+    expect(square().getAttribute('aria-label')).toContain('Couldn’t switch to ops')
+
+    act(() => $profileSwitchFailure.set(null))
+    expect(square().getAttribute('aria-label')).toBe('ops')
   })
 })
 
@@ -531,7 +553,7 @@ describe('ProfileRail fleet mode', () => {
     expect(builder.getAttribute('aria-busy')).toBeNull()
   })
 
-  it('asks before a fresh session when This device is already installed', async () => {
+  it('opens an installed This device with no prompt', async () => {
     armFleet()
     await renderFleet()
 
@@ -541,21 +563,8 @@ describe('ProfileRail fleet mode', () => {
       })
     )
 
-    expect(selectConnection).not.toHaveBeenCalled()
-    expect(await screen.findByRole('dialog', { name: 'Switch to This device?' })).toBeTruthy()
-    expect(
-      screen.getByText(
-        'This opens a fresh session on this computer. The conversation you are in stays on the other gateway.'
-      )
-    ).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Switch' }))
-
-    await act(async () => {
-      await Promise.resolve()
-    })
-
-    expect(selectConnection).toHaveBeenCalledWith('local', { profile: 'default' })
+    await vi.waitFor(() => expect(selectConnection).toHaveBeenCalledWith('local', { profile: 'default' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
   it('confirms before installing and offers connect-to-existing inline', async () => {
@@ -580,24 +589,6 @@ describe('ProfileRail fleet mode', () => {
 
     expect(selectConnection).not.toHaveBeenCalled()
     expect(await screen.findByText('Connect to existing Hermes')).toBeTruthy()
-  })
-
-  it('does not switch when the fresh-session cue is cancelled', async () => {
-    armFleet()
-    await renderFleet()
-
-    fireEvent.click(
-      screen.getByRole('button', {
-        name: 'This device (local backend — installs Hermes if missing, otherwise opens a fresh session)'
-      })
-    )
-    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
-
-    await act(async () => {
-      await Promise.resolve()
-    })
-
-    expect(selectConnection).not.toHaveBeenCalled()
   })
 
   it('keeps the active gateway click on the plain profile path', async () => {

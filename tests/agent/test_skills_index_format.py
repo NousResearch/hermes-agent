@@ -55,3 +55,25 @@ def test_clip_cuts_at_any_whitespace_never_inside_a_word(sep):
     shown = clip_skill_description(desc)
     assert len(shown) <= SKILL_PROMPT_DESC_LIMIT and shown.endswith("...")
     assert set(shown[:-3].split(sep)) == {"alpha", "bravo"}  # whole words only, no "bra..."
+
+
+
+def test_index_desc_limit_widens_the_index_and_rebuilds_a_stale_snapshot(monkeypatch, tmp_path):
+    """skills.index_desc_limit shows the full description; flipping it back clips again even though
+    no SKILL.md changed (the on-disk snapshot and LRU must not serve rows clipped at the old width)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _skill(tmp_path / "skills", "github/hermes-release", LONG)
+    config = tmp_path / "config.yaml"
+
+    def release_row(fresh_process: bool):
+        if fresh_process:  # drop only the in-process LRU; the disk snapshot stays
+            clear_skills_system_prompt_cache()
+        return index_entries(build_skills_system_prompt())["hermes-release"]
+
+    assert release_row(fresh_process=False).endswith("...")
+    config.write_text("skills:\n  index_desc_limit: 200\n", encoding="utf-8")
+    assert release_row(fresh_process=False) == f"  - hermes-release: {LONG}"  # LRU must not serve the old width
+    config.write_text("skills:\n  index_desc_limit: 5\n", encoding="utf-8")  # below the floor: 60
+    assert release_row(fresh_process=True).endswith("...")  # nor the disk snapshot
+    config.write_text("skills:\n  index_desc_limit: \"\u00b2\"\n", encoding="utf-8")  # isdigit() but not int()
+    assert release_row(fresh_process=True).endswith("...")

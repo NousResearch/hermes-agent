@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2023",
     "useDefineForClassFields": true,
-    "lib": ["DOM", "DOM.Iterable", "ES2023"],
+    "lib": ["DOM", "DOM.Iterable", "ES2023", "ES2024.Promise"],
     "types": ["node"],
     "allowJs": false,
     "skipLibCheck": true,

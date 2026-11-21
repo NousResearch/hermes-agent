@@ -879,3 +879,62 @@ async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
         assert "proc_deadbeef" not in text and "[Background process" not in text and "~" not in text
         assert "\x1b[" not in text
         assert "make -j8 all" in text
+
+
+@pytest.mark.asyncio
+async def test_off_mode_stops_the_completion_turn_even_with_notify_on_complete(monkeypatch, tmp_path):
+    """``display.background_process_notifications: off`` is an operator kill switch.
+
+    The docs say "off" means "no process watcher messages at all" and that
+    "completions never start an agent turn there"; the CLI drain and the TUI
+    poller both honour that. The gateway's per-process watcher did not: a
+    call-site ``notify_on_complete=True`` re-enabled the completion turn the
+    operator had turned off, so the agent still woke up and started a turn.
+
+    (PR #89746 reported this against gateway/run.py, where the watcher lived
+    before it moved to gateway/run_notifications.py.)
+    """
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="echo done", started_at=None,
+    )]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions, consumed=False))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "off")
+    runner._enqueue_process_completion_notification = AsyncMock(return_value=True)
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    watcher = {**_watcher_dict(), "session_key": "agent:main:telegram:dm:123", "notify_on_complete": True}
+    await runner._run_process_watcher(watcher)
+
+    runner._enqueue_process_completion_notification.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_off_mode_still_watches_for_exit_without_delivering(monkeypatch, tmp_path):
+    """``off`` suppresses the delivery, not the watch: the process must still be
+    reaped and its lifecycle logged, so the registry does not leak the session."""
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="echo done", started_at=None,
+    )]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions, consumed=False))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "off")
+    runner._enqueue_process_completion_notification = AsyncMock(return_value=True)
+
+    await runner._run_process_watcher({**_watcher_dict(), "notify_on_complete": True})
+
+    # The watcher observed the exit (its registry was polled) and then stopped.
+    runner._enqueue_process_completion_notification.assert_not_awaited()

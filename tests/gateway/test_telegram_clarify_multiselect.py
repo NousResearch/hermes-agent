@@ -172,7 +172,7 @@ class TestMultiSelectCallbacks:
         adapter = _make_adapter()
         msg = _prompt(adapter, "cidX")
         cm.register("cidX", "sk-multi", "Pick", ["red", "green"], multi_select=True)
-        cm.resolve_gateway_clarify("cidX", "typed answer")  # answered elsewhere (typed reply / timeout)
+        cm.resolve_gateway_clarify("cidX", "typed answer", session_key="sk-multi")  # answered elsewhere
 
         query = await _tap(adapter, msg, "cl:cidX:t0")
 

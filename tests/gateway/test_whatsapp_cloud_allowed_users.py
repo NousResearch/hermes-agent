@@ -223,7 +223,7 @@ async def test_suffixed_bsuid_live_allowlist_interactive_dispatch(monkeypatch, e
             adapter, sender, prompt_id, button_id=f"cl:{prompt_id}:0",
         )
         if allowed:
-            resolver.assert_called_once_with(prompt_id, "1")
+            resolver.assert_called_once_with(prompt_id, "1", session_key="session")
             assert prompt_id not in adapter._clarify_state
         else:
             resolver.assert_not_called()

@@ -49,7 +49,7 @@ def test_waiting_on_clarify_then_back_to_working_once_answered(owner):
     try:
         owner.authority.register_clarify('s', generation, entry)
         assert bot_chat_state(owner.authority, 's') == 'waiting_clarify'
-        clarify_gateway.resolve_gateway_clarify(entry.clarify_id, 'blue')
+        clarify_gateway.resolve_gateway_clarify(entry.clarify_id, 'blue', session_key='route')
         assert bot_chat_state(owner.authority, 's') == 'working'
     finally:
         clarify_gateway.clear_session(entry.session_key)

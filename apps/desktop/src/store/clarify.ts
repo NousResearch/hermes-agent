@@ -3,7 +3,7 @@ import { atom, computed } from 'nanostores'
 import { translateNow } from '@/i18n'
 
 import { $gateway } from './gateway'
-import { notifyError } from './notifications'
+import { notify, notifyError } from './notifications'
 import { registerParkedCardAnswer } from './parked-card-answers'
 import { forgetServerRequest, hasOpenServerRequest, respondToServerRequest } from './server-requests'
 import { $activeSessionId } from './session'
@@ -333,9 +333,19 @@ function lockTypedAnswer(request: ClarifyRequest, text: string): null | Promise<
         )
 
         if (reply.status === 'expired') {
-          // The wait already ended; the tool's own result says how.
+          // The wait already ended, so no card can take this answer: the tool's own result says how.
+          // Close the card (a parked one would route every later message into the same dead lock)
+          // and report "not delivered" so the caller hands the typed words back — the one failure the
+          // composer must never swallow, because clearDraft() already ran by the time this resolves.
           forgetSettledClarify(request.requestId)
-        } else if (last) {
+          forgetServerRequest(request.requestId)
+          clearClarifyRequest(request.requestId, request.sessionId)
+          notify({ id: 'clarify-expired-answer', kind: 'warning', message: translateNow('assistant.clarify.sendFailed') })
+
+          return false
+        }
+
+        if (last) {
           // The last lock resolved the batch server-side, so no response frame is owed.
           forgetServerRequest(request.requestId)
         }

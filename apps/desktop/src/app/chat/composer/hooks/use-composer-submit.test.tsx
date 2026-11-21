@@ -980,6 +980,38 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     expect($clarifyRequests.get()['runtime-session']).toBeUndefined()
   })
 
+  // The one failure the composer cannot see: the server already ended the wait, so the answer is
+  // neither queued nor submitted — and clearDraft() has already run, so the words exist nowhere.
+  // Hand them back and close the dead card: a card left parked routes every later message into the
+  // same expired lock, which is how one timed-out question eats the rest of a conversation's typing.
+  it('hands the answer back and closes a card whose wait already ended', async () => {
+    const request = vi.fn(async () => ({ status: 'expired' }))
+    setGateway(request)
+    rememberServerRequest({ fail: vi.fn(), id: 'req-dead', method: 'clarify', params: {}, respond })
+    $clarifyRequests.set({
+      'runtime-session': {
+        requestId: 'req-dead',
+        questions: [
+          { choices: ['superuser', 'por cliente'], multiSelect: false, qid: 'q0', question: 'which credential?' },
+          { choices: null, multiSelect: false, qid: 'q1', question: 'why?' }
+        ],
+        sessionId: 'runtime-session'
+      }
+    })
+    const { hook, onSubmit, loadIntoComposer } = renderSubmitHook({ text: 'superuser' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith('clarify.lock', expect.objectContaining({ request_id: 'req-dead' }))
+    )
+    await waitFor(() => expect(loadIntoComposer).toHaveBeenCalledWith('superuser', []))
+    expect($clarifyRequests.get()['runtime-session']).toBeUndefined()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
   it('answers one question per submit while a busy turn waits, matching a choice label', async () => {
     const request = vi.fn(async () => ({ status: 'ok', remaining: ['q1'] }))
     setGateway(request)

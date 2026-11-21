@@ -1,7 +1,7 @@
 """MiniMax provider profiles (international, China, OAuth).
 
 Default routes use anthropic_messages (base URLs end in /anthropic). Users can
-opt MiniMax-M3 into the OpenAI-compatible https://api.minimax.io/v1 route,
+opt MiniMax-M3 / M3.1-Flash into the OpenAI-compatible https://api.minimax.io/v1 route,
 which needs MiniMax-specific reasoning controls in extra_body.
 """
 
@@ -26,11 +26,14 @@ class MiniMaxProfile(ProviderProfile):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """M3 on api.minimax.io/v1 keeps thinking inline unless ``reasoning_split``
         is sent; effort levels only select adaptive vs disabled ``thinking``."""
-        is_m3 = str(model or "").strip().lower() in {"minimax-m3", "minimax/minimax-m3"}
-        if not _is_minimax_global_openai_base_url(base_url) or not is_m3:
+        name = str(model or "").strip().lower()
+        is_m3 = name in {"minimax-m3", "minimax/minimax-m3"}
+        is_m31 = name in {"minimax-m3.1-flash", "minimax/minimax-m3.1-flash"}
+        if not _is_minimax_global_openai_base_url(base_url) or not (is_m3 or is_m31):
             return {}, {}
         extra_body: dict[str, Any] = {"reasoning_split": True}
-        if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
+        # M3.1 thinking cannot be turned off (it 400s), so never send ``disabled`` for it.
+        if is_m3 and isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
             extra_body["thinking"] = {"type": "disabled"}
         elif reasoning_config is not None:
             extra_body["thinking"] = {"type": "adaptive"}

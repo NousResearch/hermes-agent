@@ -714,7 +714,7 @@ def _auth_store_lock(
     reentrancy tracker and kernel lock. Lock ordering invariant: ``_auth_store_lock`` FIRST (outer),
     ``_nous_shared_store_lock`` SECOND (inner), else deadlock against a concurrent shared import."""
     auth_path = target_path if target_path is not None else _auth_file_path()
-    lock_path = auth_path.with_suffix(".lock")
+    lock_path = Path(_resolved_key(auth_path)).with_suffix(".lock")  # beside the file writes land in, not a symlink
     with _file_lock(
         lock_path, _auth_lock_holder_for(auth_path), timeout_seconds,
         f"Timed out waiting for auth store lock ({lock_path})"):

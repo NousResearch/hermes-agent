@@ -52,7 +52,11 @@ def test_sandbox_artifact_is_fetched_but_credentials_and_symlinks_to_them_are_no
     delivered = BasePlatformAdapter.filter_media_delivery_paths(media)
 
     assert [Path(p).read_bytes() for p, _ in delivered] == [b"hello from sandbox", b"hello from sandbox"]
-    assert all(Path(p).name.endswith("_report.txt") for p, _ in delivered)
+    # The delivered copy keeps the sandbox file's own name (adapters send the basename as the
+    # attachment name); each fetch gets its own folder, so two fetches of one name do not collide.
+    assert [Path(p).name for p, _ in delivered] == ["report.txt", "report.txt"]
+    assert all(Path(p).parent.name.startswith("remote_") for p, _ in delivered)
+    assert delivered[0][0] != delivered[1][0]
     # The credential file and the symlink that resolves to it were refused BEFORE any bytes moved.
     assert remote_env.fetched == ["/home/agent/out/report.txt", "/home/agent/out/report.txt"]
 
@@ -63,6 +67,27 @@ def test_sandbox_project_env_file_is_not_fetched(remote_env):
     media = [("/home/agent/app/.ENV", False), ("/home/agent/out/notes.txt", False)]
     assert BasePlatformAdapter.filter_media_delivery_paths(media) == []
     assert remote_env.fetched == []
+
+
+def test_failed_fetch_leaves_no_per_fetch_folder(remote_env, tmp_path):
+    assert BasePlatformAdapter.filter_media_delivery_paths([("/home/agent/out/missing.txt", False)]) == []
+    assert remote_env.fetched == ["/home/agent/out/missing.txt"]
+    assert list((tmp_path / "cache" / "documents").glob("remote_*")) == []
+
+
+def test_document_cache_cleanup_sweeps_old_per_fetch_folders(remote_env, tmp_path):
+    import os
+    import time
+    from gateway.platforms.base import cleanup_document_cache
+    (old, _), = BasePlatformAdapter.filter_media_delivery_paths([("/home/agent/out/report.txt", False)])
+    (fresh, _), = BasePlatformAdapter.filter_media_delivery_paths([("/home/agent/out/report.txt", False)])
+    stale = time.time() - 48 * 3600
+    os.utime(old, (stale, stale))
+    os.utime(Path(old).parent, (stale, stale))
+
+    assert cleanup_document_cache(max_age_hours=24) == 1
+    assert not Path(old).parent.exists()
+    assert Path(fresh).read_bytes() == b"hello from sandbox"
 
 
 def test_local_backend_and_strict_mode_do_not_fetch(monkeypatch, tmp_path, remote_env):

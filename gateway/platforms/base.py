@@ -546,11 +546,11 @@ async def read_httpx_body_with_limit(response, *, media_type: str, body=None) ->
     return b"".join(chunks)
 
 
-def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_name: str):
+def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_name: str, dir_pattern: str = ""):
     """``(get_<kind>_cache_dir, cleanup_<kind>_cache)`` pair. The getter resolves fresh via
     get_hermes_dir (active profile) unless a test monkeypatched the module constant away from
     its import-time default, and creates the directory; ``cleanup(max_age_hours=MEDIA_CACHE_MAX_AGE_HOURS)`` deletes
-    older files and returns the count."""
+    older files (and ``dir_pattern`` folders) and returns the count."""
     def get_dir() -> Path:
         d = get_hermes_dir(new_subpath, old_name)
         current = globals().get(constant_name)
@@ -561,7 +561,7 @@ def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_na
         return d
 
     def cleanup(max_age_hours: int = MEDIA_CACHE_MAX_AGE_HOURS) -> int:
-        return unlink_files_older_than(get_dir(), "*", max_age_hours * 3600)
+        return unlink_files_older_than(get_dir(), "*", max_age_hours * 3600, dir_pattern=dir_pattern)
     get_dir.__name__ = get_dir.__qualname__ = f"get_{kind}_cache_dir"
     cleanup.__name__ = cleanup.__qualname__ = f"cleanup_{kind}_cache"
     return get_dir, cleanup
@@ -731,7 +731,7 @@ async def cache_video_from_bytes_async(data: bytes, ext: str = ".mp4") -> str:
 DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 SCREENSHOT_CACHE_DIR = get_hermes_dir("cache/screenshots", "browser_screenshots")
 get_document_cache_dir, cleanup_document_cache = _cache_dir_accessors(
-    "document", "DOCUMENT_CACHE_DIR", "cache/documents", "document_cache")
+    "document", "DOCUMENT_CACHE_DIR", "cache/documents", "document_cache", dir_pattern="remote_*")  # media_fetch
 get_screenshot_cache_dir, cleanup_screenshot_cache = _cache_dir_accessors(
     "screenshot", "SCREENSHOT_CACHE_DIR", "cache/screenshots", "browser_screenshots")
 

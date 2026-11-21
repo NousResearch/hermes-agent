@@ -1759,13 +1759,17 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         _raw = redact_terminal_output(_raw, _command)
         # Keep the last ~2000 chars snapped to a line boundary, with a marker when cut.
         _LIMIT = 2000
+        _MIN_TAIL = 200
         # Truncate at line boundaries so notifications never start mid-line (fixes #23284). Keep the last
         # ~2000 chars but snap to the nearest preceding newline, then prepend a truncation marker when
         # output was cut.
         if len(_raw) > _LIMIT:
             _tail = _raw[-_LIMIT:]
             _nl = _tail.find("\n")
-            _tail = _tail[_nl + 1:] if _nl != -1 else _tail
+            _snapped = _tail[_nl + 1:] if _nl != -1 else _tail
+            # One long line has its only newline at the end, so snapping would leave nothing.
+            # Show the raw tail (mid-line) rather than an empty or near-empty body.
+            _tail = _snapped if len(_snapped.strip()) >= _MIN_TAIL else _tail
             _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
         else:
             _out = _raw

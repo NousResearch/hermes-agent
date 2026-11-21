@@ -1437,12 +1437,12 @@ class TestMacOSPrivateSystemPaths:
 
 
 class TestKillallKillSignals:
-    """Inspired by Claude Code 2.1.113 expanded deny rules.
+    """Broad kill sweeps require approval; killing every process is always refused."""
 
-    The existing pattern caught `pkill -9` but not the equivalent
-    `killall -9` / `-KILL` / `-s KILL` / `-r <regex>` broad sweeps that
-    can wipe out unrelated processes.
-    """
+    @pytest.mark.parametrize("command", ["kill -s KILL -1", "kill -n 9 -1"])
+    def test_kill_all_floor_with_approvals_off(self, command, monkeypatch):
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "off")
+        assert approval_module.check_all_command_guards(command, "local")["approved"] is False
 
     def test_killall_signal_sweeps_flagged(self):
         for cmd in (

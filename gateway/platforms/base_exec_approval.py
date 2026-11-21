@@ -131,7 +131,7 @@ def card_kind_scope(request_id: Optional[str]):
 def approval_expired_text(key: str, **kwargs: Any) -> str:
     """``t(key)`` (a platform's "expired: the command was not run"), or the kind-neutral expiry line on a
     schedule card, which ran no command."""
-    return t("gateway.approval_expired") if _APPROVAL_KIND.get() == "schedule" else t(key, **kwargs)
+    return t("gateway.approval_expired") if is_schedule_kind() else t(key, **kwargs)
 
 
 # Bare strings; adapters add their own bold/HTML around them.

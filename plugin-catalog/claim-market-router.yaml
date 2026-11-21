@@ -1,0 +1,32 @@
+name: claim-market-router
+title: Claim Market Router
+repo: https://github.com/misakamikotoghr-5205/hermes-hackathon-plugins
+sha: "d4a7f0938b975c36c0d7fc65c8d32313a52d6f1b"
+subdir: claim-market-router
+version: "1.0.0"
+description: >-
+  Market-based subagent delegation provider (`delegation.backend: claim_market`) and
+  optional `llm_request` reasoning-effort shaper derived from MISAKA Agent and Watt Window.
+  Publishes task cards (`role_needed`, `complexity`, `max_cost_units`), synthesizes
+  capability-fit and quota-health claims with shadow pricing, resolves disagreements via
+  weighted voting, and explains infeasible budget constraints.
+  Disclosure — no network calls, subprocesses, or credential reads; stores only token-usage
+  counts and auction receipts in `plugin-data/claim-market-router/data.db`; `llm_request`
+  middleware is no-op unless `auto_effort_shaping` is enabled in plugin settings, and when
+  enabled modifies only `reasoning_effort` on the outgoing request dict.
+maintainer: misakamikotoghr-5205
+tier: community
+category: models
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/misakamikotoghr-5205/hermes-hackathon-plugins/blob/main/claim-market-router/README.md
+platforms: []
+capabilities:
+  provides_tools:
+    - claim_market_auction
+    - claim_market_ledger
+  provides_hooks:
+    - post_llm_call
+    - post_api_request
+  provides_middleware:
+    - llm_request
+  requires_env: []

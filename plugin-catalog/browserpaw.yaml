@@ -1,33 +1,26 @@
 name: browserpaw
 repo: https://github.com/GoldenLoaf24h/browserpaw
-sha: 66a7349532a5ab6251b2090d2a4ab347aa07ad45
-subdir: "plugins/browserpaw"
+sha: b519111bdd4ae41c5410d4dc93c4fec48a43eaea
+subdir: "plugins/browserpaw-hermes"
 description: >-
-  Drive your own Chrome from Hermes through a BrowserPaw MCP server you configure: 16 browserpaw_* tools for navigation, indexed DOM reading, click/fill, batch actions, screenshots and tabs. Disclosure — a thin wrapper over a BrowserPaw MCP server you add yourself (mcp_servers.browserpaw, plus plugins.entries.browserpaw.mcp_allowlist: [browserpaw]); it drives your real Chrome profile (logged-in sessions, cookies) through the separately installed BrowserPaw extension and native host on 127.0.0.1:12306, whose credential lives in ~/.chrome-mcp/bridge-token; the agent can click, fill, submit and read pages without a Hermes approval prompt unless you set trust: untrusted on that server (the README sample enables the full 50-tool profile, including in-page JavaScript, HttpOnly cookie reads and raw CDP, as native Hermes MCP tools); the optional Jev remote mode sends structured page state to TypeSafe AI or a base URL you set, and its local model download contacts hf-mirror.com/aifasthub.com/huggingface.co (probing baidu.com/bilibili.com first).
+  Run the local BrowserPaw CLI as one Hermes tool and register its canonical Agent
+  Skill for controlling the user's existing Chrome profile and learned workflows in
+  ~/.browserpaw. Disclosure — installation requires the separately published
+  browserpaw npm package and BrowserPaw Chrome extension; the agent can navigate,
+  click, fill, upload, download, inspect page data and run learned recipes against
+  logged-in sites without per-command shell expansion or Hermes approval prompts,
+  so users should choose Hermes trust settings appropriate to unattended browser
+  control. No MCP server, Jev/TypeSafe service, credential files or telemetry are
+  bundled.
 maintainer: GoldenLoaf24h
 tier: community
 category: web
 requires_hermes: ">=0.21.5"
-docs_url: "https://github.com/GoldenLoaf24h/browserpaw#readme"
-version: "4.0.0"
+docs_url: "https://github.com/GoldenLoaf24h/browserpaw/tree/main/plugins/browserpaw-hermes#readme"
+version: "5.0.0"
 capabilities:
   provides_tools:
-    - browserpaw_act_toward_goal
-    - browserpaw_navigate
-    - browserpaw_read_dom
-    - browserpaw_interact_index
-    - browserpaw_fill_index
-    - browserpaw_batch_actions
-    - browserpaw_screenshot
-    - browserpaw_smart_scroll
-    - browserpaw_scroll_until_found
-    - browserpaw_inspect_media
-    - browserpaw_grep
-    - browserpaw_get_markdown
-    - browserpaw_switch_tab
-    - browserpaw_close_tabs
-    - browserpaw_get_windows_and_tabs
-    - browserpaw_tool_docs
+    - browserpaw
   provides_hooks: []
   provides_middleware: []
   requires_env: []

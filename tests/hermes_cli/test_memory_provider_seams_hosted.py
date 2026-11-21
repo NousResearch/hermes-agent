@@ -261,4 +261,6 @@ def test_a_profile_hook_leaves_the_at_prefix_to_the_profiles_own_load(hosted_hom
         expanded = asyncio.run(refs.get_context_reference_providers()["hostedprov"].expand("x"))
     finally:
         reset_hermes_home_override(token)
-    assert expanded == str(host.pid)
+    # The host child reports its own os.getpid() in the hello handshake. On Windows, Popen.pid is the
+    # venv launcher's pid, not the interpreter's, so it can't be compared with a pid the plugin returns.
+    assert expanded == str(host.info["pid"])

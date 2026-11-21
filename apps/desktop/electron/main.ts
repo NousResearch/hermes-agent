@@ -14196,11 +14196,11 @@ ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
       reject(new Error('SSH config resolution timed out.'))
     }, 10_000)
 
-    child.stdout.on('data', chunk => {
-      stdout += String(chunk)
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
+      stdout += chunk
     })
-    child.stderr.on('data', chunk => {
-      stderr += String(chunk)
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => {
+      stderr += chunk
     })
     child.once('error', error => {
       clearTimeout(timer)
@@ -16992,8 +16992,8 @@ async function probeUninstallSummary(): Promise<UninstallSummaryDetails> {
         })
       )
 
-      child.stdout.on('data', (chunk: Buffer): void => {
-        stdout += chunk.toString()
+      child.stdout.setEncoding('utf8').on('data', (chunk: string): void => {
+        stdout += chunk
       })
       child.on('error', (): void => done(fallbackUninstallSummary()))
       child.on('exit', (code: number | null): void => {

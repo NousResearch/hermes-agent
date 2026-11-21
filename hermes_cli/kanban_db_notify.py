@@ -7,6 +7,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import time
@@ -214,7 +215,9 @@ def count_notify_subs(
     thread_id: Optional[str] = None,
 ) -> int:
     """Count ``kanban_notify_subs`` rows via a read-only connection — the
-    notifier's cheap zero-subscription early exit. Unlike :func:`connect` it
+    notifier's cheap zero-subscription early exit. The open is the guarded
+    opener's read-only arm (:func:`hermes_cli.kanban_db_connect._open_readonly`,
+    which refuses a hosted process by itself) rather than :func:`connect`, so it
     never creates the file, runs init/migration or opens writable; WAL rows are
     still visible so a fresh sub is never missed. Missing DB / missing table
     counts as zero; platform matches case-insensitively (as notifier routing),
@@ -243,8 +246,8 @@ def count_notify_subs(
     query = "SELECT COUNT(*) FROM kanban_notify_subs"
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
-    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
-    try:
+    from hermes_cli.kanban_db_connect import _open_readonly  # late: import cycle
+    with contextlib.closing(_open_readonly(path)) as conn:
         try:
             row = conn.execute(query, params).fetchone()
         except sqlite3.OperationalError as exc:
@@ -252,8 +255,6 @@ def count_notify_subs(
                 return 0
             raise
         return int(row[0]) if row else 0
-    finally:
-        conn.close()
 
 
 def remove_notify_sub(

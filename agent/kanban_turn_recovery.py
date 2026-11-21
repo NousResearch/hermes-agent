@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -240,9 +239,8 @@ def worker_claim_is_live(
         return False
     now = _now()
     try:
-        conn = sqlite3.connect(f"{Path(db_path).absolute().as_uri()}?mode=ro", uri=True)
-        try:
-            conn.row_factory = sqlite3.Row
+        from hermes_cli.kanban_db_connect import connect_closing  # late: import cycle
+        with connect_closing(Path(db_path), readonly=True) as conn:
             row = conn.execute(
                 "SELECT status, worker_pid, current_run_id, claim_lock, claim_expires "
                 "FROM tasks WHERE id = ?",
@@ -280,8 +278,6 @@ def worker_claim_is_live(
             if run["claim_expires"] is None or int(run["claim_expires"]) < now:
                 return False
             return True
-        finally:
-            conn.close()
     except Exception:
         logger.warning("kanban claim check failed — not retrying in place", exc_info=True)
         return False

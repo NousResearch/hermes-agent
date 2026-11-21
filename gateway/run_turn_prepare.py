@@ -425,6 +425,8 @@ class GatewayTurnPrepareMixin:
         strict_session = bool(event_metadata.get("gateway_session_strict"))
         pinned_session_id = str(event_metadata.get("gateway_session_id") or "").strip()
         if strict_session:
+            # The run generation this admission started under; a newer run during the awaits below drops it.
+            strict_generation = self._current_session_run_generation(expected_session_key)
             session_entry = await self.async_session_store.lookup_by_session_key(expected_session_key)
             if session_entry is None or not pinned_session_id or session_entry.session_id != pinned_session_id:
                 logger.warning(
@@ -465,6 +467,11 @@ class GatewayTurnPrepareMixin:
             if resolved_entry is None:
                 return
             session_entry = resolved_entry
+        if strict_session:
+            # Persisted liveness, route and run generation, re-proven after every await above; no
+            # await may sit between this and the side effects below (admit_strict_session).
+            if not await admit_strict_session(self, session_key, pinned_session_id, strict_generation):
+                return
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
@@ -886,3 +893,67 @@ class GatewayTurnPrepareMixin:
             persist_user_display_kind, session_entry.session_id, owner,
             title_user_message=title_user_message,
         ), _session_env_tokens
+
+
+async def admit_strict_session(runner, session_key: str, pinned_session_id: str, run_generation: int) -> bool:
+    """True when the pinned session is persisted-live, still routed for ``session_key`` and no newer
+    run started since ``run_generation`` (taken when strict admission began); False drops the event.
+
+    A strict event is pinned to one session id and must never open a session: the in-memory route
+    cannot see that the persisted row was ended or emptied, and a newer run can start while the
+    strict path is awaited. Invariant: the caller performs no ``await`` between this returning True
+    and its first side effect (source cache, topic binding, heartbeat owner). The persisted read is
+    taken AFTER every earlier await of the strict path, so a session ended or emptied while those
+    were suspended is seen, and route and generation are re-checked synchronously after it. Known
+    limit: a termination committed while this final threaded read is in flight, that moves neither
+    the route nor the run generation, is not seen; closing that needs termination itself to bump
+    one of them.
+    """
+    if not await prove_live_persisted_context(runner, pinned_session_id):
+        return False
+    # No await from here to the caller's first side effect.
+    store = getattr(runner, "session_store", None)
+    peek = getattr(store, "peek_session_id", None)
+    if not callable(peek) or peek(session_key) != pinned_session_id:
+        logger.warning(
+            "strict_session_route_moved: pinned=%s key=%s", pinned_session_id or "missing", session_key or "missing",
+        )
+        return False
+    if not runner._is_session_run_current(session_key, run_generation):
+        logger.warning(
+            "strict_session_run_superseded: pinned=%s key=%s", pinned_session_id or "missing", session_key or "missing",
+        )
+        return False
+    return True
+
+
+async def prove_live_persisted_context(runner, pinned_session_id: str) -> bool:
+    """Prove a live persisted context exists before internal delivery.
+
+    Absence, an ended session, an empty transcript, a missing reader or a failed read all fail
+    closed, so an internal lane never opens a fresh conversation on a dead one. Uses the bounded
+    picker-row read (``sessions.list_row``: no prompt JOIN, no usage flush).
+    """
+    if not pinned_session_id:
+        return False
+    session_db = getattr(runner, "_session_db", None)
+    try:
+        reader = session_db.sessions.list_row
+    except (AttributeError, RuntimeError):  # no handle, or a handle used after close
+        logger.warning("strict_session_context_reader_missing: pinned=%s", pinned_session_id)
+        return False
+    try:
+        # A synchronous repository read runs in a thread: never block the event loop on SQLite.
+        row = await asyncio.to_thread(reader, pinned_session_id)
+    except Exception:  # fail closed on any storage error; the traceback is logged
+        logger.warning("strict_session_context_lookup_failed: pinned=%s", pinned_session_id, exc_info=True)
+        return False
+    if (
+        row is None
+        or str(row.session_id) != pinned_session_id
+        or row.ended_at
+        or int(row.message_count or 0) <= 0
+    ):
+        logger.warning("strict_session_no_live_context: pinned=%s", pinned_session_id)
+        return False
+    return True

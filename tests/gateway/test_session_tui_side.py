@@ -198,3 +198,85 @@ def test_preview_restart_history_trims_a_plain_message_list():
     assert [m['role'] for m in trimmed] == ['user', 'assistant', 'tool']
     assert 'reasoning' not in trimmed[1] and trimmed[2]['content'].startswith('x' * 10 + '\n... (truncated')
     assert _preview_restart_history([]) == [] and _preview_restart_history(None) == []
+
+
+class ExploringModel(BaseHTTPRequestHandler):
+    """A /btw --explore fork tries ``write_file`` (outside the exploration whitelist), then reports
+    whether the dispatch-side guard denied it. Every other request answers its own turn."""
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        last = (body.get('messages') or [{}])[-1]
+        message = {'role': 'assistant', 'content': 'WARM_ACK'}
+        if last.get('role') == 'tool':
+            message['content'] = 'DENIED_OK' if 'denied' in str(last.get('content')).lower() else 'WRITE_ESCAPED'
+        elif 'Side task: EXPLORE_TASK' in str(last.get('content')):
+            message = {'role': 'assistant', 'content': None, 'tool_calls': [{
+                'id': 'side-write', 'type': 'function', 'function': {
+                    'name': 'write_file', 'arguments': json.dumps({'path': 'SIDE_ESCAPE.txt', 'content': 'x'})}}]}
+        finish = 'tool_calls' if message.get('tool_calls') else 'stop'
+        payload = json.dumps({'id': 'x', 'choices': [{'index': 0, 'message': message, 'finish_reason': finish}],
+                              'usage': {'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15}}).encode()
+        kind = 'application/json'
+        if body.get('stream'):
+            delta = dict(message, tool_calls=[dict(c, index=0) for c in message.get('tool_calls') or []] or None)
+            payload = ('data: ' + json.dumps({'id': 'x', 'choices': [{'index': 0, 'delta': delta,
+                       'finish_reason': finish}]}) + '\n\ndata: [DONE]\n\n').encode()
+            kind = 'text/event-stream'
+        self.send_response(200)
+        self.send_header('Content-Type', kind)
+        self.send_header('Content-Length', str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+@pytest.mark.platforms("linux")
+def test_btw_explore_runs_a_guarded_side_thread_and_promotes_by_reply(tmp_path):
+    """A real fork of the resident agent: its write_file call is denied at dispatch (the file never
+    appears), each step streams as btw.progress, the report lands as btw.complete, and --promote
+    hands the client a prompt while the parent's FIFO and transcript stay untouched."""
+    model = ThreadingHTTPServer(('127.0.0.1', 0), ExploringModel)
+    threading.Thread(target=model.serve_forever, daemon=True).start()
+    url = f'http://127.0.0.1:{model.server_port}/v1'
+    try:
+        with owner(tmp_path, {'model': {'provider': 'custom', 'default': 'explore-fixture', 'base_url': url}}) as (
+                home, _peer, desc):
+            async def probe():
+                async with websocket(home, desc) as ws:
+                    sid = (await rpc(ws, 'session.create', request_id='exp', source='tui',
+                                     toolsets=['file']))['result']['session_id']
+                    await rpc(ws, 'prompt.submit', session_id=sid, input_id='warm', text='WARM_TURN')
+                    await settled(home)
+                    before = (await rpc(ws, 'session.resume', session_id=sid))['result']['messages']
+                    await ws.send(json.dumps({'jsonrpc': '2.0', 'id': 'exp', 'method': 'prompt.btw',
+                                              'params': {'session_id': sid, 'text': '--explore EXPLORE_TASK'}}))
+                    reply, progress, complete = None, [], None
+                    async with asyncio.timeout(90):
+                        while complete is None:
+                            frame = json.loads(await ws.recv())
+                            if frame.get('id') == 'exp':
+                                reply = frame
+                            kind = (frame.get('params') or {}).get('type')
+                            if kind == 'btw.progress':
+                                progress.append(frame['params']['payload'])
+                            elif kind == 'btw.complete':
+                                complete = frame['params']['payload']
+                    task = reply['result']['task_id']
+                    assert complete['task_id'] == task and 'DENIED_OK' in complete['text'], complete
+                    # The advertised ∩ allowed tools; the denied write_file never ran, so it is no step.
+                    assert [p['text'] for p in progress] == ['exploring with read_file, search_files'], progress
+                    assert 'write_file' not in complete['text']
+                    promoted = (await rpc(ws, 'prompt.btw', session_id=sid, text=f'--promote {task}'))['result']
+                    assert 'DENIED_OK' in promoted['prompt'] and task in promoted['text'], promoted
+                    listing = (await rpc(ws, 'prompt.btw', session_id=sid, text='--threads'))['result']
+                    assert task in listing['text'] and 'done' in listing['text'], listing
+                    assert [r[0] for r in admissions(home)] == ['warm']
+                    assert (await rpc(ws, 'session.resume', session_id=sid))['result']['messages'] == before
+            asyncio.run(probe())
+        assert not list(tmp_path.rglob('SIDE_ESCAPE.txt'))
+    finally:
+        model.shutdown()
+        model.server_close()

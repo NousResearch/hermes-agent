@@ -197,13 +197,29 @@ async def background(connection, ref, params):
 
 async def btw(connection, ref, params):
     """``/btw <question>``: a side question over a snapshot of the conversation
-    (``agent/side_question.py``); the live history, FIFO and prompt cache stay untouched."""
+    (``agent/side_question.py``); the live history, FIFO and prompt cache stay untouched. Its flags
+    (``agent.side_thread.parse_btw_args``): ``--explore`` forks the resident agent into a
+    tool-using side thread (steps: ``btw.progress``); ``--threads|--stop|--promote`` reply
+    ``{text, prompt}`` at once and the client submits a promotion as its own next turn."""
+    from agent.side_thread import parse_btw_args, run_thread_command
+    from gateway.session_authorities import owner_scope
     _live, policy, text, task_id = _admit(connection, ref, params, 'btw')
     authority = connection.authority
+    request = parse_btw_args(text)
+    if request.action in {'list', 'stop', 'promote'}:
+        # The thread registry is keyed by the owning profile's home.
+        with owner_scope(authority):
+            result = run_thread_command(ref.session_id, request)
+        return {'text': result.text, **({'prompt': result.prompt} if result.prompt else {})}
+    if not request.text:
+        raise RuntimeStoreError('invalid_params')
     # The resident agent's conversation (a cache-parity fork replays it); a session with no
     # resident agent (never ran a turn here, or evicted) answers from its stored transcript.
     agent = authority.agent(ref)
     snapshot = list(getattr(agent, '_session_messages', None) or [])
+    if request.action == 'explore':
+        return _btw_explore(authority, ref, policy, task_id, agent, snapshot, request.text)
+    question = request.text
     from gateway.session_local_recovery import transcript_target
     target = None if snapshot else transcript_target(authority, ref)
 
@@ -216,10 +232,48 @@ async def btw(connection, ref, params):
             model, runtime = _resolve_runtime(authority, policy)
             main_runtime = {'model': model, 'session_id': ref.session_id,
                             **{key: runtime.get(key) for key in ('provider', 'base_url', 'api_key', 'api_mode')}}
-            return answer_side_question(text, history, parent_agent=agent, main_runtime=main_runtime,
+            return answer_side_question(question, history, parent_agent=agent, main_runtime=main_runtime,
                                         on_fork=handle.set_fork, should_stop=handle.stopped.is_set) or ''
 
-    return _spawn(authority, ref, task_id, 'btw.complete', body, extra={'question': text}, holder=[handle])
+    return _spawn(authority, ref, task_id, 'btw.complete', body, extra={'question': question}, holder=[handle])
+
+
+def _btw_explore(authority, ref, policy, task_id, agent, snapshot, task):
+    """``/btw --explore``: a side thread forked from the resident agent under the session's own
+    scope and policy (its workspace, terminal backend); a refusal replies ``{text}`` at once."""
+    from agent.side_thread import (
+        SideThreadUnavailable, explore_refusal, format_report, register_thread, run_side_exploration)
+    from gateway.session_authorities import owner_scope
+    if (refusal := explore_refusal(agent)) is not None:
+        return {'text': refusal.user_message()}
+    try:
+        with owner_scope(authority):
+            thread = register_thread(ref.session_id, task, thread_id=task_id)
+    except SideThreadUnavailable as exc:
+        return {'text': exc.user_message()}
+
+    def progress(line):
+        if (stream := authority.sessions.get(ref.session_id)) is not None:
+            stream.event_stream.publish(ref.session_id, {'task_id': task_id, 'text': line}, event_type='btw.progress')
+
+    def body():
+        with _side_scope(authority, policy, task_id):
+            run_side_exploration(thread, agent, snapshot, on_progress=progress)
+        return format_report(thread)
+
+    # Retirement and shutdown stop the thread (interrupting its fork) like any side agent.
+    return _spawn(authority, ref, task_id, 'btw.complete', body, extra={'question': task},
+                  holder=[_SideThreadStop(thread)])
+
+
+class _SideThreadStop:
+    """``/btw --explore``'s holder: the owner's retirement/shutdown hook stops the thread."""
+
+    def __init__(self, thread):
+        self.thread = thread
+
+    def hard_interrupt(self, message=None):
+        self.thread.stop()
 
 
 class _SideQuestionStop:

@@ -2466,6 +2466,7 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
         quiet_mode=True,
         # Project context files only with a configured workdir; SOUL.md always.
+        cwd=workdir,
         skip_context_files=not bool(workdir),
         load_soul_identity=True,
         skip_memory=False,

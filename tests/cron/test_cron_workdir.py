@@ -410,3 +410,44 @@ def test_build_job_prompt_inline_script_receives_configured_workdir(monkeypatch,
 
     assert observed["script_workdir"] == str(workdir)
     assert "collected data" in prompt
+
+
+@pytest.mark.parametrize("configured_workdir", [True, False], ids=["workdir", "no-workdir"])
+def test_cron_agent_subdirectory_hints_follow_workdir(tmp_path, monkeypatch, configured_workdir):
+    from cron.scheduler import _CronAgentSetup, _construct_cron_agent
+    from run_agent import AIAgent
+
+    project = tmp_path / "project"
+    launch = tmp_path / "launcher"
+    for root, hint in [(project, "Project data instructions"), (launch, "Launcher instructions")]:
+        nested = root / "data"
+        nested.mkdir(parents=True)
+        (nested / "AGENTS.md").write_text(hint, encoding="utf-8")
+    monkeypatch.setenv("TERMINAL_CWD", str(launch))
+
+    agent = _construct_cron_agent(
+        AIAgent,
+        {"enabled_toolsets": []},
+        {},
+        _CronAgentSetup(
+            model="test-model",
+            max_iterations=2,
+            runtime={
+                "provider": "custom",
+                "api_key": "test-key",
+                "base_url": "http://127.0.0.1:1/v1",
+                "api_mode": "chat_completions",
+            },
+        ),
+        workdir=str(project) if configured_workdir else None,
+        session_id="test-cron-workdir-hints",
+        session_db=None,
+    )
+    try:
+        hint = agent._subdirectory_hints.check_tool_call("terminal", {"command": "ls data/"})
+        if configured_workdir:
+            assert hint is not None and "Project data instructions" in hint
+        else:
+            assert hint is None
+    finally:
+        agent.close()

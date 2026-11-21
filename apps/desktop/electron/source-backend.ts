@@ -20,6 +20,15 @@ export interface SourceBackend {
 interface SourceOptions {
   isWindows?: boolean
   env?: NodeJS.ProcessEnv
+  /**
+   * Presence-only resolution: the caller already knows the health probe failed
+   * and wants the install it can see on disk. A failed probe is not evidence of
+   * an absent install, and treating it as one is what opened the first-run
+   * setup card over a healthy (merely stalled) install.
+   */
+  skipProbe?: boolean
+  /** Report *why* a probe failed: a bare `null` is otherwise undiagnosable. */
+  log?: (message: string) => void
 }
 
 /** Keep the validated command. PM owns interpreter and generation selection. */
@@ -43,17 +52,24 @@ export async function resolveSourceInstallationBackend(
   const command: string = shell ? `"${launcher}"` : launcher
   const env: NodeJS.ProcessEnv = buildDesktopBackendEnv({ currentEnv: options.env ?? process.env })
 
-  try {
-    await execProbe(command, ['--version'], {
-      cwd: root,
-      env: { ...process.env, ...options.env, ...env },
-      shell,
-      stdio: 'ignore',
-      timeout: PROBE_TIMEOUT_MS,
-      windowsHide: true
-    })
-  } catch {
-    return null
+  if (!options.skipProbe) {
+    try {
+      await execProbe(command, ['--version'], {
+        cwd: root,
+        env: { ...process.env, ...options.env, ...env },
+        shell,
+        stdio: 'ignore',
+        timeout: PROBE_TIMEOUT_MS,
+        windowsHide: true
+      })
+    } catch (error: unknown) {
+      options.log?.(
+        `[bootstrap] ${command} --version probe failed at ${root}: ` +
+          `${error instanceof Error ? error.message : String(error)}`
+      )
+
+      return null
+    }
   }
 
   return {

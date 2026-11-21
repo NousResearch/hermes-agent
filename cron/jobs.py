@@ -2083,6 +2083,50 @@ def _fill_missing_next_run(updated: dict[str, Any]) -> None:
     updated["next_run_at"] = next_run
 
 
+_DISABLE_UNATTRIBUTED_MARKER = (
+    "disabled without a recorded reason (disables without reasons are unattributable)")
+
+
+def _stamp_disable_attribution(
+    job: dict[str, Any], updated: dict[str, Any], updates: dict[str, Any]
+) -> None:
+    """Land disable attribution in jobs.json next to the state it explains.
+
+    Incident: job ``f586101aac06`` was found disabled with no recorded reason — a disable
+    nobody can attribute after the fact. Every update that flips (or re-asserts) ``enabled``
+    now stamps ``disabled_reason``/``disabled_at`` in the SAME record, so one read of
+    jobs.json answers "disabled, and why":
+
+    - ``enabled=False``: the reason comes from an explicit ``disabled_reason`` or
+      ``paused_reason`` in the same update; without one, an explicit unattributed marker
+      lands (programmatic surfaces — dashboard toggles, the cronjob tool — keep working,
+      and the disable stays honest rather than silent). ``hermes cron pause`` /
+      ``cron edit --disable`` refuse reason-less disables up front; this marker is the
+      store-level backstop, not a substitute for the CLI gate.
+    - ``enabled=True``: the pair clears (and any stale ``enabled_reason``); an optional
+      ``enabled_reason`` records why the job came back.
+
+    Fires only on a real flip or an explicit pause-reason update, so a schedule edit of an
+    active job (which re-asserts ``enabled=True`` internally) never injects the keys, and
+    legacy rows without them load unchanged.
+    """
+    if "enabled" not in updates:
+        return
+    flipped = bool(job.get("enabled", True)) != bool(updated.get("enabled"))
+    if not flipped and "paused_reason" not in updates and "disabled_reason" not in updates:
+        return
+    if updated.get("enabled") is False:
+        reason = str(updates.get("disabled_reason") or updates.get("paused_reason") or "").strip()
+        updated["disabled_reason"] = reason or _DISABLE_UNATTRIBUTED_MARKER
+        updated["disabled_at"] = _hermes_now().isoformat()
+        updated["enabled_reason"] = None
+    else:
+        updated["disabled_reason"] = None
+        updated["disabled_at"] = None
+        updated["enabled_reason"] = (
+            str(updates.get("enabled_reason") or "").strip() or None)
+
+
 def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
     # ``id`` is a path component under OUTPUT_DIR — changing it would leak path-escape values.
@@ -2095,6 +2139,7 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
         _normalize_job_updates(job, updates)
         _apply_pin_update(job, updates)
         updated = _apply_skill_fields({**job, **updates})
+        _stamp_disable_attribution(job, updated, updates)
         _reject_terminal_activation(job, updated, job_id)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
         if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):

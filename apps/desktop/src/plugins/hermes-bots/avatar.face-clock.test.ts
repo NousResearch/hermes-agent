@@ -4,8 +4,9 @@
  * A large roster mounts hundreds of faces, so the clock must not burn frames
  * (or 1Hz whole-document shadow walks) on faces nobody can see. It therefore
  * parks itself whenever there is nothing worth animating — no faces mounted,
- * or none intersecting — and is woken by exactly two events: a `BotFace`
- * render re-entering `startFaceClock`, and a face scrolling into view.
+ * none intersecting, or every intersecting one in a hidden keep-alive tab — and
+ * is woken by a `BotFace` render re-entering `startFaceClock`, a face scrolling
+ * into view, or (while faces are only hidden) a once-a-second recheck.
  *
  * Newer desktops delegate scheduling to the SDK's `createBudgetedLoop`
  * (15fps budget, hidden/minimized pause, dormancy, teardown); older shells
@@ -267,6 +268,39 @@ describe('the SDK budgeted-loop path', () => {
     // Re-entry (a BotFace mount) wakes rather than re-initializing.
     startFaceClock()
     expect(calls.wake).toBeGreaterThanOrEqual(2)
+  })
+
+  it('parks while every intersecting face sits in a hidden keep-alive pane, and resumes once shown', async () => {
+    // An inactive tab keeps its box (`visibility: hidden`), so the observer
+    // still reports its faces as intersecting after the user leaves the tab.
+    vi.useFakeTimers()
+
+    try {
+      const { calls, captured } = captureLoop()
+      const { startFaceClock } = await loadClock()
+      const face = mountFace()
+      let shown = false
+
+      face.checkVisibility = () => shown
+
+      startFaceClock()
+      observer!.emit([{ isIntersecting: true, target: face }])
+      captured.draw!(1000)
+
+      expect(captured.idleWhen!()).toBe(true)
+
+      // Revealing the tab re-renders nothing and changes no intersection;
+      // the clock still notices within a second and resumes painting.
+      shown = true
+      const wakesBefore = calls.wake
+      vi.advanceTimersByTime(1000)
+      expect(calls.wake).toBe(wakesBefore + 1)
+
+      captured.draw!(1100)
+      expect(captured.idleWhen!()).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('keeps a single clock across plugin loads', async () => {

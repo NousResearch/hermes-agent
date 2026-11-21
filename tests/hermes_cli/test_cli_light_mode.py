@@ -191,6 +191,56 @@ class TestSkinConfigHook:
         assert skin.get_color("banner_text") == "#FFF8DC"
 
 
+class TestPolarityPalettes:
+    """The classic CLI honors a skin's paired light_colors/dark_colors like the TUI does."""
+
+    @staticmethod
+    def _skin():
+        from hermes_cli.skin_engine import SkinConfig
+
+        return SkinConfig(
+            name="adaptive",
+            colors={"banner_text": "#FFF8DC", "status_bar_bg": "#1a1a2e", "ui_accent": "#FFBF00"},
+            light_colors={"banner_text": "#2C1810", "status_bar_bg": "#F3E9DC"},
+            dark_colors={"ui_accent": "#00FFFF"},
+        )
+
+    def test_light_terminal_uses_light_colors_as_authored(self, cli_mod):
+        cli_mod._LIGHT_MODE_CACHE = True
+        skin = self._skin()
+        assert skin.get_color("banner_text") == "#2C1810"
+        # A light fill must not be pushed through the foreground remap.
+        assert skin.get_color("status_bar_bg") == "#F3E9DC"
+
+    def test_light_terminal_falls_back_to_remapped_colors(self, cli_mod):
+        cli_mod._LIGHT_MODE_CACHE = True
+        assert self._skin().get_color("ui_accent") == "#8A5A00"
+
+    def test_dark_terminal_uses_dark_colors_then_colors(self, cli_mod):
+        cli_mod._LIGHT_MODE_CACHE = False
+        skin = self._skin()
+        assert skin.get_color("ui_accent") == "#00FFFF"
+        assert skin.get_color("banner_text") == "#FFF8DC"
+        assert skin.get_color("status_bar_bg") == "#1a1a2e"
+
+    def test_style_overrides_follow_light_palette(self, cli_mod, monkeypatch):
+        from hermes_cli import skin_engine
+
+        cli_mod._LIGHT_MODE_CACHE = True
+        monkeypatch.setattr(skin_engine, "get_active_skin", self._skin)
+        styles = skin_engine.get_prompt_toolkit_style_overrides()
+        assert styles["status-bar"] == "bg:#F3E9DC #2C1810"
+
+    def test_default_banner_art_adapts_to_light_terminal(self, cli_mod):
+        from hermes_cli import banner
+
+        cli_mod._LIGHT_MODE_CACHE = True
+        art = banner._adapt_default_art(banner.HERMES_AGENT_LOGO)
+        assert "#FFD700" not in art and "#9A6B00" in art
+        cli_mod._LIGHT_MODE_CACHE = False
+        assert banner._adapt_default_art(banner.HERMES_AGENT_LOGO) == banner.HERMES_AGENT_LOGO
+
+
 @pytest.mark.platforms("linux")
 class TestOsc11DrainGuard:
     """Regression: a late-arriving OSC 11 reply must not leak into

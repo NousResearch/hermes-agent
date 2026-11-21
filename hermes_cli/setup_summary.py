@@ -249,6 +249,9 @@ def _print_setup_summary(config: dict, hermes_home):
         print(f"   {_setup.color(f'nano {path}', _setup.Colors.DIM)}")
     print()
 
+    from hermes_cli.setup_import_results import print_import_job_hints
+    print_import_job_hints(hermes_home)
+
     _print_section_header("🚀 Ready to go!")
     _print_cmd_rows(_READY_ROWS)
     print()

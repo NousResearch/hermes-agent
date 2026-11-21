@@ -702,6 +702,9 @@ def _sessions_rename(_engine: HermesConsoleEngine, args: list[str]) -> None:
         title = " ".join(ns.title)
         if not resolved_session_id or not store.sessions.set_title(resolved_session_id, title):
             raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
+        with contextlib.suppress(Exception):  # best-effort: Telegram-side failure never fails the rename
+            from hermes_cli.session_title_telegram import propagate_session_title_to_telegram_topic
+            propagate_session_title_to_telegram_topic(store, resolved_session_id, title)
         print(f"Session '{resolved_session_id}' renamed to: {title}")
 
 

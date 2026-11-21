@@ -59,13 +59,17 @@ def _route_base_url(identity, held, entry) -> str:
 
 def _builtin_base_url(identity, base_url, get_secret_str) -> str:
     """Where a built-in provider's turn goes: its scoped ``*_BASE_URL`` ahead of ``model.base_url`` (the env-seeded
-    credential pool and ``expand_direct_api_alias`` both take it first), then its registry default."""
+    credential pool and ``expand_direct_api_alias`` both take it first), then its registry default. An env URL that
+    is just the registry default yields to ``model.base_url``, as the pool row does (``_pool_entry_mode_and_url``)."""
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.runtime_provider_custom import _DIRECT_API_BASE_URLS
     pconfig = PROVIDER_REGISTRY.get(identity)
     env_var = getattr(pconfig, 'base_url_env_var', '') or ('OPENAI_BASE_URL' if identity in _DIRECT_API_BASE_URLS else '')
-    return ((get_secret_str(env_var).strip() if env_var else '') or base_url
-            or getattr(pconfig, 'inference_base_url', ''))
+    env_url = get_secret_str(env_var).strip() if env_var else ''
+    default_url = str(getattr(pconfig, 'inference_base_url', '') or '')
+    if env_url and default_url and env_url.rstrip('/') == default_url.rstrip('/'):
+        env_url = ''
+    return env_url or base_url or default_url
 
 
 def _self_hosted(base_url) -> bool:

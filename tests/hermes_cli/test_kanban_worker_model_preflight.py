@@ -286,3 +286,24 @@ def test_unavailable_config_backend_is_an_infrastructure_spawn_failure(dispatch_
     assert task.status == "ready" and task.worker_pid is None and task.consecutive_failures == 0
     assert "config plane unreachable" in task.last_failure_error
     assert len(runs) == 1 and runs[0].outcome == "spawn_failed" and runs[0].metadata.get("infrastructure") is True
+
+
+@pytest.mark.parametrize("provider, env_var", [("deepseek", "DEEPSEEK_BASE_URL"), ("openai-api", "OPENAI_BASE_URL")])
+def test_an_env_url_that_is_the_registry_default_yields_to_a_local_model_base_url(provider, env_var, tmp_path,
+                                                                                  monkeypatch):
+    """The pool row keeps model.base_url over an env URL equal to the provider's registry default, so the turn
+    goes to the loopback server: the preflight must defer instead of freezing a cloud id for it."""
+    from types import SimpleNamespace
+
+    from hermes_cli import models
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.kanban_worker_preflight import task_model
+    from hermes_cli.runtime_provider import _pool_entry_mode_and_url
+
+    default_url, local = PROVIDER_REGISTRY[provider].inference_base_url, "http://127.0.0.1:9/v1"
+    monkeypatch.setenv(env_var, default_url)
+    monkeypatch.setattr(models, "get_default_model_for_provider", lambda provider: "cloud-model")
+    model_cfg = {"provider": provider, "base_url": local}
+    env_row = SimpleNamespace(source=f"env:{env_var}", runtime_api_key="k")
+    assert _pool_entry_mode_and_url(provider, env_row, model_cfg, "", default_url.rstrip("/"))[1] == local
+    assert task_model(_card(), {"model": model_cfg}) == ("", False)

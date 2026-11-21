@@ -94,6 +94,7 @@ class TestBlueBubblesMentionGating:
         handled = []
 
         async def fake_handle_message(event):
+            event._gateway_accepted = True
             handled.append(event)
 
         monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
@@ -234,6 +235,7 @@ class TestBlueBubblesGuidResolution:
         assert "user@example.com" not in adapter._guid_cache
 
 
+
 class TestBlueBubblesAttachmentDownload:
     """Verify _download_attachment routes to the correct cache helper."""
 
@@ -348,7 +350,8 @@ class TestBlueBubblesWebhookRegistration:
 
     @staticmethod
     def _mock_client(get_response=None, post_response=None, delete_ok=True):
-        """Build a tiny mock httpx.AsyncClient."""
+        """Build a stateful registration response, including create/read-back."""
+        rows = list((get_response or {}).get("data") or [])
 
         async def mock_get(*args, **kwargs):
             class R:
@@ -356,16 +359,23 @@ class TestBlueBubblesWebhookRegistration:
                 def raise_for_status(self):
                     pass
                 def json(self):
-                    return get_response or {"status": 200, "data": []}
+                    return {"status": 200, "data": rows}
             return R()
 
         async def mock_post(*args, **kwargs):
+            payload = kwargs.get("json") or {}
+            result = post_response or {"status": 200, "data": {}}
+            if (result.get("data") or {}).get("id"):
+                row = {**result["data"], **payload}
+                rows.append(row)
+                result = {**result, "data": row}
+
             class R:
                 status_code = 200
                 def raise_for_status(self):
                     pass
                 def json(self):
-                    return post_response or {"status": 200, "data": {}}
+                    return result
             return R()
 
         async def mock_delete(*args, **kwargs):
@@ -423,7 +433,7 @@ class TestBlueBubblesWebhookRegistration:
         url = adapter._webhook_register_url
         adapter.client = self._mock_client(
             get_response={"status": 200, "data": [
-                {"id": 7, "url": url, "events": ["new-message"]},
+                {"id": 7, "url": url, "events": ["new-message", "updated-message"]},
             ]},
         )
 
@@ -632,6 +642,7 @@ class TestBlueBubblesGateBeforeDownload:
         handled = []
 
         async def fake_handle_message(event):
+            event._gateway_accepted = True
             handled.append(event)
 
         download = AsyncMock(return_value="/tmp/cached.jpg")
@@ -762,7 +773,7 @@ class TestBlueBubblesAttachmentAuthorization:
         mark_read = AsyncMock()
 
         async def fake_handle_message(event):
-            pass
+            event._gateway_accepted = verdict is True
 
         monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
         monkeypatch.setattr(adapter, "mark_read", mark_read)

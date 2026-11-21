@@ -35,6 +35,7 @@ export const StreamingAssistant = memo(function StreamingAssistant({
   const streamPendingTools = useTurnSelector(state => state.streamPendingTools)
   const streaming = useTurnSelector(state => state.streaming)
   const activeTools = useTurnSelector(state => state.tools)
+  const toolTokens = useTurnSelector(state => state.toolTokens)
   const showStreamingArea = Boolean(streaming)
 
   if (!progress.showProgressArea && !showStreamingArea && !activeTools.length) {
@@ -49,7 +50,13 @@ export const StreamingAssistant = memo(function StreamingAssistant({
   const blocks: LiveBlock[] = groupedSegments(streamSegments).map((msg, i) => ({ key: `seg:${i}`, msg }))
 
   if (activeTools.length) {
-    blocks.push({ key: 'active-tools', msg: { kind: 'trail', role: 'system', text: '' }, tools: activeTools })
+    // The panel header renders `msg.toolTokens` (turnController accumulates it per tool start);
+    // the live trail used to omit it, so the tools panel never showed its per-call tally.
+    blocks.push({
+      key: 'active-tools',
+      msg: { kind: 'trail', role: 'system', text: '', ...(toolTokens > 0 && { toolTokens }) },
+      tools: activeTools
+    })
   }
 
   if (showStreamingArea) {

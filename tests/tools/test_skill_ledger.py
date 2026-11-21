@@ -124,6 +124,52 @@ def test_foreground_patch_is_ledgered_as_agent(ledger_env):
     assert rows[0]["actor"] == "agent"
 
 
+@pytest.mark.parametrize("automatic_gc", [False, True], ids=["explicit-gc", "automatic-gc"])
+def test_reused_backup_blob_survives_gc_before_edit_is_recorded(ledger_env, monkeypatch, automatic_gc):
+    from tools import skill_ledger
+    from tools.skill_manager_tool import skill_manage
+
+    skill_dir = ledger_env["skills"] / "my-skill"
+    skill_dir.mkdir()
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+    seed = json.loads(skill_manage("write_file", "my-skill", file_path="references/helper.txt",
+                                   file_content="helper"))
+    assert seed["success"], seed
+    digest = hashlib.sha256(skill_md.read_bytes()).hexdigest()
+    backup = skill_ledger.blobs_dir() / digest
+    assert backup.is_file()
+    assert all(item["sha256"] != digest for row in skill_ledger.list_entries()
+               for item in row["before"] + row["after"])
+
+    orphan = skill_ledger.blobs_dir() / skill_ledger._store_blob(b"unused backup")
+    aged = time.time() - skill_ledger._BLOB_GC_GRACE_SECS - 60
+    for blob in (backup, orphan):
+        os.utime(blob, (aged, aged))
+
+    capture = skill_ledger.capture_before
+
+    def capture_then_collect(*args, **kwargs):
+        before = capture(*args, **kwargs)
+        if automatic_gc:
+            with monkeypatch.context() as maintenance:
+                maintenance.setattr(skill_ledger, "_max_ledger_bytes", lambda: 1)
+                assert skill_ledger.append_entry("edit", "another-skill", evidence={"source": "test"})
+        else:
+            skill_ledger.gc_blobs()
+        assert not orphan.exists(), "the collector must run during the capture window"
+        return before
+
+    monkeypatch.setattr(skill_ledger, "capture_before", capture_then_collect)
+    edit = json.loads(skill_manage("patch", "my-skill", old_string="Original body.",
+                                   new_string="Updated body."))
+    assert edit["success"], edit
+    entry = next(row for row in skill_ledger.list_entries() if row["action"] == "patch")
+    ok, detail = skill_ledger.rollback_entry(entry["id"])
+    assert ok, detail
+    assert skill_md.read_text(encoding="utf-8") == VALID_SKILL_CONTENT
+
+
 def test_rollback_refuses_paths_outside_hermes_home(ledger_env):
     """A hand-edited ledger entry pointing outside HERMES_HOME must not
     become a write-anywhere primitive."""

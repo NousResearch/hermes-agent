@@ -135,14 +135,19 @@ def _is_within(root: Path, path: Path) -> bool:
 
 
 def _store_blob(data: bytes) -> str:
-    """Write *data* keyed by sha256 (existing blob left alone). Returns the hash."""
+    """Store *data* by sha256 and renew its GC grace period on reuse."""
     digest = hashlib.sha256(data).hexdigest()
     dest = blobs_dir() / digest
-    if not dest.exists():
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest.with_name(f".tmp-{uuid.uuid4().hex[:8]}-{digest}")
-        tmp.write_bytes(data)
-        os.replace(tmp, dest)
+    # GC holds this lock from its age check through deletion. Renew protection
+    # before releasing it so a reused blob survives until the capture is recorded.
+    with _ledger_lock():
+        if dest.exists():
+            os.utime(dest, None)
+        else:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_name(f".tmp-{uuid.uuid4().hex[:8]}-{digest}")
+            tmp.write_bytes(data)
+            os.replace(tmp, dest)
     return digest
 
 

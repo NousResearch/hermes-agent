@@ -219,6 +219,18 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
       return
     }
 
+    // Chromium's synthetic pinch modifier has no corresponding keyboard event.
+    // shortcut: Control held before opening is unknown; track from window startup if needed.
+    let controlHeld = false
+
+    const syncControl = (event: KeyboardEvent) => {
+      controlHeld = event.ctrlKey || (event.type === 'keydown' && event.key === 'Control')
+    }
+
+    const clearControl = () => {
+      controlHeld = false
+    }
+
     const onWheel = (event: WheelEvent) => {
       event.preventDefault()
 
@@ -252,7 +264,7 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
 
       // Chromium encodes touchpad pinch scale as a pixel-mode Ctrl+wheel delta of -100 * ln(scale).
       const factor =
-        deltaMode === WheelEvent.DOM_DELTA_PIXEL && event.ctrlKey
+        deltaMode === WheelEvent.DOM_DELTA_PIXEL && event.ctrlKey && !controlHeld
           ? Math.exp(-delta / 100)
           : Math.exp(-delta * WHEEL_ZOOM_SPEED)
 
@@ -260,9 +272,15 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
       zoomAt(factor, cx, cy)
     }
 
+    window.addEventListener('keydown', syncControl, true)
+    window.addEventListener('keyup', syncControl, true)
+    window.addEventListener('blur', clearControl)
     node.addEventListener('wheel', onWheel, { passive: false })
 
     return () => {
+      window.removeEventListener('keydown', syncControl, true)
+      window.removeEventListener('keyup', syncControl, true)
+      window.removeEventListener('blur', clearControl)
       node.removeEventListener('wheel', onWheel)
 
       if (zoomSettleTimer.current !== undefined) {

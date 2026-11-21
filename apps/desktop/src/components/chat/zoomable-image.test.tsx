@@ -177,6 +177,29 @@ describe('ZoomableImage lightbox', () => {
     expect(percentageText()).toBe('100%')
   })
 
+  it.each(['keyup', 'window blur'])('uses ordinary wheel zoom with Control held until %s', async release => {
+    await renderImage()
+    await openLightbox()
+    const img = lightboxImg()
+
+    const wheel = (deltaY: number) =>
+      fireEvent.wheel(img, { ctrlKey: true, deltaMode: WheelEvent.DOM_DELTA_PIXEL, deltaY })
+
+    fireEvent.keyDown(img, { key: 'Control', ctrlKey: true })
+    await act(async () => wheel(-100))
+    expect(scaleOf(img)).toBeCloseTo(Math.exp(0.2), 8)
+
+    if (release === 'keyup') {
+      fireEvent.keyUp(img, { key: 'Control' })
+    } else {
+      fireEvent.blur(globalThis.window)
+    }
+
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /reset/i })))
+    await act(async () => wheel(-100 * Math.log(2)))
+    expect(percentageText()).toBe('200%')
+  })
+
   it('makes small trackpad deltas add up to the same zoom as one larger delta', async () => {
     await renderImage()
     await openLightbox()

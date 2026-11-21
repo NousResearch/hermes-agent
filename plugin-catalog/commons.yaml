@@ -1,13 +1,13 @@
 name: commons
 repo: https://github.com/Chrisyk/hermes-commons
-sha: 2cbee284c7053074c313c48f8f794ccfbeeddeb0
-description: "One live skill library for every profile on one machine. `hermes commons setup` scans every profile, reports identical, contained and conflicting copies of each skill, proposes a merge plan and changes nothing until you apply it; apply backs up every profile, moves old copies into a backup (never deletes), points each profile's skills.create_dir at the shared folder and verifies every skill still resolves. Each skill create, edit or patch made through Hermes' skill tool is committed to git in the shared folder, labelled with profile and session. Commands: `hermes commons setup|status|check|merge|promote|demote|log|undo|restore` and a read-only `/commons status|check`. Disclosure: reads every profile's config.yaml, skills folders, bundled manifest, hub lock and cron jobs.json. After confirmation it writes the shared skills folder, runs local `git` there (hooks disabled, no prompts, 30 s timeout), sets skills.create_dir and adds commons to plugins.enabled through `hermes config set`, moves replaced skill folders into <hermes home>/commons/backups (these hold copies of config.yaml, kept outside git and outside every skills folder), and rewrites old skill paths in cron prompts only where the new file exists. Optional hourly script-only cron job, created only with `setup --apply --schedule`. No network calls, no credentials stored."
+sha: 722cf32cd85f5ce4956acbdce2e17bb9405c99f1
+description: "One live skill library for every profile on one machine. `hermes commons setup` scans every profile, reports identical, contained and conflicting copies of each skill, proposes a merge plan and changes nothing until you apply it; apply backs up every profile, moves old copies into a backup (never deletes), points each profile's skills.create_dir at the shared folder and verifies every skill still resolves. Each skill create, edit or patch made through Hermes' skill tool is committed to git in the shared folder, labelled with profile and session. Optional consistency settings (`hermes commons config`): `lock shared` points every profile's skills/.locks at one folder so Hermes' own per-skill lock serializes writes across profiles (the default for a new setup; existing installs keep each profile's own lock), and `guard warn|strict` refuses or logs a write based on an old read (off by default; its pre_tool_call/post_tool_call hooks are registered only when it is on). Commands: `hermes commons setup|config|status|check|merge|promote|demote|log|undo|restore` and a read-only `/commons status|check`. Disclosure: reads every profile's config.yaml, skills folders, bundled manifest, hub lock and cron jobs.json. After confirmation it writes the shared skills folder, runs local `git` there (hooks disabled, no prompts, 30 s timeout), sets skills.create_dir and adds commons to plugins.enabled through `hermes config set`, moves replaced skill folders into <hermes home>/commons/backups (these hold copies of config.yaml, kept outside git and outside every skills folder), and rewrites old skill paths in cron prompts only where the new file exists. Optional hourly script-only cron job, created only with `setup --apply --schedule`. No network calls, no credentials stored."
 maintainer: Chrisyk
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/Chrisyk/hermes-commons#readme
-version: "0.1.0"
+version: "0.2.0"
 title: "Commons"
 platforms: [linux, macos]
 capabilities:
@@ -15,5 +15,7 @@ capabilities:
   provides_hooks:
     - on_skill_lifecycle
     - on_session_start
+    - pre_tool_call
+    - post_tool_call
   provides_middleware: []
   requires_env: []

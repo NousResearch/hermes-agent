@@ -3644,10 +3644,16 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
     def _response_error_result(
         self, response: Any, *, default_message: str, override_error: Optional[str] = None,
     ) -> SendResult:
-        if override_error:
-            return SendResult(success=False, error=override_error, raw_response=response)
         code = getattr(response, "code", "unknown")
         msg = getattr(response, "msg", default_message)
+        if override_error:
+            # The override is a short stable label for the caller; the Feishu code/msg must still
+            # reach the log and the error text, or every diagnosis needs a manual repro (the
+            # 2026-10-07 upload bug surfaced as a bare "missing file_key" while the wire error was
+            # code=9499 Bad Request).
+            logger.error("[Feishu] %s (code=%s msg=%s)", override_error, code, msg)
+            return SendResult(success=False, error=f"{override_error} (code={code} msg={msg})",
+                              raw_response=response)
         return SendResult(success=False, error=f"[{code}] {msg}", raw_response=response)
 
     def _finalize_send_result(self, response: Any, default_message: str) -> SendResult:
@@ -3903,9 +3909,17 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
 
     @staticmethod
     def _build_file_upload_body(*, file_type: str, file_name: str, file: Any, duration: int = 0) -> Any:
+        # Feishu's ``im/v1/files`` rejects a file part that carries no ``filename=`` in its
+        # Content-Disposition once the body passes ~26MiB (measured boundary: 27,262,124 B ok,
+        # 27,262,125 B -> ``code=9499 Bad Request``). The SDK's ``Files.parse_form_data`` keeps a
+        # bare file object as-is and ``MultipartEncoder`` only emits ``filename=`` for a
+        # ``(name, file)`` tuple, so a raw file object silently produces a nameless part and the
+        # upload never returns a file_key (the adapter then reported the misleading
+        # "missing file_key"). Pass the tuple form: it succeeds at every size up to the 30MiB cap.
+        # Verified 2026-10-07 against the live tenant, upload-only (no message sent).
         if CreateFileRequestBody is None:
-            return SimpleNamespace(file_type=file_type, file_name=file_name, file=file, duration=duration)
-        fields: dict[str, Any] = {"file_type": file_type, "file_name": file_name, "file": file}
+            return SimpleNamespace(file_type=file_type, file_name=file_name, file=(file_name, file), duration=duration)
+        fields: dict[str, Any] = {"file_type": file_type, "file_name": file_name, "file": (file_name, file)}
         if duration > 0:
             fields["duration"] = duration
         return _sdk_build(CreateFileRequestBody, **fields)

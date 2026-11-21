@@ -405,6 +405,19 @@ future run. Pausing prevents automatic fires, not operator overrides: existing
 explicit **Run now** / force-run behavior remains available and can resume and run
 the job. It is not a security boundary against an operator who can run jobs.
 
+## Turning off unprompted job proposals
+
+In chat sessions where a new job is shown on an approval card, Hermes is told to
+propose useful jobs without being asked. To keep it to jobs you request:
+
+```yaml
+cron:
+  proactive_guidance: false   # default: true
+```
+
+This removes only that instruction, starting with the next session. Jobs you ask
+for still work, and each one still asks on its approval card.
+
 ## Agent-managed scheduling (cron jobs that manage cron jobs)
 
 By default, agents launched *by* the scheduler cannot use the `cronjob_manage` tool —

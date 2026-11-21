@@ -37,12 +37,19 @@ _MISSING_COMPILER = (
 )
 _COMPILER_NAME = re.compile(r"(?:clang(?:\+\+)?|g?cc|g\+\+|c\+\+)(?:-[\d.]+)?")
 _COMPILER_REMEDY = ("{what}: install a C/C++ compiler (Debian/Ubuntu/WSL: `sudo apt install build-essential`; "
-                    "Fedora: `sudo dnf install gcc gcc-c++`; macOS: `xcode-select --install`) "
+                    "Fedora: `sudo dnf install gcc gcc-c++`; Alpine: `apk add build-base`; "
+                    "macOS: `xcode-select --install`) "
                     "or point CC/CXX at one, then retry")
-# google-re2 has no musl wheel: its sdist compiles against the system RE2 and Abseil headers.
-_MISSING_RE2_HEADER = re.compile(r"fatal error: (?:re2|absl)/")
-_RE2_HEADER_REMEDY = ("the google-re2 build needs the RE2 and Abseil headers: install them with a C++ "
-                      "compiler (Alpine: `apk add build-base re2-dev abseil-cpp-dev`), then retry")
+# google-re2 has no musl wheel (nor one for macOS < 13, old glibc or other CPUs): its sdist
+# compiles against the system RE2 and Abseil headers. gcc reports `fatal error: re2/x.h: ...`,
+# clang `fatal error: 're2/x.h' file not found`.
+_MISSING_RE2_HEADER = re.compile(r"fatal error: '?(?:re2|absl)/")
+_RE2_BUILD = "google-re2"
+_RE2_HEADER_REMEDY = ("the google-re2 build needs a C++ compiler and the RE2 and Abseil headers "
+                      "(Alpine: `apk add build-base re2-dev abseil-cpp-dev`; Debian/Ubuntu: "
+                      "`sudo apt install build-essential libre2-dev libabsl-dev`; Fedora: "
+                      "`sudo dnf install gcc-c++ re2-devel abseil-cpp-devel`; Arch: `sudo pacman -S re2 abseil-cpp`; "
+                      "macOS: `brew install re2 abseil`), then retry")
 
 
 @functools.lru_cache(maxsize=None)  # noqa: UP033 -- functools.cache is 3.9+; the bootstrap runner can be older
@@ -93,13 +100,20 @@ def pinned_build_defaults(python: Path, env: Mapping[str, str]) -> dict[str, str
 
 def missing_compiler_remedy(output: str) -> str:
     """The install hint for a build that failed because no compiler exists, or because the
-    RE2/Abseil headers google-re2 compiles against are missing, else ''."""
+    RE2/Abseil headers google-re2 compiles against are missing, else ''.
+
+    A google-re2 build with no compiler gets the header hint, which names the compiler too:
+    otherwise the user installs a compiler, retries, and fails again on the headers.
+    """
     for pattern in _MISSING_COMPILER:
         for match in pattern.finditer(output):
             if not match.groups():
-                return _COMPILER_REMEDY.format(what="this package compiles native code and no compiler was found")
-            if _COMPILER_NAME.fullmatch(Path(match.group(1)).name):
-                return _COMPILER_REMEDY.format(what=f"the build needs `{match.group(1)}`, which is not on PATH")
+                what = "this package compiles native code and no compiler was found"
+            elif _COMPILER_NAME.fullmatch(Path(match.group(1)).name):
+                what = f"the build needs `{match.group(1)}`, which is not on PATH"
+            else:
+                continue
+            return _RE2_HEADER_REMEDY if _RE2_BUILD in output else _COMPILER_REMEDY.format(what=what)
     if _MISSING_RE2_HEADER.search(output):
         return _RE2_HEADER_REMEDY
     return ""

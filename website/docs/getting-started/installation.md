@@ -95,10 +95,10 @@ a C++ compiler and the RE2 and Abseil headers first:
 apk add build-base re2-dev abseil-cpp-dev
 ```
 
-The build takes a few seconds. PM uses its own Python, so no Python headers
-package is needed. Without the packages the install stops and names them.
-Keep them installed: an update that moves the pinned version compiles the
-module again.
+The build takes about 10-20 seconds (longer on a small ARM board). PM uses its
+own Python, so no Python headers package is needed. Without the packages the
+install stops with a hint that names them, the compiler included. Keep them
+installed: an update that moves the pinned version compiles the module again.
 
 A new install lands on the latest stable release, the channel `hermes update`
 follows from then on (see [Updating](./updating.md)). To install the tip of

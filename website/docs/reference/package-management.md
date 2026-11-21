@@ -316,8 +316,12 @@ It links the system RE2 and Abseil: install `build-base re2-dev abseil-cpp-dev`
 on Alpine first. The build needs pybind11, which the source distribution does
 not declare; `[tool.uv.extra-build-dependencies]` in `pyproject.toml` supplies
 the pinned version, and plugin workspaces inherit it. uv does not record that
-build requirement in `uv.lock`. A build that stops on a missing `re2/` or `absl/`
-header fails with a hint naming the three packages.
+build requirement in `uv.lock`. A google-re2 build that stops on a missing
+`re2/` or `absl/` header (gcc or clang wording), or that finds no compiler, fails
+with a hint naming the compiler and header packages for Alpine, Debian/Ubuntu,
+Fedora, Arch and macOS. macOS 12 and older, glibc older than
+2.27 (x86_64) or 2.26 (aarch64) and other CPUs have no wheel either and build
+the same way.
 
 Clone the repository and select your branch before preparing dependencies:
 

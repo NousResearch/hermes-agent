@@ -127,6 +127,10 @@ Each platform's setup page walks through what to do once you're there.
 
 - **[NeMo Relay](./nemo-relay.md)** — Inspect model and tool calls, export ATOF or ATIF data, send OpenTelemetry traces, and configure Relay plugins.
 
+## Security & Auditability
+
+- **[PiQrypt](https://github.com/piqrypt/piqrypt/tree/main/bridges/hermes)** — Cryptographic audit trail for Hermes tool calls. Ed25519-signed, hash-chained, local-first. Uses `pre_tool_call`, `post_tool_call`, and `pre_llm_call` plugin hooks — no core changes required. Supports EU AI Act Art. 12 event logging. Install: `pip install piqrypt` then `hermes plugins enable piqrypt-audit`.
+  
 ## Training & Evaluation
 
 - **[Batch Processing](../user-guide/features/batch-processing.md)** — Run the agent across hundreds of prompts in parallel, generating structured ShareGPT-format trajectory data for training data generation or evaluation.

@@ -235,6 +235,18 @@ All settings live in `~/.hermes/.env`.  Required values are in **bold**.
 | `WHATSAPP_CLOUD_API_VERSION` | `v20.0` | Meta Graph API version. Only override if a newer version is recommended in Meta's docs. |
 | `WHATSAPP_CLOUD_HOME_CHANNEL` | — | wa_id to use as the bot's home channel (for cron jobs etc). |
 
+To send answers without quoting the inbound message, set the shared platform option in
+`config.yaml`:
+
+```yaml
+platforms:
+  whatsapp_cloud:
+    reply_to_mode: off
+```
+
+The default is `first`, which quotes the inbound message only on the first text chunk;
+`all` quotes it on every chunk.
+
 You can have **both** the Baileys (`whatsapp`) and Cloud (`whatsapp_cloud`) adapters enabled simultaneously, targeting different phone numbers.
 
 ---

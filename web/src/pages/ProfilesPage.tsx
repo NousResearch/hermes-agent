@@ -48,6 +48,8 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
 import { ProfileCreationReceipt, type CreationReceipt } from "./ProfileCreationReceipt";
+import { SoulEditorBody } from "./ProfilesPage_soul";
+import { useSoulEditor } from "./ProfilesPage_soulState";
 
 
 /** Braille unicode spinner (`unicode-animations`); static first frame when reduced motion is preferred. */
@@ -355,11 +357,8 @@ export default function ProfilesPage() {
 
   // Inline SOUL editor state
   const [editingSoulFor, setEditingSoulFor] = useState<string | null>(null);
-  const [soulText, setSoulText] = useState("");
-  const [soulSaving, setSoulSaving] = useState(false);
-  // Tracks the latest SOUL request so out-of-order responses don't overwrite
-  // newer state when the user switches profiles or closes the editor.
-  const activeSoulRequest = useRef<string | null>(null);
+  const soul = useSoulEditor(showToast, () => setEditingSoulFor(null));
+  const { forget: forgetSoul, load: loadSoul } = soul;
 
   // Inline description editor state
   const [editingDescFor, setEditingDescFor] = useState<string | null>(null);
@@ -529,12 +528,12 @@ export default function ProfilesPage() {
 
   // Closes whichever editor dialog is open (model / description / SOUL).
   const closeEditor = useCallback(() => {
-    activeSoulRequest.current = null;
+    forgetSoul();
     activeDescRequest.current = null;
     setEditingModelFor(null);
     setEditingDescFor(null);
     setEditingSoulFor(null);
-  }, []);
+  }, [forgetSoul]);
 
   const openSoulEditor = useCallback(
     async (name: string) => {
@@ -547,35 +546,10 @@ export default function ProfilesPage() {
       setEditingDescFor(null);
       setEditingModelFor(null);
       setEditingSoulFor(name);
-      setSoulText("");
-      activeSoulRequest.current = name;
-      try {
-        const soul = await api.getProfileSoul(name);
-        if (activeSoulRequest.current === name) {
-          setSoulText(soul.content);
-        }
-      } catch (e) {
-        if (activeSoulRequest.current === name) {
-          showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
-        }
-      }
+      await loadSoul(name);
     },
-    [closeEditor, editingSoulFor, showToast, t.status.error],
+    [closeEditor, editingSoulFor, loadSoul],
   );
-
-  const handleSaveSoul = async (name: string) => {
-    setSoulSaving(true);
-    try {
-      await api.updateProfileSoul(name, soulText);
-      showToast(`${t.profiles.soulSaved}: ${name}`, "success");
-      activeSoulRequest.current = null;
-      setEditingSoulFor(null);
-    } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
-    } finally {
-      setSoulSaving(false);
-    }
-  };
 
   const openDescEditor = useCallback(
     (p: ProfileInfo) => {
@@ -1374,35 +1348,7 @@ export default function ProfilesPage() {
                 </>
               )}
 
-              {editorKind === "soul" && (
-                <>
-                  <Label
-                    htmlFor="profile-soul-editor"
-                    className="font-mondwest text-display text-xs tracking-wider text-muted-foreground"
-                  >
-                    {t.profiles.soulSection}
-                  </Label>
-
-                  <textarea
-                    id="profile-soul-editor"
-                    className="flex min-h-[280px] w-full border border-input bg-transparent px-3 py-2 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    placeholder={t.profiles.soulPlaceholder}
-                    value={soulText}
-                    onChange={(e) => setSoulText(e.target.value)}
-                  />
-
-                  <div className="flex justify-end">
-                    <Button
-                      size="sm"
-                      className="uppercase"
-                      onClick={() => handleSaveSoul(editorName)}
-                      disabled={soulSaving}
-                    >
-                      {soulSaving ? t.common.saving : t.common.save}
-                    </Button>
-                  </div>
-                </>
-              )}
+              {editorKind === "soul" && <SoulEditorBody name={editorName} soul={soul} />}
             </div>
           </div>
         </div>

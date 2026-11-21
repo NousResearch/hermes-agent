@@ -374,15 +374,19 @@ class SignalAdapter(BasePlatformAdapter):
             return None  # echo of our own outbound reply
         return {**envelope_data, "dataMessage": sent_msg}
 
-    def _apply_group_mention_rules(self, text: str, data_message: dict) -> tuple[bool, str]:
+    def _apply_group_mention_rules(
+            self, text: str, data_message: dict, *, replied_to_bot: bool = False) -> tuple[bool, str]:
         """Gate on require_mention (False = drop) and strip the bot's own @mention from every group
-        message, so the agent doesn't read "@+155****4567 say hello" as a directive to contact that number."""
+        message, so the agent doesn't read "@+155****4567 say hello" as a directive to contact that number.
+        A reply to one of the bot's own messages and a leading ``/command`` also count as addressing
+        the bot (Telegram/WhatsApp parity); slash access rules still decide which commands may run."""
         account_norm = self._account_normalized
         if self.require_mention:
             mentioned_in_text = account_norm and (f"@{account_norm}" in (text or ""))
             mentioned_in_metadata = any(account_norm in (m.get("number"), m.get("uuid"))
                                         for m in (data_message.get("mentions") or []))
-            if not mentioned_in_text and not mentioned_in_metadata:
+            is_slash_command = (text or "").strip().startswith("/")
+            if not (mentioned_in_text or mentioned_in_metadata or replied_to_bot or is_slash_command):
                 logger.debug("Signal: ignoring group message (require_mention=true, bot not mentioned)")
                 return False, text
         if text and account_norm:
@@ -447,15 +451,17 @@ class SignalAdapter(BasePlatformAdapter):
         text = data_message.get("message", "")
         if text and (mentions := data_message.get("mentions", [])):
             text = _render_mentions(text, mentions)
-        if is_group:
-            mentioned, text = self._apply_group_mention_rules(text, data_message)
-            if not mentioned:
-                return
         # quote.id is the quoted message's timestamp, quote.author the quoted sender —
         # both are preserved so the gateway can tell the agent which message was replied to.
+        # Resolved before the mention gate so a reply to the bot counts as addressing it.
         quote_data = data_message.get("quote") or {}
         reply_to_id = str(quote_data.get("id")) if quote_data.get("id") else None
         reply_to_author = self._extract_quote_author(quote_data)
+        reply_to_is_own = self._quote_references_own_message(reply_to_id, reply_to_author)
+        if is_group:
+            mentioned, text = self._apply_group_mention_rules(text, data_message, replied_to_bot=reply_to_is_own)
+            if not mentioned:
+                return
         source = self.build_source(
             chat_id=chat_id, chat_name=group_info.get("groupName") if group_info else sender_name,
             chat_type="group" if is_group else "dm", user_id=sender,
@@ -497,10 +503,22 @@ class SignalAdapter(BasePlatformAdapter):
             reply_to_message_id=reply_to_id, reply_to_text=quote_data.get("text"),
             reply_to_author_id=reply_to_author,
             reply_to_author_name=quote_data.get("authorName") or quote_data.get("authorProfileName"),
-            reply_to_is_own_message=self._quote_references_own_message(reply_to_id, reply_to_author),
+            reply_to_is_own_message=reply_to_is_own,
         )
         logger.debug("Signal: message from %s in %s: %s", redact_phone(sender), chat_id[:20], (text or "")[:50])
         await self.handle_message(event)
+
+    def is_sender_owner(self, source) -> bool:
+        """Whether *source*'s sender is the owner: listed by explicit id in SIGNAL_ALLOWED_USERS
+        ("*" is open DM access, never an owner). A group sender is often only a UUID, so it resolves
+        to its phone via the number<->uuid cache. The gateway's ``_is_owner`` calls this per turn."""
+        owner_ids = {x for x in self.dm_allow_from if x and x != "*"}
+        sender, sender_uuid = getattr(source, "user_id", None) or "", getattr(source, "user_id_alt", None) or ""
+        if not owner_ids or not sender:
+            return False
+        sender_phone = sender if _looks_like_e164_number(sender) else (
+            self._recipient_number_by_uuid.get(sender_uuid or sender, ""))
+        return bool(owner_ids & ({sender, sender_uuid, sender_phone} - {""}))
 
     def _group_allowed(self, group_id: str) -> bool:
         """Group policy from SIGNAL_GROUP_ALLOWED_USERS: unset → groups disabled; IDs → only those
@@ -514,8 +532,10 @@ class SignalAdapter(BasePlatformAdapter):
         return True
 
     def _remember_recipient_identifiers(self, number: Optional[str], service_id: Optional[str]) -> None:
-        """Cache any number↔UUID mapping observed from Signal envelopes."""
-        if number and service_id and _is_signal_service_id(service_id):
+        """Cache any number↔UUID mapping observed from Signal envelopes. A UUID-only envelope (the
+        sender's number is hidden) passes its UUID as ``number`` too; recording that would overwrite
+        the learned mapping with UUID→UUID, so it is skipped."""
+        if number and service_id and number != service_id and _is_signal_service_id(service_id):
             self._recipient_uuid_by_number[number] = service_id
             self._recipient_number_by_uuid[service_id] = number
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone, UTC
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
+from urllib.parse import urlsplit
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata, strip_codex_context_variant_suffix
 from agent.reasoning_effort import GPT62_MODEL_IDS
@@ -642,6 +643,39 @@ def _models_dev_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
     )
 
 
+def _same_endpoint(a: str, b: str) -> bool:
+    """True when both URLs share one origin (case-insensitive) and an identical path, userinfo
+    and query (case-sensitive: a proxy may route ``/v1`` and ``/V1`` differently)."""
+    origin = base_url_origin(a)
+    if not origin[1] or origin != base_url_origin(b):
+        return False
+
+    def parts(url: str):
+        raw = url.strip()
+        split = urlsplit(raw if "://" in raw else f"//{raw}")
+        return split.path.rstrip("/"), split.username, split.password, split.query
+
+    return parts(a) == parts(b)
+
+
+def _registered_api_key(provider: str, base_url: str) -> str:
+    """The registry provider's own key, only when ``base_url`` is the endpoint it resolves to,
+    so the key never reaches another host. A no-auth placeholder is not a key."""
+    try:
+        from hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER, PROVIDER_REGISTRY, resolve_api_key_provider_credentials
+
+        if provider not in PROVIDER_REGISTRY:
+            return ""
+        creds = resolve_api_key_provider_credentials(provider)
+        key = str(creds.get("api_key") or "").strip()
+        if key == LMSTUDIO_NOAUTH_PLACEHOLDER:
+            return ""
+        return key if _same_endpoint(base_url, str(creds.get("base_url") or "")) else ""
+    except Exception:
+        logger.debug("Registered API key lookup failed for %s", provider, exc_info=True)
+        return ""
+
+
 def get_pricing_entry(
     model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -657,7 +691,9 @@ def get_pricing_entry(
         return bundled_entry
     if route.base_url:
         entry = _pricing_entry_from_metadata(
-            fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""), route.model,
+            fetch_endpoint_model_metadata(
+                route.base_url, api_key=api_key or _registered_api_key(route.provider, route.base_url)),
+            route.model,
             source_url=f"{route.base_url.rstrip('/')}/models",
             pricing_version="openai-compatible-models-api",
         )

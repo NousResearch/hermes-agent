@@ -183,6 +183,77 @@ def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
     assert entry.output_cost_per_million == Decimal(2)
 
 
+class TestEndpointMetadataApiKey:
+    """The endpoint /models fetch must authenticate with the provider's env key (#156790)."""
+
+    BASE_URL = "http://192.0.2.10:1234/v1"
+    ENV_KEY = "fake-lm-env-key-not-a-secret"
+
+    @pytest.fixture
+    def fetched(self, monkeypatch):
+        calls = []
+
+        def fake_fetch(base_url, api_key="", **_kwargs):
+            calls.append((base_url, api_key))
+            return {}
+
+        monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", fake_fetch)
+        monkeypatch.setenv("LM_BASE_URL", self.BASE_URL)
+        monkeypatch.setenv("LM_API_KEY", self.ENV_KEY)
+        return calls
+
+    def test_registered_env_key_is_sent_to_its_own_endpoint(self, fetched):
+        get_pricing_entry("qwen/qwen3.6", provider="lmstudio", base_url=self.BASE_URL + "/")
+        assert fetched == [(self.BASE_URL + "/", self.ENV_KEY)]
+
+    def test_explicit_key_wins_over_env_key(self, fetched):
+        get_pricing_entry("qwen/qwen3.6", provider="lmstudio", base_url=self.BASE_URL, api_key="explicit")
+        assert fetched == [(self.BASE_URL, "explicit")]
+
+    def test_env_key_is_not_sent_to_another_host(self, fetched):
+        get_pricing_entry("qwen/qwen3.6", provider="lmstudio", base_url="http://192.0.2.99:1234/v1")
+        assert fetched == [("http://192.0.2.99:1234/v1", "")]
+
+    def test_env_key_is_not_sent_to_a_differently_cased_path(self, fetched):
+        url = "http://192.0.2.10:1234/V1"
+        get_pricing_entry("qwen/qwen3.6", provider="lmstudio", base_url=url)
+        assert fetched == [(url, "")]
+
+    def test_env_key_is_sent_when_only_scheme_and_host_case_differ(self, fetched):
+        url = "HTTP://192.0.2.10:1234/v1"
+        get_pricing_entry("qwen/qwen3.6", provider="lmstudio", base_url=url)
+        assert fetched == [(url, self.ENV_KEY)]
+
+    def test_env_key_is_not_sent_to_another_port(self, fetched):
+        url = "http://192.0.2.10:9999/v1"
+        get_pricing_entry("qwen/qwen3.6", provider="lmstudio", base_url=url)
+        assert fetched == [(url, "")]
+
+    def test_noauth_placeholder_is_not_sent(self, fetched, monkeypatch):
+        monkeypatch.delenv("LM_API_KEY")
+        get_pricing_entry("qwen/qwen3.6", provider="lmstudio", base_url=self.BASE_URL)
+        assert fetched == [(self.BASE_URL, "")]
+
+    def test_unregistered_provider_sends_no_key(self, fetched):
+        get_pricing_entry("some-model", provider="custom", base_url=self.BASE_URL)
+        assert fetched == [(self.BASE_URL, "")]
+
+    def test_env_key_reaches_local_server_type_probe(self, monkeypatch):
+        base_url = "http://192.0.2.20:1234/v1"
+        monkeypatch.setenv("LM_BASE_URL", base_url)
+        monkeypatch.setenv("LM_API_KEY", self.ENV_KEY)
+        probe = []
+        monkeypatch.setattr(
+            "agent.model_metadata.detect_local_server_type",
+            lambda url, api_key="": probe.append((url, api_key)) or "lm-studio",
+        )
+        monkeypatch.setattr("agent.model_metadata._lmstudio_native_models", lambda *_a, **_k: {})
+
+        get_pricing_entry("qwen/qwen3.6", provider="lmstudio", base_url=base_url)
+
+        assert probe == [(base_url, self.ENV_KEY)]
+
+
 
 
 def test_deepseek_deprecated_aliases_price_as_flash():

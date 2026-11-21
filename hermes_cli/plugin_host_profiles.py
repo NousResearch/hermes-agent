@@ -66,7 +66,7 @@ def _fingerprint(plugin_dir: Path) -> str:
 
 
 def _cached_extraction(plugin_dir: Path, module_name: str) -> dict[str, Any]:
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_hermes_home, mkdir_under_hermes_home
     # Keyed by the full path too: a user and a project plugin may share a directory name.
     path_key = hashlib.sha256(str(plugin_dir.resolve()).encode("utf-8")).hexdigest()[:12]
     cache = get_hermes_home() / "cache" / "plugin_host" / "model-providers" / f"{plugin_dir.name}-{path_key}.json"
@@ -79,7 +79,10 @@ def _cached_extraction(plugin_dir: Path, module_name: str) -> dict[str, Any]:
         pass
     payload = _extract(plugin_dir, module_name)
     if not payload.get("error"):
-        cache.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            mkdir_under_hermes_home(cache.parent)
+        except FileNotFoundError:
+            return payload  # profile home deleted or renamed: answer the caller, cache nothing
         tmp = cache.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(json.dumps({"fingerprint": fingerprint, "module_name": module_name,
                                    "payload": payload}), encoding="utf-8")

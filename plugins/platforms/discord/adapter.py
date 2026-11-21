@@ -2149,12 +2149,12 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
         logger.info("[%s] Disconnected", self.name)
 
     def _command_sync_state_path(self) -> _Path:
-        from hermes_constants import get_hermes_home
+        from hermes_constants import get_hermes_home, mkdir_under_hermes_home
         directory = get_hermes_home() / _DISCORD_COMMAND_SYNC_STATE_SUBDIR
         try:
-            directory.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
+            mkdir_under_hermes_home(directory)
+        except OSError:
+            pass  # a deleted or renamed profile home stays absent; the write below is skipped
         return directory / _DISCORD_COMMAND_SYNC_STATE_FILENAME
 
     def _read_command_sync_state(self) -> dict:
@@ -2168,9 +2168,14 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
         return data if isinstance(data, dict) else {}
 
     def _write_command_sync_state(self, state: dict) -> None:
-        atomic_json_write(
-            self._command_sync_state_path(), state, indent=None, separators=(",", ":"),
-        )
+        try:
+            atomic_json_write(
+                self._command_sync_state_path(), state, indent=None, separators=(",", ":"),
+            )
+        except OSError:
+            # Best-effort pacing state: a deleted profile home (or an unwritable one) must not
+            # abort the rest of the slash-command sync.
+            logger.debug("[%s] Could not persist Discord command sync state", self.name, exc_info=True)
 
     def _command_sync_state_key(self, app_id: Any) -> str:
         return str(app_id or "unknown")

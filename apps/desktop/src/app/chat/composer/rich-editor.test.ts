@@ -79,6 +79,17 @@ describe('renderComposerContents', () => {
     expect(editor.querySelector('[data-slash-kind]')).toBeNull()
     expect(composerPlainText(editor)).toBe('/goal ship the redesign')
   })
+
+  it('leaves an inline-code directive example intact without chipping or eating trailing text', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    const text = '> 2. 拖拽原会话（或输入 `@session:<profile>/<id>`）后继续输入 `"hello"`'
+
+    renderComposerContents(editor, text, { trailingCommitted: true })
+
+    expect(editor.querySelector('[data-ref-kind="session"]')).toBeNull()
+    expect(composerPlainText(editor)).toBe(text)
+  })
 })
 
 describe('replaceBeforeCaret across split text nodes', () => {

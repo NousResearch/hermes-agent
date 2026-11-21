@@ -204,6 +204,9 @@ def _treeless_repo_pair(tmp_path, *, promisor_reachable=False):
     _git(tmp_path, "clone", "-q", f"file://{origin}", str(clone))
     _git(clone, "config", "user.email", "test@example.com")
     _git(clone, "config", "user.name", "Test")
+    # git >= 2.54 auto-maintenance repacks geometrically and detached after a commit or fetch; run
+    # it inside the command instead, so a pack count taken afterwards is not racing it.
+    _git(clone, "config", "maintenance.autoDetach", "false")
     _git(clone, "checkout", "-qb", "old-feature")
 
     (origin / "a.txt").write_text("two\n", encoding="utf-8")

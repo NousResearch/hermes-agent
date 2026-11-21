@@ -31,6 +31,10 @@ def repo(tmp_path):
     _git(root, "init", "-q", "-b", "main")
     _git(root, "config", "user.email", "t@t")
     _git(root, "config", "user.name", "t")
+    # git >= 2.54 auto-maintenance repacks geometrically after a commit, detached: it folded the
+    # pack fixture behind the test's back on CI (made=3 of 12, then a 4th pack mid-count).
+    _git(root, "config", "maintenance.auto", "false")
+    _git(root, "config", "gc.auto", "0")
     (root / "f.txt").write_text("x\n")
     _git(root, "add", "-A")
     _git(root, "commit", "-qm", "init")
@@ -107,7 +111,9 @@ class TestMaintainPackHealth:
                 ["git", "pack-objects", "-q", str(pack_dir / f"tpack{i}")],
                 input=f"{sha}\n", cwd=str(repo), capture_output=True, text=True, check=True,
             )
-        return self._pack_count(repo)
+        made = self._pack_count(repo)
+        assert made == n, f"fixture made {made} packs, not {n}: something repacked behind it"
+        return made
 
     def test_repacks_at_threshold(self, repo, monkeypatch):
         import cli

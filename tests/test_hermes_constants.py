@@ -656,3 +656,14 @@ class TestProjectVenvDirOutOfTree:
         assert hermes_constants.project_venv_dir(other) is None
         (checkout / ".venv").mkdir()
         assert hermes_constants.project_venv_dir(checkout) == checkout / ".venv"
+
+
+@pytest.mark.parametrize("name", ["HERMES_MANAGED_DIR", "hermes_managed_dir", "Hermes_Home", "HERMES_HOME"])
+def test_is_launch_only_env_key_folds_case(name):
+    """Windows env names are case-insensitive, so every guard must fold case (#135200)."""
+    assert hermes_constants.is_launch_only_env_key(name)
+
+
+@pytest.mark.parametrize("name", ["HERMES_MANAGED_DIRX", "HERMES_HOMEDIR", "PATH", ""])
+def test_is_launch_only_env_key_rejects_other_names(name):
+    assert not hermes_constants.is_launch_only_env_key(name)

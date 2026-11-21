@@ -451,8 +451,7 @@ class GatewayProfileReconcileMixin:
         claimed = self._primary_resource_claims(active)
         for profile_name, adapters in (getattr(self, "_profile_adapters", None) or {}).items():
             for platform, adapter in list(adapters.items()):
-                for claim in (self._adapter_credential_claim(platform, adapter),
-                              self._adapter_listener_claim(platform, adapter)):
+                for claim in self._adapter_claims(platform, adapter):
                     if claim is not None:
                         claimed[claim] = profile_name
         return claimed
@@ -493,14 +492,33 @@ class GatewayProfileReconcileMixin:
         retired = getattr(self, 'session_authorities', None) is None or await unserve_profile_runtime(self, home)
         pending = (getattr(self, "_profile_failed_platforms", None) or {}).pop(name, None) or {}
         tasks = [t for t in pending.values() if isinstance(t, asyncio.Task) and not t.done()]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.wait(tasks, timeout=self._adapter_disconnect_timeout_secs())
+        # Its adapters stay in the map (live owners of their bots) while the reconnects cancel; the retiring
+        # mark keeps anything finishing meanwhile (a fatal teardown, a startup handoff) from queuing another.
+        retiring = getattr(self, "_retiring_profiles", None)
+        if retiring is None:
+            retiring = self._retiring_profiles = set()
+        retiring.add(name)
+        try:
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.wait(tasks, timeout=self._adapter_disconnect_timeout_secs())
+        finally:
+            retiring.discard(name)
         with _profile_runtime_scope(Path(home), hydrate_secrets=False):
             adapters = (getattr(self, "_profile_adapters", None) or {}).pop(name, None) or {}
-            for platform, adapter in list(adapters.items()):
-                await self._bounded_adapter_teardown(adapter, platform, profile=name)
+            for platform, adapter in adapters.items():  # no await since the pop: each holds its bot until torn down
+                self._hold_secondary_claims(name, platform, adapter, self._adapter_claims(platform, adapter))
+            try:
+                for platform, adapter in list(adapters.items()):
+                    await self._bounded_adapter_teardown(adapter, platform, profile=name)
+                    self._release_secondary_claims(name, platform, adapter)  # its bot is free once it is down
+            finally:
+                # Every hold of the profile goes, a fatal teardown's still disconnecting included (the profile
+                # is gone, so its handler queues nothing): none may block a re-serve.
+                held = getattr(self, "_secondary_held_claims", None) or {}
+                for key in [key for key in held if key[0] == name]:
+                    del held[key]
             # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
             _write_runtime_status_quiet(drop_profile_platforms=name)
             for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile",
@@ -528,9 +546,9 @@ class GatewayProfileReconcileMixin:
             # The reservation (gateway.lock) is released LAST: a deleter waiting on it may rmtree the
             # home as soon as it goes, so every handle this process holds there must close first.
             try:
-                with _log_suppressed(logging.DEBUG, "profile handle release failed", exc_info=True):
-                    from hermes_state_registry import close_all_under
-                    close_all_under(home)
+                with _log_suppressed(logging.DEBUG, "profile store release failed", exc_info=True):
+                    from persistence_assembly import close_stores_under
+                    close_stores_under(home)
                 with _log_suppressed(logging.DEBUG, "memory-store release failed", exc_info=True):
                     from plugins.memory import import_provider_module  # catalog plugin since it left core
                     import_provider_module("holographic", "store").MemoryStore.release_all_under(home)
@@ -596,8 +614,9 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
             # Keep running: the client must not interpret an incomplete teardown as stopped.
             return {"pending": True, "served_profiles": runner.served_profile_names()}
         except Exception as exc:
+            from storage_user_copy import error_type_name
             logger.warning("Profile lifecycle request failed", exc_info=True)
-            return {"error": f"{type(exc).__name__}: {exc}"}
+            return {"error": f"{error_type_name(exc)}: {exc}"}
 
     return handler
 
@@ -674,6 +693,15 @@ def profile_scoped_chore(runner, chore):
     return lambda: _for_each_served_profile(runner, lambda _label: chore())
 
 
+def _identity_verb_error(exc: Exception) -> str:
+    """``<class>: <message>`` for a failed identity verb, naming the class the store raised underneath: a
+    collision is a ``ValueError``, a store failure the SQLite error the contract error chains."""
+    from persistence.housekeeping.profile_identity import ProfileIdentityCollision
+    from storage_user_copy import error_type_name
+    name = ValueError.__name__ if isinstance(exc, ProfileIdentityCollision) else error_type_name(exc)
+    return f"{name}: {exc}"
+
+
 def migrate_profile_identity_verb(runner):
     """Build the ``migrate-profile-identity`` control-verb handler for ``hermes profile rename``
     (#111926). The live multiplexer owns the routing index in memory and writes it back
@@ -690,26 +718,25 @@ def migrate_profile_identity_verb(runner):
             return {"ok": False, "error": "live gateway has no session store"}
         acquired = []
         try:
-            from hermes_state_registry import acquire, release_or_close
+            from persistence_assembly import open_persistence, profile_scope, store_exists
             db_counts: dict[str, dict[str, int]] = {}
-            routing_db = getattr(store, "_routing_db", None)
-            if routing_db is not None and hasattr(routing_db, "rekey_profile_state"):
-                db_counts["routing"] = routing_db.rekey_profile_state(old, new)
+            if (routing := getattr(store, "_routing_persistence", None)) is not None:
+                db_counts["routing"] = routing.profile_identity.rekey_profile(old, new).as_dict()
             routing_home = getattr(store, "_routing_home", None)
-            profile_path = Path(routing_home) / "profiles" / new / "state.db" if routing_home else None
-            if profile_path is not None and profile_path.exists():
-                profile_db = acquire(profile_path)
-                acquired.append(profile_db)
-                db_counts["profile"] = profile_db.rekey_profile_state(old, new)
+            scope = profile_scope(home=Path(routing_home) / "profiles" / new) if routing_home else None
+            if scope is not None and store_exists(scope):
+                profile_store = open_persistence(scope)
+                acquired.append(profile_store)
+                db_counts["profile"] = profile_store.profile_identity.rekey_profile(old, new).as_dict()
             rekeyed = store.rekey_profile_routing(old, new)
             return {"ok": True, "rekeyed": rekeyed, "db": db_counts}
         except Exception as exc:
             logger.warning("Profile identity migration failed for %r->%r: %s", old, new, exc)
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            return {"ok": False, "error": _identity_verb_error(exc)}
         finally:
-            for db in acquired:
+            for profile_store in acquired:
                 try:
-                    release_or_close(db)
+                    profile_store.close()
                 except Exception:
                     logger.debug("Failed to release renamed profile state DB", exc_info=True)
 
@@ -737,13 +764,12 @@ def purge_profile_identity_verb(runner):
             return {"ok": False, "error": "live gateway has no session store"}
         try:
             db_counts: dict[str, dict[str, int]] = {}
-            routing_db = getattr(store, "_routing_db", None)
-            if routing_db is not None and hasattr(routing_db, "purge_profile_state"):
-                db_counts["routing"] = routing_db.purge_profile_state(name)
+            if (routing := getattr(store, "_routing_persistence", None)) is not None:
+                db_counts["routing"] = routing.profile_identity.purge_profile(name).as_dict()
             dropped = store.purge_profile_routing(name)
             return {"ok": True, "dropped": dropped, "db": db_counts}
         except Exception as exc:
             logger.warning("Profile identity purge failed for %r: %s", name, exc)
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            return {"ok": False, "error": _identity_verb_error(exc)}
 
     return _handler

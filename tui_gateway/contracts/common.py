@@ -222,7 +222,7 @@ class PendingApproval(OpenModel):
 
 
 class MessageReaction(OpenModel):
-    """One persisted reaction row (``hermes_state_messages.set_message_reaction``); ``seen`` is
+    """One persisted reaction row (``MessageRepository.set_reaction``); ``seen`` is
     stamped once announced."""
 
     emoji: str
@@ -308,3 +308,11 @@ __all__ = [
     "ProfileParams", "ProjectRef", "SessionLiveInfo", "SessionOwner", "SessionParams", "StatusResult", "StoredSessionRow",
     "SubagentStatus", "ToolLabel", "ToolLabelKind", "TranscriptMessage", "Usage",
 ]
+
+
+class UndoRollbackHint(Result):
+    """``/undo``'s line naming the files the undone turns changed and pointing at ``/rollback``: ``files`` are
+    the changed paths, ``text`` is the rendered line in the backend's language."""
+
+    files: list[str] = Field(default_factory=list)
+    text: str

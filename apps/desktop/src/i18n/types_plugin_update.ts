@@ -30,3 +30,16 @@ export interface PluginUpdateTranslations {
   updateScanBlocked: (name: string) => string
   updatedGit: (name: string) => string
 }
+
+/** Copy for the Plugins tab's "Update all" action and its auto-update switch (`plugins.auto_apply`). */
+export interface PluginUpdateAllTranslations {
+  updateAll: string
+  updatingAll: string
+  updateAllTip: string
+  updateAllDone: (updated: number, review: number, failed: number) => string
+  updateAllNone: string
+  updateAllFailed: string
+  autoUpdate: string
+  autoUpdateTip: (hours: number) => string
+  autoUpdateFailed: string
+}

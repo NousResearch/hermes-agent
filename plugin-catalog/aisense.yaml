@@ -1,0 +1,31 @@
+name: aisense
+title: AI SENSE Free Public Tools
+repo: https://github.com/aisenseapi/aisense-free-public-rest-apis
+sha: 3a646585c2ab979da025ba057bd5b9fb049c0fba
+subdir: agent-plugin
+description: >-
+  77 free tools for agents through AI SENSE's hosted MCP server (Streamable HTTP, no account, no
+  key): time and time zones, hashing and encoding, QR codes, HTML to PDF, JSON and CSV, images,
+  and workflow tools (temporary storage, webhook capture, human approval, queues, leases,
+  heartbeats, an agent inbox, typed decisions from weighted rules, semantic search, one-time
+  secrets), with one tool-choice skill bundled. Portable Agent Plugins v1 package (plugin.json +
+  mcp.json + skills/). Disclosure: hosted-only connector with no local code. Every tool call goes
+  to AI SENSE's MCP server at aisenseapi.com with the arguments the agent passes, which also
+  reach the user's model provider through the session, and request logs hold the caller's IP
+  address. Tools that create something return bearer tokens; stored data, files and captures are
+  readable by anyone holding their id or URL and expire within 24 hours; webhook schedules and
+  notify URLs make the server call a URL the agent supplies. 5000 requests per address per day
+  across all tools. The tool list comes from the server at run time, so the pinned commit doesn't
+  cover it. No sign-in: the bundled mcp.json works as installed.
+maintainer: aisenseapi
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/aisenseapi/aisense-free-public-rest-apis/blob/3a646585c2ab979da025ba057bd5b9fb049c0fba/agent-plugin/README.md
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

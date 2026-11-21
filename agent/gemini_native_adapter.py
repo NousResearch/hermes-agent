@@ -536,6 +536,12 @@ def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_conf
     return requested
 
 
+def _long_decode_cap(max_tokens: Optional[int], extra_body: dict[str, Any]) -> Optional[int]:
+    """Long-decode budget (Gemini 4, effort above high) raises the total cap; an explicit larger cap still wins."""
+    budget = extra_body.get("max_output_tokens")
+    return budget if isinstance(budget, int) and budget > int(max_tokens or 0) else max_tokens
+
+
 def _translate_response_format(response_format: Any, *, json_schema: bool = False) -> dict[str, Any]:
     """OpenAI ``response_format`` → Gemini ``generationConfig`` JSON-output keys.
 
@@ -664,7 +670,37 @@ def _part_function_call(part: dict[str, Any]) -> Optional[dict[str, Any]]:
     return fc if isinstance(fc, dict) and fc.get("name") else None
 
 
+# Guidance per ``promptFeedback.blockReason`` value with a specific remedy; the rest (OTHER, Vertex's
+# MODEL_ARMOR / JAILBREAK) get the generic text. A prompt-level block is an HTTP 200 with no candidates;
+# translated as-is it becomes an empty "stop" turn the user sees as silence.
+_BLOCK_REASON_GUIDANCE = {
+    "BLOCKLIST": "The prompt includes blocked terms. Rephrase and try again.",
+    "PROHIBITED_CONTENT": "The prompt may contain prohibited content. Adjust it and try again.",
+    "SAFETY": "The prompt was blocked by Gemini's safety filters. Adjust it and try again.",
+    "IMAGE_SAFETY": "The image was blocked for safety reasons.",
+}
+
+
+def raise_on_prompt_block(payload: dict[str, Any]) -> None:
+    """Raise a terminal error when ``promptFeedback.blockReason`` is set (unary response or stream event).
+
+    No HTTP status: the wire said 200. ``agent.error_classifier`` keys on the ``gemini_prompt_blocked`` code
+    and routes it to content_policy_blocked — deterministic for the unchanged prompt, so no retry."""
+    feedback = payload.get("promptFeedback")
+    reason = feedback.get("blockReason") if isinstance(feedback, dict) else None
+    if not reason:
+        return
+    reason = str(reason).upper()
+    # Vertex explains the block in ``blockReasonMessage``; prefer it over the canned guidance.
+    message = feedback.get("blockReasonMessage")
+    guidance = (message.strip() if isinstance(message, str) and message.strip()
+                else _BLOCK_REASON_GUIDANCE.get(reason, "The prompt was blocked. Adjust it and try again."))
+    raise GeminiAPIError(f"Gemini blocked this prompt (blockReason={reason}): {guidance}",
+                         code="gemini_prompt_blocked", details={"promptFeedback": feedback})
+
+
 def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespace:
+    raise_on_prompt_block(resp)
     candidates = resp.get("candidates") or []
     cand = parts = None
     if isinstance(candidates, list) and candidates:
@@ -683,7 +719,8 @@ def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespa
             text_signature = _text_part_signature(part) or text_signature
         elif fc := _part_function_call(part):
             tool_calls.append(_tool_call_ns(str(fc["name"]), _dump_call_args(fc), index, _new_call_id(fc), _tool_call_extra_from_part(part)))
-    finish_reason = "tool_calls" if tool_calls else _FINISH_REASON_MAP.get(str((cand or {}).get("finishReason") or "").upper(), "stop")
+    mapped_finish = _FINISH_REASON_MAP.get(str((cand or {}).get("finishReason") or "").upper(), "stop")
+    finish_reason = "tool_calls" if tool_calls and mapped_finish == "stop" else mapped_finish
     usage = _usage_from_metadata((resp.get("usageMetadata") or {}) if cand is not None else {})
     reasoning = "".join(pieces[True]) or None
     message = SimpleNamespace(role="assistant", content="".join(pieces[False]) if pieces[False] else ("" if cand is None else None),
@@ -773,6 +810,7 @@ def _tool_call_slot(fc: dict[str, Any], part: dict[str, Any], part_index: int, a
 
 
 def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices: dict[str, dict[str, Any]]) -> list[_GeminiStreamChunk]:
+    raise_on_prompt_block(event)
     candidates = event.get("candidates") or []
     if not candidates:
         return []
@@ -803,7 +841,8 @@ def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices:
                      "arguments": args_str.removeprefix(last_arguments)}
             chunks.append(_make_stream_chunk(model=model, tool_call_delta=delta))
     if finish_reason_raw := str(cand.get("finishReason") or ""):
-        finish_reason = "tool_calls" if tool_call_indices else _FINISH_REASON_MAP.get(finish_reason_raw.upper(), "stop")
+        mapped_finish = _FINISH_REASON_MAP.get(finish_reason_raw.upper(), "stop")
+        finish_reason = "tool_calls" if tool_call_indices and mapped_finish == "stop" else mapped_finish
         finish_chunk = _make_stream_chunk(model=model, finish_reason=finish_reason)
         if usage_meta := event.get("usageMetadata") or {}:  # rides on the finish chunk so the stream loop records tokens
             finish_chunk.usage = _usage_from_metadata(usage_meta)
@@ -915,6 +954,16 @@ class GeminiNativeClient:
         chunk = next(iterator, _END)
         return (True, None) if chunk is _END else (False, chunk)
 
+    @staticmethod
+    def effective_output_cap(*, max_tokens: Optional[int] = None, extra_body: Optional[dict[str, Any]] = None,
+                             **_: Any) -> int:
+        """The ``maxOutputTokens`` a ``chat.completions.create(**kwargs)`` call would really send: the
+        long-decode budget and thinking headroom can raise ``max_tokens`` (the prompt-cache warmer sends
+        a keep-alive only when the cap it asked for stands)."""
+        extra = extra_body if isinstance(extra_body, dict) else {}
+        return _effective_gemini_max_output_tokens(
+            _long_decode_cap(max_tokens, extra), extra.get("thinking_config") or extra.get("thinkingConfig"))
+
     def _create_chat_completion(
         self, *, model: str = "gemini-3.7-flash", messages: Optional[list[dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
@@ -922,10 +971,7 @@ class GeminiNativeClient:
         timeout: Any = None, **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
-        # Long-decode budget (Gemini 4, effort above high) raises the total cap; an explicit larger cap still wins.
-        budget = extra.get("max_output_tokens")
-        if isinstance(budget, int) and budget > int(max_tokens or 0):
-            max_tokens = budget
+        max_tokens = _long_decode_cap(max_tokens, extra)
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
             top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"),

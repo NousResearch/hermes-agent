@@ -13,10 +13,12 @@ interface SystemCaResult {
 }
 
 // Platforms whose OS trust store tls.getCACertificates('system') can enumerate: the Windows
-// cert store and the macOS keychain (Node reads user + System keychains there, honoring the
-// "Always Trust" SSL policy — Node ≥ 22.15). Linux is deliberately absent: its 'system' store
-// is the OpenSSL directory scan, which the default trust already covers.
-const SYSTEM_CA_PLATFORMS = new Set(['win32', 'darwin'])
+// cert store, the macOS keychain (Node reads user + System keychains there, honoring the
+// "Always Trust" SSL policy — Node ≥ 22.15), and Linux (OpenSSL directory scan). Linux is
+// included because Electron ships its own bundled Mozilla CA set as the default trust — it
+// never reads /etc/ssl/certs — so a private/corporate root installed via update-ca-certificates
+// fails every main-process Node https call exactly like the darwin case (#57241).
+const SYSTEM_CA_PLATFORMS = new Set(['win32', 'darwin', 'linux'])
 
 function installSystemCaTrust(tlsApi: NodeTlsCaApi, platform = process.platform): SystemCaResult {
   if (!SYSTEM_CA_PLATFORMS.has(platform)) {

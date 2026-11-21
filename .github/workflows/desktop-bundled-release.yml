@@ -943,6 +943,29 @@ jobs:
           printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/apple-api-key.p8"
           echo "APPLE_API_KEY=$RUNNER_TEMP/apple-api-key.p8" >> "$GITHUB_ENV"
 
+      - name: Verify App Store Connect credentials for notarytool
+        # Fail in seconds instead of after building and signing (~10 min) when
+        # the App Store Connect API key in release-signing is revoked,
+        # malformed, or missing a legal agreement (HTTP 401/403). Transient
+        # Apple 5xx / network blips warn and continue so Build and package
+        # keeps its retry path. Must NOT re-declare APPLE_API_KEY in step env.
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != ''
+        shell: bash
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          if [ -f .build/channel-controller/scripts/ci/check_macos_notary_auth.py ]; then
+            python .build/channel-controller/scripts/ci/check_macos_notary_auth.py
+          elif [ -f scripts/ci/check_macos_notary_auth.py ]; then
+            python -m scripts.ci.check_macos_notary_auth
+          elif [ -n "$HERMES_BUILD_COMMIT" ]; then
+            echo "::warning::scripts/ci/check_macos_notary_auth.py not present in commit $HERMES_BUILD_COMMIT; skipping notarization credential preflight"
+          else
+            echo "::error::scripts/ci/check_macos_notary_auth.py is missing from the release checkout"
+            exit 1
+          fi
+
       - name: Select Xcode 26 for the macOS 26 layered icon
         # electron-builder compiles apps/desktop/assets/icon.icon to Assets.car
         # with actool, which only Xcode >= 26 ships; the runner image keeps an

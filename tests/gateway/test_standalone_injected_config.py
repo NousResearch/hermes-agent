@@ -30,6 +30,6 @@ def test_injected_config_cannot_multiplex_a_standalone_home(tmp_path, monkeypatc
                     assert is_multiplex_active() is (False if home == solo else bool(flag))
                 finally:
                     if runner._session_db is not None:
-                        asyncio.run(runner._session_db.close())
+                        runner._session_db.close()
     finally:
         set_multiplex_active(previous)

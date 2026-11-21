@@ -1,4 +1,4 @@
-/* Visual self-verification tool: `npm run visual` renders real TUI surfaces
+/* Visual self-verification tool: `pnpm run visual` renders real TUI surfaces
  * across theme x background scenes to <tmpdir>/hermes-tui-visual/tui-visual.html,
  * then shot.mjs screenshots it to tui-visual.png for eyeball + agent review.
  *
@@ -13,9 +13,8 @@ import { mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { PassThrough } from 'stream'
 
-import { visualOutDir } from './paths.mjs'
-
 import { Box, renderSync, Text } from '@hermes/ink'
+import type { SessionInfo } from '@hermes/shared/gateway-types'
 import React, { type ReactElement } from 'react'
 
 import { GatewayProvider } from '../../src/app/gatewayContext.js'
@@ -24,7 +23,8 @@ import { patchUiState, resetUiState } from '../../src/app/uiStore.js'
 import { FloatingOverlays } from '../../src/components/appOverlays.js'
 import { Banner, SessionPanel } from '../../src/components/branding.js'
 import { fromSkin, type Theme } from '../../src/theme.js'
-import type { SessionInfo } from '../../src/types.js'
+
+import { visualOutDir } from './paths.mjs'
 
 const noop = () => {}
 const pending = () => new Promise<never>(() => {})

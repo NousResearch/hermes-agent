@@ -1,0 +1,32 @@
+name: agenttrust-seal
+title: "AgentTrust Seal"
+repo: https://github.com/Syrup-Labs-AI/hermes-agenttrust-seal
+sha: 66003a3e0216d000502b18fa7cf3748c837d01cb
+description: >-
+  Seal a file and verify the seal later, so one Hermes agent can prove to the next that a
+  handoff was not changed. Adds an agenttrust_seal tool (seal, verify) and an
+  /agenttrust-seal slash command. Verify answers SEAL HOLDS, SEAL BROKEN or NO SEAL, with
+  codes 0, 1 and 2, so the receiving agent can stop before it builds on a changed file.
+  Standard library only. Disclosure: no network calls, no credentials, no background
+  process. When sealing it runs one shell command, git rev-parse --short HEAD, in the
+  file's folder to record the commit. It writes one file, <file>.seal.json, next to the
+  sealed file, holding the sha256, size, author name, UTC time, short git commit and the
+  machine's hostname. A seal detects change; it is not a signature and does not prove who
+  sealed the file.
+maintainer: Syrup-Labs-AI
+tier: community
+category: tools
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/Syrup-Labs-AI/hermes-agenttrust-seal#readme
+version: "0.2.0"
+readme: true
+platforms: []
+known_issues:
+  - Tested on Hermes Agent 0.22.2 (Linux) and 0.22.7 (Windows); macOS is not tested.
+  - A seal is not a signature; anyone who can rewrite both the file and its seal can make a new seal that holds.
+capabilities:
+  provides_tools:
+    - agenttrust_seal
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

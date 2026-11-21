@@ -43,7 +43,7 @@ fitted face and hair stay fixed. Standalone wordmarks remain centered.
 
 GENERATED OUTPUTS ARE COMMITTED. Regular builds and installs consume them and
 never render; flavored release bundles (canary/commit) render to a product dir.
-icons-freshness-check.yml regenerates, runs --check, and fails on any diff.
+The icon step of repo-guards.yml regenerates, runs --check, and fails on any diff.
 
 Rendering: resvg (resvg-py) for SVG -> PNG fidelity at every size.
 Containers: Pillow for multi-size .ico and .icns.
@@ -116,8 +116,7 @@ except ImportError:
 # on the runtime dependencies without the application package installed
 # (Docker, bundles). tests/scripts/test_icon_flavors.py pins it to the canonical one.
 _CANARY_TAG_RE = re.compile(
-    r"^v(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
-    r"\+canary\.20\d{6}T\d{6}Z$"
+    r"^canary\.(?P<stamp>20\d{6}T\d{6}Z)-v(?P<core>(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$"
 )
 
 # The nous dark background (#0d1117) — fixed dark tile/background everywhere.

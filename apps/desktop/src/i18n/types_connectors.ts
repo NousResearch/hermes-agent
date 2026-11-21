@@ -31,6 +31,20 @@ export interface ConnectorCardTranslations {
   required: string
   namedAccount: (app: string, alias: string) => string
   renameAccount: string
+  directory: ConnectorDirectoryTranslations
+}
+
+/** The chat's directory card (`manage_connections` display) and the line it collapses to. */
+export interface ConnectorDirectoryTranslations {
+  suggested: string
+  allApps: string
+  receiptConnected: (apps: string) => string
+  receiptNone: string
+  receiptTimedOut: string
+  /** A tile whose sign-in is open in the browser. */
+  finishInBrowser: string
+  /** A tile whose sign-in failed; clicking it starts the same sign-in again. */
+  signInFailed: string
 }
 
 export interface ConnectorAccountsTranslations {

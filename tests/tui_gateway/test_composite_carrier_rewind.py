@@ -12,7 +12,11 @@ from agent.context_compressor import (
     SUMMARY_PREFIX,
     _SUMMARY_END_MARKER,
 )
-from hermes_state import SessionDB
+from persistence.conversation.messages import ConversationRequest, TranscriptRead, TranscriptView
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import conversation, transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tui_gateway import server
 
 
@@ -29,21 +33,22 @@ def _composite_carrier() -> dict:
 @pytest.fixture()
 def carrier_session(tmp_path):
     old_db = server._db
-    db = SessionDB(db_path=tmp_path / "state.db")
+    # The launch store lives in the launch home, where the handle beside it opens.
+    db = open_persistence(profile_scope(home=server._launch_home()))
     installed_ids: list[str] = []
 
     def install(history: list[dict]):
         sid = f"carrier-sid-{len(installed_ids)}"
         session_key = f"carrier-session-{len(installed_ids)}"
         installed_ids.append(sid)
-        db.create_session(session_key, source="tui")
+        seed_session(db, session_key, "tui")
         for message in history:
-            db.append_message(
+            seed_messages(
+                db,
                 session_key,
-                message["role"],
-                message.get("content"),
+                {"role": message["role"], "content": message.get("content")},
             )
-        durable = db.get_messages_as_conversation(session_key)
+        durable = conversation(db, session_key)
         agent = SimpleNamespace(
             _session_messages=list(durable),
             _last_flushed_db_idx=len(durable),
@@ -84,13 +89,13 @@ def _session_undo(sid: str) -> dict:
 
 
 def _assert_scaffold_preserved(
-    db: SessionDB,
+    db,
     session_key: str,
     session: dict,
     *,
     prefix_len: int = 0,
 ) -> None:
-    active = db.get_messages_as_conversation(session_key, include_row_ids=True)
+    active = conversation(db, session_key, ConversationRequest(include_row_ids=True))
     assert len(active) == prefix_len + 1
     scaffold = active[prefix_len]
     assert scaffold["role"] == "user"
@@ -128,12 +133,11 @@ def test_rewind_matches_cold_sanitized_carrier_to_unchanged_warm_ask(
     sid, session_key, session = install(
         [carrier, {"role": "assistant", "content": "failed"}]
     )
-    db._conn.execute(
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
         "UPDATE messages SET api_content = ? "
         "WHERE session_id = ? AND role = 'user'",
         (carrier["content"], session_key),
-    )
-    db._conn.commit()
+    ))
     # A live agent still has the raw wire form while a cold DB projection has
     # already applied the role-aware sanitize_context(...).strip() rule and
     # retained the raw provider wire in api_content.
@@ -153,14 +157,16 @@ def test_retry_fails_closed_when_transcript_changes_after_snapshot(
     sid, session_key, session = install(
         [_composite_carrier(), {"role": "assistant", "content": "failed"}]
     )
-    sibling = SessionDB(db_path=db.db_path)
-    original_rewind = db.rewind_to_message
+    sibling = open_persistence(db.scope)
+    # The store's rewind writes through this step after it planned against its snapshot.
+    from persistence.sqlite.conversation._store import rewind as store_rewind
+    original_rewind = store_rewind.rewind_to_message
 
     def _append_then_rewind(*args, **kwargs):
-        sibling.append_message(session_key, "assistant", "concurrent tail")
+        seed_messages(sibling, session_key, {"role": "assistant", "content": "concurrent tail"})
         return original_rewind(*args, **kwargs)
 
-    monkeypatch.setattr(db, "rewind_to_message", _append_then_rewind)
+    monkeypatch.setattr(store_rewind, "rewind_to_message", _append_then_rewind)
     before_history = [dict(message) for message in session["history"]]
 
     response = _dispatch(sid, "retry")
@@ -168,12 +174,8 @@ def test_retry_fails_closed_when_transcript_changes_after_snapshot(
     assert response["error"]["code"] == 5008
     assert "active transcript changed" in response["error"]["message"]
     assert session["history"] == before_history
-    rows = db._conn.execute(
-        "SELECT content, active, display_kind FROM messages "
-        "WHERE session_id = ? ORDER BY id",
-        (session_key,),
-    ).fetchall()
-    assert [tuple(row) for row in rows] == [
+    rows = transcript_rows(db, session_key, TranscriptRead(view=TranscriptView.ALL))
+    assert [(row["content"], row["active"], row["display_kind"]) for row in rows] == [
         (_composite_carrier()["content"], 1, None),
         ("failed", 1, None),
         ("concurrent tail", 1, None),
@@ -196,10 +198,10 @@ def test_rewind_allows_database_only_reaction_metadata_change(
     )
     older_answer = next(
         row
-        for row in db.get_messages(session_key)
+        for row in transcript_rows(db, session_key)
         if row["role"] == "assistant" and row["content"] == "older answer"
     )
-    assert db.set_message_reaction(
+    assert db.messages.set_reaction(
         session_key, older_answer["id"], "👍", author="user"
     )
 
@@ -268,7 +270,7 @@ def test_retry_drops_buried_ephemeral_scaffolding_from_the_warm_prefix(
         "candidate answer",
         "verified answer",
     ]
-    active = db.get_messages_as_conversation(session_key, include_row_ids=True)
+    active = conversation(db, session_key, ConversationRequest(include_row_ids=True))
     # Alternation repair is a model/memory projection; the two durable source
     # rows remain independently recoverable ahead of the inserted scaffold.
     assert [message.get("content") for message in active[:3]] == [
@@ -324,7 +326,7 @@ def test_undo_targets_the_composite_carrier_not_an_older_user_turn(
 
     assert response["result"]["type"] == "prefill"
     assert response["result"]["message"] == "REAL ASK"
-    active = db.get_messages_as_conversation(session_key, include_row_ids=True)
+    active = conversation(db, session_key, ConversationRequest(include_row_ids=True))
     assert [message.get("content") for message in active[:2]] == [
         "OLDER ASK",
         "older answer",
@@ -348,7 +350,7 @@ def test_undo_rewinds_media_placeholder_without_treating_it_as_retry(
 
     assert response["result"]["type"] == "prefill"
     assert response["result"]["message"] == "look\n[screenshot]"
-    active = db.get_messages_as_conversation(session_key)
+    active = conversation(db, session_key)
     assert len(active) == 1
     assert active[0]["display_kind"] == "hidden"
     assert "look\n[screenshot]" not in active[0]["content"]
@@ -430,7 +432,7 @@ def test_retry_rejects_durable_media_before_rewind_when_warm_view_is_text(
 
     assert response["error"]["code"] == 4018
     assert session["history"] == before_history
-    assert len(db.get_messages_as_conversation(session_key)) == 2
+    assert len(conversation(db, session_key)) == 2
 
 
 def test_retry_rejects_pending_attachments_before_mutating_history(carrier_session):
@@ -445,7 +447,7 @@ def test_retry_rejects_pending_attachments_before_mutating_history(carrier_sessi
 
     assert response["error"]["code"] == 4018
     assert session["history"] == before_memory
-    assert len(db.get_messages_as_conversation(session_key)) == 2
+    assert len(conversation(db, session_key)) == 2
 
 def test_prompt_row_id_rewind_preserves_scaffold_before_regeneration(
     carrier_session, monkeypatch
@@ -454,8 +456,8 @@ def test_prompt_row_id_rewind_preserves_scaffold_before_regeneration(
     sid, session_key, session = install(
         [_composite_carrier(), {"role": "assistant", "content": "failed"}]
     )
-    target_row_id = db.get_messages_as_conversation(
-        session_key, include_row_ids=True
+    target_row_id = conversation(
+        db, session_key, ConversationRequest(include_row_ids=True)
     )[0]["_row_id"]
     seen = {}
 
@@ -507,7 +509,7 @@ def test_prompt_row_id_rewind_preserves_scaffold_before_regeneration(
     assert len(seen["history"]) == 1
     assert seen["history"][0]["display_kind"] == "hidden"
     assert "REAL ASK" not in seen["history"][0]["content"]
-    active = db.get_messages_as_conversation(session_key, include_row_ids=True)
+    active = conversation(db, session_key, ConversationRequest(include_row_ids=True))
     # The cut keeps only the scaffold; the edited prompt is then durable at submit (#111868),
     # written AFTER the truncation, so it is the single active user turn after the scaffold.
     assert [(m.get("display_kind"), m["content"]) for m in active] == [

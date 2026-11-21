@@ -5,7 +5,7 @@ from typing import Optional
 from wcwidth import wcwidth, wcswidth
 
 from hermes_cli.timefmt import relative_time as _relative_time
-from hermes_state_errors import SessionActiveWriteGuardError
+from persistence.core.errors import SessionWriteGuarded
 
 
 class SessionBrowserUnavailable(RuntimeError):
@@ -17,16 +17,17 @@ def _session_status_tag(status: Optional[str]) -> str:
     return {"complete": "done", "interrupted": "intr", "error": "err", "empty": "empty"}.get(status or "", "-")
 
 
-def _annotate_session_statuses(sessions: list, session_db) -> None:
+def _annotate_session_statuses(sessions: list, store) -> None:
     """Attach ``_status`` per row via one indexed lookup (never a transcript scan); on failure rows render '-'."""
-    if session_db is None or not sessions:
+    if store is None or not sessions:
         return
     try:
-        statuses = session_db.session_lifecycle_statuses([s.get("id") for s in sessions])
+        statuses = store.sessions.lifecycle_statuses([s.get("id") for s in sessions])
     except Exception:
         return
     for s in sessions:
-        s["_status"] = statuses.get(s.get("id"), "")
+        status = statuses.get(s.get("id"))
+        s["_status"] = status.value if status is not None else ""
 
 
 def _label(s: dict) -> str:
@@ -305,7 +306,7 @@ class _CursesBrowser:
                 return False
             try:
                 ok = self.delete_fn(target["id"])
-            except SessionActiveWriteGuardError:
+            except SessionWriteGuarded:
                 self.flash = "Session is active (a live turn owns it); try again when it finishes."
                 return False
             if not ok:
@@ -392,17 +393,17 @@ def _fallback_picker(sessions: list) -> Optional[str]:
             return None
 
 
-def _session_browse_picker(sessions: list, session_db=None, *, keyboard_navigation=False) -> Optional[str]:
+def _session_browse_picker(sessions: list, store=None, *, keyboard_navigation=False) -> Optional[str]:
     """Curses session browser with live search; returns the selected session ID, or None if cancelled.
 
-    With *session_db*: shows lifecycle status / message count per row, and ``d`` (while the filter is
-    empty) prompts y/n and deletes via ``SessionDB.delete_session``. Keyboard mode raises
-    ``SessionBrowserUnavailable`` when curses cannot run, never starting a numbered input prompt.
+    With *store* (a storage interface handle): shows lifecycle status / message count per row, and ``d``
+    (while the filter is empty) prompts y/n and deletes through ``store.sessions.delete``. Keyboard mode
+    raises ``SessionBrowserUnavailable`` when curses cannot run, never starting a numbered input prompt.
     """
     if not sessions:
         print("No sessions found.")
         return None
-    _annotate_session_statuses(sessions, session_db)
+    _annotate_session_statuses(sessions, store)
 
     def _delete_session(session_id: str) -> bool:
         try:
@@ -411,15 +412,20 @@ def _session_browse_picker(sessions: list, session_db=None, *, keyboard_navigati
         except Exception:
             sessions_dir = None
         try:
-            return bool(session_db.delete_session(session_id, sessions_dir=sessions_dir, exclude_active_write_guards=True))
-        except SessionActiveWriteGuardError:
+            from gateway.session_ingress_media import native_inputs_root
+            from session_retention import after_sessions_removed
+            removed = store.sessions.delete(session_id, refuse_guarded=True, media_root=str(native_inputs_root()))
+            after_sessions_removed(store, store.scope.profile_dir, removed, reason="delete", primary=session_id,
+                                   sessions_dir=sessions_dir)
+            return bool(removed)
+        except SessionWriteGuarded:
             raise  # the browser tells the user the session is busy instead of a generic failure
         except Exception:
             return False
     try:  # curses first; any failure (no curses module, odd terminal) falls back
         import curses
         browser = _CursesBrowser(
-            curses, sessions, _delete_session if session_db is not None else None,
+            curses, sessions, _delete_session if store is not None else None,
             keyboard_navigation=keyboard_navigation)
         curses.wrapper(browser.run)
         return browser.result

@@ -66,9 +66,10 @@ def _run_repository_stage(installer: str, tmp_path: Path, install: Path, origin_
         # pwsh on POSIX cannot run the Windows-only pinned Git: seed its PM store slot with host git.
         version = json.loads((ROOT / "pm" / "lock.json").read_text(encoding="utf-8-sig"))["packages"]["git"]["version"]
         cmd = tmp_path / "tools" / f"git-{version}-win32-x64" / "cmd"
-        cmd.mkdir(parents=True)
+        cmd.mkdir(parents=True, exist_ok=True)
         for name in ("git.exe", "git"):
-            (cmd / name).symlink_to(shutil.which("git"))
+            if not (cmd / name).exists():
+                (cmd / name).symlink_to(shutil.which("git"))
         env.update(HERMES_RUNTIME_DIR=str(tmp_path / "tools"), PATH=str(cmd) + os.pathsep + env["PATH"])
     return subprocess.run([POWERSHELL, "-NoProfile", "-File", str(ROOT / "scripts" / "install.ps1"),
                            "-Stage", "repository", "-NonInteractive", "-InstallDir", str(install),
@@ -130,3 +131,31 @@ def test_clone_failure_reason_carries_gits_own_error(tmp_path, installer):
     assert result.returncode != 0
     assert "git clone failed; no checkout published: fatal:" in output, output
     assert "no-such-repo.git" in output.split("no checkout published: fatal:", 1)[1].splitlines()[0]
+
+
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.skipif(POWERSHELL is None, reason="needs PowerShell")
+def test_ps1_checkout_keeps_long_paths_enabled(tmp_path):
+    """Windows checkouts sit past MAX_PATH under a long profile root: git must be told to allow it."""
+    origin = tmp_path / "origin.git"
+    source = tmp_path / "source"
+    install = tmp_path / "install"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
+    def git(cwd, *args):
+        return subprocess.run(["git", "-C", str(cwd), *args], check=False,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+    source.mkdir()
+    for args in (("init", "-b", "main"), ("config", "user.email", "fixture@example.invalid"),
+                 ("config", "user.name", "Fixture"), ("commit", "--allow-empty", "-m", "fixture"),
+                 ("push", origin.as_posix(), "main")):
+        assert git(source, *args).returncode == 0
+    git(origin, "config", "uploadpack.allowFilter", "true")
+
+    fresh = _run_repository_stage("ps1", tmp_path, install, origin.as_uri())
+    assert fresh.returncode == 0, fresh.stdout + fresh.stderr
+    assert git(install, "config", "--local", "--get", "core.longpaths").stdout.strip() == "true"
+
+    git(install, "config", "--local", "--unset", "core.longpaths")  # a checkout from an older installer
+    rerun = _run_repository_stage("ps1", tmp_path, install, origin.as_uri())
+    assert rerun.returncode == 0, rerun.stdout + rerun.stderr
+    assert git(install, "config", "--local", "--get", "core.longpaths").stdout.strip() == "true"

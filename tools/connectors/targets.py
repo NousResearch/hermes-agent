@@ -7,7 +7,7 @@ from typing import Any, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
-CONNECTOR_ACTIONS = ("status", "connect", "reconnect", "rename")
+CONNECTOR_ACTIONS = ("display", "status", "connect", "reconnect", "rename")
 MCP_ACTIONS = ("install", "enable", "authorize")
 ALL_ACTIONS = CONNECTOR_ACTIONS + MCP_ACTIONS
 
@@ -105,6 +105,8 @@ def validate_action(action: str, managed: list[HostedTarget], mcp: list[str]) ->
 def _validate_accounts(action: str, managed: list[HostedTarget]) -> Optional[str]:
     if action != "rename" and any(t.to for t in managed):
         return "'to' is the new name of an account and applies to action rename only."
+    if action == "display" and any(t.alias for t in managed):
+        return "display takes connector slugs to suggest (e.g. [\"gmail\"]); accounts are named on connect."
     if action == "rename":
         if len(managed) != 1 or not managed[0].alias or not managed[0].to:
             return ("rename takes exactly one target {\"name\": \"<slug>\", \"alias\": \"<current name>\", "

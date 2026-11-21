@@ -1,7 +1,7 @@
 """Channel directory -- cached map of reachable channels/contacts per platform.
 
 Built on gateway startup, refreshed every 5 min, saved to ``<HERMES_HOME>/channel_directory.json``.
-send_message reads it for action="list" and to resolve friendly channel names to IDs.
+send_message reads it to resolve friendly channel names to IDs.
 """
 
 import asyncio
@@ -157,11 +157,13 @@ async def build_channel_directory(adapters: dict[Any, Any]) -> dict[str, Any]:
         platforms[plat_name] = await asyncio.to_thread(_build_from_sessions, plat_name)
     for plat in Platform:
         await _discover(plat.value)
-    # Plugin platforms are dynamic enum members missing from Platform.__members__.
+    # Plugin platforms are dynamic enum members missing from Platform.__members__. Only connected
+    # adapters are discovered, so loaded entries suffice (never import an unused adapter here).
     with contextlib.suppress(Exception):
         from gateway.platform_registry import platform_registry
-        for entry in platform_registry.plugin_entries():
+        for entry in platform_registry.loaded_entries():
             await _discover(entry.name)
+    _merge_configured_channels(adapters, platforms)
     _apply_channel_aliases(platforms)
     directory = {"updated_at": datetime.now().isoformat(), "platforms": platforms}
     try:
@@ -169,6 +171,42 @@ async def build_channel_directory(adapters: dict[Any, Any]) -> dict[str, Any]:
     except Exception as e:
         logger.warning("Channel directory: failed to write: %s", e)
     return directory
+
+
+def _merge_configured_channels(adapters: dict[Any, Any], platforms: dict[str, list[dict[str, Any]]]) -> None:
+    """Add the targets an adapter's own config declares (``configured_channels()``, e.g. Telegram
+    ``extra.dm_topics``) after discovery: session history alone drops them once their sessions are
+    pruned (#52629). Discovered entries win on an id collision; label clashes are id-qualified."""
+    for platform, adapter in adapters.items():
+        configured = getattr(adapter, "configured_channels", None)
+        if not callable(configured):
+            continue
+        try:
+            entries = _normalize_adapter_channels(configured())
+        except Exception as e:
+            logger.warning("Channel directory: configured channels for %s failed: %s", platform.value, e, exc_info=True)
+            continue
+        known = platforms.setdefault(platform.value, [])
+        seen = {entry.get("id") for entry in known}
+        added = [entry for entry in entries if entry["id"] not in seen]
+        known.extend(added)
+        _qualify_label_clashes(platform.value, known, {id(entry) for entry in added})
+
+
+def _qualify_label_clashes(platform_name: str, entries: list[dict[str, Any]], added: set[int]) -> None:
+    """Prefix the id onto every entry whose label resolves (``resolve_channel_name`` step 1) like a
+    different target's, when one of them is a just-merged configured entry: the bare name then
+    resolves to nothing rather than to whichever chat was listed first. Discovered-only clashes keep
+    their labels."""
+    by_key: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        labels = {_normalize_channel_query(entry["name"]), _normalize_channel_query(_channel_target_name(platform_name, entry))}
+        for key in labels:
+            by_key.setdefault(key, []).append(entry)
+    clashing = {id(e): e for group in by_key.values()
+                if len({e["id"] for e in group}) > 1 and any(id(e) in added for e in group) for e in group}
+    for entry in clashing.values():
+        entry["name"] = f"{entry['id']} / {entry['name']}"
 
 
 def _build_discord(adapter) -> list[dict[str, str]]:
@@ -348,22 +386,15 @@ def _entries_from_origins(platform_name: str, source: str, origins_fn) -> list[d
 def _build_from_sessions_db(platform_name: str) -> list[dict[str, str]]:
     """Pull channels/contacts from state.db gateway session rows."""
     def _origins() -> Iterable[tuple[dict[str, Any], Any]]:
-        from hermes_state_registry import acquire, release_or_close
-        db = acquire()
-        try:
-            lister = getattr(db, "list_gateway_sessions", None)
-            if not callable(lister):
-                return
-            rows = lister(platform=platform_name, active_only=False)
-        finally:
-            release_or_close(db)
-        for row in rows:
-            origin = None
-            with contextlib.suppress(TypeError, ValueError):
-                origin = json.loads(row["origin_json"]) if row.get("origin_json") else None
-            if not isinstance(origin, dict) or not origin:
-                origin = {"chat_id": row.get("chat_id"), "thread_id": row.get("thread_id"), "chat_name": row.get("display_name")}
-            yield origin, row.get("chat_type") or "dm"
+        from persistence_assembly import open_persistence, profile_scope
+        with open_persistence(profile_scope()) as store:
+            entries = store.sessions.list_gateway_sessions(platform=platform_name, active_only=False)
+        for entry in entries:
+            session = entry.session
+            origin = session.origin
+            if not origin:
+                origin = {"chat_id": session.chat_id, "thread_id": session.thread_id, "chat_name": session.display_name}
+            yield origin, session.chat_type or "dm"
     return _entries_from_origins(platform_name, "state.db session read failed", _origins)
 
 
@@ -418,7 +449,7 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
         if ch.get("id") == raw:
             return ch["id"]
     query = _normalize_channel_query(name)
-    # 1. Exact name match, including the display labels shown by send_message(action="list")
+    # 1. Exact name match, including the display labels shown by `hermes send --list`
     for ch in channels:
         if query in (_normalize_channel_query(ch["name"]), _normalize_channel_query(_channel_target_name(platform_name, ch))):
             return ch["id"]

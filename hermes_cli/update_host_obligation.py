@@ -33,6 +33,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
+from hermes_dir_acl import make_user_dir
 
 logger = logging.getLogger("hermes_cli.update_cmd")
 
@@ -244,7 +245,7 @@ def _write_locked(path: Path, *, expected_sha: str, runtimes: Optional[list], pr
     if runtimes is not None:
         payload["inventory"] = {"version": 1, "runtimes": runtimes}
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        make_user_dir(path.parent, parents=True, exist_ok=True)
         _write_record(path, payload)
     except Exception as exc:  # health: allow BLE001 -- never raises: the caller falls back to the per-home marker
         logger.debug("Could not write host update-restart obligation: %s", exc)
@@ -261,7 +262,7 @@ def _record_mutex(path: Path):
     """
     # One guard for every install's record (and the unkeyed one an older release still locks).
     guard = path.parent / f".{Path(HOST_OBLIGATION_NAME).stem}.mutex"
-    guard.mkdir(parents=True, exist_ok=True)
+    make_user_dir(guard, parents=True, exist_ok=True)
     with _marker_mutex()(guard / "record"):
         yield
 

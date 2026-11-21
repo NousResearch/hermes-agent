@@ -25,7 +25,7 @@ from hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE
 from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment, _update_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
-from tools.environments.file_sync import FileSyncManager, iter_sync_files, quoted_rm_command
+from tools.environments.file_sync import FileSyncManager, iter_sync_files, pushed_cache_excludes, quoted_rm_command
 from utils import read_json_or_empty
 
 logger = logging.getLogger(__name__)
@@ -338,8 +338,10 @@ class VercelSandboxEnvironment(BaseEnvironment):
         remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar"  # no-tmp: ok — remote sandbox path
         sandbox = self._require_sandbox()
         try:
-            # --exclude: live sockets cannot be archived ("socket ignored") and must not fail the download.
-            self._run_checked(f"tar cf {shlex.quote(remote_tar)} --exclude='*.sock' -C / {shlex.quote(archive_member)}",
+            # --exclude: live sockets cannot be archived ("socket ignored") and must not fail the download;
+            # the cache mounts only hold copies of host files.
+            self._run_checked(f"tar cf {shlex.quote(remote_tar)} --exclude='*.sock' {pushed_cache_excludes(archive_member)} "
+                              f"-C / {shlex.quote(archive_member)}",
                               "bulk download")
             sandbox.download_file(remote_tar, dest_tar_path)
         finally:

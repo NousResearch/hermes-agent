@@ -169,6 +169,18 @@ def quoted_rm_command(remote_paths: list[str]) -> str:
     return "rm -f " + " ".join(shlex.quote(p) for p in remote_paths)
 
 
+def pushed_cache_excludes(archive_member: str) -> str:
+    """tar ``--exclude`` options that keep the cache mounts out of a sync-back archive of the remote
+    ``.hermes`` at *archive_member* (relative to ``/``). Those directories hold copies of host files
+    pushed for the sandbox to read: downloading them brings nothing back, can outgrow the transfer
+    timeout on a slow link, and can restore files the host has since deleted."""
+    # Late import: credential_files pulls in agent modules (circular at module level).
+    from tools.credential_files import cache_directory_subpaths
+
+    base = archive_member.strip("/")
+    return " ".join(f"--exclude={shlex.quote(f'{base}/{sub}')}" for sub in cache_directory_subpaths())
+
+
 def quoted_mkdir_command(dirs: list[str]) -> str:
     """Build a shell ``mkdir -p`` command for a batch of directories."""
     return "mkdir -p " + " ".join(shlex.quote(d) for d in dirs)

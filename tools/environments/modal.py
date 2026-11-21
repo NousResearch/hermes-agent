@@ -20,7 +20,8 @@ from hermes_constants import get_hermes_home, hermes_home_key
 from tools.environments.base import BaseEnvironment, _update_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import (
-    FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
+    FileSyncManager, iter_sync_files, pushed_cache_excludes, quoted_mkdir_command, quoted_rm_command,
+    unique_parent_dirs)
 from tools.environments.remote_common import bash_argv, ensure_lazy_dep
 from utils import read_json_or_empty
 
@@ -377,8 +378,10 @@ class ModalEnvironment(BaseEnvironment):
 
     def _modal_bulk_download(self, dest: Path) -> None:
         """Download remote .hermes/ as a tar archive (sandboxes run as root, so /root/.hermes)."""
-        # --exclude: live sockets cannot be archived ("socket ignored") and must not fail the download.
-        data = self._exec("tar cf - --exclude='*.sock' -C / root/.hermes", timeout=120, fail_label="bulk download", capture=True)
+        # --exclude: live sockets cannot be archived ("socket ignored") and must not fail the download;
+        # the cache mounts only hold copies of host files.
+        data = self._exec(f"tar cf - --exclude='*.sock' {pushed_cache_excludes('root/.hermes')} -C / root/.hermes",
+                          timeout=120, fail_label="bulk download", capture=True)
         dest.write_bytes(data.encode() if isinstance(data, str) else data)
 
     def _modal_delete(self, remote_paths: list[str]) -> None:

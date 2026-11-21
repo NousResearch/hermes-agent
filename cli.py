@@ -1469,18 +1469,6 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
 
         try:
             with patch_stdout():
-                try:
-                    # run_in_terminal() may return either: • a coroutine / Future (prompt_toolkit ≥ 3.0) —
-                    # must be scheduled via ensure_future so the coroutine is actually awaited; calling it
-                    # bare would leave it unawaited and silently drop the output (fixes #23185 Bug A). •
-                    # None (some mocks / older PT builds) — just call the inner function directly since PT
-                    # already executed it synchronously. Do NOT fall back to a bare _pt_print when
-                    # ensure_future raises, because run_in_terminal already invoked the lambda in that case
-                    # (the mock path), which would double-print the line.
-                    import asyncio as _aio
-                    _aio.get_running_loop().set_exception_handler(self._tui_suppress_closed_loop_errors)
-                except Exception:
-                    pass  # no running loop -- nothing to patch
                 # Record that the app enables focus reporting + mouse tracking so _run_cleanup
                 # resets them; extended key modes are popped by the same reset.
                 # When multiline shortcuts are on, also ask supported terminals (e.g. iTerm2) to report
@@ -1490,7 +1478,7 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
                 if self._tui_multiline_shortcuts:
                     _enable_extended_enter_keys(app.output)
                 self._pet_start_anim()
-                app.run()
+                self._tui_run_application(app)
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass
         except (KeyError, OSError) as _stdin_err:

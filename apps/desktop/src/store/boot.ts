@@ -110,6 +110,19 @@ export function completeDesktopBoot(message = translateNow('boot.ready')) {
   })
 }
 
+const STALE_BOOT_FAILURE = /superseded by a newer connection attempt|Timed out connecting to Hermes backend/
+
+export function shouldDismissStaleBootFailure(
+  latchedError: string | null | undefined,
+  payload: { phase?: string; running?: boolean; error?: string | null }
+): boolean {
+  if (!latchedError || !STALE_BOOT_FAILURE.test(latchedError)) {
+    return false
+  }
+
+  return payload.phase === 'backend.ready' && payload.running === true && !payload.error
+}
+
 export function failDesktopBoot(message: string) {
   const current = $desktopBoot.get()
   $desktopBoot.set({

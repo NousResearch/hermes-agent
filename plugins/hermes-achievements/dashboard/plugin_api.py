@@ -184,7 +184,6 @@ def _read_json(name: str) -> Any:
 
 def _write_json(name: str, data: Any) -> None:
     path = _data_file(name)
-    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_json_safe(data), indent=2, sort_keys=True), encoding="utf-8")
 
 

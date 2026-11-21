@@ -761,3 +761,20 @@ def test_profile_deleted_mid_cleanup_reply_admits_removed_files(tmp_path, monkey
     assert "did nothing" not in reply
     assert "files it already removed stay removed" in reply
     assert not home.exists()
+
+
+@pytest.mark.parametrize("named", (True, False))
+def test_unrelated_file_not_found_on_a_live_home_still_raises(tmp_path, monkeypatch, named):
+    """Only a dead named home turns FileNotFoundError into the "no longer exists" reply."""
+    home = tmp_path / ".hermes" / "profiles" / "b" if named else tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    pi = _load_plugin_init()
+
+    def _vanished():
+        raise FileNotFoundError("tracked file vanished")
+
+    monkeypatch.setattr(pi.dg, "quick", _vanished)
+    with pytest.raises(FileNotFoundError, match="tracked file vanished"):
+        pi._handle_slash("quick")

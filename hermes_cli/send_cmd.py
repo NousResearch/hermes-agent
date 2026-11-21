@@ -72,6 +72,8 @@ def _emit_result(result_json: str, *, json_mode: bool, quiet: bool) -> int:
     elif not quiet:
         for warning in payload.get("warnings") or ():  # the cause behind an error, or a partial send
             print(f"hermes send: warning: {warning}", file=sys.stderr)
+        if payload.get("delivery_unconfirmed"):  # sent, receipt lost: shown, never a failure
+            print(f"hermes send: warning: {payload['delivery_unconfirmed']}", file=sys.stderr)
         if payload.get("error"):
             print(f"hermes send: {payload['error']}", file=sys.stderr)
         elif payload.get("success"):

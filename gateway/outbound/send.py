@@ -17,7 +17,8 @@ from gateway.outbound.targets import (
 )
 from gateway.outbound.senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
-    SharedBotTargetRefused, _adapter_media_method, _error, _live_adapter, _media_caption_split,
+    SharedBotTargetRefused, _adapter_media_method, _error, _live_adapter, _mark_incomplete_delivery,
+    _media_caption_split,
     _optional_sender_kwargs, _plugin_standalone_sender, _registry_standalone_send, _resolve_slack_user_target,
     _sanitize_error_text, _send_matrix_via_adapter)
 from tools.registry import tool_error
@@ -227,13 +228,9 @@ def _handle_send(args):
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
             if mirror_text and _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
                 result["mirrored"] = True
-            if media_dropped:
-                # The text went out but an attachment the caller asked for did not: a script reading
-                # ``success`` / exit 0 must not book a delivery that never happened (#115908).
-                result["success"] = False
-                result["partial_success"] = True
-                result["error"] = (f"Delivery incomplete: {len(media_dropped)} requested MEDIA attachment(s) "
-                                   "dropped before delivery (see media_dropped)")
+            # Pre-send filter drops and sender-reported attachment failures both leave the
+            # text delivered but the requested MEDIA missing.
+            _mark_incomplete_delivery(result, len(media_dropped), bool(media_files))
         if isinstance(result, dict) and media_dropped:
             result["media_dropped"] = media_dropped
         if isinstance(result, dict) and "error" in result:

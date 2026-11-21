@@ -52,6 +52,24 @@ def _error(message: str) -> dict:
     return {"error": _sanitize_error_text(message)}
 
 
+def _mark_incomplete_delivery(result: dict, dropped: int, media_requested: bool) -> None:
+    """Turn a successful send that left requested MEDIA undelivered into a partial success: a script
+    reading ``success`` / exit 0 must not book a delivery that never happened (#115908). The error is
+    counts only; the paths and transport detail stay in ``media_dropped`` / ``warnings``."""
+    # A sender's top-level warning (generic text-only omission, per-file attachment failures) names an
+    # attachment that did not arrive. Sent-but-unconfirmed media is not a warning: senders report it in
+    # the typed ``delivery_unconfirmed`` field, which stays a success (a partial would invite a duplicate
+    # re-send). Warnings count only when the send carried attachments; a text-only send's advisories
+    # (e.g. the split-cap file fallback) stay a success.
+    warned = len(result.get("warnings") or []) if media_requested else 0
+    reasons = [*([f"{dropped} requested MEDIA attachment(s) dropped before delivery (see media_dropped)"]
+                 if dropped else []),
+               *([f"{warned} MEDIA delivery warning(s) from the platform sender (see warnings)"]
+                 if warned else [])]
+    if reasons:
+        result.update(success=False, partial_success=True, error="Delivery incomplete: " + "; ".join(reasons))
+
+
 def _success(platform: str, chat_id, warnings=None, **fields) -> dict:
     """Standard success payload; ``warnings`` is only included when non-empty."""
     return {"success": True, "platform": platform, "chat_id": chat_id, **fields,

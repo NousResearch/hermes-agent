@@ -1513,6 +1513,7 @@ def _deliver_via_live_adapter(
 
 def _deliver_standalone(
     t: _TargetDelivery, content: str, media_files: list, target_errors: list, delivery_errors: list,
+    unverified_targets: Optional[list] = None,
 ) -> Optional[bool]:
     """Standalone fallback for a target the live lane did not deliver; True once the text was sent,
     in full or in part (a split send that failed after a chunk landed)."""
@@ -1555,6 +1556,9 @@ def _deliver_standalone(
         # A partial send's head is on screen at this target, so the run did reach someone; so may
         # a send whose answer was lost (explicit ``uncertain``, or no result at all: timeout, raise).
         return partial or (t.standalone_in_flight and (result is None or result.get("delivery") == "uncertain"))
+    if (unverified_targets is not None and isinstance(result, dict) and result.get("delivery_unconfirmed")
+            and t.where not in unverified_targets):
+        unverified_targets.append(t.where)  # sent, ack lost: recorded, never resent
     # Standalone senders report per-file attachment failures in ``warnings`` while returning
     # success; surface them so a vanished attachment doesn't mark the run ok.
     for _w in (result.get("warnings") if isinstance(result, dict) else None) or []:
@@ -1875,7 +1879,8 @@ def _deliver_result(
             target_errors=target_errors, delivery_errors=delivery_errors,
             unverified_targets=unverified_targets,
         )
-        reached += bool(delivered or _deliver_standalone(t, cleaned_delivery_content, media_files, target_errors, delivery_errors))
+        reached += bool(delivered or _deliver_standalone(
+            t, cleaned_delivery_content, media_files, target_errors, delivery_errors, unverified_targets))
 
     # Filter-time drops apply to every target; report them once. A run whose every target was
     # suppressed sent nothing, so there is no drop to report.

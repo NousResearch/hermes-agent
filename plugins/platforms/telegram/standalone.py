@@ -342,16 +342,18 @@ def _telegram_mdv2(text, *, max_units=None):
     return None if max_units is not None and utf16_len(formatted) > max_units else formatted
 
 
-def _record_media_failure(error, media_path, warnings, last_msg):
-    """Warn about a failed upload; one that may have landed counts as sent (never a resend)."""
+def _record_media_failure(error, media_path, warnings, unconfirmed, last_msg):
+    """Warn about a failed upload. One that may have landed counts as sent (never a resend) and goes
+    to ``unconfirmed``, not ``warnings``: a warning makes the send partial and invites a duplicate."""
     from plugins.platforms.telegram.telegram_media_retry import request_may_have_delivered
-    maybe = request_may_have_delivered(error)
-    warnings.append(_sanitize_error_text(
-        f"Failed to send media {media_path}: {error}" + (" (Telegram may still deliver it; do not resend)" if maybe else "")))
-    logger.error(warnings[-1])
-    if maybe:  # delivery unknown, never a hard failure a caller would answer with a resend
-        return last_msg or SimpleNamespace(message_id=None)
-    return last_msg
+    if not request_may_have_delivered(error):
+        warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {error}"))
+        logger.error(warnings[-1])
+        return last_msg
+    unconfirmed.append(_sanitize_error_text(
+        f"Telegram never confirmed media {media_path} ({error}); it may already be in the chat, so do not resend it"))
+    logger.error(unconfirmed[-1])
+    return last_msg or SimpleNamespace(message_id=None)
 
 
 def _rich_send_result(rich, chat_id, outcome) -> dict:
@@ -398,7 +400,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                          **notification_kwargs(resolve_notifications_mode(), notify)}
         # disable_web_page_preview is only valid for send_message, not media sends.
         text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
-        warnings, _tg_caption = [], None
+        warnings, _tg_caption, unconfirmed = [], None, []
         if message and not media_files:
             rich = await send_rich_standalone(bot, {**(extra or {}), "disable_link_previews": disable_link_previews},
                                               chat_id, message, thread_id=thread_id, notify=notify)
@@ -430,7 +432,10 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                          for path, err in detail.get("failed", ())]
             if detail.get("ambiguous"):
                 outcome.ambiguous()
-                warnings.append("Telegram never confirmed a photo album; it may already be in the chat, so it was not resent")
+                # Sent, ack lost: possibly delivered, so not a failure warning (a warning makes the send
+                # partial and invites a duplicate re-send). Same typed field as the live adapter path.
+                unconfirmed.append("Telegram never confirmed a photo album; it may already be in the chat, "
+                                   "so do not resend it")
             if not result.success and not detail.get("failed") and not detail.get("refused"):
                 warnings.append(_sanitize_error_text(f"Failed to send Telegram photo album: {result.error}"))
             # A refused album goes photo by photo below (topic fallback, a warning per failure).
@@ -455,12 +460,13 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     bot, int_chat_id, media_path, is_voice, caption=_tg_caption, parse_mode=send_parse_mode,
                     has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document)
             except Exception as e:
-                last_msg = _record_media_failure(e, media_path, warnings, last_msg)
+                last_msg = _record_media_failure(e, media_path, warnings, unconfirmed, last_msg)
         if last_msg is None:
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
         return _success(chat_id, warnings, **({"message_id": str(last_msg.message_id)}
                                               if last_msg.message_id is not None else {}),
-                        **outcome.split_fields())
+                        **outcome.split_fields(),
+                        **({"delivery_unconfirmed": "; ".join(unconfirmed)} if unconfirmed else {}))
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: "
                 f"{install_hint('telegram')}", "retryable": True}

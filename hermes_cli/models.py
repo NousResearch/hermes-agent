@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import contextvars
 import copy
-import gzip
 import json
 import logging
 import os
@@ -30,7 +29,7 @@ if TYPE_CHECKING:
 from agent.proxy_bypass import is_loopback_host
 from agent.bedrock_service_tiers import BEDROCK_ULTRAFAST_ROUTES, bedrock_fast_mode_overrides
 from hermes_cli.route_identity import normalize_route_base_url
-from hermes_cli.urllib_security import open_credentialed_url
+from hermes_cli.urllib_security import decode_response_body, open_credentialed_url
 from hermes_cli.version_info import hermes_user_agent
 from hermes_cli.models_catalog_static import (
     CuratedFallbackModels,
@@ -81,9 +80,7 @@ def _get_json(
     call time so monkeypatching ``_urlopen_model_catalog_request`` still applies). Raises on failure."""
     req = urllib.request.Request(url, headers=headers or {})
     with (opener or _urlopen_model_catalog_request)(req, timeout=timeout, **open_kwargs) as resp:
-        body = resp.read()
-        if req.get_header("Accept-encoding") == "gzip" and resp.headers.get("Content-Encoding", "").lower() == "gzip":
-            body = gzip.decompress(body)
+        body = decode_response_body(resp, resp.read())
         return json.loads(body.decode())
 
 

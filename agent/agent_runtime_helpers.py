@@ -1345,14 +1345,14 @@ def anthropic_prompt_cache_policy(
     if isinstance(eff_model, dict):
         eff_model = eff_model.get('model') or eff_model.get('default') or ''
     eff_model = eff_model if isinstance(eff_model, str) else str(eff_model or '')
-    model_lower = eff_model.lower()
+    from agent.preset_resolution import effective_family_model
+    resolved_model, model_lower = effective_family_model(eff_model, agent)
     provider_lower = eff_provider.lower()
     is_claude = "claude" in model_lower
-    # Kimi/Moonshot via OpenRouter takes Claude's envelope cache_control; without it moonshotai/kimi-k2.6
-    # served ~1% hits on 64K prompts (1% → 67% → 84% → 97% with it, #25970). The family matcher covers
-    # bare k1./k2./k25 slugs.
+    # Kimi/Moonshot via OpenRouter takes Claude's envelope cache_control — without it kimi-k2.6 served ~1% hits
+    # on 64K prompts (#25970). The family matcher covers bare k1./k2./k25 slugs.
     from agent.anthropic_endpoints import _model_name_is_kimi_family
-    is_kimi = _model_name_is_kimi_family(eff_model) or "moonshot" in model_lower
+    is_kimi = _model_name_is_kimi_family(resolved_model) or "moonshot" in model_lower
     is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
     # Nous Portal proxies to OpenRouter; treat as OpenRouter-equivalent for cache layout.
     is_nous_portal = base_url_host_matches(eff_base_url, "nousresearch.com")

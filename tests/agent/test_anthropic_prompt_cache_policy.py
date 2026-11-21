@@ -1033,3 +1033,102 @@ class TestExplicitOverrides:
 # ─────────────────────────────────────────────────────────────────────
 # Long-lived prefix cache policy (cross-session 1h tier)
 # ─────────────────────────────────────────────────────────────────────
+
+
+class _FakeResp:
+    def __init__(self, payload, status=200):
+        self.status_code = status
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _FakePresetClient:
+    payload: dict = {}
+    calls: int = 0
+
+    def __init__(self, *a, **k):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def get(self, url):
+        _FakePresetClient.calls += 1
+        return _FakeResp(_FakePresetClient.payload)
+
+
+def _claude_head_payload():
+    return {"data": {"designated_version": {"config": {"model": "anthropic/claude-haiku-5.5"}}}}
+
+
+class TestPresetModels:
+    """``@preset/<slug>`` hides its head model; the policy must family-match on the
+    resolved head (#157875) and fail open to today's behavior when it cannot."""
+
+    def _fresh_resolver_cache(self, monkeypatch):
+        from agent import preset_resolution
+        monkeypatch.setattr(preset_resolution, "_preset_head_model_cache", {})
+
+    def test_preset_with_claude_head_gets_envelope_markers(self, monkeypatch):
+        import httpx
+        from agent import preset_resolution
+        self._fresh_resolver_cache(monkeypatch)
+        _FakePresetClient.payload = _claude_head_payload()
+        _FakePresetClient.calls = 0
+        monkeypatch.setattr(httpx, "Client", _FakePresetClient)
+        agent = _make_agent(model="@preset/fast-zdr")
+        agent.api_key = "sk-or-test"
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+        assert _FakePresetClient.calls == 1
+
+    def test_resolution_is_cached_per_slug_across_policy_calls(self, monkeypatch):
+        import httpx
+        from agent import preset_resolution
+        self._fresh_resolver_cache(monkeypatch)
+        _FakePresetClient.payload = _claude_head_payload()
+        _FakePresetClient.calls = 0
+        monkeypatch.setattr(httpx, "Client", _FakePresetClient)
+        agent = _make_agent(model="@preset/fast-zdr")
+        agent.api_key = "sk-or-test"
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+        assert _FakePresetClient.calls == 1
+
+    def test_unresolvable_preset_keeps_status_quo(self, monkeypatch):
+        import httpx
+        from agent import preset_resolution
+        self._fresh_resolver_cache(monkeypatch)
+        _FakePresetClient.payload = {"error": {"code": 404}}
+        _FakePresetClient.calls = 0
+        monkeypatch.setattr(httpx, "Client", _FakePresetClient)
+        agent = _make_agent(model="@preset/unknown-slug")
+        agent.api_key = "sk-or-test"
+        # Negative cache: the retry after a miss does not re-fetch within the TTL.
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+        assert _FakePresetClient.calls == 1
+
+    def test_non_claude_head_gets_no_markers(self, monkeypatch):
+        import httpx
+        from agent import preset_resolution
+        self._fresh_resolver_cache(monkeypatch)
+        _FakePresetClient.payload = {"data": {"designated_version": {"config": {"model": "deepseek/deepseek-chat"}}}}
+        monkeypatch.setattr(httpx, "Client", _FakePresetClient)
+        agent = _make_agent(model="@preset/speed-tier")
+        agent.api_key = "sk-or-test"
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_suffixed_form_family_matches_the_base_without_fetch(self, monkeypatch):
+        from agent import preset_resolution
+
+        def _no_fetch(*a, **k):
+            raise AssertionError("a named base model must not fetch the presets API")
+
+        monkeypatch.setattr(preset_resolution, "resolve_preset_head_model", _no_fetch)
+        agent = _make_agent(model="anthropic/claude-sonnet-4.6@preset/team-default")
+        assert agent._anthropic_prompt_cache_policy() == (True, False)

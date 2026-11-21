@@ -124,3 +124,34 @@ class TestProfileCompletion:
         count = out.count("(__hermes_profiles)")
         # At least the -p flag + the profile action completions
         assert count >= 2, f"Expected >=2 profile completion entries, got {count}"
+
+
+# ---------------------------------------------------------------------------
+# 4. Config key completion
+# ---------------------------------------------------------------------------
+
+def test_bash_completes_config_keys_and_boolean_values(monkeypatch):
+    """`hermes config set <TAB>` offers the `config keys` inventory, then true/false for a bool key."""
+    import hermes_cli.config_inventory as inventory
+
+    monkeypatch.setattr(inventory, "registered_config_keys",
+                        lambda: ["compression.enabled", "model.default", "ra.service\\.name"])
+    monkeypatch.setattr(inventory, "boolean_config_keys", lambda: ["compression.enabled"])
+    parser = _make_parser()
+    cfg = parser._subparsers._group_actions[0].add_parser("config", help="Config")
+    cfg_sub = cfg.add_subparsers(dest="config_command")
+    for name in ("get", "set", "unset", "show"):
+        cfg_sub.add_parser(name, help=name)
+    script = generate_bash(parser)
+
+    def complete(*words):
+        driver = (f'{script}\nCOMP_WORDS=(hermes {" ".join(repr(w) for w in words)}); '
+                  'COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 )); _hermes_completion; echo "${COMPREPLY[*]}"')
+        return subprocess.run(["bash", "-c", driver], capture_output=True, text=True,
+                              encoding="utf-8", check=True).stdout.split()
+
+    assert complete("config", "set", "comp") == ["compression.enabled"]
+    assert complete("config", "get", "") == ["compression.enabled", "model.default"]
+    assert complete("config", "set", "compression.enabled", "") == ["true", "false"]
+    assert complete("config", "set", "model.default", "") == []
+    assert complete("config", "show", "") == []

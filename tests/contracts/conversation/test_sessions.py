@@ -701,6 +701,19 @@ def test_distinct_cwds_groups_counts_and_orders(backend, scope_a, scope_b):
     assert store_b.sessions.distinct_session_cwds() == (SessionCwdUsage(cwd="/w/other-scope", sessions=1, last_active=other.started_at),)
 
 
+def test_distinct_session_cwds_count_exclusion_keeps_the_cwd(backend, scope_a):
+    store = backend.open(scope_a)
+    store.sessions.create(_new("sfc-cnt-human", cwd="/w/mixed"))
+    store.sessions.create(_new("sfc-cnt-tool", cwd="/w/mixed", source="tool"))
+    store.sessions.create(_new("sfc-cnt-only", cwd="/w/auto-only", source="tool"))
+    everything = {u.cwd: u for u in store.sessions.distinct_session_cwds()}
+    counted = {u.cwd: u for u in store.sessions.distinct_session_cwds(count_exclude_sources=("tool",))}
+    # CONTRACT: excluded sources leave the count only: the cwd is still listed (count 0) with the same newest stamp.
+    assert {c: u.sessions for c, u in everything.items()} == {"/w/auto-only": 1, "/w/mixed": 2}
+    assert {c: u.sessions for c, u in counted.items()} == {"/w/auto-only": 0, "/w/mixed": 1}
+    assert {c: u.last_active for c, u in counted.items()} == {c: u.last_active for c, u in everything.items()}
+
+
 def test_backfill_repo_roots_fills_empty_only(backend, scope_a, scope_b):
     store_a = backend.open(scope_a)
     store_b = backend.open(scope_b)

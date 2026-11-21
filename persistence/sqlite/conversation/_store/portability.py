@@ -1,7 +1,7 @@
 """Rich session rows, cron runs, skill-scaffolded sessions and working directories."""
 
 
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 from persistence.sqlite._state.keys import (
     CRON_PRINCIPAL_ID, CRON_REQUEST_PREFIX, cron_request_range, cron_run_from_request, legacy_cron_run_job,
     prefix_range,
@@ -86,16 +86,23 @@ def _read_rows(holder: StoreHolder, sql: str, params=()) -> list:
         return conn.execute(sql, params).fetchall()
 
 
-def distinct_session_cwds(holder: StoreHolder, include_archived: bool = False) -> list[dict[str, Any]]:
+def distinct_session_cwds(
+    holder: StoreHolder, include_archived: bool = False, count_exclude_sources: Sequence[str] = ()
+) -> list[dict[str, Any]]:
     """Distinct non-empty session cwds with usage stats, for repo discovery. Aggregates
     across ALL history; children/branches count (a worktree session is a real
-    workspace signal)."""
+    workspace signal). ``count_exclude_sources`` only filters the count, so a cwd whose rows
+    all come from those sources is still discovered with its activity stamp."""
     where = "cwd IS NOT NULL AND TRIM(cwd) != ''"
     if not include_archived:
         where += " AND archived = 0"
+    params = list(count_exclude_sources)
+    count = "COUNT(*)"
+    if params:
+        count = f"COUNT(CASE WHEN source NOT IN ({','.join('?' for _ in params)}) THEN 1 END)"
     rows = _read_rows(holder,
-        "SELECT cwd AS cwd, COUNT(*) AS sessions, MAX(COALESCE(ended_at, started_at, 0)) AS last_active "
-        f"FROM sessions WHERE {where} GROUP BY cwd"
+        f"SELECT cwd AS cwd, {count} AS sessions, MAX(COALESCE(ended_at, started_at, 0)) AS last_active "
+        f"FROM sessions WHERE {where} GROUP BY cwd", params
     )
     return [{"cwd": r["cwd"], "sessions": int(r["sessions"] or 0), "last_active": float(r["last_active"] or 0)}
             for r in rows]

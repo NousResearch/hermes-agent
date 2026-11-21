@@ -1017,10 +1017,13 @@ class SQLiteSessionRepository:
             for row in rows
         )
 
-    def distinct_session_cwds(self, *, include_archived: bool = False) -> tuple[SessionCwdUsage, ...]:
+    def distinct_session_cwds(
+        self, *, include_archived: bool = False, count_exclude_sources: Sequence[str] = ()
+    ) -> tuple[SessionCwdUsage, ...]:
         holder = self._store.holder()
         with refusals(holder):
-            rows = distinct_session_cwds(holder, include_archived=include_archived)
+            rows = distinct_session_cwds(
+                holder, include_archived=include_archived, count_exclude_sources=count_exclude_sources)
         return tuple(SessionCwdUsage(cwd=row["cwd"], sessions=row["sessions"], last_active=row["last_active"])
                      for row in rows)
 

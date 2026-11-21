@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import random
 import sqlite3
 import threading
 import time
@@ -299,28 +300,138 @@ def mark_execution_handoff_pending(execution_id: str) -> Optional[dict[str, Any]
     return record
 
 
+# A claim row is fenced (status='claimed' AND handoff_pending=1), so retrying the
+# adoption UPDATE after transient writer contention cannot double-adopt: only the
+# row's current owner predicate matches, and a lost race returns rowcount 0.
+_ADOPT_LOCK_RETRY_SLEEP_MAX = 2.0
+# Each step is drawn as equal jitter — ``uniform(step / 2, step)`` — the same shape
+# ``hermes_state._sleep_before_write_retry`` uses for its write retries: a batch-fire
+# cohort that collided once must not retire on one shared schedule and collide again
+# (the 33 ms cluster in #135487). The drawn value is what the budget check below
+# spends, so jitter can never overspend the window either.
+# The retry lives INSIDE the handoff grace the dispatching gateway waits
+# (``deadline = monotonic() + HANDOFF_ADOPTION_GRACE_SECONDS`` in
+# ``scheduler._run_external_cron_worker``), so its budget is the grace still left when
+# adoption starts — measured from ``handoff_started_at``, the same anchor the dead-owner
+# recovery uses, so the two guards around one handoff cannot disagree. A fixed attempt
+# count could spend 4 x busy_timeout + sleeps and land ~35 s against a 30 s window
+# (#145590 review). ``_MARGIN`` is what the winning attempt still needs to publish its
+# acknowledgement.
+_ADOPT_RETRY_MARGIN_SECONDS = 2.0
+# Past the grace the gateway has stopped waiting, so another attempt no longer buys the
+# acknowledgement — it buys the run. Stopping exactly at the boundary hands the waiter a
+# dead owner, which it terminalizes as ``unknown``
+# (``_wait_for_external_cron_worker_body``) and the tick is lost: the very failure
+# #135487 is about. So contention may overrun the window by this much, loudly.
+_ADOPT_RETRY_OVERRUN_SECONDS = 15.0
+# Backstop for a pathological loop (a lock that never clears): the measured budget
+# already bounds each attempt, this bounds the count.
+_ADOPT_RETRY_ATTEMPTS_MAX = 12
+
+
+def _is_lock_contention(exc: BaseException) -> bool:
+    """True for SQLite's transient writer-contention errors (retryable), False for
+    everything else (schema errors, corruption — must surface immediately)."""
+    return isinstance(exc, sqlite3.OperationalError) and (
+        "locked" in str(exc).lower() or "busy" in str(exc).lower()
+    )
+
+
+def _adopt_retry_deadlines(execution_id: str) -> tuple[float, float]:
+    """``(grace_deadline, hard_deadline)`` as ``time.monotonic()`` readings.
+
+    ``grace_deadline`` is when the dispatching gateway stops waiting for the
+    acknowledgement; ``hard_deadline`` is the last moment a further attempt is worth
+    making. No usable anchor (row already gone, unreadable stamp) leaves the whole
+    window ahead rather than refusing to retry.
+    """
+    elapsed = 0.0
+    try:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT handoff_started_at FROM executions WHERE id=?", (execution_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is not None and row[0] is not None:
+            elapsed = max(0.0, time.time() - float(row[0]))
+    except (sqlite3.Error, TypeError, ValueError):
+        pass
+    left = HANDOFF_ADOPTION_GRACE_SECONDS - elapsed - _ADOPT_RETRY_MARGIN_SECONDS
+    grace_deadline = time.monotonic() + max(0.0, left)
+    return grace_deadline, grace_deadline + _ADOPT_RETRY_OVERRUN_SECONDS
+
+
 def adopt_claimed_execution(execution_id: str) -> Optional[dict[str, Any]]:
     """Atomically transfer and start an attempt in its worker process.
 
     The dispatching gateway creates the row before spawning a restart-safe
     worker.  Adoption is the single ``claimed`` → ``running`` gate: only the
     winner may acknowledge ownership or run side effects.
+
+    Transient ``database is locked`` (synchronous=FULL commits queueing behind
+    a batch-fire tick, #135487) is retried with backoff instead of killing
+    the dispatch: the fenced UPDATE is idempotent for the owner, and losing the
+    race to another process still returns None.  The budget is the handoff grace
+    still left when the first contention is seen, plus a bounded overrun, so the
+    backoff can neither starve the acknowledgement nor throw the tick away.
     """
     pid = os.getpid()
     process_started_at = _process_start_time(pid)
-    now = _hermes_now().isoformat()
-    with _transaction() as conn:
-        cur = conn.execute(
-            """UPDATE executions
-               SET process_id=?, pid=?, process_started_at=?,
-                   status='running', started_at=?, handoff_pending=0,
-                   handoff_started_at=NULL
-               WHERE id=? AND status='claimed' AND handoff_pending=1""",
-            (_PROCESS_ID, pid, process_started_at, now, execution_id),
-        )
-        if cur.rowcount != 1:
-            return None
-        record = _fetch(conn, execution_id)
+    record = None
+    attempt = 0
+    overran = False
+    blocked = 0.0
+    # Spent lazily on the first ``database is locked``: the anchor needs its own
+    # connection (one open + PRAGMA stack + schema-init DDL), and the uncontended
+    # path — the one that was never in trouble — must not pay for a read whose
+    # result is only used by the retry.
+    deadlines: tuple[float, float] | None = None
+    while True:
+        # Per attempt, not once before the loop: a late attempt must not stamp a
+        # started_at seconds older than the run it describes.
+        now = _hermes_now().isoformat()
+        started = time.monotonic()
+        try:
+            with _transaction() as conn:
+                cur = conn.execute(
+                    """UPDATE executions
+                       SET process_id=?, pid=?, process_started_at=?,
+                           status='running', started_at=?, handoff_pending=0,
+                           handoff_started_at=NULL
+                       WHERE id=? AND status='claimed' AND handoff_pending=1""",
+                    (_PROCESS_ID, pid, process_started_at, now, execution_id),
+                )
+                if cur.rowcount != 1:
+                    return None
+                record = _fetch(conn, execution_id)
+            break
+        except sqlite3.OperationalError as exc:
+            blocked = time.monotonic() - started
+            if not _is_lock_contention(exc) or attempt + 1 >= _ADOPT_RETRY_ATTEMPTS_MAX:
+                raise
+            if deadlines is None:
+                deadlines = _adopt_retry_deadlines(execution_id)
+            grace_deadline, hard_deadline = deadlines
+            # An attempt is only worth starting if it can still finish inside the
+            # window: a busy timeout that would run past it cannot help the run.
+            # The drawn jitter is what that check spends, so a longer sleep simply
+            # retires an attempt the window could not have carried.
+            step = min(0.5 * (2**attempt), _ADOPT_LOCK_RETRY_SLEEP_MAX)
+            sleep = random.uniform(step / 2.0, step)
+            if hard_deadline - time.monotonic() <= blocked + sleep:
+                raise
+            if not overran and time.monotonic() > grace_deadline:
+                overran = True
+                logger.warning(
+                    "Adoption of execution %s is still contending past the handoff grace; "
+                    "retrying for up to %.0fs more rather than losing the tick (#135487)",
+                    execution_id,
+                    hard_deadline - time.monotonic(),
+                )
+            attempt += 1
+            time.sleep(sleep)
     _emit_execution_state(record)
     return record
 

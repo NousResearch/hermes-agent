@@ -83,6 +83,26 @@ def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optiona
     return _status._process_is_stopped(existing_pid)
 
 
+def _publish_json_excl(path: Path, record: dict[str, Any]) -> None:
+    """Create ``path`` already holding ``record`` (FileExistsError if it exists): dump to a private
+    temp name, then hard-link it into place. A bare O_EXCL create is visible EMPTY until its dump
+    lands, and ``acquire_scoped_lock`` deletes an empty lock as a crashed writer's leftover, so a
+    contender reading in that window (or holding an earlier empty read) took the lock from under a
+    live creator and both reported ownership."""
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{os.urandom(4).hex()}")
+    _status._write_json_excl(temporary, record)
+    try:
+        os.link(temporary, path)
+    except FileExistsError:
+        raise
+    except OSError:
+        # A mount without hard links (some FUSE/SMB shares): the bare create still arbitrates via
+        # O_EXCL, only the empty-file window comes back.
+        _status._write_json_excl(path, record)
+    finally:
+        _status._unlink_quietly(temporary)
+
+
 def release_scoped_lock(scope: str, identity: str) -> None:
     """Release a scope lock owned by this PID. No start_time equality check: on-disk null vs a live
     fingerprint would wedge reconnects."""

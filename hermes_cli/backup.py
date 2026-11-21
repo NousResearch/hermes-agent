@@ -144,7 +144,7 @@ _EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}
 # torn-restore hazard the sidecar exclusion below exists to prevent, and the capture is an
 # operator-recovery artifact that must move as a unit (manifest + image + WAL), never partially.
 _EXCLUDED_PREFIXES = (
-    "state.db.pre-update-emergency-",
+    "state.db.pre-update-emergency-", "state.db.replaced-",  # .replaced-: what the update guard overwrote
     f"state.db{RETIRED_GENERATION_DIR_SUFFIX}",
 )
 

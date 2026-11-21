@@ -95,3 +95,52 @@ def test_status_withholds_host_detail_in_gated_mode(gated_client):
     assert not leaked, f"/api/status leaked host detail under the gate: {leaked}"
 
 
+
+
+# ``webapp_url`` drives the SPA's "your dashboard is moving" modal: only a hosted (Hermes Cloud)
+# agent's signed-in standalone dashboard gets it, never a local one and never the Webapp itself.
+_WEBAPP_URL = "https://otter--app.agents.nousresearch.com"
+
+
+def _login(client) -> None:
+    r1 = client.get("/auth/login?provider=stub", follow_redirects=False)
+    state = r1.headers["location"].split("state=")[1]
+    client.get(f"/auth/callback?code=stub_code&state={state}", follow_redirects=False)
+
+
+@pytest.fixture
+def hosted_webapp(monkeypatch):
+    from hermes_cli.web_routers import status
+    monkeypatch.setattr(status, "_hosted_webapp_url", lambda: _WEBAPP_URL)
+
+
+def test_status_names_the_webapp_to_a_signed_in_hosted_dashboard(gated_client, hosted_webapp):
+    assert "webapp_url" not in gated_client.get("/api/status").json()  # signed out
+    _login(gated_client)
+    assert gated_client.get("/api/status").json()["webapp_url"] == _WEBAPP_URL
+
+
+def test_status_omits_the_webapp_on_a_local_dashboard(loopback_client, hosted_webapp):
+    assert "webapp_url" not in loopback_client.get("/api/status").json()
+
+
+def test_status_omits_the_webapp_on_the_webapp_itself(gated_client, hosted_webapp, monkeypatch):
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    _login(gated_client)
+    assert "webapp_url" not in gated_client.get("/api/status").json()
+
+
+@pytest.mark.parametrize("hosted,webapp,expected", [
+    (True, {"enabled": True, "public_url": _WEBAPP_URL + "/"}, _WEBAPP_URL),
+    (False, {"enabled": True, "public_url": _WEBAPP_URL}, None),  # not Hermes Cloud
+    (True, {"enabled": False, "public_url": _WEBAPP_URL}, None),  # Webapp not seeded on
+    (True, {"enabled": True}, None),
+    (True, {"enabled": True, "public_url": "javascript:alert(1)"}, None),
+    (True, None, None),
+])
+def test_hosted_webapp_url(monkeypatch, hosted, webapp, expected):
+    from hermes_cli import web_server_files
+    from hermes_cli.web_routers import status
+    monkeypatch.setattr(web_server_files, "_default_hermes_root_is_opt_data", lambda: hosted)
+    monkeypatch.setattr(status, "load_config", lambda: {"webapp": webapp} if webapp is not None else {})
+    assert status._hosted_webapp_url() == expected

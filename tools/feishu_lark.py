@@ -8,6 +8,8 @@ No ``registry.register`` here on purpose: tool discovery must not import this mo
 import contextvars
 import json
 
+from tools.feishu_client import build_client_from_env
+
 # The lark client of the comment being answered: feishu_comment sets it around the agent run.
 # A context variable, because each tool call runs on a worker thread that gets a copy of the
 # agent's context (tools/thread_context.py) and none of its thread-locals. Concurrent comment
@@ -16,8 +18,20 @@ current_client: contextvars.ContextVar = contextvars.ContextVar("feishu_lark_cli
 
 
 def get_client():
-    """Return the lark client of the comment being answered, or None outside a comment run."""
-    return current_client.get()
+    """Return the lark client of the comment being answered, or build one from env creds.
+
+    When a comment-context client has been injected, that wins. Otherwise fall back to
+    the gateway app credentials (``FEISHU_APP_ID``/``FEISHU_APP_SECRET`` or
+    ``LARK_APP_ID``/``LARK_APP_SECRET``) so the doc/drive tools still work in ordinary
+    chat sessions where no comment client exists.
+    """
+    client = current_client.get()
+    if client is not None:
+        return client
+    client = build_client_from_env()
+    if client is not None:
+        current_client.set(client)
+    return client
 
 
 def _check_feishu():

@@ -13,7 +13,10 @@ import pytest
 import cron.scheduler as sched
 from cron import unreachable_retry as ur
 from cron.scheduler_bookkeeping import finish_completed_run
-from cron.jobs import create_job, get_due_jobs, get_job, load_jobs, mark_job_run, save_jobs
+from cron.jobs import (
+    create_job, get_due_jobs, get_job, load_jobs, mark_job_run, pause_job, resume_job,
+    save_jobs, update_job,
+)
 
 
 @pytest.fixture
@@ -26,6 +29,35 @@ def tmp_cron_home(tmp_path, monkeypatch):
 
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
+
+
+@pytest.mark.parametrize(("edit", "paused"), [
+    ({"schedule": "0 12 * * *"}, False),
+    ({"timezone": "America/Los_Angeles"}, False),
+    ({"timezone": "America/Los_Angeles"}, True),
+])
+def test_schedule_edit_restarts_the_unreachable_retry_ladder(tmp_cron_home, monkeypatch, edit, paused):
+    now = datetime(2026, 11, 12, 9, tzinfo=UTC)
+    monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+    monkeypatch.setattr(ur, "_hermes_now", lambda: now)
+    job = create_job("daily report", "0 10 * * *", timezone="UTC")
+    job_id = job["id"]
+    assert mark_job_run(job_id, False, "ConnectError: dns", model_unreachable=True)
+    assert get_job(job_id)[ur.STATE_KEY]["attempt"] == 1
+
+    if paused:
+        pause_job(job_id)
+    updated = update_job(job_id, edit.copy())
+    if paused:
+        assert updated["state"] == "paused"
+        assert not updated["enabled"]
+        updated = resume_job(job_id)
+    now = datetime.fromisoformat(updated["next_run_at"])
+    assert mark_job_run(job_id, False, "ConnectError: dns", model_unreachable=True)
+
+    retried = get_job(job_id)
+    assert datetime.fromisoformat(retried["next_run_at"]) == now + timedelta(minutes=5)
+    assert retried[ur.STATE_KEY]["attempt"] == 1
 
 
 def test_unreachable_failure_pulls_next_run_earlier_then_ladder_exhausts(

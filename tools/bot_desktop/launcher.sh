@@ -33,6 +33,12 @@ export LANG="${LANG:-C.UTF-8}"
 # Inheriting a login session's bus/session manager yields "Another session manager is already
 # running" / "Unable to contact settings server".
 unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS DISPLAY XAUTHORITY WAYLAND_DISPLAY
+# A flatpak exports dir inherited from the login session (…/flatpak/exports/share, which has no
+# xfce4/panel/plugins) breaks xfce4-panel 4.20's module scan: every plugin, launcher included, then
+# fails with a blocking "Plugin loading failure" dialog. Drop only those entries; keep the host's rest.
+_dd=""; IFS=: read -ra _dirs <<< "${XDG_DATA_DIRS:-}"
+for _d in "${_dirs[@]}"; do [[ -z "$_d" || "$_d" == */flatpak/exports/share* ]] || _dd+="${_dd:+:}$_d"; done
+export XDG_DATA_DIRS="${_dd:-/usr/local/share:/usr/share}"; unset _dd _dirs _d
 
 mkdir -p "$XDG_CONFIG_HOME/xfce4/xfconf/xfce-perchannel-xml" "$XDG_CONFIG_HOME/autostart" \
          "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$(dirname "$HERMES_BD_SOCKET")"

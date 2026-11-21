@@ -830,7 +830,13 @@ class TestPollLoop(unittest.TestCase):
         """A failed IMAP check must surface through the fatal-error hook so
         the gateway's reconnect/backoff machinery learns email is unhealthy
         instead of silently treating the failed check as an empty inbox
-        (#80016)."""
+        (#80016).
+
+        Threshold behavior (homestack patch): a SINGLE transient failure does
+        not escalate — one slow Gmail read must not tear down the adapter and,
+        when it is the last connected platform, exit the gateway that serves
+        every profile. Only EMAIL_FETCH_FAILURE_THRESHOLD consecutive failures
+        escalate."""
         import asyncio
         adapter = self._make_adapter()
         notified = []
@@ -844,12 +850,49 @@ class TestPollLoop(unittest.TestCase):
         mock_imap.login.side_effect = Exception("read operation timed out")
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            # Threshold-1 isolated failures: tolerated, never escalated.
+            for _ in range(adapter._fetch_failure_threshold - 1):
+                asyncio.run(adapter._check_inbox())
+                self.assertEqual(len(notified), 0)
+            # One more consecutive failure crosses the threshold.
             asyncio.run(adapter._check_inbox())
 
         self.assertEqual(len(notified), 1)
         self.assertEqual(adapter.fatal_error_code, "email_imap_fetch_failed")
         self.assertTrue(adapter.fatal_error_retryable)
         self.assertIn("read operation timed out", adapter.fatal_error_message)
+
+    def test_single_fetch_failure_does_not_escalate(self):
+        """One transient IMAP timeout must not trigger the fatal-error hook,
+        and a subsequent successful poll must clear the streak so an isolated
+        blip can never accumulate into an escalation."""
+        import asyncio
+        adapter = self._make_adapter()
+        notified = []
+
+        async def mock_fatal_handler(adapter):
+            notified.append(adapter)
+
+        adapter.set_fatal_error_handler(mock_fatal_handler)
+
+        failing = MagicMock()
+        failing.login.side_effect = Exception("read operation timed out")
+        healthy = MagicMock()
+        healthy.login.return_value = True
+        healthy.uid.side_effect = [("OK", [b""]), ("OK", [])]
+
+        with patch("imaplib.IMAP4_SSL", return_value=failing):
+            asyncio.run(adapter._check_inbox())
+        self.assertEqual(len(notified), 0)
+        self.assertEqual(adapter._consecutive_fetch_failures, 1)
+
+        with patch("imaplib.IMAP4_SSL", return_value=healthy):
+            asyncio.run(adapter._check_inbox())
+        self.assertEqual(adapter._consecutive_fetch_failures, 0)
+
+        with patch("imaplib.IMAP4_SSL", return_value=failing):
+            asyncio.run(adapter._check_inbox())
+        self.assertEqual(len(notified), 0)
 
     def test_partial_batch_dispatched_before_escalation(self):
         """A mid-batch IMAP failure must dispatch the messages already
@@ -889,7 +932,11 @@ class TestPollLoop(unittest.TestCase):
         mock_imap.uid.side_effect = uid_handler
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
-            asyncio.run(adapter._check_inbox())
+            # Threshold (homestack patch): only the Nth consecutive failure
+            # escalates, so drive the streak to the threshold. UID 1 is marked
+            # seen after the first poll, so it is not re-dispatched below.
+            for _ in range(adapter._fetch_failure_threshold):
+                asyncio.run(adapter._check_inbox())
 
         # The successfully fetched message was dispatched, not dropped.
         self.assertEqual(len(dispatched), 1)

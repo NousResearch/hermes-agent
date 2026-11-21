@@ -311,6 +311,32 @@ class TestAtomicWrite:
         assert [p for p in os.listdir(tmp_path) if ".hermes-tmp" in p] == []
 
 
+    @staticmethod
+    def _failing_mv_write(ops, monkeypatch, target: Path):
+        """write_file through the shell script with its final ``mv`` failing, so the EXIT trap runs."""
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        execute = ops.env.execute
+        monkeypatch.setattr(ops.env, "execute", lambda command, **kw: execute("mv() { return 1; }; " + command, **kw))
+        return ops.write_file(str(target), "new\n")
+
+    def test_failed_write_removes_its_temp(self, ops, tmp_path: Path, monkeypatch):
+        workdir = tmp_path / "a b"
+        workdir.mkdir()
+        res = self._failing_mv_write(ops, monkeypatch, workdir / "f.txt")
+        assert res.error
+        assert os.listdir(workdir) == []
+
+    @pytest.mark.platforms("posix")
+    def test_failed_write_in_a_globbing_dir_deletes_nothing_else(self, ops, tmp_path: Path, monkeypatch):
+        # Unquoted, ``$tmp`` under "a * b" splits and the ``*`` matches every file in the cwd.
+        bystander = tmp_path / "keep.txt"
+        bystander.write_text("keep\n", encoding="utf-8")
+        workdir = tmp_path / "a * b"
+        workdir.mkdir()
+        res = self._failing_mv_write(ops, monkeypatch, workdir / "f.txt")
+        assert res.error
+        assert os.listdir(workdir) == [] and bystander.read_text(encoding="utf-8") == "keep\n"
+
     @pytest.mark.platforms("linux")
     def test_patch_routes_through_atomic_write(self, ops, tmp_path: Path):
         target = tmp_path / "edit.py"

@@ -63,7 +63,7 @@ def test_transport_failure_logs_exact_request_bytes_and_class_chain(caplog):
     assert f"serialized_request_body_bytes={len(request_content)}" in message
     assert "stream_opened=false" in message
     assert "exception_chain=APIConnectionError <- RemoteProtocolError" in message
-    assert "attempt=2/2" in message
+    assert "attempt=3/3" in message
     assert "payload" not in message
     assert request_content.decode() not in message
     assert "example.invalid" not in message
@@ -121,7 +121,7 @@ def test_zero_event_retry_prunes_oversized_tool_output_and_logs_size_delta(monke
     assert Path(tmp_path, "cache", "spillover", "call_browser.txt").read_text() == "x" * 760_396
     assert seen[0][2]["output"] == "x" * 760_396  # the caller's kwargs are not mutated
     prune_logs = [r.message for r in caplog.records if "zero-event" in r.message]
-    assert len(prune_logs) == 1 and "attempt 1/2" in prune_logs[0]
+    assert len(prune_logs) == 1 and "attempt 1/3" in prune_logs[0]
     assert re.search(r"serialized_input_bytes=\d+ -> \d+", prune_logs[0])
 
 
@@ -140,4 +140,4 @@ def test_zero_event_retry_without_prunable_output_logs_unchanged_resend(monkeypa
 
     assert response.status == "completed" and seen[0] == seen[1]
     (log,) = [r.message for r in caplog.records if "zero-event" in r.message]
-    assert "unchanged" in log and "attempt 1/2" in log and re.search(r"serialized_input_bytes=\d+", log)
+    assert "unchanged" in log and "attempt 1/3" in log and re.search(r"serialized_input_bytes=\d+", log)

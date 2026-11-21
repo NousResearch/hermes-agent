@@ -1099,6 +1099,32 @@ def _api_error_debug_info(error: Exception) -> dict[str, Any]:
     return info
 
 
+def _prune_old_request_dumps(agent) -> None:
+    """Delete ``request_dump_*.json`` files older than ``HERMES_DUMP_RETENTION_DAYS``.
+
+    Dumps carry full prompt mirrors (redacted, but still conversation content) and previously
+    accumulated indefinitely in each profile's logs dir, where fleet backup jobs pick them up.
+    Pruning at dump-write time keeps the directory bounded without a separate maintenance pass.
+    Set the env var to ``0`` to keep every dump forever; default retention is 30 days.
+    """
+    try:
+        from utils.env import env_int
+
+        retention_days = env_int("HERMES_DUMP_RETENTION_DAYS", 30)
+        if retention_days <= 0:
+            return
+        cutoff = time.time() - retention_days * 86400
+        for dump_file in agent.logs_dir.glob("request_dump_*.json"):
+            try:
+                if dump_file.stat().st_mtime < cutoff:
+                    dump_file.unlink()
+            except OSError:
+                continue
+    except Exception as prune_error:
+        if getattr(agent, "verbose_logging", False):
+            logger.warning("Failed to prune old request dumps: %s", prune_error)
+
+
 def dump_api_request_debug(
     agent, api_kwargs: dict[str, Any], *, reason: str, error: Optional[Exception] = None
 ) -> Optional[Path]:
@@ -1140,6 +1166,7 @@ def dump_api_request_debug(
         from agent.redact_structured import redact_structured
         _redacted_payload = redact_structured(dump_payload)
         atomic_json_write(dump_file, _redacted_payload, default=str)
+        _prune_old_request_dumps(agent)
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
         if env_var_enabled("HERMES_DUMP_REQUEST_STDOUT"):
             print(json.dumps(_redacted_payload, ensure_ascii=False, indent=2, default=str))

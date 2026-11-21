@@ -3,6 +3,7 @@
 Every consumer -- CLI help, gateway dispatch, Telegram BotCommands, Slack
 subcommand mapping, autocomplete -- derives from ``COMMAND_REGISTRY``. To add a
 command, append a ``CommandDef``; to add an alias, set ``aliases=("short",)``.
+Aliases are accepted by resolution but are not separate discovery entries.
 """
 
 from __future__ import annotations
@@ -395,9 +396,19 @@ def desktop_surface_registry() -> dict[str, str | None]:
     }
 
 
-# Every name and alias -> its CommandDef.
+# Resolution has two deliberately separate maps: canonical names define the command surface,
+# while aliases exist only for backwards-compatible dispatch. Keeping them separate prevents a
+# compatibility spelling from becoming a discovery entry again when a new consumer is added.
+CANONICAL_COMMAND_LOOKUP: dict[str, CommandDef] = {
+    cmd.name: cmd for cmd in COMMAND_REGISTRY
+}
+COMMAND_ALIASES: dict[str, CommandDef] = {
+    alias: cmd for cmd in COMMAND_REGISTRY for alias in cmd.aliases
+}
 _COMMAND_LOOKUP: dict[str, CommandDef] = {
-    key: cmd for cmd in COMMAND_REGISTRY for key in (cmd.name, *cmd.aliases)}
+    **CANONICAL_COMMAND_LOOKUP,
+    **COMMAND_ALIASES,
+}
 
 
 def resolve_command(name: str) -> CommandDef | None:
@@ -413,7 +424,7 @@ def _build_description(cmd: CommandDef) -> str:
 
 
 def build_commands_by_category() -> dict[str, dict[str, str]]:
-    """Localized ``{category: {"/command": description}}`` (excludes gateway_only).
+    """Localized canonical ``{category: {"/command": description}}`` (excludes gateway_only).
 
     Built per call so a ``display.language`` change applies without a restart; category keys are
     the registry identifiers -- render them with ``category_label``.
@@ -422,10 +433,7 @@ def build_commands_by_category() -> dict[str, dict[str, str]]:
     for cmd in COMMAND_REGISTRY:
         if cmd.gateway_only:
             continue
-        entries = {f"/{cmd.name}": _build_description(cmd)}
-        for alias in cmd.aliases:
-            entries[f"/{alias}"] = t("slash.shared.alias_for", description=cmd.describe(), name=cmd.name)
-        grouped.setdefault(cmd.category, {}).update(entries)
+        grouped.setdefault(cmd.category, {})[f"/{cmd.name}"] = _build_description(cmd)
     return grouped
 
 

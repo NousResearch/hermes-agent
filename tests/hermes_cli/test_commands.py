@@ -3,7 +3,10 @@
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
+from hermes_cli.commands import (COMMAND_ALIASES, COMMAND_REGISTRY, COMMANDS_BY_CATEGORY,
+                                 CANONICAL_COMMAND_LOOKUP, CommandDef, GATEWAY_KNOWN_COMMANDS,
+                                 command_desktop_meta, gateway_help_lines, infer_argument_mode,
+                                 resolve_command)
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
 from hermes_cli.commands_platforms import (_CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, discord_skill_commands_by_category, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands)
 
@@ -106,6 +109,40 @@ class TestDerivedDicts:
     def test_commands_by_category_covers_all_categories(self):
         registry_categories = {cmd.category for cmd in COMMAND_REGISTRY if not cmd.gateway_only}
         assert set(COMMANDS_BY_CATEGORY.keys()) == registry_categories
+
+    def test_discovery_tables_contain_canonical_names_only(self):
+        """Aliases resolve for compatibility but never become command rows."""
+        alias_names = {f"/{alias}" for cmd in COMMAND_REGISTRY for alias in cmd.aliases}
+        discovered = {
+            name
+            for category in COMMANDS_BY_CATEGORY.values()
+            for name in category
+        }
+
+        assert not discovered & alias_names
+        assert "/reload-mcp" in discovered
+        assert "/reload_mcp" not in discovered
+        resolved = resolve_command("reload_mcp")
+        assert resolved is not None
+        assert resolved.name == "reload-mcp"
+
+    def test_canonical_and_compatibility_lookups_are_separate(self):
+        assert "reload-mcp" in CANONICAL_COMMAND_LOOKUP
+        assert "reload_mcp" not in CANONICAL_COMMAND_LOOKUP
+        assert "reload_mcp" in COMMAND_ALIASES
+        assert COMMAND_ALIASES["reload_mcp"].name == "reload-mcp"
+
+    def test_hidden_alias_prefix_still_dispatches(self):
+        """Hiding aliases from discovery must not remove typed-prefix dispatch."""
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+
+        from cli import HermesCLI
+
+        dispatch = Mock(return_value=True)
+        fake_cli = SimpleNamespace(process_command=dispatch)
+        assert HermesCLI._expand_slash_prefix(fake_cli, "/reload_m", "/reload_m", {}, {})
+        dispatch.assert_called_once_with("/reload_mcp", redispatch=True)
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +392,14 @@ class TestSlashCommandCompleter:
         completions = _completions(completer, "/he")
         texts = {item.text for item in completions}
         assert "help" in texts
+
+    def test_aliases_are_not_autocomplete_entries(self):
+        texts = {item.text for item in _completions(SlashCommandCompleter(), "/reload")}
+
+        assert "reload-mcp" in texts
+        assert "reload-skills" in texts
+        assert "reload_mcp" not in texts
+        assert "reload_skills" not in texts
 
 
 # ── Stacked slash-skill completion ──────────────────────────────────────

@@ -9688,6 +9688,16 @@ def test_complete_slash_offers_skills_alongside_commands(monkeypatch):
     assert kinds == {"command", "skill"}
 
 
+def test_complete_slash_uses_canonical_builtin_names_only():
+    """The TUI picker must not reintroduce aliases as duplicate command rows."""
+    items = {item["text"].strip() for item in _slash_completions("/reload")}
+
+    assert "reload-mcp" in items
+    assert "reload-skills" in items
+    assert "reload_mcp" not in items
+    assert "reload_skills" not in items
+
+
 def test_complete_slash_ranks_skills_by_recorded_usage(monkeypatch):
     """The skills someone actually invokes lead the ones they never opened."""
     _slash_skill_fixtures(monkeypatch)

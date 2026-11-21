@@ -939,10 +939,14 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // Resolves to the created runtime id, or false when the submit must stop.
       const createSessionForSubmit = async (): Promise<false | string> => {
         let createdId: null | string
+        let createdInBackground: string | null = null
 
         try {
           createdId = await createBackendSessionForSend(bubbleText, {
-            onComposerScopeAssigned: options?.onComposerScopeAssigned
+            onComposerScopeAssigned: options?.onComposerScopeAssigned,
+            onCreatedInBackground: storedId => {
+              createdInBackground = storedId
+            }
           })
         } catch (err) {
           dropOptimistic(null)
@@ -975,6 +979,18 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           }
 
           return false
+        }
+
+        if (createdInBackground) {
+          // Deliver to the minted chat, not the one now on screen. Disable
+          // foreground-only drift and UI mutations while retaining the stored
+          // owner for attachment routing, optimistic state, and prompt.submit.
+          targetStartedInCurrentView = false
+          targetStoredSessionId = createdInBackground
+          startingStoredSessionId = createdInBackground
+          seedOptimistic(createdId)
+
+          return createdId
         }
 
         // A successful create re-homes selection and route onto the chat it

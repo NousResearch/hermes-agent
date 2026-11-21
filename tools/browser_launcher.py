@@ -40,6 +40,11 @@ logger = logging.getLogger(__name__)
 # human's click dies while the agent's launch works.
 CHROMIUM_SANDBOX_BYPASS_ARGS: tuple[str, ...] = ("--no-sandbox", "--disable-dev-shm-usage")
 
+# Passing ``--remote-debugging-port=0`` makes Chromium flip Blink's AutomationControlled feature on
+# (``navigator.webdriver == true``), which causes Google sign-in and Cloudflare Turnstile to refuse the
+# browser even during human takeover (#137774). Shared with ``tools.bot_desktop.browser.dock_argv``.
+CHROMIUM_ANTI_DETECTION_ARGS: tuple[str, ...] = ("--disable-blink-features=AutomationControlled",)
+
 # Base flags, each kept for a reason (the minimum for an unattended, disposable automation browser):
 #   --no-first-run / --no-default-browser-check  no welcome tab or default-browser bar on a fresh profile
 #   --disable-background-networking               no field-trial / safe-browsing / update pings per launch
@@ -242,6 +247,8 @@ def build_chromium_argv(executable: str, user_data_dir: str, *, packaged: bool, 
     if not headed:
         argv.append("--headless=new")
     configured = _configured_chromium_args()
+    existing = {str(a) for a in extra_args} | set(configured)
+    argv += [flag for flag in CHROMIUM_ANTI_DETECTION_ARGS if flag not in existing]
     if sandbox_bypass and needs_chromium_sandbox_bypass():
         argv += [flag for flag in CHROMIUM_SANDBOX_BYPASS_ARGS if flag not in configured]
     argv += [str(a) for a in extra_args]

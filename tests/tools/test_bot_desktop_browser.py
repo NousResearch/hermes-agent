@@ -92,6 +92,21 @@ def test_dock_browser_advertises_a_devtools_port():
     assert "--remote-debugging-port=" in browser.dock_argv("/opt/chrome", "/p/dir")[2]
 
 
+def test_dock_browser_disables_automation_controlled_alongside_ephemeral_port():
+    """``--remote-debugging-port=0`` makes Chromium report ``navigator.webdriver == true``, causing
+    Google sign-in and Cloudflare Turnstile to reject human takeover (#137774). The dock icon must
+    always pair the ephemeral port with ``--disable-blink-features=AutomationControlled``, independent
+    of the sandbox bypass policy."""
+    from tools.browser_launcher import CHROMIUM_ANTI_DETECTION_ARGS
+
+    for sandbox_bypass in (False, True):
+        argv = browser.dock_argv("/opt/chrome", "/p/dir", sandbox_bypass=sandbox_bypass)
+        assert "--remote-debugging-port=0" in argv
+        assert set(CHROMIUM_ANTI_DETECTION_ARGS) <= set(argv)
+    line = browser.dock_exec_line("/opt/chrome", "/p/dir", sandbox_bypass=False)
+    assert '"--disable-blink-features=AutomationControlled"' in line
+
+
 def test_dock_browser_caps_its_disk_cache():
     """The persistent profile lives on the gateway's disk (6 GB on a hosted instance); the HTTP cache
     must not be allowed to grow without bound there."""

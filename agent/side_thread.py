@@ -259,6 +259,20 @@ def _tool_names(messages: list[dict[str, Any]]) -> list[str]:
     return names
 
 
+def explore_refusal(parent_agent: Any) -> Optional[SideThreadUnavailable]:
+    """Why ``parent_agent`` cannot be forked into an exploration thread, or None. Surfaces call it
+    before admitting a thread so the refusal shows at once instead of as a failed report."""
+    from agent.side_question_request import _agent_provider_refusal
+
+    if parent_agent is None:
+        return SideThreadUnavailable("no_agent", "no live parent agent")
+    # MoA fans out to advisors and an agent-as-provider runs its own tools remotely: neither can
+    # be held to a dispatch-side whitelist.
+    if (reason := _agent_provider_refusal(parent_agent)) is not None:
+        return SideThreadUnavailable("provider", reason)
+    return None
+
+
 def run_side_exploration(
     thread: SideThread, parent_agent: Any, history: Optional[list[dict[str, Any]]], *,
     on_progress: Optional[Callable[[str], None]] = None,
@@ -273,7 +287,6 @@ def run_side_exploration(
         release_cache_parity_fork,
     )
     from agent.side_question import _side_question_task_config, trim_snapshot_for_fork
-    from agent.side_question_request import _agent_provider_refusal
     from hermes_cli.plugins import clear_thread_tool_whitelist, set_thread_tool_whitelist
     from tools.skills_tool import bind_turn_secret_capture
 
@@ -285,14 +298,7 @@ def run_side_exploration(
             except Exception:
                 logger.debug("side exploration progress callback failed", exc_info=True)
 
-    # MoA fans out to advisors and an agent-as-provider runs its own tools remotely: neither can
-    # be held to a dispatch-side whitelist.
-    refusal = None
-    if parent_agent is None:
-        refusal = SideThreadUnavailable("no_agent", "no live parent agent")
-    elif (reason := _agent_provider_refusal(parent_agent)) is not None:
-        refusal = SideThreadUnavailable("provider", reason)
-    if refusal is not None:
+    if (refusal := explore_refusal(parent_agent)) is not None:
         thread._finish("failed", error=refusal.user_message())
         raise refusal
 
@@ -374,10 +380,13 @@ def _preview(text: str, limit: int = 60) -> str:
 
 
 def format_thread_line(thread: SideThread) -> str:
-    """``btw_ab12cd  done     42s  6 tools  "find the retry logic"``."""
-    tools = len(thread.tool_calls)
-    return (f"{thread.thread_id}  {thread.status:<8} {int(thread.elapsed):>4}s  "
-            f"{tools} tool{'s' if tools != 1 else ''}  \"{_preview(thread.task)}\"")
+    """``btw_ab12cd  done     42s  ⚒ 6  "find the retry logic"`` (locale-neutral: ids, status
+    words and counts read the same in every catalog), plus the latest step while it runs."""
+    line = (f"{thread.thread_id}  {thread.status:<8} {int(thread.elapsed):>4}s  "
+            f"⚒ {len(thread.tool_calls)}  \"{_preview(thread.task)}\"")
+    with thread._lock:
+        latest = thread.progress[-1] if thread.running and thread.progress else ""
+    return f"{line}\n      ┊ {latest}" if latest else line
 
 
 def format_thread_list(threads: list[SideThread]) -> str:

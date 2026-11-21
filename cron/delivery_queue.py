@@ -225,16 +225,18 @@ def get_status(execution_id: str) -> Optional[dict]:
     }
 
 
-def claim_next() -> Optional[dict]:
+def claim_next(*, ready: Optional[Callable[[dict], bool]] = None) -> Optional[dict]:
     """Atomically claim one pending send before touching the transport."""
     pid = os.getpid()
     started = _process_start_time(pid)
     with _transaction() as conn:
         # created_at carries a DST-varying offset: order by instant, not text.
-        row = conn.execute(
-            "SELECT execution_id FROM deliveries WHERE status='pending' "
-            "ORDER BY julianday(created_at), created_at, execution_id LIMIT 1"
-        ).fetchone()
+        rows = conn.execute(
+            "SELECT execution_id, job_json FROM deliveries WHERE status='pending' "
+            "ORDER BY julianday(created_at), created_at, execution_id"
+        )
+        row = next((candidate for candidate in rows
+                    if ready is None or ready(json.loads(candidate["job_json"]))), None)
         if row is None:
             return None
         cur = conn.execute(
@@ -326,13 +328,14 @@ def recover_abandoned() -> int:
 
 
 def drain(
-    send: Callable[[dict, str, bool], Optional[str]], *, limit: int = 20
+    send: Callable[[dict, str, bool], Optional[str]], *, limit: int = 20,
+    ready: Optional[Callable[[dict], bool]] = None,
 ) -> int:
     """Deliver pending rows through *send*, terminalizing every claimed row."""
     recover_abandoned()
     processed = 0
     for _ in range(max(0, limit)):
-        row = claim_next()
+        row = claim_next(ready=ready)
         if row is None:
             break
         with _lock:

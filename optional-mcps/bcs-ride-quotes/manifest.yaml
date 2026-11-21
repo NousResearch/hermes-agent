@@ -1,0 +1,27 @@
+manifest_version: 1
+name: bcs-ride-quotes
+description: 'Black Car Service: San Francisco Bay Area SUV fare estimates and website booking links.'
+source: https://www.blackcarservice.co/ai
+transport:
+  type: http
+  url: https://www.blackcarservice.co/api/mcp
+auth:
+  type: none
+tools:
+  default_enabled:
+    - quote_ride
+suggest:
+  keywords:
+    - San Francisco car service
+    - SFO car service
+    - Bay Area chauffeur
+  hosts:
+    - blackcarservice.co
+post_install: |
+  No account or credentials required. Restart the session after enabling.
+  quote_ride estimates private-SUV fares for future Bay Area trips. It does
+  not reserve a vehicle or accept payment/contact details. Quote attempts
+  increment aggregate daily outcome counters; retries count separately.
+  Ask the customer to review their trip and final price on the returned
+  blackcarservice.co booking link. Booking and payment happen on the website.
+  Shared limits: 30 requests per IP and 300 total requests per five minutes.

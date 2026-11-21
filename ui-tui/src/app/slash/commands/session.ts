@@ -145,8 +145,11 @@ export const sessionCommands: SlashCommand[] = [
       // --stop and --promote reply text at once, a promotion with the prompt to submit.
       ctx.gateway.rpc<BtwResult>('prompt.btw', { session_id: ctx.sid, text: arg }).then(
         ctx.guarded<BtwResult>(r => {
-          if (r.text) {
-            ctx.transcript.sys(r.text)
+          // A side chat (`--open`) docks only in the Desktop app: show the gateway's fallback line.
+          const text = r.side_chat ? r.fallback_text || r.text : r.text
+
+          if (text) {
+            ctx.transcript.sys(text)
           } else if (r.task_id) {
             ctx.transcript.sys(t('slashCmd.session.btw.answering', r.task_id))
           }

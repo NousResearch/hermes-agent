@@ -9,7 +9,7 @@ import { patchUiState, resetUiState } from '../app/uiStore.js'
 
 const flush = () => new Promise(resolve => setImmediate(resolve))
 
-function harness(reply: Record<string, string>) {
+function harness(reply: Record<string, unknown>) {
   const request = vi.fn(async () => reply)
   const sys = vi.fn()
   const send = vi.fn()
@@ -61,6 +61,17 @@ it('/btw --promote queues the prompt behind a running turn', async () => {
   await flush()
 
   expect(enqueue).toHaveBeenCalledWith('PROMOTED')
+  expect(send).not.toHaveBeenCalled()
+})
+
+it('/btw --open shows the Desktop-only fallback line', async () => {
+  const side_chat = { title: 'btw: t', messages: [] }
+  const { send, slash, sys } = harness({ text: '⤢ Opening btw_ab12cd', fallback_text: 'DESKTOP ONLY', side_chat })
+
+  slash('/btw --open')
+  await flush()
+
+  expect(sys.mock.calls.flat()).toEqual(['DESKTOP ONLY'])
   expect(send).not.toHaveBeenCalled()
 })
 

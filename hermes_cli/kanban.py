@@ -332,6 +332,22 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
     return 0
 
 
+def _skill_refusal(assignee, skills):
+    """An actionable line for a skill the assignee profile cannot load, else None.
+
+    Boards are shared, but skills resolve from each profile's own tree, so a card naming a
+    skill only the creator's profile carries would die at every dispatch boot. A resolver
+    failure is logged, never fatal: the boot check still reports what the worker cannot load.
+    """
+    try:
+        from hermes_cli.kanban_skills import skills_refusal
+        return skills_refusal(assignee or "", skills)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("kanban create: skill validation failed")
+        return None
+
+
 def _cmd_create(args: argparse.Namespace) -> int:
     from agent.delegation_context import is_dispatcher_owned_worker_context
 
@@ -360,6 +376,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
+    refusal = _skill_refusal(args.assignee, getattr(args, "skills", None) or ())
+    if refusal:
+        return _err(f"kanban: {refusal}", 2)
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
             conn, title=args.title, body=body, assignee=args.assignee,

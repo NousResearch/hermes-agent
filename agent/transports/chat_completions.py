@@ -6,10 +6,13 @@ provider-specific work lives in build_kwargs (max_tokens, reasoning, extra_body)
 
 import hashlib
 import json
+import logging
 import re
 import string
 from typing import Any
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 from agent.reasoning_effort import (
     GEMINI4_THINKING_LEVELS, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, chat_endpoint_efforts, clamp_effort,
@@ -21,6 +24,7 @@ from session_rules.turns import coalesce_tool_call_id
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
+
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 # xAI reserves ``tool_search`` for its server-side tool (HTTP 400 on client
@@ -527,6 +531,43 @@ def _sanitize_message(
     return out_msg if strip_keys or remapped or copied_tool_calls is not None else None
 
 
+#: (profile, model, effort) triples already reported, so a dropped effort logs once per route
+#: instead of on every turn.
+_EFFORT_DROP_WARNED: set[tuple[str, str, str]] = set()
+
+
+def _warn_if_effort_dropped(
+    profile: Any,
+    model: str | None,
+    reasoning_config: dict | None,
+    top_level: dict[str, Any] | None,
+    extra_body: dict[str, Any] | None,
+) -> None:
+    """Report a resolved reasoning effort that this route's profile does not forward.
+
+    A profile that emits no knob for the active model makes ``agent.reasoning_effort``,
+    ``agent.reasoning_overrides`` and ``--reasoning`` a silent no-op: the CLI, the picker and
+    ``/reasoning`` all keep showing the requested level while the provider runs its own
+    default (#107495). Logging it is cheap and turns an invisible misconfiguration into a
+    visible one; it deliberately does not change the request.
+    """
+    effort = requested_effort(reasoning_config)
+    if not effort or effort == "none":
+        return
+    top_level = top_level or {}
+    extra_body = extra_body or {}
+    if top_level.get("reasoning_effort") or "thinking" in extra_body or "reasoning" in extra_body:
+        return
+    name = str(getattr(profile, "name", "?"))
+    key = (name, str(model or ""), str(effort))
+    if key in _EFFORT_DROP_WARNED:
+        return
+    _EFFORT_DROP_WARNED.add(key)
+    logger.warning(
+        "Reasoning effort %r is not forwarded for model %r on provider %r: the provider "
+        "profile emits no effort knob for this model, so the provider's default applies",
+        effort, model, name,
+    )
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'."""
 
@@ -670,6 +711,9 @@ class ChatCompletionsTransport(ProviderTransport):
             **({"lmstudio_reasoning_options": _lm_options} if _lm_options is not None else {}),
         )
         api_kwargs.update(top_level_from_profile)
+        _warn_if_effort_dropped(
+            profile, model, reasoning_config, top_level_from_profile, extra_body_from_profile,
+        )
 
         extra_body: dict[str, Any] = {}
         profile_body = profile.build_extra_body(

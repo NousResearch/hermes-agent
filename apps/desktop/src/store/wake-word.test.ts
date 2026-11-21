@@ -8,6 +8,7 @@ import {
   armWakeWord,
   resetWakeWordState,
   resumeWakeAfterVoice,
+  setWakeWordSessionId,
   toggleWakeWord,
   type WakeRequester
 } from './wake-word'
@@ -68,6 +69,7 @@ describe('applyWakeStatus', () => {
 describe('toggleWakeWord', () => {
   it('starts via wake.start with surface gui when off, and flips to listening', async () => {
     applyWakeStatus({ available: true, listening: false, phrase: 'hey hermes' })
+    setWakeWordSessionId('active-runtime-session')
 
     const request = requester(method => {
       expect(method).toBe('wake.start')
@@ -77,7 +79,12 @@ describe('toggleWakeWord', () => {
 
     await toggleWakeWord(request)
 
-    expect(request).toHaveBeenCalledWith('wake.start', { client_capture: true, persist: true, surface: 'gui' })
+    expect(request).toHaveBeenCalledWith('wake.start', {
+      client_capture: true,
+      persist: true,
+      session_id: 'active-runtime-session',
+      surface: 'gui'
+    })
     expect($wakeWord.get()).toMatchObject({ listening: true, notice: '', pending: false })
   })
 
@@ -206,6 +213,23 @@ describe('armWakeWord (gateway-ready auto-arm)', () => {
 
     expect(calls).toEqual(['wake.status'])
     expect($wakeWord.get()).toMatchObject({ available: true, listening: true })
+  })
+
+  it('rebinds an owned listener to the active session', async () => {
+    const request = requester(method =>
+      method === 'wake.status'
+        ? { available: true, listening: true, owned_by_caller: true, phrase: 'hey hermes' }
+        : { phrase: 'hey hermes', started: true }
+    )
+
+    setWakeWordSessionId('active-runtime-session')
+    await armWakeWord(request)
+
+    expect(request).toHaveBeenCalledWith('wake.start', {
+      client_capture: true,
+      session_id: 'active-runtime-session',
+      surface: 'gui'
+    })
   })
 
   it('keeps the default hidden state when the backend lacks wake.* methods', async () => {

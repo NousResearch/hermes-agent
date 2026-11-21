@@ -96,6 +96,19 @@ class TestSessionStatePersistence(unittest.TestCase):
         self.assertIn("7", after["output"])
         self.assertEqual(after["kernel"]["reused"], True)
 
+    def test_earlier_cell_source_stays_readable(self):
+        """inspect.getsource and tracebacks read code defined in an earlier cell, and the
+        traceback starts at the cell, not at the runner's exec call."""
+        with _kernel_config():
+            _run("def f(x):\n    return 1 / x\n")
+            _run("def g():\n    return 2\n")
+            src = _run("import inspect\nprint(inspect.getsource(f))")
+            boom = _run("f(0)")
+        self.assertEqual(src["status"], "success", src)
+        self.assertIn("return 1 / x", src["output"])
+        self.assertIn("return 1 / x", boom["error"])
+        self.assertNotIn("hermes_kernel_runner", boom["error"])
+
     def test_imports_persist(self):
         with _kernel_config():
             _run("import json as _j")

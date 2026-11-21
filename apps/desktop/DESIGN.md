@@ -323,6 +323,11 @@ Keep the renderer's startup fallback insets aligned with that position so the
 adjacent toolbar and panel reservations do not jump when native state arrives.
 Windows/Linux retain their previous toolbar startup fallback until native state arrives.
 
+Standing sidebar tabs (Sessions / Bots) use `PaneTabStrip variant="sidebar"`:
+equal-width tabs inside the same `px-2.5` inset as sidebar navigation. Their
+strip has no minimize chevron; the titlebar sidebar toggle owns that action.
+Tool-panel and conversation strips keep their existing controls and sizing.
+
 The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
 and the right-sidebar toggle sit on the right; haptics remain in settings.
 In Simple interface mode only sidebar, settings and the layout editor render,

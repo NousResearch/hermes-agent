@@ -9,6 +9,7 @@ through :func:`_origin` at call time.
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from typing import Any, Dict, Optional
 from urllib.parse import urljoin
@@ -54,7 +55,10 @@ def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:
                 "tts", NOUS_MANAGED_PROVIDER,
                 "the Nous Tool Gateway is not available (not entitled or unreachable)"))
         return route
-    direct_api_key = openai_cfg.get("api_key") or resolve_openai_audio_api_key()
+    direct_api_key = (
+        os.path.expandvars(openai_cfg.get("api_key") or "")
+        or resolve_openai_audio_api_key()
+    )
     if direct_api_key:
         return direct_api_key, openai_cfg.get("base_url") or DEFAULT_OPENAI_BASE_URL, False
     if selected is not None:

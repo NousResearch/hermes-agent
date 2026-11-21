@@ -94,6 +94,7 @@ _Key = tuple[str, str]  # (profile home, backend)
 class _Token:
     value: str = field(repr=False)
     last_used: float
+    ttl: float = _IDLE_TTL_S
 
 
 class _TokenOps(NamedTuple):
@@ -103,6 +104,22 @@ class _TokenOps(NamedTuple):
     lock_profile: Callable[[str, Optional[str]], None]
     release: Callable[[str], None]
     lock_everything: Callable[[], None]
+
+
+def _idle_ttl_seconds(backend: str) -> int:
+    """Read this profile's finite manager timeout; invalid values keep the safe default."""
+    from agent.vault_backends.base import _cfg
+
+    try:
+        section = _cfg().get(backend)
+    except Exception:  # health: allow BLE001 -- unreadable config must keep the safe default, never block unlock
+        return _IDLE_TTL_S
+    value = section.get("idle_timeout_seconds") if isinstance(section, dict) else None
+    # No Never/zero/negative, bool, coercion or unbounded duration. Other profiles
+    # and backends retain the default unless their own config explicitly opts in.
+    if type(value) is int and 1 <= value <= 86400:
+        return value
+    return _IDLE_TTL_S
 
 
 def _token_store() -> _TokenOps:
@@ -132,7 +149,7 @@ def _token_store() -> _TokenOps:
         # fire early, find nothing expired and re-arm.
         nonlocal timer
         if timer is None and tokens:
-            delay = min(t.last_used for t in tokens.values()) + _IDLE_TTL_S - now
+            delay = min(t.last_used + t.ttl for t in tokens.values()) - now
             timer = threading.Timer(max(delay, 0.0) + 0.01, expire)
             timer.daemon = True
             timer.start()
@@ -149,7 +166,7 @@ def _token_store() -> _TokenOps:
             if timer is threading.current_thread():  # not a newer timer armed while this one waited
                 timer = None
             now = time.monotonic()
-            for key in [k for k, t in tokens.items() if now - t.last_used > _IDLE_TTL_S]:
+            for key in [k for k, t in tokens.items() if now - t.last_used > t.ttl]:
                 del tokens[key]
             arm(now)
 
@@ -159,7 +176,7 @@ def _token_store() -> _TokenOps:
             if token is None:
                 return None
             now = time.monotonic()
-            if now - token.last_used > _IDLE_TTL_S:
+            if now - token.last_used > token.ttl:
                 del tokens[key]
                 settle()
                 return None
@@ -172,11 +189,12 @@ def _token_store() -> _TokenOps:
             return generations.get(key, 0)
 
     def commit(key: _Key, value: str, generation: Optional[int], owner: Optional[str]) -> bool:
+        ttl = _idle_ttl_seconds(key[1])  # caller's profile scope; read before taking the guard
         with guard:
             if generation is not None and generation != generations.get(key, 0):
                 return False
             now = time.monotonic()
-            tokens[key] = _Token(value, now)
+            tokens[key] = _Token(value, now, ttl)
             owners[key] = owner
             arm(now)
             return True

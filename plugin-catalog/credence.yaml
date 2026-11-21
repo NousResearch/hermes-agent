@@ -1,6 +1,6 @@
 name: credence
 repo: https://github.com/landenjackson/hermes-credence-plugin
-sha: 9869b811dbd3d31261967deaee7289b4946b08b3
+sha: c97fc5cc17d92f5ee12d60edfc88f3a2b8a94cfa
 description: >-
   Per-human trust for multi-user Hermes deployments. Every platform user starts as a
   Stranger whose tool calls are limited to read-only lookups; capability is granted to a

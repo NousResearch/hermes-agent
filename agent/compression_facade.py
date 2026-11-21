@@ -298,6 +298,15 @@ class CompressionFacadeMixin:
             if not direct_path:
                 idle_timeout, total_ceiling = resolve_context_compression_timeouts()
                 direct_path = idle_timeout <= 0
+            if not direct_path:
+                # A pass must never outlive the turn that started it. The #114594 aux-budget floor
+                # can exceed a short host run budget, and configuration cannot lower it, so cap
+                # here against the remaining run budget instead.
+                from agent.conversation_compression_deadline import cap_compaction_to_run_budget
+
+                idle_timeout, total_ceiling = cap_compaction_to_run_budget(
+                    self, idle_timeout, total_ceiling
+                )
             if direct_path:
                 result = _run(active_fence)
             else:

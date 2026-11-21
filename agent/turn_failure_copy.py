@@ -19,6 +19,10 @@ from persistence.conversation.messages import (
     CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY, CONTENT_REFUSED_NOTICE,
 )
 
+# Separates failed-turn copy from the provider's own words; a chat surface may withhold what follows
+# (``display.provider_error_detail``).
+PROVIDER_SAID = "\n\nProvider said: "
+
 # Failure codes minted by loop sites that are not provider verdicts (see module docstring).
 SITE_FAILURE_CODES = frozenset({
     "context_overflow", "truncated", "invalid_response", "empty_response", "loop_error",
@@ -442,7 +446,7 @@ def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, rese
         situation = f"it looks temporarily unavailable. {_NEXT_STEPS_RETRY}"
     return (
         f"{lead} — {situation} To avoid this in future, "
-        f"add a backup provider with `hermes fallback add`.\n\nProvider said: {summary}"
+        f"add a backup provider with `hermes fallback add`.{PROVIDER_SAID}{summary}"
     )
 
 
@@ -550,13 +554,13 @@ def nonretryable_copy(
     relogin = oauth_relogin_command(provider) if "{relogin}" in template else ""
     body = template.format(label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint,
                            relogin=relogin)
-    return f"{body}\n\nProvider said: {summary}"
+    return f"{body}{PROVIDER_SAID}{summary}"
 
 
 def content_policy_copy(*, label: str, summary: str) -> str:
     return (
         f"{label}'s safety filter refused this request, so the model didn't answer. "
-        f"{CONTENT_POLICY_NEXT_STEPS}\n\nProvider said: {summary}"
+        f"{CONTENT_POLICY_NEXT_STEPS}{PROVIDER_SAID}{summary}"
     )
 
 

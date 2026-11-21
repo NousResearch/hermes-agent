@@ -10,6 +10,8 @@ into one dim line: ``⋯ 12.4s · edited 2 files +18 -3 · read 4 files · ran 3
 from __future__ import annotations
 
 import json
+import math
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,6 +20,7 @@ __all__ = [
     "TurnTally",
     "format_elapsed",
     "format_token_flow",
+    "format_turn_stamps",
     "format_turn_summary",
 ]
 
@@ -140,12 +143,16 @@ class TurnSummaryCollector:
     def tally(self) -> TurnTally:
         return self._tally
 
-    def render(self, elapsed_seconds: float) -> str:
-        return format_turn_summary(elapsed_seconds, self._tally)
+    def render(self, elapsed_seconds: float, *, model_seconds: float | None = None,
+               timing_stamps: str = "", force: bool = False) -> str:
+        return format_turn_summary(elapsed_seconds, self._tally, model_seconds=model_seconds,
+                                   timing_stamps=timing_stamps, force=force)
 
 
 def format_elapsed(seconds: float) -> str:
-    """``12.4s`` / ``2m05s``."""
+    """``12.4s`` / ``2m05s``; ``""`` for non-finite values (round(inf) raises)."""
+    if not math.isfinite(seconds):
+        return ""
     seconds = max(seconds, 0.0)
     if seconds < 60:
         return f"{seconds:.1f}s"
@@ -163,9 +170,44 @@ def _pluralize(count: int, plural_noun: str) -> str:
     return f"1 {plural_noun}"
 
 
-def format_turn_summary(elapsed_seconds: float, tally: TurnTally | None, *, max_segments: int = _MAX_SEGMENTS) -> str:
+def format_turn_stamps(started_at: Any, first_token_at: Any) -> str:
+    """``start 14:03:02 → first-token 14:03:05``; ``""`` when nothing usable.
+
+    Second resolution, independent of ``display.timestamp_format``. Missing
+    halves are omitted, never fabricated.
+    """
+    def _clock(value: Any) -> str:
+        try:
+            moment = float(value)
+        except (TypeError, ValueError):
+            return ""
+        # isfinite rejects +inf/-inf: localtime(inf) raises, and any returned
+        # clock for an insane epoch would be a fabricated timestamp anyway.
+        if not math.isfinite(moment) or moment <= 0:
+            return ""
+        return time.strftime("%H:%M:%S", time.localtime(moment))
+
+    start = _clock(started_at)
+    first = _clock(first_token_at)
+    if start and first:
+        return f"start {start} → first-token {first}"
+    if start:
+        return f"start {start}"
+    return ""
+
+
+def format_turn_summary(elapsed_seconds: float, tally: TurnTally | None, *, max_segments: int = _MAX_SEGMENTS,
+                        model_seconds: float | None = None, timing_stamps: str = "",
+                        force: bool = False) -> str:
     """Render the per-turn accounting line, or ``""`` when there's nothing to say.
-    Pure; gating (``display.turn_summary``, quiet mode, CLI-only) is the caller's job."""
+    Pure; gating (``display.turn_summary``, quiet mode, CLI-only) is the caller's job.
+
+    ``model_seconds`` adds a ``6.2s model`` segment after the wall-clock total
+    (``display.turn_timing="split"``); ``None`` means unavailable and renders
+    nothing rather than a fabricated ``0.0s``. ``timing_stamps`` appends a
+    pre-rendered wall-clock segment (``"verbose"``). ``force`` skips the
+    fast-tool-less-turn suppression for users who opted into timing.
+    """
     if tally is None:
         tally = TurnTally()
 
@@ -183,14 +225,35 @@ def format_turn_summary(elapsed_seconds: float, tally: TurnTally | None, *, max_
     if tally.other_tools:
         segments.append(f"called {_pluralize(tally.other_tools, 'tools')}")
 
-    if not segments and tally.total_tools == 0 and elapsed_seconds < _MIN_TOOLLESS_SECONDS:
+    if not segments and tally.total_tools == 0 and elapsed_seconds < _MIN_TOOLLESS_SECONDS and not force:
         return ""
 
     if max_segments > 0 and len(segments) > max_segments:
         hidden = len(segments) - max_segments
         segments = segments[:max_segments] + [f"+{hidden} more"]
 
-    return f"{SUMMARY_PREFIX} " + " · ".join([format_elapsed(elapsed_seconds)] + segments)
+    parts = [format_elapsed(elapsed_seconds)]
+    model_label = _format_model_segment(model_seconds)
+    if model_label:
+        parts.append(model_label)
+    parts.extend(segments)
+    if timing_stamps:
+        parts.append(timing_stamps)
+    return f"{SUMMARY_PREFIX} " + " · ".join(parts)
+
+
+def _format_model_segment(model_seconds: Any) -> str:
+    """``6.2s model``; ``""`` when unavailable so Codex-style turns without
+    ``api_duration`` never render a fabricated ``0.0s``."""
+    if model_seconds is None:
+        return ""
+    try:
+        seconds = float(model_seconds)
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(seconds) or seconds < 0:
+        return ""
+    return f"{format_elapsed(seconds)} model"
 
 
 def format_token_flow(output_tokens: Any, *, arrow: str = "↓") -> str:

@@ -100,6 +100,7 @@ async function openPage(onSubmit: ChatBarProps['onSubmit'], pending: unknown[] =
       drainNextQueued: async () => false,
       exitQueuedEdit: () => false,
       onCancel: () => {},
+      onInterruptTurn: () => {},
       onSteer: options.onSteer ?? (async () => false),
       onSteerHidden: async () => false,
       onSubmit,

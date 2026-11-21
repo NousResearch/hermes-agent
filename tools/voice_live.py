@@ -144,6 +144,16 @@ def resolve_gpt_live_status() -> dict[str, Any]:
     }
 
 
+def _voice_param(live: dict[str, Any]) -> Any:
+    """Session ``audio.output.voice``: a named voice as a string, a custom voice as ``{"id": ...}``.
+
+    OpenAI refuses a custom voice id (``voice_...``) sent as a bare string with 403
+    "Voice session access denied"; custom voices must be referenced by object.
+    """
+    voice = str(live.get("voice") or DEFAULT_LIVE_VOICE).strip()
+    return {"id": voice} if voice.startswith("voice_") else voice
+
+
 def build_session_config(history: Optional[list] = None) -> dict[str, Any]:
     """The ``session`` object for ``POST /v1/live/sessions`` (client delegation, WebRTC — the
     transport negotiates the audio format, so none is set)."""
@@ -151,7 +161,7 @@ def build_session_config(history: Optional[list] = None) -> dict[str, Any]:
     config: dict[str, Any] = {
         "model": str(live.get("model") or DEFAULT_LIVE_MODEL),
         "instructions": live_instructions(live),
-        "audio": {"output": {"voice": str(live.get("voice") or DEFAULT_LIVE_VOICE)}},
+        "audio": {"output": {"voice": _voice_param(live)}},
         "delegation": {"type": "client"},
     }
     if history:

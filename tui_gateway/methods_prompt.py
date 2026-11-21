@@ -19,7 +19,7 @@ _GROUP_PROBE_FAILED_MSG = "Could not verify this group. Try again after the gate
 
 def _history_user_indices(history: list) -> list:
     """Indices of canonical live-user turns, including composite carriers."""
-    from agent.context_compressor import user_originated_turn_view
+    from session_rules.turns import user_originated_turn_view
     return [i for i, m in enumerate(history) if user_originated_turn_view(m) is not None]
 
 
@@ -42,8 +42,7 @@ def _mem_db_pair_agrees(mem, db_msg) -> bool:
     if mem.get("role") != db_msg.get("role"):
         return False
     if mem.get("role") == "user":
-        from agent.context_compressor import user_originated_turn_view
-        from agent.memory_manager import sanitize_context
+        from session_rules.turns import user_originated_turn_view, sanitize_context
         mem_view = user_originated_turn_view(mem)
         db_view = user_originated_turn_view(db_msg)
         if (mem_view is None) != (db_view is None):
@@ -80,19 +79,18 @@ def _load_durable_truncation_history(
     session_key = _submit_row_target_key(session) or str(fallback_sid or "")
     if not session_key:
         return []
+    from persistence.conversation.messages import ConversationRequest
     try:
-        with _session_db(session) as db:
-            get_conv = getattr(db, "get_messages_as_conversation", None)
-            if not callable(get_conv):
+        with _session_db(session) as db, _persistence_for(db) as persistence:
+            if persistence is None:
                 return None
-            history = get_conv(
-                session_key, repair_alternation=repair_alternation, include_row_ids=True)
+            return [message.as_openai_message() for message in persistence.messages.read_conversation(
+                session_key, ConversationRequest(repair_alternation=repair_alternation, include_row_ids=True))]
     except Exception:
         logger.debug(
             "prompt.submit: failed loading durable history for session %s", session_key,
             exc_info=True)
         return None
-    return history if isinstance(history, list) else None
 
 
 def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
@@ -173,8 +171,7 @@ def _merge_carrier_holds_target_text(carrier: dict, db_msg: dict) -> bool:
     empty side drops out), so the target's sanitized text either IS the carrier's
     content or appears in it as a whole ``"\\n\\n"``-delimited part. Both views are
     user-originated by construction (the caller only visits user turns)."""
-    from agent.context_compressor import user_originated_turn_view
-    from agent.memory_manager import sanitize_context
+    from session_rules.turns import user_originated_turn_view, sanitize_context
     mem_view = user_originated_turn_view(carrier)
     db_view = user_originated_turn_view(db_msg)
     if mem_view is None or db_view is None:
@@ -214,18 +211,19 @@ def _pending_reaction_notes(session: dict) -> str:
     except Exception:
         return ""
     try:
-        with _session_db(session) as db:
-            pending = None if db is None else db.take_unseen_reactions(session_key, author="user")
+        with _session_db(session) as db, _persistence_for(db) as persistence:
+            pending = None if persistence is None else persistence.messages.take_unseen_reactions(
+                session_key, author="user")
     except Exception:
         logger.debug("Failed to read pending reactions", exc_info=True)
         return ""
     notes = []
     for entry in pending or ():
-        snippet = (entry.get("text") or "").strip().replace("\n", " ")
+        snippet = (entry.text or "").strip().replace("\n", " ")
         if len(snippet) > 120:
             snippet = snippet[:120] + "…"
-        emoji = entry.get("emoji") or ""
-        whose = "their own" if entry.get("role") == "user" else "your"
+        emoji = entry.emoji or ""
+        whose = "their own" if entry.role == "user" else "your"
         if snippet:
             notes.append(f'[The user reacted {emoji} to {whose} message: "{snippet}"]')
         else:
@@ -236,36 +234,50 @@ def _pending_reaction_notes(session: dict) -> str:
 
 # ── prompt.submit pieces ────────────────────────────────────────────────────
 
-def _typed_stop_phrase_response(rid, text):
-    """RPC reply ending the voice chat when a bare stop phrase is TYPED while backend voice
-    mode is on (typed twin of the spoken stop phrase), or None for a normal message."""
-    if not (isinstance(text, str) and _voice_mode_enabled()):
-        return None
+def _consume_typed_stop_phrase(text, sid=None, *, emit: bool = True) -> bool:
+    """End *sid*'s voice chat when *text* is a bare stop phrase TYPED while its voice mode is on
+    (typed twin of the spoken stop phrase) -> True; False for a normal message. *emit* sends the
+    ``voice.transcript`` stop event to the voice client; the canonical ``prompt.submit`` path
+    (``gateway/session_controls.py``) answers its submitter in the reply instead (TUI-26)."""
+    if not (isinstance(text, str) and _session_voice_enabled(sid)):
+        return False
     try:
         # Typed bare stop phrase while backend voice mode is active ends the voice chat instead of sending
-        # "stop" to the agent — the typed twin of the spoken stop phrase (PR #73106), applied at the ONE
-        # server-side choke point every TUI submit passes through. (The desktop's voice conversation is
-        # renderer-owned and never flips the backend flag, so it handles its own typed stop client-side.)
+        # "stop" to the agent — the typed twin of the spoken stop phrase (PR #73106), applied at the
+        # server-side choke point every TUI submit passes through: this sidecar handler and the shared
+        # owner's canonical prompt.submit. (The desktop's voice conversation is renderer-owned and never
+        # flips the backend flag, so it handles its own typed stop client-side.)
         from tools.voice_mode_transcript import is_voice_stop_phrase
         if not is_voice_stop_phrase(text):
-            return None
-    except Exception:
-        return None
-    _end_voice_chat(stop_loop=True, stop_tts=True)
-    _voice_emit("voice.transcript", {"stop_phrase": True, "typed": True})
+            return False
+    except Exception:  # an unreadable voice config never swallows the message: it reaches the agent
+        logger.debug("typed stop-phrase check failed; submitting the text", exc_info=True)
+        return False
+    _end_session_voice_chat(sid, stop_loop=True, stop_tts=True)
+    if emit:
+        _voice_emit("voice.transcript", {"stop_phrase": True, "typed": True})
     logger.info("prompt.submit: typed stop phrase — voice chat ended")
-    return _ok(rid, {"voice_stopped": True})
+    return True
+
+
+def _typed_stop_phrase_response(rid, text, sid=None):
+    """RPC reply ending the voice chat when a bare stop phrase is TYPED while the session's voice
+    mode is on (typed twin of the spoken stop phrase), or None for a normal message."""
+    return _ok(rid, {"voice_stopped": True}) if _consume_typed_stop_phrase(text, sid) else None
 
 
 _HOSTED_TASK_FIELDS = {"room_id", "task_id", "thread_id", "turn_id", "execution_generation", "member_id"}
 
 
-def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback):
-    """Validate the hosted-room turn proof carried by an internal submit."""
+def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback, hosted_images=None):
+    """Validate the hosted-room turn proof carried by an internal submit. ``hosted_images`` are the
+    member's event-bound images, already materialized under the image cache by the room worker."""
     if session.get("source") != "bot_room":
         return _err(rid, 4120, "hosted room turns require a bot_room session")
     valid = (
         isinstance(hosted_task, dict) and callable(hosted_terminal_callback)
+        and (hosted_images is None or (isinstance(hosted_images, list)
+                                       and all(isinstance(p, str) and p for p in hosted_images)))
         and set(hosted_task) == _HOSTED_TASK_FIELDS
         and all(isinstance(hosted_task.get(f), str) and hosted_task[f]
                 for f in _HOSTED_TASK_FIELDS - {"execution_generation"})
@@ -282,15 +294,16 @@ def _legacy_group_fence_error(rid, session, params):
     if not room_id:
         return None
     try:
-        from gateway.hosted_rooms import (
-            HostedRoomError, RoomProbeUnavailableError, default_db_path, probe_hosted_room,
-            probe_peer_room_reservation)
-        hosted = probe_hosted_room(default_db_path(), room_id=room_id)
+        from gateway.hosted_rooms import probe_hosted_room, probe_peer_room_reservation
+        from persistence.gateway.hosted_rooms import HostedRoomError, RoomProbeUnavailableError
+        from tui_gateway.methods_groups import _active_store
+        store = _active_store()
+        hosted = probe_hosted_room(store, placement="shared", room_id=room_id)
         peer = False
         if not hosted:
             from hermes_constants import profile_name_for_home
             peer = probe_peer_room_reservation(
-                default_db_path(), room_id=room_id, target_profile=(
+                store, placement="shared", room_id=room_id, target_profile=(
                     profile_name_for_home(session.get("profile_home"))
                     or str(params.get("profile") or "").strip()
                     or str(_current_profile_name() or "default").strip()))
@@ -448,7 +461,7 @@ def _archived_user_turns(session, sid, history, cut_index, survivor_ids) -> int:
     (#94486): its turns are counted from the physical durable rows, and every id that cannot be
     classified there counts as a turn (fail closed). On a durable-carrier cut the run's rows
     before the target survive (*survivor_ids*)."""
-    from agent.context_compressor import user_originated_turn_view
+    from session_rules.turns import user_originated_turn_view
     physical = None
     archived = 0
     for h_idx in _history_user_indices(history):
@@ -480,7 +493,7 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     if err is not None:
         return err, {}
     durable_prefix = resolved[3] if len(resolved) > 3 else None
-    from agent.context_compressor import history_before_user_originated_turn
+    from session_rules.turns import history_before_user_originated_turn
     if durable_prefix is not None:
         # Durable-boundary cut: the target row is physically present but merged into
         # a repaired live carrier; the physical rows strictly before it are the
@@ -526,21 +539,22 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     # after the in-memory rewrite would stack the new exchange on the "undone" turns).
     # Writes through _session_db (profile sessions own their state.db).
     fields = {}
-    with _session_db(session) as db:
-        if db is not None:
+    from persistence.conversation.messages import ReplaceMode
+    with _session_db(session) as db, _persistence_for(db) as persistence:
+        if persistence is not None:
             try:
                 # NULL session_key (old CLI-origin sessions) would trip an FK violation.
-                # active_only=True: replace only the live (active=1) rows. In-place compaction (#38763)
+                # ARCHIVE_DROPPED replaces only the live (active=1) rows. In-place compaction (#38763)
                 # keeps the pre-compaction transcript as active=0/compacted=1 rows under this same session
-                # key; a bare replace_messages() would DELETE that durable archive on every edit/regenerate
+                # key; a destructive replace would DELETE that durable archive on every edit/regenerate
                 # — the same bug class #80216 fixed for /retry. On an uncompacted session all rows are
-                # active=1, so this is behaviorally identical to the full replace. archive_dropped: a rewind
+                # active=1, so this is behaviorally identical to the full replace. Archiving: a rewind
                 # overwrites turns the user may not have meant to drop, and this write is the last step
                 # before they are gone — three reported incidents ended here with nothing to restore from
                 # (#70516, #80763, #82756). Soft-archiving keeps them on disk (active=0) and in the FTS
                 # index, so a mis-aimed cut is recoverable instead of terminal. The live transcript is
                 # unchanged. Fall back to session id when session_key is NULL — CLI-origin sessions created
-                # before the session_key default fix have no key, and replace_messages(None) triggers an FK
+                # before the session_key default fix have no key, and a replace under None triggers an FK
                 # violation.
                 truncation_key = session.get("session_key") or sid
                 old_active_row_ids = _row_ids_of(history)
@@ -553,17 +567,29 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
                         raise RuntimeError("could not load durable row identities for truncation")
                     old_active_row_ids.update(_row_ids_of(durable_rebind_history))
                 old_survivor_row_ids = [_message_row_id(message) for message in truncated]
-                # active_only: a bare replace would DELETE the compaction archive (active=0
-                # rows) on every edit.  archive_dropped: a mis-aimed cut stays recoverable.
-                db.replace_messages(
-                    truncation_key, truncated, active_only=True, archive_dropped=True,
+                # Only the live rows: a bare replace would DELETE the compaction archive (active=0
+                # rows) on every edit.  Archived, not deleted: a mis-aimed cut stays recoverable.
+                replaced = persistence.messages.replace_transcript(
+                    truncation_key, [_new_message(message) for message in truncated], ReplaceMode.ARCHIVE_DROPPED,
                     reject_active_turn_lease=True)
+                # The row state the write gave each message: a kept row only its id and uid, an inserted row
+                # its stored timestamp, ownership version and tool-call uids as well.
+                for message, row in zip(truncated, replaced.rows):
+                    message["_row_id"] = int(row.id)
+                    if row.message_uid:
+                        message["message_uid"] = row.message_uid
+                    if row.db_row_snapshot is not None:
+                        message.update(timestamp=row.timestamp, _db_row_snapshot=row.db_row_snapshot)
+                        if row.tool_call_uids is not None:
+                            message["_tool_call_uids"] = dict(row.tool_call_uids)
+                        if row.tool_call_uid is not None:
+                            message["_tool_call_uid"] = row.tool_call_uid
             except Exception as exc:
                 logger.error(
                     "prompt.submit: replace_messages failed for session %s (ordinal=%d); refusing "
                     "turn so memory and DB stay aligned: %s",
                     sid, ordinal, exc, exc_info=True)
-                return _err(rid, 5008, f"failed to persist history truncation: {exc}"), {}
+                return _err(rid, 5008, f"failed to persist history truncation: {_store_error_text(exc)}"), {}
             # Surface the survivors' live ids so the client rebinds its cached rowIds
             # (a strict-prefix cut keeps them unchanged since #82956; a divergent
             # rewrite mints new rows).  None entries: the client must drop that turn's id.
@@ -586,7 +612,7 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
 
 def _storage_error_data(failure, raw) -> dict:
     """Machine-readable error data: ``code`` lets a GUI pick a "Run doctor" / "Retry" action."""
-    from hermes_state_user_copy import storage_failure_details
+    from storage_user_copy import storage_failure_details
     return {"code": failure.code, "cause": failure.cause, "details": storage_failure_details(raw)}
 
 
@@ -600,20 +626,23 @@ def _reopen_if_finalized(db, session_id: str) -> None:
     live again. Best-effort: a failed read must not block the send."""
     if not session_id:
         return
-    try:
-        row = db.get_session(session_id)
-    except Exception:
-        logger.debug("finalized-session reopen check failed for %s", session_id, exc_info=True)
-        return
-    if row is not None and row.get("ended_at") is not None:
-        db.reopen_session(session_id)
+    with _persistence_for(db) as persistence:
+        if persistence is None:
+            return
+        try:
+            row = persistence.sessions.get(session_id)
+        except Exception:
+            logger.debug("finalized-session reopen check failed for %s", session_id, exc_info=True)
+            return
+        if row is not None and row.ended_at is not None:
+            persistence.sessions.reopen(session_id)
 
 
 def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
     here), then the message itself (#111868: a freeze during the first build must leave a
     resumable transcript); the error reply is the only user-visible signal (desktop maps it to a toast)."""
-    from hermes_state_user_copy import describe_storage_failure
+    from storage_user_copy import describe_storage_failure
     try:
         if _ensure_session_db_row(session) is False:
             failure = describe_storage_failure(_db_error)
@@ -638,14 +667,14 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
                 rid, 5070,
                 "Session storage could not be written, so this message was not saved: the disk is full. "
                 "Free some disk space, then send your message again.",
-                data=_storage_error_data(failure, exc))
+                data=_storage_error_data(failure, _store_error_text(exc)))
         else:
             logger.warning("prompt.submit: session persist failed: %s", exc, exc_info=True)
             error = _err(
                 rid, 5071,
                 f"Session storage could not be written, so this message was not saved. Cause: {failure.gloss}. "
                 f"{failure.action} Then send your message again.",
-                data=_storage_error_data(failure, exc))
+                data=_storage_error_data(failure, _store_error_text(exc)))
     # No turn thread will start, so neither resume nor the busy queue may see
     # this rejected prompt as live. Release the slot a turn would normally own.
     with session["history_lock"]:
@@ -658,7 +687,8 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
 
 
 def _run_after_agent_ready(
-    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
+    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None,
+    hosted_images=None,
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
@@ -689,21 +719,98 @@ def _run_after_agent_ready(
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        image_paths=hosted_images, terminal_callback=hosted_terminal_callback, turn_author=turn_author)
 
 
 _TRUNCATION_PARAMS = (
     "truncate_before_user_ordinal", "truncate_before_row_id", "truncate_before_message_id")
 
+#: The refusal reason when the owner's FIFO could not take a typed prompt (RT-37): transient, the
+#: gateway's turn ends on its own, so the client offers "send when the turn ends", not a new chat.
+SESSION_OWNER_BUSY = "SESSION_OWNER_BUSY"
+#: The owner's FIFO did not confirm a forwarded prompt in time; it may still have been queued, so the
+#: client must not offer Retry (a second copy would run): check the chat first.
+SESSION_OWNER_UNCONFIRMED = "SESSION_OWNER_UNCONFIRMED"
+
+
+def _slot_refusal(rid, sid, session, text, params, refusal, internal_hosted_submit) -> dict:
+    """The answer to a refused slot: a ledger refusal of a client submit goes to the owner's FIFO."""
+    if getattr(refusal, "ledger_status", None) is not None and not internal_hosted_submit:
+        return _submit_to_ledger_owner(rid, sid, session, text, params, refusal)
+    reason = getattr(refusal, "reason", None)
+    return _err(rid, 4090, str(refusal), {"reason": reason} if reason else None)
+
+
+def _submit_to_ledger_owner(rid, sid, session, text, params, refusal) -> dict:
+    """The gateway's durable ledger holds work for this session (#140385, RT-37): one owner, one FIFO.
+    Work that ends on its own (a running or queued gateway turn) gets this prompt queued behind it in
+    the OWNER's FIFO (``owner_forward``): the owner runs it once, after the current turn, and nothing
+    runs here. An ``unknown`` admission, or work no running gateway will finish, keeps its refusal
+    (only Discard / a gateway resume resolves it); anything else that cannot be queued is refused
+    with the reason and the advice to send when the turn ends."""
+    from tui_gateway import owner_forward
+    not_owned = _err(rid, 4090, str(refusal), {"reason": getattr(refusal, "reason", None) or "SESSION_NOT_OWNED"})
+    if getattr(refusal, "ledger_status", None) == "unknown":
+        return not_owned
+    why = None
+    if not owner_forward.forwardable(refusal, session, text, params):
+        why = ("a rewind or attachment cannot join its queue" if isinstance(text, str) and text.strip()
+               else "this kind of message cannot join its queue")
+        if _unstage_refused_images(session):
+            why = "an image cannot join its queue, so it was removed from this message"
+    else:
+        try:
+            receipt = owner_forward.forward_prompt(sid, session, text)
+        except owner_forward.OwnerNotRunning:
+            return not_owned  # no gateway runs the ledger's work: it will not end on its own
+        except owner_forward.OwnerUnconfirmed:
+            return _err(rid, 4090, "The gateway is running a turn in this chat and did not confirm your message"
+                        " in time. It may already be queued there: check the chat before sending it again.",
+                        {"reason": SESSION_OWNER_UNCONFIRMED})
+        except Exception as exc:  # every owner failure is the same named refusal
+            logger.info("forwarding prompt for %s to the owner failed: %s",
+                        session.get("session_key") or sid, exc, exc_info=True)
+            why = str(exc) if isinstance(exc, owner_forward.OwnerUnavailable) else "the gateway refused it"
+        else:
+            if receipt.get("voice_stopped") is True:
+                return _ok(rid, {"voice_stopped": True})  # the owner ended its voice chat; nothing queued
+            return _ok(rid, {"status": "queued", "admission_id": receipt.get("admission_id"),
+                             "forwarded": True})
+    return _err(rid, 4090, "The gateway is running a turn in this chat and " + why
+                + ". Nothing was sent. Send it again when the current turn ends.",
+                {"reason": SESSION_OWNER_BUSY})
+
+
+def _unstage_refused_images(session) -> int:
+    """Drop the images staged for a submit the owner's FIFO cannot take (RT-37c live finding).
+
+    Every other refusal leaves ``attached_images`` staged because the turn that ends the refusal (the
+    legacy turn once the slot frees) consumes them. Here no legacy turn comes: while the gateway owns the
+    chat, a staged image makes every later text-only send unforwardable too, so the chat stays refused
+    behind an image the composer may no longer show. The refusal names the removal, so the user re-attaches
+    it knowingly instead of losing it silently."""
+    with session["history_lock"]:
+        dropped = len(session.get("attached_images") or ())
+        session["attached_images"] = []
+    return dropped
+
 
 def _lock_in_submit_turn(
     rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind):
-    """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
-    cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
+    """Under ``history_lock``: refuse watch-child races / malformed truncation / lost ownership, apply
+    the cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``; ``err`` is the
+    ownership refusal itself (a str) when an idle-released lease cannot be re-claimed."""
     fields = {}
     with _session_turn_admission(session) as admitted:
         if not admitted:
             return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
+        # The ownership check above ran before this lock: the idle reaper (which releases under it) may have
+        # freed the lease since, and another surface claimed and extended the transcript. Re-claim here,
+        # before the cut and the turn's writes; a refusal (an ActiveSessionRefusal str) writes nothing.
+        try:
+            _require_transcript_owner(session)
+        except SessionNotOwned as exc:
+            return exc.refusal, fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(
@@ -720,12 +827,25 @@ def _lock_in_submit_turn(
             if err is not None:
                 return err, {}
         session["running"] = True
+        session.pop("_notif_turn_claim", None)  # a stale dispatcher claim never releases this turn
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
         if hosted_task is not None:
             session["_hosted_room_task"] = dict(hosted_task)
         _start_inflight_turn(session, text, display_kind=display_kind)
     return None, fields
+
+
+def _claim_submit_turn(
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind,
+    internal_hosted_submit):
+    """``_lock_in_submit_turn``, with an ownership refusal answered like the precheck's (outside history_lock:
+    the ledger-owner forward and image unstaging take it)."""
+    err, fields = _lock_in_submit_turn(
+        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
+    if isinstance(err, str):  # the idle reaper released the lease after the precheck; nothing was written
+        return _slot_refusal(rid, sid, session, text, params, err, internal_hosted_submit), {}
+    return err, fields
 
 
 # Per-turn client surfaces that carry a model-bound note (session_notifications._hud_surface_note);
@@ -748,7 +868,7 @@ def _(rid, params: dict) -> dict:
         if isinstance(title_preview, str) and title_preview.strip()
         else None
     )
-    if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
+    if (stopped := _typed_stop_phrase_response(rid, text, sid)) is not None:
         return stopped
     if params.get("interrupted"):
         # Client-side barge-in: latch so this turn's model message carries the note.
@@ -766,17 +886,18 @@ def _(rid, params: dict) -> dict:
     turn_author = raw_author.author if raw_author is not None else None
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
-    internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
+    hosted_images = params.get("_hosted_images")
+    internal_hosted_submit = (
+        hosted_task is not None or hosted_terminal_callback is not None or hosted_images is not None)
     err = (
-        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback)
+        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback, hosted_images)
         if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
     if err is not None:
         return err
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         # Refused HERE — before the busy queue, db row and agent build — so a refusal
         # leaves the session untouched.  The reason travels as machine-readable data.
-        reason = getattr(limit_message, "reason", None)
-        return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
+        return _slot_refusal(rid, sid, session, text, params, limit_message, internal_hosted_submit)
     # Rewritten every submit: a session alternates app window / HUD / live voice; a stale value misinforms.
     session["client_surface"] = params.get("surface") if params.get("surface") in _CLIENT_SURFACES else ""
     # Live-voice delegations carry the recent spoken transcript for the MODEL INPUT only (the persisted
@@ -830,8 +951,9 @@ def _(rid, params: dict) -> dict:
     requested_rebind_ids = (
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
-    err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
+    err, survivor_fields = _claim_submit_turn(
+        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind,
+        internal_hosted_submit)
     if err is not None:
         return err
     if turn_isolation:
@@ -879,8 +1001,9 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author),
-        daemon=True)
+            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
+            hosted_images),
+        daemon=True, name=f"prompt-submit-{sid}")
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
     run_thread.start()
@@ -1101,8 +1224,8 @@ def _(rid, params: dict) -> dict:
     def body():
         from run_agent import AIAgent
         kwargs = _background_agent_kwargs(session["agent"], task_id)
-        with _side_agent_session_db(kwargs.get("session_db")) as session_db:
-            agent = AIAgent(**{**kwargs, "session_db": session_db})
+        with _side_agent_session_db(kwargs.get("session_db")) as session_db, _persistence_for(session_db) as persistence:
+            agent = AIAgent(**{**kwargs, "session_db": session_db, "persistence": persistence})
             try:
                 result = agent.run_conversation(user_message=text, task_id=task_id)
             finally:

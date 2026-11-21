@@ -136,6 +136,97 @@ def test_loaded_launchd_identity_is_independent_of_disk(configured, command, rea
         verify_launchd_loaded(output, home, uid=123, username="owner")
 
 
+def _launchd_gateway_command(tmp_path, monkeypatch, *, store, profile=""):
+    """The gateway command generate_launchd_plist persists, from a store Python or an external one."""
+    from hermes_cli import _launchers, gateway as gw
+    from hermes_cli.gateway_launchd import _timestamped_stderr_gateway_command
+    monkeypatch.setattr(gw, "PROJECT_ROOT", tmp_path / "hermes-agent")
+    monkeypatch.setattr(gw, "get_python_path", lambda: sys.executable)
+    monkeypatch.setattr(gw, "_profile_arg", lambda *a, **k: profile)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda *a, **k: Path(sys.executable) if store else None)
+    return _timestamped_stderr_gateway_command(tmp_path / "logs" / "gateway.error.log", external_supervisor=True)
+
+
+@pytest.mark.platforms("linux", "macos")  # launchd ProgramArguments are POSIX shell-quoted
+@pytest.mark.parametrize("case,reason", [
+    ("store", None), ("inline", None), ("store_profile", "profile_mismatch"),
+    ("chained_shell", "service_identity_unverified"), ("substituted_shell", "service_identity_unverified"),
+    ("extra_jxa", "service_identity_unverified"), ("foreign_osascript", "service_identity_unverified"),
+    ("tampered_bootstrap", "service_identity_unverified"), ("arbitrary_inline", "service_identity_unverified"),
+    ("other_run_module", "service_identity_unverified"),
+    ("foreign_root_store", "service_identity_unverified"), ("foreign_root_inline", "service_identity_unverified"),
+    ("other_home", "foreign_root"), ("osascript_non_gateway", "service_identity_unverified"),
+    ("own_wrapper_foreign_inner", "service_identity_unverified"),
+    ("osascript_foreign_bare", "service_identity_unverified"),
+    ("osascript_legacy_module", "service_identity_unverified"),
+])
+def test_launchd_verifies_the_osascript_wrapped_command_the_installer_writes(case, reason, tmp_path, monkeypatch):
+    """The Local Network wrapper (#71206) is unwrapped only as its exact template, and the command inside
+    is held to the same gateway identity as a bare ProgramArguments, on disk and as launchd loaded it."""
+    import plistlib
+    from hermes_cli.gateway_launchd import launchd_program_arguments
+    from hermes_cli.gateway_runtime_service_identity import verify_launchd_loaded, verify_launchd_plist
+    home = tmp_path / ".hermes"
+    from hermes_cli import gateway as gw
+    command = _launchd_gateway_command(tmp_path, monkeypatch,
+                                       store=case not in {"inline", "tampered_bootstrap", "foreign_root_inline"},
+                                       profile="--profile stranger" if case == "store_profile" else "")
+    if case.startswith("foreign_root"):  # the installer's own output, written for another checkout
+        from hermes_cli.gateway_launchd import _timestamped_stderr_gateway_command
+        root = gw.PROJECT_ROOT
+        monkeypatch.setattr(gw, "PROJECT_ROOT", tmp_path / "other-checkout")
+        command = _timestamped_stderr_gateway_command(tmp_path / "logs" / "gateway.error.log", external_supervisor=True)
+        monkeypatch.setattr(gw, "PROJECT_ROOT", root)
+    if case in {"own_wrapper_foreign_inner", "osascript_foreign_bare"}:
+        # The installer's own gateway command for ANOTHER checkout: inside OUR stderr wrapper, or bare
+        # inside the Local Network wrapper. Neither is a launcher this install root writes.
+        from hermes_cli._launchers import installation_command
+        foreign = installation_command(tmp_path / "other-checkout", ["gateway", "run", "--external-supervisor"],
+                                       python=sys.executable)
+        assert Path(foreign[0]).name == "hermes"
+        command = foreign if case == "osascript_foreign_bare" else installation_command(
+            gw.PROJECT_ROOT, ["--error-log", str(tmp_path / "logs" / "gateway.error.log"), "--", *foreign],
+            module="hermes_cli.stderr_timestamp", python=sys.executable)
+    if case == "osascript_legacy_module":
+        # The legacy ``python -m`` form from any interpreter: accepted unwrapped, never written inside osascript.
+        command = [sys.executable, "-m", "hermes_cli.stderr_timestamp", "--error-log",
+                   str(tmp_path / "logs" / "gateway.error.log"), "--",
+                   sys.executable, "-m", "hermes_cli.main", "gateway", "run", "--external-supervisor"]
+    if case == "osascript_non_gateway":
+        command = ["/bin/sh", "-c", "id"]
+    if case == "tampered_bootstrap":
+        tampered = command[3].replace("import hermes_bootstrap; ", "import hermes_bootstrap; print('injected'); ")
+        assert tampered != command[3]
+        command[3] = tampered
+    if case == "arbitrary_inline":
+        command = [sys.executable, "-I", "-c", "print('injected')", *command[3:]]
+    if case == "other_run_module":
+        command[2] = "other_module"
+    argv = launchd_program_arguments(command, tmp_path / "logs" / "gateway.log", tmp_path / "logs" / "gateway.error.log")
+    shell_edits = {"chained_shell": (" >> ", "; id >> "), "substituted_shell": (" gateway run", " $(id) gateway run")}
+    if case in shell_edits:
+        edited = argv[4].replace(*shell_edits[case], 1)
+        assert edited != argv[4]
+        argv[4] = edited
+    if case == "extra_jxa":
+        argv[4] += ' $.system("id");'
+    if case == "foreign_osascript":
+        argv[0] = str(tmp_path / "osascript")
+    env = dict(HERMES_HOME=str(home if case != "other_home" else tmp_path / "elsewhere" / ".hermes"),
+               HERMES_SUPERVISED_CHILD="1")
+    definition = plistlib.loads(plistlib.dumps(dict(Label="ai.hermes.gateway", ProgramArguments=argv, EnvironmentVariables=env)))
+    output = ("gui/123/ai.hermes.gateway = {\n\tstate = not running\n\tprogram = " + argv[0] + "\n\targuments = {\n"
+              + "\n".join("\t\t" + arg for arg in argv) + "\n\t}\n\tenvironment = {\n"
+              + "".join(f"\t\t{key} => {value}\n" for key, value in env.items()) + "\t}\n}")
+    for verify in (lambda: verify_launchd_plist(definition, "ai.hermes.gateway", home),
+                   lambda: verify_launchd_loaded(output, home, uid=123, username="owner")):
+        if reason:
+            with pytest.raises(ValueError, match=reason):
+                verify()
+        else:
+            verify()
+
+
 def _installed_vbs(home, configured):
     """The current installed launcher grammar; no script is executed."""
     script = home / 'gateway.vbs'
@@ -202,6 +293,66 @@ def test_task_xml_binds_actual_action_and_principal(case, reason, tmp_path):
             verify_windows_task(xml, home, user, 'S-1-5-21-123')
     else:
         verify_windows_task(xml, home, user, 'S-1-5-21-123')
+
+
+def test_task_launcher_for_a_non_ascii_home_is_utf16_and_still_verifies(tmp_path, monkeypatch):
+    """wscript.exe reads a BOM-less .vbs in the ANSI code page, so a non-ASCII HERMES_HOME (any CJK or
+    accented Windows username) reached python garbled and the gateway died before logging. The installed
+    launcher is UTF-16 with a BOM; ensure must verify it, and a UTF-8 one an older version wrote."""
+    import codecs
+    from hermes_cli import gateway_windows
+    from hermes_cli.gateway_runtime_service_identity import verify_windows_task
+
+    home = tmp_path / 'Usuário 方舟'
+    script = home / 'gateway-service' / 'Hermes_Gateway.cmd'
+    script.parent.mkdir(parents=True)
+    monkeypatch.setattr(gateway_windows, '_assert_windows', lambda: None)
+    monkeypatch.setattr(gateway_windows, 'get_task_script_path', lambda: script)
+    monkeypatch.setattr(gateway_windows, '_launcher_settings', lambda: (sys.executable, str(home), str(home), ''))
+    launcher = gateway_windows._write_task_script().with_suffix('.vbs')
+    raw = launcher.read_bytes()
+    assert raw.startswith(codecs.BOM_UTF16_LE) and str(home) in raw.decode('utf-16')
+    user = 'DOMAIN\\owner'
+    xml = gateway_windows._build_scheduled_task_xml('Hermes_Gateway', launcher, user)
+    verify_windows_task(xml, home, user, 'S-1-5-21-123')
+    launcher.write_bytes(raw.decode('utf-16').encode('utf-8'))
+    verify_windows_task(xml, home, user, 'S-1-5-21-123')
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_task_discovery_skips_listing_lines_that_are_not_task_rows(tmp_path, monkeypatch, installed):
+    """An orphaned TaskCache entry (OEM leftovers) makes ``schtasks /Query /FO CSV`` print a localized
+    one-field diagnostic among the rows (#142140). That refused every cold start with
+    service_state_unknown, task or not. Such lines are skipped; one naming our task still never counts."""
+    from types import SimpleNamespace
+    from hermes_cli import gateway_runtime_service as service
+    from hermes_cli.gateway_windows import _build_scheduled_task_xml
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    script = _installed_vbs(home, str(home))
+    name = "Hermes_Gateway_" + service.service_suffix(home)
+    account, sid = "DESKTOP-1\\owner", "S-1-5-21-123"
+    listing = ('"\\Microsoft\\Windows\\Defrag\\ScheduledDefrag","N/A","Ready"\r\n'
+               '错误: 任务映像已损坏或已篡改。\r\n'
+               f'"\\{name}","N/A"\r\n')
+    if installed:
+        listing += f'"\\{name}","N/A","Ready"\r\n'
+    # whoami first: it is queried with /FO CSV too.
+    out = {"whoami.exe": f'"{account}","{sid}"\r\n', "/XML": _build_scheduled_task_xml(name, script, account),
+           "/FO": listing}
+    queries = []
+
+    def run(argv, *_args, **_kwargs):
+        queries.append(argv)
+        return SimpleNamespace(returncode=0, stdout=next(text for key, text in out.items() if key in argv).encode())
+
+    monkeypatch.setattr(service, "_run", run)
+    found = service._windows(home, time.monotonic() + 5)
+    if installed:
+        assert found is not None and found.start_argv == ("schtasks.exe", "/Run", "/TN", name)
+    else:
+        assert found is None and len(queries) == 1
 
 
 @pytest.mark.platforms("macos")

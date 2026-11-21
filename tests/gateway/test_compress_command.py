@@ -531,15 +531,17 @@ def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, monk
     ``fitness`` row is a multiplexed named profile: its child is published in
     ``profiles/fitness/state.db`` before the routing index knows the child id.
     """
-    import hermes_state
     from gateway.slash_commands_session import GatewaySessionCommandsMixin
     from gateway.session import AsyncSessionStore, SessionStore
+    from persistence.conversation.lineage import CompressionChild
+    from persistence.conversation.messages import NewMessage
+    from tests.fixtures.storage_read import transcript_rows
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
     root = tmp_path / "hermes"
     (root / "profiles" / "fitness").mkdir(parents=True)
     (root / "profiles" / "fitness" / "config.yaml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     store = SessionStore(sessions_dir=root / "sessions", config=GatewayConfig(multiplex_profiles=True))
     parent, child = "parent", "child"
     entry = SessionEntry(
@@ -548,16 +550,16 @@ def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, monk
         platform=Platform.DISCORD, chat_type="thread",
     )
     store._entries[entry.session_key] = entry
-    db = store._db_for_key(entry.session_key)
-    db.create_session(parent, "discord")
-    db.append_message(parent, "assistant", "old turn")
-    watermark = db.get_active_message_watermark(parent)
-    db.append_message(parent, "assistant", "concurrent foreign turn")
-    ceiling = db.get_active_message_watermark(parent)
+    db = store._persistence_for_key(entry.session_key)
+    seed_session(db, parent, "discord")
+    seed_messages(db, parent, {"role": "assistant", "content": "old turn"})
+    watermark = db.messages.active_watermark(parent).last_active
+    seed_messages(db, parent, {"role": "assistant", "content": "concurrent foreign turn"})
+    ceiling = db.messages.active_watermark(parent).last_active
     handoff = [{"role": "assistant", "content": "compressed summary"}]
-    db.publish_compression_child(
-        parent_session_id=parent, child_session_id=child, source="discord",
-        messages=handoff, watermark=watermark, watermark_ceiling=ceiling,
+    db.lineage.publish_compression_child(
+        parent, CompressionChild(session_id=child, source="discord"),
+        [NewMessage.from_live(m) for m in handoff], watermark=watermark, watermark_ceiling=ceiling,
         require_compression_lease=False,
     )
 
@@ -574,7 +576,7 @@ def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, monk
         asyncio.run(GatewaySessionCommandsMixin._persist_manual_compression(
             runner, agent, entry, _make_source(), handoff))
         assert entry.session_id == child
-        assert [m["content"] for m in db.get_messages(child)] == [
+        assert [m["content"] for m in transcript_rows(db, child)] == [
             "compressed summary", "concurrent foreign turn",
         ]
     finally:

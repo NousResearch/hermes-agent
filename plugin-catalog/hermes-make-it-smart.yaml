@@ -1,0 +1,43 @@
+name: hermes-make-it-smart
+repo: https://github.com/tesla963/hermes-make-it-smart
+sha: f06d4ecba73a0ba1a92ebeb0108e1368532bee59
+description: >-
+  Canonical catalog over every Hermes profile. Reads the local state.db files, names each session
+  "NNN [Subject] MMM [Tag] [Tag] Description · Verb", and exposes faceted filters (subject, maker,
+  context, intention, theme, year, project) as a native Desktop page. The window is a three-column
+  box —facet panel, vertical Session Info rail, content— and every window (Session DB, Process, New
+  Rules) keeps its own filters and its own universe. Includes a Pending view that attributes every
+  memory/skill approval request to the session that produced it, and a Process tab that simulates
+  the rename, writes a mandatory backup, commits through the host's session.title API and offers
+  one-click revert.
+  Disclosure — reads session titles and message excerpts from the local Hermes databases on the
+  user's machine. No text leaves the machine by default: classification runs locally, and the model
+  path is opt-in — off unless the owner configures their own endpoint and key (the key is stored by
+  Hermes and read with agent.secret_scope.get_secret; the plugin keeps no credential of its own) and
+  ticks the consent box. When enabled, up to 600 characters per turn of the user's own messages go
+  to that endpoint, with attachments and URLs stripped and sensitive values redacted first; the
+  description it returns is written to the local database. Writes are session titles — through the
+  cellar_rename / cellar_tag tools, or when the user presses Commit in the Process tab — always
+  after a timestamped backup, and revertible in one click.
+maintainer: tesla963
+tier: community
+category: general
+docs_url: https://github.com/tesla963/hermes-make-it-smart#readme
+version: "0.32.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - cellar_search
+    - cellar_session
+    - cellar_stats
+    - cellar_series
+    - cellar_rename
+    - cellar_tag
+    - cellar_cheatsheet
+    - cellar_index
+    - cellar_verify
+    - cellar_export
+  provides_hooks:
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

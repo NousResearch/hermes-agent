@@ -314,6 +314,9 @@ _ACTION_COMMANDS: dict[str, tuple[str, ...]] = {}
 _ACTION_IDS: dict[str, str] = {}
 # ``name`` → synthetic result for actions handled without a subprocess (e.g. unsupported Docker updates).
 _ACTION_RESULTS: dict[str, dict[str, Any]] = {}
+# ``name`` → (pid, byte offset of that child's section in its log): a later spawn that fails after
+# writing its own header must not lend its text to the child that is still on record.
+_ACTION_LOG_STARTS: dict[str, tuple[int, int]] = {}
 
 
 def _terminate_desktop_managed_gateway() -> None:
@@ -328,17 +331,28 @@ def _terminate_desktop_managed_gateway() -> None:
         pass  # exited between poll() and terminate()
 
 
-def _named_profile_from_action(subcommand: list[str]) -> Optional[str]:
-    """Return the named-profile selector that :func:`_profile_cli_args` puts in front of an action.
+def _split_profile_selector(subcommand: list[str]) -> tuple[Optional[str], list[str]]:
+    """The named-profile selector that :func:`_profile_cli_args` puts in front of an action, and
+    the arguments after it.
 
     Deliberately inspects only the leading selector: values after the real subcommand may
     legitimately contain ``-p`` / ``--profile`` for a nested process (``mcp add --args ...``).
     """
-    if len(subcommand) >= 2 and subcommand[0] in {"-p", "--profile"}:
-        return str(subcommand[1]).strip() or None
-    if subcommand and str(subcommand[0]).startswith("--profile="):
-        return str(subcommand[0]).split("=", 1)[1].strip() or None
-    return None
+    args = list(subcommand)
+    if len(args) >= 2 and args[0] in {"-p", "--profile"}:
+        return str(args[1]).strip() or None, args[2:]
+    if args and str(args[0]).startswith("--profile="):
+        return str(args[0]).split("=", 1)[1].strip() or None, args[1:]
+    return None, args
+
+
+def _named_profile_from_action(subcommand: list[str]) -> Optional[str]:
+    return _split_profile_selector(subcommand)[0]
+
+
+def _is_gateway_action(subcommand: list[str]) -> bool:
+    """True for a ``gateway`` command after the selector: a profile may be called ``gateway``."""
+    return _split_profile_selector(subcommand)[1][:1] == ["gateway"]
 
 
 def _is_host_gateway_spawn(subcommand: list[str]) -> bool:
@@ -347,16 +361,7 @@ def _is_host_gateway_spawn(subcommand: list[str]) -> bool:
     ``hermes gateway restart`` and ``hermes -p default gateway restart`` are the host.
     ``hermes -p coder gateway stop`` is not.
     """
-    profile = _named_profile_from_action(subcommand)
-    if profile not in (None, "default"):
-        return False
-    args = list(subcommand)
-    if profile is not None:
-        if args and args[0] in {"-p", "--profile"}:
-            args = args[2:]
-        elif args and str(args[0]).startswith("--profile="):
-            args = args[1:]
-    return bool(args) and args[0] == "gateway"
+    return _named_profile_from_action(subcommand) in (None, "default") and _is_gateway_action(subcommand)
 
 
 def _profile_action_environment(
@@ -376,7 +381,7 @@ def _profile_action_environment(
     normal startup then loads that profile's own ``.env``. A host-gateway verb (bare ``gateway``
     or ``-p default gateway``) starts from ``host_gateway_child_env`` so a named-profile dashboard
     cannot donate its dotenv to the multiplexer. Other actions without a profile selector keep
-    the historical environment exactly.
+    the historical environment, less the deployment's stamps unless the action is ``update``.
     """
     profile = _named_profile_from_action(subcommand)
     if _is_host_gateway_spawn(subcommand):
@@ -384,12 +389,15 @@ def _profile_action_environment(
         action_env = host_gateway_child_env()
     elif profile is None:
         action_env = dict(os.environ)
+        if subcommand[:1] != ["update"]:  # update restarts gateways and keeps the deployment's stamps
+            from tools.environments.local import drop_deployment_stamps
+            drop_deployment_stamps(action_env)
     else:
         from hermes_cli.env_loader import (
             _PROFILE_MANAGED_ENV_KEYS, _env_keys_defined_in_dotenv, get_secret_source_values,
         )
         from hermes_cli.web_server_profiles import _resolve_profile_dir
-        from hermes_constants import apply_subprocess_home_env, get_default_hermes_root
+        from hermes_constants import apply_subprocess_home_env, get_default_hermes_root, is_launch_only_env_key
         from tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
         target_home = _resolve_profile_dir(profile)
@@ -405,6 +413,9 @@ def _profile_action_environment(
             # Secret managers contribute locally named credentials that never appear in .env;
             # the dashboard already hydrated its own sources, so their key names are a boundary too.
             profile_keys.update(get_secret_source_values(source_home).keys())
+        # Launch-only keys are never loaded from .env or a source (#135200): the value here is the
+        # launch environment's, so a planted line naming one must not strip it from the child.
+        profile_keys = {key for key in profile_keys if not is_launch_only_env_key(key)}
         for key in profile_keys:
             action_env.pop(key, None)
         # Authorization gates that reached this process outside any dotenv (unit-file
@@ -416,6 +427,9 @@ def _profile_action_environment(
         # and resolves to the same validated directory.
         action_env["HERMES_HOME"] = str(target_home)
         apply_subprocess_home_env(action_env)
+        if _is_gateway_action(subcommand):  # as host_gateway_child_env does: install can start one too
+            from tools.environments.local import keep_deployment_stamps
+            keep_deployment_stamps(action_env)
 
     action_env["HERMES_NONINTERACTIVE"] = "1"
     # A config.yaml allow_all_users grant bridged into os.environ must not outlive the config that
@@ -479,6 +493,7 @@ def _spawn_hermes_action(
     from hermes_cli.web_server import PROJECT_ROOT
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_file = open(_ACTION_LOG_DIR / _ACTION_LOG_FILES[name], "ab", buffering=0)
+    section_start = os.fstat(log_file.fileno()).st_size
     # The header carries the action id durably: the update's completion marker lands in the ROOT
     # update.log every profile shares, and only this id ties one to the action THIS log started.
     action_id = (env_overrides or {}).get("HERMES_ACTION_ID")
@@ -539,6 +554,7 @@ def _spawn_hermes_action(
                 )
                 proc = _popen(creationflags=windows_detach_flags_without_breakaway())
         else:
+            # detached-spawn: ok — dashboard gateway start/restart actions, which must outlive the dashboard
             proc = _popen(start_new_session=True)
     except OSError as exc:
         # Without this the action log would hold only the started-header for a spawn that never
@@ -550,6 +566,7 @@ def _spawn_hermes_action(
     _ACTION_RESULTS.pop(name, None)
     _ACTION_COMMANDS[name] = tuple(subcommand)
     _ACTION_PROCS[name] = proc
+    _ACTION_LOG_STARTS[name] = (proc.pid, section_start)
     if action_id:
         _ACTION_IDS[name] = action_id
     else:
@@ -657,11 +674,29 @@ def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[s
             f"`hermes -p {requested} gateway install --force` starts a separate one anyway.")
 
 
+def live_session_refusal(profile: Optional[str], verb: str) -> Optional[str]:
+    """Refusal text when the gateway ``verb`` would act on has live sessions, else None. Asked before
+    spawning: the child refuses the same way, but into an action log the UI never reads."""
+    from hermes_cli.gateway_lifecycle_guards import refusal_lines
+    from hermes_cli.web_server_profiles import _resolve_profile_dir
+    homes = [_resolve_profile_dir(_own_profile_selector(profile) or "default")]
+    from gateway.host_attach import host_gateway
+    owner = host_gateway()
+    if owner is not None:
+        homes.append(Path(owner.home))
+    lines = refusal_lines(verb, homes, flag_hint=f"POST /api/gateway/{verb}?interrupt=true")
+    return "\n".join(lines) or None
+
+
 def _restart_gateway_after(profile: Optional[str], *, what: str, label: str) -> dict[str, Any]:
     """Best-effort gateway restart after a config change. The save stays authoritative: a failed
     spawn is reported (``restart_started: False`` + ``restart_error``) so the UI can fall back to
-    its manual restart banner instead of failing the request."""
+    its manual restart banner instead of failing the request. Live sessions refuse it the same way,
+    with ``restart_busy`` set so a UI can say so in its own words."""
     from hermes_cli.web_server import _spawn_gateway_restart
+    refusal = live_session_refusal(profile, "restart")
+    if refusal:
+        return {"restart_started": False, "restart_error": refusal, "restart_busy": True}
     try:
         proc, reused = _spawn_gateway_restart(profile)
     except Exception as exc:
@@ -670,6 +705,50 @@ def _restart_gateway_after(profile: Optional[str], *, what: str, label: str) -> 
     if reused:
         _log.info("%s: reusing in-flight gateway restart (pid %s)", label, proc.pid)
     return {"restart_started": True, "restart_action": "gateway-restart", "restart_pid": proc.pid}
+
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_RESTART_REASON_MAX = 300
+
+
+def _restart_log_last_line(pid: int) -> str:
+    """The last line the ``gateway-restart`` child *pid* wrote to its log, or ``""``: its section
+    runs from the offset ``_spawn_hermes_action`` recorded to the next spawn's header."""
+    start = _ACTION_LOG_STARTS.get("gateway-restart")
+    if start is None or start[0] != pid:
+        return ""
+    log_path = _ACTION_LOG_DIR / _ACTION_LOG_FILES["gateway-restart"]
+    try:
+        with log_path.open("rb") as log:
+            log.seek(start[1])
+            section = log.read(256 * 1024).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    header, _, body = section.lstrip("\n").partition("\n")
+    if not header.startswith("=== gateway-restart started"):
+        return ""  # the log was rotated or truncated since
+    body = body.split("\n=== gateway-restart started", 1)[0]
+    lines = [_ANSI_ESCAPE.sub("", line).strip() for line in body.splitlines()]
+    last = next((line for line in reversed(lines) if line), "")
+    return last[:_RESTART_REASON_MAX]
+
+
+def gateway_restart_failure(profile: Optional[str]) -> Optional[dict[str, Any]]:
+    """Why the newest restart of the *profile* gateway failed, or ``None`` while it runs, after it
+    succeeded, or when this process started none. A child that exits nonzero leaves the old
+    gateway serving the old config, so a UI waiting for the new one learns here that none is coming.
+    ``pid`` is the ``restart_pid`` the restart answered, so the UI ignores an older restart."""
+    from hermes_cli import web_server
+    recent = web_server._LAST_GATEWAY_RESTART
+    if recent is None:
+        return None
+    _spawned_at, proc, command = recent
+    if tuple(arg for arg in command if arg != "--interrupt") != tuple(_gateway_subcommand(profile, "restart")):
+        return None
+    exit_code = proc.poll()
+    if not exit_code:
+        return None
+    return {"pid": proc.pid, "exit_code": exit_code, "reason": _restart_log_last_line(proc.pid) or f"exit code {exit_code}"}
 
 
 def _split_text_for_speak_stream(text: str, cap: int) -> list:

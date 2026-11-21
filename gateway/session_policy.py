@@ -1,13 +1,14 @@
 """Frozen, explicit local-client launch policy for the existing TurnRunner."""
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import MISSING, dataclass, fields
+from functools import cached_property
 import contextlib
 import json
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -15,16 +16,62 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
                            'yolo', 'safe_mode', 'ignore_user_config',
                            'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
-                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd'})
+                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd', 'client_env',
+                           'client'})
 # Sections a ``follow_profile_config`` session re-reads from the owning profile's CURRENT config each
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
-FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
-                   'platform_toolsets')
-def pin_reasoning_effort(config, effort):
+FOLLOW_MODEL_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases')
+FOLLOW_SECTIONS = (*FOLLOW_MODEL_SECTIONS, 'platform_toolsets')
+# A Bot Chat an earlier build committed frozen follows its profile once a client opens it (``follow_bot_chat``).
+# The marker sits in the policy's own config, so no other receipt changes shape (an older owner restores
+# them all, and reads this chat as frozen), and the creation request, the exact-retry identity, stays as sent.
+# A chat created on the welcome trial's model carries it too (``stage_local_session``), so a provider the user
+# connects later replaces that model.
+FOLLOW_ADOPTED = 'follow_adopted'
+# A Desktop chat its creator's connection declared local (``process_identity.local_desktop_client``): its
+# turns run as work for the local Desktop (``local_desktop_turn``). Owner-set in the policy's own config, so
+# an exact create retry from a socket whose declaration has not landed carries the same creation request,
+# and ``launch_request`` never echoes it.
+LOCAL_DESKTOP_CHAT = 'desktop_local'
+# A launch field's state as a committed session edit left it, in the policy's own config: ``True`` the
+# session chose it (``/reasoning <level>``, a model pick carrying one), ``False`` a reset gave it back to
+# the profile. Either wins over the creation request (the launch identity, never rewritten) and the older
+# pick receipts.
+SESSION_PINS = 'session_pins'
+
+
+def session_pinned(config, field, launched):
+    """Whether *field* is the session's own choice: its last committed session edit, else *launched*."""
+    pins = config.get(SESSION_PINS)
+    return pins[field] if isinstance(pins, dict) and isinstance(pins.get(field), bool) else launched
+
+
+def pin_reasoning_effort(config, effort, *, session=False):
     """Write an explicit session reasoning level into *config*: it wins over a per-model default
-    (``reasoning_overrides``), at creation, on ``/reasoning`` and on a model pick that carries one."""
+    (``reasoning_overrides``), at creation, on ``/reasoning`` and on a model pick that carries one.
+    A *session* edit also records the pin."""
     config.setdefault('agent', {})['reasoning_effort'] = effort
     config['agent'].pop('reasoning_overrides', None)
+    if session:
+        config[SESSION_PINS] = {**(config.get(SESSION_PINS) or {}), 'reasoning': True}
+
+
+def profile_config(authority):
+    """The owning profile's current ``config.yaml`` (its present sections), read fresh."""
+    from gateway.run import _load_gateway_config
+    from gateway.session_persistence import authority_persistence
+    return present_sections(_load_gateway_config(authority_persistence(authority).scope.profile_dir / 'config.yaml'))
+
+
+def unpin_reasoning(config, profile):
+    """``/reasoning reset``: the level is *profile*'s (its current config) again, re-read every turn by a
+    following session and on each resume by any other; a create-time ``reasoning`` included."""
+    from gateway.session_policy_refresh import _follow
+    followed = profile.get('agent') if isinstance(profile.get('agent'), dict) else {}
+    agent = config.setdefault('agent', {})
+    for key in ('reasoning_effort', 'reasoning_overrides'):
+        _follow(agent, followed, key)
+    config[SESSION_PINS] = {**(config.get(SESSION_PINS) or {}), 'reasoning': False}
 
 
 FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier', 'disabled_toolsets', 'coding_context')
@@ -38,6 +85,35 @@ _TURN_PROFILE: ContextVar = ContextVar('follow_profile_read', default=None)  # (
 # ``oneshot`` (finite ``chat -q`` / ``-z`` runs) run as the CLI but keep their own stored label, so human
 # pickers hide them (INTERNAL_LISTING_SOURCES).
 SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp', 'tool': 'cli', 'oneshot': 'cli'}
+# ``tool`` and ``oneshot`` stay stored under their own labels so pickers can hide them.
+# Creation labels of the owner's own chats: the only LOCAL routes that carry OpenAI Daybreak (agent.daybreak),
+# the approved account's own access (no third-party or downstream use). Not ``tool`` (third-party
+# integrations), ``acp`` (editor clients), or the ``bot_room`` / ``a2a`` policies hosted rooms and peers stage.
+DAYBREAK_LABELS = frozenset({'cli', 'tui', 'gui', 'oneshot'})
+# Every other creation label is rewritten to ``source='local'`` on peer refresh.
+_KEEP_STORED_LABEL = frozenset({'tool', 'oneshot'})
+STORED_AS_LOCAL = frozenset(SURFACES) - _KEEP_STORED_LABEL
+# Routing labels and the accounting placeholder: never a creating surface.
+_NOT_A_SURFACE = frozenset({None, '', 'local', 'unknown'})
+
+
+def created_surface(label):
+    """``created_source`` for a policy or live label.
+
+    ``local`` and ``unknown`` are not surfaces. A label stored as ``local`` maps
+    through ``SURFACES`` (``gui`` is ``desktop``). Any other label, including
+    ``tool`` and ``oneshot``, is kept as itself: created_source is provenance.
+    """
+    if label in _NOT_A_SURFACE:
+        return None
+    return SURFACES[label] if label in STORED_AS_LOCAL else label
+
+
+# Policy label and agent surface for one conversation, keyed by either name: ``--source gui``
+# and ``--source desktop`` are the same rows. ``tool`` and ``oneshot`` are not aliases of
+# ``cli`` here: they keep their own stored label.
+SURFACE_GROUPS = {name: group for group in (frozenset({label, SURFACES[label]}) for label in STORED_AS_LOCAL)
+                  for name in group}
 
 
 def _refuse(field, detail=None):
@@ -45,9 +121,13 @@ def _refuse(field, detail=None):
 
     ``reason`` stays the bounded wire code every caller compares as a string; ``field`` and
     ``detail`` are what tells ~20 different create checks apart, in the client and in the
-    gateway log, without a second run to find out which one fired (``RuntimeStoreError`` bounds
+    gateway log, without a second run to find out which one fired (``AuthorityRefusal`` bounds
     and flattens both)."""
-    raise RuntimeStoreError('invalid_params', field=field, detail=detail)
+    raise AuthorityRefusal('invalid_params', field=field, detail=detail)
+
+
+# ``acp_adapter/edit_approval.py``'s AUTO_APPROVE_* values, in main's ACP mode order.
+EDIT_APPROVAL_POLICIES = ('ask', 'workspace_session', 'session')
 
 
 @dataclass(frozen=True)
@@ -75,6 +155,27 @@ class LocalSessionPolicy:
     # workspace). A following session replays this decision rather than re-probing its folder each turn: it
     # drops the posture when its profile leaves ``focus``, and one created outside it never gains it later.
     coding_posture: bool = False
+    # The shell-launched client's allowlisted environment (``agent.session_client_env``), bound for this
+    # session's turns only; None when the client sent none (Desktop, a session from before the field).
+    client_env_json: str | None = None
+    # The client sent one over an attach the gateway could not prove is on its host (no gateway-minted
+    # ticket): only host-free values were kept, and its tools run with the gateway's own toolchain.
+    client_env_remote: bool = False
+    # The rules that map was normalised by (``client_env_rules``: allowlist, secret filter, locality) as
+    # plain data: an exact retry is judged by them, never by the profile's current ones, and the session's
+    # tools run without every toolchain name they cover that the client did not send.
+    client_env_rules_json: str | None = None
+    # An ACP session's edit approval (``session.mutate edit_policy``; main's ACP modes): ``ask`` (Default),
+    # ``workspace_session`` (Accept Edits) or ``session`` (Don't Ask). Sensitive paths always ask.
+    edit_approval_policy: str = 'ask'
+
+    def client_env(self):
+        return None if self.client_env_json is None else json.loads(self.client_env_json)
+
+    def client_env_scope(self):
+        from agent.session_client_env import client_env_scope
+        rules = None if self.client_env_rules_json is None else json.loads(self.client_env_rules_json)
+        return client_env_scope(self.client_env(), local=not self.client_env_remote, rules=rules)
 
     def config(self, authority=None, *, secrets=True):
         return self.effective(authority, secrets=secrets)[0]
@@ -82,13 +183,14 @@ class LocalSessionPolicy:
     def effective(self, authority=None, *, secrets=True):
         """``(config, model)`` the next turn runs, both from ONE read of the owning profile when following
         (the turn's policy scope holds that read): a route never pairs one profile's model with another's
-        endpoint. Explicit choices (create-time reasoning / tier / toolsets, a pick that still holds) are
-        applied over the followed defaults; frozen secrets of followed sections are never recovered."""
+        endpoint. Explicit choices (create-time reasoning / tier / toolsets, a session ``/reasoning`` until
+        reset, a pick that still holds) are applied over the followed defaults; frozen secrets of followed
+        sections are never recovered."""
         config = present_sections(json.loads(self.config_json))
         live = self.read_profile(authority)
         if self.config_secret_ref is not None and authority is not None and secrets:
             from gateway.session_policy_credentials import disable_dropped_secrets, recover_config_secrets
-            recovered = recover_config_secrets(authority, self)
+            recovered = recover_config_secrets(authority, self, skip=self.followed_sections if live else None)
             for path, value in recovered.items():
                 if path[0] is None:  # private terminal projection, not config
                     continue
@@ -102,11 +204,12 @@ class LocalSessionPolicy:
         if live:
             frozen, request = config.get('model') or {}, json.loads(self.request_json)
             pick = frozen.get('selection_profile')
-            held = pick is not None and pick == list(profile_target(live))
+            held = pick is not None and pick == list(profile_target(live)) and entry_serves(frozen, live)
             pinned = {'platform_toolsets', 'disabled_toolsets'} if 'toolsets' in request else set()
-            pinned |= {'reasoning_effort', 'reasoning_overrides'} if 'reasoning' in request else set()
+            chosen = session_pinned(config, 'reasoning', 'reasoning' in request)
+            pinned |= {'reasoning_effort', 'reasoning_overrides'} if chosen else set()
             pinned |= {'service_tier'} if 'service_tier' in request else set()
-            for key in FOLLOW_SECTIONS:
+            for key in self.followed_sections:
                 if key in pinned:
                     continue
                 if key in live:
@@ -119,7 +222,7 @@ class LocalSessionPolicy:
                 from gateway.run import _resolve_gateway_model
                 model = _resolve_gateway_model(live) or self.model
             agent, live_agent = config.setdefault('agent', {}), live.get('agent') or {}
-            for key in FOLLOW_AGENT_KEYS:
+            for key in FOLLOW_AGENT_KEYS if self.follows_profile else ():
                 if key in pinned:
                     continue
                 if key in live_agent:
@@ -135,20 +238,34 @@ class LocalSessionPolicy:
             config['model']['api_key'] = value
         return config, model
 
-    @property
+    @cached_property
     def follows_profile(self):
-        return json.loads(self.request_json).get('follow_profile_config') is True
+        # Read ~8-10 times a turn on the event loop, and a frozen policy's config is a whole profile:
+        # parse once per (immutable) policy; ``replace()`` builds a fresh instance with its own cache.
+        return (json.loads(self.request_json).get('follow_profile_config') is True
+                or json.loads(self.config_json).get(FOLLOW_ADOPTED) is True)
 
-    def read_profile(self, authority):
+    @property
+    def followed_sections(self):
+        # The hosted member's stored policy already identifies its owner, including
+        # rooms created before route following. Keep its tool and approval policy frozen.
+        if self.source == 'bot_room' and not self.ignore_user_config:
+            return FOLLOW_MODEL_SECTIONS
+        return FOLLOW_SECTIONS if self.follows_profile else ()
+
+    def read_profile(self, authority, *, for_turn=False):
         """The owning profile's current config for a following session, else None; inside this policy's
         turn scope, the turn's one read."""
-        if authority is None or not self.follows_profile:
+        if authority is None or not self.followed_sections:
             return None
         held = _TURN_PROFILE.get()
         if held is not None and held[0] == self:
             return held[1]
-        from gateway.run import _load_gateway_config
-        return present_sections(_load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml'))
+        # Room creation and history use the stored policy. Only execution
+        # resolves a new model route from the owning profile.
+        if self.source == 'bot_room' and not for_turn:
+            return None
+        return profile_config(authority)
 
     def current_toolsets(self, config):
         """The next turn's toolsets from its resolved *config*: a following session without an explicit
@@ -271,6 +388,29 @@ def bound_route_holds(bound, bound_config, block, config):
     return same_route({**bound, 'base_url': url} if url else bound, block, config)
 
 
+def entry_serves(block, config):
+    """False when *block* pins a ``base_url`` that the config entry its credential comes from no longer
+    serves in *config*: its named provider (``providers:`` / ``custom_providers:``), or the alias its
+    ``api_key_from`` points into. That entry's key (inline, ``key_env``, ``key_cmd``) authenticates the
+    entry's own endpoint, so a pick held on the old one ends rather than carry the new key there."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    block = block if isinstance(block, dict) else {}
+    url = normalize_route_base_url(block.get('base_url'))
+    if not url:
+        return True
+    from gateway.session_route_identity import _named_entry
+    provider = str(block.get('provider') or '').strip()
+    entries = [_named_entry(provider, config)] if provider else []
+    source = block.get('api_key_from')
+    if isinstance(source, list) and len(source) > 1:
+        alias = config
+        for part in source[:-1]:
+            alias = alias.get(part) if isinstance(alias, dict) else None
+        entries.append(alias)
+    return all(normalize_route_base_url(entry.get('base_url')) == url for entry in entries
+               if isinstance(entry, dict) and str(entry.get('base_url') or '').strip())
+
+
 def _held_pick(frozen, live):
     """A pick that still holds keeps its selection; on the profile's own endpoint the rest of the
     ``model:`` block (a rotated key included) is the profile's. Another endpoint never gets it."""
@@ -290,7 +430,8 @@ def present_sections(config):
     return config
 
 
-def build_policy(params, config, *, private_secrets=None, profile_terminal=True, workspace_posture=False):
+def build_policy(params, config, *, private_secrets=None, profile_terminal=True, workspace_posture=False,
+                 client_local=False):
     from agent.runtime_cwd import resolve_agent_cwd
     from tools.terminal_scope import build_profile_terminal_scope, default_terminal_scope
     from hermes_constants import get_hermes_home
@@ -323,11 +464,17 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
         cwd = _profile_workspace_cwd(get_hermes_home()) or cwd
     from gateway.session_local_editor import validate_editor
     validate_editor(source, params.get('editor'))
+    if 'client' in params:  # a self-declared label kept in the request as sent; no decision below reads it
+        from gateway.session_client import client_problem
+        if problem := client_problem(params['client']):
+            _refuse('client', problem)
     launch_skills(params)
     config = present_sections(json.loads(json.dumps(config)))
-    if params.get('follow_profile_config') is True and 'model' in params:
-        # The pick's provenance, recorded before the launch route folds in: it holds while the profile
-        # still targets this, and a later profile edit supersedes it.
+    picked_route = {'model', 'provider', 'base_url'} & set(_without_auto_pick(params))
+    if params.get('follow_profile_config') is True and picked_route:
+        # Any explicit route pick (a model, a provider, an endpoint) records its provenance before the
+        # launch route folds in: it holds while the profile still targets this, and a later profile edit
+        # supersedes it. Without it the first turn's followed route replaces the pick.
         config.setdefault('model', {})['selection_profile'] = list(profile_target(config))
     _apply_launch_overrides(params, config)
     # The posture is opt-in (``session.create`` only) and needs a folder the client named: the daemon's own
@@ -341,7 +488,17 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     # configured cwd unless the user picked this folder for the session.
     if params.get('cwd_explicit') is True or terminal_uses_host_cwd(terminal):
         terminal['TERMINAL_CWD'] = cwd
-    request = {k: v for k, v in params.items() if k not in {'request_id', 'api_key'}}
+    client_env = rules = None
+    if 'client_env' in params:
+        from agent.session_client_env import client_env_rules, normalise_client_env
+        rules = client_env_rules(config, local=client_local)
+        try:
+            client_env = json.dumps(normalise_client_env(params['client_env'], rules), sort_keys=True)
+        except ValueError as exc:
+            _refuse('client_env', str(exc))
+        rules = json.dumps(rules, sort_keys=True)
+    # Values stay out of the request: ``launch_request`` is echoed to every viewer of the session.
+    request = {k: v for k, v in params.items() if k not in {'request_id', 'api_key', 'client_env'}}
     request.setdefault('source', 'cli')
     from gateway.session_local_mcp import private_editor_request
     private_editor_request(request, private_secrets)
@@ -350,7 +507,9 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     return LocalSessionPolicy(source, SURFACES[source], cwd, model, tuple(sorted(enabled)),
                               json.dumps(config), json.dumps(request, sort_keys=True), json.dumps(terminal),
                               safe_mode=safe_mode, ignore_user_config=ignore_user_config,
-                              coding_posture=coding_posture)
+                              coding_posture=coding_posture, client_env_json=client_env,
+                              client_env_remote=client_env is not None and not client_local,
+                              client_env_rules_json=rules)
 
 
 def terminal_uses_host_cwd(terminal):
@@ -389,14 +548,51 @@ def _keeps_profile_route(picked, config):
     `deepinfra`, `custom:<name>` for a named entry) is the same route. A block with an endpoint
     and no provider (or `auto`) already routes to `custom` there.
     """
-    from gateway.session_route_identity import resolved_route
-    held = dict(config.get('model') or {}) if isinstance(config.get('model'), dict) else {}
-    if str(held.get('provider') or '').strip().lower() in ('', 'auto') and str(held.get('base_url') or '').strip():
-        held['provider'] = 'custom'
-    held_id = resolved_route(held, config)[0]
+    from gateway.session_route_identity import profile_route_identity, resolved_route
+    held_id = profile_route_identity(config)
     if held_id == 'auto' or not isinstance(picked, str) or not picked.strip():
         return False
     return resolved_route({'provider': picked}, config)[0] == held_id
+
+
+def _with_entry_pick(params, config):
+    """*params* with a provider pick of the held entry's bare config key spelled as its ``custom:<key>``.
+
+    A configured entry keyed like a canonical built-in (`providers: deepseek`) is shadowed by the
+    built-in in raw provider resolution, so the bare spelling would route, and be frozen, as a
+    different provider than the entry the profile runs (#140107). Only the held entry's bare key
+    is that entry (Desktop's guard). A keyed entry's display name is not; a keyless legacy
+    ``custom_providers:`` entry's is (``configured_entry_key``). A bare ``custom`` pick is the billing
+    class a client echoed from the runtime, not a route: on a bare ``custom`` profile with an endpoint
+    it is that profile's route unless it picks another endpoint, or another entry lists a model that
+    is not the profile's default; otherwise it names the configured entry serving its endpoint/model
+    (the profile's own first), else (no endpoint picked) the profile's own entry. A launch key for an
+    entry the model alone chose is refused. Other picks stay as they came.
+    """
+    from gateway.session_route_identity import configured_entry_key, profile_route_identity
+    picked = params.get('provider')
+    if not isinstance(picked, str):
+        return params
+    identity = profile_route_identity(config)
+    if picked.strip().lower() == 'custom':
+        from hermes_cli.runtime_provider_custom import _route_key, routed_custom_identity
+        url, model = params.get('base_url'), str(params.get('model') or '')
+        own_url = _route_key(model_route(config.get('model'))[1])
+        if identity == 'custom' and own_url and (
+                _route_key(url) == own_url if url is not None
+                else model.strip().lower() == profile_target(config)[0].lower()
+                or not routed_custom_identity(None, model, config)):
+            return params
+        held = identity if identity.startswith('custom:') else None
+        healed = routed_custom_identity(url, model, config, held=held) or (
+            identity if identity.startswith('custom:') and url is None else None)
+        if healed and healed != identity and url is None and 'api_key' in params:
+            # The model alone chose this entry: a launch key the user gave is never sent to a host they did not name.
+            _refuse('api_key', f'{healed} was chosen by model; name it with --provider or --base-url to use a launch key')
+        return {**params, 'provider': healed} if healed else params
+    if identity == 'auto' or picked.strip().lower() != (configured_entry_key(identity, config) or None):
+        return params
+    return {**params, 'provider': identity}
 
 
 def _apply_launch_overrides(params, config):
@@ -404,8 +600,9 @@ def _apply_launch_overrides(params, config):
     from urllib.parse import urlsplit
     from hermes_cli.config import resolve_turn_limit
     from hermes_constants import parse_reasoning_effort
-    params = _without_auto_pick(params)
-    if 'provider' in params and not _keeps_profile_route(params['provider'], config):
+    params = _with_entry_pick(_without_auto_pick(params), config)
+    picks_profile_entry = 'provider' in params and _keeps_profile_route(params['provider'], config)
+    if 'provider' in params and not picks_profile_entry:
         model = config.setdefault('model', {})
         # A provider pick is a route change: the profile's endpoint, wire protocol and
         # credential pointers belong to the provider being replaced, and pairing the new one
@@ -504,8 +701,16 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         posture = focus_toolsets(config)
     enabled = set(posture) if posture is not None else _get_platform_tools(config, 'acp' if source == 'acp' else 'cli')
     if explicit is not None:
-        from toolsets import resolve_toolset
+        from toolsets import TOOLSETS, resolve_toolset
         requested = {t for name in explicit for t in resolve_toolset(name)}
+        dropped = _unnamed_extension_toolsets(explicit, requested, config) & enabled
+        enabled -= dropped
+        # ``hermes-api-server`` expands into built-in names; keep one an MCP server or plugin shares (``web``) when
+        # the pick needs its built-in tools and asked for all of them, instead of refusing the pick. A wider name
+        # (a plugin key called ``coding``) would grant tools the pick never asked for.
+        missing = requested - {t for name in enabled for t in resolve_toolset(name)}
+        static = {n: set(resolve_toolset(n, include_registry=False)) for n in dropped & set(TOOLSETS)}
+        enabled |= {n for n, tools in static.items() if tools & missing and tools <= requested}
         effective = {t for name in enabled for t in resolve_toolset(name)}
         if not requested <= effective:
             _refuse('toolsets', f"not available on this surface: {', '.join(sorted(requested - effective))}")
@@ -524,6 +729,23 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         from hermes_cli.tools_config import _get_plugin_toolset_keys
         enabled -= _get_plugin_toolset_keys()
     return enabled
+
+
+def _unnamed_extension_toolsets(explicit, requested, config):
+    """Plugin toolsets and MCP servers an explicit pick did not name. ``_get_platform_tools`` adds every plugin
+    toolset not in ``known_plugin_toolsets`` and every enabled MCP server, so without this ``-t session_search``
+    also got a plugin's terminal/file tools (#147832). ``all``/``*`` names everything."""
+    if {'all', '*'} & set(explicit):
+        return set()
+    from hermes_cli.tools_config import _get_plugin_toolset_keys, enabled_mcp_server_names
+    from toolsets import TOOLSETS, resolve_toolset
+    configured = config.get('mcp_servers') if isinstance(config.get('mcp_servers'), dict) else {}
+    named = set(explicit) | {n[4:] for n in explicit if n.startswith('mcp-') and n not in configured}
+    plugin_keys = _get_plugin_toolset_keys()
+    # A plugin key may share a built-in name (``coding``); a composite pick like ``hermes-cli`` covers it only
+    # when every tool it resolves to is already in the pick, otherwise the name alone would smuggle tools in.
+    covered = {k for k in plugin_keys & set(TOOLSETS) if set(resolve_toolset(k)) <= requested}
+    return (plugin_keys | enabled_mcp_server_names(config)) - named - covered
 
 
 def _in_coding_workspace(config, source, cwd):
@@ -551,7 +773,7 @@ def _extract_config_secrets(value, private, path=()):
                     or key.lower() in containers or _is_secret_payload_key(key))
         if sensitive and child and child not in ('{}', '[]'):
             if private is None:
-                raise RuntimeStoreError('launch_credentials_unavailable')
+                raise AuthorityRefusal('launch_credentials_unavailable')
             private[child_path] = child
             value[key] = None
         else:
@@ -580,7 +802,7 @@ def render_launch_skills(params, session_id):
     from agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
     prompt, loaded, missing = build_preloaded_skills_prompt(skills, task_id=session_id)
     if not loaded:
-        raise RuntimeStoreError('unknown_skill')
+        raise AuthorityRefusal('unknown_skill')
     if missing:
         import logging
         logging.getLogger(__name__).warning('Skipping %s for session %s; continuing with: %s',
@@ -635,11 +857,16 @@ def register_worker_hooks(policy):
     register_outbound_webhooks(config)
 
 
-def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=None):
+def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=None, owner_key=False,
+                    client_request=None):
     """CLI keys live only in this authority lifetime, never its durable receipt.
 
     Restart deliberately revokes them. History remains readable; inference must
     report launch_credentials_unavailable, never select a profile fallback key.
+    An ``owner_key`` (an alias's, expanded by the owner) of the same create request as the attempt
+    holding the slot (``same_create_retry``, its ``client_env`` in ``client_request``) takes the held
+    key: a ``.env`` rotation between overlapping attempts is not a changed request, and the policy
+    then fingerprints the key it runs with.
     """
     from dataclasses import replace
     import hmac
@@ -655,21 +882,29 @@ def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=No
         keys = authority._local_launch_keys = {}
     ref = f'{authority.instance_id}:{authority.epoch}:{session_id}'
     old = keys.get(ref)
+    owners = getattr(authority, '_local_owner_key_requests', None)
+    if owners is None:
+        owners = authority._local_owner_key_requests = {}
+    if owner_key and api_key is not None and old is not None and ref in owners:
+        from session_rules.local_create import same_create_retry
+        api_key = old if same_create_retry(owners[ref], policy.request_json, client_request or {}) else api_key
     # Only a key that IS being bound can conflict: binding config secrets alone (a provider
     # change drops the launch key) must not be refused by the key the session already holds.
     if api_key is not None and old is not None and not hmac.compare_digest(old, api_key):
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
     configs = getattr(authority, '_local_config_secrets', None)
     if configs is None:
         configs = authority._local_config_secrets = {}
     config_ref = ref
-    if config_secrets and getattr(authority, 'db', None) is not None:
+    if config_secrets and getattr(authority, 'persistence', None) is not None:
         from gateway.session_policy_credentials import config_reference
         config_ref = config_reference(authority, session_id, policy, config_secrets)
     if config_ref in configs and configs[config_ref] != config_secrets:
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
     if config_secrets:
         configs[config_ref] = dict(config_secrets)
+    if api_key is not None and old is None and owner_key:
+        owners[ref] = {k: getattr(policy, k) for k in ('request_json', 'client_env_json', 'client_env_rules_json')}
     if api_key is not None:
         keys[ref] = api_key
     # The durable ref carries the key's fingerprint (the digest config_secret_ref already
@@ -699,47 +934,74 @@ def rebind_launch_key(authority, session, api_key):
         _refuse('api_key', 'must be a non-empty string')
     source = authority.sessions[session.session_id].source
     if source is None or source.platform != Platform.LOCAL:
-        raise RuntimeStoreError('admission_conflict')
-    from hermes_state_local import local_receipt
-    ref = restore_policy(local_receipt(authority.db, session.session_id)['policy']).credential_ref
+        raise AuthorityRefusal('admission_conflict')
+    from gateway.session_persistence import authority_persistence
+    ref = restore_policy(authority_persistence(authority).bindings.receipt(session.session_id).policy).credential_ref
     if ref is None:
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
     keys = getattr(authority, '_local_launch_keys', None)
     if keys is None:
         keys = authority._local_launch_keys = {}
     held = keys.get(_key_slot(ref))
     if held is not None:
         if not hmac.compare_digest(held, api_key):
-            raise RuntimeStoreError('admission_conflict')
+            raise AuthorityRefusal('admission_conflict')
         return
     _, _, fingerprint = ref.partition('#')
     if not fingerprint or not hmac.compare_digest(fingerprint, fingerprint_secret_value(api_key) or ''):
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
     keys[_key_slot(ref)] = api_key
+
+
+def _secret_refs(authority, retired):
+    """The launch-key slots and config-secret references the LOCAL policies outside *retired* name: the
+    live sessions', and those of closed conversations ``session_retirement`` let go, which keep their
+    frozen policy on the local adapter and resume on it (a branch on its parent's slots)."""
+    from gateway.config import Platform
+    sources = [live.source for sid, live in authority.sessions.items() if sid not in retired]
+    chats = {source.chat_id for source in sources if source is not None and source.platform == Platform.LOCAL}
+    chats.update(sid for sid in getattr(authority, 'retired_local', ()) if sid not in retired)
+    if not chats:
+        return set()  # only a restored or retired LOCAL session has a policy in the adapter map
+    from gateway.session_local_recovery import local_adapter_map
+    policies = getattr(local_adapter_map(authority).get(Platform.LOCAL), 'policies', None) or {}
+    refs = set()
+    for policy in filter(None, map(policies.get, chats)):
+        refs.update(ref for ref in (policy.credential_ref and _key_slot(policy.credential_ref),
+                                    policy.config_secret_ref) if ref)
+    return refs
 
 
 def release_launch_secrets(authority, session_ids):
     """Drop retired sessions' launch keys, frozen config secrets and editor MCP servers.
 
     They live only in this authority's memory for the session's lifetime; a deleted session can
-    never run again, so keeping them would hold its credentials until the process exits."""
+    never run again, so keeping them would hold its credentials until the process exits. A branch's
+    policy names its parent's slots, so a slot named after a retired session stays while a policy the
+    local adapter holds references it, and then until restart, which revokes every launch secret anyway. Only
+    slots named after *session_ids* are released, so the set never exceeds release by name: no later
+    sweep, and a binding not yet published always sits under its own live session's name. Call
+    before the retired sessions leave ``authority.sessions``."""
     import hashlib
     from gateway.session_policy_credentials import PREFIX
     retired = {str(sid) for sid in session_ids}
     if not retired:
         return
+    kept = _secret_refs(authority, retired)
     prefix = f'{authority.instance_id}:{authority.epoch}:'
     keys = getattr(authority, '_local_launch_keys', None) or {}
     # A key re-supplied after a restart sits in the slot of the epoch that minted it.
-    for ref in [ref for ref in keys if ref.split(':', 2)[-1] in retired]:
+    owners = getattr(authority, '_local_owner_key_requests', None) or {}
+    for ref in [ref for ref in keys if ref.split(':', 2)[-1] in retired and ref not in kept]:
         del keys[ref]
+        owners.pop(ref, None)
     configs = getattr(authority, '_local_config_secrets', None) or {}
     for ref in list(configs):
         if ref.startswith(PREFIX):
             owner = json.loads(ref[len(PREFIX):]).get('session')
         else:
             owner = ref[len(prefix):] if ref.startswith(prefix) else None
-        if owner in retired:
+        if owner in retired and ref not in kept:
             del configs[ref]
     editors = getattr(authority, '_local_editor_mcp', None) or {}
     for sid in retired:
@@ -751,7 +1013,7 @@ def launch_key(authority, policy):
         return None
     value = getattr(authority, '_local_launch_keys', {}).get(_key_slot(policy.credential_ref))
     if value is None:
-        raise RuntimeStoreError('launch_credentials_unavailable')
+        raise AuthorityRefusal('launch_credentials_unavailable')
     return value
 
 
@@ -765,39 +1027,205 @@ def route_launch_key(authority, policy, config):
     return launch_key(authority, policy)
 
 
+def _policy_refused(field: str, detail: str) -> AuthorityRefusal:
+    """A receipt refusal that names its check. ``storage_unavailable`` stays the wire code; ``field``
+    and ``detail`` say which check fired, so an operator can tell a blank model from a bad surface
+    without reading the source (#148540)."""
+    return AuthorityRefusal('storage_unavailable', field=field, detail=detail)
+
+
+def _stored_cwd_is_absolute(cwd: str) -> bool:
+    """Whether a RECEIPT's cwd is absolute in the spelling the machine that wrote it used.
+
+    A stored cwd records where the session was created, not where this host may run it: a Windows
+    install keeps ``C:\\Users\\<user>`` (not ``Path.is_absolute()`` on POSIX) and a POSIX install keeps
+    ``/home/<user>`` (not absolute to ``WindowsPath``). Judging it with this host's ``Path`` rejected
+    the whole otherwise-valid policy, so every control on a migrated session answered
+    ``storage_unavailable``. Both pure flavours accept only a fully rooted path: a relative, a
+    drive-relative (``C:hermes``) and, unlike ``ntpath.isabs`` before Python 3.13, a drive-less
+    rooted (``\\Users\\x``) path still refuse. Running a turn in a foreign folder stays refused, by
+    name, through :func:`workspace_ready` -> ``workspace_unavailable``.
+    """
+    return PurePosixPath(cwd).is_absolute() or PureWindowsPath(cwd).is_absolute()
+
+
+_POLICY_FIELDS = frozenset(field.name for field in fields(LocalSessionPolicy))
+_REQUIRED_POLICY_FIELDS = frozenset(field.name for field in fields(LocalSessionPolicy)
+                                    if field.default is MISSING and field.default_factory is MISSING)
+# The creation label a peer-refreshed ``local`` receipt came from, read back from the platform it kept.
+_LABEL_FOR_PLATFORM = {SURFACES[label]: label for label in STORED_AS_LOCAL}
+_ADOPTED_KEY_SETS: set = set()
+
+
+def _adopt_stored_policy(data):
+    """A stored receipt's ``policy`` dict, limited to the fields THIS build defines.
+
+    A receipt is written by whatever build the session was created on: when a policy field is
+    added or dropped at a release boundary, every receipt from the other side carries (or lacks)
+    it, and constructing the dataclass verbatim answered ``TypeError`` -> ``storage_unavailable``
+    forever — the session unrecoverable and a cron delivery into it reported as a storage fault
+    (#151667). Adopting the shape an older build wrote is the same pattern as #140234; keys are
+    named in the log (never their values: a receipt's values hold credentials and routes), and a
+    genuinely incomplete receipt still refuses, because a missing required field raises below."""
+    if not isinstance(data, dict):
+        return data
+    unknown = tuple(sorted(set(data) - _POLICY_FIELDS))
+    if not unknown:
+        return data
+    # Every turn, claim and metadata read restores the policy: name each dropped key set once per process.
+    if unknown not in _ADOPTED_KEY_SETS:
+        _ADOPTED_KEY_SETS.add(unknown)
+        logger.warning("restore_policy: adopting a stored receipt whose keys this build dropped: %s",
+                       ", ".join(unknown))
+    return {key: value for key, value in data.items() if key in _POLICY_FIELDS}
+
+
+def _stored_policy(data):
+    """The receipt's policy object; a required field the receipt lacks is refused by name."""
+    if not isinstance(data, dict):
+        raise _policy_refused('policy', 'the stored policy is not an object')
+    stored = _adopt_stored_policy(data)
+    missing = sorted(_REQUIRED_POLICY_FIELDS - set(stored))
+    if missing:
+        raise _policy_refused(missing[0], 'the stored policy has no value for this required field')
+    return LocalSessionPolicy(**stored)
+
+
+def _check_stored_surface(policy) -> None:
+    """Refuse a receipt whose source/platform is not a surface pair this build knows, by name."""
+    from gateway.session_a2a import is_forward_policy
+    # The membership checks below hash these; a list or dict would raise TypeError unnamed.
+    if not isinstance(policy.source, str) or not isinstance(policy.platform, str):
+        raise _policy_refused('source', 'the stored source/platform is not a pair of names')
+    surfaces = {**SURFACES, 'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
+    # A peer refresh relabels an interactive receipt's source to ``local`` and keeps its platform
+    # (#148473): that pair restores; a ``local`` label on any other platform still refuses.
+    source_ok = ((policy.source in surfaces and policy.platform == surfaces[policy.source])
+                 or (policy.source == 'local'
+                     and policy.platform in {SURFACES[name] for name in STORED_AS_LOCAL}))
+    if not is_forward_policy(policy) and not source_ok:
+        raise _policy_refused('source', f'stored source/platform {policy.source}/'
+                                        f'{policy.platform} is not a known surface pair')
+
+
 def restore_policy(data):
-    """Reject incomplete private policy rather than rebuilding from current defaults."""
+    """Reject incomplete private policy rather than rebuilding from current defaults.
+
+    Every refusal names the check that fired (``AuthorityRefusal.field`` / ``.detail``) so the gateway
+    log and the client can tell the reasons' many checks apart instead of reporting the bare
+    ``storage_unavailable`` (#148540). The wire code stays ``storage_unavailable``. The checks accept
+    exactly the shapes our own writers persist (an empty model, a peer-refreshed ``local`` label, a
+    cwd spelled for the other OS, a key another build wrote) and nothing looser.
+    """
     try:
-        policy = LocalSessionPolicy(**data)
-        from gateway.session_a2a import is_forward_policy
-        surfaces = {**SURFACES, 'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
-        if ((not is_forward_policy(policy) and
-             (policy.source not in surfaces or policy.platform != surfaces[policy.source]))
-                or not isinstance(policy.cwd, str) or not Path(policy.cwd).is_absolute()
-                or not isinstance(policy.model, str) or not policy.model.strip()
-                or not isinstance(policy.toolsets, (list, tuple))
-                or any(not isinstance(name, str) for name in policy.toolsets)
-                or type(policy.safe_mode) is not bool or type(policy.ignore_user_config) is not bool
-                or not isinstance(policy.skills_prompt, (str, type(None)))
-                or type(policy.coding_posture) is not bool
-                or (policy.safe_mode and not policy.ignore_user_config)):
-            raise ValueError('invalid policy')
+        policy = _stored_policy(data)
+        _check_stored_surface(policy)
+        if not isinstance(policy.cwd, str) or not _stored_cwd_is_absolute(policy.cwd):
+            raise _policy_refused('cwd', 'the stored working directory is missing or not absolute')
+        # model=None/'' is what our own writers persist when the model cannot be resolved (session_local
+        # ``or None``, session_kanban's raw resolution); the launch path resolves an empty policy model
+        # from the profile's config (session_hosted_rpc falls back to _resolve_gateway_model; #35381
+        # made the runtime recover it). Refusing it here stranded the session forever (#148540).
+        if policy.model not in (None, '') and (not isinstance(policy.model, str) or not policy.model.strip()):
+            raise _policy_refused('model', 'the stored model is not a model name')
+        if not isinstance(policy.toolsets, (list, tuple)) or any(
+                not isinstance(name, str) for name in policy.toolsets):
+            raise _policy_refused('toolsets', 'the stored toolsets are not a list of names')
+        if type(policy.safe_mode) is not bool or type(policy.ignore_user_config) is not bool:
+            raise _policy_refused('safe_mode' if type(policy.safe_mode) is not bool
+                                  else 'ignore_user_config', 'the stored flag is not a boolean')
+        if not isinstance(policy.skills_prompt, (str, type(None))):
+            raise _policy_refused('skills_prompt', 'the stored skills prompt is not a string')
+        if type(policy.coding_posture) is not bool:
+            raise _policy_refused('coding_posture', 'the stored flag is not a boolean')
+        if not _valid_client_env(policy.client_env_json):
+            raise _policy_refused('client_env_json', 'the stored client environment map is malformed')
+        if type(policy.client_env_remote) is not bool:
+            raise _policy_refused('client_env_remote', 'the stored flag is not a boolean')
+        if not _valid_client_env(policy.client_env_rules_json, list):
+            raise _policy_refused('client_env_rules_json', 'the stored client environment rules are '
+                                                           'malformed')
+        if not isinstance(policy.edit_approval_policy, str) or (
+                policy.edit_approval_policy not in EDIT_APPROVAL_POLICIES):
+            raise _policy_refused('edit_approval_policy', 'the stored edit approval policy is unknown')
+        if policy.edit_approval_policy != 'ask' and (policy.source, policy.platform) not in {
+                ('acp', 'acp'), ('local', 'acp')}:
+            raise _policy_refused('edit_approval_policy', 'only an acp receipt may store a non-ask '
+                                                          'edit approval policy')
+        if policy.safe_mode and not policy.ignore_user_config:
+            raise _policy_refused('safe_mode', 'safe mode requires ignore_user_config')
         from dataclasses import replace
-        for value in (policy.config_json, policy.request_json, policy.terminal_json):
-            if not isinstance(json.loads(value), dict):
-                raise ValueError('invalid policy object')
+        for name in ('config_json', 'request_json', 'terminal_json'):
+            try:
+                value = json.loads(getattr(policy, name))
+            except (TypeError, ValueError) as exc:
+                raise _policy_refused(name, 'the stored policy object is not valid JSON') from exc
+            if not isinstance(value, dict):
+                raise _policy_refused(name, 'the stored policy object is not a JSON object')
         terminal = json.loads(policy.terminal_json)
         if terminal_uses_host_cwd(terminal) and terminal.get('TERMINAL_CWD') != policy.cwd:
-            raise ValueError('terminal policy mismatch')
-        return replace(policy, toolsets=tuple(policy.toolsets))
+            raise _policy_refused('terminal_json', 'TERMINAL_CWD does not match the stored cwd')
+        # Consumers key on the creation label (``editor_scope`` installs the ACP edit approver only for
+        # ``acp``; local-interactive approval reads cli/tui/gui/acp), so a peer-refreshed ``local``
+        # receipt runs under the label its platform says it was created with.
+        source = _LABEL_FOR_PLATFORM[policy.platform] if policy.source == 'local' else policy.source
+        return replace(policy, source=source, toolsets=tuple(policy.toolsets))
+    except AuthorityRefusal:
+        # A refusal that already names its field keeps its own reason (it is a ValueError subclass,
+        # so the blanket wrap below would otherwise flatten it back to the bare code).
+        raise
     except (KeyError, TypeError, ValueError) as exc:
-        raise RuntimeStoreError('storage_unavailable') from exc
+        raise AuthorityRefusal('storage_unavailable') from exc
+
+
+def _valid_client_env(value, kind: type = str):
+    """A stored client map (names to strings) or its rules (``kind=list``: rule names to string lists)."""
+    if value is None:
+        return True
+    try:
+        env = json.loads(value) if isinstance(value, str) else None
+    except ValueError:
+        return False
+    return isinstance(env, dict) and all(isinstance(k, str) and isinstance(v, kind) and (
+        kind is str or all(isinstance(item, str) for item in v)) for k, v in env.items())
+
+
+def policy_turn_toolsets(authority, policy, config, session_id):
+    """A local turn's toolsets: the policy's current set, plus ``onboarding`` for an onboarding chat
+    (``agent.onboarding_session.onboarding_chat_toolsets``)."""
+    from agent.onboarding_session import onboarding_chat_toolsets
+    from gateway.session_persistence import authority_persistence
+    store = authority_persistence(authority) if authority is not None else None
+    return onboarding_chat_toolsets(list(policy.current_toolsets(config)), store, session_id, persistence=store)
+
+
+def local_desktop_turn(runner, source, scope):
+    """*scope* (the profile scope a turn enters), also marked as work for the local Desktop when the
+    turn belongs to a Desktop chat its creator's connection declared local (``stage_local_session``);
+    any other turn gets *scope* untouched. Read from the live policy without raising: a cold policy
+    is restored, or refused, by the turn."""
+    from gateway.config import Platform
+    policy = None
+    if getattr(source, 'platform', None) == Platform.LOCAL:
+        policy = getattr(runner._adapter_for_source(source), 'policies', {}).get(source.chat_id)
+    # The request_json mark: a chat an earlier build created, which stamped it into the creation request.
+    if policy is None or policy.source != 'gui' or not any(
+            json.loads(raw).get(LOCAL_DESKTOP_CHAT) is True for raw in (policy.config_json, policy.request_json)):
+        return scope
+    return _serving_local_desktop_within(scope)
+
+
+@contextmanager
+def _serving_local_desktop_within(scope):
+    from hermes_cli.process_identity import serving_local_desktop
+    with scope, serving_local_desktop(True):
+        yield
 
 
 def policy_for_source(runner, source):
     from gateway.session_local import LocalSessionAdapter
     from gateway.config import Platform
-    if source.platform != Platform.LOCAL:
+    if source is None or source.platform != Platform.LOCAL:  # None: a history mount, which runs nothing
         return None
     adapter = runner._adapter_for_source(source)
     if isinstance(adapter, LocalSessionAdapter) and adapter.authorize_source(source):
@@ -805,51 +1233,150 @@ def policy_for_source(runner, source):
         if policy is None:
             # Cold recovery must restore the frozen policy before executing, not
             # reinterpret a LOCAL route as a default CLI launch.
-            raise RuntimeStoreError('storage_unavailable')
+            raise AuthorityRefusal('storage_unavailable', field='policy',
+                                   detail='the session has no restored policy (its receipt was refused or not yet recovered)')
         return policy
     return None
 
 
+def workspace_ready(policy) -> bool:
+    """Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
+    turn runs in a missing directory. A cwd spelled for another OS restores (the receipt records where the
+    session was made) but is never ready here: on Windows ``/Users/x`` would resolve against the current
+    drive and bind a folder the session never named."""
+    cwd = Path(policy.cwd)
+    return cwd.is_absolute() and cwd.is_dir()
+
+
+def workspace_unavailable_result(policy) -> dict:
+    """A failed, never-run turn for a session whose frozen working directory is gone. Nothing ran
+    and an unchanged resend fails the same way, so the reply names the folder and the way out
+    instead of the generic "something went wrong" apology."""
+    from agent.i18n import t
+    from agent.turn_failure_copy import stamp_failure
+    text = t("gateway.errors.workspace_unavailable", path=policy.cwd)
+    return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                          "failed": True, "completed": False, "error": text},
+                         "workspace_unavailable", False)
+
+
+def refused_turn_result(policy, exc) -> dict | None:
+    """A failed, never-run turn for an owner refusal at scope entry that an unchanged resend repeats
+    (gone working folder, changed launch key); None for any other refusal."""
+    from agent.error_surface import build_error_surface_from_result
+    from agent.turn_failure_copy import launch_credentials_copy, stamp_failure
+    if exc.reason == 'workspace_unavailable':
+        result = workspace_unavailable_result(policy)
+    elif exc.reason == 'launch_credentials_unavailable':
+        text = launch_credentials_copy(exc)
+        result = stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                                "failed": True, "completed": False, "error": text},
+                               "launch_credentials_unavailable", False)
+    else:
+        return None
+    # The descriptor makes settlement commit the explanation and its card as the transcript's
+    # failed-turn boundary (gateway_refusal_boundary), so a reopened chat still shows the way out.
+    result["error_surface"] = build_error_surface_from_result(result)
+    return result
+
+
 @contextmanager
-def policy_scope(policy, *, authority=None):
+def policy_scope(policy, *, authority=None, home=None):
+    """Bind a session's frozen policy for a turn. *home* is the profile that owns the session (its
+    terminal policy's owner); it defaults to *authority*'s profile."""
     if policy is None:
         yield
         return
-    # Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
-    # turn runs in a missing directory.
-    if not Path(policy.cwd).is_dir():
-        raise RuntimeStoreError('workspace_unavailable')
+    if not workspace_ready(policy):
+        raise AuthorityRefusal('workspace_unavailable', field='cwd', detail=policy.cwd)
     from agent.runtime_cwd import set_session_cwd
-    from tools.terminal_scope import set_terminal_scope, reset_terminal_scope
+    from agent.runtime_scope import bind_terminal_policy
+    from tools.terminal_scope import reset_terminal_scope
     terminal = json.loads(policy.terminal_json)
+    live = policy.read_profile(authority, for_turn=True)
     if policy.config_secret_ref is not None:
         from gateway.session_policy_credentials import recover_config_secrets
-        for path, value in recover_config_secrets(authority, policy).items():
+        for path, value in recover_config_secrets(authority, policy, skip=policy.followed_sections if live else None).items():
             if path[0] is None:
                 terminal[path[1]] = value
     # A following session's turn reads its profile once; every resolution in the turn uses that read.
-    profile_token = _TURN_PROFILE.set((policy, policy.read_profile(authority)))
+    profile_token = _TURN_PROFILE.set((policy, live))
     active = policy
     if policy.follows_profile:
         from dataclasses import replace
         active = replace(policy, toolsets=policy.current_toolsets(policy.config(authority, secrets=False)))
     cwd_token = set_session_cwd(policy.cwd)
-    terminal_token = set_terminal_scope(terminal)
+    owner = home if home is not None else getattr(authority, 'profile_id', None)
+    terminal_token = bind_terminal_policy(terminal, profile_home=owner)
     policy_token = _ACTIVE_POLICY.set(active)
     from gateway.session_local_editor import editor_scope
     try:
         from agent.auxiliary_task_config import session_auxiliary_scope
         from gateway.session_local_mcp import editor_mcp_scope
-        # Auxiliary tasks read the session's frozen section, never live config.yaml (a rotated key there).
-        auxiliary = policy.config(authority).get('auxiliary') if authority is not None else None
-        aux_scope = session_auxiliary_scope(auxiliary) if authority is not None else contextlib.nullcontext()
-        with editor_scope(policy), editor_mcp_scope(authority, policy), aux_scope:
+        # Side tasks follow the profile's config.yaml, as every other side-task reader does; a bypass
+        # session never reads the profile: its side tasks use its own saved section (code defaults only).
+        aux_scope = (session_auxiliary_scope(policy.config(authority, secrets=False).get('auxiliary'))
+                     if policy.ignore_user_config else contextlib.nullcontext())
+        with (editor_scope(policy), editor_mcp_scope(authority, policy), aux_scope,
+              policy.client_env_scope()):
             yield
     finally:
         _ACTIVE_POLICY.reset(policy_token)
         reset_terminal_scope(terminal_token)
         cwd_token.var.reset(cwd_token)
         _TURN_PROFILE.reset(profile_token)
+
+
+def bind_turn_workspace(policy, task_id):
+    """Make the session's frozen workspace its terminal cwd override for this turn's tools (#140665).
+
+    The client's cwd (or ``--in DIR``) is frozen into the policy at admission, but the terminal tool
+    mounts ``resolve_task_overrides(task_id)['cwd']`` into a per-session Docker container. Before the
+    one-gateway runtime each ``hermes chat`` was its own process with its own ``TERMINAL_CWD``; now the
+    turn runs here, so register it under the turn's own task id (inside the turn's routed scope, which
+    qualifies the key). Docker mounting the host cwd only: the local backend already runs in the
+    policy's ``TERMINAL_CWD``, and ssh and the other sandboxes keep their own cwd. Re-registered only
+    when the workspace changed, so an agent's ``cd`` inside the session survives later turns.
+    """
+    if policy is None or not task_id:
+        return
+    terminal = json.loads(policy.terminal_json)
+    if str(terminal.get('TERMINAL_ENV') or '').strip().lower() != 'docker' or not terminal_uses_host_cwd(terminal):
+        # The session moved off a host-cwd Docker mount (e.g. to SSH with its own terminal.cwd): the
+        # binding an earlier turn registered would otherwise win in _plan_execution on the new backend.
+        unbind_turn_workspace(task_id)
+        return
+    from tools.terminal_tool import register_task_env_overrides, resolve_task_overrides, workspace_key_for
+    current = resolve_task_overrides(task_id)
+    if current.get('cwd') == policy.cwd and current.get('cwd_source') == 'session':
+        return
+    register_task_env_overrides(task_id, {**current, 'cwd': policy.cwd, 'cwd_source': 'session',
+                                          'workspace_key': workspace_key_for(policy.cwd)})
+
+
+def unbind_turn_workspace(task_id):
+    """Drop the workspace override :func:`bind_turn_workspace` registered for *task_id*, and the cwd
+    record it seeded. Only its own entry (tagged ``workspace_key``): an ACP/TUI workspace or an RL
+    image override registered by someone else under the same id stays."""
+    if not task_id:
+        return
+    from tools.terminal_tool import _qualify_task_key, _task_env_overrides, clear_session_cwd, get_session_cwd
+    key = _qualify_task_key(task_id)
+    current = _task_env_overrides.get(key) or {}
+    if 'workspace_key' not in current:
+        return
+    _task_env_overrides.pop(key, None)
+    if get_session_cwd(task_id) == current.get('cwd'):
+        clear_session_cwd(task_id)
+
+
+def release_session_workspaces(authority, session_ids):
+    """Session teardown: drop each session's workspace binding under its owning profile's scope (the
+    key the turn bound it under), so the override table does not grow with every closed session."""
+    from gateway.session_authorities import owner_scope
+    with owner_scope(authority):
+        for sid in session_ids:
+            unbind_turn_workspace(sid)
 
 
 @contextmanager
@@ -860,6 +1387,17 @@ def profile_read_scope(policy, authority):
     token = _TURN_PROFILE.set((policy, policy.read_profile(authority)))
     try:
         yield
+    finally:
+        _TURN_PROFILE.reset(token)
+
+
+def turn_model(policy, authority):
+    """The model this policy's turn resolved, for checks that run after ``policy_scope`` exits: a
+    hosted room member reads its owning profile only in turn scope, so an unscoped read would
+    report the frozen model and the post-turn fallback check would evict every switched agent."""
+    token = _TURN_PROFILE.set((policy, policy.read_profile(authority, for_turn=True)))
+    try:
+        return policy.current_model(authority)
     finally:
         _TURN_PROFILE.reset(token)
 

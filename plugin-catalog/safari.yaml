@@ -1,0 +1,26 @@
+name: safari
+repo: https://github.com/Thorballer/hermes-safari-plugin
+sha: 4e75e3e59ee8b74a24b0e087c7aaf7b5cf590bba
+description: "Drive the user's real Safari on macOS. Safari has no Chrome DevTools Protocol, so this plugin speaks AppleScript (JXA) to Safari for tabs, navigation, DOM reads, and real native mouse/keyboard input. Because it drives the browser the user is already signed into, logged-in sites work without a separate automation profile. Registers a `safari` toolset (eight tools) and a `hermes safari` command that reports every macOS permission gate and the fix for each. Disclosure — drives your real, signed-in Safari: the agent can open any URL (including local `file://` pages), read page text, run arbitrary JavaScript in any open tab, type, submit forms and send real mouse clicks on your logged-in sites without a per-action Hermes approval, and Hermes's browser website blocklist does not apply. Requires macOS Automation consent and, for page reads and scripts, Safari's \"Allow JavaScript from Apple Events\"; native clicks use `cliclick` or Accessibility, screenshots need Screen Recording. Tabs it opens are closed after an hour idle."
+maintainer: Thorballer
+tier: community
+category: tools
+requires_hermes: ">=0.21.0"
+version: "0.1.0"
+docs_url: https://github.com/Thorballer/hermes-safari-plugin
+platforms:
+  - macos
+capabilities:
+  provides_tools:
+    - safari_open
+    - safari_state
+    - safari_js
+    - safari_act
+    - safari_click
+    - safari_type
+    - safari_tabs
+    - safari_screenshot
+  provides_hooks:
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

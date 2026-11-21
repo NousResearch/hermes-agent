@@ -196,7 +196,7 @@ class TestReapUntrackedGroupGuard:
         reg = ProcessRegistry()
         proc = MagicMock()
         proc.pid = 999
-        session = SimpleNamespace(systemd_unit="", host_start_time=4242)
+        session = SimpleNamespace(systemd_unit="", _owned_pgid=None, host_start_time=4242)
         calls, forbidden = [], []
         monkeypatch.setattr(
             ProcessRegistry, "_terminate_host_pid",
@@ -223,7 +223,7 @@ class TestReapUntrackedGroupGuard:
         try:
             real_start = ProcessRegistry._safe_host_start_time(proc.pid)
             assert real_start is not None, "no /proc start time on this platform?"
-            session = SimpleNamespace(systemd_unit="", host_start_time=real_start)
+            session = SimpleNamespace(systemd_unit="", _owned_pgid=None, host_start_time=real_start)
 
             ProcessRegistry()._reap_untracked(session, proc)
 
@@ -248,7 +248,7 @@ class TestReapUntrackedGroupGuard:
             real_start = ProcessRegistry._safe_host_start_time(proc.pid)
             assert real_start is not None, "no /proc start time on this platform?"
             assert os.getpgid(proc.pid) == proc.pid  # leads its group: old arm fired here
-            session = SimpleNamespace(systemd_unit="", host_start_time=real_start + 1)
+            session = SimpleNamespace(systemd_unit="", _owned_pgid=None, host_start_time=real_start + 1)
             # A stub Popen keeps the wait tail from parking 5s on the still-live child.
             stub = SimpleNamespace(pid=proc.pid, wait=lambda timeout=None: None)
 

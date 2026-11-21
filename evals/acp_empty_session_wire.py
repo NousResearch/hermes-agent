@@ -21,6 +21,9 @@ def main():
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(repo))
+    from persistence.conversation.sessions import SessionWindow
+    from persistence_assembly import open_persistence_reader
     requests = []
 
     class Model(BaseHTTPRequestHandler):
@@ -101,8 +104,9 @@ def main():
                 return response['result']
 
     def rows():
-        with sqlite3.connect(hermes / 'state.db') as db:
-            return db.execute('SELECT id, source, message_count FROM sessions ORDER BY id').fetchall()
+        with open_persistence_reader(hermes / 'state.db') as store:
+            entries = store.sessions.search_sessions(window=SessionWindow(limit=None))
+        return sorted((e.session.session_id, e.session.source, e.session.message_count) for e in entries)
 
     result = {'repo': str(repo), 'home': str(home)}
     try:
@@ -118,8 +122,10 @@ def main():
         forked = rpc('session/fork', {'sessionId': sid, 'cwd': str(home), 'mcpServers': []})
         result['fork_id'] = forked['sessionId']
         result['after_fork'] = rows()
-        with sqlite3.connect(hermes / 'state.db') as db:
-            result['messages'] = db.execute('SELECT session_id, role, content FROM messages ORDER BY id').fetchall()
+        with open_persistence_reader(hermes / 'state.db') as store:
+            exported = store.maintenance.export_all(include_inactive=True)
+        result['messages'] = [(m.session_id, m.role, m.content)
+                              for m in sorted((m for e in exported for m in e.messages), key=lambda m: m.id)]
         for session_id in (sid, result['fork_id']):
             assert [(r[1], r[2]) for r in result['messages'] if r[0] == session_id] == [
                 ('user', 'Reply with a short greeting; do not use tools.'),
@@ -133,9 +139,9 @@ def main():
         moved = home / 'moved'
         moved.mkdir()
         rpc('session/load', {'sessionId': legacy, 'cwd': str(moved), 'mcpServers': []})
-        with sqlite3.connect(hermes / 'state.db') as db:
-            result['existing_empty_metadata'] = db.execute(
-                'SELECT model_config, message_count FROM sessions WHERE id = ?', (legacy,)).fetchone()
+        with open_persistence_reader(hermes / 'state.db') as store:
+            record = store.sessions.get(legacy)
+        result['existing_empty_metadata'] = (record.model_config_json, record.message_count)
         assert json.loads(result['existing_empty_metadata'][0])['cwd'] == str(moved)
         assert result['existing_empty_metadata'][1] == 0
         assert result['after_open'] == [], 'session/new created an empty durable row'

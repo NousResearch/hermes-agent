@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type { CSSProperties, MutableRefObject, PointerEvent as ReactPointerEvent, RefObject } from 'react'
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { requestComposerInsert } from '@/app/chat/composer/focus'
 import { CopyButton } from '@/components/ui/copy-button'
@@ -11,6 +11,63 @@ import { cn } from '@/lib/utils'
 import { notify } from '@/store/notifications'
 
 import type { ConsoleEntry, PreviewConsoleState } from './preview-console-state'
+
+/**
+ * Subscribe the console panel to at most one value per animation frame.
+ *
+ * A chatty preview page emits `console-message` events in bursts (an animation
+ * loop can produce hundreds per second, each one its own task). `useStore`
+ * re-rendered the whole log panel and re-armed its scroll effect per message.
+ * The panel only needs the latest log list per paint; intermediate lists are
+ * never visible. Store writes themselves are cheap and stay untouched.
+ */
+export function useFrameStore<T>(
+  store: { get: () => T; listen: (listener: () => void) => () => void },
+  publishImmediately?: (value: T) => boolean
+): T {
+  const [value, setValue] = useState<T>(() => store.get())
+  const frame = useRef<number | null>(null)
+
+  // eslint-disable-next-line no-restricted-syntax -- a frame id, not an atom mirror
+  useEffect(() => {
+    const schedule = () => {
+      const next = store.get()
+
+      if (publishImmediately?.(next)) {
+        setValue(next)
+
+        return
+      }
+
+      // A frame is already pending and will read the latest store value when it
+      // runs; writing state now would render once per console message again.
+      if (frame.current !== null) {
+        return
+      }
+
+      frame.current = window.requestAnimationFrame(() => {
+        frame.current = null
+        setValue(store.get())
+      })
+    }
+
+    const stop = store.listen(schedule)
+    setValue(store.get())
+
+    return () => {
+      stop()
+
+      if (frame.current !== null) {
+        window.cancelAnimationFrame(frame.current)
+        frame.current = null
+      }
+    }
+  }, [publishImmediately, store])
+
+  return value
+}
+
+const isEmptyLogList = (logs: ConsoleEntry[]) => logs.length === 0
 
 const consoleLevelLabel: Record<number, string> = {
   0: 'log',
@@ -108,7 +165,7 @@ function ConsoleRow({ copyText, log, onSend, onToggleSelect, selected }: Console
           </span>
         )}
       </div>
-      <span className="opacity-0 transition-opacity group-hover/row:opacity-100">
+      <span className="opacity-0 transition-opacity focus-within:opacity-100 group-hover/row:opacity-100">
         <CopyButton
           appearance="inline"
           className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
@@ -148,35 +205,19 @@ export function PreviewConsolePanel({
   const { t } = useI18n()
   const copy = t.preview.console
   const consoleHeight = useStore(consoleState.$height)
-  const logs = useStore(consoleState.$logs)
+  const logs = useFrameStore(consoleState.$logs, isEmptyLogList)
   const selectedLogIds = useStore(consoleState.$selectedLogIds)
   const visibleSelection = useMemo(() => logs.filter(log => selectedLogIds.has(log.id)), [logs, selectedLogIds])
   const sendableLogs = visibleSelection.length > 0 ? visibleSelection : logs
-  const stickScrollRafRef = useRef<number | null>(null)
 
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
-  useEffect(() => {
+  // Follow in the batched commit, before another append checks the bottom gap.
+  useLayoutEffect(() => {
     if (!consoleShouldStickRef.current) {
       return
     }
 
-    if (stickScrollRafRef.current !== null) {
-      window.cancelAnimationFrame(stickScrollRafRef.current)
-      stickScrollRafRef.current = null
-    }
-
-    stickScrollRafRef.current = window.requestAnimationFrame(() => {
-      stickScrollRafRef.current = null
-      const consoleBody = consoleBodyRef.current
-      consoleBody?.scrollTo({ top: consoleBody.scrollHeight })
-    })
-
-    return () => {
-      if (stickScrollRafRef.current !== null) {
-        window.cancelAnimationFrame(stickScrollRafRef.current)
-        stickScrollRafRef.current = null
-      }
-    }
+    const consoleBody = consoleBodyRef.current
+    consoleBody?.scrollTo({ top: consoleBody.scrollHeight })
   }, [consoleBodyRef, consoleHeight, consoleShouldStickRef, logs])
 
   function sendLogsToComposer(entries: ConsoleEntry[]) {

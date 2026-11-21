@@ -12,38 +12,41 @@ A corrupt store is an unavailable store, not an empty one.
 """
 
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+
+from persistence.core.errors import CorruptStoreError, PermanentStoreError
 
 from hermes_cli import web_server
 import hermes_cli.web_server_sessions as _web_server_sessions
 from hermes_cli.web_routers import sessions as sessions_router
 
 
-class _MalformedDB:
-    """SessionDB stand-in that fails the way a corrupt file really fails."""
+class _Store:
+    """Storage interface stand-in whose id lookup is ``resolve_id``; records its close."""
 
-    def __init__(self):
+    def __init__(self, resolve_id):
         self.closed = False
-
-    def resolve_session_id(self, session_id):
-        raise sqlite3.DatabaseError("database disk image is malformed")
-
-    def get_session(self, sid):  # pragma: no cover - never reached
-        raise AssertionError("resolve_session_id should have raised first")
+        self.sessions = SimpleNamespace(resolve_id=resolve_id)
 
     def close(self):
         self.closed = True
 
 
+def _corrupt_lookup(session_id):
+    """Fails the way a corrupt file really fails."""
+    raise CorruptStoreError("database disk image is malformed")
+
+
 @pytest.fixture
 def malformed_db(monkeypatch):
-    db = _MalformedDB()
+    store = _Store(_corrupt_lookup)
     monkeypatch.setattr(
-        _web_server_sessions, "_open_session_db_for_profile", lambda profile, *, read_only: db
+        _web_server_sessions, "_open_session_db_for_profile", lambda profile, *, read_only: store
     )
-    return db
+    return store
 
 
 @pytest.mark.asyncio
@@ -103,9 +106,6 @@ class _CorruptAuthorityDB:
 def _mutation_request(monkeypatch):
     """Delete/rename never open a SessionDB in the handler: they admit through the session
     authority, so corruption surfaces from the authority write, not from a handler-opened store."""
-    import sqlite3
-    from types import SimpleNamespace
-
     import gateway.session_mutations as _mutations
 
     authority = SimpleNamespace(db=_CorruptAuthorityDB(), profile_id="p", epoch=1)
@@ -151,26 +151,12 @@ async def test_export_endpoint_reports_corruption(malformed_db):
 # ── A genuinely absent session must still be a 404, not a 503 ──────────────
 
 
-class _EmptyDB:
-    def __init__(self):
-        self.closed = False
-
-    def resolve_session_id(self, session_id):
-        return None
-
-    def get_session(self, sid):
-        return None
-
-    def close(self):
-        self.closed = True
-
-
 @pytest.mark.asyncio
 async def test_absent_session_is_still_404(monkeypatch):
     monkeypatch.setattr(
         _web_server_sessions,
         "_open_session_db_for_profile",
-        lambda profile, *, read_only: _EmptyDB(),
+        lambda profile, *, read_only: _Store(lambda sid: None),
     )
     with pytest.raises(HTTPException) as excinfo:
         await sessions_router.get_session_detail("does_not_exist")
@@ -180,9 +166,8 @@ async def test_absent_session_is_still_404(monkeypatch):
 # ── Unrelated DatabaseErrors must not be relabelled as corruption ──────────
 
 
-class _OtherErrorDB(_EmptyDB):
-    def resolve_session_id(self, session_id):
-        raise sqlite3.DatabaseError("some unrelated database failure")
+def _other_error_lookup(session_id):
+    raise PermanentStoreError("some unrelated database failure")
 
 
 @pytest.mark.asyncio
@@ -190,7 +175,48 @@ async def test_non_corruption_database_error_is_not_swallowed(monkeypatch):
     monkeypatch.setattr(
         _web_server_sessions,
         "_open_session_db_for_profile",
-        lambda profile, *, read_only: _OtherErrorDB(),
+        lambda profile, *, read_only: _Store(_other_error_lookup),
     )
-    with pytest.raises(sqlite3.DatabaseError):
+    with pytest.raises(PermanentStoreError) as excinfo:
         await sessions_router.get_session_detail("20260830_180820_744f05")
+    assert not isinstance(excinfo.value, CorruptStoreError)
+
+
+# ── The same two failures as the file raises them, through the backend's own translation ──
+
+
+@pytest.fixture
+def real_store_whose_lookup_raises(monkeypatch, tmp_path):
+    """Make the id lookup of a real storage interface handle raise ``sqlite3.DatabaseError(message)``, so the
+    backend's own error translation decides what the route sees."""
+    from persistence.sqlite.conversation import sessions as sqlite_sessions
+    from persistence_assembly import open_persistence, profile_scope
+
+    def install(message):
+        def failing_lookup(holder, session_id_or_prefix):
+            raise sqlite3.DatabaseError(message)
+
+        monkeypatch.setattr(sqlite_sessions, "resolve_session_id", failing_lookup)
+        monkeypatch.setattr(
+            _web_server_sessions, "_open_session_db_for_profile",
+            lambda profile, *, read_only: open_persistence(profile_scope(home=tmp_path)))
+
+    return install
+
+
+@pytest.mark.asyncio
+async def test_malformed_file_error_from_the_backend_is_503(real_store_whose_lookup_raises):
+    real_store_whose_lookup_raises("database disk image is malformed")
+    with pytest.raises(HTTPException) as excinfo:
+        await sessions_router.get_session_detail("20260830_180820_744f05")
+    assert excinfo.value.status_code == 503
+    assert "malformed" in str(excinfo.value.detail).lower()
+
+
+@pytest.mark.asyncio
+async def test_unrelated_database_error_from_the_backend_is_not_relabelled(real_store_whose_lookup_raises):
+    real_store_whose_lookup_raises("some unrelated database failure")
+    with pytest.raises(PermanentStoreError) as excinfo:
+        await sessions_router.get_session_detail("20260830_180820_744f05")
+    assert not isinstance(excinfo.value, CorruptStoreError)
+    assert isinstance(excinfo.value.__cause__, sqlite3.DatabaseError)

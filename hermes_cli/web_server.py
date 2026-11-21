@@ -25,14 +25,19 @@ import urllib.parse
 from hermes_cli.install_identity import get_install_id as _shared_get_install_id
 from hermes_cli.process_identity import is_desktop_owned_backend
 from hermes_cli.pty_session import run_reaper
+from hermes_cli import web_server_file_tickets as _file_tickets
+from hermes_cli.web_server_session_token import resolve_session_token
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+from hermes_cli._startup_fast import project_root_str
+
+PROJECT_ROOT = Path(project_root_str())
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 from hermes_cli.config import load_config
 from hermes_cli.version_info import get_version_info
 
@@ -71,6 +76,7 @@ from hermes_cli.web_server_lifecycle import (
     _read_bound_port,
     _report_port_in_use,
     _start_parent_death_watchdog,
+    _uvicorn_console_logging,
     _warm_gateway_module,
     _write_dashboard_ready_file,
     _write_machine_sentinel_line,
@@ -88,20 +94,22 @@ def _gateway_owns_cron(name: str, home) -> bool:
 
 
 def _start_desktop_cron_ticker(stop_event: threading.Event, interval: int = 60) -> None:
-    """Tick the cron scheduler from inside the desktop dashboard backend.
+    """Tick the cron scheduler from inside a Desktop-owned dashboard backend.
 
-    The desktop spawns a ``hermes dashboard`` backend, not a gateway, so without
-    this a cron created in the app would never fire (no live adapters; delivery
-    falls back to the per-platform send path). The primary backend outlives the
-    per-profile pool (reaped after ~10 idle minutes), so it ticks EVERY local
-    profile's store like a multiplex gateway; external providers keep the
-    single-store behavior (registries are not profile-scoped). Cross-process
-    safe: the built-in tick takes the per-store ``cron/.tick.lock``.
+    ``is_desktop_owned_backend`` holds for the SSH remote spawn (``serve
+    --ssh-session-token-file``); a local Desktop attaches to the host gateway,
+    whose own ticker covers every profile. That backend is not a gateway, so
+    without this a cron created in the app would never fire on that host (no
+    live adapters; delivery falls back to the per-platform send path). It ticks
+    EVERY local profile's store like a multiplex gateway, gated per tick against
+    a gateway that owns it; external providers keep the single-store behavior
+    (registries are not profile-scoped). Cross-process safe: the built-in tick
+    takes the per-store ``cron/.tick.lock``.
 
-    Every local profile's store is ticked, not just this backend's own (#69377's desktop sibling): the
-    desktop pools per-profile backends and reaps them after ~10 idle minutes, so a secondary profile's
-    ticker dies with its backend and that profile's jobs silently stop firing until the user next opens it
-    ("tasks on the sleeping profile could be idle" — community report, Aug 2026).
+    Every profile's store is ticked, not just this backend's own (#69377's desktop sibling): the
+    old per-profile Desktop backends each ticked only their own store and stopped with it, so a
+    secondary profile's jobs silently stopped firing until the user next opened it ("tasks on the
+    sleeping profile could be idle" — community report, Aug 2026).
     """
     from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
     from hermes_constants import get_hermes_home, profile_name_for_home
@@ -176,19 +184,6 @@ def _start_desktop_cron_ticker(stop_event: threading.Event, interval: int = 60) 
 _DESKTOP_MCP_DISCOVERY_DELAY_S = 1.0
 
 
-def _probe_install_before_state_db() -> None:
-    from hermes_cli.anon_auth import on_local_desktop_backend
-
-    if not on_local_desktop_backend():
-        return
-    try:
-        from hermes_cli.install_state import probe
-
-        probe()
-    except (OSError, ValueError):  # what the probe's own guards leave; onboarding.state probes again
-        _log.warning("first-install check at boot failed", exc_info=True)
-
-
 from hermes_cli.web_server_app import app_lifespan
 
 
@@ -227,14 +222,10 @@ from hermes_cli.memory_oauth import router as _memory_oauth_router
 
 app.include_router(_memory_oauth_router)
 
-# Session token for sensitive endpoints. The desktop shell mints it via
-# HERMES_DASHBOARD_SESSION_TOKEN; otherwise fresh per server start. It dies with
-# the process and is injected into the SPA HTML so only the web UI can use it.
-def _resolve_session_token() -> str:
-    return os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
-
-
-_SESSION_TOKEN = _resolve_session_token()
+# Session token for sensitive endpoints. Resolution lives in the
+# web_server_session_token sibling; it dies with the process and is injected
+# into the SPA HTML so only the web UI can use it.
+_SESSION_TOKEN = resolve_session_token()
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 _SSH_OWNER_NONCE: Optional[str] = None
 _SSH_RUNTIME_PURELIB: Optional[tuple[str, int, int]] = None
@@ -295,6 +286,12 @@ def _ssh_runtime_intact() -> bool:
 # share one testable seam.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 
+from hermes_cli.web_upload_limit import ChatFileUploadLimitMiddleware
+
+# Inside every auth/Host middleware: those checks run before body ingestion,
+# and the receive limit runs before FastAPI can spool a multipart attachment.
+app.add_middleware(ChatFileUploadLimitMiddleware)
+
 # Endpoints that do NOT require the session token; everything else under /api/
 # is gated below. Shared with the OAuth gate so the two allowlists cannot
 # drift (/api/status once 401'd under the OAuth gate, breaking the portal probe).
@@ -315,12 +312,17 @@ def _has_valid_session_token(request: Request) -> bool:
     return hmac.compare_digest(auth.encode(), f"Bearer {_SESSION_TOKEN}".encode())
 
 
-# Routes that may also authenticate via ``?token=`` (download links opened by
-# the OS shell / a new tab, where no header can be set). Kept narrow.
+# Routes that may also authenticate via ``?token=`` for Electron's remote
+# "open externally" download link. Browser pages use path-bound file tickets
+# instead (``web_server_file_tickets``), so the session token never lands in
+# their download history or a copyable media URL. The OAuth gate still requires
+# its session cookie; query credentials are only accepted by the loopback gate.
 _QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download"})
 
 
 def _has_valid_query_token(request: Request, path: str) -> bool:
+    if _file_tickets.redeem(request):
+        return True
     if path not in _QUERY_TOKEN_API_PATHS:
         return False
     token = request.query_params.get("token", "")
@@ -338,8 +340,11 @@ def _require_token(request: Request) -> None:
     A verified native owner (``authenticate_native_http``) is the same-user
     principal the outer seams already accepted; local Desktop runs with no
     static token, so that principal must satisfy route-local policy too.
+    Hosted plugins receive this guard's decision via private IPC and request-local
+    state, not via a forwarded gateway credential or a process-wide bypass.
     """
-    if getattr(request.state, "native_http_principal", None):
+    if (getattr(request.state, "native_http_principal", None)
+            or getattr(request.state, "hosted_http_authenticated", None) is True):
         return
     if getattr(request.app.state, "auth_required", False):
         ok = getattr(request.state, "session", None) is not None
@@ -353,10 +358,13 @@ from hermes_cli.web_server_boundary import (  # re-exported: web_server.<name> s
     _DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     _LOOPBACK_HOST_VALUES,
     _dashboard_public_hosts,
+    _dashboard_public_origins,
     _desktop_loopback_auth_exempt,
     _host_header_hostname,
     _is_accepted_host,
     public_hosts_engage_gate,
+    public_url_hosts,
+    public_url_origins,
     should_require_auth,
 )
 
@@ -381,7 +389,8 @@ async def host_header_middleware(request: Request, call_next):
     # app.state.bound_host is set by start_server() at listen time.
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host and not _is_accepted_host(
-        request.headers.get("host", ""), bound_host, getattr(app.state, "trusted_public_hosts", frozenset())
+        request.headers.get("host", ""), bound_host, getattr(app.state, "trusted_public_hosts", frozenset()),
+        bool(getattr(app.state, "loopback_companion", None)),
     ):
         return JSONResponse(
             status_code=400,
@@ -395,20 +404,27 @@ async def host_header_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+# Imported here, beside the plugin gates that use it, like the other mid-module web_server_*
+# groups. Not an import cycle: web_server_dashboard reaches back into this module only inside
+# functions, so the position is not load-bearing. What is load-bearing is the middleware
+# registration order below (the HTTP gate before the auth middlewares, so it runs after them).
+from hermes_cli.web_server_dashboard import (
+    PluginApiWebSocketGate, _plugin_api_name, _plugin_api_request_refused,
+)
+from hermes_cli.web_server_plugin_profiles import forward_secondary_plugin_request, plugin_request_scope
+
+
 @app.middleware("http")
 async def _plugin_api_runtime_gate(request: Request, call_next):
-    """Block requests to disabled plugin API routes at request time.
+    """Block requests to disabled plugin API routes at request time
+    (:func:`_plugin_api_request_refused`).
 
-    :func:`_mount_plugin_api_routes` gates at import time; a plugin disabled
-    while running keeps its router mounted until restart, so enforce on every
-    ``/api/plugins/{name}/...`` request. Registered BEFORE the auth middlewares
-    (runs AFTER them): an unauthenticated caller must get auth's 401, never this
-    404, or the status code becomes a plugin-name oracle.
+    Registered BEFORE the auth middlewares (runs AFTER them): an unauthenticated
+    caller must get auth's 401, never this 404, or the status code becomes a
+    plugin-name oracle.
     """
     path = request.url.path
-    # parts: ['', 'api', 'plugins', '<name>', ...]
-    parts = path.split("/")
-    plugin_name = parts[3] if path.startswith("/api/plugins/") and len(parts) >= 4 else ""
+    plugin_name = _plugin_api_name(request.scope)
     # Only gate authenticated requests. Unauthenticated ones fall through so
     # auth_middleware / the OAuth gate return 401 first and this route can't
     # be used as a plugin-name oracle. Desktop authenticates with a native ticket.
@@ -419,23 +435,17 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
         or _has_valid_session_token(request)
         or _has_valid_query_token(request, path)
     ):
-        try:
-            # Gate: only serve user plugins that are in plugins.enabled and not in plugins.disabled. This
-            # prevents the frontend from loading JS/CSS from plugins the user has not explicitly activated.
-            # (#46435)
-            from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
-            enabled_set = _get_enabled_set()
-            disabled_set = _get_disabled_set()
-        except Exception:
-            enabled_set = set()
-            disabled_set = set()
-        # Source from the cached plugin list; unknown => user plugin (safe default — blocks).
-        plugin = next((p for p in _get_dashboard_plugins() if p.get("name") == plugin_name), None)
-        source = plugin.get("source") if plugin else "user"
-        blocked = plugin_name in disabled_set or (source == "user" and plugin_name not in enabled_set)
-        if blocked and source in ("user", "bundled"):
-            return JSONResponse(status_code=404, content={"detail": "Plugin not found"})
+        with plugin_request_scope(request.scope):  # a secondary profile's plugins run in its host
+            if await _plugin_api_request_refused(plugin_name):
+                return JSONResponse(status_code=404, content={"detail": "Plugin not found"})
+            hosted = await forward_secondary_plugin_request(request, plugin_name)
+        if hosted is not None:
+            return hosted
     return await call_next(request)
+
+
+# The same gate for WebSocket upgrades: ``@app.middleware("http")`` passes those through untouched.
+app.add_middleware(PluginApiWebSocketGate)
 
 
 @app.middleware("http")
@@ -477,8 +487,11 @@ async def _token_auth_seam(request: Request, call_next):
 
     A registered token route is owned here — authenticate, attach the principal
     + ``token_authenticated`` so downstream gates skip enforcement. Non-token
-    routes pass through untouched.
+    routes pass through untouched. ``/api/peer/`` is owned by the peer-pass check instead.
     """
+    from hermes_cli.dashboard_auth.peer_pass import is_peer_path, peer_pass_middleware
+    if is_peer_path(request.url.path):  # only a peer pass opens it; nothing else is tried
+        return await peer_pass_middleware(request, call_next)
     from hermes_cli.dashboard_auth.native_http import authenticate_native_http, native_profile_scope
     from hermes_cli.dashboard_auth.token_auth import token_auth_middleware
     rejection = await authenticate_native_http(request)
@@ -547,27 +560,38 @@ async def _dashboard_health_middleware(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception as exc:
-        DASHBOARD_HEALTH.record_error(type(exc).__name__, request.url.path)
+        from storage_user_copy import error_type_name
+        DASHBOARD_HEALTH.record_error(error_type_name(exc), request.url.path)
         raise
-    if response.status_code >= 500:
+    # /api/peer answers carry the gateway api_server's status (asleep, restarting, its own errors),
+    # which the gateway component reports; they say nothing about this process.
+    from hermes_cli.dashboard_auth.peer_pass import is_peer_path
+    if response.status_code >= 500 and not is_peer_path(request.url.path):
         DASHBOARD_HEALTH.record_error(f"http_{response.status_code}", request.url.path)
     return response
 
 
-# CORS: restrict to localhost origins only.  The web UI is intended to run
-# locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
-# read/modify config and secrets.
+def _is_trusted_local_origin(origin: str) -> bool:
+    """The dashboard app's :func:`hermes_cli.web_server_boundary.is_trusted_local_origin`."""
+    from hermes_cli.web_server_boundary import is_trusted_local_origin
+    return is_trusted_local_origin(origin, app.state)
+
+
+class _LocalOriginCORSMiddleware(CORSMiddleware):
+    def is_allowed_origin(self, origin: str) -> bool:
+        return _is_trusted_local_origin(origin)
+
+
+# CORS: the trusted loopback origins only (web_server_boundary.is_trusted_local_origin, the same
+# rule the WebSocket Origin gate applies). allow_origins=["*"] on 0.0.0.0 would let any website
+# read/modify config and secrets; any local port would let a page on another port read
+# index.html's session token.
 #
 # Registered AFTER all ``@app.middleware("http")`` decorators so it is the
 # *outermost* middleware (Starlette's onion: last-added runs first).
 # Without this, an OPTIONS preflight from a cross-origin SPA hits the auth
 # middlewares before CORS can answer, producing 401 instead of 204 + headers.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(_LocalOriginCORSMiddleware, allow_methods=["*"], allow_headers=["*"])
 
 
 # Authenticated-route self-test: one in-process request per minute against a
@@ -645,7 +669,7 @@ elif _GATEWAY_HEALTH_TIMEOUT > _GATEWAY_HEALTH_TIMEOUT_MAX:
 
 
 _MANAGED_FILE_MAX_BYTES = 100 * 1024 * 1024
-_FS_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
+_FS_DATA_URL_MAX_BYTES = WEBAPP_ATTACHMENT_MAX_BYTES
 # Multipart uploads stream to a temp file in fixed chunks and rename into
 # place: constant memory, no base64 inflation, no proxy body-size 502s (NS-501).
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
@@ -662,12 +686,6 @@ def get_install_id() -> Optional[str]:
     return _shared_get_install_id(cache=_INSTALL_ID_CACHE)
 
 
-# Serializes config.yaml read-modify-write cycles for handlers on worker threads
-# (asyncio.to_thread): config.py's _CONFIG_LOCK covers each load/save call, not
-# the span between them, so two off-loop updates could drop each other's writes.
-# RLock so nested helpers that also take it can't self-deadlock.
-_CONFIG_MUTATION_LOCK = threading.RLock()
-
 # A finished ``gateway-restart`` child does not mean the gateway is back (it
 # exits once the restart is handed off), so in-flight reuse stops coalescing
 # exactly when a stale frontend re-fires every few seconds (#89034: 77 restarts,
@@ -681,7 +699,7 @@ GATEWAY_RESTART_COOLDOWN_SECONDS = 10.0
 _LAST_GATEWAY_RESTART: Optional[tuple[float, subprocess.Popen, tuple[str, ...]]] = None
 
 
-def _spawn_gateway_restart(profile: Optional[str] = None) -> tuple[subprocess.Popen, bool]:
+def _spawn_gateway_restart(profile: Optional[str] = None, *, interrupt: bool = False) -> tuple[subprocess.Popen, bool]:
     """Spawn ``hermes gateway restart``, reusing an in-flight or recent restart.
 
     Concurrent children race each other on the kill-and-start path, so a live
@@ -694,7 +712,10 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> tuple[subprocess.Po
     """
     global _LAST_GATEWAY_RESTART
 
-    subcommand = _gateway_mod._gateway_subcommand(profile, "restart")
+    # ``interrupt``: ``POST /api/gateway/restart`` is the user-commanded force path that supersedes a
+    # drain (D6 of the safe-shutdown plan, 19b26244046); a config-save auto-restart is not, and its
+    # child refuses while sessions are live.
+    subcommand = _gateway_mod._gateway_subcommand(profile, "restart") + ["--interrupt"] * interrupt
     existing = _gateway_mod._ACTION_PROCS.get("gateway-restart")
     if existing is not None and existing.poll() is None:
         existing_command = _gateway_mod._ACTION_COMMANDS.get("gateway-restart")
@@ -746,7 +767,12 @@ _dashboard_plugins_cache: Optional[list] = None
 
 
 def _get_dashboard_plugins(force_rescan: bool = False) -> list:
+    """The active scope's dashboard plugins: a secondary profile's are its own (PLG-3)."""
     global _dashboard_plugins_cache
+    from hermes_cli.web_server_plugin_profiles import profile_dashboard_plugins, secondary_profile_home
+    home = secondary_profile_home()
+    if home is not None:
+        return profile_dashboard_plugins(home, force_rescan)
     stale = _dashboard_plugins_cache is None or force_rescan or any(
         not Path(p["_dir"]).is_dir() for p in _dashboard_plugins_cache
     )
@@ -771,20 +797,38 @@ from hermes_cli.web_routers import (
     config_env as _config_env_routes,
     models as _models_routes,
     messaging as _messaging_routes,
+    messaging_relay as _messaging_relay_routes,
     oauth as _oauth_routes,
     cron as _cron_routes,
     mcp as _mcp_routes,
     ops as _ops_routes,
+    transfer as _transfer_routes,
     skills as _skills_routes,
     tools as _tools_routes,
     analytics as _analytics_routes,
     chat_ws as _chat_ws_routes,
     chat_workspaces as _chat_workspaces_routes,
     dashboard_ui as _dashboard_ui_routes,
+    webapp as _webapp_routes,
     shared_metrics as _shared_metrics_routes,
+    delegation as _delegation_routes,
+    webapp_access as _webapp_access_routes,
+    ui_preferences as _ui_preferences_routes,
+    gateway_connections as _gateway_connections_routes,
+    gateway_connections_reach as _gateway_connections_reach_routes,
+    webapp_relay_proxy as _webapp_relay_proxy_routes,
+    peer as _peer_routes,
 )
 
+import hermes_cli.web_routers.desktop_plugins as _desktop_plugin_routes
+import hermes_cli.web_routers.uploads as _upload_routes
+from fastapi import Depends as _Depends
+from hermes_cli.web_server_surface import route_on as _route_on
+
 app.include_router(_files_routes.router)
+# The Webapp's routes exist only on the surfaces whose policy names them (404 elsewhere).
+app.include_router(_upload_routes.router, dependencies=[_Depends(_route_on("browser_files"))])
+app.include_router(_desktop_plugin_routes.router, dependencies=[_Depends(_route_on("desktop_plugins"))])
 app.include_router(_git_routes.router)
 app.include_router(_local_models_routes.router)
 app.include_router(_status_routes.router)
@@ -800,12 +844,14 @@ app.include_router(_config_env_routes.config_router)
 app.include_router(_models_routes.router)
 app.include_router(_config_env_routes.router)
 app.include_router(_messaging_routes.router)
+app.include_router(_messaging_relay_routes.router)
 app.include_router(_oauth_routes.router)
 app.include_router(_sessions_routes.manage_router)
 app.include_router(_status_routes.logs_router)
 app.include_router(_cron_routes.router)
 app.include_router(_mcp_routes.router)
 app.include_router(_ops_routes.router)
+app.include_router(_transfer_routes.router)
 app.include_router(_skills_routes.hub_router)
 app.include_router(_profiles_routes.router)
 app.include_router(_skills_routes.router)
@@ -814,7 +860,16 @@ app.include_router(_analytics_routes.router)
 app.include_router(_chat_ws_routes.router)
 app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
+app.include_router(_webapp_routes.router)
+# The saved-connections proxy checks its surface per request (WebSocket routes take no Request).
+app.include_router(_webapp_relay_proxy_routes.router)
+app.include_router(_peer_routes.router)
 app.include_router(_shared_metrics_routes.router)
+app.include_router(_delegation_routes.router)
+app.include_router(_webapp_access_routes.router, dependencies=[_Depends(_route_on("web_access"))])
+app.include_router(_ui_preferences_routes.router, dependencies=[_Depends(_route_on("ui_preferences"))])
+app.include_router(_gateway_connections_routes.router, dependencies=[_Depends(_route_on("gateway_connections"))])
+app.include_router(_gateway_connections_reach_routes.router, dependencies=[_Depends(_route_on("gateway_connections"))])
 
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
 # mount before the SPA catch-all so /{full_path:path} doesn't swallow them. Auth
@@ -829,8 +884,9 @@ mount_spa(app)
 def _no_auth_provider_message(host: str) -> str:
     """Actionable SystemExit text for a gated bind with no registered auth provider.
 
-    Names the exact trigger: on a loopback bind the ONLY trigger is
-    dashboard.public_url, so print the offending URL and the remove-it exit.
+    Names the exact trigger: on a loopback bind the ONLY trigger is the public URL
+    (dashboard.public_url, or webapp.public_url for the gateway's Webapp listener),
+    so print the offending URL and the remove-it exit.
     Bundled providers expose ``LAST_SKIP_REASON`` so an installed-but-
     unconfigured provider is not reported as merely "no providers".
     """
@@ -843,25 +899,30 @@ def _no_auth_provider_message(host: str) -> str:
     except Exception:
         pass
 
+    # A listener that declares its own public URL (the gateway's Webapp: webapp.public_url) is
+    # gated by that setting, never by dashboard.public_url.
+    own_url = getattr(app.state, "listener_public_url", None)
+    setting = "dashboard.public_url" if own_url is None else "webapp.public_url"
     if host in _LOOPBACK_HOST_VALUES:
-        public_url = ""
-        try:
-            from hermes_cli.dashboard_auth.prefix import resolve_public_url
+        public_url = own_url or ""
+        if own_url is None:
+            try:
+                from hermes_cli.dashboard_auth.prefix import resolve_public_url
 
-            public_url = resolve_public_url()
-        except Exception:
-            pass
+                public_url = resolve_public_url()
+            except Exception:
+                pass
         gate_reason = (
-            f"dashboard.public_url is set to "
+            f"{setting} is set to "
             f"{public_url or '<a non-loopback URL>'} — an "
             f"operator-declared external URL engages the auth gate "
             f"even on a loopback bind"
         )
         fix_hint = (
             "If this dashboard should be LOCAL-ONLY (no reverse "
-            "proxy), remove dashboard.public_url from config.yaml "
-            "(and unset HERMES_DASHBOARD_PUBLIC_URL) to restore the "
-            "unauthenticated loopback mode.\n"
+            f"proxy), remove {setting} from config.yaml "
+            + ("(and unset HERMES_DASHBOARD_PUBLIC_URL) " if own_url is None else "")
+            + "to restore the unauthenticated loopback mode.\n"
         )
     else:
         gate_reason = f"the auth gate engages on non-loopback binds ({host})"
@@ -876,8 +937,13 @@ def _no_auth_provider_message(host: str) -> str:
         "print(hash_password('your-password'))\")\n"
         "  • OAuth: run `hermes dashboard register` (Nous Portal) or "
         "install a DashboardAuthProvider plugin.\n"
+        "  • Deployment token: provision HERMES_DASHBOARD_SESSION_TOKEN "
+        "(a literal token, or 'file:<path>' naming a secret-manager-decrypted "
+        "token file) — the bundled session-token provider then authorizes "
+        "bearer REST + /api/ws ?token= for token-mode clients such as the "
+        "Desktop's remote-gateway 'Session token' field.\n"
         "There is no unauthenticated public-dashboard option. For "
-        "local-only use, bind 127.0.0.1 and leave dashboard.public_url "
+        f"local-only use, bind 127.0.0.1 and leave {setting} "
         "unset; a configured external public URL requires auth even "
         "when a local reverse proxy reaches a loopback backend."
     )
@@ -926,10 +992,16 @@ def _configure_auth_gate(
     # reverse-proxy deployments; resolved once so middleware never reloads
     # config. A non-loopback public hostname engages the gate even on a loopback
     # backend, else the SPA's local session token becomes remotely reachable.
-    app.state.trusted_public_hosts = _dashboard_public_hosts()
+    # A listener that declares its own public URL (``listener_public_url``: the
+    # gateway's, from webapp.public_url) is judged by that one instead.
+    own_url = getattr(app.state, "listener_public_url", None)
+    app.state.trusted_public_hosts = (
+        _dashboard_public_hosts() if own_url is None else public_url_hosts(own_url))
+    app.state.trusted_public_origins = (  # its exact loopback origin: a proxy on another local port
+        _dashboard_public_origins() if own_url is None else public_url_origins(own_url))
     # auth_required drives middleware, SPA-token injection, WS auth, the
     # startup refusal, the gate-on banner and uvicorn proxy_headers.
-    if _desktop_loopback_auth_exempt(host, ssh_session_token, ssh_owner_nonce):
+    if own_url is None and _desktop_loopback_auth_exempt(host, ssh_session_token, ssh_owner_nonce):
         # public_url describes the operator's PUBLIC deployment, not this
         # Desktop-owned loopback backend (#96490), which authenticates with the
         # per-spawn session token the ticket-only gate would refuse.
@@ -1010,8 +1082,9 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
         served_app = wrap_asgi_with_ws_tracking(app, app.state.ssh_isolated_clients)
         ping_interval, ping_timeout = TUNNEL_WS_PING_INTERVAL_S, TUNNEL_WS_PING_TIMEOUT_S
 
+    _uvicorn_console_logging()  # log_config=None: uvicorn's dictConfig would close every live handler
     config = uvicorn.Config(
-        served_app, host=host, port=port, log_level="warning",
+        served_app, host=host, port=port, log_level="warning", log_config=None,
         # Off by default so _ws_client_is_allowed sees the real peer, not
         # X-Forwarded-For. Gated mode runs behind a TLS terminator and needs
         # X-Forwarded-Proto for cookie Secure flags.
@@ -1021,6 +1094,9 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
         forwarded_allow_ips=_dashboard_forwarded_allow_ips(_dash_cfg),
         ws_ping_interval=ping_interval,
         ws_ping_timeout=ping_timeout,
+        # Per-frame zlib on the loop buys nothing for a local client (build_listener_server); a peer
+        # behind a tunnel (SSH-isolated backend, public gate) keeps it.
+        ws_per_message_deflate=ssh_isolated or not _is_loopback or bool(app.state.auth_required),
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
         # Desktop sends a single SIGTERM and escalates to SIGKILL ~5s later;
         # uvicorn's default (None) waits on lingering ASGI tasks forever, so a
@@ -1344,7 +1420,14 @@ def _run_serve(serve, config, host: str, port: int) -> None:
         raise
 
 
-def start_server(
+def start_server(*args, **kwargs):
+    """Run the dashboard/serve backend; no lazy install may prompt on an inherited TTY (#125607)."""
+    from pm.extras import suppress_interactive_install_prompts
+    with suppress_interactive_install_prompts():
+        return _start_server_runtime(*args, **kwargs)
+
+
+def _start_server_runtime(
     host: str = "127.0.0.1",
     port: int = 9119,
     open_browser: bool = True,
@@ -1371,6 +1454,8 @@ def start_server(
     until the ready sentinel is written so its SDK import can't hold the GIL
     against the pre-bind path.
     """
+    from hermes_cli.update_proxy_env import restore_user_proxy_env
+    restore_user_proxy_env()  # a backend an update replayed keeps the user's proxy env, not the update's
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 
@@ -1394,9 +1479,14 @@ def start_server(
     # host_header_middleware validates Host against this (DNS rebinding,
     # GHSA-ppp5-vxwm-4cf7).
     app.state.bound_host = host
+    # Only the gateway's Webapp listener binds a loopback socket beside a specific address.
+    app.state.loopback_companion = None
     # The SPA bootstrap reads this so profile-less deep links (/chat?resume=<id>) inherit the
     # launcher's preselected profile instead of silently running in the launch scope (#73085).
     app.state.initial_profile = str(initial_profile or "")
+    # Before multi-profile activation can mirror a turn's profile into HERMES_HOME.
+    from hermes_cli.isolated_scope import record_launch_scope
+    record_launch_scope(isolated=isolated, desktop_owned=is_desktop_owned_backend())
 
     config, server = _build_uvicorn_server(host, port, ssh_isolated=bool(ssh_session_token))
 

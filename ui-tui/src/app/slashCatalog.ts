@@ -1,8 +1,8 @@
+import type { CommandsCatalogResponse } from '@hermes/shared/gateway-types'
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useEffect } from 'react'
 
-import type { CommandsCatalogResponse } from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { SlashCatalog } from '../types.js'
@@ -34,6 +34,22 @@ export const loadSlashCatalog = (rpc: GatewayRpc, sid: null | string, setCatalog
       }
     })
     .catch(e => turnController.pushActivity(t('gatewayMsg.startup.commandCatalogUnavailable', rpcErrorMessage(e)), 'info'))
+
+/** `skills.changed`: a skill was installed or removed from another terminal. Refetch the palette
+ *  from the gateway, which rescans; this client never reads the skills dir itself. True when handled. */
+export function refreshSlashCatalogOnSkillsChange(
+  ev: { type: string },
+  rpc: GatewayRpc,
+  setCatalog: (catalog: null | SlashCatalog) => void
+): boolean {
+  if (ev.type !== 'skills.changed') {
+    return false
+  }
+
+  void loadSlashCatalog(rpc, $uiState.get().sid, setCatalog)
+
+  return true
+}
 
 /** The slash catalog for the live session (or the launch workspace before one exists). */
 export const $slashCatalog = atom<null | SlashCatalog>(null)

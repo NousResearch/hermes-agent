@@ -136,7 +136,7 @@ def test_start_with_collection_off_purges_receipts_unreported(marks, monkeypatch
     assert marks.rows == []
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="runs the real install.sh")
+@pytest.mark.platforms("posix")
 def test_real_install_sh_ladder_leaves_only_closed_tokens(tmp_path):
     """The real ladder with git missing from PATH fails in prerequisites and parks one closed receipt."""
     tools = tmp_path / "bin"

@@ -388,15 +388,16 @@ def _quiet():
 
 class ReadFaults:
     """Counts every read of config.yaml through the lowest-level YAML read seam
-    (``hermes_cli.config.fast_safe_load`` — every config.yaml reader in hermes_cli.config,
-    ``read_user_config_raw`` and therefore tui_gateway go through it) and fails chosen reads with
-    a transient ``EMFILE`` on an otherwise intact file."""
+    (``utils.fast_safe_load``, called by the file config backend that every config.yaml reader —
+    hermes_cli.config, ``read_user_config_raw`` and therefore tui_gateway — goes through) and fails
+    chosen reads with a transient ``EMFILE`` on an otherwise intact file."""
 
     def __init__(self, monkeypatch, config_path: Path):
         self.path = os.path.abspath(str(config_path))
         self.count = 0
         self.fail_at: set[int] = set()
-        real = C.fast_safe_load
+        import utils
+        real = utils.fast_safe_load
 
         def wrapped(stream):
             name = getattr(stream, "name", None)
@@ -405,7 +406,7 @@ class ReadFaults:
                 if self.count in self.fail_at:
                     raise OSError(errno.EMFILE, "Too many open files (C18 injected)")
             return real(stream)
-        monkeypatch.setattr(C, "fast_safe_load", wrapped)
+        monkeypatch.setattr(utils, "fast_safe_load", wrapped)
 
     def arm(self, *ks: int) -> None:
         self.count, self.fail_at = 0, set(ks)
@@ -543,6 +544,10 @@ def test_p2_every_documented_key_is_settable_and_changes_exactly_one_key(chunk, 
         if blocked:  # a scalar sits where this key needs a mapping: the guard refuses by design
             continue
         s, want = _set_value_for(path, default, current, rng)
+        from hermes_cli.config_secret_refs import config_path_api_key_env
+        secret_env = config_path_api_key_env(list(path), case.tree)
+        if secret_env:  # a credential is stored in .env and written as its reference (#77471)
+            want = f"${{{secret_env}}}"
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):

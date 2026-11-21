@@ -6,7 +6,7 @@ Fresh executor/helper threads retain the registered interpreter's owner boundary
 import os
 import threading
 
-from agent.runtime_session_store import WorkerPersistenceError, is_worker_process
+from agent.runtime_session_store import WorkerPersistenceError, call_off_event_loop, is_worker_process
 
 _store = None
 _lock = threading.Lock()
@@ -46,14 +46,16 @@ class WorkerDelegationLedger:
         from tools.async_delegation import _ROUTING_KEYS
         if any(record.get(key) for key in _ROUTING_KEYS):
             raise WorkerPersistenceError('unsupported_producer')
-        return self.store._apply('delegation.dispatch', {
+        # Reached from a tool callback, on Relay's loop (#139029).
+        return call_off_event_loop(self.store._apply, 'delegation.dispatch', {
             key: record.get(key, '') for key in ('delegation_id', 'parent_session_id', 'session_key',
                 'origin_ui_session_id', 'origin_session_id', 'dispatched_at')} | {'task': {
             key: record[key] for key in ('goal', 'goals', 'context', 'toolsets', 'role', 'model', 'is_batch', 'task_indexes')
             if key in record}})['value']
 
-    def complete(self, event, result):
-        return self.store._apply('delegation.complete', {'event': event, 'result': result})['value']
+    def complete(self, event, result, delivery='pending'):
+        return self.store._apply('delegation.complete', {'event': event, 'result': result}
+                                 | ({'delivery': delivery} if delivery != 'pending' else {}))['value']
 
     def child(self, delegation_id, entry):
         return self.store._apply('delegation.child', {'delegation_id': delegation_id, 'entry': entry})['value']
@@ -77,4 +79,4 @@ class WorkerDelegationLedger:
         return self.store._apply('delegation.drop', {'delegation_id': delegation_id, 'claim_id': claim_id})['value']
 
     def unscheduled(self, delegation_id):
-        return self.store._apply('delegation.unscheduled', {'delegation_id': delegation_id})['value']
+        return call_off_event_loop(self.store._apply, 'delegation.unscheduled', {'delegation_id': delegation_id})['value']

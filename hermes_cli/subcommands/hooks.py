@@ -33,7 +33,7 @@ def build_hooks_parser(subparsers, *, cmd_hooks: Callable) -> None:
 
     _hk_revoke = hooks_subparsers.add_parser(
         "revoke", aliases=["remove", "rm"],
-        help="Remove a command's allowlist entries (a running gateway drops it at the next local session open)")
+        help="Remove a command's allowlist entries (a running gateway drops it within about 30 seconds)")
     _hk_revoke.add_argument(
         "command", help="The exact command string to revoke (as declared in config.yaml)")
 

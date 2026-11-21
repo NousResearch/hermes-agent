@@ -4,6 +4,7 @@ The mailbox is a delivery receipt, not an execution queue. A committed canonical
 admission is the only consumer; unknown execution is never retried as inference.
 """
 import asyncio
+from collections.abc import Mapping
 from functools import partial
 import logging
 from pathlib import Path
@@ -11,11 +12,14 @@ import time
 
 from agent.turn_author import parse_turn_author
 
-from gateway.session_contract import Principal, SessionRef
+from gateway.session_contract import SessionActor, SessionRef
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
-from hermes_state_runtime import RuntimeStoreError, get_session_admission
-from tools.bot_live_delivery import _delivery_id, _read
+from gateway.session_persistence import authority_persistence, owner_rule
+from persistence.core.errors import AuthorityRefusal
+from tools.bot_failure_reasons import HELD_NOT_SENT, UNKNOWN
+from tools.bot_live_delivery import _TERMINAL, _delivery_id, _read
+logger = logging.getLogger(__name__)
 from gateway.session_bot_mailbox import (mailbox_lock, read_receipt, write_receipt,
     scan_receipts, remember_receipt, track_receipt_task, withdraw_pin, refuse_pin, requeue_pin)
 
@@ -153,10 +157,7 @@ def _pin_committed(authority, record, request_id):
     admissions moved to retired receipts keyed by the route principal the pin never recorded)."""
     if _admission_at(authority, record['session_id'], request_id) is not None:
         return True
-    from hermes_state_mutation_retirement import RETIRED_PREFIX
-    with authority.db._read_ctx() as conn:
-        return conn.execute('SELECT 1 FROM state_meta WHERE key=?',
-                            (RETIRED_PREFIX + record['session_id'],)).fetchone() is not None
+    return authority_persistence(authority).runtime.retired_session(record['session_id'])
 
 
 def _legacy_order(path, record):
@@ -168,59 +169,216 @@ def _legacy_order(path, record):
 
 def _home(authority, actor, profile):
     from gateway.session_authorities import served_profile_name
-    home = Path(authority.db.db_path).parent.resolve()
+    from tools.bot_mode_probe import _handle, _hermes_root, _roster
+    home = authority_persistence(authority).scope.profile_dir
     name = served_profile_name(home)
-    if actor.profile_id != authority.profile_id or profile not in (name, 'hermes' if name == 'default' else name):
-        raise RuntimeStoreError('profile_mismatch')
+    handle = _handle(name, [n for n, _d in _roster(_hermes_root(home))]) if name == 'default' else name
+    if actor.profile_id != authority.profile_id or profile not in (name, handle):
+        raise AuthorityRefusal('profile_mismatch')
     if 'session:submit' not in actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     return home
 
 
 async def _target(authority, actor):
-    ref = None
-    if authority.db.get_session_by_title('Bot Chat') is None:
-        ref = await _create_bot_chat(authority, actor)  # None: a concurrent delivery created it first
+    ref = lane = None
+    store = authority_persistence(authority)
+    row = store.sessions.get_by_title('Bot Chat')
+    if row is None or (displaced := displaceable_bot_chat(authority, row, actor.subject)) is not None:
+        # None: a concurrent delivery created it first. A title held by an API conversation no FIFO
+        # can own is moved aside first, under the same lock (MSG-21, #140769).
+        ref = await _create_bot_chat(authority, actor, displace=None if row is None else displaced)
+    if ref is None and (row := store.sessions.get_by_title('Bot Chat')) is None:
+        # Moved aside since it was read: a lane's /new frees a handed-off Bot Chat's title off the
+        # titled-create lock (``release_superseded_bot_chat``). None again: a concurrent delivery minted.
+        if (ref := await _create_bot_chat(authority, actor)) is None:
+            row = store.sessions.get_by_title('Bot Chat')
     if ref is None:
-        row = authority.db.get_session_by_title('Bot Chat')
-        tip = authority.db.get_compression_tip(row['id'])
-        target = authority.db.get_session(tip)
+        target = store.sessions.get(store.lineage.tip(row.session_id))
         if target is None:
-            raise RuntimeStoreError('not_found')
+            raise AuthorityRefusal('not_found')
         from gateway.session_local_migration import resolve_local_target
-        ref = resolve_local_target(authority, actor, target['id'])
+        from gateway.session_route_recovery import handed_off_ref
+        # A Bot Chat handed off to a messaging lane stays the bot's chat there: delivery follows it.
+        ref = lane = handed_off_ref(authority, target.session_id)
+        if ref is None:
+            ref = resolve_local_target(authority, actor, target.session_id)
     authority.authorize(actor, ref, 'session:submit')
     live = authority.sessions[ref.session_id]
     entry = authority.runner.session_store.lookup_by_session_key(live.route)
-    if live.source.platform != Platform.LOCAL or entry is None:
-        raise RuntimeStoreError('admission_conflict')
+    if (live.source.platform != Platform.LOCAL and lane is None) or entry is None:
+        raise AuthorityRefusal('admission_conflict')
     return ref, live, entry
 
 
-async def _create_bot_chat(authority, actor):
-    """No Bot Chat yet: mint it the way ``hermes chat --in ~ -c "Bot Chat" --create-if-missing``
+def displaceable_bot_chat(authority, row, subject=None):
+    """The id holding the canonical title when the Bot Chat is a conversation this delivery can
+    never adopt, rename (the title is its identity) or rename over the API, so it would refuse
+    every delivery for good: an ``api_`` row an older gateway or a plain ``POST /api/sessions``
+    minted, a messaging row, or a lineage whose compression tip (the row a delivery adopts) is
+    unbound local history ``_kept_local_history`` does not keep for the delivering *subject*.
+    Else None: a bound local chat and kept history are never moved. *row* is a ``SessionRecord`` or a
+    ``sessions`` row mapping."""
+    row = _row_fields(row)
+    if str(row.get('chat_id') or '').startswith('local-'):
+        return None  # every delivery asks: a bound local chat answers from its own row, with no read
+    store = authority_persistence(authority)
+    tip = store.sessions.get(store.lineage.tip(row['id']))
+    tip = None if tip is None else _row_fields(tip)
+    from gateway.session_route_recovery import handed_off_ref, superseded_hand_off
+    if tip is not None and (lane := handed_off_ref(authority, tip['id'])) is not None:
+        # Handed off (``/handoff``): still the bot's chat while its lane holds it; history once that
+        # lane moved on (``/new``), so a fresh Bot Chat takes the title (#143286).
+        return row['id'] if superseded_hand_off(authority, lane) else None
+    for candidate in (row, tip):
+        if candidate is None or str(candidate.get('chat_id') or '').startswith('local-'):
+            return None
+        chat_id = str(candidate.get('chat_id') or '')
+        marks = store.bindings.binding_marks(chat_id or candidate['id'])
+        if marks.policy or marks.legacy:
+            return None
+    # Only the tip is adopted (``_target``), so only the tip decides: a root the owner could adopt
+    # above a tip nobody can would otherwise hold the title and refuse every delivery.
+    return None if _kept_local_history(store.sessions.store_owner(), tip, owner_rule(), subject) else row['id']
+
+
+def _row_fields(row):
+    """The ``sessions`` row fields the Bot Chat checks read, as a mapping (a row mapping passes through)."""
+    from gateway.session_local_migration import legacy_row
+    return row if isinstance(row, Mapping) else {'id': row.session_id, **legacy_row(row)}
+
+
+def release_superseded_bot_chat(persistence, store, route, session_id):
+    """The lane on *route* moved off *session_id* (its ``/new``, a reset, another ``/resume`` or
+    ``/handoff``). A Bot Chat handed off there (``/handoff``) is that lane's history now: free the
+    canonical title at once (``_displace_bot_chat``), so the Bots roster and its registry lookup both
+    stop naming it and the next click or delivery mints a fresh Bot Chat (#143286). Every route
+    transition calls this, and so does boot (an older build's transition). *persistence* is the storage
+    interface handle of the store holding *session_id*."""
+    from gateway.session_route_recovery import _messaging_platform
+    from persistence.authority.vocabulary import LEGACY_LOCAL_SOURCES
+    root = (persistence.lineage.lineage(session_id) or [session_id])[0]
+    row = persistence.sessions.get(root)
+    if (row is None or row.title != 'Bot Chat' or row.created_source not in LEGACY_LOCAL_SOURCES
+            or _messaging_platform(row.source) is None):
+        return
+    with store._lock:
+        entry = store._entry_locked(route)
+    if entry is None or (persistence.lineage.lineage(entry.session_id) or [entry.session_id])[0] == root:
+        return  # the lane still holds it
+    if _displace_bot_chat(persistence, root):
+        logger.info("Bot Chat %s was handed off to %s and that lane moved on: moved it aside", root, route)
+
+
+def release_superseded_bot_chat_at_boot(persistence, store):
+    row = persistence.sessions.get_by_title('Bot Chat')
+    if row is not None:
+        tip = persistence.sessions.get(persistence.lineage.tip(row.session_id)) or row
+        release_superseded_bot_chat(persistence, store, tip.session_key, row.session_id)
+
+
+def _kept_local_history(own_profile, row, rule, subject=None):
+    """Whether an unbound row is local history the Bot Chat door must leave in place: a CLI, TUI
+    or Desktop row the delivering *subject* or the host owner adopts by the native open's own rule
+    (``validate_legacy_row``: unstamped, or stamped with one of that adopter's identities), or a
+    Desktop row a foreign login stamped with its label (#140183: kept even with a route column or
+    another profile's name). Any other local-source row (a route column left by a crash or
+    reconnect, another profile's stamp, a stamp neither adopter owns, or outside Desktop a foreign
+    label) is not: kept, it held the title and refused every delivery for good (#141243, #143715).
+    *subject* None: the row's own ``auth:v1`` or owner-label stamp is the adopter, as a peer DM's
+    turn enters the chat."""
+    from gateway.session_identity import parse_authenticated_subject
+    from persistence.authority.vocabulary import LEGACY_LOCAL_SOURCES
+    from session_rules.legacy_local import legacy_account_label, same_owner, validate_legacy_row
+    if row.get('source') not in LEGACY_LOCAL_SOURCES:
+        return False
+    user_id = row.get('user_id')
+    owner = rule.host_subject
+    if (user_id and not legacy_account_label(row) and not same_owner(user_id, owner, rule)
+            and not (subject and same_owner(user_id, subject, rule))
+            and parse_authenticated_subject(user_id) is None):
+        # A label neither adopter owns: Desktop keeps it (#140183); elsewhere no open adopts it.
+        return row.get('source') == 'desktop'
+    # A forwarded login (control socket) adopts its own stamp; the owner's history is never moved
+    # aside for a delivery that cannot adopt it.
+    for adopter in dict.fromkeys((user_id if subject is None else subject, owner)):
+        try:
+            validate_legacy_row(own_profile, row, subject=adopter, rule=rule)
+        except AuthorityRefusal:
+            continue
+        return True
+    return False
+
+
+def _moved_aside_by_this_door(authority, holder, pinned):
+    """Whether *pinned*, the Bot Chat the producer discovered, is the title holder this delivery's
+    ``_target`` just moved aside. The producer pins the id it read before asking, so the first
+    delivery after a move would otherwise be refused ``admission_conflict`` for the chat the door
+    itself replaced, and land only on the next beat."""
+    if holder is None:
+        return False
+    store = authority_persistence(authority)
+    if pinned not in (holder.session_id, store.lineage.tip(holder.session_id)):
+        return False
+    current = store.sessions.get(holder.session_id)
+    return str((current.title if current is not None else None) or '').startswith('Bot Chat (')
+
+
+def _displace_bot_chat(store, sid):
+    """Free the canonical title from *sid*: it keeps its id and history under a visible name the
+    user can find, rename or delete: ``Bot Chat (API <id>)`` for an API conversation, else named by
+    its platform (``Bot Chat (telegram <id>)``). False when the title moved meanwhile."""
+    from persistence.conversation.sessions import MAX_TITLE_LENGTH
+    row = store.sessions.get(sid)
+    source = str((row.source if row is not None else None) or '')
+    label = 'API' if source in ('', 'api_server', 'bot_peer_dm') else source
+    name = f'Bot Chat ({label} {sid})'
+    if len(name) > MAX_TITLE_LENGTH:
+        name = name[:MAX_TITLE_LENGTH - 2] + '…)'
+    return store.sessions.retitle_canonical_bot_chat(sid, name)
+
+
+async def _create_bot_chat(authority, actor, *, displace=None):
+    """No Bot Chat yet (or *displace*, an API conversation holding its title, is moved aside first): mint it the way ``hermes chat --in ~ -c "Bot Chat" --create-if-missing``
     did on the CLI lane this door replaced, so a fresh profile's first delivery has somewhere
     to land instead of being recorded as failed. Same owner step as ``session.create`` with a
     title: lookup, creation and title run under the authority's titled-create lock, with the
     commits off the owner loop (N90). Creation is the actor's own capability; a submit-only
     principal (owner recovery) still gets ``not_found``."""
     if 'session:create' not in actor.capabilities:
-        raise RuntimeStoreError('not_found')
-    from gateway.session_local import stage_local_session
+        raise AuthorityRefusal('not_found')
+    from gateway.session_local import commit_local_session, stage_local_session, staged_creation_follows
     from gateway.session_local_recovery import restore_local_session
     from gateway.session_local_title import title_new_session
     from gateway.session_runtime_workers import tracked_write
-    from hermes_state_local import commit_local_session
+    store = authority_persistence(authority)
     lock = getattr(authority, '_titled_create_lock', None)
     if lock is None:
         lock = authority._titled_create_lock = asyncio.Lock()
     async with lock:
-        if authority.db.get_session_by_title('Bot Chat') is not None:
-            return None
-        ref = stage_local_session(authority, actor, {
-            'request_id': _bot_chat_creation_id(authority, actor), 'source': 'cli', 'cwd': str(Path.home())})
+        held = store.sessions.get_by_title('Bot Chat')
+        if held is not None:
+            if (displace is None or held.session_id != displace
+                    or displaceable_bot_chat(authority, held, actor.subject) != displace):
+                return None
+            logger.warning("Bot Chat title held by %s, a conversation no FIFO can own: moving it aside", displace)
+            # False: the title moved since the check. A lane's ``/new`` frees a handed-off Bot Chat's
+            # title from the store's worker thread, outside this lock (``release_superseded_bot_chat``):
+            # nobody holds it then, so this delivery mints the replacement.
+            if (not await tracked_write(authority, partial(_displace_bot_chat, store, displace))
+                    and store.sessions.get_by_title('Bot Chat') is not None):
+                return None
+        # The Bot Chat follows its profile whoever mints it (a Bot or cron delivery, a peer DM),
+        # the same contract Desktop's create asks for. A later profile change reaches it.
+        request_id = _bot_chat_creation_id(authority, actor)
+        params = {'request_id': request_id, 'source': 'cli', 'cwd': str(Path.home()),
+                  'follow_profile_config': True}
+        # A creation staged by an older build, before this flag, resumes as it was staged.
+        if not staged_creation_follows(authority, actor, request_id):
+            params.pop('follow_profile_config')
+        ref = stage_local_session(authority, actor, params)
         if isinstance(ref, dict):
-            await tracked_write(authority, partial(commit_local_session, authority.db, epoch=authority.epoch, receipt=ref))
+            await tracked_write(authority, partial(commit_local_session, store, epoch=authority.epoch, receipt=ref))
             ref = restore_local_session(authority, ref['session_id'])
         await tracked_write(authority, partial(title_new_session, authority, ref, 'Bot Chat'))
         return ref
@@ -229,47 +387,84 @@ async def _create_bot_chat(authority, actor):
 def _bot_chat_creation_id(authority, actor):
     """The first creation identity whose session is not spent. Generation 0 keeps the historical
     ``bot-chat:<profile>`` id; a generation is spent once its session was deleted (retired: a retry
-    must never resurrect it) or renamed (titled, but not "Bot Chat" — or the lookup had found it),
-    and a replacement takes the next one. Derived from durable rows only, so a restart and two
-    concurrent deliveries (serialized by the titled-create lock) pick the same identity. An
-    existing UNtitled session is the same creation interrupted before its title: it is reused."""
-    from gateway.session_local_recovery import local_identity
-    from hermes_state_mutation_retirement import retired_session
-    base, generation = 'bot-chat:' + authority.profile_id, 0
-    while True:
-        request_id = base if generation == 0 else f'{base}:{generation}'
-        sid = local_identity(authority.profile_id, actor.subject, request_id)
-        row = authority.db.get_session(sid)
-        if not retired_session(authority.db, sid) and (row is None or not row.get('title')):
-            return request_id
-        generation += 1
+    must never resurrect it), renamed (titled, but not "Bot Chat" — or the lookup had found it) or
+    handed off to a messaging lane, and a replacement takes the next one. Derived from durable rows
+    only, so a restart and two concurrent deliveries (serialized by the titled-create lock) pick the
+    same identity. An existing UNtitled local session is the same creation interrupted before its
+    title: it is reused, unless archived: a deliberate Archive retires the Bot Chat by clearing its
+    title, and reusing that row would put the next delivery into the archived chat (#139779)."""
+    from gateway.session_route_recovery import _messaging_platform
+    from persistence.authority.bindings import generation_request_id
+    from persistence.authority.runtime import LocalGenerations
+    base = 'bot-chat:' + authority.profile_id
+    store = authority_persistence(authority)
+    chain = LocalGenerations(profile_id=authority.profile_id, principal_id=actor.subject, base_request_id=base)
+    pick = store.runtime.first_generation(chain)
+    # Handed off (``/handoff``), it is a messaging lane's conversation: its receipt went with it,
+    # and a reset's head carried its name there (``hermes_state_local.hand_off_conversations``).
+    while pick.row is not None and (bool(pick.row.title) or pick.row.archived or _messaging_platform(pick.row.source) is not None):
+        pick = store.runtime.first_generation(chain, start=pick.generation + 1)
+    return generation_request_id(base, pick.generation)
 
 
 def _admission_outcome(authority, admission_id, fallback=None):
     """``(status, reply)`` of one admission, read from its committed result, never transcript recency."""
-    row = get_session_admission(authority.db, admission_id=admission_id)
+    store = authority_persistence(authority)
+    row = store.admissions.get(admission_id=admission_id)
     if row is None:
-        raise RuntimeStoreError('storage_unavailable')
+        return _expired_outcome(authority, fallback)
+    from gateway.session_results import admission_result
+    saved = admission_result(store, admission_id)
+    if saved is not None and row.status != 'terminal':
+        # The settlement committed (from its worker thread) between these two reads. Its result and
+        # terminal outcome commit together, so re-read the row: the stale ``started`` row has no
+        # outcome, and a completed turn would project as a terminal ``failed`` receipt.
+        row = store.admissions.get(admission_id=admission_id)
     # A terminal row without a result blob is still definitive when the outcome says the
     # input never ran (cancelled) or was refused/failed; ambiguous is reserved for the
     # durable unknown state and for missing evidence (completed/interrupted without result).
     status = {'queued': 'queued', 'started': 'claimed', 'unknown': 'ambiguous',
-              'terminal': {'cancelled': 'cancelled', 'rejected': 'failed', 'failed': 'failed'}.get(row['outcome'], 'ambiguous')}[row['status']]
-    from gateway.session_results import admission_result
-    saved = admission_result(authority.db, admission_id)
+              'terminal': {'cancelled': 'cancelled', 'rejected': 'failed', 'failed': 'failed'}.get(row.outcome, 'ambiguous')}[row.status]
     reply = (fallback or {}).get('reply', '')
     if saved is not None:
         reply = saved['result'].get('final_response', '')
-        status = 'settled' if row['outcome'] == 'completed' else 'failed'
+        # A turn stopped mid-run (the sender's message_agent cancel, or a Stop on the target) did
+        # not fail: the sender hears ``cancelled``, never a failure to retry or report as broken.
+        status = {'completed': 'settled', 'interrupted': 'cancelled'}.get(row.outcome, 'failed')
+        from gateway.session_bot_outcome import owner_stopped
+        if status == 'cancelled' and owner_stopped(saved['result']):
+            status = 'failed'  # its gateway stopped mid-turn: never re-run, and nobody cancelled it
         # A successful bare silence marker is a delivery decision (same rule as the gateway and
         # the live Bot Chat completion): the turn stays in the target's transcript, the sender
         # never sees the marker as prose.
-        from gateway.response_filters import is_intentional_silence_response
-        if status == 'settled' and is_intentional_silence_response(reply):
-            reply = ''
+        from gateway.response_filters import is_intentional_silence_response, strip_trailing_silence_marker
+        if status == 'settled':
+            reply = '' if is_intentional_silence_response(reply) else strip_trailing_silence_marker(reply)
     elif fallback is not None and fallback.get('status') in {'settled', 'failed'}:
         status = fallback['status']
     return status, reply
+
+
+def _expired_outcome(authority, record):
+    """A receipt outlives its admission once a deleted target's tombstone passes the retry horizon
+    (``prune_retired_tombstones``). A final receipt keeps the answer it already holds; a pending one
+    whose session was deleted (retired, or its row gone) can never learn its outcome and becomes
+    ``ambiguous``, never resent. A live session missing its admission is still a storage fault."""
+    store = authority_persistence(authority)
+    record = record or {}
+    if record.get('status') in _TERMINAL:
+        return record['status'], record.get('reply', '')
+    session_id = record.get('session_id')
+    if session_id and store.runtime.retired_session(session_id):
+        return 'ambiguous', record.get('reply', '')
+    if session_id and store.sessions.get(session_id) is None:
+        # Never resent either way, but a row gone without its fence is not a plain delete: store damage,
+        # or a marker an older release reclaimed. Logged once: the receipt is final from here on.
+        logging.getLogger(__name__).warning(
+            'Bot delivery %s: session %s is gone with no deletion marker; settled as ambiguous',
+            record.get('delivery_id'), session_id)
+        return 'ambiguous', record.get('reply', '')
+    raise AuthorityRefusal('storage_unavailable')
 
 
 def _retry_admission(authority, record):
@@ -279,10 +474,8 @@ def _retry_admission(authority, record):
 
 
 def _admission_at(authority, session_id, request_id):
-    with authority.db._read_ctx() as conn:
-        row = conn.execute('SELECT admission_id FROM session_admissions WHERE target_session_id=? AND request_id=?',
-                           (session_id, request_id)).fetchone()
-    return row[0] if row else None
+    rows = authority_persistence(authority).admissions.match(session_id=session_id, request_id=request_id)
+    return rows[0].admission_id if rows else None
 
 
 def _result(authority, record):
@@ -298,9 +491,21 @@ def _result(authority, record):
         status, reply = _admission_outcome(authority, retry_id)
     else:
         status, reply = _admission_outcome(authority, record['admission_id'], record)
+        if status == 'failed' and (record.get('retry') or {}).get('refused') == 'cancelled':
+            status = 'cancelled'  # its sender withdrew it (``session_bot_cancel``); its retry never ran
+    if status == 'settled' and not reply:
+        from gateway.session_bot_outcome import forgotten_reply
+        reply = forgotten_reply(authority, current, record) or ''
     error = reason = None
     if status == 'failed':
-        error, reason = _failure(authority, current)
+        try:
+            error, reason = _failure(authority, current)
+        except AuthorityRefusal as exc:
+            if exc.reason != 'not_found':
+                raise
+            # Its admission aged out after the chat was deleted: the receipt's own answer stands.
+            from tools.bot_failure_reasons import UNKNOWN
+            error, reason = record.get('error') or 'Bot Chat delivery failed', record.get('reason') or UNKNOWN
     return {k: v for k, v in dict(status=status, delivery_id=record['delivery_id'],
         profile_home=record['profile_home'], session_id=record['session_id'],
         admission_id=record['admission_id'], message=record['message'], reply=reply,
@@ -313,7 +518,10 @@ def _failure(authority, admission_id):
     ran (no result) has no provider text: ``unknown``."""
     from gateway.session_results import admission_result
     from tools.bot_failure_reasons import classify_agent_error, turn_failure_text
-    saved = (admission_result(authority.db, admission_id) or {}).get('result') or {}
+    saved = (admission_result(authority_persistence(authority), admission_id) or {}).get('result') or {}
+    from gateway.session_bot_outcome import OWNER_STOPPED_ERROR, owner_stopped
+    if owner_stopped(saved):
+        return OWNER_STOPPED_ERROR, UNKNOWN  # never a retryable class: its steps may already have run
     error = saved.get('error') or saved.get('final_response') or 'Bot Chat delivery failed'
     return error, classify_agent_error(turn_failure_text(saved.get('error'), saved.get('failure_reason')) or error)
 
@@ -356,11 +564,12 @@ def _retry_eligible(authority, record):
     replayed — and the retry itself is never retried."""
     if (record.get('retry') or {}).get('refused') or _retry_admission(authority, record):
         return False
-    row = get_session_admission(authority.db, admission_id=record['admission_id'])
-    if row is None or row['status'] != 'terminal' or row['outcome'] != 'failed':
+    store = authority_persistence(authority)
+    row = store.admissions.get(admission_id=record['admission_id'])
+    if row is None or row.status != 'terminal' or row.outcome != 'failed':
         return False
     from gateway.session_results import admission_result
-    saved = admission_result(authority.db, record['admission_id'])
+    saved = admission_result(store, record['admission_id'])
     if saved is None:
         return False
     from tools.bot_failure_reasons import RETRY_NONE, result_retry_action
@@ -386,16 +595,16 @@ async def _maybe_retry(authority, home, path, record):
     # transport granted ``session:operator`` (a local delivery into api-peer's Bot Chat), and the
     # session check below still pins the retry to the admitted target.
     operator = {'session:operator'} if record.get('operator') is True else set()
-    actor = Principal(record['principal_id'], authority.profile_id,
+    actor = SessionActor(record['principal_id'], authority.profile_id,
                       frozenset({'session:submit', 'session:read'} | operator), 'bot-delivery-retry')
     try:
         authority._require_admission_open()
         ref, live, entry = await _target(authority, actor)
         if ref.session_id != record['session_id']:
-            raise RuntimeStoreError('admission_conflict')
-        if authority.db.latest_conversation_role(entry.session_id) == 'user':
-            raise RuntimeStoreError('open_user_tail')
-    except RuntimeStoreError as exc:
+            raise AuthorityRefusal('admission_conflict')
+        if authority_persistence(authority).messages.latest_conversation_role(entry.session_id) == 'user':
+            raise AuthorityRefusal('open_user_tail')
+    except AuthorityRefusal as exc:
         if exc.reason == 'runtime_draining':
             # No retry was attempted. Keep the local projection pending until startup recovery
             # can perform the same derived retry, rather than exposing an interim failure.
@@ -415,7 +624,7 @@ async def _maybe_retry(authority, home, path, record):
     await write_receipt(home, record)
     try:
         receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, identity)
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         if exc.reason != 'queue_full':
             raise
         # Nothing was admitted: keep the delivery pending (as for a drain) so the next wake or
@@ -433,7 +642,7 @@ async def _record_reply(authority, home, key, future):
     paused = False
     try:
         await asyncio.shield(future)
-    except RuntimeStoreError:
+    except AuthorityRefusal:
         # A paused FIFO is still queued/unknown. Project that durable state;
         # never turn a wakeup refusal into a failed delivery or a fresh retry.
         paused = True
@@ -467,14 +676,14 @@ def relay_operation(connection, operation, params):
     authority, actor = connection.authority, connection.actor
     from gateway.session_authorities import require_serving, served_profile_name
     require_serving(authority)  # the outbox/roster/replies belong to the home's next owner
-    home = Path(authority.db.db_path).parent.resolve()
+    home = authority_persistence(authority).scope.profile_dir
     name = served_profile_name(home)
     _home(authority, actor, name)
     if 'session:control' not in actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     fields = {'roster': {'agents'}, 'outbox': set(), 'reply': {'id', 'reply', 'error', 'reason'}}
     if set(params) - fields[operation]:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     from tools.bot_relay import write_remote_roster, claim_pending_envelopes, write_reply
     if operation == 'roster':
         return {'count': write_remote_roster(home, params.get('agents'))}
@@ -484,7 +693,7 @@ def relay_operation(connection, operation, params):
         write_reply(home, params.get('id'), reply=params.get('reply', ''),
                     error=params.get('error', ''), reason=params.get('reason', ''))
     except ValueError as exc:
-        raise RuntimeStoreError('admission_conflict') from exc
+        raise AuthorityRefusal('admission_conflict') from exc
     return {'ok': True}
 
 
@@ -503,12 +712,12 @@ async def _migrate(authority, actor, home, root):
         owner = record['owner']
         if owner['profile_home'] != str(home):
             continue
-        if authority.db.get_compression_tip(owner['session_id']) != entry.session_id:
+        if authority_persistence(authority).lineage.tip(owner['session_id']) != entry.session_id:
             continue
         from hermes_cli.active_sessions import active_session_liveness_guard
         with active_session_liveness_guard(owner['session_id'], registry_home=home) as active:
             if active:
-                raise RuntimeStoreError('runtime_coordination_required')
+                raise AuthorityRefusal('runtime_coordination_required')
         if record['status'] == 'claimed':
             record.update(status='ambiguous', reason='unknown_execution')
             await write_receipt(home, record, expect='claimed')
@@ -520,33 +729,38 @@ async def _migrate(authority, actor, home, root):
 
 async def recover_bot_deliveries(authority):
     """Rebuild derivative replies and queued legacy admissions at owner startup."""
-    home = Path(authority.db.db_path).parent.resolve()
+    store = authority_persistence(authority)
+    home = store.scope.profile_dir
     async with mailbox_lock(authority):
         root, records, _ = await _scan_owner_receipts(authority, home)
         for path, record in records:
             if not record or record.get('profile_home') != str(home) or not record.get('admission_id'):
                 continue
-            record.update(_result(authority, record))
-            if record['status'] in {'queued', 'claimed'}:
-                _watch_reply(authority, home, record['delivery_id'],
-                             record.get('retry_admission_id') or record['admission_id'])
-            if record['status'] not in {'queued', 'claimed'}:
-                await _maybe_retry(authority, home, path, record)
+            try:
+                record.update(_result(authority, record))
+                if record['status'] in {'queued', 'claimed'}:
+                    _watch_reply(authority, home, record['delivery_id'],
+                                 record.get('retry_admission_id') or record['admission_id'])
+                if record['status'] not in {'queued', 'claimed'}:
+                    await _maybe_retry(authority, home, path, record)
+            except AuthorityRefusal as exc:
+                # One receipt the store cannot answer must not stop the owner (and, multiplexed, every
+                # profile with it): log it and recover the rest. The next start reads it again (a
+                # retry already pinned on it is then admitted once).
+                logging.getLogger(__name__).error('Bot delivery %s not recovered: %s (%s)',
+                                                  record.get('delivery_id'), exc.reason, path, exc_info=True)
+                continue
             await write_receipt(home, record)
             remember_receipt(authority, home, record)
-        row = authority.db.get_session_by_title('Bot Chat')
+        row = store.sessions.get_by_title('Bot Chat')
         if row is None:
             return
-        target = authority.db.get_session(authority.db.get_compression_tip(row['id']))
+        target = store.sessions.get(store.lineage.tip(row.session_id))
         if target is None:
             return
-        from hermes_state_local import POLICY_PREFIX
-        with authority.db._read_ctx() as conn:
-            bound = conn.execute('SELECT 1 FROM state_meta WHERE key=?',
-                (POLICY_PREFIX + (target.get('chat_id') or target['id']),)).fetchone()
-        if not bound:
+        if not store.bindings.binding_marks(target.chat_id or target.session_id).policy:
             return  # Unowned history requires a native ticket, never the first remote sender.
-        actor = Principal(target['user_id'], authority.profile_id,
+        actor = SessionActor(target.user_id, authority.profile_id,
                           frozenset({'session:submit', 'session:read'}), 'bot-owner-recovery')
         await _migrate(authority, actor, home, root)
 
@@ -570,68 +784,171 @@ def _watch_reply(authority, home, key, admission_id):
 
 async def deliver(connection, params):
     from gateway.session_runtime_workers import track_mutation
+    from gateway.session_bot_state import bot_chat_state
     connection.authority._require_admission_open()
-    return await asyncio.shield(track_mutation(connection.authority, _deliver(connection, params)))
+    answer = await asyncio.shield(track_mutation(connection.authority, _deliver(connection, params)))
+    # Not part of the receipt (it is stale a second later): the sender's ack and its runner's replays.
+    return {**answer, 'target_state': bot_chat_state(connection.authority, answer['session_id'])}
 
 
 def _require_same_delivery(record, actor, message, author, category):
     """A delivery id names one delivery: the same message, principal, author and category (the
     mailbox writer's identity), whether its receipt is admission-backed or refused."""
-    if (record['message'] != message or record['principal_id'] != actor.subject
+    from gateway.owner_identity import same_owner
+    if (record['message'] != message or not same_owner(record['principal_id'], actor.subject)
             or record.get('author') != author
             or record.get('notification_category', 'result') != category):
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
 
 
-async def _deliver(connection, params):
-    authority, actor = connection.authority, connection.actor
+def _delivery_params(authority, actor, params):
+    """``(home, key, message, author, category)`` of one ``deliver``/``settle`` request: the
+    delivery's full identity, validated the same way for both verbs."""
     home = _home(authority, actor, params.get('profile'))
     if set(params) - {'id', 'profile', 'message', 'session_id', 'author', 'notification_category'}:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     from gateway.session_automation import automation_notification_metadata
     notification = automation_notification_metadata(params)
     category = notification.get('notification_category', 'result')
     try:
         key = _delivery_id(params.get('id'))
     except ValueError as exc:
-        raise RuntimeStoreError('invalid_params') from exc
+        raise AuthorityRefusal('invalid_params') from exc
     message = params.get('message')
     # Main capped only a relayed bot DM (MESSAGE_MAX_CHARS + attribution headroom), at the relay
     # edge; a trusted producer's report (cron bot-chat, its deferred drain) carries no author and
     # was admitted whole, so it gets a resource bound only.
     limit = _BOT_DM_MAX_CHARS if params.get('author') is not None else _PRODUCER_MAX_CHARS
     if not isinstance(message, str) or not message.strip() or len(message) > limit:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     author = parse_turn_author(params.get('author'))
     if params.get('author') is not None and (not isinstance(params['author'], dict) or author is None):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
+    return home, key, message, author, category
+
+
+def _refused_answer(record):
+    return {k: record[k] for k in ('status', 'refused', 'delivery_id', 'profile_home', 'session_id',
+                                   'message', 'reply', 'error', 'reason')}
+
+
+async def _receipt_answer(authority, actor, home, record, identity, retry_path=None):
+    """The answer an id's existing receipt gives, or None when it has none yet: an admitted id's
+    published result (after its one retry when ``retry_path`` is given), or a terminal refusal
+    (``refuse_pin``, ``settle``), which is the id's answer for good. Both check the identity."""
+    if record is None or not (record.get('admission_id') or record.get('refused') is True):
+        return None
+    _require_same_delivery(record, actor, *identity)
+    if not record.get('admission_id'):
+        return _refused_answer(record)
+    authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
+    if retry_path is not None:
+        await _maybe_retry(authority, home, retry_path, record)
+    return await _publish_result(authority, home, record)
+
+
+async def _deliver(connection, params):
+    authority, actor = connection.authority, connection.actor
+    home, key, message, author, category = _delivery_params(authority, actor, params)
+    identity = (message, author, category)
     authority._require_admission_open()
     async with mailbox_lock(authority):
         root, record = await read_receipt(home, key)
         path = root / f'{key}.json'
-        if record is not None and record.get('admission_id'):
-            _require_same_delivery(record, actor, message, author, category)
-            authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
-            await _maybe_retry(authority, home, path, record)
-            return await _publish_result(authority, home, record)
-        await _migrate(authority, actor, home, root)
+        answer = await _receipt_answer(authority, actor, home, record, identity, retry_path=path)
+        if answer is not None:
+            return answer
+        try:
+            await _migrate(authority, actor, home, root)
+            _, record = await read_receipt(home, key)
+            answer = await _receipt_answer(authority, actor, home, record, identity, retry_path=path)
+            if answer is not None:
+                return answer
+            if record is not None:
+                raise AuthorityRefusal('unknown_execution')
+            holder = authority_persistence(authority).sessions.get_by_title('Bot Chat')
+            ref, live, entry = await _target(authority, actor)
+            pinned = params.get('session_id', entry.session_id)
+            if pinned != entry.session_id and not _moved_aside_by_this_door(authority, holder, pinned):
+                raise AuthorityRefusal('admission_conflict')
+            return await _admit(authority, actor, home, root, key, message, ref, live, entry, author=author,
+                                notification_category=category)
+        except AuthorityRefusal as exc:
+            raise await _held_by_another_writer(home, key, exc) or exc
+
+
+async def settle(connection, params):
+    from gateway.session_authorities import require_serving
+    from gateway.session_runtime_workers import track_mutation
+    # Retirement joins tracked work but cannot fence a later write: receipts carry no epoch and
+    # mailbox_lock is this authority's own, so a stale connection is refused before it schedules.
+    require_serving(connection.authority)
+    connection.authority._require_admission_open()
+    return await asyncio.shield(track_mutation(connection.authority, _settle(connection, params)))
+
+
+async def _settle(connection, params):
+    """Finalize a delivery the sender was told may not have been admitted: under the mailbox lock
+    every ``_admit`` holds, either settle the id as never sent or answer with what it already is.
+
+    A ``deliver`` refusal marked ``admitted=False`` proves absence only while that request held
+    the lock; a same-id attempt may admit right after. The sender calls this before it says "NOT
+    sent": with no receipt and no admission row for ``bot:<id>``, a terminal ``refused`` receipt
+    bound to the full identity is written, and every later ``deliver`` of the id answers with it
+    instead of admitting. An admitted id gets its receipt; an in-flight pin stays unknown. Only the
+    Bot DM tool calls this, so cron's same-id retries of a refusal are unchanged.
+
+    The writer is not re-checked: it may release between the refusal and this call, and "nothing
+    was admitted" is all that is serialized here. So the receipt claims only that, and any
+    ``session:submit`` principal of the profile can settle an id it never delivered: the trust
+    ``deliver`` already grants it over that id."""
+    authority, actor = connection.authority, connection.actor
+    home, key, message, author, category = _delivery_params(authority, actor, params)
+    async with mailbox_lock(authority):
         _, record = await read_receipt(home, key)
-        if record is not None and record.get('admission_id'):
-            _require_same_delivery(record, actor, message, author, category)
-            authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
-            await _maybe_retry(authority, home, path, record)
-            return await _publish_result(authority, home, record)
-        if record is not None and record.get('refused') is True:
-            _require_same_delivery(record, actor, message, author, category)
-            return {k: record[k] for k in ('status', 'refused', 'delivery_id', 'profile_home', 'session_id',
-                                           'message', 'reply', 'error', 'reason')}
-        if record is not None:
-            raise RuntimeStoreError('unknown_execution')
-        ref, live, entry = await _target(authority, actor)
-        if params.get('session_id', entry.session_id) != entry.session_id:
-            raise RuntimeStoreError('admission_conflict')
-        return await _admit(authority, actor, home, root, key, message, ref, live, entry, author=author,
-                            notification_category=category)
+        if record is None:
+            record = _not_sent_record(authority, actor, home, key, message, author, category)
+            await write_receipt(home, record)
+            logging.getLogger(__name__).info('Bot Chat delivery %s settled as not sent (%s)', key, record['reason'])
+        _require_same_delivery(record, actor, message, author, category)
+        answer = await _receipt_answer(authority, actor, home, record, (message, author, category))
+        if answer is None:
+            raise AuthorityRefusal('unknown_execution')
+        return answer
+
+
+def _not_sent_record(authority, actor, home, key, message, author, category):
+    """The never-admitted id's terminal receipt, in ``refuse_pin``'s shape. Refuses (unknown) when
+    the FIFO holds a ``bot:<id>`` row anyway or there is no Bot Chat to name."""
+    store = authority_persistence(authority)
+    admitted = store.admissions.match(request_id='bot:' + key)
+    row = store.sessions.get_by_title('Bot Chat')
+    if admitted or row is None:
+        raise AuthorityRefusal('unknown_execution')
+    from gateway.session_automation import automation_notification_metadata
+    record = dict(delivery_id=key, profile_home=str(home), session_id=store.lineage.tip(row.session_id),
+                  principal_id=actor.subject, message=message, status='failed', refused=True, reply='',
+                  error='Settled as not sent after a session-writer refusal', reason=HELD_NOT_SENT)
+    record.update(automation_notification_metadata({'notification_category': category}))
+    if author is not None:
+        record['author'] = dict(author)
+    return record
+
+
+async def _held_by_another_writer(home, key, exc):
+    """The settleable form of a ``runtime_coordination_required`` refusal, or None.
+
+    Another session writer holds the chat (a pre-authority Desktop backend's lease on a legacy Bot
+    Chat, a live CLI). Nothing was admitted under this id when it still has no receipt: ``_admit``
+    pins one before it admits and withdraws it only when nothing committed. That holds only while
+    this request has the lock, so ``admitted=False`` is a hint, not the verdict: the sender asks
+    ``settle`` before it reports a no-send. Any other refusal keeps its unknown outcome."""
+    if exc.reason != HELD_NOT_SENT or (await read_receipt(home, key))[1] is not None:
+        return None
+    held = AuthorityRefusal(exc.reason, field='session_writer',
+                            detail='another session writer holds the Bot Chat; nothing was admitted yet')
+    held.admitted = False
+    return held
 
 
 async def _admit(authority, actor, home, root, key, message, ref, live, entry, author=None, legacy=None,
@@ -658,10 +975,10 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
     if not await write_receipt(home, record, expect=(legacy or {}).get('status')):
         if legacy is not None:
             return None
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
     try:
         receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, 'bot:' + key)
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         if _admission_at(authority, ref.session_id, 'bot:' + key) is not None:
             raise  # committed after all: the pin stays the explicit unknown record
         if exc.reason in _OWNER_STATE_REFUSALS:

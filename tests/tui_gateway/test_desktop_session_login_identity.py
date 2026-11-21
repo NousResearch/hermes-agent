@@ -14,12 +14,16 @@ identity-less: nothing is inferred and nothing is stamped.
 
 from __future__ import annotations
 
-from hermes_state import SessionDB
+from gateway.owner_identity import host_owner_subject
+from tests.fixtures.storage_read import session_row
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tui_gateway import server
 from tui_gateway.transport import bind_transport, reset_transport
 
 _LOADED_USER = "alice"
-_LOGIN = f"basic:{_LOADED_USER}"
+# A signed-in login is the machine owner (gateway.owner_identity): its row carries the owner's OS
+# subject, the one native Desktop's own sessions carry, so Desktop and the TUI resume it.
+_LOGIN = host_owner_subject()
 
 
 class _LoginSocket:
@@ -39,8 +43,8 @@ class _AnonymousSocket:
         return True
 
 
-def _real_db(monkeypatch, tmp_path) -> SessionDB:
-    db = SessionDB(db_path=tmp_path / "state.db")
+def _real_db(monkeypatch, tmp_path):
+    db = storage_handle(tmp_path)
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
@@ -62,7 +66,7 @@ def _create_desktop_session(transport, tmp_path) -> tuple[dict, str, str]:
 
 
 def test_desktop_session_row_records_the_logged_in_user(monkeypatch, tmp_path):
-    """Login succeeded, then a conversation: the row must name the human."""
+    """Login succeeded, then a conversation: the row must name the owner."""
     db = _real_db(monkeypatch, tmp_path)
     record, sid, key = _create_desktop_session(_LoginSocket(), tmp_path)
     try:
@@ -75,8 +79,8 @@ def test_desktop_session_row_records_the_logged_in_user(monkeypatch, tmp_path):
     finally:
         server._sessions.pop(sid, None)
 
-    assert db.get_session(key)["user_id"] == _LOGIN
-    assert db.get_session("branch-key")["user_id"] == _LOGIN
+    assert session_row(db, key)["user_id"] == _LOGIN
+    assert session_row(db, "branch-key")["user_id"] == _LOGIN
 
 
 def test_anonymous_desktop_session_row_stays_identity_less(monkeypatch, tmp_path):
@@ -89,4 +93,4 @@ def test_anonymous_desktop_session_row_stays_identity_less(monkeypatch, tmp_path
     finally:
         server._sessions.pop(sid, None)
 
-    assert not (db.get_session(key)["user_id"] or "").strip()
+    assert not (session_row(db, key)["user_id"] or "").strip()

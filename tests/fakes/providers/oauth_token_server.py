@@ -298,8 +298,18 @@ class TestCA:
     leaf_key: Path
 
 
+def _san(host: str):
+    import ipaddress
+
+    from cryptography import x509
+    try:
+        return x509.IPAddress(ipaddress.ip_address(host))
+    except ValueError:
+        return x509.DNSName(host)
+
+
 def make_test_ca(directory: Path, hosts: Iterable[str]) -> TestCA:
-    """Generate a CA and a leaf cert for ``hosts`` (SAN) under ``directory``."""
+    """Generate a CA and a leaf cert for ``hosts`` (DNS or IP SAN) under ``directory``."""
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -328,7 +338,7 @@ def make_test_ca(directory: Path, hosts: Iterable[str]) -> TestCA:
         .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hosts[0])]))
         .issuer_name(ca_name).public_key(leaf_key.public_key()).serial_number(x509.random_serial_number())
         .not_valid_before(now - _dt.timedelta(minutes=5)).not_valid_after(now + _dt.timedelta(days=1))
-        .add_extension(x509.SubjectAlternativeName([x509.DNSName(h) for h in hosts]), critical=False)
+        .add_extension(x509.SubjectAlternativeName([_san(h) for h in hosts]), critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
         .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import os
@@ -14,6 +16,7 @@ from pathlib import Path
 import queue
 import sys
 import threading
+from hermes_dir_acl import make_user_dir
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,24 @@ def _caller_summary(limit=8):
             frames.append(f'{module}:{frame.f_code.co_name}:{frame.f_lineno}')
         frame = frame.f_back
     return ' <- '.join(frames)
+
+
+def call_off_event_loop(fn, *args, **kwargs):
+    """Call ``fn`` here, or on a worker thread when this thread is running an event loop.
+
+    For synchronous best-effort writers that can run inside a callback Relay drives on its private
+    loop (provider/tool callbacks): there ``WorkerRPC`` refuses the call (``synchronous_rpc_on_event_loop``,
+    sticky for the rest of the turn; #139029). The callback already blocks that loop, so waiting for the
+    thread costs it nothing; the context is copied so session-scoped state survives the hop, and errors
+    re-raise here. Async code awaits ``asyncio.to_thread`` instead.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return fn(*args, **kwargs)
+    context = contextvars.copy_context()
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix='worker-persist-off-loop') as pool:
+        return pool.submit(context.run, fn, *args, **kwargs).result()
 
 
 class _OwnerLink:
@@ -199,6 +220,9 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
     adoption. Local queue acceptance is never returned as canonical commit.
     Pending journals live outside age-pruned cache trees.
     """
+    # The process's async-delegation ledger belongs to the adopted execution, never a reserved child.
+    binds_delegation_ledger = True
+
     def __init__(self, rpc, scope, outbox_dir, adopted=None, *, max_bytes=4 * 1024 * 1024):
         self.rpc = rpc
         self.scope = dict(scope)
@@ -206,7 +230,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         self.lock = threading.RLock()
         self.failure = None
         self.path = Path(outbox_dir) / 'pending.json'
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        make_user_dir(self.path.parent, mode=0o700, parents=True, exist_ok=True)
         if self.path.parent.is_symlink() or self.path.is_symlink():
             raise WorkerPersistenceError('unsafe_outbox')
         os.chmod(self.path.parent, 0o700)
@@ -237,7 +261,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
                 # Replay must land the journal exactly on the adopted assignment (a pending
                 # publication moves it to the child); anything else is not this successor's outbox.
                 raise WorkerPersistenceError('outbox_scope_mismatch')
-            if is_worker_process():
+            if is_worker_process() and self.binds_delegation_ledger:
                 from tools.async_delegation_worker import bind_worker_delegation_store
                 bind_worker_delegation_store(self)
         except Exception:
@@ -354,10 +378,14 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             wait_seconds=1800.0, poll_interval_seconds=1.0, on_wait=None,
             wait_notice_interval_seconds=15.0, should_abort=None, acquire_patience_s=0.5,
             on_contended=None):
-        # Reuse only the local polling orchestrator, not the SQLite mixin surface. Same signature
+        # Reuse only the shared polling orchestrator over this store's RPC try. Same signature
         # as the owner's (``on_contended``: a busy-database notice; the RPC try never raises it).
-        from hermes_state_compression import SessionCompressionMixin
-        return SessionCompressionMixin.acquire_session_turn_lease(self, session_id, holder,
+        from types import SimpleNamespace
+        from persistence.authority.coordination import acquire_turn_lease_waiting
+        attempts = SimpleNamespace(try_acquire_turn_lease=lambda *, session_id, holder, ttl_seconds, patience_s:
+                                   self.try_acquire_session_turn_lease(session_id, holder, ttl_seconds=ttl_seconds,
+                                                                       patience_s=patience_s))
+        return acquire_turn_lease_waiting(attempts, session_id=session_id, holder=holder,
             ttl_seconds=ttl_seconds, wait_seconds=wait_seconds,
             poll_interval_seconds=poll_interval_seconds, on_wait=on_wait,
             wait_notice_interval_seconds=wait_notice_interval_seconds,
@@ -433,8 +461,8 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         return self._session_number(session_id, 'compression_recovery_deadline', float, 0.0)
 
     def get_session_model_config_value(self, session_id, key, default=None):
-        from hermes_state_sessions import _parse_model_config
-        return _parse_model_config(self.get_session(session_id).get('model_config')).get(key, default)
+        from persistence.conversation.sessions import parse_model_config
+        return parse_model_config(self.get_session(session_id).get('model_config')).get(key, default)
 
     def update_conversation_model_config_value(self, session_id, key, update):
         # A worker owns exactly its session row, so the read-modify-write is that row's; the owner applies
@@ -457,8 +485,8 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         self._apply('session.sidecars', {'patch': patch})
 
     def update_session_tool_names(self, session_id, pin):
-        # The tools[] freeze pin ({"version", "tools"}; None clears): without it every fresh worker
-        # re-probes check_fns and a config flip between turns silently forks the cached prefix.
+        # The tools[] freeze pin ({"version", "tools"[, "delegation_backend"]}; None clears): without it every
+        # fresh worker re-probes check_fns and a config flip between turns silently forks the cached prefix.
         self._session(session_id)
         self._apply('session.tools', {'tool_names': pin})
 

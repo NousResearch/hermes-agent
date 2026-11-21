@@ -87,6 +87,19 @@ def _cgroup_limit_bytes() -> Optional[int]:
     return None
 
 
+def cgroup_limit_bytes() -> Optional[int]:
+    """Public accessor for :func:`_cgroup_limit_bytes`.
+
+    The one figure other components should derive a *scope* budget from:
+    ``memory.high`` (throttling point) preferred, then ``memory.max``, then the
+    v1 limit — own cgroup first, ``None`` when uncapped/unreadable.  The kanban
+    dispatch cap uses it so the derived parallel cap and the gateway's own
+    memory budget agree on the same boundary instead of one reading host RAM
+    while the unit is cgroup-capped.
+    """
+    return _cgroup_limit_bytes()
+
+
 def _total_memory_bytes() -> Optional[int]:
     try:
         return int(os.sysconf("SC_PAGE_SIZE")) * int(os.sysconf("SC_PHYS_PAGES"))

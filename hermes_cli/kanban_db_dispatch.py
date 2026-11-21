@@ -1836,13 +1836,50 @@ def review_dispatch_enabled() -> bool:
 # tenants. Both fail open: non-Linux / read error → no cap / "unknown".
 
 # Assumed per-worker footprint for the derived cap; deliberately conservative
-# so the cap errs toward fewer workers on small VMs.
-MEMORY_GUARD_MB_PER_WORKER = 512
+# so the cap errs toward fewer workers on small VMs.  512 MB was too low:
+# measured 2026-11-10 on this host a heavy worker sits at ~550 MB anon plus its
+# share of the unit it runs in, so the old figure planned ~10% more workers
+# than fit.  600 MB covers worker + client + MCP children as the cgroup charges
+# them.
+MEMORY_GUARD_MB_PER_WORKER = 600
+
+# Share of the effective memory budget the derived cap may plan for workers;
+# the rest stays with the scope's own baseline (gateway process, MCP/LSP
+# children — measured ~0.9-1.3 GiB of the unit).  Mirrors
+# ``gateway.agent_cache_pressure._AUTO_BUDGET_FRACTION`` ("shed well under the
+# limit") so both consumers read the same usable-budget convention off the same
+# cgroup boundary.
+MEMORY_GUARD_USABLE_FRACTION = 0.65
 
 # Derived default bounds: never below 2 (smallest VM must still progress),
 # never above 8 (more fan-out must be explicit in config).
 DERIVED_MAX_IN_PROGRESS_FLOOR = 2
 DERIVED_MAX_IN_PROGRESS_CEILING = 8
+
+
+def _cgroup_budget_kib() -> Optional[int]:
+    """Memory budget of the cgroup this dispatcher runs in, in KiB, or ``None``.
+
+    The derived cap used to divide host ``MemTotal`` — wrong on any cgroup-capped
+    host, where the unit holds far less RAM than the machine has (measured
+    2026-11-10: ``MemTotal`` 12 GiB against a unit with ``MemoryHigh`` 3.5 GiB,
+    so the derived default planned 24 -> clamped 8 workers, i.e. ~5 GiB of
+    workers plus the gateway in a 4.5 GiB box).  This returns the scope's own
+    ``memory.high``/``memory.max`` (via the gateway's cgroup reader, which
+    prefers the throttle point) so the cap is derived from the boundary the unit
+    is actually held to.
+    Fails open to ``None``: non-Linux, uncapped cgroup, missing gateway package,
+    read error — callers fall back to ``MemTotal`` as before.
+    """
+    try:
+        from gateway.agent_cache_pressure import cgroup_limit_bytes
+
+        limit = cgroup_limit_bytes()
+    except Exception:
+        return None
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        return None
+    return limit // 1024
 
 
 def _system_memory_sample() -> dict:
@@ -1851,26 +1888,47 @@ def _system_memory_sample() -> dict:
     Local import keeps ``kanban_db`` importable without the gateway package.
     Module-level indirection is also the test seam — conftest patches this to
     ``{}`` so results don't depend on the CI runner's live memory.
+
+    Adds ``cgroup_budget_kib`` when the scope is cgroup-capped, so
+    :func:`derive_default_max_in_progress` can take the smaller of host RAM and
+    the scope's real budget.  An explicit sample without that key keeps the
+    historic MemTotal path, so callers passing their own sample are unaffected.
     """
     try:
         from gateway.lifecycle_ledger import sample_memory
-        return sample_memory() or {}
+        sample = sample_memory() or {}
     except Exception:
-        return {}
+        sample = {}
+    cgroup_kib = _cgroup_budget_kib()
+    if cgroup_kib:
+        sample["cgroup_budget_kib"] = cgroup_kib
+    return sample
 
 
 def derive_default_max_in_progress(sample: Optional[Mapping[str, Any]] = None) -> Optional[int]:
     """Memory-derived default for ``kanban.max_in_progress`` when unset:
-    ``clamp(MemTotal / MEMORY_GUARD_MB_PER_WORKER, FLOOR, CEILING)``. Returns
-    ``None`` (no cap) when total memory is unknown, so macOS/Windows dev
-    machines are unaffected.
+    ``clamp(usable / MEMORY_GUARD_MB_PER_WORKER, FLOOR, CEILING)`` where the
+    effective budget is ``min(MemTotal, cgroup_budget_kib)`` — the scope's own
+    ``memory.high``/``memory.max`` when it is cgroup-capped, host RAM otherwise
+    — and ``usable`` is ``MEMORY_GUARD_USABLE_FRACTION`` of that budget (the
+    rest is the scope's own baseline). Returns ``None`` (no cap) when the
+    budget is unknown, so macOS/Windows dev machines are unaffected.
     """
     if sample is None:
         sample = _system_memory_sample()
     total_kib = sample.get("mem_total_kib")
     if isinstance(total_kib, bool) or not isinstance(total_kib, int) or total_kib <= 0:
         return None
-    workers = (total_kib // 1024) // MEMORY_GUARD_MB_PER_WORKER
+    budget_kib = total_kib
+    cgroup_kib = sample.get("cgroup_budget_kib")
+    if (
+        isinstance(cgroup_kib, int)
+        and not isinstance(cgroup_kib, bool)
+        and 0 < cgroup_kib < budget_kib
+    ):
+        budget_kib = cgroup_kib
+    usable_mb = int((budget_kib // 1024) * MEMORY_GUARD_USABLE_FRACTION)
+    workers = usable_mb // MEMORY_GUARD_MB_PER_WORKER
     return max(DERIVED_MAX_IN_PROGRESS_FLOOR, min(workers, DERIVED_MAX_IN_PROGRESS_CEILING))
 
 

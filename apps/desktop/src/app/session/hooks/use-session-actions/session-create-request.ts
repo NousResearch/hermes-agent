@@ -1,3 +1,6 @@
+import type { BtwSideChat } from '@hermes/shared'
+
+import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { requestGatewayForAgent } from '@/store/gateway'
 import {
   $activeGatewayProfile,
@@ -16,6 +19,8 @@ import {
   getComposerModelSelection
 } from '@/store/session'
 import type { SessionCreateResponse } from '@/types/hermes'
+
+import type { BranchMessage } from './utils'
 
 type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 
@@ -150,4 +155,36 @@ export async function desktopSessionCreateParams(
         }
       : {})
   }
+}
+
+/** The `session.create` params of a branch child: a Desktop session under its parent, on the
+ *  parent's profile, optionally titled (a `/btw --open` side chat). ``key`` is the stable
+ *  per-attempt idempotency key: a retry after a lost response returns the SAME child (#65410). */
+export function branchCreateParams({ cwd, key, parentStoredId, profile, title }: {
+  cwd?: string
+  key: string
+  parentStoredId: null | string
+  profile?: null | string
+  title?: string
+}): Record<string, unknown> {
+  return {
+    cols: 96,
+    source: 'desktop',
+    ...(cwd && { cwd }),
+    ...(profile ? { profile } : {}),
+    ...(parentStoredId && { parent_session_id: parentStoredId }),
+    ...(title && { title }),
+    idempotency_key: key
+  }
+}
+
+/** A `/btw --open` side-chat seed as branch messages (user/assistant text rows). */
+export function sideChatBranchMessages(seed: BtwSideChat): BranchMessage[] {
+  const role = (value: string): ChatMessage['role'] => (value === 'assistant' ? 'assistant' : 'user')
+
+  return seed.messages.map(({ content, role: seedRole }, index) => ({
+    content,
+    role: role(seedRole),
+    source: { id: `btw-seed-${index}`, parts: [textPart(content)], role: role(seedRole) } as ChatMessage
+  }))
 }

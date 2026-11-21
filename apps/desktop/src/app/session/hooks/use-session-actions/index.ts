@@ -1,4 +1,4 @@
-import { mergeUsage, randomUuid } from '@hermes/shared'
+import { type BtwSideChat, mergeUsage, randomUuid } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
@@ -194,7 +194,8 @@ import {
 } from './resume-reconcile'
 import { backgroundRuntimeOptions, runtimeOwner, runtimeOwnerProfile } from './runtime-owner'
 import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
-import { publishWarmSessionRuntime } from './session-usage'
+import { branchCreateParams, sideChatBranchMessages } from './session-create-request'
+import { applyStoredUsage, publishWarmSessionRuntime } from './session-usage'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
@@ -271,15 +272,6 @@ export interface BranchLoadedSessionOptions {
 // How long we keep creatingSessionRef after create/fork navigate before giving up
 // if the router never lands on the pending stored id (stuck navigate / lost race).
 const CREATE_GUARD_RELEASE_MS = 3_000
-
-// Reflect a stored row's persisted token counts into the live usage atom
-// (total is derived, so callers can't drift it out of sync with input/output).
-function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?: number | null }) {
-  const input = stored.input_tokens || 0
-  const output = stored.output_tokens || 0
-
-  setCurrentUsage(current => ({ ...current, input, output, total: input + output }))
-}
 
 interface FreshSessionDraftOptions {
   preserveRoute?: boolean
@@ -2556,7 +2548,9 @@ export function useSessionActions({
       profile?: null | string,
       branchCount?: number,
       ownerRoute?: SessionOwnerRoute,
-      idempotencyKey?: string
+      idempotencyKey?: string,
+      // A side chat (`/btw --open`): titled, and always a tab docked beside the chat, never main.
+      beside?: { dock: TileDock; title: string }
     ): Promise<boolean> => {
       creatingSessionRef.current = true
 
@@ -2622,16 +2616,7 @@ export function useSessionActions({
               : {})
           }
 
-          const createParams = {
-            cols: 96,
-            source: 'desktop',
-            ...(cwd && { cwd }),
-            ...(profile ? { profile } : {}),
-            ...(parentStoredId && { parent_session_id: parentStoredId }),
-            // Stable per-attempt key: a backend retry after a lost response
-            // returns the SAME child instead of spawning a duplicate (#65410).
-            idempotency_key: key
-          }
+          const createParams = branchCreateParams({ cwd, key, parentStoredId, profile, title: beside?.title })
 
           createFlight = (
             sourceSessionId
@@ -2753,7 +2738,7 @@ export function useSessionActions({
         // (the #69750 focus-stealing bug, reintroduced if this fires
         // unconditionally). resumeSession reuses the runtime warm-cached above
         // (ensureSessionState/updateSessionState) instead of an extra resume RPC.
-        if (parentStoredId !== null && selectedStoredSessionIdRef.current === parentStoredId) {
+        if (!beside && parentStoredId !== null && selectedStoredSessionIdRef.current === parentStoredId) {
           navigate(sessionRoute(routedSessionId), { replace: true })
           await resumeSession(routedSessionId)
         } else {
@@ -2764,7 +2749,7 @@ export function useSessionActions({
           // closed the owner socket, the backend reaped the draft runtime,
           // and the tile looped resume→reclaim until the storm breaker
           // latched "Couldn't open this session".
-          openSessionTile(routedSessionId, 'center', undefined, null, {
+          openSessionTile(routedSessionId, beside?.dock ?? 'center', undefined, null, {
             ownerRoute,
             workspaceMode: 'sessions'
           })
@@ -2942,6 +2927,19 @@ export function useSessionActions({
       })
     },
     [activeSessionIdRef, branchLoadedSession, busyRef, getRouteToken, selectedStoredSessionIdRef]
+  )
+
+  // `/btw --open`: a finished side thread becomes a child chat in a tab docked to the RIGHT of this
+  // one (main never moves), owned by the parent's backend like any branch.
+  const openSideChat = useCallback(
+    async (seed: BtwSideChat, parentStoredId: null | string): Promise<boolean> => {
+      const profile = parentStoredId ? await resolveSessionProfile(parentStoredId) : undefined
+      const ownerRoute = parentStoredId ? sessionOwnerRouteFromRow(cachedSessionRow(parentStoredId)) : undefined
+      const beside = { dock: 'right' as const, title: seed.title }
+
+      return forkBranch(sideChatBranchMessages(seed), null, parentStoredId, $currentCwd.get().trim(), profile, undefined, ownerRoute, undefined, beside)
+    },
+    [forkBranch]
   )
 
   // Branch any listed session, not just the open one. Reads the target's stored
@@ -3341,6 +3339,7 @@ export function useSessionActions({
     createBackendSessionForSend,
     openNewSessionTile,
     openSettings,
+    openSideChat,
     removeSession,
     resumeSession,
     selectSidebarItem,

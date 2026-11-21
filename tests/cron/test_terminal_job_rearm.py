@@ -68,14 +68,18 @@ def test_wedged_claimed_oneshot_remains_triggerable(tmp_cron_dir):
     assert triggered["enabled"] is True
 
 
-def test_paused_job_run_override_remains_allowed(tmp_cron_dir):
+def test_paused_job_trigger_is_refused_and_disk_record_is_unchanged(tmp_cron_dir):
     job = create_job("paused", "every 1h")
     from cron.jobs import pause_job
 
-    pause_job(job["id"])
-    triggered = trigger_job(job["id"])
-    assert triggered["state"] == "scheduled"
-    assert triggered["enabled"] is True
+    pause_job(job["id"], reason="paused by owner")
+    before = copy.deepcopy(load_jobs())
+
+    with pytest.raises(ValueError, match="Job is paused/disabled"):
+        trigger_job(job["id"])
+
+    assert load_jobs() == before
+    assert get_job(job["id"]) == before[0]
 
 
 def test_terminal_jobs_are_not_due_or_advanced(tmp_cron_dir):

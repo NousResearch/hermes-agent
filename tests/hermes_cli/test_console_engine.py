@@ -234,6 +234,25 @@ def test_cron_pause_resume_and_run_require_confirmation(_isolate_hermes_home):
     assert "Triggered job" in triggered.output
 
 
+@pytest.mark.parametrize("disabled_only", [False, True], ids=["paused", "disabled-only"])
+def test_cron_run_refuses_paused_or_disabled_job(_isolate_hermes_home, disabled_only):
+    """A manual console run must not reactivate a job or erase its pause audit."""
+    from cron.jobs import create_job, get_job, pause_job, update_job
+
+    job = create_job(prompt="say hello", schedule="every 1h", name="paused-check")
+    if disabled_only:
+        update_job(job["id"], {"enabled": False})
+    else:
+        pause_job(job["id"], reason="paused by owner")
+    before = get_job(job["id"])
+
+    result = HermesConsoleEngine().execute(f"cron run {job['id']}", confirmed=True)
+
+    assert result.status == "error"
+    assert result.output == "Job is paused/disabled; resume it before running."
+    assert get_job(job["id"]) == before
+
+
 def test_repl_runs_non_interactive_lines_without_prompts(_isolate_hermes_home):
     stdin = io.StringIO("help\nexit\n")
     stdout = io.StringIO()

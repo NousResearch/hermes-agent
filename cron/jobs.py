@@ -2203,12 +2203,12 @@ def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[dic
             f"Cannot run: job '{name}' is {job.get('state')} (terminal). "
             f"Create a new occurrence with 'hermes cron resume {name} "
             "--run-now' or '--at <ISO-8601>'.")
+    if not is_job_runnable(job):
+        raise ValueError("Job is paused/disabled; resume it before running.")
     manual_run_at = _hermes_now().isoformat()
     return update_job(job["id"], {
         "enabled": True,
         "state": "scheduled",
-        "paused_at": None,
-        "paused_reason": None,
         "next_run_at": manual_run_at,
         # Run-now intent, so cron expression/TZ repair guards don't treat it as stale state; the
         # overwritten slot comes back at claim time (an extra fire, cron/extra_fire.py).

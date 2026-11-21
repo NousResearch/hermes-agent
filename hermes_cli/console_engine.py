@@ -756,7 +756,7 @@ def _cron_job_action(args: list[str], usage: str, action: str, run) -> str:
     from cron.jobs import AmbiguousJobReference
     try:
         job = run(args[0])
-    except AmbiguousJobReference as exc:
+    except (AmbiguousJobReference, ValueError) as exc:
         raise ConsoleCommandError(str(exc)) from exc
     if not job:
         raise ConsoleCommandError(f"Job not found: {args[0]}")

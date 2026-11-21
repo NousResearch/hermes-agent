@@ -4,6 +4,11 @@ import type { Translations } from './types'
 
 // The in-app browser pane's copy (`preview.web`), composed by de.ts.
 export const dePreviewWeb: TranslationOverride<Translations['preview']['web']> = {
+  textComment: 'Ausgewählten Text kommentieren',
+  textCommentOn: 'Textkommentare beenden',
+  textCommentPlaceholder: 'Kommentar hinzufügen…',
+  sendTextComment: 'Änderung senden',
+  textCommentUnavailable: 'Öffnen Sie den ursprünglichen Chat und versuchen Sie es erneut. Ihr Kommentar wurde nicht gesendet.',
   embeddedPreviewHint:
     'Manche Websites blockieren eingebettete Vorschauen. Öffne die Originalseite in einem Browser-Tab.',
   appFailedToBoot: 'Die Vorschau-App konnte nicht gestartet werden',

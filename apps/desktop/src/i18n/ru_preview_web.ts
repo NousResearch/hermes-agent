@@ -5,6 +5,11 @@ import type { Translations } from './types'
 
 // The in-app browser pane's copy (`preview.web`), composed by ru.ts.
 export const ruPreviewWeb: TranslationOverride<Translations['preview']['web']> = {
+  textComment: 'Комментировать выделенный текст',
+  textCommentOn: 'Завершить комментирование текста',
+  textCommentPlaceholder: 'Добавить комментарий…',
+  sendTextComment: 'Отправить правку',
+  textCommentUnavailable: 'Откройте исходный чат и повторите попытку. Комментарий не отправлен.',
   embeddedPreviewHint:
     'Некоторые сайты блокируют встроенный предпросмотр. Откройте исходную страницу во вкладке браузера.',
   appFailedToBoot: 'Приложение предпросмотра не запустилось',

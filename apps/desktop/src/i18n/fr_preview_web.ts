@@ -4,6 +4,11 @@ import type { Translations } from './types'
 
 // The in-app browser pane's copy (`preview.web`), composed by fr.ts.
 export const frPreviewWeb: TranslationOverride<Translations['preview']['web']> = {
+  textComment: 'Commenter le texte sélectionné',
+  textCommentOn: 'Arrêter de commenter le texte',
+  textCommentPlaceholder: 'Ajouter un commentaire…',
+  sendTextComment: 'Envoyer la modification',
+  textCommentUnavailable: 'Ouvrez la conversation d’origine et réessayez. Votre commentaire n’a pas été envoyé.',
   embeddedPreviewHint:
     "Certains sites bloquent les aperçus intégrés. Ouvrez la page d'origine dans un onglet du navigateur.",
   appFailedToBoot: "Échec du démarrage de l'application d'aperçu",

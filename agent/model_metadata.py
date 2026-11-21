@@ -1281,6 +1281,9 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     # "= available_tokens: 10000", last "= N".
     for pattern in (
         r'exceeds model(?:\'s)? maximum output tokens\s*\(?\s*(\d+)\s*\)?',
+        r'exceeds the limit of\s*(\d+)',
+        r'is greater than the maximum of\s*(\d+)',
+        r'cannot be greater than\s*(?:max_model_len\s*=\s*)?(\d+)',
         r'max_tokens\s*:\s*\d+\s*>\s*(\d+)\s*,?\s*which is the maximum allowed number of output tokens',
         r'range of max_tokens should be\s*\[\s*\d+\s*,\s*(\d+)\s*\]',
         r'available_tokens[:\s]+(\d+)',
@@ -1347,6 +1350,7 @@ _OUTPUT_CAP_SIGNALS = (
     ("output limit",), ("maximum allowed number of output tokens",),
     ("max_tokens is too large", "supports at most"), ("tokens from the input messages", "tokens for the completion"),
     ("limited to",),  # Scaleway: "max_completion_tokens is limited to 16384 for <model>" (#67453)
+    ("exceeds the limit of",), ("is greater than the maximum of",), ("cannot be greater than",),
 )
 _INPUT_OVERFLOW_SIGNALS = (
     "prompt is too long", "prompt too long", "input is too long", "input token",
@@ -1364,7 +1368,8 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("range of max_tokens should be",), ("exceeds model", "maximum output tokens"),
     ("output limit",), ("max_tokens", "maximum allowed number of output tokens"),
     ("max_tokens is too large", "supports at most"), ("tokens from the input messages", "tokens for the completion"),
-    ("limited to",),
+    ("limited to",), ("exceeds the limit of",), ("is greater than the maximum of",),
+    ("cannot be greater than",),
 )
 
 
@@ -1965,6 +1970,10 @@ def _validate_cached_context_length(model: str, base_url: str, cached: int, *, a
     # Drop invalid rows, known 32K underreports, pre-catalog leftovers, and xAI's old 2M Grok 4.20.
     drop_rules = (
         (cached <= 0, logger.warning, "Dropping non-positive cache entry %s@%s -> %s; re-resolving", cached),
+        # A remote sub-minimum cache row would fail every subsequent agent init.
+        # Preserve local windows for the existing live-probe/rejection path.
+        (0 < cached < MINIMUM_CONTEXT_LENGTH and not is_local_endpoint(base_url), logger.warning,
+         "Dropping sub-minimum remote context cache entry %s@%s -> %s; re-resolving", f"{cached:,}"),
         (cached <= 32768 and _model_name_suggests_stale_32k_underreport(model), logger.info,
          "Dropping stale cached context entry %s@%s -> %s (known 32K underreport); re-resolving via hardcoded defaults", f"{cached:,}"),
         (_stale_pre_catalog_cache_entry(model, cached), logger.info,

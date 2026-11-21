@@ -316,7 +316,60 @@ def test_a_docker_path_is_read_through_its_volume_mount(tmp_path, monkeypatch):
     assert [put["data"] for put in storage.requests] == [b"from the container mount"]
 
 
-def test_a_remote_terminal_backend_is_refused_like_media_delivery(tmp_path, monkeypatch):
+class _RemoteSandbox:
+    """A live ssh sandbox as ``gateway.media_fetch`` sees it: a small remote filesystem."""
+
+    _remote_home = "/home/me"
+
+    def __init__(self):
+        self.files = {"/home/me/q3.pdf": b"%PDF-1.4 from the sandbox", "/home/me/.ssh/id_rsa": b"SECRET"}
+        self.fetched = []
+
+    def fetch_realpath(self, remote_path):
+        return remote_path
+
+    def fetch_file(self, remote_path, local_dest, *, max_bytes):
+        from tools.environments.base import FileFetchError
+        self.fetched.append(remote_path)
+        if remote_path not in self.files:
+            raise FileFetchError("missing")
+        Path(local_dest).write_bytes(self.files[remote_path])
+
+
+@pytest.fixture
+def remote_sandbox(monkeypatch, tmp_path):
+    from gateway import media_fetch
+    sandbox = _RemoteSandbox()
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setattr(media_fetch, "_active_remote_env", lambda: sandbox)
+    monkeypatch.setattr("gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "cache" / "documents")
+    monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (tmp_path / "cache" / "documents",))
+    return sandbox
+
+
+def test_a_remote_terminal_file_is_fetched_like_media_delivery(remote_sandbox):
+    gateway, storage = Gateway(), Storage()
+
+    entry = _execute(gateway, storage, {"attachment": "/home/me/q3.pdf"})
+
+    assert entry["response"] == {"sent": True}
+    assert gateway.requests[1]["json"]["filename"].endswith("q3.pdf")
+    assert [put["data"] for put in storage.requests] == [b"%PDF-1.4 from the sandbox"]
+
+
+@pytest.mark.parametrize("path", ["/home/me/.ssh/id_rsa", "/home/me/missing.pdf"])
+def test_a_remote_file_the_media_policy_refuses_fails_before_any_upload(remote_sandbox, path):
+    gateway, storage = Gateway(), Storage()
+
+    entry = _execute(gateway, storage, {"attachment": path})
+
+    assert entry["error"]["code"] == "FILE_NOT_ALLOWED" and "ssh" in entry["error"]["message"]
+    assert "files/upload" not in gateway.routes() and storage.requests == []
+    # The credential path is screened before any bytes move.
+    assert "/home/me/.ssh/id_rsa" not in remote_sandbox.fetched
+
+
+def test_a_remote_terminal_backend_without_a_live_sandbox_is_refused(tmp_path, monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     gateway, storage = Gateway(), Storage()
 

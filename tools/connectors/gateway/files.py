@@ -1,7 +1,8 @@
 """File inputs and outputs of connector tools.
 
 The model passes a local path wherever a tool takes a file. Before execute, each path is checked
-with the media-delivery rule (the one that guards ``MEDIA:`` attachments), staged through the tool
+with the media-delivery rule (the one that guards ``MEDIA:`` attachments) — a file in a remote
+terminal backend is fetched the way ``MEDIA:`` fetches it (``gateway.media_fetch``) — staged through the tool
 gateway, and PUT to the presigned storage URL; the gateway's descriptor replaces the path. Files a
 tool returns are downloaded at once into the profile's connector downloads folder, and the model
 sees ``{name, mimetype, path}``. Storage URLs and keys never reach the model or the logs.
@@ -40,7 +41,8 @@ FILE_INPUT_NOTE = "Pass a local file path."
 _ARRAY_ITEM = "*"
 _MAX_SCHEMA_DEPTH = 32
 # Terminal backends whose files this machine can read, as media delivery reads them: the host, and
-# Docker through its mounts. The others keep the model's files on another machine.
+# Docker through its mounts. The others keep the model's files on another machine, and a file there
+# is fetched under the ``MEDIA:`` remote-fetch policy instead.
 _HOST_READABLE_BACKENDS = frozenset({"local", "docker"})
 _UNSAFE_NAME_CHARS = re.compile(r"[\x00-\x1f\x7f<>:\"|?*\\/]")
 _MAX_NAME_CHARS = 150
@@ -206,6 +208,11 @@ def _readable_file(raw: str, task_id: Optional[str]) -> str:
     from gateway.platforms.base import validate_media_delivery_path
     from gateway.session_context import get_session_env
 
+    from tools.file_tools_paths import _terminal_env_type_for_task
+
+    backend = _terminal_env_type_for_task(task_id or "default")
+    if backend not in _HOST_READABLE_BACKENDS:
+        return _fetched_remote_file(raw, backend)
     candidate = _backend_path(raw, task_id)
     allowed = validate_media_delivery_path(candidate, session_key=get_session_env("HERMES_SESSION_KEY", ""))
     if allowed:
@@ -219,19 +226,26 @@ def _readable_file(raw: str, task_id: Optional[str]) -> str:
              "gateway.media_delivery_allow_dirs, can be sent.")
 
 
-def _backend_path(raw: str, task_id: Optional[str]) -> str:
-    """``raw`` as an absolute path in the terminal backend's namespace, resolved the way the file
-    tools resolve it. Backends whose files live on another machine are refused, as ``MEDIA:`` is."""
-    from tools.file_tools_paths import _resolve_path_for_task, _terminal_env_type_for_task
+def _fetched_remote_file(raw: str, backend: str) -> str:
+    """A file in a remote terminal backend, copied to this machine by the same fetch, denylist and
+    strict-mode rule ``MEDIA:`` delivery uses; else ``FileInputError``."""
+    from gateway.media_fetch import fetch_remote_media
 
-    task = task_id or "default"
-    backend = _terminal_env_type_for_task(task)
-    if backend not in _HOST_READABLE_BACKENDS:
-        raise FileInputError(
-            "FILE_NOT_ALLOWED", f"Files in the {backend} terminal backend are not on this machine, "
-            "so they cannot be sent as a connector file input.",
-            hint="Use a file on this machine, or switch to the local or Docker terminal backend.")
-    return str(_resolve_path_for_task(raw, task))
+    fetched = fetch_remote_media(raw)
+    if fetched:
+        return fetched
+    raise FileInputError(
+        "FILE_NOT_ALLOWED", f"{raw} could not be fetched from the {backend} terminal backend: it is missing, "
+        "not an absolute path, refused by the file-sending policy, or too large.",
+        hint="Pass the absolute path of a regular file outside credential folders.")
+
+
+def _backend_path(raw: str, task_id: Optional[str]) -> str:
+    """``raw`` as an absolute path in a host-readable terminal backend's namespace, resolved the way
+    the file tools resolve it."""
+    from tools.file_tools_paths import _resolve_path_for_task
+
+    return str(_resolve_path_for_task(raw, task_id or "default"))
 
 
 def _read_bytes(raw: str, path: str) -> bytes:

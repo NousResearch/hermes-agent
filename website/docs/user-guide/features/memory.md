@@ -488,6 +488,32 @@ and tools not listed here remain denied. Keep the list narrow and prefer tools
 that stage a proposal for human review rather than applying external or
 destructive changes directly. The default is an empty list.
 
+### Declaring what the review may write (`writes`)
+
+Background review can use memory, skill-management, and read-only file tools
+by default. If that combined write surface is wider than a profile should
+hold, declare the narrower one:
+
+```yaml
+auxiliary:
+  background_review:
+    writes: memory          # or `skills`, or `memory+skills`
+```
+
+| `writes` | The review may write |
+|----------|----------------------|
+| unset (default) | memory and skills — today's surface, unchanged |
+| `memory` | memory entries only; the skill tree is read-only for the fork |
+| `skills` | the skill tree only; the memory tool is not dispatchable |
+| `memory+skills` | both |
+
+Reading stays available in every arm: a review declared `memory` still holds
+`skill_view` / `skills_list`, so it can read a skill it may not patch. The key
+only ever **narrows** — an `extra_tools` entry cannot re-admit a writer the
+declaration removed. A value this key does not understand (`memry`, a typo)
+narrows to `memory` rather than restoring the skill writer, and logs a
+`background_review.writes … carries unknown surfaces` warning in `agent.log`.
+
 ### Local models: reviews wait for an idle GPU (`defer`)
 
 On a cloud provider the review finishes in seconds and runs alongside

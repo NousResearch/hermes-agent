@@ -257,6 +257,9 @@ _REVIEW_MAX_INPUT_TOKENS_CAP = 600_000
 _REVIEW_INPUT_CONTEXT_FRACTION = 0.75
 _REVIEW_MAX_INPUT_TOKENS_FALLBACK = 120_000
 
+#: The write surfaces a review fork can be declared to hold (``auxiliary.background_review.writes``).
+_REVIEW_WRITE_SURFACES = ("memory", "skills")
+
 
 def _task_block(cfg: Any) -> dict[str, Any]:
     """``cfg["auxiliary"]["background_review"]`` as a dict (``{}`` on any shape mismatch)."""
@@ -1209,6 +1212,33 @@ def _track_review_fork(agent: Any, review_agent: Any, *, register: bool) -> None
                     agent._active_children.remove(review_agent)
 
 
+def _declared_write_surface(task_cfg: Optional[dict[str, Any]]) -> Optional[set]:
+    """``auxiliary.background_review.writes`` as a set of write surfaces, or ``None``.
+
+    A deployment that declares ``writes: memory`` arms a review that never patches the skill
+    tree; ``writes: memory+skills`` keeps both. Undeclared — the default — leaves today's
+    surface untouched, so no deployment changes behaviour by omission. An unreadable
+    declaration narrows to ``memory`` rather than widening: a typo must never restore the
+    surface the operator tried to remove.
+    """
+    try:
+        raw = _background_review_task_config(task_cfg).get("writes")
+    except Exception:  # health: allow BLE001 -- a config boundary that must narrow, not raise
+        logger.debug("background_review writes parse failed", exc_info=True)
+        return None
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    tokens = raw if isinstance(raw, (list, tuple)) else str(raw).replace("+", ",").split(",")
+    declared = {str(token).strip().lower() for token in tokens if str(token).strip()}
+    known = {surface for surface in declared if surface in _REVIEW_WRITE_SURFACES}
+    if declared != known:
+        logger.warning(
+            "background_review.writes %r carries unknown surfaces %s — the review is narrowed to %s",
+            raw, sorted(declared - known), sorted(known or {"memory"}),
+        )
+    return known or {"memory"}
+
+
 def _review_tool_whitelist(
     review_agent: Any, task_cfg: Optional[dict[str, Any]], review_memory: bool = False,
 ) -> tuple[set, set]:
@@ -1249,7 +1279,37 @@ def _review_tool_whitelist(
             configured_extra_tools = {name.strip() for name in extra_raw if isinstance(name, str) and name.strip()}
     except Exception:
         logger.debug("background_review extra_tools parse failed", exc_info=True)
-    return whitelist | configured_extra_tools, configured_extra_tools
+    # ``auxiliary.background_review.writes`` (memory | skills | memory+skills) NARROWS the arm
+    # above and can never widen it: with ``skills`` undeclared, ``skill_manage`` is not
+    # dispatchable at all, while the read tools of the toolset (skill_view/skills_list) stay so
+    # a review can still read what it may not write. It is applied to the composed set, so a
+    # profile listing ``skill_manage`` in ``extra_tools`` cannot re-admit it; that entry is
+    # dropped from the reported list too, so the deny message never advertises a denied tool.
+    declared = _declared_write_surface(task_cfg)
+    dispatched = whitelist | configured_extra_tools
+    if declared is not None:
+        if "skills" not in declared:
+            dispatched.discard("skill_manage")
+            configured_extra_tools.discard("skill_manage")
+        if "memory" not in declared:
+            dispatched.discard("memory")
+    return dispatched, configured_extra_tools
+
+
+def _review_surface_phrases(review_whitelist: set) -> tuple[str, str, str]:
+    """The deny/prompt fragments that must match the composed whitelist, in one place.
+
+    ``(deny_memory, deny_skill, prompt_subject)``. A review whose skill surface was narrowed
+    away (``auxiliary.background_review.writes: memory``) must not be told skill management is
+    available: the model would spend iterations on calls the dispatch side denies.
+    """
+    memory_ok = "memory" in review_whitelist
+    skill_ok = "skill_manage" in review_whitelist
+    deny_memory = " and memory for notes (add only)" if memory_ok else ""
+    deny_skill = ", skill_manage(action='patch'|...) to change skills" if skill_ok else " skills"
+    prompt_subject = ("memory and skill " if (memory_ok and skill_ok)
+                      else ("memory " if memory_ok else "skill "))
+    return deny_memory, deny_skill, prompt_subject
 
 
 @dataclass
@@ -1303,15 +1363,15 @@ def _run_review_fork(
     deny_extra = f" Configured extra tools also allowed: {extra_list}." if configured_extra_tools else ""
     prompt_extra = f" Exception — these configured tools are also allowed: {extra_list}." if configured_extra_tools else ""
     # Keep the deny/prompt wording in sync with the whitelist: a memory-less review must not
-    # tell the model that memory is available, or it will burn iterations on denied calls.
-    memory_phrase_deny = " and memory for notes (add only)" if "memory" in review_whitelist else ""
-    memory_phrase_prompt = "memory and skill " if "memory" in review_whitelist else "skill "
+    # tell the model that memory is available, or it will burn iterations on denied calls —
+    # and the same holds for a declared-writes review whose skill surface was narrowed away.
+    memory_phrase_deny, skill_phrase_deny, memory_phrase_prompt = _review_surface_phrases(review_whitelist)
     set_thread_tool_whitelist(
         review_whitelist,
         deny_msg_fmt=(
             "Background review denied non-whitelisted tool: "
-            "{tool_name}. Allowed here: skill_view/skills_list/read_file/search_files to read, "
-            "skill_manage(action='patch'|...) to change skills"
+            "{tool_name}. Allowed here: skill_view/skills_list/read_file/search_files to read"
+            + skill_phrase_deny
             + memory_phrase_deny + "." + deny_extra + " Do not retry {tool_name}."
         ),
     )

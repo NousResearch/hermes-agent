@@ -1,7 +1,9 @@
 """Tests for tool argument type coercion.
 
 When LLMs return tool call arguments, they frequently put numbers as strings
-("42" instead of 42) and booleans as strings ("true" instead of true).
+("42" instead of 42) and booleans as strings ("true" instead of true) — and,
+the mirror case, bare JSON numbers/booleans where the schema asks for a
+string (long digit IDs like snowflakes are emitted unquoted).
 coerce_tool_args() fixes these type mismatches by comparing argument values
 against the tool's JSON Schema before dispatch.
 """
@@ -158,6 +160,100 @@ class TestCoerceToolArgs:
         assert isinstance(result["offset"], int)
         assert result["limit"] == 100
         assert isinstance(result["limit"], int)
+
+
+# ── Mirror direction: bare number/boolean → string (long digit IDs) ────────
+
+
+class TestCoerceBareScalarsToString:
+    """Models emit long digit IDs as bare JSON numbers where the schema asks for
+    a string (the tool_call bridge hides concrete schemas from provider-side
+    validation). The repair must be exact — no float round-trip — and must not
+    touch values whose native kind the schema already accepts."""
+
+    def _mock_schema(self, properties):
+        return {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {"type": "object", "properties": properties},
+        }
+
+    def test_bare_integer_becomes_exact_string(self):
+        """The reported bug: a 19-digit org_uid (>2**53) must survive verbatim."""
+        schema = self._mock_schema({"org_uid": {"type": "string"}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"org_uid": 1052820076022894593})
+            assert result["org_uid"] == "1052820076022894593"
+
+    def test_negative_integer(self):
+        schema = self._mock_schema({"cursor": {"type": "string"}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"cursor": -42})
+            assert result["cursor"] == "-42"
+
+    def test_integral_float_drops_point(self):
+        schema = self._mock_schema({"page_token": {"type": "string"}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"page_token": 42.0})
+            assert result["page_token"] == "42"
+
+    def test_non_integral_float(self):
+        schema = self._mock_schema({"score": {"type": "string"}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"score": 2.5})
+            assert result["score"] == "2.5"
+
+    def test_bare_boolean_uses_json_spelling(self):
+        """True is an int subclass; it must stringify as "true", never "True"."""
+        schema = self._mock_schema({"flag": {"type": "string"}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"flag": True})
+            assert result["flag"] == "true"
+            result = coerce_tool_args("test_tool", {"flag": False})
+            assert result["flag"] == "false"
+
+    def test_union_accepting_integer_left_alone(self):
+        """A union that already accepts the native kind must stay untouched."""
+        schema = self._mock_schema(
+            {"id": {"anyOf": [{"type": "string"}, {"type": "integer"}]}}
+        )
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"id": 42})
+            assert result["id"] == 42
+
+    def test_integer_schema_not_stringified(self):
+        schema = self._mock_schema({"limit": {"type": "integer"}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"limit": 10})
+            assert result["limit"] == 10
+            assert isinstance(result["limit"], int)
+
+    def test_boolean_schema_left_alone(self):
+        schema = self._mock_schema({"verbose": {"type": "boolean"}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"verbose": True})
+            assert result["verbose"] is True
+
+    def test_string_value_untouched(self):
+        schema = self._mock_schema({"org_uid": {"type": "string"}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"org_uid": "1052820076022894593"})
+            assert result["org_uid"] == "1052820076022894593"
+
+    def test_string_typed_ref_property(self):
+        """The repair also applies behind a local $ref, like the str→X direction."""
+        schema = {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "$defs": {"OrgUid": {"type": "string"}},
+                "properties": {"org_uid": {"$ref": "#/$defs/OrgUid"}},
+            },
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"org_uid": 1052820076022894593})
+            assert result["org_uid"] == "1052820076022894593"
 
 
 # ── Schema-guided nested JSON-string normalization (cline/cline#11803) ─────

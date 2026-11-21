@@ -10,6 +10,7 @@ import json
 import logging
 import time
 from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Any, Dict, List, Optional
@@ -25,6 +26,19 @@ from tools.delegate_tool_registry import _capture_gateway_steer_authority
 from tools.delegate_tool_results import _finalize_child_results
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
+_required_background_parent = contextvars.ContextVar("required_background_parent", default=None)
+
+
+@contextmanager
+def require_background(parent):
+    """A host call may refuse delegation, but must never join this parent's children inline."""
+    if parent is None:
+        raise ValueError("A background-only delegation scope requires a parent agent")
+    token = _required_background_parent.set(parent)
+    try:
+        yield
+    finally:
+        _required_background_parent.reset(token)
 
 
 @dataclass
@@ -484,7 +498,9 @@ def _dispatch_background(batch: _Batch) -> str:
         batch.origin_wake_sid, batch.origin_session_history_delivery,
         oneshot_session=getattr(batch.parent_agent, "_oneshot_session", None) is True,  # agent_is_oneshot's pin
     )
-    if wake_sid is None:  # (a detached-only continue checked this before building its child)
+    if wake_sid is None:
+        if batch.detached_only:
+            return _refuse_detached_only(batch, "this session cannot receive background results")
         logger.info("delegate_task: async delivery unsupported on this session runtime; running the batch synchronously instead.")
         return _run_sync_with_note(batch, "no_async")
 
@@ -518,6 +534,8 @@ def _dispatch_background(batch: _Batch) -> str:
         _restore_parent_cancellation(unit)
         if not dispatched and batch.detached_only:
             return _refuse_detached_only(batch, f"the background pool is at capacity ({dispatch.get('error', 'rejected')})")
+        if batch.detached_only:
+            return _refuse_remaining_units(batch, units[k:], dispatched, dispatch.get("error", "rejected"))
         if not dispatched:
             logger.info(
                 "delegate_task: async pool at capacity (%s); running the whole batch synchronously instead.",
@@ -533,12 +551,33 @@ def _dispatch_background(batch: _Batch) -> str:
         payload["inline_results"] = inline_results
     return json.dumps(payload, ensure_ascii=False)
 
+def _refuse_remaining_units(batch: _Batch, remaining: list[_Batch], dispatched: list[tuple[_Batch, str]], why: str) -> str:
+    """Keep accepted handles; release only the units that never started."""
+    from tools.delegate_tool import _settle_refused_transcripts
+    refused = []
+    for unit in remaining:
+        for i, _, child in unit.children:
+            refused.append(_fabricated_entry(i, "error", f"Background dispatch refused: {why}", child))
+            _release_unstarted_child(unit, child)
+    _settle_refused_transcripts(refused, batch.live_deleg_id, batch.live_writers, batch.live_home)
+    finish_delegation_unit(batch.task_list, refused, background=True)
+    accepted = replace(batch, children=[child for unit, _ in dispatched for child in unit.children],
+                       refused=[*batch.refused, *refused],
+                       live_deleg_id=dispatched[0][1] if len(dispatched) == 1 else batch.live_deleg_id)
+    return json.dumps(_dispatched_payload(accepted, dispatched), ensure_ascii=False)
+
+
 def _refuse_detached_only(batch: _Batch, why: str) -> str:
     """A detached-only batch that cannot detach: nothing ran, its children are released."""
+    from tools.delegate_tool import _settle_refused_transcripts
     from tools.registry import tool_error
-    for _, _, child in batch.children:
+    refused = []
+    for i, _, child in batch.children:
+        refused.append(_fabricated_entry(i, "error", why, child))
         _release_unstarted_child(batch, child)
-    return tool_error(f"Not continued: {why}.")
+    _settle_refused_transcripts(refused, batch.live_deleg_id, batch.live_writers, batch.live_home)
+    finish_delegation_unit(batch.task_list, refused, background=True)
+    return tool_error(f"Background delegation refused: {why}.")
 
 
 def _run_batch(batch: _Batch, background: bool) -> str:
@@ -548,6 +587,10 @@ def _run_batch(batch: _Batch, background: bool) -> str:
     begin_delegation_run(
         batch.task_list, subagents=len(batch.children), depth=getattr(batch.parent_agent, "_delegate_depth", 0) + 1,
     )
+    if batch.parent_agent is not None and _required_background_parent.get() is batch.parent_agent:
+        if session_joins_delegation(batch.parent_agent) or getattr(batch.parent_agent, "_oneshot_session", None) is True:
+            return _refuse_detached_only(batch, "this session pins joined delegation")
+        batch = replace(batch, detached_only=True)
     if batch.detached_only or (background and not session_joins_delegation(batch.parent_agent)):
         return _dispatch_background(batch)
     return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)

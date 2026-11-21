@@ -229,6 +229,17 @@ const owned = new Map<string, () => void>()
 
 const webLocks = () => (typeof navigator === 'undefined' ? undefined : navigator.locks)
 
+async function preparedSubmissionLockName(key: string): Promise<string> {
+  const name = `${STORAGE_KEY}.${key}`
+
+  // The key includes the full prompt. WebKit caps Web Lock names at 1024 UTF-16 units;
+  // hash oversized names, retaining short names so older live tabs still coordinate.
+  if (name.length <= 1024) { return name }
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key))
+
+  return `${STORAGE_KEY}.sha256:${Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')}`
+}
+
 function holdPreparedSubmission(key: string): Promise<boolean> {
   const locks = webLocks()
 
@@ -240,8 +251,8 @@ function holdPreparedSubmission(key: string): Promise<boolean> {
     return Promise.resolve(true)
   }
 
-  return new Promise<boolean>(acquired => {
-    void locks.request(`${STORAGE_KEY}.${key}`, { ifAvailable: true }, lock => {
+  return new Promise<boolean>((acquired, reject) => {
+    void preparedSubmissionLockName(key).then(name => locks.request(name, { ifAvailable: true }, lock => {
       if (!lock) {
         acquired(false)
 
@@ -252,7 +263,7 @@ function holdPreparedSubmission(key: string): Promise<boolean> {
         owned.set(key, release)
         acquired(true)
       })
-    })
+    })).catch(reject)
   })
 }
 

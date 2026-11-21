@@ -358,6 +358,9 @@ _SPECS = [
         _arg("task_ids", nargs="*", help="Task ids to archive (default mode)"),
         _arg("--rm", dest="purge_ids", nargs="+",
              help="Permanently delete already-archived task ids from the board"),
+        _arg("--cascade", action="store_true",
+             help="Also archive every dependent task (leaves first); without this flag "
+                  "unfinished children of a cancelled card are held for review"),
     ], help="Archive one or more tasks"),
     _cmd("tail", [_TASK_ID, _arg("--interval", type=float, default=1.0)], help="Follow a task's event stream"),
     _cmd("dispatch", [

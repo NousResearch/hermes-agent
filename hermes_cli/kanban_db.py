@@ -3786,7 +3786,72 @@ def specify_triage_task(
     return True
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> bool:
+def _hold_children_of_cancelled_parent(conn: sqlite3.Connection, parent_id: str) -> list[str]:
+    """Park the children of a **cancelled** parent instead of releasing them.
+
+    ``archived`` is terminal for dependency purposes, so ``recompute_ready``
+    treats it exactly like ``done``. That is right when a finished parent is
+    later archived, and wrong when a *plan is cancelled*: the child was never
+    approved to run on its own, yet it is promoted to ``ready`` and picked up
+    by a worker. Archiving four cards to cancel a plan promoted each of their
+    blocked children as if the plan still held: the children executed, and the
+    SLA watcher then reported them as long overdue — three layers of fiction
+    from one missing distinction.
+
+    A ``blocked`` event is sticky (``_has_sticky_block``), so the parked child
+    cannot be promoted by the very ``recompute_ready`` at the end of archive.
+    """
+    rows = conn.execute(
+        "SELECT t.id FROM tasks t JOIN task_links l ON l.child_id = t.id "
+        "WHERE l.parent_id = ? AND t.status IN ('todo', 'ready', 'blocked', 'scheduled')",
+        (parent_id,),
+    ).fetchall()
+    held: list[str] = []
+    for r in rows:
+        child_id = r["id"]
+        changed = conn.execute(
+            "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input', "
+            "    block_recurrences = COALESCE(block_recurrences, 0) + 1, "
+            "    claim_lock = NULL, claim_expires = NULL, "
+            "    worker_pid = NULL, worker_started_at = NULL "
+            "WHERE id = ? AND status IN ('todo', 'ready', 'blocked', 'scheduled')",
+            (child_id,),
+        ).rowcount
+        if changed != 1:
+            continue
+        _append_event(conn, child_id, "blocked", {
+            "kind": "needs_input",
+            "reason": (f"parent {parent_id} was archived before finishing (plan cancelled); "
+                       "this task will not run until it is rescheduled or archived"),
+            "parent_cancelled": parent_id,
+        })
+        held.append(child_id)
+    return held
+
+
+def _descendants_deepest_first(conn: sqlite3.Connection, root_id: str) -> list[str]:
+    """Every descendant of ``root_id``, leaves first (safe to archive in order)."""
+    children: dict[str, list[str]] = {}
+    for row in conn.execute("SELECT parent_id, child_id FROM task_links"):
+        children.setdefault(row["parent_id"], []).append(row["child_id"])
+    order: list[str] = []
+    depth: dict[str, int] = {}
+
+    def walk(tid: str, d: int) -> None:
+        depth[tid] = d
+        for cid in children.get(tid, []):
+            if cid in depth:  # cycle guard (shouldn't happen, but never hang an archive)
+                continue
+            walk(cid, d + 1)
+        order.append(tid)
+
+    walk(root_id, 0)
+    order.remove(root_id)
+    return order  # post-order = leaves before their parents
+
+
+def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None,
+                 cascade: bool = False) -> bool:
     """Archive a task; a *running* task's host-local worker is terminated.
 
     Clearing ``worker_pid`` in the DB alone left the OS process running past its
@@ -3799,7 +3864,23 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     dispatcher can spawn a duplicate worker off the released claim. The
     termination outcome lands as its own ``archive_worker_termination`` event so
     the ``archived`` event stays atomic with the status flip.
+
+    **Cancelled is not the same as done.** Archiving a card that is not ``done``
+    cancels a plan, so
+    its unfinished children are held for a human decision instead of being
+    promoted (see :func:`_hold_children_of_cancelled_parent`).
+
+    ``cascade=True`` is the explicit "this whole branch is dead" choice (the
+    Kubernetes propagation model): every descendant is archived first — leaves
+    before parents — and a running worker among them is terminated. Without it
+    the default stays the conservative hold.
     """
+    if cascade:
+        # Each descendant archives in its own txn; post-order means a parent's
+        # children are already archived when the parent is processed, so the
+        # "hold unfinished children" rule has nothing left to hold.
+        for child_id in _descendants_deepest_first(conn, task_id):
+            archive_task(conn, child_id, signal_fn=signal_fn, cascade=False)
     with write_txn(conn):
         row = conn.execute(
             "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
@@ -3807,7 +3888,8 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
         ).fetchone()
         if not row:
             return False
-        was_running = row["status"] == "running"
+        prev_status = row["status"]
+        was_running = prev_status == "running"
         prev_pid, prev_lock, prev_started = row["worker_pid"], row["claim_lock"], row["worker_started_at"]
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
@@ -3822,11 +3904,14 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
             summary="task archived with run still active",
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
+        if prev_status not in ("done", "archived"):
+            _hold_children_of_cancelled_parent(conn, task_id)
     if was_running:
         termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started)
         with write_txn(conn):
             _append_event(conn, task_id, "archive_worker_termination", termination, run_id=run_id)
-    # ``archived`` parents no longer block children; promote them now.
+    # ``archived`` parents no longer block children; promote them now. Children
+    # of a cancelled parent are sticky-blocked above and stay put.
     recompute_ready(conn)
     # Reap the workspace on archive too (never-completed tasks kept it forever).
     _cleanup_workspace(conn, task_id)

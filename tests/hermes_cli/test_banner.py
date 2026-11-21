@@ -81,3 +81,25 @@ def test_baked_banner_uses_live_identity(monkeypatch):
 
     monkeypatch.setattr(version_info, "get_code_identity", lambda: {"short_sha": "a1b2c3d4"})
     assert banner._baked_banner_state() == {"upstream": "a1b2c3d4", "local": "a1b2c3d4", "ahead": 0}
+
+
+def _main_channel_label(monkeypatch, state):
+    from hermes_cli import steward, update_channel
+
+    monkeypatch.setattr(steward, "read_install_stamp", lambda root: {})
+    monkeypatch.setattr(update_channel, "resolve_update_channel", lambda config, root: "main")
+    monkeypatch.setattr(banner, "get_git_banner_state", lambda: state)
+    return banner.format_banner_version_label()
+
+
+def test_version_label_names_running_commit_when_behind_upstream(monkeypatch):
+    """A checkout behind origin/main must show HEAD, not only origin/main's commit."""
+    label = _main_channel_label(monkeypatch, {"upstream": "bbbbbbbb", "local": "aaaaaaaa", "ahead": 0})
+    assert label.endswith(" · upstream bbbbbbbb · local aaaaaaaa (behind)")
+
+
+def test_version_label_in_sync_and_ahead_are_unchanged(monkeypatch):
+    in_sync = _main_channel_label(monkeypatch, {"upstream": "aaaaaaaa", "local": "aaaaaaaa", "ahead": 0})
+    assert in_sync.endswith(" · upstream aaaaaaaa")
+    ahead = _main_channel_label(monkeypatch, {"upstream": "bbbbbbbb", "local": "aaaaaaaa", "ahead": 2})
+    assert ahead.endswith(" · upstream bbbbbbbb · local aaaaaaaa (+2 carried commits)")

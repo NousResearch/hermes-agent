@@ -46,14 +46,17 @@ def owning_home_root(project_root: Path) -> Path | None:
     another root (a test's temporary ``HERMES_HOME``, a per-task home, a CI service home) borrows
     it: the root that installed it already holds committed state for it, under the root the
     checkout sits in (``<root>/hermes-agent``) or else the platform default root. ``None`` when
-    the active root's state is that state (the owner itself, or one of its profiles), and when no
-    such root has state for this checkout -- a fresh install, or a custom root that owns its own
+    the active root is that root (the owner itself, or one of its profiles), and when no
+    root has state for this checkout -- a fresh install, or a custom root that owns its own
     tree -- so those keep today's behaviour (#123238).
 
     A borrowing launch's own sync leaves ``facts.json`` under the borrower too, so state alone
     cannot name the owner. The checkout's ``hermes`` launcher can: only the owner publishes it,
     and it execs the owner's store Python. With no live launcher to ask, the root the checkout
-    sits in outranks the platform default.
+    sits in outranks the platform default. The owner itself is decided on the roots, never on
+    their state directories: a per-task home that links ``installs/`` back to the owner resolves
+    to the same state directory, and mistaking that for ownership republishes the shared
+    launcher under the per-task spelling (#136094).
     """
     from hermes_constants import _get_platform_default_hermes_home
 
@@ -65,7 +68,7 @@ def owning_home_root(project_root: Path) -> Path | None:
         return None
     owner = _launcher_bound_root(root, candidates) or candidates[0]
     try:
-        if (owner / "installs" / key).resolve() == install_state_dir(root).resolve():
+        if dependency_home_root().resolve() == Path(owner).resolve():
             return None
     except OSError:
         pass

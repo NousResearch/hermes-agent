@@ -13,7 +13,7 @@ from agent.tool_dispatch_helpers import (
     _extract_error_preview, _extract_file_mutation_targets, _extract_landed_file_mutation_paths
 )
 from agent.tool_result_classification import (
-    FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS, file_mutation_result_landed
+    FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS, file_mutation_result_landed, is_stale_write_refusal
 )
 
 # One text for "the model produced nothing after retries" on every surface (CLI explainer,
@@ -132,6 +132,10 @@ class TurnExplainersMixin:
         if not targets:
             return
         landed = file_mutation_result_landed(tool_name, result)
+        if not landed and is_stale_write_refusal(result):
+            # Nothing was written and the refusal tells the model to read and retry; the footer would
+            # show its model-facing text in the reply (#155997). A later success or failure still counts.
+            return
         if landed:
             landed_paths = _extract_landed_file_mutation_paths(tool_name, args, result)
             changed = getattr(self, "_turn_file_mutation_paths", None)

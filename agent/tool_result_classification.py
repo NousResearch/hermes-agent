@@ -31,15 +31,31 @@ def tool_may_have_side_effect(tool_name: str) -> bool:
 GUARDRAIL_REFUSAL_KEY = "guardrail_refusal"
 
 
-def is_guardrail_refusal(result: Any) -> bool:
-    """Return True when ``result`` (JSON string or parsed dict) is a harness refusal."""
+def _has_true_flag(result: Any, key: str) -> bool:
     data = result
     if isinstance(result, str):
         try:
             data = json.loads(result.strip())
-        except Exception:
+        except ValueError:  # not JSON (json.JSONDecodeError is a ValueError)
             return False
-    return isinstance(data, dict) and data.get(GUARDRAIL_REFUSAL_KEY) is True
+    return isinstance(data, dict) and data.get(key) is True
+
+
+def is_guardrail_refusal(result: Any) -> bool:
+    """Return True when ``result`` (JSON string or parsed dict) is a harness refusal."""
+    return _has_true_flag(result, GUARDRAIL_REFUSAL_KEY)
+
+
+# Set by write_file when it refused to overwrite a file this task has not seen in full
+# (``tools/file_tools_write_guards.py::_stale_write_refusal``). Nothing was written and the body
+# tells the model to read the file and write again: a precondition between the tool and the
+# model, not a failed edit to report to the user.
+STALE_WRITE_BLOCKED_KEY = "stale_write_blocked"
+
+
+def is_stale_write_refusal(result: Any) -> bool:
+    """Return True when ``result`` (JSON string or parsed dict) is write_file's stale-write refusal."""
+    return _has_true_flag(result, STALE_WRITE_BLOCKED_KEY)
 
 
 # A quoted "error"/"failed" in a result's head marks it failed UNLESS it is a key whose value is

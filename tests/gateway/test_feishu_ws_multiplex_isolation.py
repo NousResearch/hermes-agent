@@ -39,7 +39,7 @@ def _inject_fake_lark_module(monkeypatch, connect=None):
     monkeypatch.setitem(sys.modules, "lark_oapi", lark)
     monkeypatch.setitem(sys.modules, "lark_oapi.ws", lark_ws)
     monkeypatch.setitem(sys.modules, "lark_oapi.ws.client", client_mod)
-    monkeypatch.setattr(feishu_adapter, "_WS_ISOLATION_INSTALLED", False)
+
     return client_mod
 
 

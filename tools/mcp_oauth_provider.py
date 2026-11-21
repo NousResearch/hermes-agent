@@ -203,10 +203,12 @@ class HermesProviderMixin:
         SDK's ``_exchange_token_authorization_code``/``_refresh_token`` and ``tools.mcp_oauth_device``
         — and travel through ``client.send()``, which never merges the client's default headers, so
         without a stamp the POST leaves with NO ``User-Agent`` at all and a WAF-fronted authorization
-        server answers 403 (#115329)."""
+        server answers 403 (#115329). ``Accept: application/json`` too: GitHub's token endpoint
+        answers form-encoded without it, which the SDK's JSON-only parser rejects (#44592)."""
         ua = getattr(self, "_hermes_token_user_agent", None)  # tests build via __new__
         if ua:
             request.headers["User-Agent"] = ua
+        request.headers.setdefault("Accept", "application/json")
         return stamp_default_user_agent(request)
 
     def _coerce_client_secret_post(self) -> None:

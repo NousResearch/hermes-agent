@@ -51,10 +51,13 @@ terminal result is handed to the delivery queue without running the agent again;
 and bookkeeping use the original fire identity. Delivery interrupted after a send claim stays
 unknown and is not retried automatically.
 
-An interrupted execution or a prepared fire that cannot be found stays paused for operator review.
-Recovery never creates another admission for it. Paused jobs are not automatically resumed, even
-when their completed result is recovered. `hermes cron run` exits nonzero for a known synchronous
-execution failure; background dispatch is not a terminal success/failure verdict.
+An in-gateway execution killed with the gateway (crash, kill, power loss) is recorded as unknown by
+startup recovery, and the job stays active: the next scheduled slot is the recovery point, and
+`hermes cron runs` shows the receipt. The job is not auto-paused on owner loss — pause is reserved
+for a live scheduler observing an execution it cannot account for. Paused jobs are not
+automatically resumed, even when their completed result is recovered. `hermes cron run` exits
+nonzero for a known synchronous execution failure; background dispatch is not a terminal
+success/failure verdict.
 
 ## Creating scheduled tasks
 

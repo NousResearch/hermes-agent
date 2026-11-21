@@ -1,0 +1,33 @@
+name: kaicalls
+title: KaiCalls
+repo: https://github.com/KaiCalls/kaicalls-mcp
+sha: 8993d86f1a345a21617d8575b1d38dead71e00e6
+subdir: integrations/hermes
+version: "1.1.0"
+description: |
+  A secretary for your business phone, run from Hermes. Your own phone rings first; when you can't pick up, Kai answers, takes the caller's details and texts you. Hermes then tells you what you missed, texts customers back, has Kai call them back, and changes what Kai says on calls.
+
+  - "What did I miss?": calls, unheard voicemails, texts and open to-dos in one read
+  - Reply by text, or have Kai call a customer back and report how it went
+  - Change the greeting, opening hours, closed days and what Kai tells callers
+  - Set up a line and check what's left to finish
+  - Bundles the kaicalls skill; Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only
+
+  Disclosures
+  - Hosted-only connector with no local code: every tool call, with its arguments, goes to www.kaicalls.com (Streamable HTTP, API key auth).
+  - Call audio, transcripts, voicemails, texts, caller details and phone numbers are handled by KaiCalls; the line needs a paid KaiCalls plan.
+  - The package marks the server untrusted, so Hermes asks before every call, text or change.
+  - The key is read from KAICALLS_API_KEY in the profile .env (or the plugin's settings form) and sent as a bearer header.
+  - The tool set is served by the remote server at runtime and is not covered by the pinned sha. No telemetry.
+maintainer: KaiCalls
+tier: community
+category: tools
+docs_url: https://github.com/KaiCalls/kaicalls-mcp/tree/main/integrations/hermes
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [KAICALLS_API_KEY]

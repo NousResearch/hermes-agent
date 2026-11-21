@@ -500,6 +500,93 @@ def _run_user_provider_override_case(
         )
 
 
+@pytest.mark.parametrize("base_url", [
+    "https://api.fireworks.ai/inference/v1",
+    "https://other.example/inference/v1",
+    "https://api.fireworks.ai/other/v1",
+])
+def test_switch_model_accepts_configured_default_missing_from_provider_listing(monkeypatch, tmp_path, base_url):
+    """A provider default remains selectable when its /models listing omits it."""
+    model_id = "accounts/fireworks/routers/deepseek-v4p1-flash-us"
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        f"model:\n  default: {model_id}\n  provider: fireworks\n"
+        "providers:\n  fireworks:\n    timeout: 30\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(
+        "hermes_cli.models_validate.validate_requested_model",
+        lambda *a, **k: _REJECTED_VALIDATION,
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.models.detect_provider_for_model", lambda *a, **k: None)
+
+    accepted = switch_model(
+        raw_input=model_id,
+        current_provider="fireworks",
+        current_model=model_id,
+        current_base_url=base_url,
+        current_api_key="test-key",
+        user_providers={"fireworks": {"timeout": 30}},
+        custom_providers=[],
+    )
+    rejected = switch_model(
+        raw_input="accounts/fireworks/models/deepseek-v4p1-flash-us",
+        current_provider="fireworks",
+        current_model=model_id,
+        current_base_url=base_url,
+        current_api_key="test-key",
+        user_providers={"fireworks": {"timeout": 30}},
+        custom_providers=[],
+    )
+
+    wrong_provider = switch_model(
+        raw_input=model_id,
+        current_provider="openrouter",
+        current_model=model_id,
+        current_base_url=base_url,
+        current_api_key="test-key",
+        user_providers={"fireworks": {"timeout": 30}},
+        custom_providers=[],
+    )
+
+    assert accepted.success is True
+    assert accepted.base_url == base_url
+    assert rejected.success is False
+    assert wrong_provider.success is False
+
+
+@pytest.mark.parametrize("provider_line", ["", "  provider: ''\n", "  provider: '   '\n"])
+def test_switch_model_rejects_default_without_paired_provider(monkeypatch, tmp_path, provider_line):
+    """An empty caller provider must not authorize a default with no provider pair."""
+    model_id = "accounts/fireworks/routers/deepseek-v4p1-flash-us"
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        f"model:\n  default: {model_id}\n{provider_line}", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(
+        "hermes_cli.models_validate.validate_requested_model",
+        lambda *a, **k: _REJECTED_VALIDATION,
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.models.detect_provider_for_model", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input=model_id,
+        current_provider="",
+        current_model=model_id,
+        current_base_url="https://api.fireworks.ai/inference/v1",
+        current_api_key="test-key",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is False
 
 
 # =============================================================================

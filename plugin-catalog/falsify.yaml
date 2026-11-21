@@ -1,0 +1,38 @@
+name: falsify
+repo: "https://github.com/CodexOperator/falsify"
+sha: "e341b681771a115a8a80c89e112f963e807ad150"
+description: >-
+  A claim is not done until it survives a check that could have failed. The agent pre-registers each
+  claim BEFORE changing anything (its check and the base commit), hashed before any run; judging runs the
+  check on the agent's final tree (must pass) and on copies with the agent's own change reverted, whole and
+  hunk by hunk (must fail): a check that passes without the change reads VOID, and a proved claim says how
+  many hunks of the change its check covers. The agent never writes the mutant. A pre_verify nudge names
+  every claim not done on a proved result before the turn finishes; it never blocks completion.
+  Disclosure: falsify RUNS the check command the agent registered, with your permissions and no sandbox,
+  in temporary copies of the repo's working tree (read with a private git index; the original tree, its
+  index and history are never written); every run first goes to Hermes's approval prompt with
+  the exact argv, and under cron, gateway auto-approve or any run where nobody answered it records VOID
+  'not run' and executes nothing. Stores records and results under its own plugin data dir; no
+  background process. No network and no credentials by default; OPT-IN only (FALSIFY_DRAFT_URL and a claim
+  registered with blind: K), it sends the claim and the base tree's files, minus every file the check names or
+  would discover, to that endpoint. Its URL and optional key are config_schema secrets read only through
+  Hermes's secret scope (agent.secret_scope.get_secret), never from os.environ or a file.
+maintainer: CodexOperator
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: "https://github.com/CodexOperator/falsify#readme"
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - falsify_register
+    - falsify_judge
+    - falsify_done
+    - falsify_status
+  provides_hooks:
+    - pre_verify
+    - pre_tool_call
+    - post_approval_response
+  provides_middleware: []
+  requires_env: []

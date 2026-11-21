@@ -473,7 +473,38 @@ class GatewayVoiceMixin:
             return False
         # Dedup: base adapter auto-TTS already handles voice input (play_tts plays in VC when
         # connected) — unless streaming consumed the text (already_sent): then the runner must.
+        #
+        # Exception (#101185): on a Discord voice-channel turn where the bot is connected to
+        # the guild's VC, exactly one spoken reply per turn is the contract. The base adapter's
+        # auto-TTS fallback (`_wants_auto_tts`) only fires when the handler RETURNS text; a
+        # voice-first session that suppressed the text bubble leaves it with nothing to play,
+        # and the runner's skip then silences the answer entirely (only the tool ack is heard).
+        # Membership is resolved through the text-channel binding + active mixer — the same
+        # proof used for the "One moment" voice ack — because on a spoken turn the event is
+        # synthetic and under multiplexing the delivery adapter can differ from the one whose
+        # `_voice_clients` holds the connection.
+        if is_voice_input and not already_sent and self._vc_reply_owned_by_runner(event, adapter):
+            return True
         return not (is_voice_input and not already_sent)
+
+    def _vc_reply_owned_by_runner(self, event: MessageEvent, adapter) -> bool:
+        """True when this turn's guild has a live voice call on the answering bot: the
+        runner's `_send_voice_reply` is the only path guaranteed to play it in the channel."""
+        if getattr(event.source.platform, "value", None) != Platform.DISCORD.value:
+            return False
+        # Prefer the text-channel binding + mixer (the ack path): guild proven for THIS chat.
+        bound = getattr(adapter, "_voice_text_channels", None)
+        mixer_active = getattr(adapter, "voice_mixer_active", None)
+        if isinstance(bound, dict) and callable(mixer_active):
+            connected = getattr(adapter, "is_in_voice_channel", None)
+            for gid, channel in bound.items():
+                if str(channel) == str(event.source.chat_id) and mixer_active(gid) \
+                        and (callable(connected) and connected(gid)):
+                    return True
+        # Fallback: guild carried by the event (slash/interaction shapes).
+        guild_id = self._get_guild_id(event)
+        is_in_vc = getattr(adapter, "is_in_voice_channel", None)
+        return bool(guild_id and callable(is_in_vc) and is_in_vc(guild_id))
 
     def _should_echo_stt_transcripts(self) -> bool:
         return bool(getattr(self.config, "stt_echo_transcripts", True))

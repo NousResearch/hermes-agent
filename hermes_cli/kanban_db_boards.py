@@ -9,7 +9,9 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 
 from __future__ import annotations
 
+import contextlib
 import json
+import shutil
 import time
 from typing import Any
 from typing import Optional
@@ -143,6 +145,77 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
     return entries
 
 
+def _move_board_dir(d: Path, dest_root: Path, slug: str) -> Path:
+    """Atomically move board directory *d* into ``<dest_root>/<slug>-<ts>[-<n>]``."""
+    dest_root.mkdir(parents=True, exist_ok=True)
+    ts = int(time.time())
+    target = dest_root / f"{slug}-{ts}"
+    suffix = 1
+    while target.exists():  # rapid double-archive / delete
+        target = dest_root / f"{slug}-{ts}-{suffix}"
+        suffix += 1
+    try:
+        d.rename(target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            dest_root.rmdir()
+        raise
+    return target
+
+
+def _rollback_staged_board_dir(
+    staged: Path, original: Path, board_json_bytes: Optional[bytes],
+) -> None:
+    """Best-effort rollback of a failed hard-delete back to *original*."""
+    try:
+        if board_json_bytes is not None and staged.is_dir() and not staged.is_symlink():
+            board_json = staged / "board.json"
+            if not board_json.exists():
+                board_json.write_bytes(board_json_bytes)
+        if staged.exists() and not original.exists():
+            staged.rename(original)
+    except OSError as rollback_exc:
+        _kb._log.warning(
+            "kanban: failed to roll back staged board dir %s to %s: %s",
+            staged, original, rollback_exc,
+        )
+
+
+def _hard_delete_board_dir(d: Path, slug: str) -> None:
+    """Hard-delete *d* atomically so a refused delete leaves the board intact (#157000).
+
+    Moves *d* into ``boards/_trash/`` first — on Windows an open ``kanban.db``
+    handle makes that ``rename`` fail without touching ``board.json``, matching
+    the archive path. If ``rmtree`` still fails after the move (e.g. POSIX
+    unwritable entries), restores ``board.json`` if needed and moves *d* back.
+    """
+    board_json = d / "board.json"
+    board_json_bytes = (
+        board_json.read_bytes()
+        if not d.is_symlink() and board_json.is_file()
+        else None
+    )
+    trash_root = _kb.boards_root() / "_trash"
+    staged = _move_board_dir(d, trash_root, slug)
+    try:
+        # Remove child directories (workspaces, logs, ...) before the top-level
+        # DB and board.json so a refusal inside a subdir leaves kanban.db intact
+        # for rollback.
+        if staged.is_dir() and not staged.is_symlink():
+            for child in sorted(staged.iterdir(), key=lambda p: p.name):
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child)
+        shutil.rmtree(staged)
+    except BaseException:
+        _rollback_staged_board_dir(staged, d, board_json_bytes)
+        with contextlib.suppress(OSError):
+            trash_root.rmdir()
+        raise
+
+    with contextlib.suppress(OSError):
+        trash_root.rmdir()
+
+
 def remove_board(slug: str, *, archive: bool = True) -> dict:
     """Archive (to ``boards/_archived/<slug>-<ts>/``) or delete a board;
     ``default`` cannot be removed. Returns ``{"slug", "action", "new_path"}``."""
@@ -154,27 +227,20 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     if not d.exists():
         raise ValueError(f"board {normed!r} does not exist")
 
-    # If the user removed the currently-active board, revert to default.
-    if _kb.get_current_board() == normed:
-        _kb.clear_current_board()
-
-    # A concurrent connect() after the rename recreates an empty DB file; drop
-    # the init cache first so the schema pass re-runs on it.
-    _kb._INITIALIZED_PATHS.discard(str((d / "kanban.db").resolve()))
+    # Capture active-board and DB-cache identity before moving *d*, and only
+    # clear them after the directory is actually removed so a refused removal
+    # is a no-op.
+    was_current = _kb.get_current_board() == normed
+    db_resolved = str((d / "kanban.db").resolve())
 
     if archive:
         # Capture display metadata before the move so the tombstone below keeps
         # the user's board name instead of falling back to a title-cased slug.
         prior_meta = read_board_metadata(normed)
-        archive_root = _kb.boards_root() / "_archived"
-        archive_root.mkdir(parents=True, exist_ok=True)
-        ts = int(time.time())
-        target = archive_root / f"{normed}-{ts}"
-        suffix = 1
-        while target.exists():  # rapid double-archive
-            target = archive_root / f"{normed}-{ts}-{suffix}"
-            suffix += 1
-        d.rename(target)
+        target = _move_board_dir(d, _kb.boards_root() / "_archived", normed)
+        _kb._INITIALIZED_PATHS.discard(db_resolved)
+        if was_current:
+            _kb.clear_current_board()
         # Leave an ``archived`` tombstone at the original slug. Stale dashboard
         # tabs / gateway pollers can keep calling connect(board=slug) after the
         # archive; without a marker the resurrect-guard cannot tell an archived
@@ -190,8 +256,11 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
             archived=True,
         )
         return {"slug": normed, "action": "archived", "new_path": str(target)}
-    import shutil
-    shutil.rmtree(d)
+
+    _hard_delete_board_dir(d, normed)
+    _kb._INITIALIZED_PATHS.discard(db_resolved)
+    if was_current:
+        _kb.clear_current_board()
     return {"slug": normed, "action": "deleted", "new_path": ""}
 
 

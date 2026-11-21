@@ -199,7 +199,7 @@ hermes kanban block    t_abc "need input" --ids t_def t_hij
 |---|---|---|
 | `kanban_show` | 读取当前任务（标题、正文、先前尝试、父级交接、评论、完整预格式化的 `worker_context`）。默认使用环境变量中的任务 id。 | — |
 | `kanban_list` | 列出带有 `assignee`、`status`、`tenant`、归档可见性和限制过滤器的任务摘要。供编排器发现看板工作使用。 | — |
-| `kanban_complete` | 以 `summary` + `metadata` 结构化交接完成任务。 | `summary` / `result` 至少一个 |
+| `kanban_complete` | 以 `summary` + `metadata` 结构化交接完成任务。 | `summary`（必填） |
 | `kanban_request_review` | 启动同卡审查，携带 `summary`、可选 `metadata` 和 reviewer profile；任务移入 `review`，且不计入 block 循环。 | `summary` |
 | `kanban_request_changes` | reviewer 在活动审查 run 中要求修改：关闭审查 run，重新检查父依赖，并把任务交还原 implementer。 | `reason` |
 | `kanban_block` | 以 `reason` 上报需要人工输入。 | `reason` |

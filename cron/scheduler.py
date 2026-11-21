@@ -258,6 +258,28 @@ def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
     return skew
 
 
+# Script/monitor source failures (cron.scheduler_script + cron.monitor). The job never reached a
+# model, so provider classification is structurally wrong for them, and their text carries a
+# traceback — which routinely contains "timed out" and any credential the script passed on its own
+# command line. Matched on the leading shape, never on substrings: post-mortem regexes over a
+# traceback are exactly what mislabelled these (field-reported 2026-09-27).
+_SCRIPT_SOURCE_FAILURE_PREFIXES = (
+    "script exited with code",
+    "script execution failed",
+    "script not found",
+    "script path is not a file",
+    "script cancelled",
+    "monitor_url fetch failed",
+    "monitor_url must be http(s):",
+    "monitor_url blocked:",
+    "monitor_url redirect without a location header",
+    "monitor_url exceeded ",
+    "monitor job has neither",
+)
+# Shapes whose own text is a self-contained one-line diagnostic (no captured stderr): safe to echo.
+_SCRIPT_SOURCE_DIAGNOSTIC_PREFIXES = ("script not found", "script path is not a file")
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """One-line failure notice for chat delivery (full details stay in the run output).
 
@@ -266,7 +288,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     ``classify_api_error`` verdict and the copy table in ``scheduler_failure_copy``."""
     from cron.scheduler_failure_copy import (
         classify_cron_failure_reason, generic_failure_notice, inactivity_notice,
-        provider_failure_notice, script_timeout_notice)
+        provider_failure_notice, script_failed_notice, script_timeout_notice)
 
     job_name = job.get("name") or job.get("id") or "cron job"
     job_id = job.get("id") or job_name
@@ -278,6 +300,18 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     # See #78503, #82460.
     if lower.startswith("script timed out"):
         return script_timeout_notice(job_name, job_id)
+
+    # Same layer, every OTHER script/monitor failure shape: a crashed script is not a provider
+    # fault, and its traceback must not travel to chat (it can carry a credential).
+    if lower.startswith(_SCRIPT_SOURCE_FAILURE_PREFIXES):
+        detail = ""
+        if lower.startswith(_SCRIPT_SOURCE_DIAGNOSTIC_PREFIXES):
+            # Self-contained diagnostic: the runner's messages are single lines of prose, so bound
+            # by sentence and length (never by newline — there is none).
+            detail = text.splitlines()[0].split(". ", 1)[0].strip()
+            if len(detail) > 200:
+                detail = detail[:197].rstrip() + "..."
+        return script_failed_notice(job_name, job_id, detail)
 
     # Scheduler inactivity watchdog ("idle for {n}s (limit {m}s)"): the job's OWN tool call went
     # quiet, no model service involved. Its text may still contain "timed out", so it must be

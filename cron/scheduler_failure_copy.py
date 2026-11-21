@@ -144,6 +144,33 @@ def inactivity_notice(job_name: str, job_id: str) -> str:
     )
 
 
+def script_failed_notice(job_name: str, job_id: str, detail: str = "") -> str:
+    """A job's script (or monitor source) failed for a reason other than a timeout: the job never
+    ran, no model was involved.
+
+    Deliberately does NOT echo the captured output. A crashed script's text always carries a
+    traceback, and therefore whatever the script put on its own command line: a monitor shelling out
+    with ``curl -u user:token`` leaked an app password into the alert, the run output and the
+    executions ledger (field-reported 2026-09-27). Only a caller-vetted one-line diagnostic travels
+    as *detail*; the operator reads the rest locally.
+    """
+    detail = detail.strip()
+    if detail and detail[-1] not in ".!?":
+        detail += "."
+    head = (
+        f"⚠️ Cron '{job_name}' failed: {detail} The job never ran — no model was invoked."
+        if detail
+        else f"⚠️ Cron '{job_name}' failed: its script exited with an error, so the job never ran. "
+             f"No model was invoked."
+    )
+    return (
+        f"{head} The script's captured output is in {cron_output_dir_display(job_id)} "
+        f"(`hermes cron runs {job_id}`) and may contain credentials the script printed — read it "
+        f"there, then fix the script and retry with `hermes cron run {job_id}` "
+        f"(or pause it: `hermes cron pause {job_id}`)."
+    )
+
+
 def blocked_config_notice(job_name: str, reason: str) -> str:
     """One-time notice when the pre-run configuration check refused to start the job."""
     reason = reason.rstrip()

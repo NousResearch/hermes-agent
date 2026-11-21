@@ -538,6 +538,13 @@ export default function App() {
     >
       <SelectionSwitcher />
 
+      {/* Skip link (T4.2): the first tab stop jumps past the banner stack and
+          sidebar into the page body (`main` in PageHeaderProvider). sr-only
+          keeps it invisible until focused. */}
+      <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:px-3 focus:py-2 focus:bg-background-base focus:text-midground">
+        {t.app.skipToContent}
+      </a>
+
       <div
         aria-hidden
         className="pointer-events-none fixed inset-0 z-0"

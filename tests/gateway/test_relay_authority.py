@@ -168,6 +168,8 @@ async def probe(peer):
                     assert 'error' in denied, denied
                 # A busy relay callback must not block the same reader that receives
                 # outbound ACKs. The FIFO is the authority's, not a second adapter queue.
+                # busy_input_mode is queue (see main), so the running turn never consumes relay-4;
+                # the consumed cases are covered in test_session_ingress_live_turn.py.
                 blocked = deepcopy(raw)
                 blocked.update(message_id='relay-3', text='BLOCK_FIFO')
                 await connector_ws.send(json.dumps({'type': 'inbound', 'event': blocked}) + '\n')
@@ -274,6 +276,7 @@ def main():
     os.environ.update(OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url)
     Path(os.environ['HERMES_HOME'], 'config.yaml').write_text(
         f'model:\n  default: local-wire-stub\n  provider: custom\n  base_url: {url}\n'
+        'display:\n  busy_input_mode: queue\n'
         'streaming:\n  enabled: false\nauxiliary:\n  title_generation:\n    enabled: false\n')
     try:
         asyncio.run(probe(peer))

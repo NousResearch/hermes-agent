@@ -4,8 +4,10 @@ description: "Songwriting craft and Suno AI music prompts."
 version: 1.0.0
 author: Teknium (teknium1), Hermes Agent
 license: MIT
-tags: [songwriting, music, suno, parody, lyrics, creative]
 platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    tags: [songwriting, music, suno, parody, lyrics, creative]
 triggers:
   - writing a song
   - song lyrics

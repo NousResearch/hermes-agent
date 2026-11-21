@@ -1,4 +1,4 @@
-"""Locked credential-pool administration and target resolution."""
+"""Locked credential-pool administration and target resolution, plus the pool's lock-free size."""
 from __future__ import annotations
 
 import time
@@ -23,6 +23,12 @@ class CredentialNotSavedError(RuntimeError):
 
 
 class CredentialPoolAdminMixin:
+    def entry_count(self) -> int:
+        """How many credentials the pool holds, without the lock: ``select()`` holds it across token
+        refreshes and ``auth.json`` writes, and a UI repaint must not wait on those. Every writer
+        swaps or appends to ``_entries`` in one step, so the length is always a whole list's."""
+        return len(self._entries)
+
     def reset_status(self, credential_id: str) -> Optional[PooledCredential]:
         """Clear only the target's local error state, preserving sibling cooldowns."""
         with self._lock:

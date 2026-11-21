@@ -27,6 +27,18 @@ from __future__ import annotations
 import os
 import sys
 
+
+def is_pytest_invocation() -> bool:
+    """Identify pytest's module and console entry points before consuming CLI flags."""
+    if "pytest" not in sys.modules:
+        return False
+    spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+    if spec is not None and spec.name == "pytest.__main__":
+        return True
+    launcher = os.path.basename(sys.argv[0]).lower().removesuffix(".exe")
+    return launcher in {"pytest", "py.test"}
+
+
 __all__ = [
     "active_profile_may_override_home",
     "container_mode_may_be_active",

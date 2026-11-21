@@ -1083,6 +1083,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str | None = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
                 order: str = "discovery",
+                densify: bool = True,
                 task_id: str = "default") -> str:
     """Search for content or files."""
     try:
@@ -1138,7 +1139,10 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 m.content = redact_sensitive_text(
                     m.content, file_read=True,
                     secret_file=_is_secret_file_arg(_resolved_match_path(m.path, task_id)))
-        result_dict = result.to_dict(densify=True)
+        result_dict = result.to_dict(densify=densify)
+        # Code-kernel callers need the documented array even for zero hits.
+        if densify is False:
+            result_dict.setdefault("matches", [])
 
         if omitted:
             result_dict["_omitted"] = (
@@ -1419,7 +1423,12 @@ def _handle_search_files(args, **kw):
         pattern=pattern, target=target, path=path,
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0),
-        order=args.get("order", "discovery"), task_id=tid)
+        order=args.get("order", "discovery"),
+        # Internal-only knob (not in the model schema): the execute_code kernel
+        # stub sends densify=False so programmatic callers always receive the
+        # documented `matches` array instead of the agent-facing densified
+        # text block (#155854).
+        densify=args.get("densify", True), task_id=tid)
 
 
 def _read_file_schema_overrides():

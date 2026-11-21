@@ -238,7 +238,9 @@ def cmd_send(args: argparse.Namespace) -> None:
     tool_args = {"action": "send", "target": target, "message": message}
     if mentions:
         tool_args["mentions"] = mentions
-    result = send_message_tool(tool_args)
+    # A standalone delivery is an external event in the TARGET session, not that
+    # session's own assistant speech; keep it alternation-safe on history replay.
+    result = send_message_tool(tool_args, mirror_role="user")
     sys.exit(_emit_result(result, json_mode=getattr(args, "json", False), quiet=getattr(args, "quiet", False)))
 
 

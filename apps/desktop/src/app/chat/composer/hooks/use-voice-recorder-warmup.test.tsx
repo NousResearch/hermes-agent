@@ -305,4 +305,44 @@ describe('useVoiceRecorder STT readiness barrier', () => {
 
     expect(onTranscript).not.toHaveBeenCalled()
   })
+  it('delivers a plugin take to its latched destination without inserting into the ordinary draft', async () => {
+    const ordinary = vi.fn()
+    const recipient = { onTranscript: vi.fn(), onState: vi.fn(), focusInput: vi.fn() }
+    const transcribe = vi.fn(async () => 'Dictated annotation')
+    const hook = renderRecorder(transcribe, ordinary)
+    await act(async () => {
+      await hook.result.current.start(recipient)
+    })
+    await act(async () => {
+      await hook.result.current.stop()
+    })
+    expect(recipient.onTranscript).toHaveBeenCalledWith('Dictated annotation')
+    expect(ordinary).not.toHaveBeenCalled()
+    expect(recipient.onState.mock.calls.map(call => call[0])).toEqual(['recording', 'transcribing', 'idle'])
+    expect(recipient.focusInput).toHaveBeenCalledOnce()
+  })
+
+  it('cancels a plugin take and discards a transcription already in flight', async () => {
+    const deferred = Promise.withResolvers<string>()
+    const recipient = { onTranscript: vi.fn(), onState: vi.fn(), focusInput: vi.fn() }
+    const transcribe = vi.fn(() => deferred.promise)
+    const hook = renderRecorder(transcribe)
+    await act(async () => {
+      await hook.result.current.start(recipient)
+    })
+    let stopping: Promise<void>
+    await act(async () => {
+      stopping = hook.result.current.stop()
+    })
+    await waitFor(() => expect(transcribe).toHaveBeenCalledOnce())
+    act(() => hook.result.current.cancel())
+    await act(async () => {
+      deferred.resolve('Cancelled words')
+      await stopping!
+    })
+    expect(micHandle.cancel).toHaveBeenCalled()
+    expect(recipient.onTranscript).not.toHaveBeenCalled()
+    expect(recipient.focusInput).not.toHaveBeenCalled()
+    expect(recipient.onState).toHaveBeenLastCalledWith('idle')
+  })
 })

@@ -31,6 +31,7 @@ import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
 import { useAutoSpeakReplies } from './use-auto-speak-replies'
+import { usePluginDictation } from './use-plugin-dictation'
 import { useVoiceConversation } from './use-voice-conversation'
 import { useVoiceLiveConversation } from './use-voice-live-conversation'
 import { useVoiceRecorder } from './use-voice-recorder'
@@ -112,11 +113,19 @@ export function useComposerVoice({
     previousSessionIdRef.current = sessionId
   }, [sessionId])
 
-  const { dictate, voiceActivityState, voiceStatus } = useVoiceRecorder({
+  const recorder = useVoiceRecorder({
     focusInput,
     maxRecordingSeconds,
     onTranscript: insertText,
     onTranscribeAudio
+  })
+
+  const { dictate, voiceActivityState, voiceStatus } = recorder
+  usePluginDictation({
+    target,
+    sessionId,
+    disabled: disabled || voiceConversationActive || !onTranscribeAudio,
+    recorder
   })
 
   const surfaceId = useComposerSurfaceId()

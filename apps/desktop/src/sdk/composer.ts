@@ -1,12 +1,20 @@
 import {
   type ComposerInsertMode,
   type ComposerTarget,
+  getActiveComposer,
   requestComposerFocus,
   requestComposerGetDraft,
   requestComposerInsertAcked,
   requestComposerSetDraft,
   requestComposerSubmit
 } from '@/app/chat/composer/focus'
+import { type DictationRecipient, startComposerDictation } from '@/lib/composer-dictation'
+import {
+  captureResponseSelection,
+  formatResponseAnnotations,
+  onResponseAnnotationsOpen,
+  parseResponseAnnotations
+} from '@/lib/response-annotations'
 import { freshDraftScope, takeSessionDraft } from '@/store/composer'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
@@ -48,8 +56,14 @@ const resolveComposerAddress = (
   // drops the request (fail-closed) rather than leaking it into whatever
   // session the primary is displaying.
   const shownInPrimary = ids.includes($selectedStoredSessionId.get() ?? '')
+  const tileTarget = `tile:${stored}` as ComposerTarget
+  // A selected primary can remain mounted behind another route while this
+  // same session is visible in a tile. Honor that exact active tile; routing
+  // to the hidden primary would silently drop focus restoration. The shared
+  // bus already heals hidden active targets to the visible chat surface.
+  const target = !shownInPrimary || getActiveComposer() === tileTarget ? tileTarget : 'main'
 
-  return { ids, stored, target: shownInPrimary ? 'main' : (`tile:${stored}` as ComposerTarget) }
+  return { ids, stored, target }
 }
 
 /** THE composer draft surface (#116305 item 1): read, write, insert, and
@@ -63,6 +77,25 @@ const resolveComposerAddress = (
  *  resolves to no live surface returns `null`/`false` (or is dropped, for
  *  `focus`) — it never broadcasts and never throws. */
 export const composerHost = {
+  /** User-initiated dictation into a plugin field using the addressed composer's STT settings.
+   * Stop transcribes; cancel discards audio. The caller must cancel when its field closes.
+   * Returns null if the surface is absent, busy recording, or disabled. Never submits. */
+  dictation: {
+    version: 1,
+    start: (sessionId: null | string, recipient: DictationRecipient) => {
+      const { target } = resolveComposerAddress(sessionId)
+
+      return target === null ? null : startComposerDictation(target === 'active' ? getActiveComposer() : target, recipient)
+    }
+  },
+  /** Self-contained annotation chips; feature-detect this on older desktops. */
+  annotations: {
+    version: 1,
+    captureSelection: captureResponseSelection,
+    format: formatResponseAnnotations,
+    parse: parseResponseAnnotations,
+    onOpen: onResponseAnnotationsOpen
+  },
   /** The live draft text of one composer, or null when nothing holds it.
    *  Mounted surfaces answer with their in-DOM text (current, incl.
    *  unsaved keystrokes); an unmounted session falls back to its debounced

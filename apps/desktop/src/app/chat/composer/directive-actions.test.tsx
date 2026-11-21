@@ -3,10 +3,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
 import { IS_MAC } from '@/lib/keybinds/combo'
+import { onResponseAnnotationsOpen } from '@/lib/response-annotations'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 
 import { ComposerDirectiveActions } from './directive-actions'
-import { refChipElement } from './rich-editor'
+import { refChipElement, refChipHtml } from './rich-editor'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 
@@ -217,5 +218,57 @@ describe('ComposerDirectiveActions', () => {
     hover(editor.querySelector('[data-ref-kind="url"]')!)
 
     expect(pillValue()).toBe('https://late.example')
+  })
+})
+
+
+describe('annotation preview intent', () => {
+  it.each(['element', 'html'])('keeps open and remove as separate keyboard controls in %s chips', factory => {
+    const value = JSON.stringify({ type: 'response-annotations', version: 1, label: '1 annotation', annotations: [{ id: 'a', text: 'Selected words', comment: '' }] })
+    const editor = mountEditor([{ kind: 'annotation', value }])
+
+    if (factory === 'html') {
+      editor.innerHTML = refChipHtml('annotation', `\`${value}\``)
+    }
+
+    const chip = chips(editor, 'annotation')[0]!
+    const controls = chip.querySelectorAll<HTMLElement>('[role="button"]')
+    expect(chip.getAttribute('role')).toBe('group')
+    expect(controls).toHaveLength(2)
+    expect(chip.querySelector('[role="button"] [role="button"]')).toBeNull()
+    const received = vi.fn()
+    const off = onResponseAnnotationsOpen(received)
+
+    try {
+      for (const [index, control] of [...controls].entries()) {
+        expect(control.tabIndex).toBe(0)
+        control.focus()
+        fireEvent.keyDown(control, { key: 'Enter' })
+        expect(received.mock.calls.at(-1)?.[0]).toMatchObject({ value, editable: true, remove: index === 1 })
+      }
+    } finally {
+      off()
+    }
+  })
+  it('exposes hover and keyboard previews without activating or removing the attachment', () => {
+    const value = JSON.stringify({ type: 'response-annotations', version: 1, label: '1 annotation', annotations: [{ id: 'a', text: 'Selected words', comment: '' }] })
+    const editor = mountEditor([{ kind: 'annotation', value }])
+    const chip = chips(editor, 'annotation')[0]!
+    const received = vi.fn()
+    const off = onResponseAnnotationsOpen(received)
+
+    try {
+      hover(chip)
+      expect(received.mock.calls.at(-1)?.[0]).toMatchObject({ value, editable: true, interaction: 'hover' })
+      expect(pillValue()).toBeNull()
+      fireEvent.pointerOut(chip, { relatedTarget: document.body })
+      expect(received.mock.calls.at(-1)?.[0].interaction).toBe('leave')
+      fireEvent.focusIn(chip)
+      expect(received.mock.calls.at(-1)?.[0].interaction).toBe('focus')
+      fireEvent.focusOut(chip)
+      expect(received.mock.calls.at(-1)?.[0].interaction).toBe('leave')
+      expect(editor.contains(chip)).toBe(true)
+      expect(received.mock.calls.every(([request]) => !request.remove)).toBe(true)
+    } finally { off() }
   })
 })

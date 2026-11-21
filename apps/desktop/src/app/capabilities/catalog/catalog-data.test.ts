@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { fetchCatalog, parseCatalog } from './catalog-data'
+import { EMPTY_FACETS, filterCatalog } from './catalog-query'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -100,6 +101,16 @@ describe('public catalog data', () => {
       })
       expect(entry?.search).toContain(row.capabilities.providesTools[0])
     })
+  })
+
+  it('finds an installed plugin outside the catalog by its id as well as its display name', () => {
+    const entries = parseCatalog('plugins', [{ name: 'Demo Watcher', identifier: 'demo-watcher', tier: 'local' }])
+
+    const search = (query: string) =>
+      filterCatalog(entries, EMPTY_FACETS, query, () => true, 'plugins').map(row => row.name)
+
+    expect(search('demo-watcher')).toEqual(['Demo Watcher'])
+    expect(search('demo watcher')).toEqual(['Demo Watcher'])
   })
 
   it.each(['skills', 'plugins'] as const)('fetches only the published %s snapshot and parses it', async kind => {

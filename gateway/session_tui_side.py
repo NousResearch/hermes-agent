@@ -262,8 +262,12 @@ def _btw_explore(authority, ref, policy, task_id, agent, snapshot, task):
         return format_report(thread)
 
     # Retirement and shutdown stop the thread (interrupting its fork) like any side agent.
-    return _spawn(authority, ref, task_id, 'btw.complete', body, extra={'question': task},
-                  holder=[_SideThreadStop(thread)])
+    from agent.i18n import t
+    from agent.side_thread import task_preview
+    return {**_spawn(authority, ref, task_id, 'btw.complete', body, extra={'question': task},
+                     holder=[_SideThreadStop(thread)]),
+            # The localized start notice, so a client needs no catalog of its own for it.
+            'text': t('side_thread.started', thread_id=task_id, preview=task_preview(task))}
 
 
 class _SideThreadStop:

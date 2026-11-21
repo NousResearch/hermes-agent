@@ -365,7 +365,8 @@ def _tool_tally(names: list[str]) -> str:
     return ", ".join(f"{name} ×{n}" if n > 1 else name for name, n in counts.items())
 
 
-def _preview(text: str, limit: int = 60) -> str:
+def task_preview(text: str, limit: int = 60) -> str:
+    """One line of at most ``limit`` characters: how surfaces quote a thread's task."""
     text = " ".join(str(text or "").split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
@@ -374,7 +375,7 @@ def format_thread_line(thread: SideThread) -> str:
     """``btw_ab12cd  done     42s  ⚒ 6  "find the retry logic"`` (locale-neutral: ids, status
     words and counts read the same in every catalog), plus the latest step while it runs."""
     line = (f"{thread.thread_id}  {thread.status:<8} {int(thread.elapsed):>4}s  "
-            f"⚒ {len(thread.tool_calls)}  \"{_preview(thread.task)}\"")
+            f"⚒ {len(thread.tool_calls)}  \"{task_preview(thread.task)}\"")
     with thread._lock:
         latest = thread.progress[-1] if thread.running and thread.progress else ""
     return f"{line}\n      ┊ {latest}" if latest else line

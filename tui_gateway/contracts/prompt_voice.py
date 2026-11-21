@@ -250,8 +250,9 @@ method("prompt.background", params=SideAgentParams, result=TaskIdResult,
 class BtwResult(Result):
     """``prompt.btw`` parses its ``text`` (``agent.side_thread.parse_btw_args``). A question or a
     ``--explore`` thread runs detached: ``task_id``, answer as ``btw.complete`` (an exploration
-    streams ``btw.progress`` first). ``--threads|--stop|--promote`` reply at once with ``text`` to
-    show, plus for a promotion the ``prompt`` the client submits as its next turn."""
+    streams ``btw.progress`` first, and its reply carries the localized start notice as ``text``).
+    ``--threads|--stop|--promote`` (and a refused exploration) reply at once with ``text`` to show,
+    plus for a promotion the ``prompt`` the client submits as its next turn."""
 
     task_id: str | None = None
     text: str | None = None

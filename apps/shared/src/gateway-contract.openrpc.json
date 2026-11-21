@@ -7715,7 +7715,7 @@
       },
       "BtwResult": {
         "additionalProperties": false,
-        "description": "``prompt.btw`` parses its ``text`` (``agent.side_thread.parse_btw_args``). A question or a\n``--explore`` thread runs detached: ``task_id``, answer as ``btw.complete`` (an exploration\nstreams ``btw.progress`` first). ``--threads|--stop|--promote`` reply at once with ``text`` to\nshow, plus for a promotion the ``prompt`` the client submits as its next turn.",
+        "description": "``prompt.btw`` parses its ``text`` (``agent.side_thread.parse_btw_args``). A question or a\n``--explore`` thread runs detached: ``task_id``, answer as ``btw.complete`` (an exploration\nstreams ``btw.progress`` first, and its reply carries the localized start notice as ``text``).\n``--threads|--stop|--promote`` (and a refused exploration) reply at once with ``text`` to show,\nplus for a promotion the ``prompt`` the client submits as its next turn.",
         "properties": {
           "task_id": {
             "anyOf": [

@@ -61,6 +61,7 @@ def test_explore_streams_progress_then_reports(sidecar, monkeypatch):
     monkeypatch.setattr("agent.side_thread.run_side_exploration", run)
     reply = server._methods["prompt.btw"]("rid", {"session_id": SID, "text": "--explore find the retry logic"})
     task_id = reply["result"]["task_id"]
+    assert task_id in reply["result"]["text"]  # the localized start notice
     assert done.wait(10)
 
     assert seen == {"parent": agent, "history": agent._session_messages}

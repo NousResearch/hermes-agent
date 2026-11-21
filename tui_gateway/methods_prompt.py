@@ -1282,7 +1282,12 @@ def _btw_explore(rid, session, parent, task_id, agent, snapshot, task):
         run_side_exploration(thread, agent, snapshot, on_progress=progress)
         return format_report(thread)
 
-    return _spawn_side_agent(rid, session, task_id, parent, "btw.complete", body, extra={"question": task})
+    reply = _spawn_side_agent(rid, session, task_id, parent, "btw.complete", body, extra={"question": task})
+    if "result" in reply:
+        from agent.i18n import t
+        from agent.side_thread import task_preview
+        reply["result"]["text"] = t("side_thread.started", thread_id=task_id, preview=task_preview(task))
+    return reply
 
 
 @method("preview.restart")

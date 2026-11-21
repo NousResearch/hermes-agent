@@ -3005,7 +3005,7 @@ export interface SideAgentParams {
 export interface TaskIdResult {
   task_id: string
 }
-/** ``prompt.btw`` parses its ``text`` (``agent.side_thread.parse_btw_args``). A question or a ``--explore`` thread runs detached: ``task_id``, answer as ``btw.complete`` (an exploration streams ``btw.progress`` first). ``--threads|--stop|--promote`` reply at once with ``text`` to show, plus for a promotion the ``prompt`` the client submits as its next turn. */
+/** ``prompt.btw`` parses its ``text`` (``agent.side_thread.parse_btw_args``). A question or a ``--explore`` thread runs detached: ``task_id``, answer as ``btw.complete`` (an exploration streams ``btw.progress`` first, and its reply carries the localized start notice as ``text``). ``--threads|--stop|--promote`` (and a refused exploration) reply at once with ``text`` to show, plus for a promotion the ``prompt`` the client submits as its next turn. */
 export interface BtwResult {
   task_id?: string | null
   text?: string | null

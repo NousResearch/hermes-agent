@@ -1,5 +1,5 @@
 import { skillInvocationText } from '@hermes/shared'
-import { mergeUsage, parseCommandDispatch, parseSlashCommand, randomUuid } from '@hermes/shared'
+import { jsonRpcErrorReason, mergeUsage, parseCommandDispatch, parseSlashCommand, randomUuid } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { mergeOlderTranscriptPage } from '@/app/chat/transcript-backfill'
@@ -71,6 +71,7 @@ import type {
   SessionTitleResponse,
   SlashExecResponse
 } from '../../../types'
+import type { CreateBackendSessionForSend } from '../use-session-actions/create-overrides'
 
 import { remoteBrowserManageRefusal } from './browser-manage-refusal'
 import { adoptPreparedSubmission, preparedSubmissionKey } from './prepared-submissions'
@@ -98,6 +99,20 @@ import {
 // host is still compressing (#97948).
 export const SESSION_COMPRESS_TIMEOUT_MS = 660_000
 const WAKE_START_TIMEOUT_MS = 180_000
+
+function slashDispatchErrorText(name: string, execError: unknown, dispatchError: unknown): string {
+  const dispatchMessage = dispatchError instanceof Error ? dispatchError.message : String(dispatchError)
+
+  // A fallback that finds no quick command, plugin, bundle or skill adds no useful
+  // detail about the original slash worker failure.
+  if (execError && /not a quick\/plugin\/(?:bundle\/)?skill command/i.test(dispatchMessage)) {
+    const original = execError instanceof Error ? execError.message : String(execError)
+
+    return `error: /${name} failed: ${original}`
+  }
+
+  return `error: ${dispatchMessage}`
+}
 
 const wakeDeviceLabel = (device?: WakeInputDeviceStatus): string => {
   if (!device) {
@@ -155,7 +170,7 @@ interface SlashCommandDeps {
   branchCurrentSession: () => Promise<boolean>
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
-  createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
+  createBackendSessionForSend: CreateBackendSessionForSend
   getRoutedStoredSessionId: () => null | string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   handleSkinCommand: (arg: string) => string
@@ -284,7 +299,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       const ensureSessionId = async (sessionHint?: string, preview?: null | string) =>
         resolveTargetSessionId({
           activeRuntimeId: initialRuntimeId,
-          createSession: () => createBackendSessionForSend(preview),
+          createSession: () => createBackendSessionForSend(preview, {
+            onComposerScopeAssigned: options?.onComposerScopeAssigned
+          }),
           explicitRuntimeId: sessionHint,
           getRuntimeIdForStoredSession,
           requestGateway,
@@ -569,19 +586,15 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           await handleDispatch(dispatch)
         } catch (err) {
-          // "not a quick/plugin/bundle/skill command" (older gateways: without
-          // "bundle/") just means the fallback had nothing to add — the slash.exec failure (worker timeout, crash) is
-          // the real error, so don't bury it under the routing noise.
-          const dispatchMessage = err instanceof Error ? err.message : String(err)
-
-          if (slashExecError && /not a quick\/plugin\/(?:bundle\/)?skill command/i.test(dispatchMessage)) {
-            const original = slashExecError instanceof Error ? slashExecError.message : String(slashExecError)
-            renderSlashOutput(`error: /${name} failed: ${original}`)
-
-            return
+          // Only let the composer restore a retry when both routes definitively refused the command.
+          if (
+            jsonRpcErrorReason(slashExecError) === 'unsupported_command' &&
+            jsonRpcErrorReason(err) === 'unsupported_command'
+          ) {
+            submitted = false
           }
 
-          renderSlashOutput(`error: ${dispatchMessage}`)
+          renderSlashOutput(slashDispatchErrorText(name, slashExecError, err))
         }
       }
 

@@ -202,6 +202,38 @@ def test_schedule_task_parks_time_delay_without_dispatching(kanban_home):
         assert any(e.kind == "scheduled" and e.payload == {"reason": "run next week"} for e in events)
 
 
+def test_unblock_scheduled_review_run_resumes_in_review_lane(kanban_home):
+    """A reviewer that parks a card in ``scheduled`` (e.g. waiting for CI) must come
+    back as the reviewer. Resuming to ``ready`` re-dispatches it as an implementer run:
+    no ``sdlc-review`` and the implementer-only card skills, so the reviewer profile
+    fails with ``kanban_skills_unavailable``."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="feature", assignee="dev", skills=["dev-only"])
+        assert kb.claim_task(conn, t) is not None
+        assert kb.request_review(conn, t, summary="PR opened", reviewer="pm", force=True)
+        assert kb.claim_review_task(conn, t) is not None
+        run_id = kb.get_task(conn, t).current_run_id
+        assert kb.schedule_task(conn, t, reason="wait for CI", expected_run_id=run_id)
+        assert kb.unblock_task(conn, t)
+        task = kb.get_task(conn, t)
+        assert (task.status, task.assignee) == ("review", "pm")
+
+
+def test_unblock_scheduled_implementer_run_resumes_ready(kanban_home):
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="feature", assignee="dev")
+        assert kb.claim_task(conn, t) is not None
+        run_id = kb.get_task(conn, t).current_run_id
+        assert kb.schedule_task(conn, t, reason="wait", expected_run_id=run_id)
+        assert kb.unblock_task(conn, t)
+        assert kb.get_task(conn, t).status == "ready"
+
+        never_run = kb.create_task(conn, title="later", assignee="dev")
+        assert kb.schedule_task(conn, never_run)
+        assert kb.unblock_task(conn, never_run)
+        assert kb.get_task(conn, never_run).status == "ready"
+
+
 
 
 

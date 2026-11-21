@@ -52,8 +52,7 @@ export function LogSearchField({ containerClassName, onChange, placeholder, sear
   const label = formatMatchLabel(search.query, search.active + 1, search.hits.length)
 
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    const action =
-      event.key === 'Enter' ? (event.shiftKey ? 'previous' : 'next') : findBarKeyAction(event, { inInput: true })
+    const action = findBarKeyAction(event, { inInput: true })
 
     if (!action) {
       return

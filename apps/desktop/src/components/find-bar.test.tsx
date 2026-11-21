@@ -176,6 +176,11 @@ describe('findBarKeyAction', () => {
     expect(findBarKeyAction({ key: 'Enter', nativeEvent: { isComposing: true } }, { inInput: true })).toBeNull()
   })
 
+  it('leaves Escape to an IME composition, which it cancels instead of closing the bar', () => {
+    expect(findBarKeyAction({ isComposing: true, key: 'Escape' })).toBeNull()
+    expect(findBarKeyAction({ key: 'Escape', keyCode: 229 }, { inInput: true })).toBeNull()
+  })
+
   it('ignores a bare g so typing never triggers a step', () => {
     expect(findBarKeyAction({ key: 'g' })).toBeNull()
     expect(findBarKeyAction({ key: 'g' }, { inInput: true })).toBeNull()

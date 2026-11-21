@@ -69,7 +69,10 @@ export interface FindBarKeyEvent {
  * whatever else may want them instead of being silently swallowed.
  */
 export function findBarKeyAction(event: FindBarKeyEvent, options: { inInput?: boolean } = {}): FindBarKeyAction {
-  if (event.altKey) {
+  // Keys inside an IME composition (CJK input) confirm, cancel or pick its candidates:
+  // a composing Enter stepping matches jumps the viewport, a composing Escape closing
+  // the bar throws away the query being typed.
+  if (event.altKey || isImeComposing(event)) {
     return null
   }
 
@@ -85,10 +88,7 @@ export function findBarKeyAction(event: FindBarKeyEvent, options: { inInput?: bo
     return event.shiftKey ? 'previous' : 'next'
   }
 
-  // A bare Enter inside the input can also be an IME composition commit
-  // (CJK input); stepping matches on that keystroke jumps the viewport while
-  // the user is still composing their query.
-  if (event.key === 'Enter' && !mod && options.inInput && !isImeComposing(event)) {
+  if (event.key === 'Enter' && !mod && options.inInput) {
     return event.shiftKey ? 'previous' : 'next'
   }
 

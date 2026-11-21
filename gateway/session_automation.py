@@ -657,11 +657,12 @@ def restore_local_automation(authority, ref, row):
     return event
 
 
-async def admit_automation(authority, adapter, event, identity, replaces=None, fold=None):
+async def admit_automation(authority, adapter, event, identity, replaces=None, fold=None, *, check=None):
     """``replaces``: a queued automation row of the same session this input supersedes (a liveness
     tick carrying the output of the one still waiting). Its cancellation commits in this admission's
     own transaction, so neither lands without the other. ``fold``: ``replaces`` is a completion this
-    batch absorbs (``QueuedFold``), given the tick admission ids it may sit behind."""
+    batch absorbs (``QueuedFold``), given the tick admission ids it may sit behind. ``check``, when
+    supplied, fences the producer at the admission gate inside the write transaction."""
     authority._require_admission_open()
     payload, entry = snapshot_automation(authority, adapter, event, identity)
     from gateway.session_authority import LiveSession
@@ -692,7 +693,8 @@ async def admit_automation(authority, adapter, event, identity, replaces=None, f
         # queued tail but for the finishing process's ticks.
         row, created = store.admissions.admit(
             epoch=authority.epoch, principal_id='automation:' + entry.session_key, session_id=ref.session_id,
-            request_id=identity, payload=payload, gate=authority.gate_refusal(),
+            request_id=identity, payload=payload,
+            gate=partial(authority.gate_refusal, check) if check is not None else authority.gate_refusal(),
             supersedes=replaces if fold is None else None,
             fold=None if fold is None else QueuedFold(replaces, frozenset(fold)))
         replaced[:] = [replaces] if created and replaces is not None else []

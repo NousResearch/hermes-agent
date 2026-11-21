@@ -403,6 +403,19 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         from hermes_cli.plugins_injection import inject_plugin_message
         return inject_plugin_message(self, content, role, session_key=session_key, origin=origin)
 
+    def submit_message(self, content: str, *, session_key: str, expected_session_id: str,
+                       request_id: str) -> dict:
+        """Durably queue a pinned gateway turn; call from a worker thread, not its event loop."""
+        from hermes_cli.plugins_injection import plugin_submission
+        return plugin_submission(self, content=content, session_key=session_key,
+                                 expected_session_id=expected_session_id, request_id=request_id)
+
+    def submission_status(self, *, session_key: str, expected_session_id: str, request_id: str) -> dict:
+        """Read this plugin's durable receipt and bounded final response for an exact request."""
+        from hermes_cli.plugins_injection import plugin_submission
+        return plugin_submission(self, content=None, read_only=True, session_key=session_key,
+                                 expected_session_id=expected_session_id, request_id=request_id)
+
     def session_cwd(self) -> str:
         """The calling session's recorded cwd, never the gateway's own (``plugin_session``)."""
         from hermes_cli.plugin_session import context_cwd

@@ -30,6 +30,16 @@ def _keyless_rescue_enabled() -> bool:
         return False
 
 
+def _rescue_partial_enabled() -> bool:
+    """``web.rescue_partial_failures`` (default off): rescue failed URLs in a mixed batch."""
+    from tools.web_tools import _load_web_config
+    try:
+        return bool(_load_web_config().get("rescue_partial_failures", False))
+    except Exception:  # a config read never makes rescue fatal; keep the traceback for diagnosis
+        logger.debug("partial rescue setting read failed", exc_info=True)
+        return False
+
+
 def _ring_vendor_keyless(name: str) -> bool:
     """Did *name*'s own provider route this call through the anonymous keyless ring?
 
@@ -125,25 +135,31 @@ def _policy_blocked_result(result: dict) -> bool:
 
 
 def _rescue_extract(provider_name: str, urls: list, results: list) -> list:
-    """Rescue a whole-batch extract failure via the ring.
+    """Rescue extract failures via the ring: a whole failed batch, or a mixed batch's failed entries.
 
-    Only genuine failures are re-fetched; policy-blocked entries are preserved verbatim. If the provider
-    broke url/result order parity, every entry is treated as rescueable and the ring's list replaces the
-    batch wholesale.
+    Only genuine failures are re-fetched; policy-blocked entries are preserved verbatim, and an origin
+    HTTP answer (``HTTP <code> from origin`` — the page's own response, not a backend failure) is left
+    alone too, mirroring the whole-batch trigger. If the provider broke url/result order parity, every
+    entry is treated as rescueable and the ring's list replaces the batch wholesale.
     """
+    from plugins.web._common import is_origin_http_error
     from plugins.web.keyless_mcp import extract_with_failover
 
     parity = len(results) == len(urls)
-    rescue_idx = [i for i, r in enumerate(results) if not parity or not _policy_blocked_result(r)]
+    rescue_idx = [
+        i for i, r in enumerate(results)
+        if not parity or (r.get("error") and not _policy_blocked_result(r)
+                          and not is_origin_http_error(r.get("error")))
+    ]
     if not rescue_idx:
-        return results  # every failure is an intentional policy block
+        return results  # nothing genuine failed: policy blocks / origin answers only
 
     rescue_urls = [urls[i] for i in rescue_idx] if parity else list(urls)
     errors = (results[i].get("error") for i in rescue_idx if results[i].get("error"))
     original_error = next(errors, "extract failed")
     logger.warning(
-        "web_extract backend '%s' failed all %d URL(s) (%s); one-shot keyless rescue",
-        provider_name, len(rescue_urls), (original_error or "")[:200],
+        "web_extract backend '%s' failed %d of %d URL(s) (%s); one-shot keyless rescue",
+        provider_name, len(rescue_urls), len(urls), (original_error or "")[:200],
     )
     rescued = extract_with_failover(provider_name, list(rescue_urls))
     if rescued and all(r.get("error", "") for r in rescued):
@@ -156,4 +172,6 @@ def _rescue_extract(provider_name: str, urls: list, results: list) -> list:
     if parity and len(rescued) == len(rescue_idx):
         replacements = dict(zip(rescue_idx, rescued))
         return [replacements.get(i, r) for i, r in enumerate(results)]
+    if len(rescue_idx) < len(results):
+        return results  # mixed batch: an unmappable ring list must not drop the original successes
     return rescued

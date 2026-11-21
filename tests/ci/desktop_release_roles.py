@@ -110,8 +110,23 @@ def universal_assembler(jobs: dict) -> str:
                  "universal bundle assembly")
 
 
+def termux_builds(jobs: dict) -> dict[str, str]:
+    """``"release" | "commit"`` -> id of that Termux .deb build trust branch."""
+    legs: dict[str, str] = {}
+    for name, job in jobs.items():
+        if not _stages(job, "termux"):
+            continue
+        mode = _MODE_BY_CACHE[job["cache-mode"]]
+        assert mode not in legs, f"{name} and {legs[mode]} both build termux ({mode})"
+        legs[mode] = name
+    assert set(legs) == {"release", "commit"}, legs
+    return legs
+
+
 def termux_builder(jobs: dict) -> str:
-    return _only([name for name, job in jobs.items() if _stages(job, "termux")], "termux deb")
+    """The Termux selection gate that turns one trust branch into one job result."""
+    pair = set(termux_builds(jobs).values())
+    return _only([name for name, job in jobs.items() if pair <= set(needs_of(job))], "termux deb gate")
 
 
 def _renders(job: dict, flag: str) -> bool:

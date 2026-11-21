@@ -278,6 +278,43 @@ RECEIPT_HANDOFFS = {
 RECEIPT_INCLUDES = ("metadata-*.json",)
 
 
+def _validate_package_platform_row(item: dict, tag: str, expected_windows_version: str,
+                                   url) -> None:
+    """Validate platform-specific version and signing metadata for one candidate package row.
+
+    A commit claim built from a pre-PR commit (legacyCommitBuild=True) carries tagless commit
+    versions (X.Y.Z.0 / X.Y.Z / X.Y.Z-1); stable and canary releases never admit legacyCommitBuild.
+    """
+    legacy = bool(item.get("legacyCommitBuild"))
+    if legacy and not is_commit_claim(tag):
+        raise ValueError("Legacy commit build metadata is only allowed for commit claims")
+    core = None
+    if legacy:
+        from hermes_cli.update_channel import tag_core
+
+        core = tag_core(tag)
+    if item["platform"] == "windows":
+        if legacy:
+            expected_quad = f"{core}.0"
+            if (item.get("version") != expected_quad
+                    or item.get("executableVersion") not in (core, expected_quad)):
+                raise ValueError("Windows legacy commit candidate version differs from the claim core")
+        elif (item.get("version") != expected_windows_version
+              or item.get("executableVersion") != expected_windows_version):
+            raise ValueError("Windows candidate version differs from the admitted release epoch")
+        windows_version(item["version"])
+        if not item.get("publisher") or not item.get("applicationId") or not url.path.endswith(".msixbundle"):
+            raise ValueError("Windows candidate needs publisher, applicationId and MSIX bundle")
+    elif item["platform"] == "macos":
+        expected_mac = core if legacy else payload_version(tag)
+        if item.get("version") != expected_mac or not re.fullmatch(r"[A-Z0-9]{10}", item.get("teamId", "")) or not url.path.endswith(".zip"):
+            raise ValueError("macOS candidate needs matching version, signing team and app ZIP")
+    else:
+        expected_deb = f"{core}-1" if legacy else _deb_version(tag)
+        if item.get("version") != expected_deb:
+            raise ValueError("Termux candidate version differs from the admitted release")
+
+
 def _validated_rows(manifest: dict, tag: str, commit: str, public_base: str,
                     release_epoch: int | None, *, archive: str) -> dict:
     """The per-row checks shared by the full-manifest and receipt validators."""
@@ -307,18 +344,7 @@ def _validated_rows(manifest: dict, tag: str, commit: str, public_base: str,
             raise ValueError(f"Candidate package is outside its immutable tag archive: {target}")
         if not DIGEST.fullmatch(artifact.get("sha256", "")) or not item.get("identity"):
             raise ValueError(f"Invalid candidate digest or identity: {target}")
-        if item["platform"] == "windows":
-            if (item.get("version") != expected_windows_version
-                    or item.get("executableVersion") != expected_windows_version):
-                raise ValueError("Windows candidate version differs from the admitted release epoch")
-            windows_version(item["version"])
-            if not item.get("publisher") or not item.get("applicationId") or not url.path.endswith(".msixbundle"):
-                raise ValueError("Windows candidate needs publisher, applicationId and MSIX bundle")
-        elif item["platform"] == "macos":
-            if item.get("version") != payload_version(tag) or not re.fullmatch(r"[A-Z0-9]{10}", item.get("teamId", "")) or not url.path.endswith(".zip"):
-                raise ValueError("macOS candidate needs matching version, signing team and app ZIP")
-        elif item.get("version") != _deb_version(tag):
-            raise ValueError("Termux candidate version differs from the admitted release")
+        _validate_package_platform_row(item, tag, expected_windows_version, url)
         rows[target] = item
     return rows
 
@@ -658,7 +684,8 @@ CONTROLLER_WORKFLOW = "stable-release.yml"
 
 def claim_run_title(claim_tag: str) -> str:
     """The run-name stable-release.yml sets. Every run is on the default branch, so this names the claim."""
-    return f"Stable release {claim_tag}"
+    prefix = "Canary" if is_canary_claim(claim_tag) else "Commit" if is_commit_claim(claim_tag) else "Stable"
+    return f"{prefix} release {claim_tag}"
 
 
 def is_claim_run(*, title: str | None, head_branch: str | None, head_sha: str | None,
@@ -886,8 +913,28 @@ def admit(env: dict) -> None:
     )
 
 
-def verify(env: dict) -> None:
+def commit_supports_claim_tag(commit: str, run=output) -> bool:
+    """Whether ``commit`` already carries commit-claim support in its own build scripts.
+
+    A commit forked before commit claims existed still builds cleanly through the tagless
+    ``--commit`` path while the trusted controller records, stages, smokes and renders its
+    candidate under the claim archive.
+    """
+    try:
+        channel_py = run(["git", "show", f"{commit}:hermes_cli/update_channel.py"])
+        msix_mjs = run(["git", "show", f"{commit}:scripts/msix-shared.mjs"])
+        deb_py = run(["git", "show", f"{commit}:scripts/termux/deb_version.py"])
+    except (subprocess.CalledProcessError, ValueError):
+        return False
+    return ("def is_commit_tag(" in channel_py
+            and "COMMIT_TAG_RE" in msix_mjs
+            and '"commit"' in deb_py)
+
+
+def verify(env: dict, run=output) -> None:
     """Revalidate claim custody in a reusable privileged workflow."""
+    from hermes_cli.update_channel import tag_core
+
     tag, commit, claim = stable_context(env)
     # Bundle defaults reach the builds only from the claim: a commit build's bundleEnv, nothing for
     # a release. A caller passing anything else is refused here, before any build.
@@ -895,8 +942,15 @@ def verify(env: dict) -> None:
 
     if decode(env.get("BUNDLE_ENV_JSON", "")) != (claim.get("bundle_env") or {}):
         raise ValueError("Bundle environment differs from the admitted claim")
-    emit({"tag": tag, "sha": commit, "channel": claim.get("policy", "stable"), "payload-version": payload_version(tag),
-          "release-epoch": claim["claim_epoch"]}, env)
+    policy = claim.get("policy", "stable")
+    outputs = {
+        "tag": tag, "sha": commit, "channel": policy, "payload-version": payload_version(tag),
+        "release-epoch": claim["claim_epoch"],
+    }
+    if policy == "commit":
+        outputs["core-version"] = tag_core(tag) or ""
+        outputs["legacy-commit-build"] = "false" if commit_supports_claim_tag(commit, run=run) else "true"
+    emit(outputs, env)
 
 
 def _stage_transition(env: dict, archive: str, base: str, row: dict) -> dict:

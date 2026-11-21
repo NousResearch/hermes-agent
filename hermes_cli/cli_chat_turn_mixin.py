@@ -23,6 +23,35 @@ from agent.i18n import t
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 
 
+def _set_pane_title(text: str) -> None:
+    """Publish this pane's turn state as the terminal title.
+
+    Terminal multiplexers read the title to show whether an agent is working (herdr, for one,
+    maps ``⏳`` to working and ``✓`` to idle). prompt_toolkit owns the screen while a prompt is
+    live, so the title goes through its output — a raw escape write would land in the rendered
+    scrollback as visible garbage. HERDR_ENV gates the whole thing so a plain terminal is never
+    repainted.
+    """
+    if os.environ.get("HERDR_ENV") != "1":
+        return
+    try:
+        from prompt_toolkit.application import get_app
+
+        get_app().set_title(text)
+        return
+    except Exception:
+        pass
+    # No prompt_toolkit application (one-shot, non-interactive): fall back to the console title
+    # where the platform exposes one.
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            ctypes.windll.kernel32.SetConsoleTitleW(text)
+    except Exception:
+        pass
+
+
 class CLIChatTurnMixin:
     """chat() and its per-turn phase helpers."""
 
@@ -121,6 +150,7 @@ class CLIChatTurnMixin:
                 self._prompt_start_time = time.time()
                 self._prompt_duration = 0.0
                 # Daemon: closing the terminal tab (SIGHUP) must not be kept alive by it.
+                _set_pane_title("⏳ hermes")
                 agent_thread = threading.Thread(target=self._chat_run_agent, args=(turn, message), daemon=True)
                 agent_thread.start()
                 interrupt_msg = self._chat_monitor_agent_thread(turn, agent_thread)
@@ -130,6 +160,7 @@ class CLIChatTurnMixin:
                 _cprint(t("gateway.model.error_prefix", error=e))
                 return None
             finally:
+                _set_pane_title("✓ hermes")
                 self._chat_release_turn_audio(turn)
 
     def _chat_release_turn_audio(self, turn):

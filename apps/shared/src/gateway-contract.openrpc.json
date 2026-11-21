@@ -7752,9 +7752,74 @@
             ],
             "default": null,
             "title": "Prompt"
+          },
+          "side_chat": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BtwSideChat"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "fallback_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Fallback Text"
           }
         },
         "title": "BtwResult",
+        "type": "object"
+      },
+      "BtwSideChat": {
+        "additionalProperties": false,
+        "description": "A finished side thread as a child session: the conversation it forked from, then the side\ntask and its report (``agent.side_thread.side_chat_seed``).",
+        "properties": {
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/BtwSideChatMessage"
+            },
+            "title": "Messages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "title",
+          "messages"
+        ],
+        "title": "BtwSideChat",
+        "type": "object"
+      },
+      "BtwSideChatMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "BtwSideChatMessage",
         "type": "object"
       },
       "CanonicalApprovalParams": {

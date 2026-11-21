@@ -1236,11 +1236,11 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     request = parse_btw_args(text)
-    if request.action in {"list", "stop", "promote"}:
+    if request.action in {"list", "stop", "promote", "open"}:
         # Profile scope: the thread registry is keyed by the owning profile's home.
         with _session_profile_runtime_scope(session, hydrate_secrets=False):
             result = run_thread_command(parent, request)
-        return _ok(rid, {"text": result.text, **({"prompt": result.prompt} if result.prompt else {})})
+        return _ok(rid, result.reply())
     if not request.text:
         from agent.i18n import t
         return _ok(rid, {"text": t("side_thread.usage")})

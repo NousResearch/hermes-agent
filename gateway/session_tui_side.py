@@ -206,11 +206,11 @@ async def btw(connection, ref, params):
     _live, policy, text, task_id = _admit(connection, ref, params, 'btw')
     authority = connection.authority
     request = parse_btw_args(text)
-    if request.action in {'list', 'stop', 'promote'}:
+    if request.action in {'list', 'stop', 'promote', 'open'}:
         # The thread registry is keyed by the owning profile's home.
         with owner_scope(authority):
             result = run_thread_command(ref.session_id, request)
-        return {'text': result.text, **({'prompt': result.prompt} if result.prompt else {})}
+        return result.reply()
     if not request.text:
         raise RuntimeStoreError('invalid_params')
     # The resident agent's conversation (a cache-parity fork replays it); a session with no

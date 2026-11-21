@@ -247,6 +247,19 @@ class TaskIdResult(Result):
 
 method("prompt.background", params=SideAgentParams, result=TaskIdResult,
        doc="Run a task on a fresh agent in the background; the answer arrives as background.complete.")
+class BtwSideChatMessage(Result):
+    role: str
+    content: str
+
+
+class BtwSideChat(Result):
+    """A finished side thread as a child session: the conversation it forked from, then the side
+    task and its report (``agent.side_thread.side_chat_seed``)."""
+
+    title: str
+    messages: list[BtwSideChatMessage]
+
+
 class BtwResult(Result):
     """``prompt.btw`` parses its ``text`` (``agent.side_thread.parse_btw_args``). A question or a
     ``--explore`` thread runs detached: ``task_id``, answer as ``btw.complete`` (an exploration
@@ -257,6 +270,10 @@ class BtwResult(Result):
     task_id: str | None = None
     text: str | None = None
     prompt: str | None = None
+    # ``--open``: the side chat to create (``session.create`` seed rows + title); a client that
+    # cannot dock a second chat shows ``fallback_text`` instead of ``text``.
+    side_chat: BtwSideChat | None = None
+    fallback_text: str | None = None
 
 
 method("prompt.btw", params=SideAgentParams, result=BtwResult,

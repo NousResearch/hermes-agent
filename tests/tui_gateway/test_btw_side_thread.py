@@ -89,3 +89,13 @@ def test_explore_refusal_replies_at_once(sidecar, monkeypatch):
     reply = server._methods["prompt.btw"]("rid", {"session_id": SID, "text": "--explore x"})
     assert "task_id" not in reply["result"] and reply["result"]["text"]
     assert side_thread.list_threads(SID) == [] and frames == []
+
+
+def test_open_replies_with_the_side_chat_seed(sidecar):
+    server, frames, _done, _agent = sidecar
+    thread = side_thread.register_thread(SID, "find the retry logic")
+    thread.context = [{"role": "user", "content": "fix it"}, {"role": "assistant", "content": "on it"}]
+    thread._finish("done", answer="net.py:40")
+    reply = server._methods["prompt.btw"]("rid", {"session_id": SID, "text": "--open"})["result"]
+    assert reply["side_chat"] == side_thread.side_chat_seed(thread)
+    assert reply["fallback_text"] and frames == []

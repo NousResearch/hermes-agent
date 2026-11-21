@@ -26,6 +26,7 @@ from persistence.core.errors import AuthorityRefusal
 
 from cron.inbox import INBOX_MARKER
 from gateway.session_persistence import authority_persistence
+from hermes_cli.dashboard_auth.ws_tickets import INTERNAL_PROVIDER
 
 # Creation labels whose clients may continue an inbox item (``SURFACES`` key -> continues).
 CONTINUE_SOURCES = frozenset({'gui'})
@@ -46,8 +47,11 @@ def continuing_surface(actor, transport):
     so that capability alone never makes it ``gui``."""
     if getattr(transport, 'desktop_local', False):
         return 'gui'
-    native = (getattr(transport, 'auth_identity', None) or {}).get('native_bootstrap') is True
-    return 'gui' if not native and 'session:operator' in getattr(actor, 'capabilities', ()) else 'cli'
+    identity = getattr(transport, 'auth_identity', None) or {}
+    # A native ticket is the CLI/TUI here (the Desktop said ``desktop_local``); the server-internal
+    # credential is the dashboard's embedded TUI child. Both hold the operator capability.
+    terminal = identity.get('native_bootstrap') is True or identity.get('provider') == INTERNAL_PROVIDER
+    return 'gui' if not terminal and 'session:operator' in getattr(actor, 'capabilities', ()) else 'cli'
 
 
 def _item(store, session_id):
@@ -66,8 +70,11 @@ def _item(store, session_id):
 
 
 def _list(store, limit):
-    items = [item for sid in store.sessions.session_ids_with_model_config_key(INBOX_MARKER)
-             if (item := _item(store, sid)) is not None]
+    # The id scan is one query returning ids, newest run first; reading an item costs two more, so only
+    # the newest LIST_MAX are read. The unread badge counts that window (an unread run older than the
+    # newest LIST_MAX is not counted); the page is its newest *limit* by delivery time.
+    ids = store.sessions.session_ids_with_model_config_key(INBOX_MARKER)[:LIST_MAX]
+    items = [item for sid in ids if (item := _item(store, sid)) is not None]
     items.sort(key=lambda item: item['delivered_at'], reverse=True)
     return {'items': items[:limit], 'unread_count': sum(item['unread'] for item in items)}
 

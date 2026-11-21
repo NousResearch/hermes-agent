@@ -94,6 +94,21 @@ async def test_a_running_item_stays_on_its_cron_policy(owner, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_inbox_list_reads_only_the_newest_window_of_runs(owner, tmp_path, monkeypatch):
+    """The listing cost is bounded: only the newest LIST_MAX marked runs are read, however many exist."""
+    from gateway import session_inbox
+    sid = _filed_run(owner, tmp_path)
+    read = []
+    real_item = session_inbox._item
+    monkeypatch.setattr(session_inbox, '_item', lambda store, s: read.append(s) or real_item(store, s))
+    monkeypatch.setattr(session_inbox, 'LIST_MAX', 1)
+    monkeypatch.setattr(owner.persistence.sessions, 'session_ids_with_model_config_key',
+                        lambda key: (sid, 'older-1', 'older-2'))
+    listed = await session_inbox.list_items(_connection(owner), None, {'limit': 1})
+    assert read == [sid] and [item['session_id'] for item in listed['items']] == [sid]
+
+
+@pytest.mark.asyncio
 async def test_a_continued_item_never_badges_the_inbox_again(owner, tmp_path, monkeypatch):
     """Once the user replies in an item it is their chat: its own turns postdate the read watermark,
     which must not turn it back into an unread Inbox result."""
@@ -109,11 +124,16 @@ async def test_a_continued_item_never_badges_the_inbox_again(owner, tmp_path, mo
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('native,continues', [(True, False), (False, True)])
+@pytest.mark.parametrize('identity,continues', [
+    ({'provider': 'local', 'native_bootstrap': True}, False),  # CLI/TUI native ticket
+    ({'user_id': 'server-internal', 'provider': 'server-internal'}, False),  # dashboard's embedded TUI
+    ({'user_id': 'u1', 'provider': 'nous'}, True),  # Web app tab's socket ticket
+])
 async def test_only_a_desktop_renderer_continues_an_item_without_the_desktop_declaration(
-        owner, tmp_path, monkeypatch, native, continues):
-    """A native ticket without ``desktop_local`` is the CLI/TUI: its operator capability must not turn
-    the run into a Desktop chat. The same capability on a dashboard-listener socket (Web app) does."""
+        owner, tmp_path, monkeypatch, identity, continues):
+    """A terminal client (native ticket without ``desktop_local``, or the embedded TUI's internal
+    credential) holds the operator capability too: it must not turn the run into a Desktop chat. The
+    same capability on a Web app socket does."""
     from gateway.session_contract import SessionRef
     from gateway.session_inbox import continue_if_inbox
     import gateway.session_policy_refresh as refresh
@@ -121,7 +141,7 @@ async def test_only_a_desktop_renderer_continues_an_item_without_the_desktop_dec
     sid = _filed_run(owner, tmp_path)
     connection = _connection(owner, desktop_local=False, capabilities=(
         'session:read', 'session:control', 'session:submit', 'session:operator'))
-    connection.transport.auth_identity = {'provider': 'local', 'native_bootstrap': True} if native else {}
+    connection.transport.auth_identity = identity
     await continue_if_inbox(connection, SessionRef(owner.profile_id, sid))
     assert owner.persistence.bindings.receipt(sid).policy['source'] == ('gui' if continues else 'cron')
 

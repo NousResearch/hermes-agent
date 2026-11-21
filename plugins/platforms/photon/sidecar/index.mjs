@@ -457,11 +457,40 @@ async function normalizeBinaryContent(content) {
     return meta;
   }
   if (typeof content.read === "function") {
-    try {
-      const buf = await content.read();
+    const MAX_READ_ATTEMPTS = 5;
+    const INITIAL_DELAY_MS = 600;
+    let buf = null;
+    let lastError = null;
+    for (let attempt = 1; attempt <= MAX_READ_ATTEMPTS; attempt++) {
+      try {
+        let timer = null;
+        const timeoutPromise = new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("Attachment download timed out (15s)")),
+            15000
+          );
+        });
+        try {
+          buf = await Promise.race([content.read(), timeoutPromise]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+        if (buf) break;
+      } catch (e) {
+        lastError = e;
+        if (attempt < MAX_READ_ATTEMPTS) {
+          const delay = Math.round(INITIAL_DELAY_MS * Math.pow(1.5, attempt - 1));
+          console.warn(
+            `photon-sidecar: reading ${label} bytes failed (attempt ${attempt}/${MAX_READ_ATTEMPTS}: ${e?.message || e}); retrying in ${delay}ms...`
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+    }
+    if (buf) {
       // Guard the case where size was unknown but the bytes turn out to be
       // over the cap.
-      if (buf && buf.length > MAX_INLINE_ATTACHMENT_BYTES) {
+      if (buf.length > MAX_INLINE_ATTACHMENT_BYTES) {
         console.error(
           `photon-sidecar: ${label} (${buf.length} bytes) ` +
             `exceeds inline cap after read; forwarding metadata only`
@@ -470,11 +499,11 @@ async function normalizeBinaryContent(content) {
       }
       meta.data = Buffer.from(buf).toString("base64");
       meta.encoding = "base64";
-    } catch (e) {
+    } else if (lastError) {
       console.error(
-        `photon-sidecar: failed to read ${content.type} bytes ` +
+        `photon-sidecar: failed to read ${content.type} bytes after ${MAX_READ_ATTEMPTS} attempts ` +
           "(forwarding metadata only): " +
-          (e && e.stack ? e.stack : String(e))
+          (lastError && lastError.stack ? lastError.stack : String(lastError))
       );
     }
   }

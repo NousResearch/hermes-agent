@@ -149,10 +149,13 @@ def run_auto_archive(store, idle_days: float = 3, min_interval_hours: int = 24, 
         # No-op when the watchdog is not armed; never raises.
         report_startup_progress(900.0, phase="state_db_auto_archive")
         ids = () if idle_days is None else store.maintenance.list_idle_archive_candidates(idle_days, exclude_pinned=exclude_pinned)
-        for session_id in ids:
+        archived = result["archived"] = sum(
+            1 for session_id in ids
             # Sweep provenance: a later compression/resume of this lineage un-hides it.
-            store.maintenance.auto_archive_lineage(session_id)
-        archived = result["archived"] = len(ids)
+            # A row under a live turn lease / compression lock is skipped (and not counted); it is
+            # left for a later sweep once the lease is gone.
+            if store.maintenance.auto_archive_lineage(session_id)
+        )
         # Record even a zero-archive run so we don't re-sweep every call.
         store.state_meta.set("last_auto_archive", str(now))
         if archived > 0:

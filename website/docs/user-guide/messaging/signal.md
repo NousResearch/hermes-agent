@@ -111,6 +111,27 @@ SIGNAL_GROUP_ALLOWED_USERS=groupId1,groupId2     # Enable groups (omit to disabl
 SIGNAL_HOME_CHANNEL=+1234567890                  # Default delivery target for cron jobs
 ```
 
+### Expire automatically generated voice replies
+
+To keep written conversations and expire their spoken replies, set a delay in the
+Signal account's profile configuration and restart its gateway:
+
+```yaml
+platforms:
+  signal:
+    extra:
+      voice_reply_expiry_minutes: 60
+```
+
+The default is `0` (off). Choose 1–1380 minutes when enabled. The gateway
+saves a receipt for each new automatically spoken reply and asks Signal to
+delete it after the delay. The text, incoming recordings and explicitly sent
+attachments stay in the chat. Turning the option off affects future replies.
+Pending receipts survive a gateway restart. [Signal's sender deletion
+window](https://support.signal.org/hc/en-us/articles/360050426432-Delete-for-everyone)
+is 24 hours. Removal on recipient devices is best effort, and the gateway must
+be online before that window ends.
+
 Then start the gateway:
 
 ```bash

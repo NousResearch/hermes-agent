@@ -10,6 +10,7 @@ import logging
 import os
 import random
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -22,6 +23,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote
 
 import httpx
+
+from hermes_constants import get_hermes_home
+from plugins.platforms.signal.voice_reply_expiry import DAY_MS, VoiceReplyExpiry, expiry_minutes
 
 from gateway.config import Platform, PlatformConfig
 from agent.i18n import t
@@ -189,6 +193,10 @@ class SignalAdapter(BasePlatformAdapter):
         extra = config.extra or {}
         self.http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
         self.account = extra.get("account", "")
+        self._voice_expiry_minutes = expiry_minutes(extra.get("voice_reply_expiry_minutes", 0))
+        self._voice_expiry = VoiceReplyExpiry(
+            get_hermes_home() / "plugin-data" / "signal" / "voice-reply-expiry.db", self.account)
+        self._voice_expiry_task: Optional[asyncio.Task] = None
         self.ignore_stories = extra.get("ignore_stories", True)
         # Allowlists are per-profile (scoped reads); group policy derives from the group allowlist's
         # presence. The DM allowlist mirrors run.py's SIGNAL_ALLOWED_USERS so reaction hooks (which
@@ -254,6 +262,8 @@ class SignalAdapter(BasePlatformAdapter):
             self._last_sse_activity = time.time()
             self._sse_task = asyncio.create_task(self._sse_listener())
             self._health_monitor_task = asyncio.create_task(self._health_monitor())
+            if self._voice_expiry_minutes or self._voice_expiry.path.exists():
+                self._voice_expiry_task = asyncio.create_task(self._expire_voice_replies())
             logger.info("Signal: connected to %s", self.http_url)
             # Plugin-registered native handlers (ctx.register_platform_handler).
             self._wire_plugin_handlers(None)
@@ -272,7 +282,7 @@ class SignalAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop SSE listener and clean up."""
         self._running = False
-        for task in (self._sse_task, self._health_monitor_task):
+        for task in (self._sse_task, self._health_monitor_task, self._voice_expiry_task):
             await cancel_task(task)
         for task in self._typing_tasks.values():
             task.cancel()
@@ -889,8 +899,41 @@ class SignalAdapter(BasePlatformAdapter):
         """Send one local file as a Signal attachment via the ``send`` RPC."""
         params = await self._with_target(
             {"account": self.account, "message": caption or "", "attachments": [file_path]}, chat_id)
-        _, err = await self._rpc_send(params, fail_error)
-        return err or SendResult(success=True)
+        result, err = await self._rpc_send(params, fail_error)
+        if err:
+            return err
+        target = "group:" + params["groupId"] if "groupId" in params else params["recipient"][0]
+        timestamp = result.get("timestamp") if isinstance(result, dict) else None
+        return SendResult(success=True, raw_response={"signal_target": target, "timestamp": timestamp})
+
+    async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
+        result = await super().play_tts(chat_id, audio_path, **kwargs)
+        if result.success and self._voice_expiry_minutes and not kwargs.get("caption"):
+            receipt = result.raw_response or {}
+            timestamp = receipt.get("timestamp")
+            now = int(time.time() * 1000)
+            if type(timestamp) is int and now - DAY_MS < timestamp <= now + 60_000 and receipt.get("signal_target"):
+                try:
+                    self._voice_expiry.remember(receipt["signal_target"], timestamp, self._voice_expiry_minutes)
+                except (OSError, sqlite3.Error):
+                    logger.warning("Signal: voice reply sent, but its expiry could not be saved")
+            else:
+                logger.warning("Signal: voice reply sent without a deletion receipt")
+        return result
+
+    async def _expire_voice_replies(self) -> None:
+        while self._running:
+            try:
+                await self._voice_expiry.process_due(self._remove_voice_reply)
+            except (OSError, sqlite3.Error):
+                logger.warning("Signal: could not process pending voice reply expiries")
+            await asyncio.sleep(30)
+
+    async def _remove_voice_reply(self, target: str, timestamp: int) -> bool:
+        params = await self._with_target(
+            {"account": self.account, "targetTimestamp": timestamp}, target, resolve=False)
+        result = await self._rpc("remoteDelete", params)
+        return result is not None and self._validate_send_result(result)[0]
 
     async def _send_attachment(self, chat_id: str, file_path: str, media_label: str,
                                caption: Optional[str] = None) -> SendResult:

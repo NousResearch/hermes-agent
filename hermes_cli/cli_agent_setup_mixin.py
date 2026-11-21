@@ -959,49 +959,68 @@ class CLIAgentSetupMixin:
         """
         import json
 
+        import cli as _cli_mod
         from agent.message_metadata import withheld_prompt_text
-        from cli import _DIM, _RST, _cprint
+        from cli import _DIM, _RST
 
-        for msg in display_history:
-            role = msg.get("role", "")
-            display_kind = msg.get("display_kind")
-            content = msg.get("content")
-            tool_calls = msg.get("tool_calls") or []
-            if role == "system" or display_kind == "hidden":
-                continue
-            if display_kind in _RESUME_EVENT_KEYS:
-                metadata = msg.get("display_metadata") or {}
-                label = (metadata.get("display_text")
-                         if display_kind in ("async_delegation_complete", "process_complete") else None)
-                _cprint(f"  {_DIM}◈ {_escape(sanitize(label or t(_RESUME_EVENT_KEYS[display_kind])))}{_RST}")
-                continue
-            if role == "user":
-                # A pre_llm_call veto stores the model-facing placeholder in content and the
-                # text the human typed in display_metadata: the transcript shows the typed ask.
-                text = sanitize(withheld_prompt_text(msg) or _user_display_text(content))
-                if text.strip():
-                    self._print_user_message_preview(text, full=True)  # type: ignore[attr-defined]
-                continue
-            if role != "assistant":
-                continue  # tool results stay out of the replay; the call row below names the work
-            reasoning = sanitize(_reasoning_display_text(msg)).strip()
-            if reasoning:
-                self._print_resumed_reasoning(reasoning)
-            text = sanitize(strip_reasoning("" if content is None else str(content))).strip()
-            if text:
-                self._print_resumed_assistant(text)
-            for call in tool_calls:
-                fn = call.get("function") or {}
-                name = fn.get("name") or "tool"
-                args = fn.get("arguments")
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args) if args.strip() else {}
-                    except (TypeError, ValueError):
-                        args = {"command": args}
-                if not isinstance(args, dict):
-                    args = {}
-                self._print_resumed_tool_call(name, args, sanitize)
+        # A live turn prints a handful of lines; a resume can print thousands. Batch
+        # the replay into large writes so prompt_toolkit/terminal setup is paid per
+        # chunk, not per line. The content and styling are unchanged.
+        original_cprint = _cli_mod._cprint
+        pending: list[str] = []
+
+        def _capture(text) -> None:
+            pending.append(str(text))
+            if len(pending) >= 400:
+                original_cprint("\n".join(pending))
+                pending.clear()
+
+        _cli_mod._cprint = _capture
+        try:
+            for msg in display_history:
+                role = msg.get("role", "")
+                display_kind = msg.get("display_kind")
+                content = msg.get("content")
+                tool_calls = msg.get("tool_calls") or []
+                if role == "system" or display_kind == "hidden":
+                    continue
+                if display_kind in _RESUME_EVENT_KEYS:
+                    metadata = msg.get("display_metadata") or {}
+                    label = (metadata.get("display_text")
+                             if display_kind in ("async_delegation_complete", "process_complete") else None)
+                    _capture(f"  {_DIM}◈ {_escape(sanitize(label or t(_RESUME_EVENT_KEYS[display_kind])))}{_RST}")
+                    continue
+                if role == "user":
+                    # A pre_llm_call veto stores the model-facing placeholder in content and the
+                    # text the human typed in display_metadata: the transcript shows the typed ask.
+                    text = sanitize(withheld_prompt_text(msg) or _user_display_text(content))
+                    if text.strip():
+                        self._print_user_message_preview(text, full=True)  # type: ignore[attr-defined]
+                    continue
+                if role != "assistant":
+                    continue  # tool results stay out of the replay; the call row below names the work
+                reasoning = sanitize(_reasoning_display_text(msg)).strip()
+                if reasoning:
+                    self._print_resumed_reasoning(reasoning)
+                text = sanitize(strip_reasoning("" if content is None else str(content))).strip()
+                if text:
+                    self._print_resumed_assistant(text)
+                for call in tool_calls:
+                    fn = call.get("function") or {}
+                    name = fn.get("name") or "tool"
+                    args = fn.get("arguments")
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args) if args.strip() else {}
+                        except (TypeError, ValueError):
+                            args = {"command": args}
+                    if not isinstance(args, dict):
+                        args = {}
+                    self._print_resumed_tool_call(name, args, sanitize)
+        finally:
+            _cli_mod._cprint = original_cprint
+            if pending:
+                original_cprint("\n".join(pending))
 
     def _print_resumed_tool_call(self, name: str, args: dict, sanitize) -> None:
         """Replay one tool call; shell/python bodies keep every line, not a ``+N commands`` summary."""

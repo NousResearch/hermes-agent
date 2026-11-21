@@ -569,3 +569,18 @@ class TestTranscriptResumeDisplay:
         for line in command.splitlines():
             assert line in output
         assert "+ 5 commands" not in output
+
+    def test_large_transcript_batches_without_losing_rows(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        cli._modern_layout = True
+        history = []
+        for i in range(1, 151):
+            history.append({"role": "user", "content": f"Question {i}\nsecond line\nthird line"})
+            history.append({"role": "assistant", "content": f"Answer {i}\nmore text"})
+        cli.conversation_history = history
+        output = self._capture(cli, monkeypatch)
+
+        for i in (1, 75, 150):
+            assert f"Question {i}" in output
+            assert f"Answer {i}" in output
+        assert output.count("Question ") == 150

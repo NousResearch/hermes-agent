@@ -26,10 +26,9 @@ What is real
 * The ledger module, on a real ``state.db`` under an isolated
   ``HOME=<tmp>/home``, ``HERMES_HOME=<tmp>/home/.hermes`` (every child).
 * The turn-side checkpoints: ``BasePlatformAdapter._record_delivery_obligation``
-  (record + mark_attempting) and ``_finalize_delivery_obligation``
+  (record as attempting) and ``_finalize_delivery_obligation``
   (mark_delivered) — the exact methods the adapter's final-send path calls.
-  The "recorded, crashed before attempting" kill point calls the ledger's
-  ``record_obligation`` directly (there is no seam between the two writes).
+  The never-attempted case seeds a pending row with ``record_obligation``.
 * The boot sweep: ``GatewayRunner._claim_pending_obligations`` (ledger claim +
   real ``SessionStore`` resume-flag clear) then
   ``GatewayRunner._redeliver_claimed_obligations`` (marker choice, send,
@@ -168,7 +167,7 @@ async def main():
     for i, kind in enumerate(kinds):
         ev, text = event(i), body(i)
         if kind == "pending":
-            # Recorded, crashed before mark_attempting.
+            # A pending obligation with no send attempt.
             oid = dl.compute_obligation_id(SESSION_KEY, ev.message_id, text)
             dl.record_obligation(obligation_id=oid, session_key=SESSION_KEY, platform="telegram",
                                  chat_id=CHAT_ID, thread_id=None, content=text)
@@ -388,7 +387,7 @@ def _assert_reboots_are_noops(cell: Cell, ids: dict, label: str, n: int = 2) -> 
 
 # Kill point -> (kinds seeded by the turn process, reboot #1 crashes inside its resend?)
 KILL_POINTS = {
-    # recorded 'pending', crashed before mark_attempting: never sent.
+    # A pending obligation has never been sent.
     "recorded-unsent": (["pending"] * N_OBLIGATIONS, False),
     # (a) recorded + attempting, send NOT issued.
     "attempting-unsent": (["attempting"] * N_OBLIGATIONS, False),

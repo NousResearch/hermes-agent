@@ -63,12 +63,12 @@ class ObligationLedger:
     def _obligations(self) -> dict[str, dict[str, Any]]:
         return self._table("delivery_obligations")
 
-    def record_delivery_obligation(self, *, obligation_id: str, session_key: str, platform: str, chat_id: str, thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None, owner: OwnerStamp) -> None:
+    def record_delivery_obligation(self, *, obligation_id: str, session_key: str, platform: str, chat_id: str, thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None, owner: OwnerStamp, start_attempt: bool = False) -> None:
         now = time.time()
         rows = self._obligations()
         rows[obligation_id] = {
             "obligation_id": obligation_id, "session_key": session_key, "platform": platform, "chat_id": str(chat_id),
-            "thread_id": str(thread_id) if thread_id else None, "content": content, "state": "pending", "attempts": 0,
+            "thread_id": str(thread_id) if thread_id else None, "content": content, "state": "attempting" if start_attempt else "pending", "attempts": 0,
             "created_at": now, "updated_at": now, "owner_pid": owner.pid, "owner_started_at": owner.started_at,
             "last_error": None, "adapter_profile": _profile(adapter_profile)}
         for key in [key for key, row in rows.items() if row["state"] in ("delivered", "abandoned") and row["updated_at"] < now - OBLIGATION_RETENTION_SECONDS]:

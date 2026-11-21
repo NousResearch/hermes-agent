@@ -90,11 +90,14 @@ def test_recoverable_sweep_claims_dead_owners_rows(backend, scope_a, clock):
     # CONTRACT: ``sweep_recoverable_obligations`` with the probe as data: a live owner's row is skipped; a never-claimed pending row is claimed plainly; others carry the marker; the claim moves to attempting, +1 attempt, stamped to the sweeper.
     coord = backend.open(scope_a).coordination
     record(coord, "o-plain")
+    coord.record_delivery_obligation(obligation_id="o-started", session_key="sk-started", platform="telegram", chat_id="42",
+                                     thread_id=None, content="reply", owner=OLD, start_attempt=True)
     record(coord, "o-failed")
     coord.mark_obligation_failed(obligation_id="o-failed", error="boom")
     record(coord, "o-live", owner=ME)
     claimed = {c.obligation_id: c for c in coord.sweep_recoverable_obligations(owner=ME, dead_owners=DEAD)}
-    assert set(claimed) == {"o-plain", "o-failed"}
+    assert set(claimed) == {"o-plain", "o-started", "o-failed"}
+    assert claimed["o-started"].needs_marker and claimed["o-started"].attempts == 1
     assert claimed["o-plain"] == ClaimedObligation(obligation_id="o-plain", session_key="sk-o-plain", platform="telegram", chat_id="42", thread_id=None,
                                                    content="reply", profile="default", attempts=1, needs_marker=False)
     assert (claimed["o-failed"].needs_marker, claimed["o-failed"].marker, claimed["o-failed"].attempts) == (True, None, 1)

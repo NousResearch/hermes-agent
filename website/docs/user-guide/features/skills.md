@@ -694,7 +694,25 @@ reviewed with the same familiar approve/deny flow as dangerous commands:
 /skills approve <id>        # apply it (or 'all')
 /skills reject <id>         # drop it (or 'all')
 /skills approval on         # turn the gate on (or 'off') and persist it
+/skills approval background # gate only background writes; yours apply directly
 ```
+
+To gate only the writes nobody asked for and keep your own skill edits flowing,
+narrow the gate with a scope:
+
+```yaml
+skills:
+  write_approval: true
+  write_approval_scope: background   # all (default) | background
+```
+
+With `background`, skill writes from your own turns (CLI, messaging, cron, and
+the subagents they delegate to) apply immediately. Every forked agent stays
+gated: the background review that runs after a turn, `/refine`, the curator's
+consolidation pass, and plugin session forks. `/skills approval background` sets
+both keys, and `/skills approval on` goes back to gating every write. Any other
+scope value means `all`. The curator's automatic archiving of stale skills does not
+go through `skill_manage` and is not gated by either scope.
 
 The review surface works in the interactive CLI and on messaging platforms
 (diff output is truncated for chat bubbles — read the full diff on the CLI or

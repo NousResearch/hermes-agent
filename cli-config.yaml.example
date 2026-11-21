@@ -1056,6 +1056,12 @@ memory:
   # every N user turns. Set to 0 to disable. Only active when memory is enabled.
   nudge_interval: 10        # Nudge every 10 user turns (0 = disabled)
 
+  # Approval gate for memory-tool writes (/memory pending|approve|reject|approval).
+  # write_approval_scope: background exempts your own turns, so only saves from
+  # forked agents (background review, /refine, curator consolidation) are staged.
+  # write_approval: false
+  # write_approval_scope: all     # all | background
+
 # =============================================================================
 # Session Continuity (Messaging Platforms)
 # =============================================================================
@@ -1230,6 +1236,12 @@ skills:
   # external_dirs:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
+
+  # Approval gate for skill_manage writes (/skills pending|diff|approve|reject|approval).
+  # write_approval_scope: background exempts your own turns, so only writes from
+  # forked agents (background review, /refine, curator consolidation) are staged.
+  # write_approval: false
+  # write_approval_scope: all     # all | background
 
 # =============================================================================
 # Agent Behavior

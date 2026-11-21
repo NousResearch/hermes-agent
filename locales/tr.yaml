@@ -729,7 +729,7 @@ gateway:
     stacked_disabled: "Bu yığınlı çağrıdaki **{names}** skill'leri {platform} için devre dışı.\nEtkinleştirmek için: `hermes skills config`"
     stacked_load_failed: "/{command} için yığınlı skill'ler yüklenemedi."
     gate_off: "Skill yazma onayı kapalı (skills.write_approval). /skills approval on ile etkinleştirin, ardından hazırlanan yazımları burada /skills pending ile inceleyin."
-    unknown_subcommand: "Bu platformda bilinmeyen /skills alt komutu. Kullanım: pending, approve <id>, reject <id>, diff <id>, approval <on|off>. (Arama/kurma yalnızca CLI'dan yapılır.)"
+    unknown_subcommand: "Bu platformda bilinmeyen /skills alt komutu. Kullanım: pending, approve <id>, reject <id>, diff <id>, approval <on|off|background>. (Arama/kurma yalnızca CLI'dan yapılır.)"
     diff_truncated: "\n… (kısaltıldı — tam diff: ~/.hermes/pending/skills/{pending_id}.json)"
   busy:
     action_restarting: "yeniden başlatılıyor"
@@ -924,7 +924,7 @@ gateway:
     item: "• `/{slug}` — {desc} _({count} skill)_"
     invoke_hint: "Bir paketin tüm skill'lerini yüklemek için `/<slug>` ile çağırın."
   memory:
-    unknown_subcommand: "Bilinmeyen /memory alt komutu. Kullanın: pending, approve <id>, reject <id>, approval <on|off>."
+    unknown_subcommand: "Bilinmeyen /memory alt komutu. Kullanın: pending, approve <id>, reject <id>, approval <on|off|background>."
   approvals:
     admin_only: "Kalıcı onay modunu yalnızca gateway yöneticileri değiştirebilir."
   heartbeat:
@@ -3029,7 +3029,7 @@ cli:
     kanban:
       failed: "(._.) kanban hatası: {error}"
     memory:
-      unknown_subcommand: "Bilinmeyen /memory alt komutu. Kullanım: pending, approve <id>, reject <id>, approval <on|off>."
+      unknown_subcommand: "Bilinmeyen /memory alt komutu. Kullanım: pending, approve <id>, reject <id>, approval <on|off|background>."
     learn:
       from_description: "⚡ Açıkladığınız içerikten bir skill öğreniliyor..."
       from_conversation: "⚡ Bu konuşmadan bir skill öğreniliyor..."

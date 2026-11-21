@@ -729,7 +729,7 @@ gateway:
     stacked_disabled: "Навички **{names}** у цьому складеному виклику вимкнено для {platform}.\nУвімкніть їх командою: `hermes skills config`"
     stacked_load_failed: "Не вдалося завантажити складені навички для /{command}."
     gate_off: "Схвалення записів навичок вимкнено (skills.write_approval). Увімкніть його командою /skills approval on, а потім переглядайте підготовлені записи тут через /skills pending."
-    unknown_subcommand: "Невідома підкоманда /skills на цій платформі. Доступні: pending, approve <id>, reject <id>, diff <id>, approval <on|off>. (Пошук і встановлення доступні лише в CLI.)"
+    unknown_subcommand: "Невідома підкоманда /skills на цій платформі. Доступні: pending, approve <id>, reject <id>, diff <id>, approval <on|off|background>. (Пошук і встановлення доступні лише в CLI.)"
     diff_truncated: "\n… (скорочено — повний diff у ~/.hermes/pending/skills/{pending_id}.json)"
   busy:
     action_restarting: "перезапускається"
@@ -924,7 +924,7 @@ gateway:
     item: "• `/{slug}` — {desc} _({count} навичок)_"
     invoke_hint: "Викличте пакет через `/<slug>`, щоб завантажити всі його навички."
   memory:
-    unknown_subcommand: "Невідома підкоманда /memory. Використовуйте: pending, approve <id>, reject <id>, approval <on|off>."
+    unknown_subcommand: "Невідома підкоманда /memory. Використовуйте: pending, approve <id>, reject <id>, approval <on|off|background>."
   approvals:
     admin_only: "Лише адміністратори шлюзу можуть змінювати постійний режим схвалення."
   heartbeat:
@@ -3029,7 +3029,7 @@ cli:
     kanban:
       failed: "(._.) помилка kanban: {error}"
     memory:
-      unknown_subcommand: "Невідома підкоманда /memory. Доступні: pending, approve <id>, reject <id>, approval <on|off>."
+      unknown_subcommand: "Невідома підкоманда /memory. Доступні: pending, approve <id>, reject <id>, approval <on|off|background>."
     learn:
       from_description: "⚡ Вивчаю навичку з вашого опису..."
       from_conversation: "⚡ Вивчаю навичку з цієї розмови..."

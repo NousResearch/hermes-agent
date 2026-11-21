@@ -249,7 +249,8 @@ class GatewaySlashCommandsMixin(
         return CheckpointManager(enabled=True, **fields)
 
     def _write_approval_setter(self, section: str, event: MessageEvent):
-        """``set_mode_fn`` for /memory and /skills: persist ``<section>.write_approval``. Raw read is
+        """``set_mode_fn`` for /memory and /skills: persist the ``<section>.write_approval*`` settings
+        it is handed (the gate boolean and its scope) in one write. Raw read is
         correct for the write-back round-trip (merged defaults must not be persisted back to the
         user's file); the cached agent is dropped so the setting takes effect next message."""
         from gateway.run import _gateway_config_home
@@ -259,9 +260,9 @@ class GatewaySlashCommandsMixin(
         config_path = _gateway_config_home() / "config.yaml"
         session_key = self._session_key_for_source(event.source)
 
-        def _set_approval(enabled: bool):
+        def _set_approval(settings: dict):
             user_config = read_user_config_raw(config_path)
-            user_config.setdefault(section, {})["write_approval"] = bool(enabled)
+            user_config.setdefault(section, {}).update(settings)
             atomic_config_write(config_path, user_config)
             # Evict any cached agent for this session so the next message rebuilds with the correct
             # session_id end-to-end — mirrors /branch and /reset. Without this, the cached AIAgent (and its

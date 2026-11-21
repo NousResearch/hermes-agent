@@ -939,9 +939,10 @@ Independent of the content scanner above, `skills.write_approval` gates every sk
 ```yaml
 skills:
   write_approval: false   # false = write freely (default) | true = stage every write for review
+  write_approval_scope: all   # all (default) | background = stage only writes your own turns didn't make
 ```
 
-When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Neither gate covers direct edits by the generic file tools or the terminal. Full walkthrough: [Gating agent skill writes](./features/skills.md#gating-agent-skill-writes-skillswrite_approval).
+When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off|background` (`background` sets `write_approval_scope: background`: skill writes from your own turns apply, and writes from the background review, `/refine`, curator consolidation and any other forked agent are staged). Memory has the same gate (`memory.write_approval`, below). Neither gate covers direct edits by the generic file tools or the terminal. Full walkthrough: [Gating agent skill writes](./features/skills.md#gating-agent-skill-writes-skillswrite_approval).
 
 ## Memory Configuration
 
@@ -952,9 +953,10 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # true = require approval for memory-tool writes
+  write_approval_scope: all # all (default) | background = gate only saves your own turns didn't make
 ```
 
-With `memory.write_approval: true`, writes made through the `memory` tool need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](./features/memory.md#controlling-memory-writes-write_approval).
+With `memory.write_approval: true`, writes made through the `memory` tool need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off|background`. See [Controlling memory writes](./features/memory.md#controlling-memory-writes-write_approval).
 
 ## Context File Truncation
 

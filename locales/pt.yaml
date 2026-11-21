@@ -729,7 +729,7 @@ gateway:
     stacked_disabled: "A(s) skill(s) **{names}** desta invocação empilhada está(ão) desativada(s) para {platform}.\nAtive-as com: `hermes skills config`"
     stacked_load_failed: "Falha ao carregar skills empilhadas para /{command}."
     gate_off: "A aprovação de gravação de skills está desativada (skills.write_approval). Ative-a com /skills approval on e depois revise as gravações pendentes aqui com /skills pending."
-    unknown_subcommand: "Subcomando /skills desconhecido nesta plataforma. Use: pending, approve <id>, reject <id>, diff <id>, approval <on|off>. (Busca/instalação são somente pela CLI.)"
+    unknown_subcommand: "Subcomando /skills desconhecido nesta plataforma. Use: pending, approve <id>, reject <id>, diff <id>, approval <on|off|background>. (Busca/instalação são somente pela CLI.)"
     diff_truncated: "\n… (truncado — diff completo em ~/.hermes/pending/skills/{pending_id}.json)"
   busy:
     action_restarting: "reiniciando"
@@ -924,7 +924,7 @@ gateway:
     item: "• `/{slug}` — {desc} _({count} skills)_"
     invoke_hint: "Invoque um bundle com `/<slug>` para carregar todas as suas skills."
   memory:
-    unknown_subcommand: "Subcomando /memory desconhecido. Use: pending, approve <id>, reject <id>, approval <on|off>."
+    unknown_subcommand: "Subcomando /memory desconhecido. Use: pending, approve <id>, reject <id>, approval <on|off|background>."
   approvals:
     admin_only: "Somente administradores do gateway podem alterar o modo de aprovação persistente."
   heartbeat:
@@ -3029,7 +3029,7 @@ cli:
     kanban:
       failed: "(._.) erro do kanban: {error}"
     memory:
-      unknown_subcommand: "Subcomando /memory desconhecido. Use: pending, approve <id>, reject <id>, approval <on|off>."
+      unknown_subcommand: "Subcomando /memory desconhecido. Use: pending, approve <id>, reject <id>, approval <on|off|background>."
     learn:
       from_description: "⚡ Aprendendo uma skill a partir do que você descreveu..."
       from_conversation: "⚡ Aprendendo uma skill a partir desta conversa..."

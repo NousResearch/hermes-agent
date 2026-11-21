@@ -729,7 +729,7 @@ gateway:
     stacked_disabled: "المهارة/المهارات **{names}** في هذا الاستدعاء المتراكب معطّلة على {platform}.\nفعّلها بـ: `hermes skills config`"
     stacked_load_failed: "فشل تحميل المهارات المتراكبة لـ /{command}."
     gate_off: "الموافقة على كتابة المهارات معطّلة (skills.write_approval). فعّلها بـ /skills approval on، ثم راجع الكتابات المُجهَّزة هنا بـ /skills pending."
-    unknown_subcommand: "أمر فرعي غير معروف لـ /skills على هذه المنصة. استخدم: pending، approve <id>، reject <id>، diff <id>، approval <on|off>. (البحث والتثبيت متاحان في سطر الأوامر فقط.)"
+    unknown_subcommand: "أمر فرعي غير معروف لـ /skills على هذه المنصة. استخدم: pending، approve <id>، reject <id>، diff <id>، approval <on|off|background>. (البحث والتثبيت متاحان في سطر الأوامر فقط.)"
     diff_truncated: "\n… (مقتطع — الفرق الكامل في ~/.hermes/pending/skills/{pending_id}.json)"
   busy:
     action_restarting: "قيد إعادة التشغيل"
@@ -924,7 +924,7 @@ gateway:
     item: "• `/{slug}` — {desc} _({count} مهارات)_"
     invoke_hint: "استدعِ حزمة بـ `/<slug>` لتحميل كل مهاراتها."
   memory:
-    unknown_subcommand: "أمر فرعي غير معروف لـ /memory. استخدم: pending أو approve <id> أو reject <id> أو approval <on|off>."
+    unknown_subcommand: "أمر فرعي غير معروف لـ /memory. استخدم: pending أو approve <id> أو reject <id> أو approval <on|off|background>."
   approvals:
     admin_only: "لا يمكن تغيير وضع الموافقة الدائم إلا لمشرفي البوّابة."
   heartbeat:
@@ -3029,7 +3029,7 @@ cli:
     kanban:
       failed: "(._.) خطأ في كانبان: {error}"
     memory:
-      unknown_subcommand: "أمر /memory الفرعي غير معروف. استخدم: pending أو approve <id> أو reject <id> أو approval <on|off>."
+      unknown_subcommand: "أمر /memory الفرعي غير معروف. استخدم: pending أو approve <id> أو reject <id> أو approval <on|off|background>."
     learn:
       from_description: "⚡ جارٍ تعلّم مهارة مما وصفته..."
       from_conversation: "⚡ جارٍ تعلّم مهارة من هذه المحادثة..."

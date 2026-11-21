@@ -845,7 +845,7 @@ gateway:
       Activez-les avec : `hermes skills config`
     stacked_load_failed: "Échec du chargement des skills empilées pour /{command}."
     gate_off: "L'approbation des écritures de skills est désactivée (skills.write_approval). Activez-la avec /skills approval on, puis examinez ici les écritures en attente avec /skills pending."
-    unknown_subcommand: "Sous-commande /skills inconnue sur cette plateforme. Utilisez : pending, approve <id>, reject <id>, diff <id>, approval <on|off>. (Recherche et installation : CLI uniquement.)"
+    unknown_subcommand: "Sous-commande /skills inconnue sur cette plateforme. Utilisez : pending, approve <id>, reject <id>, diff <id>, approval <on|off|background>. (Recherche et installation : CLI uniquement.)"
     diff_truncated: |2-
 
       … (tronqué — diff complet dans ~/.hermes/pending/skills/{pending_id}.json)
@@ -1104,7 +1104,7 @@ gateway:
     item: "• `/{slug}` — {desc} _({count} skills)_"
     invoke_hint: "Invoquez un bundle avec `/<slug>` pour charger toutes ses skills."
   memory:
-    unknown_subcommand: "Sous-commande /memory inconnue. Utilisez : pending, approve <id>, reject <id>, approval <on|off>."
+    unknown_subcommand: "Sous-commande /memory inconnue. Utilisez : pending, approve <id>, reject <id>, approval <on|off|background>."
   approvals:
     admin_only: "Seuls les administrateurs du gateway peuvent modifier le mode d'approbation persistant."
   heartbeat:
@@ -3323,7 +3323,7 @@ cli:
     kanban:
       failed: "(._.) erreur kanban : {error}"
     memory:
-      unknown_subcommand: "Sous-commande /memory inconnue. Utilisez : pending, approve <id>, reject <id>, approval <on|off>."
+      unknown_subcommand: "Sous-commande /memory inconnue. Utilisez : pending, approve <id>, reject <id>, approval <on|off|background>."
     learn:
       from_description: "⚡ Apprentissage d'une skill à partir de votre description..."
       from_conversation: "⚡ Apprentissage d'une skill à partir de cette conversation..."

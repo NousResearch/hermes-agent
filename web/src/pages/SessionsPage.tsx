@@ -1207,8 +1207,10 @@ export default function SessionsPage() {
   // Current search rows carry the same stamp; an unstamped row from an older
   // backend still falls back to the management profile.
   const rowProfile = useCallback(
-    (id: string) => (searchResults ?? sessions).find((s) => s.id === id)?.profile,
-    [searchResults, sessions],
+    (id: string) =>
+      (searchResults ?? sessions).find((s) => s.id === id)?.profile ??
+      overviewSessions.find((s) => s.id === id)?.profile,
+    [overviewSessions, searchResults, sessions],
   );
 
   const sessionDelete = useConfirmDelete({
@@ -1217,6 +1219,11 @@ export default function SessionsPage() {
         try {
           await api.deleteSession(id, rowProfile(id));
           setSessions((prev) => prev.filter((s) => s.id !== id));
+          // The Overview tab renders its own recent-cards array; evict there too
+          // or the deleted card lingers until the 5s poll (#156056 review).
+          setOverviewSessions((prev) => prev.filter((s) => s.id !== id));
+          // The Overview tab renders its own recent-cards array; evict there too
+          // or the deleted card lingers until the 5s poll (#156056 review).
           setTotal((prev) => prev - 1);
           if (expandedId === id) setExpandedId(null);
           // Drop the deleted ID from any active bulk-select set — it
@@ -1473,7 +1480,8 @@ export default function SessionsPage() {
   }, [pruneDays, showToast, loadSessions, loadStats]);
 
   const pendingSession = sessionDelete.pendingId
-    ? sessions.find((s) => s.id === sessionDelete.pendingId)
+    ? sessions.find((s) => s.id === sessionDelete.pendingId) ??
+      overviewSessions.find((s) => s.id === sessionDelete.pendingId)
     : null;
 
   // Build snippet map from search results (session_id → snippet)
@@ -2115,13 +2123,23 @@ export default function SessionsPage() {
                       )}
                     </div>
 
-                    <Badge
-                      tone="outline"
-                      className="shrink-0 self-start text-xs sm:self-center"
-                    >
-                      <Database className="mr-1 h-3 w-3" />
-                      {s.source ? sourceLabel(s.source) : "local"}
-                    </Badge>
+                    <div className="flex shrink-0 items-center gap-2 self-start sm:self-center">
+                      <Badge tone="outline" className="text-xs">
+                        <Database className="mr-1 h-3 w-3" />
+                        {s.source ? sourceLabel(s.source) : "local"}
+                      </Badge>
+
+                      <Button
+                        ghost
+                        size="icon"
+                        className="text-destructive"
+                        aria-label={t.sessions.deleteSession}
+                        title={t.sessions.deleteSession}
+                        onClick={() => sessionDelete.requestDelete(s.id)}
+                      >
+                        <Trash2 />
+                      </Button>
+                    </div>
                   </div>
                 ))}
               </CardContent>

@@ -13,6 +13,8 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import gateway_client, gateway_runtime, kanban_worker_client
+from hermes_cli.kanban_db_transport import (
+    KANBAN_TURN_UNKNOWN_EXIT_CODE, KanbanTurnUnknownError, submitter_exit_code)
 from gateway.drain_control import RESTART_WAIT_REASON
 
 GUE = gateway_client.GatewayUnavailableError
@@ -103,8 +105,13 @@ async def test_a_worker_cut_by_a_restart_wait_waits_outside_it(monkeypatch, tmp_
 
     # The worker waits for the next owner without reading anything from the restarting one, and an
     # owner that never comes back still fails it at OWNER_WAIT_S (which ends the turn it held).
-    with pytest.raises(gateway_client.GatewayClientError, match="owner silent"):
+    # The claim was ADMITTED before the restart wait cut it ("Session: s1" was printed, the
+    # admission id is held), so the give-up is the reconcile lane — exit 70, not the never-reached
+    # 71: the turn may have completed and already pushed, and the retry has a session to resume.
+    with pytest.raises(KanbanTurnUnknownError, match="owner silent") as give_up:
         await kanban_worker_client.run({"task_id": "t1"}, str(tmp_path / "kanban.db"))
+    assert give_up.value.session_id == "s1"
+    assert submitter_exit_code(give_up.value) == KANBAN_TURN_UNKNOWN_EXIT_CODE
     assert owner.receipts_in_wait == 0
     assert owner.dials > 2
 

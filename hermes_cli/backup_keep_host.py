@@ -329,7 +329,8 @@ def create_undo_point(root: Path, external_members: tuple[str, ...] = ()) -> Opt
     atomic_write_text(manifest, json.dumps(sorted(_profile_names(root))), mode=0o600)
     entries[_PROFILES_MANIFEST] = manifest
     out = backups / f"{_UNDO_PREFIX}{datetime.now():%Y-%m-%d-%H%M%S}-{secrets.token_hex(3)}.zip"
-    return _write_full_zip_backup(out, root, [(path, Path(arc)) for arc, path in entries.items()])
+    outcome = _write_full_zip_backup(out, root, [(path, Path(arc)) for arc, path in entries.items()])
+    return outcome.path if outcome.status == "complete" else None
 
 
 def _profile_names(root: Path) -> set[str]:

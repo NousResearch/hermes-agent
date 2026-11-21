@@ -174,7 +174,7 @@ def test_killed_backup_recovers_and_preserves_live_peer(
     output = retry_dir / "recovered.zip"
     monkeypatch.setattr(backup, "_collect_external_entries", lambda: ([], []))
     if automatic:
-        assert backup._write_full_zip_backup(output, home) == output
+        assert backup._write_full_zip_backup(output, home).path == output
     else:
         assert backup._run_backup_locked(Namespace(output=str(output)), home)
     assert not any(p.name.startswith(".hermes-backup-stage-") for p in home.iterdir())
@@ -367,7 +367,7 @@ def test_backup_completes_when_output_filesystem_refuses_locks(
     monkeypatch.setattr(backup, "_collect_external_entries", lambda: ([], []))
     monkeypatch.setattr(backup, "get_default_hermes_root", lambda: home)
     if automatic:
-        assert backup._write_full_zip_backup(output, home) == output
+        assert backup._write_full_zip_backup(output, home).path == output
     else:
         assert backup.run_backup(Namespace(output=str(output)))
     with zipfile.ZipFile(output) as archive:
@@ -419,7 +419,7 @@ def test_retry_elsewhere_reclaims_default_backup_stages_but_preserves_live_ones(
 
     def run():
         if automatic:
-            assert backup._write_full_zip_backup(output, home) == output
+            assert backup._write_full_zip_backup(output, home).path == output
         else:
             assert backup._run_backup_locked(Namespace(output=str(output)), home)
 
@@ -450,7 +450,7 @@ def test_default_backup_cleanup_does_not_follow_a_linked_output_folder(
     _kill(child)
     monkeypatch.setattr(backup, "_collect_external_entries", lambda: ([], []))
     output = tmp_path / "backup.zip"
-    assert backup._write_full_zip_backup(output, home) == output
+    assert backup._write_full_zip_backup(output, home).path == output
     assert snapshot.read_bytes() == b"\0" * 4096
 
 
@@ -465,7 +465,7 @@ def test_failed_legacy_snapshot_names_possible_residue_without_deleting_it(
     output = tmp_path / "backup.zip"
     monkeypatch.setattr(backup, "_collect_external_entries", lambda: ([], []))
     if automatic:
-        assert backup._write_full_zip_backup(output, home) is None
+        assert backup._write_full_zip_backup(output, home).status == "failed"
     else:
         assert not backup._run_backup_locked(Namespace(output=str(output)), home)
     assert legacy.read_bytes() == b"unfinished legacy snapshot"
@@ -483,7 +483,7 @@ def test_legacy_zip_partial_is_reported_and_preserved(tmp_path, monkeypatch, cap
     notes.write_bytes(b"user notes")
     output = tmp_path / "backup.zip"
     monkeypatch.setattr(backup, "_collect_external_entries", lambda: ([], []))
-    assert backup._write_full_zip_backup(output, home) == output
+    assert backup._write_full_zip_backup(output, home).path == output
     assert str(legacy) in caplog.text
     assert str(notes) not in caplog.text
     assert legacy.read_bytes() == b"legacy partial"

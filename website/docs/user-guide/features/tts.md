@@ -73,6 +73,7 @@ tts:
     speed: 1                    # 0.5 - 2.0
     vol: 1                      # 0 - 10
     pitch: 0                    # -12 - 12
+    # emotion: "happy"          # Optional; unset lets MiniMax infer it from the text
     # base_url: "https://tts.example/v1/t2a_v2"  # Optional endpoint override for the selected region
   mistral:
     model: "voxtral-mini-tts-2603"

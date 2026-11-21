@@ -19,10 +19,12 @@
 }
 
 :root[data-shell='portal'] {
+  /* A font the person chose in Appearance (`--dt-font-chosen`, themes/context.tsx) leads both faces:
+     it is there for readability, so it is not left to the theme's stack behind the brand's. */
   /* H1, panel, dialog and drawer titles, the wordmark. */
-  --portal-font-display: 'Oswald', var(--dt-font-sans);
+  --portal-font-display: var(--dt-font-chosen, 'Oswald'), var(--dt-font-sans);
   /* Every other line of UI. */
-  --portal-font-body: 'Mona Sans', var(--dt-font-sans);
+  --portal-font-body: var(--dt-font-chosen, 'Mona Sans'), var(--dt-font-sans);
   /* Paths, ids, code and an agent's own words (the SOUL preview, 877:4245): the theme's mono, the
      bundled JetBrains Mono standing in for Aeonik Fono. */
   --portal-font-mono: var(--dt-font-mono);

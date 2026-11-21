@@ -31,7 +31,7 @@ import {
   localDisplaySkinProfile
 } from './backend-sync'
 import { writeBootPalette } from './boot-palette'
-import { $chatFontFamily, resolveChatFontFamily } from './chat-font'
+import { $chatFontFamily, chosenChatFontFamily, resolveChatFontFamily } from './chat-font'
 import { harmonize, normalizeHex, readableInk } from './color'
 import {
   BUILTIN_THEME_LIST,
@@ -307,6 +307,19 @@ const TYPOGRAPHY_KNOB_VARS = {
   letterSpacing: '--dt-letter-spacing'
 } as const
 
+/** The person's own face on a variable of its own, unset while they use the theme's. `--dt-font-sans`
+ *  already leads with it; a shell that names its own faces ahead of the theme's (the redesign's
+ *  Mona Sans and Oswald, tokens/type.css) reads this one so the choice leads those too. */
+function applyChosenFont(root: HTMLElement, chatFontFamily: string) {
+  const chosen = chosenChatFontFamily(chatFontFamily)
+
+  if (chosen) {
+    root.style.setProperty('--dt-font-chosen', chosen)
+  } else {
+    root.style.removeProperty('--dt-font-chosen')
+  }
+}
+
 // Optional typography knobs. They are the ONLY vars applyTheme may paint
 // inline conditionally: styles.css declares the same fallbacks on :root, so
 // a theme that stops providing one must drop the inline value — otherwise
@@ -414,6 +427,7 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily 
     root.style.setProperty(k, v)
   }
 
+  applyChosenFont(root, chatFontFamily)
   applyTypographyKnobs(root, typo)
 
   const chromeBg = chromeBackground(c.background, isDark)

@@ -21,6 +21,8 @@ export interface DiscoveryCopy {
     newBadge: string
     /** Clears the New marks the tray opened with. */
     markAllRead: string
+    /** A row's ×: takes it out of the tray until it has news again. */
+    dismiss: string
     footnote: string
     /** Reopens the rename splash. */
     openIntroduction: string
@@ -69,6 +71,7 @@ const en: DiscoveryCopy = {
     empty: 'Nothing new right now.',
     newBadge: 'New',
     markAllRead: 'Mark all read',
+    dismiss: 'Dismiss',
     footnote: 'Updates stay here until you clear them.',
     openIntroduction: 'Open introduction'
   },
@@ -121,6 +124,7 @@ const fr: DiscoveryCopy = {
     empty: 'Rien de nouveau pour l’instant.',
     newBadge: 'Nouveau',
     markAllRead: 'Tout marquer comme lu',
+    dismiss: 'Ignorer',
     footnote: 'Les mises à jour restent ici jusqu’à ce que vous les effaciez.',
     openIntroduction: 'Ouvrir la présentation'
   },
@@ -173,6 +177,7 @@ const de: DiscoveryCopy = {
     empty: 'Gerade nichts Neues.',
     newBadge: 'Neu',
     markAllRead: 'Alle als gelesen markieren',
+    dismiss: 'Ausblenden',
     footnote: 'Updates bleiben hier, bis du sie entfernst.',
     openIntroduction: 'Einführung öffnen'
   },
@@ -225,6 +230,7 @@ const es: DiscoveryCopy = {
     empty: 'Nada nuevo por ahora.',
     newBadge: 'Nuevo',
     markAllRead: 'Marcar todo como leído',
+    dismiss: 'Descartar',
     footnote: 'Las actualizaciones se quedan aquí hasta que las borres.',
     openIntroduction: 'Abrir la presentación'
   },
@@ -277,6 +283,7 @@ const ja: DiscoveryCopy = {
     empty: '今は新しいお知らせはありません。',
     newBadge: '新着',
     markAllRead: 'すべて既読にする',
+    dismiss: '閉じる',
     footnote: 'アップデートは消去するまでここに残ります。',
     openIntroduction: '紹介を開く'
   },
@@ -329,6 +336,7 @@ const zh: DiscoveryCopy = {
     empty: '暂时没有新内容。',
     newBadge: '新',
     markAllRead: '全部标为已读',
+    dismiss: '忽略',
     footnote: '更新会一直留在这里，直到你清除。',
     openIntroduction: '打开介绍'
   },
@@ -381,6 +389,7 @@ const zhHant: DiscoveryCopy = {
     empty: '目前沒有新內容。',
     newBadge: '新',
     markAllRead: '全部標為已讀',
+    dismiss: '忽略',
     footnote: '更新會一直留在這裡，直到你清除。',
     openIntroduction: '開啟介紹'
   },
@@ -433,6 +442,7 @@ const ru: DiscoveryCopy = {
     empty: 'Пока ничего нового.',
     newBadge: 'Новое',
     markAllRead: 'Отметить всё прочитанным',
+    dismiss: 'Скрыть',
     footnote: 'Обновления остаются здесь, пока вы их не уберёте.',
     openIntroduction: 'Открыть знакомство'
   },
@@ -485,6 +495,7 @@ const ar: DiscoveryCopy = {
     empty: 'لا جديد الآن.',
     newBadge: 'جديد',
     markAllRead: 'تعليم الكل كمقروء',
+    dismiss: 'تجاهل',
     footnote: 'تبقى التحديثات هنا حتى تمسحها.',
     openIntroduction: 'فتح التعريف'
   },

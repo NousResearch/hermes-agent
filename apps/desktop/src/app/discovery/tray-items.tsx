@@ -1,5 +1,5 @@
 import { computed } from 'nanostores'
-import type { ComponentType } from 'react'
+import { type ComponentType, createContext, use } from 'react'
 import { useNavigate } from 'react-router'
 
 import { Badge } from '@/components/ui/badge'
@@ -45,13 +45,18 @@ export interface TrayItemDefinition extends TrayItemSource {
   Card: ComponentType<TrayCardProps>
 }
 
+/** Takes the row's own item out of the tray (the tray provides it per row): every row can be
+ *  dismissed without each item wiring it. */
+export const TrayItemClearContext = createContext<(() => void) | null>(null)
+
 interface TrayCardViewProps {
   /** The row's glyph: a codicon name. */
   glyph: string
   title: string
   description?: string
   action: { label: string; run: () => void }
-  /** An × that takes the item out of the tray. */
+  /** What the row's × does and says, for an item that has its own way out (it answers a question,
+   *  say). Every other row's × clears it from the tray until it has news again. */
   clear?: { label: string; run: () => void }
   unseen: boolean
 }
@@ -59,8 +64,10 @@ interface TrayCardViewProps {
 /** The tray's one row shape (Figma E6 18677:29931): a glyph, the title and its line, the action at
  *  the end with its chevron, in the welcome card's row language. Items compose it so every entry
  *  reads alike; an item that needs a different shape renders its own. */
-export function TrayCard({ action, clear, description, glyph, title, unseen }: TrayCardViewProps) {
+export function TrayCard({ action, clear: ownClear, description, glyph, title, unseen }: TrayCardViewProps) {
   const copy = useDiscoveryCopy()
+  const clearFromTray = use(TrayItemClearContext)
+  const clear = ownClear ?? (clearFromTray && { label: copy.tray.dismiss, run: clearFromTray })
 
   return (
     <article className="discovery-tray-card" data-slot="tray-card" data-unseen={unseen || undefined}>

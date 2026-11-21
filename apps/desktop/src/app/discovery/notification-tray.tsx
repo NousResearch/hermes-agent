@@ -13,7 +13,7 @@ import { $renameSplashReopenable, reopenRenameSplash } from '@/store/rename-spla
 import { useRailMenuCollisionPadding } from '../redesign/portal-status-menu'
 
 import { useDiscoveryCopy } from './discovery-copy'
-import { notificationTray } from './tray-items'
+import { notificationTray, TrayItemClearContext } from './tray-items'
 
 const NOTHING_UNSEEN: ReadonlySet<string> = new Set()
 
@@ -28,7 +28,7 @@ export function NotificationBell() {
   const { pathname, search } = useLocation()
   const listed = useStore(notificationTray.$listed)
   const unseen = useStore(notificationTray.$unseen)
-  const introduction = useStore($renameSplashReopenable)
+  const reopenable = useStore($renameSplashReopenable)
   const [open, setOpen] = useState(false)
   // What was new when the tray opened: seeing it clears the bell, not the cards' marks.
   const [newOnOpen, setNewOnOpen] = useState(NOTHING_UNSEEN)
@@ -36,6 +36,7 @@ export function NotificationBell() {
   useEffect(() => setOpen(false), [pathname, search])
   // A card that takes the person elsewhere (the splash, an update) keeps focus there on close.
   const handedOff = useRef(false)
+  const trayRef = useRef<HTMLDivElement>(null)
 
   const handOff = () => {
     handedOff.current = true
@@ -51,7 +52,15 @@ export function NotificationBell() {
     setOpen(next)
   }
 
+  // The row leaves with its ×, which held focus: the tray takes it, so the keyboard stays inside.
+  const clearItem = (id: string) => {
+    notificationTray.clear(id)
+    trayRef.current?.focus({ preventScroll: true })
+  }
+
   const hasNews = unseen.size > 0
+  // The introduction's button stands for its row: cleared with it.
+  const introduction = reopenable && listed.some(item => item.id === 'rename-splash')
 
   return (
     <Popover onOpenChange={onOpenChange} open={open}>
@@ -82,8 +91,10 @@ export function NotificationBell() {
             event.preventDefault()
           }
         }}
+        ref={trayRef}
         side="right"
         sideOffset={0}
+        tabIndex={-1}
         variant="menu"
       >
         <h2 className="discovery-tray-title">{copy.tray.heading}</h2>
@@ -94,7 +105,9 @@ export function NotificationBell() {
             <ul className="discovery-welcome-card discovery-tray-items">
               {listed.map(({ Card, id }) => (
                 <li key={id}>
-                  <Card close={handOff} dismiss={() => setOpen(false)} unseen={newOnOpen.has(id)} />
+                  <TrayItemClearContext value={() => clearItem(id)}>
+                    <Card close={handOff} dismiss={() => setOpen(false)} unseen={newOnOpen.has(id)} />
+                  </TrayItemClearContext>
                 </li>
               ))}
             </ul>

@@ -1,11 +1,12 @@
 import { atom } from 'nanostores'
 import { beforeEach, expect, it, vi } from 'vitest'
 
-import { $traySeen, createNotificationTray, type TrayItemState } from './notification-tray'
+import { $trayCleared, $traySeen, createNotificationTray, type TrayItemState } from './notification-tray'
 
 beforeEach(() => {
   window.localStorage.clear()
   $traySeen.set([])
+  $trayCleared.set([])
 })
 
 const item = (id: string, state: null | TrayItemState) => ({ id, $state: atom<null | TrayItemState>(state) })
@@ -47,4 +48,28 @@ it('keeps what was seen across a reload of the page', async () => {
 
 it('refuses two items with one id, whose seen news would collide', () => {
   expect(() => createNotificationTray([item('update', null), item('update', null)])).toThrow(/duplicate/)
+})
+
+it('takes a cleared item out of the tray until it announces something else', () => {
+  const update = item('update', { news: '1.2.0' })
+  const splash = item('splash', { news: null })
+  const tray = createNotificationTray([update, splash])
+
+  tray.clear('update')
+  tray.clear('splash')
+  expect(tray.$listed.get()).toEqual([])
+
+  // The next update is a different announcement; the splash's entry says nothing new and stays away.
+  update.$state.set({ news: '1.3.0' })
+  expect(tray.$listed.get().map(entry => entry.id)).toEqual(['update'])
+  expect([...tray.$unseen.get()]).toEqual(['update'])
+})
+
+it('keeps what was cleared across a reload of the page', async () => {
+  createNotificationTray([item('update', { news: '1.2.0' })]).clear('update')
+
+  vi.resetModules()
+  const reloaded = await import('./notification-tray')
+  const tray = reloaded.createNotificationTray([item('update', { news: '1.2.0' })])
+  expect(tray.$listed.get()).toEqual([])
 })

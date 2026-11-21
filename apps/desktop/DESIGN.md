@@ -852,8 +852,8 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 
 | Token | Dark | Light | Note |
 |---|---|---|---|
-| `--portal-font-display` | `'Oswald', var(--dt-font-sans)` | ″ | H1, panel, dialog and drawer titles, the wordmark. |
-| `--portal-font-body` | `'Mona Sans', var(--dt-font-sans)` | ″ | Every other line of UI. |
+| `--portal-font-display` | `var(--dt-font-chosen, 'Oswald'), var(--dt-font-sans)` | ″ | H1, panel, dialog and drawer titles, the wordmark. |
+| `--portal-font-body` | `var(--dt-font-chosen, 'Mona Sans'), var(--dt-font-sans)` | ″ | Every other line of UI. |
 | `--portal-font-mono` | `var(--dt-font-mono)` | ″ | Paths, ids, code and an agent's own words (the SOUL preview, 877:4245): the theme's mono, the bundled JetBrains Mono standing in for Aeonik Fono. |
 | `--portal-type-display-xl-size` | `2.5rem` | ″ | Page H1, agent name (1036:7378). |
 | `--portal-type-display-lg-size` | `1.875rem` | ″ | Panel title, sub-page H2, dialog and drawer title (1036:7476, 1038:7797). |

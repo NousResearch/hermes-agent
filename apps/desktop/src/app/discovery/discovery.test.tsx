@@ -9,7 +9,7 @@ import { $firstTimeSplash } from '@/store/first-time-splash'
 import { $guidanceLedger } from '@/store/guidance-ledger'
 import { $itemIndex } from '@/store/item-index'
 import { $newVersionReady } from '@/store/new-version'
-import { $traySeen } from '@/store/notification-tray'
+import { $trayCleared, $traySeen } from '@/store/notification-tray'
 import { $renameSplash } from '@/store/rename-splash'
 import { $sessions, $sessionsLoadError, $sessionsLoading } from '@/store/session'
 import { $shellChoice } from '@/store/shell-variant'
@@ -64,6 +64,7 @@ beforeEach(() => {
   $shellChoice.set(true)
   $guidanceLedger.set({})
   $traySeen.set([])
+  $trayCleared.set([])
   $renameSplash.set(null)
   $firstTimeSplash.set(null)
   $itemIndex.set({})
@@ -220,6 +221,27 @@ describe('the notifications tray', () => {
     fireEvent.click(within(tray).getByRole('button', { name: copy.tray.openIntroduction }))
     expect($renameSplash.get()).toBe('reopened')
     expect(splash()).not.toBeNull()
+  })
+
+  it('dismisses a notification from its row: it leaves the tray, and the introduction\'s button with it', () => {
+    renderShell()
+    act(() => {
+      $guidanceLedger.set({ renameSplash: 'seen' })
+      $newVersionReady.set(true)
+    })
+    fireEvent.click(screen.getByRole('button', { name: copy.tray.title }))
+
+    const tray = screen.getByRole('dialog', { name: copy.tray.title })
+    expect(within(tray).getAllByRole('article')).toHaveLength(2)
+
+    const intro = within(tray).getByText(copy.renameItem.title).closest('article')!
+    fireEvent.click(within(intro).getByRole('button', { name: copy.tray.dismiss }))
+    expect(within(tray).queryByText(copy.renameItem.title)).toBeNull()
+    expect(within(tray).queryByRole('button', { name: copy.tray.openIntroduction })).toBeNull()
+    expect(within(tray).getAllByRole('article')).toHaveLength(1)
+
+    fireEvent.click(within(tray).getByRole('button', { name: copy.tray.dismiss }))
+    expect(within(tray).getByText(copy.tray.empty)).toBeTruthy()
   })
 
   it('says a newer build in the chat without reloading; Later puts it away and the tray keeps it', () => {

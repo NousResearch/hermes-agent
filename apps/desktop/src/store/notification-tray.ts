@@ -6,7 +6,8 @@
  * one. Each item publishes a state atom: `null` keeps it out of the tray, otherwise `news` is a
  * token for what it currently announces (an update's target version, say) or null when it is
  * listed with nothing new. Opening the tray sees every listed item's news; a new token (the next
- * update) lights the bell again. What was seen is kept in this browser only.
+ * update) lights the bell again. Clearing an item takes it out of the tray until it announces
+ * something else (the next update). What was seen or cleared is kept in this browser only.
  */
 
 import { computed, type ReadableAtom } from 'nanostores'
@@ -28,6 +29,11 @@ const SEEN_KEY = 'hermes.desktop.notificationTray.seen.v1'
 
 export const $traySeen = persistentAtom<string[]>(SEEN_KEY, [], Codecs.stringArray)
 
+const CLEARED_KEY = 'hermes.desktop.notificationTray.cleared.v1'
+
+/** What the person cleared, as the same tokens: an item with nothing new is cleared as `''`. */
+export const $trayCleared = persistentAtom<string[]>(CLEARED_KEY, [], Codecs.stringArray)
+
 const seenToken = (id: string, news: string) => JSON.stringify([id, news])
 
 export interface NotificationTray<T extends TrayItemSource> {
@@ -37,6 +43,8 @@ export interface NotificationTray<T extends TrayItemSource> {
   $unseen: ReadableAtom<ReadonlySet<string>>
   /** Everything listed now counts as seen. Tokens of news no longer announced are dropped. */
   markAllSeen: () => void
+  /** Takes the item out of the tray until it announces something else. */
+  clear: (id: string) => void
 }
 
 export function createNotificationTray<T extends TrayItemSource>(items: readonly T[]): NotificationTray<T> {
@@ -55,7 +63,17 @@ export function createNotificationTray<T extends TrayItemSource>(items: readonly
     (...states) => states
   )
 
-  const $listed = computed($states, states => items.filter((_, index) => states[index] !== null))
+  /** What each item says now, as a token: null while it has nothing to list. */
+  const announced = (states: readonly (null | TrayItemState)[], index: number) =>
+    states[index] ? seenToken(items[index].id, states[index].news ?? '') : null
+
+  const $listed = computed([$states, $trayCleared], (states, cleared) =>
+    items.filter((_, index) => {
+      const token = announced(states, index)
+
+      return token !== null && !cleared.includes(token)
+    })
+  )
 
   const currentTokens = (states: readonly (null | TrayItemState)[]) =>
     items.flatMap((item, index) => {
@@ -79,6 +97,19 @@ export function createNotificationTray<T extends TrayItemSource>(items: readonly
       if (tokens.length !== $traySeen.get().length || tokens.some(token => !$traySeen.get().includes(token))) {
         $traySeen.set(tokens)
       }
+    },
+    clear: id => {
+      const states = $states.get()
+      const token = announced(states, items.findIndex(item => item.id === id))
+
+      if (token === null) {
+        return
+      }
+
+      // Only what is still announced is worth remembering: the rest can never match again.
+      const live = new Set(items.map((_, index) => announced(states, index)))
+
+      $trayCleared.set([...$trayCleared.get().filter(kept => live.has(kept) && kept !== token), token])
     }
   }
 }

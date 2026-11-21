@@ -1192,6 +1192,7 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             notifier_profile=args.notifier_profile or _profile_author(),
             delivery_mode=getattr(args, "delivery_mode", None),
             delivery_metadata=delivery_metadata or None,
+            kinds=getattr(args, "kinds", None),
         )
     print(f"Subscribed {args.platform}:{args.chat_id}" + (f":{thread_id}" if thread_id else "") + f" to {args.task_id}")
     return 0
@@ -1213,6 +1214,7 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
             "" if ctype == "dm" else f"  chat_type={ctype}",
             f"  user_id_alt={s['user_id_alt']}" if s.get("user_id_alt") else "",
             "" if dmode == "notify" else f"  mode={dmode}",
+            f"  kinds={','.join(s['kinds'])}" if s.get("kinds") else "",
         ))
         print(f"  {s['task_id']:10s}  {s['platform']}:{s['chat_id']}{thr}  (since event {s['last_event_id']}){extras}")
     return 0

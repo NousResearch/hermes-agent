@@ -161,11 +161,13 @@ def test_count_running_tasks_other_boards_fails_open(
     kanban_home, monkeypatch,
 ):
     """A broken board enumeration must not brick dispatch (returns 0)."""
+    from hermes_cli import kanban_host_capacity as kbhost
+
     monkeypatch.setattr(
         kb, "list_boards",
         lambda **k: (_ for _ in ()).throw(RuntimeError("boom")),
     )
-    assert kbd.count_running_tasks_other_boards() == 0
+    assert kbhost.count_running_tasks_other_boards() == 0
 
 
 def test_max_spawn_stays_per_board(kanban_home, all_assignees_spawnable):

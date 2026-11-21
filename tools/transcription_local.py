@@ -60,6 +60,16 @@ def _normalize_local_stt_language(
 
 
 def _get_local_command_template() -> Optional[str]:
+    """Return the local STT command template (``HERMES_LOCAL_STT_COMMAND`` env override >
+    managed whisper.cpp > a discovered ``whisper`` CLI).
+
+    Placeholders rendered at transcription time: ``{input_path}``, ``{output_dir}``,
+    ``{language}``, ``{model}``, plus the voice-mode keys ``{mode}`` (``stt.local.mode``:
+    ``transcribe``|``translate``) and ``{target_language}`` (``stt.local.target_language``)
+    so a command-based local stack can run the two-stage ASR -> translation path
+    (e.g. parakeet -> m2m100). Templates that don't use a placeholder are unaffected
+    (extra values are ignored).
+    """
     configured = os.getenv(LOCAL_STT_COMMAND_ENV, "").strip()
     if configured:
         return configured
@@ -299,7 +309,7 @@ def _transcribe_local_command(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> dict[str, Any]:
     """Run the configured local STT command template and read back a .txt transcript."""
-    from tools.transcription_tools import _resolve_stt_language
+    from tools.transcription_tools import _load_stt_config, _resolve_stt_language
     if prompt:
         _log_prompt_unsupported("STT provider 'local_command'")
     command_template = _get_local_command_template()
@@ -308,6 +318,13 @@ def _transcribe_local_command(
     # Language: hook override > stt.local.language > stt.language > env > "en".
     configured_language = language or _resolve_stt_language("local")
     language = _normalize_local_stt_language(configured_language) or DEFAULT_LOCAL_STT_LANGUAGE
+    # Voice interaction mode + translation target (stt.local.mode /
+    # stt.local.target_language): exposed to the template as {mode} /
+    # {target_language} so a command-based local stack can perform the
+    # two-stage ASR -> translation (e.g. parakeet -> m2m100).
+    local_cfg = _load_stt_config().get("local") or {}
+    mode = str(local_cfg.get("mode") or "transcribe").strip().lower() or "transcribe"
+    target_language = str(local_cfg.get("target_language") or "en").strip() or "en"
     normalized_model = _normalize_local_model(model_name)
     try:
         if not os.getenv(LOCAL_STT_COMMAND_ENV, "").strip():
@@ -320,7 +337,8 @@ def _transcribe_local_command(
                 return _error_result(prep_error)
             command = command_template.format(
                 input_path=shlex.quote(prepared_input), output_dir=shlex.quote(output_dir),
-                language=shlex.quote(language), model=shlex.quote(normalized_model))
+                language=shlex.quote(language), model=shlex.quote(normalized_model),
+                mode=shlex.quote(mode), target_language=shlex.quote(target_language))
             # Scrub Hermes secrets from the child env (same policy as _run_command_stt).
             # Scrub Hermes secrets from the child env (sibling path to #56332 / _run_command_stt — this
             # local-whisper path previously inherited the full process environment).

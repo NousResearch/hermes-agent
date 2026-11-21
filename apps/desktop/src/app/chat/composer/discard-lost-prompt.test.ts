@@ -76,7 +76,9 @@ test('Discard uses the queue owner socket and its lost generation, including an 
     await requestGatewayForAgent('owner', 'background', 'session.resume', { session_id: 'stored' })
     await discardLostPrompt(null, 'stored', 'lost', f.ambientRequest)
     expect(f.frames.filter(frame => frame.method === 'prompt.resolve_unknown')).toEqual([
-      { route: 'owner', method: 'prompt.resolve_unknown', params: { session_id: 'stored', admission_id: 'lost', execution_generation: 4 } }
+      // The attach learned the owner profile; it rides every later RPC (`default` included —
+      // an omitted profile means the socket's launch profile, not `default`).
+      { route: 'owner', method: 'prompt.resolve_unknown', params: { session_id: 'stored', admission_id: 'lost', execution_generation: 4, profile: 'default' } }
     ])
     expect(f.ambientRequest).not.toHaveBeenCalled()
     // The acknowledged row is retired by the owning protocol, not by local queue deletion.

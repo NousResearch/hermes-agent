@@ -29,7 +29,9 @@ test('named canonical prompt listeners receive replay-safe IDs before answering 
     await ready
     expect(projected.request_id).toBe('p')
     await client.request('approval.respond', { session_id: 's', request_id: projected.request_id, choice: 'once' })
-    expect(sent.at(-1).params).toEqual({ session_id: 's', prompt_id: 'p', execution_generation: 4, choice: 'once' })
+    // The learned owner rides every frame: an omitted `profile` is the socket's launch profile,
+    // not `default` (the authority routes on it before the closed-contract check).
+    expect(sent.at(-1).params).toEqual({ session_id: 's', prompt_id: 'p', execution_generation: 4, choice: 'once', profile: 'default' })
   } finally {
     client.close()
 

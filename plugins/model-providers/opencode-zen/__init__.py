@@ -137,12 +137,14 @@ opencode_go = OpenCodeGoProfile(
     name="opencode-go", aliases=("opencode_go", "go", "opencode-go-sub"), env_vars=("OPENCODE_GO_API_KEY",),
     base_url="https://opencode.ai/zen/go/v1", default_headers=LazyHeaders(_ATTRIBUTION_HEADERS),
     default_aux_model="glm-5", classify_api_error=_classify_go_error,
-    # The Go relay's upstream validates tool content as a strict string: list-type tool
-    # content (native vision embeds) 422s with ``messages.N.tool.content.str Input should
-    # be a valid string`` (Console Go, #104731) or 400s ``text is not set`` (MiMo, #47026),
-    # and the rejected row stays in history so every later call dies too. Images in user
-    # messages are fine, so vision itself keeps working via the text-summary downgrade.
-    supports_vision_tool_messages=False,
+    # List-type tool content (native vision embeds) is deliberately allowed on this relay: an
+    # image part inside a ``role: tool`` message was verified live against chat_completions with
+    # ``x-opencode-session`` (deepseek-v4.1-flash: HTTP 200, pixels read correctly, ~2.9s), so
+    # the 422 ``messages.N.tool.content.str`` (Console Go, #104731) and 400 ``text is not set``
+    # (MiMo, #47026) failures this profile used to veto for do not hold provider-wide. A real
+    # rejection still degrades safely: such a status is classed as multimodal tool-content
+    # damage, and the model is then remembered so later tool results go out as a text summary.
+    supports_vision_tool_messages=True,
 )
 
 register_provider(opencode_zen)

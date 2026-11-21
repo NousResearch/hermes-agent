@@ -675,7 +675,7 @@ async function pidIsOurDashboard(
   }
 
   const script =
-    'import os,shlex,subprocess,sys\n' +
+    'import ctypes,os,struct,sys\n' +
     `pid=${Number(pid)}\n` +
     `expected=os.path.expanduser(${shq(hermesPath)})\n` +
     // The installer-facing launcher is intentionally preserved for invocation
@@ -689,16 +689,37 @@ async function pidIsOurDashboard(
     `expected_token=os.path.expanduser(${shq(ownershipId ? spawnTokenPath(ownershipId, spawnNonce) : '')})\n` +
     `expected_profile=${shq(profile)}\n` +
     `nonce=${shq(spawnNonce)}\n` +
+    'args=None\n' +
     'try:\n' +
     ' raw=open(f"/proc/{pid}/cmdline","rb").read()\n' +
-    ' args=[x.decode("utf-8","surrogateescape") for x in raw.split(b"\\0") if x]\n' +
+    ' if raw.endswith(b"\\0"): raw=raw[:-1]\n' +
+    ' args=[x.decode("utf-8","surrogateescape") for x in raw.split(b"\\0")]\n' +
     'except OSError:\n' +
-    ' try:\n' +
-    '  line=subprocess.check_output(["ps","-ww","-o","command=","-p",str(pid)],text=True).strip()\n' +
-    ' except subprocess.CalledProcessError:\n' +
-    '  # pid already gone — a dead process is FOREIGN, not a transport error\n' +
-    '  print("FOREIGN");sys.exit(0)\n' +
-    ' args=shlex.split(line)\n' +
+    ' if sys.platform=="darwin":\n' +
+    '  try:\n' +
+    '   libc=ctypes.CDLL(None,use_errno=True)\n' +
+    '   mib=(ctypes.c_int*3)(1,49,pid)\n' +
+    '   size=ctypes.c_size_t(0)\n' +
+    '   if libc.sysctl(mib,3,None,ctypes.byref(size),None,0)!=0: raise OSError(ctypes.get_errno(),"KERN_PROCARGS2 size probe failed")\n' +
+    '   if size.value<4: raise ValueError("KERN_PROCARGS2 result is truncated")\n' +
+    '   buffer=ctypes.create_string_buffer(size.value)\n' +
+    '   if libc.sysctl(mib,3,buffer,ctypes.byref(size),None,0)!=0: raise OSError(ctypes.get_errno(),"KERN_PROCARGS2 read failed")\n' +
+    '   raw=buffer.raw[:size.value]\n' +
+    '   argc=struct.unpack("=i",raw[:4])[0]\n' +
+    '   exec_end=raw.find(b"\\0",4)\n' +
+    '   if argc<1 or exec_end<0: raise ValueError("KERN_PROCARGS2 result is malformed")\n' +
+    '   pos=exec_end+1\n' +
+    '   while pos<len(raw) and raw[pos]==0: pos+=1\n' +
+    '   args=[]\n' +
+    '   for _ in range(argc):\n' +
+    '    end=raw.find(b"\\0",pos)\n' +
+    '    if end<0: raise ValueError("KERN_PROCARGS2 argv is truncated")\n' +
+    '    args.append(raw[pos:end].decode("utf-8","surrogateescape"))\n' +
+    '    pos=end+1\n' +
+    '   if len(args)!=argc: raise ValueError("KERN_PROCARGS2 argv count mismatch")\n' +
+    '  except Exception: args=None\n' +
+    'if args is None:\n' +
+    ' print("FOREIGN");sys.exit(0)\n' +
     'ok=False\n' +
     'try:\n' +
     // A profile literally named "serve" puts the value token before the

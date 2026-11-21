@@ -147,6 +147,18 @@ def record_activation_inputs(stamps: Path, mtimes: dict[str, int], project_root:
         os.utime(stamp, ns=(mtime, mtime))
 
 
+def _is_git_checkout(root: Path) -> bool:
+    """Whether *root* is a live git checkout rather than a sealed payload.
+
+    The bundle builder and the Docker image both leave ``.git`` out (``scripts/build/agent.py``
+    copies with ``ignore_patterns(".git")``; ``.dockerignore`` excludes it), so its presence is an
+    exact signal that *root* is a checkout. On the documented default layout
+    (``$HERMES_HOME/hermes-agent``) ``root.parent`` IS the real home, so a checkout must not
+    probe ``root.parent / "manifest.json"`` at all (#126816).
+    """
+    return (root / ".git").exists()
+
+
 def _payload_manifest(root: Path) -> tuple[dict, Path] | None:
     """The manifest of the sealed payload whose tree is the resolved *root*, with the
     payload directory its entries resolve from, or ``None``.
@@ -156,8 +168,10 @@ def _payload_manifest(root: Path) -> tuple[dict, Path] | None:
     Every install asks, so a ``manifest.json`` that some other tool left beside a
     checkout, or one with a mistyped field, must read as "not a payload", never as an
     error. Readers then take each field with ``.get`` and treat an absent one as unset.
+    A git checkout never looks beside itself (see ``_is_git_checkout``).
     """
-    for path in (root.parent / "manifest.json", root / "manifest.json"):
+    candidates = (root / "manifest.json",) if _is_git_checkout(root) else (root.parent / "manifest.json", root / "manifest.json")
+    for path in candidates:
         try:
             manifest = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):

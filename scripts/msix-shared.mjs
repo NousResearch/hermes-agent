@@ -77,17 +77,22 @@ const VERSION_CORE = '(?:0|[1-9]\\d{0,2})\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)'
 // canary.<stamp>-v<stable> (hermes_cli/update_channel.py _CANARY_TAG_RE): group 1 is the stamp,
 // group 2 the stable core. A canary's version is <stable>+canary.<stamp> (releaseVersion).
 export const CANARY_TAG_RE = new RegExp(`^canary\\.(20\\d{6}T\\d{6}Z)-v(${VERSION_CORE})$`)
+// commit.<stamp>-v<core> (update_channel._COMMIT_TAG_RE): a commit build's claim tag, same groups.
+export const COMMIT_TAG_RE = new RegExp(`^commit\\.(20\\d{6}T\\d{6}Z)-v(${VERSION_CORE})$`)
 export const STABLE_TAG_RE = new RegExp(`^v${VERSION_CORE}$`)
 
-/** The version a stable or canary tag publishes (update_channel.release_version). Never strip a
- * leading `v`: a canary tag starts with its kind.
+/** The version a release identity tag carries (update_channel.release_version): X.Y.Z, or
+ * X.Y.Z+canary.<stamp> / X.Y.Z+commit.<stamp>. Never strip a leading `v`: canary and commit tags
+ * start with their kind.
  * @param {string} tag @returns {string | null}
  */
 export function releaseVersion(tag) {
   const value = String(tag || '')
   if (STABLE_TAG_RE.test(value)) return value.slice(1)
   const canary = CANARY_TAG_RE.exec(value)
-  return canary ? `${canary[2]}+canary.${canary[1]}` : null
+  if (canary) return `${canary[2]}+canary.${canary[1]}`
+  const commit = COMMIT_TAG_RE.exec(value)
+  return commit ? `${commit[2]}+commit.${commit[1]}` : null
 }
 
 /** releaseVersion for a tag already admitted as a release tag; throws on anything else.

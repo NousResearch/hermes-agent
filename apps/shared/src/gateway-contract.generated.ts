@@ -3005,6 +3005,12 @@ export interface SideAgentParams {
 export interface TaskIdResult {
   task_id: string
 }
+/** ``prompt.btw`` parses its ``text`` (``agent.side_thread.parse_btw_args``). A question or a ``--explore`` thread runs detached: ``task_id``, answer as ``btw.complete`` (an exploration streams ``btw.progress`` first). ``--threads|--stop|--promote`` reply at once with ``text`` to show, plus for a promotion the ``prompt`` the client submits as its next turn. */
+export interface BtwResult {
+  task_id?: string | null
+  text?: string | null
+  prompt?: string | null
+}
 export interface PreviewRestartParams {
   session_id: string
   profile?: string | null
@@ -6192,6 +6198,11 @@ export interface PreviewRestartProgressPayload {
   text: string
   level?: string | null
 }
+/** ``agent.side_thread.run_side_exploration``'s ``on_progress``: one tool step of a ``/btw --explore`` side thread, before its ``btw.complete``. */
+export interface BtwProgressPayload {
+  task_id: string
+  text: string
+}
 /** ``tool_progress._progress_subagent`` — every ``subagent.*`` frame; identity fields are optional because older emitters omit them and the TUI spawn tree falls back to flat rendering. */
 export interface SubagentEventPayload {
   goal: string
@@ -6672,8 +6683,8 @@ export interface RpcMethods {
   'projects.update': { params: ProjectsUpdateParams; result: ProjectResult }
   /** Run a task on a fresh agent in the background; the answer arrives as background.complete. */
   'prompt.background': { params: SideAgentParams; result: TaskIdResult }
-  /** Side question over a snapshot of the live conversation; the answer arrives as btw.complete. */
-  'prompt.btw': { params: SideAgentParams; result: TaskIdResult }
+  /** Side question over a snapshot of the live conversation, or a --explore side thread with tools; the answer arrives as btw.complete. Thread commands reply with {text, prompt}. */
+  'prompt.btw': { params: SideAgentParams; result: BtwResult }
   /** Send a user turn to a live session; busy sessions queue / steer / redirect instead of refusing. */
   'prompt.submit': { params: PromptSubmitParams; result: PromptSubmitResult }
   /** Re-read ~/.hermes/.env (CLI /reload parity); built agents keep their pool until /new. */
@@ -7357,8 +7368,10 @@ export interface BackendGatewayEventMap {
   'bot_relay.outbox.pending': ChangeSignalPayload
   /** Browser (CDP) connect / install progress line. */
   'browser.progress': BrowserProgressPayload
-  /** A /btw side question was answered. */
+  /** A /btw side question was answered, or a /btw --explore side thread reported. */
   'btw.complete': SideAgentCompletePayload
+  /** A /btw --explore side thread took a step (one tool call). */
+  'btw.progress': BtwProgressPayload
   /** A connection operation opened on this session; the desktop renders its card. */
   'connection.request': ConnectionRequestPayload
   /** One transition or the settlement of an open connection operation. */
@@ -7512,6 +7525,7 @@ export const GATEWAY_EVENT_TYPES = [
   'bot_relay.outbox.pending',
   'browser.progress',
   'btw.complete',
+  'btw.progress',
   'connection.request',
   'connection.update',
   'cron.changed',

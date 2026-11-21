@@ -247,8 +247,20 @@ class TaskIdResult(Result):
 
 method("prompt.background", params=SideAgentParams, result=TaskIdResult,
        doc="Run a task on a fresh agent in the background; the answer arrives as background.complete.")
-method("prompt.btw", params=SideAgentParams, result=TaskIdResult,
-       doc="Side question over a snapshot of the live conversation; the answer arrives as btw.complete.")
+class BtwResult(Result):
+    """``prompt.btw`` parses its ``text`` (``agent.side_thread.parse_btw_args``). A question or a
+    ``--explore`` thread runs detached: ``task_id``, answer as ``btw.complete`` (an exploration
+    streams ``btw.progress`` first). ``--threads|--stop|--promote`` reply at once with ``text`` to
+    show, plus for a promotion the ``prompt`` the client submits as its next turn."""
+
+    task_id: str | None = None
+    text: str | None = None
+    prompt: str | None = None
+
+
+method("prompt.btw", params=SideAgentParams, result=BtwResult,
+       doc="Side question over a snapshot of the live conversation, or a --explore side thread with "
+           "tools; the answer arrives as btw.complete. Thread commands reply with {text, prompt}.")
 
 
 class PreviewRestartParams(SessionParams):

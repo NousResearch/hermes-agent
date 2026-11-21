@@ -1227,12 +1227,28 @@ def _(rid, params: dict) -> dict:
 @method("prompt.btw")
 def _(rid, params: dict) -> dict:
     """Side question over a snapshot of the live conversation (``agent/side_question.py``);
-    history, alternation and prompt cache stay untouched.  Answer: ``btw.complete``."""
+    history, alternation and prompt cache stay untouched.  Answer: ``btw.complete``.  Its flags
+    (``agent.side_thread.parse_btw_args``): ``--explore`` forks the live agent into a tool-using
+    side thread (steps: ``btw.progress``); ``--threads|--stop|--promote`` reply at once with
+    ``{text, prompt}`` and the client submits a promotion's ``prompt`` as its next turn."""
+    from agent.side_thread import parse_btw_args, run_thread_command
     session, text, parent, task_id, err = _side_agent_args(rid, params, "btw")
     if err:
         return err
+    request = parse_btw_args(text)
+    if request.action in {"list", "stop", "promote"}:
+        # Profile scope: the thread registry is keyed by the owning profile's home.
+        with _session_profile_runtime_scope(session, hydrate_secrets=False):
+            result = run_thread_command(parent, request)
+        return _ok(rid, {"text": result.text, **({"prompt": result.prompt} if result.prompt else {})})
+    if not request.text:
+        from agent.i18n import t
+        return _ok(rid, {"text": t("side_thread.usage")})
     agent = session.get("agent")
     snapshot = list(getattr(agent, "_session_messages", None) or session.get("history") or [])
+    if request.action == "explore":
+        return _btw_explore(rid, session, parent, task_id, agent, snapshot, request.text)
+    question = request.text
     main_runtime = {
         k: getattr(agent, k, None)
         for k in ("model", "provider", "base_url", "api_key", "api_mode", "session_id")}
@@ -1240,10 +1256,33 @@ def _(rid, params: dict) -> dict:
     def body():
         from agent.side_question import answer_side_question
         return answer_side_question(
-            text, snapshot, parent_agent=agent, main_runtime=main_runtime) or ""
+            question, snapshot, parent_agent=agent, main_runtime=main_runtime) or ""
 
     return _spawn_side_agent(
-        rid, session, task_id, parent, "btw.complete", body, extra={"question": text})
+        rid, session, task_id, parent, "btw.complete", body, extra={"question": question})
+
+
+def _btw_explore(rid, session, parent, task_id, agent, snapshot, task):
+    """``/btw --explore``: a side thread forked from the live agent; each tool step is a
+    ``btw.progress`` event, the report a ``btw.complete``. A refusal replies ``{text}`` at once."""
+    from agent.side_thread import (
+        SideThreadUnavailable, explore_refusal, format_report, register_thread, run_side_exploration)
+    if (refusal := explore_refusal(agent)) is not None:
+        return _ok(rid, {"text": refusal.user_message()})
+    try:
+        with _session_profile_runtime_scope(session, hydrate_secrets=False):
+            thread = register_thread(parent, task, thread_id=task_id)
+    except SideThreadUnavailable as exc:
+        return _ok(rid, {"text": exc.user_message()})
+
+    def progress(line: str) -> None:
+        _emit("btw.progress", parent, {"task_id": task_id, "text": line})
+
+    def body():
+        run_side_exploration(thread, agent, snapshot, on_progress=progress)
+        return format_report(thread)
+
+    return _spawn_side_agent(rid, session, task_id, parent, "btw.complete", body, extra={"question": task})
 
 
 @method("preview.restart")

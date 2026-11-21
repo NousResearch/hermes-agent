@@ -3014,7 +3014,7 @@
     },
     {
       "name": "prompt.btw",
-      "summary": "Side question over a snapshot of the live conversation; the answer arrives as btw.complete.",
+      "summary": "Side question over a snapshot of the live conversation, or a --explore side thread with tools; the answer arrives as btw.complete. Thread commands reply with {text, prompt}.",
       "params": [
         {
           "name": "params",
@@ -3026,7 +3026,7 @@
       "result": {
         "name": "result",
         "schema": {
-          "$ref": "#/components/schemas/TaskIdResult"
+          "$ref": "#/components/schemas/BtwResult"
         }
       }
     },
@@ -7691,6 +7691,70 @@
           "level"
         ],
         "title": "BrowserProgressPayload",
+        "type": "object"
+      },
+      "BtwProgressPayload": {
+        "additionalProperties": false,
+        "description": "``agent.side_thread.run_side_exploration``'s ``on_progress``: one tool step of a\n``/btw --explore`` side thread, before its ``btw.complete``.",
+        "properties": {
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "text"
+        ],
+        "title": "BtwProgressPayload",
+        "type": "object"
+      },
+      "BtwResult": {
+        "additionalProperties": false,
+        "description": "``prompt.btw`` parses its ``text`` (``agent.side_thread.parse_btw_args``). A question or a\n``--explore`` thread runs detached: ``task_id``, answer as ``btw.complete`` (an exploration\nstreams ``btw.progress`` first). ``--threads|--stop|--promote`` reply at once with ``text`` to\nshow, plus for a promotion the ``prompt`` the client submits as its next turn.",
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Prompt"
+          }
+        },
+        "title": "BtwResult",
         "type": "object"
       },
       "CanonicalApprovalParams": {
@@ -51531,12 +51595,24 @@
     },
     {
       "name": "btw.complete",
-      "summary": "A /btw side question was answered.",
+      "summary": "A /btw side question was answered, or a /btw --explore side thread reported.",
       "params": [
         {
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/SideAgentCompletePayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "btw.progress",
+      "summary": "A /btw --explore side thread took a step (one tool call).",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/BtwProgressPayload"
           }
         }
       ]

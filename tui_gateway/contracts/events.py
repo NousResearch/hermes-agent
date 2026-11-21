@@ -606,7 +606,8 @@ class SideAgentCompletePayload(Payload):
 
 
 event("background.complete", SideAgentCompletePayload, doc="A /background side agent finished.")
-event("btw.complete", SideAgentCompletePayload, doc="A /btw side question was answered.")
+event("btw.complete", SideAgentCompletePayload,
+      doc="A /btw side question was answered, or a /btw --explore side thread reported.")
 event("preview.restart.complete", SideAgentCompletePayload, doc="The hidden preview-restart agent finished.")
 
 
@@ -619,6 +620,17 @@ class PreviewRestartProgressPayload(Payload):
 
 
 event("preview.restart.progress", PreviewRestartProgressPayload, doc="Progress line from the preview-restart agent.")
+
+
+class BtwProgressPayload(Payload):
+    """``agent.side_thread.run_side_exploration``'s ``on_progress``: one tool step of a
+    ``/btw --explore`` side thread, before its ``btw.complete``."""
+
+    task_id: str
+    text: str
+
+
+event("btw.progress", BtwProgressPayload, doc="A /btw --explore side thread took a step (one tool call).")
 
 
 # ── subagents (tool_progress._progress_subagent) ──────────────────────────────────────────────

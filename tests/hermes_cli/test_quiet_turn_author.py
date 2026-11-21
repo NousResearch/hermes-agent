@@ -45,7 +45,10 @@ def _run(monkeypatch, env_value, run_conversation=None):
 
 def test_quiet_one_shot_passes_turn_author_from_env(monkeypatch, capsys):
     recorded = _run(monkeypatch, json.dumps(AUTHOR))
-    assert recorded == [{"user_message": "hello", "conversation_history": [], "turn_author": AUTHOR}]
+    assert recorded == [{
+        "user_message": "hello", "conversation_history": [], "turn_author": AUTHOR,
+        "task_id": "s-1",
+    }]
     assert capsys.readouterr().out.strip() == "ok"
 
 

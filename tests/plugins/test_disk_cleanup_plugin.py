@@ -19,6 +19,8 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
@@ -316,6 +318,63 @@ class TestProtectedDirsNeverRmtreed:
         assert new_att.exists(), "kanban files a call created are never tracked or deleted"
         assert not scratch.exists(), "root-level scratch files are still cleaned up (control)"
         assert dg.load_tracked() == []
+
+
+class TestConcurrentTrackedStateWrites:
+    def test_retries_when_windows_rejects_a_concurrent_replace(self, _isolate_env, monkeypatch):
+        dg = _load_lib()
+        state_dir = _isolate_env / "disk-cleanup"
+        state_dir.mkdir()
+        tracked = state_dir / "tracked.json"
+        tracked.write_text(json.dumps([{"writer": "old"}]), encoding="utf-8")
+        backup = state_dir / "tracked.json.bak"
+        original_replace = Path.replace
+        attempts = 0
+
+        def reject_first_replace(path, target):
+            nonlocal attempts
+            if target == backup and attempts == 0:
+                attempts += 1
+                raise PermissionError("target is being replaced concurrently")
+            return original_replace(path, target)
+
+        monkeypatch.setattr(Path, "replace", reject_first_replace)
+        dg.save_tracked([{"writer": "new"}])
+
+        assert attempts == 1
+        assert json.loads(tracked.read_text(encoding="utf-8")) == [{"writer": "new"}]
+        assert json.loads(backup.read_text(encoding="utf-8")) == [{"writer": "old"}]
+
+    def test_parallel_saves_use_independent_atomic_temporary_files(self, _isolate_env, monkeypatch):
+        dg = _load_lib()
+        state_dir = _isolate_env / "disk-cleanup"
+        state_dir.mkdir()
+        tracked = state_dir / "tracked.json"
+        tracked.write_text(json.dumps([{"writer": "old"}]), encoding="utf-8")
+
+        writes_ready = threading.Barrier(2)
+        original_write_text = Path.write_text
+
+        def synchronized_state_write(path, *args, **kwargs):
+            result = original_write_text(path, *args, **kwargs)
+            is_main_temp = path.name == "tracked.json.tmp" or (
+                path.name.startswith(".tracked.json.") and ".bak." not in path.name
+            )
+            if path.parent == state_dir and is_main_temp:
+                writes_ready.wait(timeout=5)
+            return result
+
+        monkeypatch.setattr(Path, "write_text", synchronized_state_write)
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            list(workers.map(lambda i: dg.save_tracked([{"writer": i}]), (1, 2)))
+
+        assert json.loads(tracked.read_text(encoding="utf-8")) in (
+            [{"writer": 1}], [{"writer": 2}]
+        )
+        backup = state_dir / "tracked.json.bak"
+        assert json.loads(backup.read_text(encoding="utf-8")) in (
+            [{"writer": "old"}], [{"writer": 1}], [{"writer": 2}]
+        )
 
 
 class TestGitWorktreeFilesNeverCleaned:

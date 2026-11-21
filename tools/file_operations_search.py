@@ -496,6 +496,12 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
     )
 
 
+def _path_order_key(path: str) -> list[str]:
+    """``rg --sort=path`` order: entries compared one path component at a time, so ``a/b``
+    sorts before ``a-c`` (a plain string sort puts ``-`` before ``/``)."""
+    return path.replace("\\", "/").split("/")
+
+
 def _posix_roots(roots: list[str]) -> bool:
     """Darwin-only: every root is POSIX-shaped (no drive letter / backslash)."""
     return sys.platform == "darwin" and all(
@@ -1024,7 +1030,7 @@ class SearchMixin:
         ]
 
     def _search_directories_with_find(
-        self, pattern: str, path: str, fetch_limit: int
+        self, pattern: str, path: str, fetch_limit: int, by_path: bool = False
     ) -> tuple[list[str], Optional[str]]:
         """Return matching descendant directories using find, if available.
 
@@ -1074,7 +1080,8 @@ class SearchMixin:
             if self._root_under_hidden_dir(path):
                 dirs = self._filter_hidden_descendants(dirs, Path(path))
             dirs = self._filter_gitignored_paths(dirs, path)
-        return self._sort_paths_by_mtime(dirs)[:fetch_limit], limit_reason
+        ordered = sorted(dirs, key=_path_order_key) if by_path else self._sort_paths_by_mtime(dirs)
+        return ordered[:fetch_limit], limit_reason
 
     def _search_files(self, pattern: str, path: str | list[str], limit: int, offset: int,
                       order: str = "discovery") -> SearchResult:
@@ -1272,11 +1279,16 @@ class SearchMixin:
         # as a coherent page. Only the single-root path supplements (a multi-root
         # walk is already the merged view across roots).
         if limit_reason != "search_timeout" and isinstance(path, str) and self._has_command("find"):
-            dirs, directory_limit_reason = self._search_directories_with_find(glob_pattern, path, fetch_limit)
+            by_path = sort_arg == " --sort=path"
+            dirs, directory_limit_reason = self._search_directories_with_find(
+                glob_pattern, path, fetch_limit, by_path=by_path)
             if dirs:
                 existing = set(all_files)
-                merged_entries = self._sort_paths_by_mtime(
-                    all_files + [d for d in dirs if d not in existing])
+                combined = all_files + [d for d in dirs if d not in existing]
+                # Path-ordered paging must merge in rg's own order, or each offset slices a
+                # different mtime ordering of a differently-bounded list.
+                merged_entries = (sorted(combined, key=_path_order_key) if by_path
+                                  else self._sort_paths_by_mtime(combined))
                 # Under exact modified order rg is authoritative for files;
                 # the merged view keeps the newest-first contract globally.
                 all_files = merged_entries

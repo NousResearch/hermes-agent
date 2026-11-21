@@ -97,10 +97,12 @@ def _future_gateway_environment(kind: str) -> tuple[dict[str, str], Optional[str
     service = "the gateway service `hermes gateway install` would write"
     if kind == "launchd":
         import plistlib
+        from xml.parsers.expat import ExpatError
+
         from hermes_cli.gateway_launchd import generate_launchd_plist
         try:
             env = plistlib.loads(generate_launchd_plist().encode("utf-8")).get("EnvironmentVariables")
-        except Exception as exc:  # any failure leaves the environment unknown
+        except (OSError, ValueError, RuntimeError, ExpatError) as exc:  # the generator's reads, or a bad plist
             return {}, f"{service} cannot be generated here ({type(exc).__name__})"
         return {str(k): str(v) for k, v in (env or {}).items()}, None
     from hermes_cli import gateway as gw
@@ -110,7 +112,7 @@ def _future_gateway_environment(kind: str) -> tuple[dict[str, str], Optional[str
     env = _env_tokens(" ".join(shlex.quote(line) for line in (manager.stdout or "").splitlines()))
     try:
         written, problem = unit_text_environment(gw.generate_systemd_unit())
-    except Exception as exc:  # any failure leaves the environment unknown
+    except (OSError, ValueError, RuntimeError) as exc:  # the generator's own reads and identity lookups
         return env, f"{service} cannot be generated here ({type(exc).__name__})"
     if problem:
         return env, f"{service}: {problem}"

@@ -80,6 +80,94 @@ class _AsyncCM:
 class TestFormatMessage:
     """WhatsApp markdown conversion."""
 
+    def test_a11y_plain_output_strips_markdown_and_emoji(self):
+        """Regression for #137477: opted-in delivery must not speak formatting chrome."""
+        adapter = _make_adapter()
+        adapter.config.extra = {"a11y_plain_output": True}
+
+        assert adapter.format_message("# **Status** ✅\n\n*Done* — [details](https://example.test)") == (
+            "Status (done)\n\nDone — details\nhttps://example.test"
+        )
+
+    def test_a11y_plain_output_is_opt_in(self):
+        adapter = _make_adapter()
+
+        assert adapter.format_message("**Status** ✅") == "*Status* ✅"
+
+    def test_a11y_plain_output_can_be_enabled_with_environment(self, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setenv("WHATSAPP_A11Y_PLAIN_OUTPUT", "true")
+
+        assert adapter.format_message("**Status** ✅") == "Status (done)"
+
+    @pytest.mark.parametrize("content, expected", [
+        ("✅ ASPTT : accusé reçu", "(done) ASPTT : accusé reçu"),
+        ("⚠️ Check transport", "(warning) Check transport"),
+        ("🔴 Pending", "(red) Pending"),
+        ("✅", "(done)"),
+        ("⚠\ufe0e", "(warning)"),
+        ("✅⚠️🔴", "(done) (warning) (red)"),
+        ("✅ 🎉 ⚠️ 🔴", "(done) (warning) (red)"),
+        ("🎉 Hello", "Hello"),
+        ("Hello 🎉 world", "Hello world"),
+        ("Hello 🎉🎊  world 🎉", "Hello world"),
+        ("🎉", ""),
+        ("👩🏽‍💻 Family 👨‍👩‍👧‍👦 1️⃣ #️⃣ *️⃣ 🏳️‍🌈", "Family"),
+        ("👍🏽 Text ✨\ufe0e", "Text"),
+        ("Heading\n🎉 First\n\n\n  - 🎉 Nested\n    1. ✅ Done",
+         "Heading\nFirst\n\n\n  - Nested\n    1. (done) Done"),
+        ("  🎉 Indented  prose\n  🎉 Child", "  Indented  prose\n  Child"),
+        ("* 🎉 First\n* ⚠️ Second", "* First\n* (warning) Second"),
+        ("**Bold** _italic_ `x  =  \"✅\"` 🎉", 'Bold italic x  =  "✅"'),
+        ("Before\n```python\n  x = \"✅\"  \n\n\n  print(x)\n```\n🎉 After",
+         'Before\n  x = "✅"  \n\n\n  print(x)\nAfter'),
+        ("    x  =  1\n    print(x)", "    x  =  1\n    print(x)"),
+        ('    print("✅ 🎉")\n    value = "**keep**"  ',
+         '    print("✅ 🎉")\n    value = "**keep**"  '),
+        ('\tvalue = "✅  **keep**"', '\tvalue = "✅  **keep**"'),
+        ('    value = "`literal`"', '    value = "`literal`"'),
+        ("🙂‍↔️ Hello 🙂‍↕️", "Hello"),
+        ("🏴\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f Hello", "Hello"),
+        ("🎉 [details](https://example.test/a_✅?x=1)\nhttps://example.test/🎉",
+         "details\nhttps://example.test/a_✅?x=1\nhttps://example.test/🎉"),
+    ])
+    def test_a11y_plain_output_status_and_spacing(self, content, expected):
+        adapter = _make_adapter()
+        adapter.config.extra = {"a11y_plain_output": True}
+
+        assert adapter.format_message(content) == expected
+
+    @pytest.mark.parametrize("value", [True, "true", "1", "yes", "on"])
+    def test_a11y_plain_output_config_activation(self, value):
+        adapter = _make_adapter()
+        adapter.config.extra = {"a11y_plain_output": value}
+
+        assert adapter.format_message("✅ ⚠️ 🔴") == "(done) (warning) (red)"
+
+    @pytest.mark.parametrize("value", ["true", "1", "yes", "on"])
+    def test_a11y_plain_output_environment_activation(self, monkeypatch, value):
+        adapter = _make_adapter()
+        monkeypatch.setenv("WHATSAPP_A11Y_PLAIN_OUTPUT", value)
+
+        assert adapter.format_message("✅ ⚠️ 🔴") == "(done) (warning) (red)"
+
+    @pytest.mark.parametrize("value", [False, "false", "0", "off"])
+    def test_a11y_plain_output_disabled_preserves_rich_output(self, monkeypatch, value):
+        adapter = _make_adapter()
+        monkeypatch.delenv("WHATSAPP_A11Y_PLAIN_OUTPUT", raising=False)
+        adapter.config.extra = {"a11y_plain_output": value}
+
+        content = "**Status** ✅⚠️🔴 🎉  text\n  `x  =  1`"
+        assert adapter.format_message(content) == "*Status* ✅⚠️🔴 🎉  text\n  `x  =  1`"
+
+    @pytest.mark.parametrize("value", ["false", "0", "off"])
+    def test_a11y_plain_output_environment_can_disable_config(self, monkeypatch, value):
+        adapter = _make_adapter()
+        adapter.config.extra = {"a11y_plain_output": True}
+        monkeypatch.setenv("WHATSAPP_A11Y_PLAIN_OUTPUT", value)
+
+        assert adapter.format_message("**Status** ✅") == "*Status* ✅"
+
     def test_strikethrough(self):
         adapter = _make_adapter()
         assert adapter.format_message("~~deleted~~") == "~deleted~"

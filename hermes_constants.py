@@ -456,7 +456,7 @@ def named_profile_delete_incomplete(profile_home: str | Path) -> bool:
     ``profile delete`` writes the tombstone before its rmtree; a refused or failed rmtree leaves
     the profile in this state until the delete is retried (or the profile is renamed)."""
     home = Path(profile_home)
-    return home.is_dir() and named_profile_has_identity(home) and named_profile_is_deleted(home)
+    return home.is_dir() and named_profile_is_deleted(home) and named_profile_has_identity(home)
 
 
 def mark_named_profile_deleted(profile_home: str | Path) -> None:

@@ -67,6 +67,17 @@ EVENTS: dict[str, EventContract] = {}
 # Dynamic ``hermes-gateway-v1`` namespaces the session authority serves after its own verbs.
 CANONICAL_NAMESPACES: dict[str, NamespaceContract] = {}
 
+#: Namespace of the server→client requests that ask a handheld client for a device capability
+#: (``device.request``); a client that advertised none of them refuses them at once rather than
+#: stalling the agent (``tui_gateway/server_requests.py``).
+DEVICE_REQUEST_PREFIX = "device."
+
+
+def device_requests() -> list[str]:
+    """The device-shaped server→client request names, sorted — what ``client.capabilities`` answers
+    as ``device_requests`` so a client knows which to expect."""
+    return sorted(name for name in SERVER_REQUESTS if name.startswith(DEVICE_REQUEST_PREFIX))
+
 
 def unknown_method_message(method: str) -> str:
     """The ``-32601`` text both routes send. A JSON-RPC client sends no version, so a missing

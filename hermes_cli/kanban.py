@@ -227,6 +227,11 @@ def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
             return False
     elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
         return False
+    return _kanban_cli_is_fenced()
+
+
+def _kanban_cli_is_fenced() -> bool:
+    """True when this process must not write the board (delegate_task child)."""
     from agent.delegation_context import kanban_path_is_fenced
 
     return kanban_path_is_fenced(kb.kanban_home()) or kanban_path_is_fenced(kb.kanban_db_path())
@@ -422,7 +427,10 @@ def _cmd_list(args: argparse.Namespace) -> int:
         assignee = _profile_author()
     with kbc.connect_closing() as conn:
         # Cheap mini-dispatch so list reflects dependencies cleared since the last tick.
-        kb.recompute_ready(conn)
+        # Skip the write txn in a delegate_task child — recompute_ready is fenced,
+        # and list is otherwise a read (see tests/hermes_cli/test_kanban_cli_exit_status.py).
+        if not _kanban_cli_is_fenced():
+            kb.recompute_ready(conn)
         tasks = kb.list_tasks(
             conn, assignee=assignee, status=args.status, tenant=args.tenant, session_id=args.session,
             include_archived=args.archived, order_by=getattr(args, "sort", None),

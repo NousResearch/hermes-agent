@@ -355,10 +355,10 @@ async def test_a_sender_cancelled_while_it_confirms_its_lock_leaves_no_lock_held
     assert watcher.cancelled() and taken == [True, True]
     await async_wait_until(lambda: not list(gateway_status._get_lock_dir().glob("*.lock")), timeout=5,
                            what="a cancelled sender to give back the lock its confirmation took again")
-    # The cleanup and the give-back each release it. A release reads the owner and then unlinks, so
-    # two at once on different threads could unlink a lock another gateway took in between: both
-    # run on the event loop, one after the other.
-    assert released_on == [threading.current_thread().name] * 2
+    # The cleanup leaves the lock to the confirmation in flight, which gives it back once, on the
+    # event loop: a release reads the owner and then unlinks, so one on another thread could unlink
+    # a lock another gateway took in between.
+    assert released_on == [threading.current_thread().name]
 
 
 async def test_a_goodbye_still_taking_the_lock_when_the_watcher_stops_neither_takes_it_nor_is_sent(clock, monkeypatch):
@@ -442,20 +442,18 @@ async def test_the_lock_is_released_when_the_watcher_stops(clock):
     assert list(gateway_status._get_lock_dir().glob("*.lock")) == []
 
 
-async def test_a_lock_taken_after_a_cancel_follows_the_respawned_watcher_not_the_old_run(clock, monkeypatch):
-    """The supervisor respawns a watcher that died on the same reporter. A goodbye cancelled by the
-    old run's cleanup can still take the lock after that, and the lock is this process's, whichever
-    run took it: kept while the respawned watcher is the sender, given back once it no longer is."""
-    confirming, release, taken, calls = threading.Event(), threading.Event(), [], []
+async def test_a_lock_taken_after_the_watcher_died_follows_the_respawned_watcher(clock, monkeypatch):
+    """The supervisor respawns a watcher that died on the same reporter. A confirmation the old run
+    left in flight finishes under the respawned one, which joins it: the lock is the respawned
+    sender's, kept while it runs and given back when it stops."""
+    confirming, release, calls = threading.Event(), threading.Event(), []
 
     def take_the_lock(scope, identity):
         calls.append(scope)
         if len(calls) == 2:  # the goodbye's confirmation: the first one was the beat's
             confirming.set()
             release.wait(timeout=5)
-        result = gateway_status.acquire_scoped_lock(scope, identity)
-        taken.append(result[0])
-        return result
+        return gateway_status.acquire_scoped_lock(scope, identity)
 
     monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_the_lock)
     receiver = Receiver()
@@ -477,10 +475,8 @@ async def test_a_lock_taken_after_a_cancel_follows_the_respawned_watcher_not_the
 
     respawned = asyncio.create_task(reporter.run(lambda: True, tick=0.01))
     clock.advance(AFTER_INTERVAL_S)
-    await async_wait_until(lambda: len(taken) == 2, timeout=5, what="the respawned watcher taking the lock")
     release.set()
-    await async_wait_until(lambda: len(taken) == 3 and not reporter._taking, timeout=5,
-                           what="the cancelled goodbye's confirmation to be decided")
+    await async_wait_until(lambda: receiver.kinds == ["beat", "beat"], timeout=5, what="the respawned watcher's beat")
     assert list(gateway_status._get_lock_dir().glob("*.lock")), "the old run gave back the respawned sender's lock"
 
     respawned.cancel()
@@ -489,63 +485,62 @@ async def test_a_lock_taken_after_a_cancel_follows_the_respawned_watcher_not_the
                            what="the lock to be free once the respawned watcher stopped")
 
 
-async def test_a_lock_taken_after_a_cancel_is_kept_while_another_confirmation_is_out(clock, monkeypatch):
-    """Both confirmations write the same lock file. The cancelled one finishing first must not give
-    it back while the other is still out: that one comes back with the lock, and makes a sender."""
-    gates = [threading.Event(), threading.Event()]
-    took = []
+async def test_a_beat_and_a_goodbye_share_one_lock_confirmation(clock, monkeypatch):
+    """Two confirmations at once finish in any order, and a late refusal would overwrite a newer
+    acceptance and give back a live sender's lock. There is only ever one: both callers await it."""
+    confirming, release, calls = threading.Event(), threading.Event(), []
 
-    def take_then_wait(scope, identity):
-        index = len(took)
-        result = gateway_status.acquire_scoped_lock(scope, identity)
-        took.append(result[0])
-        gates[index].wait(timeout=5)
-        return result
+    def take_the_lock(scope, identity):
+        calls.append(scope)
+        confirming.set()
+        release.wait(timeout=5)
+        return gateway_status.acquire_scoped_lock(scope, identity)
 
-    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_then_wait)
+    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_the_lock)
     reporter = make_reporter(Receiver())
-    cancelled = asyncio.create_task(reporter._become_sender())
-    await async_wait_until(lambda: len(took) == 1, timeout=5, what="the first confirmation")
-    other = asyncio.create_task(reporter._become_sender())
-    await async_wait_until(lambda: len(took) == 2, timeout=5, what="the second confirmation")
-    cancelled.cancel()
-    await asyncio.wait({cancelled}, timeout=5)
+    first = asyncio.create_task(reporter._become_sender())
+    await async_wait_until(confirming.is_set, timeout=5, what="the confirmation")
+    second = asyncio.create_task(reporter._become_sender())
+    first.cancel()
+    await asyncio.wait({first}, timeout=5)
+    release.set()
 
-    gates[0].set()
-    await async_wait_until(lambda: len(reporter._taking) == 1, timeout=5, what="the cancelled one to be decided")
-    gates[1].set()
-
-    assert await asyncio.wait_for(other, timeout=5) is True
-    assert list(gateway_status._get_lock_dir().glob("*.lock")), "the sender holds no lock file"
+    assert await asyncio.wait_for(second, timeout=5) is True
+    assert calls == ["status-report"], "a second confirmation ran beside the first"
+    assert reporter._is_sender
+    assert list(gateway_status._get_lock_dir().glob("*.lock")), "a cancelled caller gave back the sender's lock"
     await reporter.run(lambda: False)
+    assert not list(gateway_status._get_lock_dir().glob("*.lock"))
 
 
-async def test_a_lock_taken_after_a_cancel_is_given_back_when_the_other_confirmation_is_refused(clock, monkeypatch):
-    """The release a cancelled confirmation owes waits for the one still out. That one coming back
-    refused (another gateway holds the lock) leaves no sender, so the owed lock is given back."""
-    gates = [threading.Event(), threading.Event()]
-    took = []
+async def test_a_watcher_stopped_while_a_confirmation_is_out_gives_the_lock_back_once_it_is_done(clock, monkeypatch):
+    """run()'s cleanup leaves the lock to the confirmation in flight: it would take it again after a
+    release, so it gives it back itself, and a refusal or an unusable directory gives back the lock
+    a sender held."""
+    entered, release = threading.Event(), threading.Event()
+    answers = [None]
 
-    def take_or_refuse(scope, identity):
-        index = len(took)
-        result = gateway_status.acquire_scoped_lock(scope, identity) if index == 0 else (False, None)
-        took.append(result[0])
-        gates[index].wait(timeout=5)
-        return result
+    def take_the_lock(scope, identity):
+        if answers[0] is not None:
+            entered.set()
+            release.wait(timeout=5)
+            if isinstance(answers[0], OSError):
+                raise answers[0]
+        return gateway_status.acquire_scoped_lock(scope, identity)
 
-    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_or_refuse)
-    reporter = make_reporter(Receiver())
-    cancelled = asyncio.create_task(reporter._become_sender())
-    await async_wait_until(lambda: len(took) == 1, timeout=5, what="the first confirmation")
-    refused = asyncio.create_task(reporter._become_sender())
-    await async_wait_until(lambda: len(took) == 2, timeout=5, what="the second confirmation")
-    cancelled.cancel()
-    await asyncio.wait({cancelled}, timeout=5)
+    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_the_lock)
+    for answer in (True, OSError(errno.EROFS, "Read-only file system", FAULT_PATH)):
+        reporter = make_reporter(Receiver())
+        answers[0] = None
+        assert await reporter._become_sender() is True
+        answers[0] = answer
+        entered.clear(), release.clear()
+        waiting = asyncio.create_task(reporter._become_sender())
+        await async_wait_until(entered.is_set, timeout=5, what="the confirmation")
+        await reporter.run(lambda: False)
+        assert list(gateway_status._get_lock_dir().glob("*.lock")), "released while the confirmation was out"
+        release.set()
 
-    gates[0].set()
-    await async_wait_until(lambda: len(reporter._taking) == 1, timeout=5, what="the cancelled one to be decided")
-    assert list(gateway_status._get_lock_dir().glob("*.lock")), "given back while another confirmation was out"
-    gates[1].set()
-
-    assert await asyncio.wait_for(refused, timeout=5) is False
-    assert not list(gateway_status._get_lock_dir().glob("*.lock")), "the owed lock was never given back"
+        assert await asyncio.wait_for(waiting, timeout=5) is False
+        assert not reporter._is_sender
+        assert not list(gateway_status._get_lock_dir().glob("*.lock")), f"lock left after a stop ({answer!r})"

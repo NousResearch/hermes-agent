@@ -1350,7 +1350,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         """Watcher env minus ``_HERMES_GATEWAY`` (else the CLI's self-restart guard refuses; gateway stays down).
 
         The host multiplexer is respawned with ``host_gateway_child_env`` (default-root
-        secrets via ``served_profile_child_env``, not ``os.environ.copy()``). A standalone
+        secrets and the deployment's stamps, not ``os.environ.copy()``). A standalone
         named-profile gateway keeps that profile's home — only a multiplexer, or a process
         already on the default root, is the host.
         """

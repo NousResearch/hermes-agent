@@ -268,7 +268,7 @@ async def test_a_beat_that_could_not_confirm_the_lock_after_the_goodbye_keeps_th
 
     def take_the_lock(scope, identity):
         tries.append(scope)
-        if len(tries) == 2:  # the second beat's confirmation: the goodbye goes out, then it fails
+        if len(tries) == 2:  # the second beat's confirmation: the goodbye is asked for, then it fails
             asyncio.run_coroutine_threadsafe(say_goodbye(), loop).result(timeout=5)
             return False, None
         return gateway_status.acquire_scoped_lock(scope, identity)
@@ -279,12 +279,13 @@ async def test_a_beat_that_could_not_confirm_the_lock_after_the_goodbye_keeps_th
     clock.advance(AFTER_THE_LONGEST_INTERVAL_S)
     await reporter.poll()
     await settle()
-    assert receiver.kinds == ["beat", "goodbye"]
+    # The goodbye joins the confirmation in flight, which another gateway holding the lock refuses.
+    assert receiver.kinds == ["beat"]
 
     clock.advance(GOODBYE_QUIET_S + 1)
     await reporter.poll()
 
-    assert receiver.kinds == ["beat", "goodbye", "beat"]
+    assert receiver.kinds == ["beat", "beat"], "the next beat waited the interval, not the quiet minute"
 
 
 async def test_a_goodbye_held_up_past_its_quiet_minute_is_not_sent(clock, monkeypatch):

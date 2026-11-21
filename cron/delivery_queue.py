@@ -262,10 +262,17 @@ def _finish(execution_id: str, *, error: Optional[str], suppressed: bool = False
         else None
     )
     with _transaction() as conn:
+        # ``unknown`` included: a wait-timeout fence can land between this process's send and this
+        # write (the worker's deadline is a wall clock, the send is not), and that fence moves the
+        # row off ``delivering``. Refusing to write then discards an outcome this process OWNS and
+        # has just observed, leaving the operator with "outcome is unknown and was not retried" for
+        # a delivery whose result is in hand. The owner predicate keeps the fence's own meaning: a
+        # row claimed by another (dead) process is never rewritten from here, and no path sends
+        # anything a second time.
         cur = conn.execute(
             """UPDATE deliveries SET status=?, finished_at=?, error=?
-               WHERE execution_id=? AND status='delivering'
-                 AND owner_process_id=? AND owner_pid=?""",
+               WHERE execution_id=? AND owner_process_id=? AND owner_pid=?
+                 AND status IN ('delivering', 'unknown')""",
             (
                 status,
                 _hermes_now().isoformat(),

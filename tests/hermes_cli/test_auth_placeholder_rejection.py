@@ -29,12 +29,17 @@ from hermes_cli.auth import has_usable_secret, AuthError
     ("xxxx xxxx xxxx xxxx", False),
     ("hf_xxxx", False),
     ("XXXXXXXX", False),
+    # an elided key pasted off a console page: "..."/"…" cannot occur in a real credential
+    ("sk-ant...gQAA", False),
+    ("eyJhbGciOi...c2ln", False),
     # real-looking keys keep resolving
     ("sk-or-v1-abc123", True),
     ("ghp_real_token_here", True),
     ("hf_real_token", True),
     ("xai-real-key-123", True),
     ("sk-test-1234567890abcdef", True),
+    # a complete JWT (segments joined by single dots) is still a credential
+    ("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnYXR1cmU", True),
 ])
 def test_shipped_placeholders_are_not_usable_secrets(value, usable):
     assert has_usable_secret(value) is usable

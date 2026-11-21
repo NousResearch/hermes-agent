@@ -43,7 +43,7 @@ def detect_terminal_graphics() -> str:
     # half-blocks; users who enabled them can pin the render mode in config.
     if term_program == "vscode":
         return "unicode"
-    if os.environ.get("KITTY_WINDOW_ID") or "kitty" in term or "ghostty" in term or term_program == "ghostty" or _is_wezterm():
+    if os.environ.get("KITTY_WINDOW_ID") or "kitty" in term or "ghostty" in term or term_program in ("ghostty", "rex") or _is_wezterm():
         return "kitty"  # WezTerm speaks kitty and iterm; kitty has richer placement
     if term_program == "iterm.app" or os.environ.get("ITERM_SESSION_ID"):
         return "iterm"

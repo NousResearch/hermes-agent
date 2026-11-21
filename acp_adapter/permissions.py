@@ -9,6 +9,7 @@ from itertools import count
 from typing import Callable
 
 from acp.schema import AllowedOutcome, PermissionOption
+from tools.approval_prompt import Unanswered
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +148,7 @@ def make_approval_callback(request_permission_fn: Callable, loop: asyncio.Abstra
             # without user response" instead of a user denial.
             return "timeout"
         if response is None:
-            return "deny"
+            return Unanswered("ACP permission request failed before a user could answer")
         return _map_outcome_to_hermes(response.outcome, allowed_option_ids={option.option_id for option in options})
 
     return _callback

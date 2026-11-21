@@ -245,6 +245,12 @@ def is_unlocked(backend: str) -> bool:
     return _tokens.live(_key(backend), False) is not None
 
 
+def any_prompt_callback_registered() -> bool:
+    """True when the surface installed at least one vault prompt."""
+    return any(cb is not None for cb in (
+        get_unlock_prompt_callback(), get_save_login_prompt_callback(), get_code_prompt_callback(),
+    ))
+
 def can_prompt_here(prompt: Optional[Callable] = None) -> bool:
     """False in contexts where no human can answer (cron, webhook, api_server, -q). ``prompt`` is the
     callback the caller is about to use (default: the unlock prompt): a chat surface installs only the

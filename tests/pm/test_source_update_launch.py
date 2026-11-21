@@ -383,6 +383,7 @@ def test_real_bootstrap_reexecs_before_app_imports(source_launch, tmp_path, isol
     entry = root / "launch_probe.py"
     entry.write_text(
         "import launch_test_tools\n"
+        "import sys; sys._hermes_pin_default_home = True\n"  # fixture is a managed launcher
         "import hermes_bootstrap\n"
         "import json, sys\n"
         "from pathlib import Path\n"
@@ -474,6 +475,7 @@ def test_failed_launch_completion_degrades_to_a_warning(source_launch, tmp_path,
     entry = root / "launch_probe.py"
     entry.write_text(
         "import launch_test_tools\n"
+        "import sys; sys._hermes_pin_default_home = True\n"  # fixture is a managed launcher
         "import hermes_bootstrap\n"
         "import json, sys\n"
         "print(json.dumps({'executable': sys.executable, 'args': sys.argv[1:]}))\n",

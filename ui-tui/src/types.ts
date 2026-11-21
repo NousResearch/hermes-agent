@@ -104,7 +104,7 @@ export interface ApprovalReq {
   choices?: string[]
   command: string
   description: string
-  /** The card to draw (`schedule` = a new cron job); absent or unknown draws the command card. */
+  /** The card to draw (`schedule` = a new cron job, `schedule_edit` = a change to one); absent or unknown draws the command card. */
   kind?: string
   /** Server→client request id; the answer is the response frame for it. */
   requestId: string

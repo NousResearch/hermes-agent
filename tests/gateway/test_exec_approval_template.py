@@ -135,6 +135,22 @@ def test_a_schedule_approval_shows_the_job_not_a_command(monkeypatch):
     assert "Reply `/approve` to create it" in sent[0]
 
 
+def test_an_edit_approval_asks_to_change_the_job_with_allow_and_deny_only(monkeypatch):
+    """kind=schedule_edit: the card asks to change a job, shows the change list as the body, and an
+    edit (each change its own consent) offers only Allow / Deny."""
+    monkeypatch.setattr("gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
+    card = _Buttons()
+    edit = {**_SCHEDULE, "kind": "schedule_edit", "command": '<cronjob_manage> (change "check-in")',
+            "description": 'Change "check-in": schedule: every day at 09:00 -> every day at 10:00',
+            "allow_session": False, "allow_permanent": False}
+    _notify(edit, card)
+    (prompt,) = card.prompts
+    assert "Hermes wants to change a scheduled job" in prompt.text and edit["description"] in prompt.text
+    assert "the job will NOT be changed" in prompt.text and "<cronjob_manage>" not in prompt.text
+    assert "Why it was flagged" not in prompt.text
+    assert [choice for _label, choice, _ in prompt.actions] == ["once", "deny"]
+
+
 def test_a_command_approval_renders_the_same_with_an_unknown_kind():
     """An approval without ``kind`` (every command) or with a kind this build does not know renders the
     command card; the schedule wording never leaks into it."""

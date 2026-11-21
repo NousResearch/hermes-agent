@@ -75,7 +75,7 @@ _CLI_CHOICE_ALIASES = {
 }
 
 # Plain-input header per approval kind (``approval.<value>_header``); anything else is a command.
-_HEADER_KEYS = {"schedule": "schedule"}
+_HEADER_KEYS = {"schedule": "schedule", "schedule_edit": "schedule_edit"}
 
 _CLI_CHOICE_I18N = {
     "once": "approval.allowed_once",

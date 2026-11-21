@@ -6,7 +6,8 @@ import {
   approvalKindFields,
   approvalNamesNothing,
   type ApprovalRequest,
-  isCommandApproval,
+  isScheduleApproval,
+  isTurnApproval,
   networkTarget,
   networkTargetName,
   receiveApprovalRequest,
@@ -59,9 +60,9 @@ export const approval: Handler = ctx => {
   rememberServerRequest(request)
   void receiveApprovalRequest(null, parked).catch(() => undefined)
 
-  // A command approval blocks its turn, and the turn lowers the flag again. A folder or site
-  // card marks its session by being parked, for as long as it is parked.
-  if (isCommandApproval(parked)) {
+  // A command or job approval blocks its turn, and the turn lowers the flag again. A folder or
+  // site card marks its session by being parked, for as long as it is parked.
+  if (isTurnApproval(parked)) {
     markNeedsInput(ctx)
   } else if (sessionId) {
     // The store's views find the chat through its published state.
@@ -97,8 +98,8 @@ function approvalNotice(request: ApprovalRequest) {
   const access = accessTarget(request)
   const network = networkTarget(request)
 
-  if (request.kind === 'access' || request.kind === 'network' || request.kind === 'schedule') {
-    const prefix = `${request.kind}Title`
+  if (request.kind === 'access' || request.kind === 'network' || isScheduleApproval(request)) {
+    const prefix = request.kind === 'schedule_edit' ? 'scheduleEditTitle' : `${request.kind}Title`
 
     return {
       approveKey: 'notifications.native.allowAction',

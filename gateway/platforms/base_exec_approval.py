@@ -12,8 +12,8 @@ accessors (``ea_header_text()`` …) so the active ``display.language`` is honou
 
 No imports from ``gateway.platforms.base`` or ``gateway.run`` — both import this module.
 
-A new scheduled job (approval ``kind`` ``schedule``) asks the same question about a job instead of a
-command. The runner binds the kind for the render (``with_approval_kind`` / ``approval_kind_scope``),
+A new scheduled job (approval ``kind`` ``schedule``) or an edit of one (``schedule_edit``) asks the
+same question about a job instead of a command. The runner binds the kind for the render (``with_approval_kind`` / ``approval_kind_scope``),
 so every accessor here and every adapter header that reads its words through ``ea_t`` switches to the
 ``schedule_*`` sibling keys without a new parameter on each adapter's ``send_exec_approval``.
 """
@@ -32,9 +32,7 @@ _T = TypeVar("_T")
 # The approval kind of the prompt being rendered; ``command`` (the default) keeps every string unchanged.
 _APPROVAL_KIND: ContextVar[str] = ContextVar("hermes_approval_kind", default="command")
 
-# kind -> {catalog key: the key that kind renders instead}. A kind missing here renders as a command.
-_KIND_KEYS: dict[str, dict[str, str]] = {"schedule": {
-    key: f"{key.rpartition('.')[0]}.schedule_{key.rpartition('.')[2]}" for key in (
+_SCHEDULE_KEYS = (
         "gateway.exec_approval.header", "gateway.exec_approval.action_once",
         "gateway.exec_approval.action_session", "gateway.exec_approval.action_always",
         "gateway.exec_approval.deadline", "gateway.exec_approval.timed_out_notice",
@@ -46,7 +44,28 @@ _KIND_KEYS: dict[str, dict[str, str]] = {"schedule": {
         "platform.matrix.approval.typed_hint_once", "platform.matrix.approval.typed_hint_session",
         "platform.matrix.approval.typed_hint_always", "platform.feishu.approval.action_session",
         "platform.feishu.approval.action_always", "platform.telegram.approval.action_once",
-        "platform.telegram.approval.action_session", "platform.telegram.approval.action_always")}}
+        "platform.telegram.approval.action_session", "platform.telegram.approval.action_always")
+# An edit of an existing job reads its own ``schedule_edit_*`` words where they differ (header,
+# deadline, timeout, the "change it" choice); the rest (Allow, the body layout) is the schedule card's.
+_SCHEDULE_EDIT_OWN = frozenset({
+    "gateway.exec_approval.header", "gateway.exec_approval.deadline", "gateway.exec_approval.timed_out_notice",
+    "gateway.exec_approval.text_choice_once", "platform.discord.approval.question",
+    "platform.slack.approval.fallback_text", "platform.matrix.approval.typed_hint_once"})
+
+
+def _sibling(key: str, prefix: str) -> str:
+    stem, _, leaf = key.rpartition(".")
+    return f"{stem}.{prefix}_{leaf}"
+
+
+# kind -> {catalog key: the key that kind renders instead}. A kind missing here renders as a command.
+_KIND_KEYS: dict[str, dict[str, str]] = {
+    "schedule": {key: _sibling(key, "schedule") for key in _SCHEDULE_KEYS},
+    "schedule_edit": {key: _sibling(key, "schedule_edit" if key in _SCHEDULE_EDIT_OWN else "schedule")
+                      for key in _SCHEDULE_KEYS},
+}
+# Kinds whose body is a job description (no command fence, nothing "flagged").
+SCHEDULE_KINDS = frozenset({"schedule", "schedule_edit"})
 
 
 def approval_kind_of(approval_data: dict) -> str:
@@ -58,6 +77,11 @@ def approval_kind_of(approval_data: dict) -> str:
 def approval_kind() -> str:
     """The kind bound for the prompt being rendered (``command`` outside any binding)."""
     return _APPROVAL_KIND.get()
+
+
+def is_schedule_kind(kind: Optional[str] = None) -> bool:
+    """True for a new-job or job-edit card (*kind*, default the bound kind): its body is the job."""
+    return (kind or _APPROVAL_KIND.get()) in SCHEDULE_KINDS
 
 
 def ea_key(key: str, kind: Optional[str] = None) -> str:
@@ -194,7 +218,7 @@ def render_exec_approval(adapter: Any, command: str, description: str, smart_den
     """``(card text, truncated)`` for ``adapter``'s markup. A preview that cannot hold the whole command
     says so in the card: where the full command was sent just before it (``full_command_shown``), or
     that only Deny is offered because it could not be (#62359)."""
-    if _APPROVAL_KIND.get() == "schedule":
+    if is_schedule_kind():
         return _render_schedule_approval(adapter, command, smart_denied, full_command_shown)
     if adapter._EA_REASON_BUDGET:
         description = adapter._ea_fit(str(description or ""), adapter._EA_REASON_BUDGET)

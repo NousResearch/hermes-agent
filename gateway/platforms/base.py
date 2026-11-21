@@ -440,8 +440,8 @@ from gateway.platforms.helpers import fence_state_after, reply_file_off, try_rep
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import (
     finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
-from gateway.platforms.base_exec_approval import (  # approval_kind / ea_key / ea_t: published to adapters
-    approval_kind, approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text, ea_key, ea_t,
+from gateway.platforms.base_exec_approval import (  # approval_kind / is_schedule_kind / ea_key / ea_t: published to adapters
+    approval_kind, is_schedule_kind, approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text, ea_key, ea_t,
     ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
     card_shows_whole_command, render_exec_approval)
 from gateway.platforms.base_streaming_tts import (

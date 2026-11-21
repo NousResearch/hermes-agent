@@ -1018,7 +1018,8 @@ def _kind_field(kind: str) -> dict:
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
-                    is_ask: bool, smart: bool = False, pending_body=None, kind: str = "command") -> dict:
+                    is_ask: bool, smart: bool = False, pending_body=None, kind: str = "command",
+                    once_only: bool = False) -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
 
     ``kind`` picks which card every surface draws (``ApprovalKind``: command, schedule, ...). It is
@@ -1045,7 +1046,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     # A command the scanners could not read to the end is approved one run at a time: a session or
     # always grant on its key would wave through every later command that trips the scan budget.
     # A manual-only class (an osascript program that can discard unsaved work) is one run too.
-    one_shot = smart_denied or manual_only or _SCAN_INCOMPLETE_DESCRIPTION in pattern_keys
+    one_shot = once_only or smart_denied or manual_only or _SCAN_INCOMPLETE_DESCRIPTION in pattern_keys
     allow_permanent = not one_shot
 
     def deny(template: str, outcome: str, **fmt) -> dict:
@@ -1257,7 +1258,7 @@ def _run_approval_gate(
     advice: str = "Find an alternative approach that avoids this action.",
     cron_deny_message: str = "", single_query_deny_message: str = "", unattended_deny_message: str = "",
     autoapprove_log_prefix: str, fail_closed_when_no_human: bool = False, no_human_block_message: str = "",
-    pattern_keys: list[str] | None = None, kind: str = "command",
+    pattern_keys: list[str] | None = None, kind: str = "command", once_only: bool = False,
 ) -> dict:
     """Shared human-approval gate for a flagged action (tool call or write): decision core for
     :func:`request_tool_approval` and the file-tool write gates.
@@ -1270,7 +1271,8 @@ def _run_approval_gate(
     Unattended deny text is ``ctx.block_message(subject, noun, advice)`` unless the caller passes
     an explicit ``*_deny_message`` (the file-tool write gates word their own). ``pattern_keys``
     (default ``[pattern_key]``) are what a session/always answer persists. ``kind`` names the card
-    the surfaces draw (``schedule`` for a scheduled job; default the command card).
+    the surfaces draw (``schedule`` for a scheduled job; default the command card); ``once_only``
+    offers only allow-once / deny and persists nothing.
     """
     # Hardline blocks are the caller's job BEFORE this gate, so yolo here only skips the recoverable approval layer.
     # ``approvals.mode: off`` is the third bypass source (the Desktop "Approvals: off" toggle writes it); the shell
@@ -1324,6 +1326,7 @@ def _run_approval_gate(
         _ACTION_GATE, command=display_target, description=description, pattern_key=pattern_key,
         pattern_keys=pattern_keys or [pattern_key], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, kind=kind,
+        once_only=once_only,
     )
 
 

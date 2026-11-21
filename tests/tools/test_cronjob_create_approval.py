@@ -188,3 +188,70 @@ def test_an_interactive_session_gets_the_line_and_the_card(cron_store, monkeypat
     assert "create a job" in (_cron_guidance(agent) or "")
     registry.dispatch("cronjob_manage", dict(_CREATE))
     assert len(asked) == 1
+
+
+# --- A model-initiated update asks on a "Change this job?" card -------------------------------------
+
+def _existing_job(cron_store):
+    return cron_store.create_job(prompt="Remind the user to drink a glass of water.", schedule="every day at 8am",
+                                 name="Water", repeat=3)
+
+
+def test_a_declined_edit_leaves_the_job_byte_identical(cron_store, monkeypatch):
+    job = _existing_job(cron_store)
+    before = cron_store.load_jobs()
+    asked = _asking(monkeypatch, "deny")
+    result = json.loads(registry.dispatch("cronjob_manage", {
+        "action": "update", "job_id": job["id"], "schedule": "every day at 9am", "prompt": "Drink tea instead."}))
+    assert result["success"] is False and result["declined"] is True
+    assert cron_store.load_jobs() == before
+    kind, card = asked[0]
+    assert kind == "schedule_edit" and card.startswith('Change "Water": ')
+    assert "prompt: Remind the user to drink a glass of water. -> Drink tea instead." in card
+    assert "schedule: " in card and " -> " in card
+    from agent.display import _detect_tool_failure
+    assert _detect_tool_failure("cronjob_manage", json.dumps(result))[0] is False
+
+
+def test_an_approved_edit_is_applied_and_offers_no_standing_grant(cron_store, monkeypatch):
+    job = _existing_job(cron_store)
+    seen = {}
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+
+    def callback(command, description, *, kind="command", **kw):
+        seen.update(kind=kind, **kw)
+        return "once"
+    terminal_tool.set_approval_callback(callback)
+    result = json.loads(registry.dispatch("cronjob_manage", {"action": "update", "job_id": job["id"], "repeat": 5}))
+    assert result["success"] is True
+    assert cron_store.get_job(job["id"])["repeat"]["times"] == 5
+    # Each change is its own consent: no "allow new jobs" scope on an edit card.
+    assert seen["kind"] == "schedule_edit" and seen.get("allow_session") is False and seen["allow_permanent"] is False
+
+
+@pytest.mark.parametrize("args", [
+    {"action": "pause"}, {"action": "resume"},
+    # Fields the card does not list are not asked about.
+    {"action": "update", "name": "Hydrate"},
+])
+def test_lifecycle_actions_and_unlisted_fields_stay_unasked(cron_store, monkeypatch, args):
+    job = _existing_job(cron_store)
+    terminal_tool.set_approval_callback(lambda *a, **k: pytest.fail("asked for a lifecycle action"))
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    assert json.loads(registry.dispatch("cronjob_manage", {**args, "job_id": job["id"]}))["success"] is True
+
+
+def test_with_nobody_to_answer_an_edit_applies_as_before(cron_store, monkeypatch):
+    job = _existing_job(cron_store)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    terminal_tool.set_approval_callback(lambda *a, **k: pytest.fail("asked with nobody present"))
+    result = json.loads(registry.dispatch("cronjob_manage", {"action": "update", "job_id": job["id"], "repeat": 5}))
+    assert result["success"] is True and cron_store.get_job(job["id"])["repeat"]["times"] == 5
+
+
+def test_an_invalid_edit_fails_before_asking(cron_store, monkeypatch):
+    job = _existing_job(cron_store)
+    asked = _asking(monkeypatch, "once")
+    result = json.loads(registry.dispatch("cronjob_manage", {
+        "action": "update", "job_id": job["id"], "workdir": "relative/dir"}))
+    assert result["success"] is False and asked == []

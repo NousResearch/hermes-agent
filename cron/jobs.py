@@ -2083,58 +2083,58 @@ def _fill_missing_next_run(updated: dict[str, Any]) -> None:
     updated["next_run_at"] = next_run
 
 
-def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """Update a job by ID, refreshing derived schedule fields when needed."""
+def merge_job_update(job: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+    """*job* with *updates* applied and every update rule checked (ValueError when one fails), without
+    saving: what ``update_job`` stores, so a caller can show or check an edit before it lands."""
+    job_id = job.get("id")
     # ``id`` is a path component under OUTPUT_DIR — changing it would leak path-escape values.
     bad_fields = _IMMUTABLE_JOB_FIELDS.intersection(updates or {})
     if bad_fields:
         raise ValueError(f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}")
+    _rederive_repeat_for_schedule_change(job, updates)
+    _normalize_job_updates(job, updates)
+    _apply_pin_update(job, updates)
+    updated = _apply_skill_fields({**job, **updates})
+    _reject_terminal_activation(job, updated, job_id)
+    # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
+    if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):
+        _validate_job_mode_invariants(
+            updated.get("monitor_script") or None, updated.get("monitor_url") or None,
+            bool(updated.get("no_agent")), _normalize_job_optional_text(updated.get("script")))
+    if any(k in updates for k in _PAYLOAD_FIELDS) and job_payload_is_empty(updated):
+        raise ValueError(EMPTY_PAYLOAD_ERROR)
+    if {"timezone", "grace_minutes"}.intersection(updates):
+        validate_schedule_knobs(updated.get("schedule") or {}, updated.get("timezone"), updated.get("grace_minutes"))
+        jobs_time.prune_inherited_knobs(updated)
+    if "schedule" in updates:
+        _apply_schedule_update(updated, updates, job_id)
+        # next_run_at now follows the new schedule; a stale quota_hold_until would only shield
+        # the record from the stale-error re-arm while no longer describing where it is
+        # parked. The next fire re-parks (with a fresh notice) if the window is still closed.
+        from cron.quota_hold import clear_state as _clear_quota_hold
+        _clear_quota_hold(updated)
+    elif "timezone" in updates and updated.get("state") != "paused":
+        # The instant on file was computed in the OLD zone; leaving it would make the new
+        # zone fire it at the wrong wall clock (or skip it). Only overwrite when the new
+        # zone can compute one (a past one-shot keeps its recorded instant).
+        recomputed = compute_next_run(updated["schedule"], timezone=updated.get("timezone"))
+        if recomputed is not None:
+            updated["next_run_at"] = recomputed
+    if {"schedule", "next_run_at", "enabled", "state", "timezone"}.intersection(updates):
+        # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
+        # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
+        updated.pop("pending_slot", None)
+    _fill_missing_next_run(updated)
+    _reject_terminal_activation(job, updated, job_id)
+    return updated
 
+
+def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Update a job by ID, refreshing derived schedule fields when needed (``merge_job_update``)."""
     def apply(jobs, i, job):
-        _rederive_repeat_for_schedule_change(job, updates)
-        _normalize_job_updates(job, updates)
-        _apply_pin_update(job, updates)
-        updated = _apply_skill_fields({**job, **updates})
-        _reject_terminal_activation(job, updated, job_id)
-        # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
-        if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):
-            _validate_job_mode_invariants(
-                updated.get("monitor_script") or None,
-                updated.get("monitor_url") or None,
-                bool(updated.get("no_agent")),
-                _normalize_job_optional_text(updated.get("script")))
-        if any(k in updates for k in _PAYLOAD_FIELDS) and job_payload_is_empty(updated):
-            raise ValueError(EMPTY_PAYLOAD_ERROR)
-        if {"timezone", "grace_minutes"}.intersection(updates):
-            validate_schedule_knobs(
-                updated.get("schedule") or {}, updated.get("timezone"),
-                updated.get("grace_minutes"))
-            jobs_time.prune_inherited_knobs(updated)
-        if "schedule" in updates:
-            _apply_schedule_update(updated, updates, job_id)
-            # next_run_at now follows the new schedule; a stale quota_hold_until would only shield
-            # the record from the stale-error re-arm while no longer describing where it is
-            # parked. The next fire re-parks (with a fresh notice) if the window is still closed.
-            from cron.quota_hold import clear_state as _clear_quota_hold
-            _clear_quota_hold(updated)
-        elif "timezone" in updates and updated.get("state") != "paused":
-            # The instant on file was computed in the OLD zone; leaving it would make the new
-            # zone fire it at the wrong wall clock (or skip it). Only overwrite when the new
-            # zone can compute one (a past one-shot keeps its recorded instant).
-            recomputed = compute_next_run(
-                updated["schedule"], timezone=updated.get("timezone"))
-            if recomputed is not None:
-                updated["next_run_at"] = recomputed
-        if {"schedule", "next_run_at", "enabled", "state", "timezone"}.intersection(updates):
-            # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
-            # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
-            updated.pop("pending_slot", None)
-        _fill_missing_next_run(updated)
-        _reject_terminal_activation(job, updated, job_id)
-        jobs[i] = updated
+        jobs[i] = updated = merge_job_update(job, updates)
         save_jobs(jobs)
         return _normalize_job_record(updated)
-
     return _with_job(job_id, apply)
 
 

@@ -13,14 +13,14 @@ from __future__ import annotations
 from typing import Any
 
 from agent.i18n import t
-from gateway.platforms.base_exec_approval import approval_kind_of, ea_t
+from gateway.platforms.base_exec_approval import approval_kind_of, ea_t, is_schedule_kind
 
 
 def kind_and_body(approval_data: dict, command: str, description: str) -> tuple[str, str]:
     """``(kind, body)`` of the prompt: a schedule prompt's body is the job description; the
     ``command`` it carries is a synthetic ``<cronjob_manage> ...`` label nobody needs to read."""
     kind = approval_kind_of(approval_data)
-    return kind, (description if kind == "schedule" else command)
+    return kind, (description if is_schedule_kind(kind) else command)
 
 
 def approval_text_prompt(adapter: Any, chat_id: str, session_key: str, request_id: str | None, command: str,
@@ -64,7 +64,7 @@ def _cutting_text_prompt(adapter: Any, chat_id: str, command: str, description: 
         return (f"{heading}\n\n{instructions}{notice}{deadline}"
                 f"\n\n{ea_reason_label_text()}: {description}\n{fence}\n{shown}\n{fence}")
 
-    schedule = approval_kind() == "schedule"
+    schedule = is_schedule_kind()
     choices = [ea_t("gateway.exec_approval.text_choice_once", prefix=prefix)]
     if not smart_denied and allow_session:
         choices.append(ea_t("gateway.exec_approval.text_choice_session", prefix=prefix))

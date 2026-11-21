@@ -12,7 +12,7 @@ is parked (logged, left out of ``served_profiles``) instead of aborting every ot
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 import logging
 from pathlib import Path
 import threading
@@ -184,6 +184,10 @@ def _record_parked_profiles(parked):
 
 
 async def initialize_gateway_runtime(runner):
+    from gateway.config import Platform
+    from gateway.platform_registry import platform_registry
+    from gateway.run import _profile_runtime_scope
+    from gateway.run_startup import GatewayStartupMixin
     from gateway.runtime_bootstrap import TicketStore
     from gateway.runtime_ownership import process_ownership
     from gateway.session_authorities import SessionAuthorities
@@ -192,6 +196,15 @@ async def initialize_gateway_runtime(runner):
     for _name, home in homes:
         if not process_ownership.owns(home):
             raise RuntimeError(f'session authority requires reserved profile ownership: {home}')
+    # Authority recovery can load the shared routing index before runner.start(). Resolve platform
+    # identities in their own scopes first; the enum is shared, but adapter registrations are not.
+    for index, (_name, home) in enumerate(homes):
+        with _profile_runtime_scope(home, hydrate_secrets=False) if index else nullcontext():
+            GatewayStartupMixin._start_discover_plugins()
+            for name in platform_registry.registered_names():
+                # A registration can disappear between the snapshot and the lookup.
+                with suppress(ValueError):
+                    Platform(name)
     instance_id = uuid.uuid4().hex
     descriptor = {
         'instance_id': instance_id, 'runtime_protocol': 1,

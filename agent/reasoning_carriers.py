@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import Any, NamedTuple, Optional
 
+from session_rules.turns import split_thinking_content
+
 CARRIER_TYPE = "hermes.native_assistant"
 _GEMINI_KEY = "extra_content"
 
@@ -80,6 +82,17 @@ class StreamCarriers:
         self.signature: Optional[str] = None
         self.opaque: dict[str, str] = {}
         self.text_parts: dict[str, list[str]] = {}
+
+    def split_delta(self, delta: Any) -> tuple[str, Optional[str]]:
+        """Return visible text and reasoning, including typed thinking blocks in content."""
+        visible, typed_thinking = split_thinking_content(getattr(delta, "content", None))
+        reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+        # Unknown SDK fields may live in model_extra (#56516).
+        if reasoning is None and isinstance(getattr(delta, "model_extra", None), dict):
+            reasoning = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
+        if not reasoning and typed_thinking:
+            reasoning = typed_thinking
+        return visible, self.feed(delta, reasoning)
 
     def feed(self, delta: Any, reasoning: Optional[str]) -> Optional[str]:
         """Absorb one delta; returns ``reasoning``, else its first declared text-carrier fragment (readable reasoning)."""

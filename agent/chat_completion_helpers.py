@@ -3050,13 +3050,13 @@ class _StreamingCall(StreamingWaitMonitor):
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
-            reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-            # Same ``model_extra`` fallback as the non-streaming path: a reasoning-only stream
-            # whose deltas carry only this field otherwise trips the empty-stream guard (#56516).
-            if reasoning_text is None and isinstance(getattr(delta, "model_extra", None), dict):
-                reasoning_text = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
-            # A profile-declared text carrier doubles as the readable reasoning.
-            reasoning_text = carriers.feed(delta, reasoning_text)
+            # Visible text and reasoning in one pass: reasoning can ride inside ``content`` as
+            # typed blocks ({"type": "thinking", …}) instead of a ``reasoning_content`` field —
+            # Mistral and other non-strict wires do exactly this. Flattening first would treat
+            # those blocks as non-text and drop reasoning the provider still billed
+            # ``reasoning_tokens`` for. ``split_delta`` also absorbs the profile-declared text
+            # carriers, which double as readable reasoning.
+            delta_visible_content, reasoning_text = carriers.split_delta(delta)
             if reasoning_text:
                 # Summary-part models omit the separator between markdown blocks; re-insert it.
                 reasoning_text = separate_glued_reasoning_blocks(
@@ -3102,7 +3102,7 @@ class _StreamingCall(StreamingWaitMonitor):
 
             # Text (list-of-blocks deltas flattened once); possible echoed SSE is
             # buffered until it can be judged.
-            delta_content = flatten_message_text(getattr(delta, "content", None), sep="")
+            delta_content = delta_visible_content
             if delta_content:
                 content_parts.append(delta_content)
                 if content_watch.feed(delta_content):

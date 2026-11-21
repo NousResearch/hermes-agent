@@ -686,23 +686,187 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+_BASE_REF_FETCH_TIMEOUT = 20
+_BASE_REF_FALLBACKS = ("origin/main", "origin/master")
+
+
+def _fetch_origin(repo_root: Path) -> None:
+    """Best-effort ``git fetch origin``: a missing remote or dead network must never fail the task."""
+    try:
+        fetch = _git(repo_root, "fetch", "origin", "--quiet", timeout=_BASE_REF_FETCH_TIMEOUT)
+        if fetch.returncode != 0:
+            _kb._log.debug("git fetch origin failed in %s: %s", repo_root, (fetch.stderr or "").strip())
+    except (OSError, subprocess.SubprocessError) as exc:
+        _kb._log.debug("git fetch origin failed in %s: %s", repo_root, exc)
+
+
+def _remote_default_ref(repo_root: Path) -> Optional[str]:
+    """The remote default branch as a local ref (``origin/HEAD`` target, else ``origin/main``,
+    else ``origin/master``), or ``None`` when none verifies as a commit. Never fetches."""
+    candidates: list[str] = []
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        head = _git(repo_root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD", timeout=10)
+        if head.returncode == 0 and head.stdout.strip():
+            candidates.append(head.stdout.strip())
+    candidates.extend(ref for ref in _BASE_REF_FALLBACKS if ref not in candidates)
+    for ref in candidates:
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            verify = _git(repo_root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", timeout=10)
+            if verify.returncode != 0 or not verify.stdout.strip():
+                continue
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                ahead = _git(repo_root, "rev-list", "--count", f"{ref}..HEAD", timeout=10)
+                count = ahead.stdout.strip()
+                if ahead.returncode == 0 and count not in ("", "0"):
+                    _kb._log.debug(
+                        "HEAD carries %s commits not on %s in %s; the base is still %s",
+                        count, ref, repo_root, ref,
+                    )
+            return ref
+    return None
+
+
+def _worktree_base_ref(repo_root: Path) -> str:
+    """Start point for a new task branch: the fetched remote default branch, else ``HEAD``.
+
+    Forking from the anchor's local ``HEAD`` made every task worktree inherit a stale
+    anchor's blindness: parked on an old branch, files that exist on ``origin/main``
+    read as nonexistent and CI compiles code the change never touches. The rule is the
+    fetched remote default branch always (``origin/HEAD`` target, else ``origin/main``,
+    else ``origin/master``); ``HEAD`` only when none resolves (today's behaviour). An
+    anchor parked on a local-only commit is not stranded: its branch ref keeps that
+    commit, and the task worktree simply starts from the remote default branch. The
+    fetch is best-effort: a missing remote or dead network must never fail the task.
+    """
+    _fetch_origin(repo_root)
+    return _remote_default_ref(repo_root) or "HEAD"
+
+
+def _commits_behind(tree: Path, ref: str) -> Optional[int]:
+    out = _kb._git_out(tree, "rev-list", "--count", f"HEAD..{ref}")
+    return int(out) if out and out.isdigit() else None
+
+
+def _op_in_progress(tree: Path) -> bool:
+    """True while a rebase or merge is mid-flight in *tree* (rebasing over it would corrupt it)."""
+    for name in ("rebase-merge", "rebase-apply", "MERGE_HEAD"):
+        out = _kb._git_out(tree, "rev-parse", "--path-format=absolute", "--git-path", name)
+        if out and Path(out).exists():
+            return True
+    return False
+
+
+def _tree_is_clean(tree: Path) -> bool:
+    """Unknown counts as dirty: a status we cannot read must not be rebased over."""
+    try:
+        status = _git(tree, "status", "--porcelain", "--untracked-files=normal", timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return status.returncode == 0 and not status.stdout.strip()
+
+
+def _stale_reuse_error(tree: Path, branch_name: str, behind: int, ref: str, reason: str) -> RuntimeError:
+    return RuntimeError(
+        f"refusing to dispatch into {tree}: {reason} and the branch {branch_name} is "
+        f"{behind} commit(s) behind {ref}. Resolve by hand: "
+        f"git -C {tree} status ; git -C {tree} rebase {ref}"
+    )
+
+
+def _rebase_onto(tree: Path, branch_name: str, behind: int, ref: str) -> None:
+    """Rebase *tree* onto *ref*; on conflict abort (branch left byte-identical) and raise."""
+    try:
+        rebase = _git(tree, "rebase", ref, timeout=300)
+    except (OSError, subprocess.SubprocessError) as exc:
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            _git(tree, "rebase", "--abort", timeout=60)
+        raise _stale_reuse_error(tree, branch_name, behind, ref, f"the rebase onto {ref} failed ({exc})") from exc
+    if rebase.returncode == 0:
+        return
+    conflicted = ""
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        conflicted = _git(tree, "diff", "--name-only", "--diff-filter=U", timeout=30).stdout.strip()
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        _git(tree, "rebase", "--abort", timeout=60)
+    paths = ", ".join(conflicted.splitlines()) or "see git status"
+    raise _stale_reuse_error(
+        tree, branch_name, behind, ref, f"the rebase onto {ref} conflicts ({paths})"
+    )
+
+
+def _push_rebased_branch(tree: Path, branch_name: str) -> None:
+    """Publish the rebase only for a branch that already exists on origin; never fails dispatch."""
+    tracked = _kb._git_out(tree, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch_name}")
+    if not tracked:
+        return
+    try:
+        push = _git(tree, "push", "--force-with-lease", "origin", branch_name, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        _kb._log.warning("kanban: push of rebased %s from %s failed: %s", branch_name, tree, exc)
+        return
+    if push.returncode != 0:
+        _kb._log.warning(
+            "kanban: push of rebased %s from %s failed: %s",
+            branch_name, tree, (push.stderr or push.stdout or "").strip(),
+        )
+
+
+def _reuse_gate(repo_root: Path, tree: Path, branch_name: str) -> None:
+    """Bring a REUSED task branch up to the fetched remote default branch, or refuse.
+
+    A new branch forks from the remote default branch (:func:`_worktree_base_ref`) but a
+    reused branch/tree is handed back wherever it was parked, so the worker ran on stale
+    code. A clean tree behind the base is rebased (work is kept, never reset or stashed);
+    a dirty tree, an operation already in progress, or a conflict refuses the dispatch so
+    the card blocks for a human instead of running stale. With no remote default ref
+    (offline, no ``origin``) the reuse is unchanged.
+    """
+    _fetch_origin(repo_root)
+    ref = _remote_default_ref(repo_root)
+    if ref is None:
+        return
+    behind = _commits_behind(tree, ref)
+    if not behind:
+        return
+    if _op_in_progress(tree):
+        raise _stale_reuse_error(tree, branch_name, behind, ref, "a rebase/merge is already in progress")
+    if not _tree_is_clean(tree):
+        raise _stale_reuse_error(
+            tree, branch_name, behind, ref,
+            "working tree is dirty (uncommitted or untracked files)",
+        )
+    _rebase_onto(tree, branch_name, behind, ref)
+    _kb._log.info(
+        "kanban: rebased reused worktree %s (%s) onto %s: behind %s -> %s",
+        tree, branch_name, ref, behind, _commits_behind(tree, ref),
+    )
+    _push_rebased_branch(tree, branch_name)
+
+
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None and _path_key(_git_common_dir(target)) == _path_key(repo_common):
+        if _git_current_branch(target) == branch_name:
+            _reuse_gate(repo_root, target, branch_name)
         return
     target.parent.mkdir(parents=True, exist_ok=True)
-    if _git_branch_exists(repo_root, branch_name):
+    reused_branch = _git_branch_exists(repo_root, branch_name)
+    if reused_branch:
         args = ["worktree", "add", str(target), branch_name]
     else:
-        args = ["worktree", "add", "-b", branch_name, str(target), "HEAD"]
+        # A new branch starts at the fetched default branch so it cannot
+        # inherit a stale anchor checkout's blindness.
+        args = ["worktree", "add", "-b", branch_name, str(target), _worktree_base_ref(repo_root)]
     result = _git(repo_root, *args, timeout=60)
     if result.returncode != 0:
         stderr = (result.stderr or result.stdout or "").strip()
         raise RuntimeError(
             f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
         )
+    if reused_branch:
+        _reuse_gate(repo_root, target, branch_name)
 
 
 def _anchored_worktree(repo_root: Path, task_id: str, branch_name: str) -> tuple[Path, str]:
@@ -754,6 +918,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
     if requested.exists() and _is_linked_worktree_checkout(requested):
         actual_branch = _git_current_branch(requested)
         if actual_branch == branch_name:
+            _reuse_gate(_git_toplevel(requested) or requested, requested, branch_name)
             return requested_resolved, actual_branch
         # The requested path is an existing checkout of a DIFFERENT task's
         # branch (decompose children inherit the root's workspace_path

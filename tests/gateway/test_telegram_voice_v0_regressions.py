@@ -21,6 +21,39 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
 
+@pytest.mark.asyncio
+async def test_external_stt_failure_respects_local_fallback_setting():
+    from gateway.config import GatewayConfig
+
+    disabled = GatewayConfig.from_dict({"stt": {"local_fallback": False}})
+    assert disabled.stt_local_fallback is False
+    assert GatewayConfig.from_dict({}).stt_local_fallback is True
+    assert GatewayConfig.from_dict({"stt": {"local_fallback": "false"}}).stt_local_fallback is False
+    assert GatewayConfig.from_dict({"stt_local_fallback": False,
+                                    "stt": {"local_fallback": True}}).stt_local_fallback is False
+    assert GatewayConfig.from_dict(disabled.to_dict()).stt_local_fallback is False
+
+    from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
+
+    external = MagicMock(return_value={"success": False, "error": "unavailable"})
+    local = MagicMock(return_value={"success": True, "transcript": "local"})
+
+    class Owner(GatewayInboundTranscriptionMixin):
+        def __init__(self, config):
+            self.config = config
+
+    owner = Owner(disabled)
+    transcript, note = await owner._transcribe_one_clip("/tmp/voice.ogg", external, local)
+    assert transcript is None and "could not be transcribed" in note
+    external.assert_called_once()
+    local.assert_not_called()
+
+    owner.config = GatewayConfig.from_dict({})
+    transcript, _ = await owner._transcribe_one_clip("/tmp/voice.ogg", external, local)
+    assert transcript == "local"
+    local.assert_called_once_with("/tmp/voice.ogg")
+
+
 def _source():
     return SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
 

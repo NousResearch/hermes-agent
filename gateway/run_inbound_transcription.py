@@ -342,16 +342,22 @@ class GatewayInboundTranscriptionMixin:
         return f"[voice message could not be transcribed automatically; the audio is available at: {cls._agent_audio_path(path)}]"
 
     async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> tuple[Optional[str], str]:
-        return await transcribe_one_clip(path, transcribe_audio, transcribe_audio_local_fallback)
+        return await transcribe_one_clip(
+            path, transcribe_audio, transcribe_audio_local_fallback,
+            local_fallback=getattr(getattr(self, "config", None), "stt_local_fallback", True),
+        )
 
 
-async def transcribe_one_clip(path: str, transcribe_audio=None, transcribe_audio_local_fallback=None) -> tuple[Optional[str], str]:
-    """``(transcript_or_None, note)`` for one clip via configured STT with local fallback. Also the
-    adapters' group mention gate (``gateway.platforms.helpers.spoken_mention_clips``)."""
+async def transcribe_one_clip(path: str, transcribe_audio=None, transcribe_audio_local_fallback=None,
+                              *, local_fallback: bool = True) -> tuple[Optional[str], str]:
+    """Transcribe via configured STT, optionally falling back to local STT.
+
+    Also used by the adapters' group mention gate.
+    """
     if transcribe_audio is None:
         from tools.transcription_tools import transcribe_audio, transcribe_audio_local_fallback
     result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
-    if not result.get("success"):
+    if not result.get("success") and local_fallback:
         fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
         if fallback.get("success"):
             logger.info("Configured STT failed for %s; recovered with local STT", path)

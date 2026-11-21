@@ -675,7 +675,13 @@ async def spoken_mention_clips(paths: list[str], patterns, *, adapter: Any = Non
                 and _sender_may_use_bot(adapter, source) and await asyncio.to_thread(is_stt_enabled)
             for path in paths if enabled else ():
                 try:
-                    results[path] = await transcribe_one_clip(path)
+                    results[path] = await transcribe_one_clip(
+                        path,
+                        local_fallback=getattr(
+                            getattr(getattr(adapter, "gateway_runner", None), "config", None),
+                            "stt_local_fallback", True,
+                        ),
+                    )
                 except Exception as exc:  # health: allow BLE001 -- an STT failure is a non-match, never a crash
                     logger.warning("Spoken mention check could not transcribe %s: %s", path, exc)
             if any(text and any(p.search(text) for p in patterns) for text, _note in results.values()):

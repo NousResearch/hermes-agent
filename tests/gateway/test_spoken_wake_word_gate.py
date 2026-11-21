@@ -4,7 +4,7 @@ captionless voice note could never match. The turn reuses the gate's transcript:
 """
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -253,6 +253,27 @@ async def test_disabled_stt_never_transcribes_at_the_gate_even_with_local_fallba
     with patch("tools.transcription_tools.transcribe_audio_local_fallback", side_effect=fallback):
         assert await spoken_mention_clips([str(clip)], [re.compile(p) for p in PATTERNS]) == []
     assert local == []
+
+
+@pytest.mark.asyncio
+async def test_spoken_gate_does_not_use_local_fallback_when_disabled(tmp_path, monkeypatch):
+    """A failed external wake-word check must not secretly load local STT."""
+    import re
+    from gateway.platforms.helpers import spoken_mention_clips
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    clip = tmp_path / "gate.ogg"
+    clip.write_bytes(OGG)
+    external = MagicMock(return_value={"success": False, "error": "unavailable"})
+    local = MagicMock(return_value={"success": True, "transcript": "hermes, what is on today"})
+    adapter = _telegram(True)
+    adapter.gateway_runner = SimpleNamespace(config=SimpleNamespace(stt_enabled=True, stt_local_fallback=False))  # type: ignore[assignment]
+
+    with patch("tools.transcription_tools.transcribe_audio", external), \
+         patch("tools.transcription_tools.transcribe_audio_local_fallback", local):
+        assert await spoken_mention_clips([str(clip)], [re.compile(p) for p in PATTERNS],
+                                          adapter=adapter) == []
+    external.assert_called_once()
+    local.assert_not_called()
 
 
 @pytest.mark.asyncio

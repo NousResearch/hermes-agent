@@ -223,3 +223,33 @@ def test_edge_speak_stream_speaks_each_sentence_instead_of_whole_text_fallback(
     assert reply not in calls
 
 
+def test_oversized_pcm_chunk_is_sliced_under_the_client_frame_cap(stream_client, monkeypatch):
+    """Conduit's speech socket keeps URLSessionWebSocketTask's 1 MiB default
+    maximumMessageSize; one oversized frame throws in the client's receive() and
+    its terminal-failure path drops the ENTIRE buffered utterance (~21.8 s of
+    24 kHz mono PCM per sentence). The server must slice PCM below that cap,
+    losslessly. Regression guard: the un-sliced whole-sentence send silently
+    killed read-aloud mid-reply on every long sentence for any client keeping
+    the URLSession default.
+    """
+    pcm = bytes(range(256)) * 4096 + b"\x01\x02"  # 1 MiB + one sample: a ~22 s sentence
+    assert len(pcm) > 1024 * 1024
+    streamer = _FakeStreamer([pcm])
+    _patch_provider(monkeypatch, streamer)
+
+    with stream_client.websocket_connect(_url()) as conn:
+        conn.send_text(json.dumps({"text": "One very long spoken sentence.", "done": True}))
+        assert conn.receive_json()["type"] == "start"
+        frames = []
+        while True:
+            message = conn.receive()
+            if message.get("bytes") is not None:
+                frames.append(message["bytes"])
+                continue
+            assert json.loads(message["text"]) == {"type": "end"}
+            break
+
+    # The contract is the CLIENT's cap, not the server's slice size.
+    assert all(0 < len(frame) <= 1024 * 1024 for frame in frames)
+    assert len(frames) > 1, "a whole-sentence frame must not ride the socket unsliced"
+    assert b"".join(frames) == pcm

@@ -130,6 +130,29 @@ test('control: an explicit remote source records its own wire without changing l
   expect(isStalledDialError(new Error('timed out while waiting for a free slot'))).toBe(true)
 })
 
+
+test('a local-scoped legacy remote override keeps its own wire without changing native attachments', async () => {
+  const { ensureGatewayForAgent } = await import('./gateway')
+  recordConnectionWire('local', 'canonical')
+  setSessionOwnerHint('native-chat', { connectionId: 'local', mode: 'local', profile: 'default' })
+  setSessionOwnerHint('worker-chat', { connectionId: 'local', mode: 'remote', profile: 'worker', targetProfile: 'default' })
+
+  // The remote descriptor is dialed under the local registry scope.
+  window.hermesDesktop = {
+    getConnectionFor: vi.fn(async () => descriptor),
+    getGatewayWsUrlFor: vi.fn(async () => descriptor.wsUrl)
+  } as never
+  ReviewSocket.advertise = {}
+  const opening = ensureGatewayForAgent('local', 'worker')
+  await vi.advanceTimersByTimeAsync(10)
+  await opening
+
+  expect.soft(connectionWire('local')).toBe('canonical')
+  expect.soft(connectionWire({ connectionId: 'local', profile: 'worker' })).toBe('legacy')
+  expect.soft(serverOwnsComposerQueue('native-chat')).toBe(true)
+  expect.soft(serverOwnsComposerQueue('worker-chat')).toBe(false)
+})
+
 test('a real protocol readiness timeout is classified as a stalled dial', async () => {
   ReviewSocket.advertise = null
   const client = new HermesGateway()

@@ -320,6 +320,8 @@ class FeishuAdapterSettings:
     ws_reconnect_interval: int = 120
     ws_ping_interval: Optional[int] = None
     ws_ping_timeout: Optional[int] = None
+    ws_read_timeout: Optional[float] = None  # seconds; null = auto (max(300, 3*live ping)), 0 = off
+    ws_open_timeout: Optional[float] = 10.0  # seconds; explicit null omits the override (SDK default)
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: dict[str, FeishuGroupRule] = field(default_factory=dict)
@@ -442,6 +444,41 @@ def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -
 def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     parsed = _coerce_int(value, default=default, min_value=min_value)
     return default if parsed is None else parsed
+
+
+def _coerce_optional_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+    """Coerce to a finite positive float; ``None`` keeps ``default``, unusable values raise.
+
+    Fractional values are preserved (tests use sub-second budgets) and only ``None``
+    means "feature off", so a typo'd config can never silently widen a timeout to
+    infinity by accident - the invalid value fails loudly at settings load instead.
+    """
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("feishu.ws_open_timeout must be a positive finite number or null") from exc
+    if parsed != parsed or parsed in (float("inf"), float("-inf")) or parsed <= 0:  # NaN/guards
+        raise ValueError("feishu.ws_open_timeout must be a positive finite number or null")
+    return parsed
+
+
+def _coerce_read_timeout(value: Any) -> Optional[float]:
+    """Tri-state read-timeout parse: null/missing = auto, explicit 0 = off, positive = budget.
+
+    ``effective_read_timeout`` derives the auto budget from the live ping interval at
+    receive-loop entry; an explicit zero is the operator's way to opt out entirely.
+    """
+    if value is None:
+        return None  # auto: resolved later from the effective heartbeat
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed != parsed or parsed in (float("inf"), float("-inf")) or parsed < 0:
+        return None
+    return parsed  # 0.0 = off; > 0 = explicit seconds
 
 
 # --- Post payload builders and parsers ---
@@ -1059,6 +1096,12 @@ class _ThreadLocalLoopProxy:
 def _install_lark_ws_isolation(ws_client_module: Any) -> None:
     """Install the thread-dispatching shims once per process (idempotent)."""
     global _WS_ISOLATION_INSTALLED
+    # Lazy sibling import: file-loader tests exec this module without package
+    # context (see tests/gateway/_plugin_adapter_loader.py), so a module-level
+    # relative import would break them. The WS paths below only run when the
+    # real plugin system (package import) drives a Feishu connection.
+    from .adapter_ws import TimedRequestsFacade, effective_read_timeout, wrap_client_connection
+
     with _WS_ISOLATION_LOCK:
         if _WS_ISOLATION_INSTALLED:
             return
@@ -1070,6 +1113,23 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
             for key, value in overrides.items():
                 kwargs.setdefault(key, value)
             return real_connect(*args, **kwargs)
+
+        # Bootstrap POST budget (#156356): the SDK resolves its endpoint URL with a
+        # synchronous ``requests.post`` that has no timeout, on the WS worker thread and
+        # *before* any connection exists — a half-dead tunnel wedges it exactly like
+        # ``recv``. Rebind a facade onto the SDK module only (the process-wide
+        # ``requests`` other plugins use keeps its exact behavior); unregistered
+        # threads pass straight through.
+        sdk_requests = getattr(ws_client_module, "requests", None)
+        if sdk_requests is not None:
+
+            def _bootstrap_budget() -> Optional[tuple[float, float]]:
+                open_timeout = getattr(_ws_isolation_state, "ws_open_timeout", None)
+                if open_timeout is None:
+                    return None
+                return (open_timeout, 30.0)
+
+            ws_client_module.requests = TimedRequestsFacade(sdk_requests, _bootstrap_budget)
 
         # Keep inspect.signature(websockets.connect) honest — the SDK probes it for ``proxy`` support.
         _dispatch_connect.__wrapped__ = real_connect
@@ -1084,6 +1144,21 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
             on_link_up = getattr(_ws_isolation_state, "on_link_up", None)
             if on_link_up is not None:
                 on_link_up()
+            # Receive budget (#156356): bound every recv() on this (re)built link. The SDK
+            # replaces ``_conn`` on each reconnect and schedules a fresh receive loop, so the
+            # proxy is (re)attached here, at loop entry — the one place that always runs on
+            # the owning thread with the new connection in place. The auto budget resolves
+            # from the client's LIVE ping interval at this moment (overrides and negotiated
+            # ``_configure`` payloads may have changed it since the worker started), so a
+            # healthy heartbeat cadence never trips the deadline. A stalled recv then raises
+            # TimeoutError into the SDK's own ``except`` -> ``_disconnect`` -> ``_reconnect``
+            # ladder instead of parking the loop in SSL_read forever.
+            read_budget = effective_read_timeout(
+                getattr(_ws_isolation_state, "ws_read_explicit", None),
+                getattr(self, "_ping_interval", None),
+            )
+            if read_budget is not None:
+                wrap_client_connection(self, read_budget)
             try:
                 await original_receive_loop(self)
             except Exception:
@@ -1136,7 +1211,11 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
 
     connect_overrides = {
         key: value
-        for key, value in (("ping_interval", adapter._ws_ping_interval), ("ping_timeout", adapter._ws_ping_timeout))
+        for key, value in (
+            ("ping_interval", getattr(adapter, "_ws_ping_interval", None)),
+            ("ping_timeout", getattr(adapter, "_ws_ping_timeout", None)),
+            ("open_timeout", getattr(adapter, "_ws_open_timeout", None)),
+        )
         if value is not None
     }
     adapter_loop = adapter._loop
@@ -1157,6 +1236,14 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     _ws_isolation_state.connect_kwargs = connect_overrides
     _ws_isolation_state.on_link_up = _on_link_up
     _ws_isolation_state.adapter = adapter
+    # #156356: per-thread receive-timeout inputs and open timeout for the bootstrap facade.
+    # Registered alongside the other thread-local state so a sibling profile's settings never
+    # leak into this link. Only the EXPLICIT setting is stored here; the auto budget is
+    # resolved at receive-loop entry from the client's *live* ping interval, because
+    # ``_apply_runtime_ws_overrides`` (and server-negotiated ``_configure`` payloads) can
+    # change the heartbeat after this registration.
+    _ws_isolation_state.ws_read_explicit = getattr(adapter, "_ws_read_timeout", None)
+    _ws_isolation_state.ws_open_timeout = getattr(adapter, "_ws_open_timeout", None)
 
     def _configure_with_overrides(conf: Any) -> Any:
         if original_configure is None:
@@ -1177,6 +1264,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         _ws_isolation_state.connect_kwargs = None
         _ws_isolation_state.on_link_up = None
         _ws_isolation_state.adapter = None
+        _ws_isolation_state.ws_read_explicit = None
+        _ws_isolation_state.ws_open_timeout = None
         if original_configure is not None:
             ws_client._configure = original_configure
         pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
@@ -1419,6 +1508,12 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
             ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
             ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
+            ws_read_timeout=_coerce_read_timeout(extra.get("ws_read_timeout")),
+            ws_open_timeout=(
+                _coerce_optional_float(extra["ws_open_timeout"], default=None)
+                if "ws_open_timeout" in extra
+                else 10.0
+            ),
             admins=frozenset(_id_set(extra.get("admins", []))),
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,

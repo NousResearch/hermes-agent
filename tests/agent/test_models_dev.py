@@ -1420,3 +1420,36 @@ class TestOpencodeRelayVisionMarker:
         with patch("agent.models_dev.fetch_models_dev", return_value=registry):
             caps = get_model_capabilities("opencode-go", "deepseek-v4-flash-vision-exp")
         assert caps.supports_vision is False and caps.context_window == 500000
+
+
+class TestTencentHy4BuiltinVision:
+    """Stable Hy4 and Hy4 Flash take image input on both Tencent endpoints; Hy4 preview and Hy3
+    stay text-only.
+
+    The built-in entry is what makes this survive a cold/empty catalog cache — without it
+    ``image_input_mode: auto`` detours pixels through the lossy describe path.
+    """
+
+    @pytest.mark.parametrize("model", ["hy4", "hy4-flash"])
+    @pytest.mark.parametrize("provider", ["tencent-tokenhub", "tencent-tokenplan"])
+    def test_hy4_is_vision_capable_without_a_catalog(self, provider, model):
+        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+            caps = get_model_capabilities(provider, model)
+        assert caps is not None and caps.supports_vision is True
+
+    @pytest.mark.parametrize("model", ["hy4-preview", "hy3", "hy3-preview"])
+    def test_text_only_siblings_are_not_claimed(self, model):
+        """A prefix-matching built-in would hand the text-only preview a vision claim it cannot serve."""
+        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+            assert get_model_capabilities("tencent-tokenhub", model) is None
+
+    @pytest.mark.parametrize("model", ["hy4", "hy4-flash"])
+    def test_an_explicit_override_can_still_turn_vision_off(self, model):
+        """The built-in is the only vision source for these providers — Hermes maps no models.dev id
+        for tencent-*, so ``_get_provider_models`` never resolves a catalog. ``model_overrides``
+        stays the escape hatch if Tencent ever ships the id text-only."""
+        overrides = {"tencent-tokenhub": {model: {"supports_vision": False}}}
+        with patch("agent.models_dev._load_model_overrides", return_value=overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            caps = get_model_capabilities("tencent-tokenhub", model)
+        assert caps is not None and caps.supports_vision is False

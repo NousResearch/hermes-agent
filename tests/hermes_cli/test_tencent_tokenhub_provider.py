@@ -135,6 +135,27 @@ class TestTencentTokenhubContextLength:
         assert isinstance(ctx, int)
         assert ctx >= 4096, f"hy3-preview context length looks unset/wrong: {ctx}"
 
+    @pytest.mark.parametrize("model", ["hy4", "hy4-flash"])
+    def test_hy4_has_registered_context_length(self, model):
+        from agent.model_metadata import get_model_context_length
+        ctx = get_model_context_length(model)
+        assert isinstance(ctx, int)
+        assert ctx >= 4096, f"{model} context length looks unset/wrong: {ctx}"
+
+
+class TestTencentHy4ModelCatalog:
+    """hy4 and hy4-flash ship alongside hy4-preview on both direct Tencent providers."""
+
+    @pytest.mark.parametrize("model", ["hy4", "hy4-flash"])
+    def test_hy4_in_tokenhub_catalog(self, model):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert model in _PROVIDER_MODELS["tencent-tokenhub"]
+
+    @pytest.mark.parametrize("model", ["hy4", "hy4-flash"])
+    def test_hy4_in_tokenplan_catalog(self, model):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert model in _PROVIDER_MODELS["tencent-tokenplan"]
+
 # =============================================================================
 # providers.py (unified provider module)
 # =============================================================================

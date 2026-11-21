@@ -16,7 +16,8 @@ import pytest
 from agent.runtime_scope import bind_profile_scope
 from agent.terminal_env_provider import TerminalEnvironmentProvider
 from agent.terminal_env_registry import _registry as terminal_env_registry
-from tools import terminal_tool
+from agent.verification_evidence import record_verify_run, verification_status
+from tools import file_state, terminal_tool
 from tools.environments.local import LocalEnvironment
 from tools.file_tools import _get_file_ops, clear_file_ops_cache
 from tools.file_tools_read_tracking import reset_file_dedup
@@ -64,8 +65,8 @@ class _CardProvider(TerminalEnvironmentProvider):
         return _ConfinedEnv(self.default_workspace, self.default_workspace)
 
 
-def _dispatch(name, task_id, **arguments):
-    result = registry.dispatch(name, arguments, task_id=task_id)
+def _dispatch(name, task_id, *, session_id=None, **arguments):
+    result = registry.dispatch(name, arguments, task_id=task_id, session_id=session_id)
     assert isinstance(result, str)
     return json.loads(result)
 
@@ -156,7 +157,9 @@ def card_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_SINGLE_QUERY", "1")
     task = "card-workspace"
     with bind_profile_scope(profile, hydrate_secrets=False):
-        terminal_env_registry.register(_CardProvider(workspace))
+        provider = _CardProvider(workspace)
+        previous = terminal_env_registry.snapshot_registration(provider.name)
+        terminal_env_registry.register(provider)
         terminal_tool.record_session_cwd(task, str(workspace))
         try:
             yield path, task
@@ -164,7 +167,7 @@ def card_workspace(tmp_path, monkeypatch):
             cleanup_vm(terminal_tool._resolve_container_task_id(task))
             terminal_tool.clear_session_cwd(task)
             clear_file_ops_cache(task)
-            terminal_env_registry.reset_for_tests()
+            terminal_env_registry.restore_registration(provider.name, provider, previous)
 
 
 @pytest.mark.parametrize("patch_first", [False, True], ids=["full-read", "full-reread-after-patch"])
@@ -219,3 +222,124 @@ def test_card_workspace_paged_read_uses_task_cwd_and_survives_compaction(card_wo
     assert "error" not in written, written
     assert path.read_text(encoding="utf-8") == content
     assert (other / path.name).read_text(encoding="utf-8") == '{"status": "other"}\n'
+
+
+@pytest.mark.parametrize("tool", ["write_file", "patch"])
+def test_confined_edit_stales_verification(card_workspace, monkeypatch, tool):
+    path, task = card_workspace
+    workspace = path.parent
+    (workspace / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")
+    session = "card-verification"
+    record_verify_run(root=workspace, session_id=session, ok=True)
+    assert verification_status(session_id=session, cwd=workspace)["status"] == "passed"
+
+    if tool == "write_file":
+        edited = workspace / "new.txt"
+        result = _dispatch(tool, task, session_id=session, path=str(edited), content="new\n")
+    else:
+        edited = path
+        result = _dispatch(tool, task, session_id=session, path=str(edited), old_string="draft", new_string="final")
+    assert "error" not in result, result
+    status = verification_status(session_id=session, cwd=workspace)
+    assert status["status"] == "stale", status
+    assert status["changed_paths"] == [str(edited)]
+
+
+@pytest.mark.parametrize("mounted", [_ConfinedEnv], indirect=True)
+@pytest.mark.parametrize("filename", ["a.txt", "a.ipynb"])
+def test_confined_read_is_visible_to_delegation(mounted, filename):
+    _env, view, real, task = mounted
+    if filename.endswith(".ipynb"):
+        (real / filename).write_text(
+            json.dumps({"cells": [{"cell_type": "markdown", "source": ["alpha"]}]}),
+            encoding="utf-8",
+        )
+    path = str(view / filename)
+    result = _dispatch("read_file", task, path=path)
+    assert "alpha" in result["content"]
+    assert file_state.known_reads(task) == [path]
+
+
+@pytest.mark.parametrize("mounted", [_ConfinedEnv], indirect=True)
+@pytest.mark.parametrize("tool", ["write_file", "patch"])
+def test_confined_edit_is_visible_to_delegation(mounted, tool):
+    _env, view, _real, task = mounted
+    if tool == "write_file":
+        path = str(view / "new.txt")
+        result = _dispatch(tool, task, path=path, content="new\n")
+    else:
+        path = str(view / "a.txt")
+        result = _dispatch(tool, task, path=path, old_string="beta", new_string="gamma")
+    assert "error" not in result, result
+    assert file_state.writes_since("parent", 0, [path]) == {task: [path]}
+    assert file_state.writes_since("parent", 0)[task] == [path]
+
+
+@pytest.mark.parametrize("mounted", [_ConfinedEnv], indirect=True)
+def test_confined_patch_warns_about_sibling_write(mounted, monkeypatch):
+    env, view, _real, task = mounted
+    path = str(view / "a.txt")
+    sibling = f"{task}-sibling"
+    monkeypatch.setitem(terminal_tool._active_environments, terminal_tool._resolve_container_task_id(sibling), env)
+    assert "alpha" in _dispatch("read_file", task, path=path)["content"]
+    changed = _dispatch("patch", sibling, path=path, old_string="beta", new_string="gamma")
+    assert changed["success"], changed
+    result = _dispatch("patch", task, path=path, old_string="alpha", new_string="delta")
+    assert result["success"], result
+    assert f"modified by sibling subagent {sibling!r}" in result.get("_warning", ""), result
+
+
+def test_confined_relative_edit_uses_symlinked_workspace(card_workspace):
+    path, task = card_workspace
+    alias = path.parent.with_name("workspace-link")
+    alias.symlink_to(path.parent, target_is_directory=True)
+    terminal_tool.record_session_cwd(task, str(alias))
+
+    result = _dispatch("patch", task, path=path.name, old_string="draft", new_string="final")
+    assert result["success"], result
+    assert result["resolved_path"] == str(alias / path.name)
+    assert "_warning" not in result, result
+
+    outside = _dispatch("write_file", task, path="../outside.txt", content="outside\n")
+    assert "error" not in outside, outside
+    assert "OUTSIDE the active workspace" in outside.get("_warning", ""), outside
+
+
+@pytest.fixture
+def unrelated_terminal_provider(tmp_path):
+    class UnrelatedProvider(_CardProvider):
+        name = "test_unrelated_card"
+
+    provider = UnrelatedProvider(tmp_path)
+    previous = terminal_env_registry.snapshot_registration(provider.name)
+    terminal_env_registry.register(provider)
+    yield provider
+    registered = terminal_env_registry.get_provider(provider.name)
+    terminal_env_registry.restore_registration(provider.name, provider, previous)
+    assert registered is provider
+
+
+def test_card_workspace_preserves_other_terminal_providers(unrelated_terminal_provider, request):
+    request.getfixturevalue("card_workspace")
+    assert terminal_env_registry.get_provider(unrelated_terminal_provider.name) is unrelated_terminal_provider
+
+
+@pytest.mark.parametrize("mounted", [_ConfinedEnv], indirect=True)
+def test_confined_overwrite_explains_backend_without_hash_tools(mounted, monkeypatch):
+    env, view, real, task = mounted
+    execute = env.execute
+
+    def execute_without_hash_tools(command, **kwargs):
+        if "sha256sum " in command:
+            command = "export PATH=\n" + command
+        return execute(command, **kwargs)
+
+    monkeypatch.setattr(env, "execute", execute_without_hash_tools)
+    path = str(view / "a.txt")
+    assert "alpha" in _dispatch("read_file", task, path=path)["content"]
+
+    result = _dispatch("write_file", task, path=path, content="replacement\n")
+    assert result.get("stale_write_blocked"), result
+    assert "backend cannot hash" in result["error"], result
+    assert (real / "a.txt").read_text(encoding="utf-8") == "alpha\nbeta\n"

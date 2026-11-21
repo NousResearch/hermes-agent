@@ -542,10 +542,10 @@ def _mark_document_read(resolved: str, task_id: str, document_bytes: bytes, conf
     if confined_ops is not None:
         _mark_full_write_baseline(resolved, task_id, hashlib.sha256(document_bytes).hexdigest(),
                                   confined_ops=confined_ops)
-        return
-    _mark_full_write_baseline(resolved, task_id)
-    _update_read_timestamp(resolved, task_id)
-    file_state.record_read(task_id, resolved)
+    else:
+        _mark_full_write_baseline(resolved, task_id)
+        _update_read_timestamp(resolved, task_id)
+    file_state.record_read(task_id, resolved, use_host_mtime=confined_ops is None)
 
 
 def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
@@ -648,8 +648,7 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
         _cap_read_tracker_data(task_data)
 
     try:
-        if confined_ops is None:
-            file_state.record_read(task_id, resolved_str, partial=not complete)
+        file_state.record_read(task_id, resolved_str, partial=not complete, use_host_mtime=confined_ops is None)
     except Exception:
         logger.debug("file_state.record_read failed", exc_info=True)
 
@@ -883,11 +882,11 @@ def _edit_warnings(paths: list[str], path_to_resolved: dict, task_id: str, *, co
     warnings: list[str] = []
     for p in paths:
         r = path_to_resolved.get(p)
-        w = None
-        if confined_ops is None:
-            w = (file_state.check_stale(task_id, r) if r else None) or _check_file_staleness(p, task_id)
+        w = file_state.check_stale(task_id, r, use_host_mtime=confined_ops is None) if r else None
+        if not w and confined_ops is None:
+            w = _check_file_staleness(p, task_id)
         if not w and r:
-            w = _path_resolution_warning(p, Path(r), task_id)
+            w = _path_resolution_warning(p, Path(r), task_id, confined=confined_ops is not None)
         if w:
             warnings.append(w)
     return warnings
@@ -897,15 +896,15 @@ def _note_edited(task_id: str, paths: list[str], path_to_resolved: dict, session
                  *, confined_ops=None) -> None:
     """Post-success bookkeeping: verification-stale marker, then per path refresh
     the read stamp (no false staleness on the next edit) and record the write."""
-    if confined_ops is not None:
-        for resolved in filter(None, path_to_resolved.values()):
-            _invalidate_resolved_read(resolved, task_id)
-        return
     _mark_verification_stale(task_id, [path_to_resolved.get(p) or p for p in paths], session_id=session_id)
     for p in paths:
-        _update_read_timestamp(p, task_id)
-        if path_to_resolved.get(p):
-            file_state.note_write(task_id, path_to_resolved[p])
+        resolved = path_to_resolved.get(p)
+        if confined_ops is None:
+            _update_read_timestamp(p, task_id)
+        elif resolved:
+            _invalidate_resolved_read(resolved, task_id)
+        if resolved:
+            file_state.note_write(task_id, resolved, use_host_mtime=confined_ops is None)
 
 
 # Whole-file rewrite hint: an overwrite of an existing file this large whose new content keeps at least

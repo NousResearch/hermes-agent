@@ -1184,7 +1184,7 @@ class _ChildRun:
             _files_read = list(file_state.known_reads(self.child_task_id))[:40]
         _files_written_map: dict = {}
         with _quiet(None):
-            _files_written_map = file_state.writes_since("", self.wall_start, [])  # all writes since wall_start
+            _files_written_map = file_state.writes_since("", self.wall_start)
         complete_kwargs: dict[str, Any] = {
             "preview": summary[:160] if summary else entry.get("error", ""),
             "status": entry["status"],

@@ -614,7 +614,8 @@ def _confined_overwrite_blocker(resolved: str, task_id: str, file_ops) -> str | 
     if digest == b"":
         return None
     if digest is None:
-        return f"Could not verify the current contents of {resolved} in the terminal backend."
+        return (f"The terminal backend cannot hash {resolved} to verify its current contents. "
+                "Overwriting requires a working sha256sum or shasum in that backend.")
     baseline = _full_write_baseline(resolved, task_id)
     if baseline == (digest,):
         return None

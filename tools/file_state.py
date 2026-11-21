@@ -20,7 +20,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 # (mtime, read_ts, partial). partial=True when read_file returned a windowed
 # view (offset > 1 or limit < total_lines) — a later write should still warn
 # so the model re-reads in full.
-ReadStamp = tuple[float, float, bool]
+ReadStamp = tuple[float | None, float, bool]
 
 # Bounded so long sessions don't accumulate unbounded state.
 _MAX_PATHS_PER_AGENT = 4096
@@ -97,37 +97,40 @@ class FileStateRegistry:
                     self._path_lock_users.pop(resolved, None)
                     self._path_locks.pop(resolved, None)
 
-    def _stamp(self, task_id: str, resolved: str, mtime: float, now: float, partial: bool) -> None:
+    def _stamp(self, task_id: str, resolved: str, mtime: float | None, now: float, partial: bool) -> None:
         """Caller holds ``_state_lock``."""
         agent_reads = self._reads[task_id]
-        agent_reads[resolved] = (float(mtime), now, bool(partial))
+        agent_reads[resolved] = (mtime, now, bool(partial))
         _evict_oldest(agent_reads, _MAX_PATHS_PER_AGENT)
 
     def record_read(self, task_id: str, resolved: str, *, partial: bool = False,
-                    mtime: Optional[float] = None) -> None:
+                    mtime: Optional[float] = None, use_host_mtime: bool = True) -> None:
         if _disabled():
             return
-        mtime = _mtime_or_none(resolved) if mtime is None else mtime
-        if mtime is None:
-            return
+        if use_host_mtime and mtime is None:
+            mtime = _mtime_or_none(resolved)
+            if mtime is None:
+                return
         with self._state_lock:
             self._stamp(task_id, resolved, mtime, time.time(), partial)
 
-    def note_write(self, task_id: str, resolved: str, *, mtime: Optional[float] = None) -> None:
+    def note_write(self, task_id: str, resolved: str, *, mtime: Optional[float] = None,
+                   use_host_mtime: bool = True) -> None:
         """Record a successful write: global last-writer AND this agent's own
         read stamp (a write is an implicit read of the current content)."""
         if _disabled():
             return
-        mtime = _mtime_or_none(resolved) if mtime is None else mtime
-        if mtime is None:
-            return
+        if use_host_mtime and mtime is None:
+            mtime = _mtime_or_none(resolved)
+            if mtime is None:
+                return
         now = time.time()
         with self._state_lock:
             self._last_writer[resolved] = (task_id, now)
             _evict_oldest(self._last_writer, _MAX_GLOBAL_WRITERS)
             self._stamp(task_id, resolved, mtime, now, False)
 
-    def check_stale(self, task_id: str, resolved: str) -> Optional[str]:
+    def check_stale(self, task_id: str, resolved: str, *, use_host_mtime: bool = True) -> Optional[str]:
         """Model-facing warning if this write would be stale, else ``None``. Severity
         order: sibling wrote after our read > mtime drift / partial read > never read."""
         if _disabled():
@@ -138,8 +141,8 @@ class FileStateRegistry:
 
         if stamp is None and last_writer is None:  # net-new file / first touch
             return None
-        current_mtime = _mtime_or_none(resolved)
-        if current_mtime is None:
+        current_mtime = _mtime_or_none(resolved) if use_host_mtime else None
+        if use_host_mtime and current_mtime is None:
             return None  # file doesn't exist — write creates it; not stale
 
         if last_writer is not None:
@@ -159,9 +162,11 @@ class FileStateRegistry:
                         f"this agent's last read at {_fmt_ts(read_ts)}. "
                         "Re-read the file before writing.")
 
+        if not use_host_mtime:
+            return None
         if stamp is not None:
             read_mtime, _read_ts, partial = stamp
-            if current_mtime != read_mtime:
+            if read_mtime is not None and current_mtime != read_mtime:
                 return (
                     f"{resolved} was modified since you last read it "
                     "on disk (external edit or unrecorded writer). "
@@ -178,17 +183,17 @@ class FileStateRegistry:
             "Read the file first so you can write an informed edit.")
 
     def writes_since(self, exclude_task_id: str, since_ts: float,
-                     paths: Iterable[str]) -> dict[str, list[str]]:
+                     paths: Iterable[str] | None = None) -> dict[str, list[str]]:
         """``{writer_task_id: [paths]}`` for writes after ``since_ts`` by agents
         other than ``exclude_task_id`` (delegate_task's "subagent modified files
-        you previously read" reminder)."""
+        you previously read" reminder). Omit paths to report across all paths."""
         if _disabled():
             return {}
-        paths_set = set(paths)
+        paths_set = None if paths is None else set(paths)
         out: dict[str, list[str]] = defaultdict(list)
         with self._state_lock:
             for p, (writer_tid, ts) in self._last_writer.items():
-                if writer_tid != exclude_task_id and ts >= since_ts and p in paths_set:
+                if writer_tid != exclude_task_id and ts >= since_ts and (paths_set is None or p in paths_set):
                     out[writer_tid].append(p)
         return dict(out)
 
@@ -228,24 +233,26 @@ def get_registry() -> FileStateRegistry:
 
 
 # Convenience wrappers (short names used at call sites).
-def record_read(task_id: str, resolved_or_path: str | Path, *, partial: bool = False) -> None:
-    _registry.record_read(task_id, str(resolved_or_path), partial=partial)
+def record_read(task_id: str, resolved_or_path: str | Path, *, partial: bool = False,
+                use_host_mtime: bool = True) -> None:
+    _registry.record_read(task_id, str(resolved_or_path), partial=partial, use_host_mtime=use_host_mtime)
 
 
-def note_write(task_id: str, resolved_or_path: str | Path) -> None:
-    _registry.note_write(task_id, str(resolved_or_path))
+def note_write(task_id: str, resolved_or_path: str | Path, *, use_host_mtime: bool = True) -> None:
+    _registry.note_write(task_id, str(resolved_or_path), use_host_mtime=use_host_mtime)
 
 
-def check_stale(task_id: str, resolved_or_path: str | Path) -> Optional[str]:
-    return _registry.check_stale(task_id, str(resolved_or_path))
+def check_stale(task_id: str, resolved_or_path: str | Path, *, use_host_mtime: bool = True) -> Optional[str]:
+    return _registry.check_stale(task_id, str(resolved_or_path), use_host_mtime=use_host_mtime)
 
 
 def lock_path(resolved_or_path: str | Path):
     return _registry.lock_path(str(resolved_or_path))
 
 
-def writes_since(exclude_task_id: str, since_ts: float, paths: Iterable[str | Path]) -> dict[str, list[str]]:
-    return _registry.writes_since(exclude_task_id, since_ts, [str(p) for p in paths])
+def writes_since(exclude_task_id: str, since_ts: float,
+                 paths: Iterable[str | Path] | None = None) -> dict[str, list[str]]:
+    return _registry.writes_since(exclude_task_id, since_ts, None if paths is None else (str(p) for p in paths))
 
 
 def known_reads(task_id: str) -> list[str]:

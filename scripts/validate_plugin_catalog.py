@@ -17,7 +17,9 @@ Usage:
     python3 scripts/validate_plugin_catalog.py entry.yaml removed.yaml
     python3 scripts/validate_plugin_catalog.py --json plugin-catalog/
 
-Exit codes: 0 = all files valid (warnings allowed), 1 = at least one error.
+Exit codes: 0 = all files valid (warnings allowed), 1 = at least one error,
+101 = ruamel.yaml is missing, so nothing was validated (a dependency problem,
+not a catalog problem — probes can tell the two apart by the code).
 Human output is one ``<file>: ERROR: ...`` / ``<file>: warning: ...`` line
 per finding; ``--json`` emits a machine-readable report on stdout instead.
 """
@@ -38,7 +40,10 @@ except ImportError:  # pragma: no cover - dependency guidance only
         "ERROR: ruamel.yaml is required (pip install ruamel.yaml==0.18.17)",
         file=sys.stderr,
     )
-    sys.exit(2)
+    # 101, not 1: probes must be able to tell "dependency missing" apart from a
+    # real validation failure (1). Keep in sync with the docstring above.
+    sys.exit(101)
+
 
 # \Z, not $: $ also matches just before a trailing newline, so a block scalar's
 # "abc123\n" would sneak past a $-anchored check while the workflow's fullmatch

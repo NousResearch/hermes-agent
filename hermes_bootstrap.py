@@ -586,7 +586,7 @@ from hermes_cli._parser import command_argv
 # Repair needs only stdlib. Do not activate the damaged tree to reach it.
 _pm_repair = command_argv(sys.argv[1:])[:2] == ["pm", "repair"]
 if not _pm_repair:
-    from hermes_cli.venv_sync import prepare_launch, relaunch_command
+    from hermes_cli.venv_sync import UpdateInProgress, prepare_launch, relaunch_command
 
     try:
         _launch_python = prepare_launch(_root, sys.argv[1:])
@@ -605,13 +605,21 @@ if not _pm_repair:
         if isinstance(exc, PermissionError) and (message := install_state_permission_message(_root, exc)):
             print(f"hermes: {message}", file=sys.stderr)
             raise SystemExit(1) from None
-        # Degrade, never brick the CLI: the previous dependency generation is still selected
-        # (a failed sync commits nothing), so an offline or half-finished update leaves a
-        # usable Hermes plus a warning. Activation below is the real gate — a tree whose
-        # dependencies cannot load still exits with the repair remedy.
-        print(f"hermes: source-update completion failed: {exc}; "
-              "running with the previous dependencies — run `hermes update` to finish it",
-              file=sys.stderr)
+        if isinstance(exc, UpdateInProgress):
+            # A *refused* claim is not a failed completion: nothing was synced and nothing was
+            # verified about this tree — an update may be rewriting it right now. Promising "the
+            # previous dependencies" here (and telling the user to run `hermes update`, which the
+            # same holder refuses again) sent one gateway into 88 restarts on a half-updated tree
+            # without ever naming the owner. Say who holds it; the tree may still boot, so boot it.
+            print(f"hermes: {exc}", file=sys.stderr)
+        else:
+            # Degrade, never brick the CLI: the previous dependency generation is still selected
+            # (a failed sync commits nothing), so an offline or half-finished update leaves a
+            # usable Hermes plus a warning. Activation below is the real gate — a tree whose
+            # dependencies cannot load still exits with the repair remedy.
+            print(f"hermes: source-update completion failed: {exc}; "
+                  "running with the previous dependencies — run `hermes update` to finish it",
+                  file=sys.stderr)
     try:
         recover_if_needed(_root)
         activate_dependencies(_root)

@@ -288,7 +288,7 @@ python -m plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 
 # A named profile gets its own separate registration:
-hermes -p <profile> python -m plugins.platforms.google_chat.oauth \
+HERMES_HOME="$HOME/.hermes/profiles/<profile>" python -m plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 ```
 
@@ -390,7 +390,7 @@ python -m plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 
 # Named profile:
-hermes -p <profile> python -m plugins.platforms.google_chat.oauth \
+HERMES_HOME="$HOME/.hermes/profiles/<profile>" python -m plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 ```
 

@@ -52,18 +52,57 @@ class _RefuseRedirect(urllib.request.HTTPRedirectHandler):
 _opener = urllib.request.build_opener(_RefuseRedirect())
 
 
+class _DeadlineExceeded(Exception):
+    """Internal: the single total operation budget expired."""
+
+
 def _http_get_json(url: str, token: str, timeout: float) -> tuple[int, Any]:
-    """GET *url* with *token*; returns (status, parsed-json|None). Raises nothing cross-boundary."""
+    """GET *url* with *token*; returns (status, parsed-json|None).
+
+    ``timeout`` is a TOTAL monotonic budget covering connect, response headers
+    and every body read. urllib's socket timeout is only an inactivity bound:
+    bytes that trickle in can outlast it, so the deadline is enforced here as
+    well and the socket timeout is refreshed to the remaining budget before
+    each read. No worker thread is started, so a refusal leaves no background
+    request behind.
+    """
+    deadline = time.monotonic() + max(float(timeout), 0.0)
     req = urllib.request.Request(
         url, method="GET",
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
-    with _opener.open(req, timeout=timeout) as resp:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise _DeadlineExceeded()
+    with _opener.open(req, timeout=remaining) as resp:
         host = urllib.request.urlparse(resp.geturl()).hostname or ""
         if host.lower() not in _OPENROUTER_HOSTS:
             return 502, None
-        raw = resp.read(MAX_BODY_BYTES + 1)
-        if len(raw) > MAX_BODY_BYTES:
-            return 502, None
+        sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _DeadlineExceeded()
+            if sock is not None:
+                try:
+                    sock.settimeout(remaining)
+                except Exception:  # health: allow BLE001 -- best effort, monotonic check still bounds us
+                    pass
+            want = min(4096, MAX_BODY_BYTES + 1 - total)
+            # http.client's read(n) loops internally until n bytes arrive, so a
+            # slow trickle can outlast our per-iteration deadline check. read1
+            # returns at most one raw read, letting the monotonic check run
+            # between network reads.
+            read1 = getattr(getattr(resp, "fp", None), "read1", None)
+            chunk = read1(want) if callable(read1) else resp.read(min(1, want))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > MAX_BODY_BYTES:
+                return 502, None
+        raw = b"".join(chunks)
         try:
             return int(resp.status), json.loads(raw.decode("utf-8", "replace"))
         except (ValueError, UnicodeDecodeError):
@@ -85,6 +124,11 @@ def fetch_openrouter_key_limits(token: str, *, credential_scope_id: str,
     started = time.time()
     try:
         status, body = _http_get_json(OPENROUTER_KEY_URL, token, effective_timeout)
+    except (_DeadlineExceeded, TimeoutError):
+        # socket.timeout is a TimeoutError; the refreshed per-read socket
+        # timeout is the mechanism that enforces the total monotonic budget.
+        logger.debug("quota_fetch: openrouter key endpoint exceeded the total deadline")
+        return _unavailable("fetch_timeout")
     except Exception:  # health: allow BLE001 -- network/TLS/HTTP failures are all 'unavailable'; token never logged
         logger.debug("quota_fetch: openrouter key endpoint unavailable")
         return _unavailable("fetch_failed")

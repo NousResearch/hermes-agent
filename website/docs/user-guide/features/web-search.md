@@ -32,9 +32,9 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Perplexity** | `PERPLEXITY_API_KEY` | ✔ | ✔ (query-relevant snippets) | Paid (per-request Search API pricing) |
 | **Keenable** | `KEENABLE_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
-| **OpenAI Native (Codex)** | `hermes auth add openai-codex` | ✔ | — | Requires a ChatGPT/Codex subscription |
+| **OpenAI Native (Codex)** | `hermes auth add openai-codex` | ✔ | ✔ | Requires a ChatGPT/Codex subscription |
 
-Brave Search, DDGS, xAI, and OpenAI Native are **search-only** — pair any of them with Firecrawl/Tavily/Perplexity/Keenable/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `python -c "import pm; pm.sync_venv(['ddgs'], explicit=True)"` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below). OpenAI Native declares the same kind of provider-executed tool on the Codex Responses endpoint (see [below](#openai-native)).
+Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Perplexity/Keenable/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `python -c "import pm; pm.sync_venv(['ddgs'], explicit=True)"` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below). OpenAI Native declares the same kind of provider-executed tool on the Codex Responses endpoint (see [below](#openai-native)).
 
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
@@ -380,23 +380,24 @@ web:
 Unlike index-backed providers (Brave, Tavily, Exa) which return verbatim search-engine results, xAI is an LLM choosing which URLs to surface and writing the titles and descriptions itself. The *content* of the query influences the output, so a maliciously crafted query (e.g. injected via untrusted upstream input the agent picked up) can in principle steer Grok into emitting attacker-chosen URLs. Treat returned URLs the same way you'd treat any model-generated link — validate before fetching, especially if the query came from untrusted input.
 :::
 
-### OpenAI Native (Codex Responses) {#openai-native}
+### OpenAI Native (Codex) {#openai-native}
 
-Declares OpenAI's provider-executed `web_search` tool on the Codex Responses endpoint (ChatGPT/Codex subscriptions). The model drives search server-side and folds the results into its own answer — Hermes never runs a client-side search in this mode.
+Searches and reads pages through your ChatGPT/Codex subscription, using the Codex backend's standalone search endpoint — the one the official Codex client calls for its web tool. Hermes runs the search itself and hands the results to whatever model the session uses.
 
 ```yaml
 # ~/.hermes/config.yaml
 web:
   search_backend: "openai-native"
+  extract_backend: "openai-native"   # optional — it also serves web_extract
 ```
 
 Requirements and scope:
 
-- **Credentials**: an openai-codex OAuth login (`hermes auth add openai-codex`). This backend has no API key of its own; without a login it is simply unavailable.
-- **Transport**: only the Codex Responses endpoint exposes the built-in. On any other transport — a custom OpenAI-compatible `base_url`, or a non-OpenAI model — the client-side `web_search` function is left untouched, because the endpoint cannot be relied on to host the tool. Point `web.search_backend` at an ordinary provider for those.
-- **Search only**: the built-in covers search, not extraction. Pair it with Firecrawl (or another extract-capable backend) through `web.extract_backend` when you also need `web_extract`.
+- **Credentials**: an openai-codex OAuth login (`hermes auth add openai-codex`). This backend has no API key of its own; without a login it is simply unavailable. Requests go to the host your Codex credential routes to.
+- **Any model**: the search runs client-side, so it works with non-OpenAI chat models too. Only the login is OpenAI's.
+- **Search and extract**: `web_search` maps to a search query and `web_extract` opens each URL. Results come back with Codex citation markup stripped.
 
-**One tool either way.** Selecting this backend swaps the client-side `web_search` function for the built-in 1:1 — it is not an additive grant. A session whose toolset has no `web_search` never gets server-side search injected.
+The endpoint lives under `alpha/` and is not a published API, so its shape can change; the provider surfaces HTTP errors verbatim rather than falling back silently.
 
 ---
 

@@ -11,6 +11,7 @@ import asyncio
 import base64
 import io
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -543,3 +544,168 @@ async def test_name_allowlist_warning_once_scoped_even_if_first_connect_fails(mo
     assert len(warnings) == 1
     assert "['alice']" in warnings[0]
     assert "bob" not in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# 11. Inline images: mobile clients inline the bytes in msgContent.image and
+#     send NO chatItem.file transfer, so the file-path block finds nothing.
+# ---------------------------------------------------------------------------
+
+_PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00\x01\x02\x03" * 16
+_JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00\x01\x02\x03" * 16
+_GIF_BYTES = b"GIF89a" + b"\x00\x01\x02\x03" * 16
+_WEBP_BYTES = b"RIFF" + b"\x00\x00\x00\x00" + b"WEBP" + b"\x00\x01\x02\x03" * 16
+
+
+def _data_uri(raw: bytes, declared: str = "image/png") -> str:
+    return f"data:{declared};base64," + base64.b64encode(raw).decode()
+
+
+def _inline_image_item(data_uri: str, *, item_id: int = 77, file_path: str | None = None) -> dict:
+    """Inbound image whose bytes are inline in ``msgContent.image`` (no file transfer)."""
+    chat_item = {
+        "chatDir": {"type": "directRcv"},
+        "meta": {"itemId": item_id, "itemTs": "2026-11-02T07:00:00Z"},
+        "content": {"type": "rcvMsgContent", "msgContent": {"type": "image", "image": data_uri}},
+    }
+    if file_path is not None:
+        chat_item["file"] = {"fileId": 9, "fileName": "photo.png",
+                             "fileSource": {"filePath": file_path}}
+    return {
+        "chatInfo": {"type": "direct", "contact": {"contactId": 4, "localDisplayName": "tester"}},
+        "chatItem": chat_item,
+    }
+
+
+def _capture_inbound(monkeypatch):
+    """Adapter whose inbound events are captured instead of processed."""
+    adapter = _adapter_with_ws()
+    captured: list = []
+    enqueued: list = []
+
+    async def _handle(event):
+        captured.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", _handle)
+    monkeypatch.setattr(adapter, "_enqueue_text_event", lambda e: enqueued.append(e))
+    return adapter, captured, enqueued
+
+
+@pytest.mark.asyncio
+async def test_inline_image_is_decoded_and_reaches_the_event(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter, captured, _ = _capture_inbound(monkeypatch)
+
+    await adapter._handle_chat_item(_inline_image_item(_data_uri(_PNG_BYTES)))
+
+    assert len(captured) == 1, "an inline image must not produce an empty message"
+    event = captured[0]
+    from gateway.platforms.event import MessageType
+    assert event.message_type is MessageType.PHOTO
+    assert event.media_types == ["image/png"]
+    written = Path(event.media_urls[0])
+    assert written.parent == tmp_path / "cache" / "simplex-inline"
+    assert written.name == "inline-77.png"
+    assert written.read_bytes() == _PNG_BYTES
+
+
+@pytest.mark.parametrize(
+    "raw,ext,mime",
+    [
+        (_PNG_BYTES, ".png", "image/png"),
+        (_JPEG_BYTES, ".jpg", "image/jpeg"),
+        (_GIF_BYTES, ".gif", "image/gif"),
+        (_WEBP_BYTES, ".webp", "image/webp"),
+    ],
+)
+def test_format_comes_from_the_magic_bytes(monkeypatch, tmp_path, raw, ext, mime):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    decoded = _simplex._decode_inline_image(_data_uri(raw), 5)
+    assert decoded is not None
+    path, sniffed = decoded
+    assert sniffed == mime
+    assert path.endswith(f"inline-5{ext}")
+
+
+def test_declared_mime_never_reaches_the_filename(monkeypatch, tmp_path):
+    """``data:image/x.exe`` is attacker-controlled: the extension is sniffed, never trusted."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    decoded = _simplex._decode_inline_image(_data_uri(_PNG_BYTES, "image/x.exe"), 6)
+    assert decoded is not None
+    path, mime = decoded
+    assert mime == "image/png"
+    assert path.endswith(".png")
+    assert ".exe" not in path
+
+
+@pytest.mark.parametrize(
+    "declared",
+    ["image/svg+xml", "image/x-executable", "text/html", ""],
+)
+def test_declared_image_with_non_image_bytes_is_dropped(monkeypatch, tmp_path, declared):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    payload = _data_uri(b"#!/bin/sh\nrm -rf /\n" * 4, declared) if declared else _data_uri(b"#!/bin/sh\nrm -rf /\n" * 4)
+    assert _simplex._decode_inline_image(payload, 7) is None
+    assert not (tmp_path / "cache" / "simplex-inline").exists()
+
+
+def test_oversized_payload_is_rejected_before_decoding(monkeypatch, tmp_path):
+    """The cap must bite before base64 decode, or untrusted input sizes our memory."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(_simplex, "_INLINE_IMAGE_MAX_B64", 64)
+
+    class _NeverDecode:
+        @staticmethod
+        def b64decode(*_a, **_k):
+            raise AssertionError("decoded a payload that should have been rejected by size")
+
+    monkeypatch.setattr(_simplex, "base64", _NeverDecode)
+    assert _simplex._decode_inline_image(_data_uri(_PNG_BYTES), 8) is None
+
+
+def test_decoded_size_cap_is_enforced_before_writing(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(_simplex, "_INLINE_IMAGE_MAX_BYTES", 64)
+    assert len(_PNG_BYTES) > 64
+    assert _simplex._decode_inline_image(_data_uri(_PNG_BYTES), 9) is None
+    assert not (tmp_path / "cache" / "simplex-inline").exists()
+
+
+@pytest.mark.parametrize("file_id", ["77/../../evil", "a77b", "../../etc/passwd"])
+def test_filename_component_is_sanitised_to_digits(monkeypatch, tmp_path, file_id):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    decoded = _simplex._decode_inline_image(_data_uri(_PNG_BYTES), file_id)
+    assert decoded is not None
+    written = Path(decoded[0])
+    assert written.parent == tmp_path / "cache" / "simplex-inline"
+    assert written.name in {"inline-77.png", "inline-x.png"}
+    assert ".." not in written.name and "/" not in written.name
+
+
+def test_missing_item_id_falls_back_to_a_timestamp(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    decoded = _simplex._decode_inline_image(_data_uri(_PNG_BYTES))
+    assert decoded is not None
+    stem = Path(decoded[0]).stem
+    assert stem.startswith("inline-") and stem[7:].isdigit()
+
+
+@pytest.mark.parametrize("payload", ["", "   ", None, 42, "data:image/png;base64,%%%%", "data:image/png;base64,AAAA"])
+def test_unusable_payloads_return_none(monkeypatch, tmp_path, payload):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert _simplex._decode_inline_image(payload, 10) is None
+
+
+@pytest.mark.asyncio
+async def test_decodable_file_transfer_wins_over_inline_bytes(monkeypatch, tmp_path):
+    """A real file path is already downloaded; do not decode the inline copy over it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    on_disk = tmp_path / "photo.png"
+    on_disk.write_bytes(_PNG_BYTES)
+    adapter, captured, _ = _capture_inbound(monkeypatch)
+
+    await adapter._handle_chat_item(
+        _inline_image_item(_data_uri(_PNG_BYTES), file_path=str(on_disk)))
+
+    assert captured[0].media_urls == [str(on_disk)]
+    assert not (tmp_path / "cache" / "simplex-inline").exists()

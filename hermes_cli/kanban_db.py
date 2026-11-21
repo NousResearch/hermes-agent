@@ -1859,7 +1859,8 @@ def _end_run(
     error: Optional[str] = None, metadata: Optional[dict] = None, status: Optional[str] = None,
 ) -> Optional[int]:
     """Close the active run (``status`` defaults to ``outcome``) and clear
-    ``current_run_id``; None when no run was active (never-claimed task).
+    ``current_run_id``; None when no run was active (never-claimed task) or
+    when the close did not actually land.
 
     ``worker_pid`` / ``worker_started_at`` / ``claim_lock`` stay on the closed
     row: they are the only evidence left of the OS process once the task row
@@ -1869,7 +1870,7 @@ def _end_run(
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
         return None
-    conn.execute(
+    cur = conn.execute(
         """
         UPDATE task_runs
            SET status        = ?,
@@ -1884,8 +1885,17 @@ def _end_run(
         """,
         (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
     )
+    # ``ended_at IS NULL`` stops a run being closed twice, but it used to be a
+    # silent guard: on an already-closed run (reclaim / stale sweep / timeout
+    # already ended it) the UPDATE matched zero rows, yet the caller still got
+    # a run id back and believed ``summary``/``metadata`` had landed there.
+    # The task then completed with the handoff stored nowhere. Report "nothing
+    # was written" instead; every caller already reads ``None`` as "no run to
+    # attribute this to", and the transitions that owe a handoff synthesize a
+    # run of their own (see ``_end_or_synthesize_run``).
+    wrote = cur.rowcount == 1
     conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
-    return run_id
+    return run_id if wrote else None
 
 
 def _first_line(text: Optional[str], limit: int) -> str:
@@ -4151,6 +4161,51 @@ def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
         "ORDER BY COALESCE(ended_at, started_at) DESC, id DESC LIMIT 1", (task_id,),
     ).fetchone()
     return row["summary"] if row else None
+
+
+# Metadata keys the tool layer stamps onto every completed run; on their own they
+# are bookkeeping, not a handoff.
+_HANDOFF_STAMP_KEYS = frozenset({"worker_session_id"})
+
+
+def has_handoff_payload(metadata: Any) -> bool:
+    """True when ``metadata`` carries handoff content beyond the auto-stamps.
+
+    ``_handle_complete`` stamps ``worker_session_id`` onto every completion, so
+    a closing run's metadata is routinely non-empty while the actual handoff
+    (branch, PR text, artifact list, session/distill verdicts) sits on an
+    earlier run. "Non-empty object" is therefore the wrong test — and the one
+    that let downstream readers report an empty handoff.
+    """
+    if not isinstance(metadata, dict) or not metadata:
+        return False
+    return any(key not in _HANDOFF_STAMP_KEYS for key in metadata)
+
+
+def latest_handoff_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
+    """Newest run that actually carries handoff metadata; :func:`latest_run` otherwise.
+
+    ``latest_run`` is the wrong reader for a handoff whenever a task was closed
+    more than once. The usual shape: the implementer hands off with
+    ``request_review(metadata={...})`` (its run closes as ``review_requested``),
+    then the reviewer's own run closes the task with a summary — and a stamped
+    ``worker_session_id`` as the only metadata. Reading the newest run at that
+    point yields no handoff even though it is intact one run earlier, which is
+    how downstream workers and the archivist end up asking for a fallback
+    comment. ``summary`` already had such a reader (:func:`latest_summary`);
+    metadata did not.
+    """
+    rows = conn.execute(
+        "SELECT * FROM task_runs WHERE task_id = ? "
+        "  AND metadata IS NOT NULL AND TRIM(metadata) NOT IN ('', '{}', 'null') "
+        "ORDER BY COALESCE(ended_at, started_at) DESC, id DESC",
+        (task_id,),
+    ).fetchall()
+    for row in rows:
+        run = Run.from_row(row)
+        if has_handoff_payload(run.metadata):
+            return run
+    return latest_run(conn, task_id)
 
 
 def latest_summaries(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[str, str]:

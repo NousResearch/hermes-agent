@@ -61,15 +61,58 @@ def _as_positive_int(raw, default: int) -> int:
     return int(value) if value >= 1 and value == int(value) else default
 
 
-def settings_from_config(cfg) -> BotLoopGuardSettings:
-    """Read ``gateway.bot_loop_guard`` from a loaded config dict. Unusable values keep the default."""
+def _callable_takes_arg(fn: Callable) -> bool:
+    """Whether ``fn`` accepts a positional ``tier`` argument, so ``BotLoopGuard`` can call a tier-aware
+    settings callable as ``fn(tier)`` while still calling a legacy 0-arg one (e.g. a test's plain
+    ``lambda: settings`` or ``functools.partial``) as ``fn()`` -- no caller needs to change."""
+    import inspect
+
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    for param in sig.parameters.values():
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.VAR_POSITIONAL,
+        ):
+            return True
+    return False
+
+
+def _merge_tier_block(base: BotLoopGuardSettings, tier_block) -> BotLoopGuardSettings:
+    """Override only the fields ``tier_block`` sets; everything else keeps ``base`` (the flat/legacy
+    value). ``tier_block`` missing/empty returns ``base`` unchanged -- this is what keeps a config.yaml
+    with no ``claude_mode``/``local_mode`` sub-block behaving exactly as before (§3 of the design doc)."""
+    if not isinstance(tier_block, dict) or not tier_block:
+        return base
+    return BotLoopGuardSettings(
+        enabled=_as_bool(tier_block.get("enabled"), base.enabled),
+        max_events=_as_positive_int(tier_block.get("max_events"), base.max_events),
+        window_seconds=_as_positive(tier_block.get("window_seconds"), base.window_seconds),
+        cooldown_seconds=_as_positive(tier_block.get("cooldown_seconds"), base.cooldown_seconds),
+        max_hops=_as_positive_int(tier_block.get("max_hops"), base.max_hops),
+        bot_replies_expect_reply=_as_bool(tier_block.get("bot_replies_expect_reply"), base.bot_replies_expect_reply),
+    )
+
+
+def settings_from_config(cfg, tier: str = "default") -> BotLoopGuardSettings:
+    """Read ``gateway.bot_loop_guard`` from a loaded config dict. Unusable values keep the default.
+
+    ``tier`` is ``"default"`` (ignore ``claude_mode``/``local_mode`` -- legacy/flat behaviour,
+    unconditionally 100% backward compatible), ``"claude"`` or ``"local"``: for the latter two, the
+    matching ``claude_mode``/``local_mode`` sub-block overrides the flat keys above, field by field
+    (bot_loop_guard_split_design.md §3/§4.1). A sub-block that is absent or empty changes nothing, so a
+    config.yaml with no sub-blocks behaves identically for every tier.
+    """
     from hermes_cli.config import cfg_get
 
     block = cfg_get(cfg, "gateway", "bot_loop_guard", default=None)
     if not isinstance(block, dict):
         return BotLoopGuardSettings()
     defaults = BotLoopGuardSettings()
-    return BotLoopGuardSettings(
+    base = BotLoopGuardSettings(
         enabled=_as_bool(block.get("enabled"), defaults.enabled),
         max_events=_as_positive_int(block.get("max_events"), defaults.max_events),
         window_seconds=_as_positive(block.get("window_seconds"), defaults.window_seconds),
@@ -77,6 +120,9 @@ def settings_from_config(cfg) -> BotLoopGuardSettings:
         max_hops=_as_positive_int(block.get("max_hops"), defaults.max_hops),
         bot_replies_expect_reply=_as_bool(block.get("bot_replies_expect_reply"), defaults.bot_replies_expect_reply),
     )
+    if tier not in ("claude", "local"):
+        return base
+    return _merge_tier_block(base, block.get(f"{tier}_mode"))
 
 
 def configured_bot_user(platform_config, user_id) -> bool:
@@ -91,12 +137,13 @@ def configured_bot_user(platform_config, user_id) -> bool:
     return isinstance(configured, (list, tuple, set)) and str(user_id) in {str(v).strip() for v in configured}
 
 
-def load_settings() -> BotLoopGuardSettings:
-    """Settings from the live config.yaml. Defaults when the config cannot be read."""
+def load_settings(tier: str = "default") -> BotLoopGuardSettings:
+    """Settings from the live config.yaml for ``tier`` (see ``settings_from_config``). Defaults when
+    the config cannot be read."""
     try:
         from hermes_cli.config import load_config_readonly
 
-        return settings_from_config(load_config_readonly())
+        return settings_from_config(load_config_readonly(), tier)
     except Exception:
         return BotLoopGuardSettings()
 
@@ -107,16 +154,31 @@ class BotLoopGuard:
 
     def __init__(
         self,
-        settings: Callable[[], BotLoopGuardSettings] = load_settings,
+        settings: Callable[..., BotLoopGuardSettings] = load_settings,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._settings = settings
+        self._settings_takes_tier = _callable_takes_arg(settings)
         self._clock = clock
         self._lock = threading.Lock()
         self._events: dict[Hashable, deque[float]] = {}
         self._cooldown_until: dict[Hashable, float] = {}
         self._last_sweep = 0.0
         self._chains: dict[Hashable, _Chain] = {}
+
+    def _resolved_settings(self, tier: str = "default") -> BotLoopGuardSettings:
+        """``self._settings(tier)`` for a tier-aware settings callable; ``self._settings()`` for a
+        legacy 0-arg one (checked once, at construction) -- so a caller passing a plain ``lambda:
+        settings`` (every pre-tier test and caller) keeps working unchanged."""
+        return self._settings(tier) if self._settings_takes_tier else self._settings()
+
+    @staticmethod
+    def _bucket_key(conversation: Hashable, tier: str) -> Hashable:
+        """``tier="default"`` keeps the legacy bucket key (just ``conversation``) so the sliding-window
+        state is unchanged for every caller that does not pass a tier. An explicit ``"claude"``/``"local"``
+        tier gets its own bucket, so a claude-tier burst cannot spend a local-tier peer's budget or vice
+        versa (bot_loop_guard_split_design.md §4.1)."""
+        return conversation if tier == "default" else (conversation, tier)
 
     @property
     def tracked_conversations(self) -> int:
@@ -128,39 +190,51 @@ class BotLoopGuard:
         """Whether any bot exchange is open, so a human message has a chain to reset."""
         return bool(self._chains)
 
-    def blocked(self, conversation: Hashable) -> bool:
-        """True while ``conversation`` is cooling down. Reads only, so callers may ask as often as they like."""
-        if not self._settings().enabled:
+    def blocked(self, conversation: Hashable, tier: str = "default") -> bool:
+        """True while ``conversation`` (at ``tier``) is cooling down. Reads only, so callers may ask as
+        often as they like."""
+        if not self._resolved_settings(tier).enabled:
             return False
         with self._lock:
-            return self._cooldown_until.get(conversation, 0.0) > self._clock()
+            return self._cooldown_until.get(self._bucket_key(conversation, tier), 0.0) > self._clock()
 
-    def admit(self, conversation: Hashable) -> tuple[bool, str]:
-        """Count one admitted bot-authored message for ``conversation``.
-        Returns ``(allowed, state)``; state is ``disabled``, ``ok``, ``tripped`` (this message started the cooldown) or ``cooldown``."""
-        settings = self._settings()
+    def admit(self, conversation: Hashable, tier: str = "default") -> tuple[bool, str]:
+        """Count one admitted bot-authored message for ``conversation`` at ``tier`` (``"default"``,
+        ``"claude"`` or ``"local"`` -- each tier has its own budget once explicitly tiered, see
+        ``_bucket_key``). Returns ``(allowed, state)``; state is ``disabled``, ``ok``, ``tripped`` (this
+        message started the cooldown) or ``cooldown``."""
+        settings = self._resolved_settings(tier)
         if not settings.enabled:
             return True, "disabled"
         now = self._clock()
+        key = self._bucket_key(conversation, tier)
         with self._lock:
             self._sweep(now, settings)
-            if self._cooldown_until.get(conversation, 0.0) > now:
+            if self._cooldown_until.get(key, 0.0) > now:
                 return False, "cooldown"
-            events = self._events.setdefault(conversation, deque())
+            events = self._events.setdefault(key, deque())
             cutoff = now - settings.window_seconds
             while events and events[0] <= cutoff:
                 events.popleft()
             if len(events) >= settings.max_events:
-                self._cooldown_until[conversation] = now + settings.cooldown_seconds
+                self._cooldown_until[key] = now + settings.cooldown_seconds
                 events.clear()
                 return False, "tripped"
             events.append(now)
             return True, "ok"
 
-    def chain_admit(self, conversation: Hashable, sender: str, text: str, *, is_bot: bool) -> tuple[bool, str]:
-        """Apply the chain rules to one admitted inbound message. Returns ``(allowed, state)``; state is
-        ``disabled``, ``human`` (chain reset), ``ok``, ``max_hops``, ``duplicate`` or ``reply_to_reply``."""
-        settings = self._settings()
+    def chain_admit(
+        self, conversation: Hashable, sender: str, text: str, *, is_bot: bool, tier: str = "default"
+    ) -> tuple[bool, str]:
+        """Apply the chain rules to one admitted inbound message. ``tier`` is this message's sender's
+        tier; sticky-strict (bot_loop_guard_split_design.md §4.2/§5): once any message in this chain is
+        ``"claude"``, ``_Chain.ever_claude`` latches True and every later message in the same chain is
+        judged under claude-tier settings even if its own sender is ``"local"`` -- a local-tier bot
+        cannot relax the limits a claude-tier one in the same exchange is held to. ``tier="default"``
+        (the legacy default) never sets ``ever_claude``, so a caller that never passes a tier sees the
+        chain behave exactly as before. Returns ``(allowed, state)``; state is ``disabled``, ``human``
+        (chain reset), ``ok``, ``max_hops``, ``duplicate`` or ``reply_to_reply``."""
+        settings = self._resolved_settings(tier)
         if not settings.enabled:
             return True, "disabled"
         now = self._clock()
@@ -172,6 +246,10 @@ class BotLoopGuard:
             chain = self._chains.get(conversation)
             if chain is None or now - chain.updated > settings.cooldown_seconds:
                 chain = self._chains[conversation] = _Chain()
+            if tier == "claude":
+                chain.ever_claude = True
+            effective_tier = "claude" if chain.ever_claude else tier
+            settings = self._resolved_settings(effective_tier)
             chain.updated = now
             ask = (sender, hashlib.sha256(" ".join(str(text or "").split()).encode()).hexdigest())
             if ask in chain.asks:
@@ -188,7 +266,7 @@ class BotLoopGuard:
         """Record that this bot's reply to bot ``recipient`` went out. Only a delivered reply makes the
         recipient's next message an answer to an answer: a message still waiting for its turn, or one
         the turn chose to leave unanswered, does not."""
-        if not self._settings().enabled:
+        if not self._resolved_settings().enabled:
             return
         with self._lock:
             chain = self._chains.get(conversation)
@@ -211,10 +289,11 @@ class BotLoopGuard:
 
 class _Chain:
     """One bot-to-bot exchange since the last human message in a conversation."""
-    __slots__ = ("asks", "hops", "replied_to", "updated")
+    __slots__ = ("asks", "ever_claude", "hops", "replied_to", "updated")
 
     def __init__(self) -> None:
         self.hops = 0
         self.asks: set[tuple[str, str]] = set()
         self.replied_to: str = ""
         self.updated = 0.0
+        self.ever_claude: bool = False

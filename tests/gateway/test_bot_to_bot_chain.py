@@ -111,6 +111,30 @@ async def test_ingress_drops_the_bot_reply_and_still_admits_the_human(monkeypatc
     assert await runner._hm_admit_event(_event(PEER, "new question", True)) is not None
 
 
+def test_mixed_chain_sticky_strict_claude_tier_latches_for_the_whole_chain(clock):
+    """bot_loop_guard_split_design.md §4.2/§5: a mixed chain -- a local-tier bot, then a claude-tier
+    one, then the same local-tier bot again -- must stay under the stricter claude-tier ``max_hops``
+    for every later message once any one message in the chain was claude-tier, even though the
+    sender flipping back to local never itself claims ``tier=\"claude\"``."""
+    settings_by_tier = {
+        "default": BotLoopGuardSettings(max_hops=1000, window_seconds=60, cooldown_seconds=600),
+        "local": BotLoopGuardSettings(max_hops=1000, window_seconds=60, cooldown_seconds=600),
+        "claude": BotLoopGuardSettings(max_hops=2, window_seconds=60, cooldown_seconds=600),
+    }
+    guard = BotLoopGuard(settings=lambda tier="default": settings_by_tier[tier], clock=clock.now)
+
+    # Hop 1: a local-tier bot asks. Under a pure local budget (max_hops=1000) this would run forever.
+    assert guard.chain_admit(CHAT, "local_bot", "ask 1", is_bot=True, tier="local") == (True, "ok")
+    # Hop 2: a claude-tier bot answers -- this latches ever_claude for the rest of the chain.
+    assert guard.chain_admit(CHAT, "claude_bot", "ask 2", is_bot=True, tier="claude") == (True, "ok")
+    # Hop 3: the local-tier bot is back, still claiming tier="local", but the chain is already at the
+    # claude-tier max_hops=2 cap -- sticky-strict means its own (looser) tier cannot relax that.
+    assert guard.chain_admit(CHAT, "local_bot", "ask 3", is_bot=True, tier="local") == (False, "max_hops")
+    # A human message resets the chain; the same local bot can ask again under the local-only budget.
+    assert guard.chain_admit(CHAT, HUMAN, "ok continue", is_bot=False) == (True, "human")
+    assert guard.chain_admit(CHAT, "local_bot", "ask again", is_bot=True, tier="local") == (True, "ok")
+
+
 def test_bot_users_marks_a_peer_on_a_platform_without_a_bot_flag():
     config = SimpleNamespace(extra={"bot_users": ["peer_bot", " other "]})
     assert configured_bot_user(config, "peer_bot") and configured_bot_user(config, "other")

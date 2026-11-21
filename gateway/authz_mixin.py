@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from gateway.bot_loop_guard import BotLoopGuard
+from gateway.bot_model_tier import classify_tier
 from gateway.config import Platform
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import (
@@ -813,12 +814,26 @@ class GatewayAuthorizationMixin:
         platform = source.platform.value if source.platform else ""
         return (self._adapter_profile_for_source(source) or "", platform, str(source.chat_id or ""))
 
+    def _sender_tier(self, source: SessionSource) -> str:
+        """``"claude"``/``"local"`` for ``source``'s bot peer, by its adapter profile
+        (``gateway.bot_model_tier.classify_tier``, fail-closed to ``"claude"``). ``"default"`` for a
+        non-bot source, or when no adapter profile can be resolved -- the legacy/flat behaviour, so a
+        caller with no bot peer or no claude_mode/local_mode config.yaml block sees no change
+        (bot_loop_guard_split_design.md §4)."""
+        if not getattr(source, "is_bot", False):
+            return "default"
+        profile = self._adapter_profile_for_source(source)
+        if not profile:
+            return "default"
+        return classify_tier(profile)
+
     def _admit_bot_message(self, source: SessionSource) -> bool:
         """Count one authorized bot-authored inbound message. False when it trips the budget or the chat is cooling down.
         The inbound handler calls this once per message; ``_is_user_authorized`` only peeks because it is asked several times."""
         if not getattr(source, "is_bot", False):
             return True
-        allowed, state = self._bot_loop_guard_instance().admit(self._bot_loop_guard_conversation(source))
+        allowed, state = self._bot_loop_guard_instance().admit(
+            self._bot_loop_guard_conversation(source), self._sender_tier(source))
         if state == "tripped":
             logger.warning(
                 "Bot loop guard is dropping bot messages in %s chat %s: bot %s sent one message too many "
@@ -840,7 +855,8 @@ class GatewayAuthorizationMixin:
                 not is_bot and not self._bot_loop_guard_instance().tracking_chains):
             return True
         allowed, state = self._under_authorization_profile(source, lambda: self._bot_loop_guard_instance().chain_admit(
-            self._bot_loop_guard_conversation(source), str(source.user_id or ""), str(event.text or ""), is_bot=is_bot))
+            self._bot_loop_guard_conversation(source), str(source.user_id or ""), str(event.text or ""),
+            is_bot=is_bot, tier=self._sender_tier(source)))
         if not allowed:
             logger.info("Bot loop guard ended a bot exchange in %s chat %s (%s from %s; gateway.bot_loop_guard).",
                         source.platform.value if source.platform else "", source.chat_id, state, source.user_id)
@@ -865,7 +881,8 @@ class GatewayAuthorizationMixin:
         if not getattr(source, "is_bot", False):
             return True
         # The guard judges the final verdict: a chat allowlist admits a bot before the ALLOW_BOTS block runs.
-        return not self._bot_loop_guard_instance().blocked(self._bot_loop_guard_conversation(source))
+        return not self._bot_loop_guard_instance().blocked(
+            self._bot_loop_guard_conversation(source), self._sender_tier(source))
 
     def _principal_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool) -> bool:
         """The allowlist verdict alone, before the bot loop guard."""

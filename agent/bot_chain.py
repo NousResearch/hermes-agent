@@ -30,9 +30,32 @@ _CHAINS: dict[str, dict] = {}
 _LOCK = threading.Lock()
 
 
-def _settings():
+def _settings(tier: str = "default"):
+    # ``tier="default"`` resolves to exactly the old flat settings (bot_loop_guard_split_design.md §4),
+    # so a caller passing none (every pre-existing one) sees no change -- no caller needs to change.
     from gateway.bot_loop_guard import load_settings
-    return load_settings()
+    return load_settings(tier)
+
+
+def _call_settings(tier: str):
+    """Call the module-level ``_settings`` with ``tier`` if it takes one, else with no arguments at
+    all. ``_settings`` is a plain module attribute (not an object built once), and
+    ``tests/agent/test_bot_chain.py`` monkeypatches it with the legacy 0-arg ``lambda: settings`` --
+    checking arity on every call (not once at import time) is what keeps that working: no existing
+    caller or test needs to change (bot_loop_guard_split_design.md §4, mirrors
+    ``gateway.bot_loop_guard.BotLoopGuard._resolved_settings``)."""
+    from gateway.bot_loop_guard import _callable_takes_arg
+    return _settings(tier) if _callable_takes_arg(_settings) else _settings()
+
+
+def _agent_tier(agent: Any) -> str:
+    """``"claude"``/``"local"`` for ``agent``'s own running model (``gateway.bot_model_tier``,
+    fail-closed to ``"claude"`` on an unreadable/empty model). Used for this side's tier-aware limits
+    and to seed a chain's ``ever_claude`` sticky-strict flag."""
+    from gateway.bot_model_tier import classify_model_text
+    model = getattr(agent, "model", "") or ""
+    provider = getattr(agent, "provider", "") or ""
+    return classify_model_text(" ".join(str(v) for v in (model, provider) if v))
 
 
 def _hops(author: Optional[dict]) -> int:
@@ -41,7 +64,7 @@ def _hops(author: Optional[dict]) -> int:
 
 
 def _new_state(now: float) -> dict:
-    return {"hops": 0, "sent": 0, "asks": set(), "no_reply_from": None, "updated": now}
+    return {"hops": 0, "sent": 0, "asks": set(), "no_reply_from": None, "updated": now, "ever_claude": False}
 
 
 def _bound_key(agent: Any) -> str:
@@ -76,12 +99,16 @@ def on_turn_start(agent: Any, turn_author: Optional[dict], display_kind: Optiona
     (background review, side question) shares the session id but is not the conversation: no change."""
     if getattr(agent, "_turn_origin", None):
         return
-    settings = _settings()
-    if not settings.enabled:
-        return
     from gateway.response_filters import is_machinery_display_kind
     from tools.bot_mode_probe import NO_REPLY_MARKER
     now = time.monotonic()
+    agent_tier = _agent_tier(agent)
+    with _LOCK:
+        key = _bound_key(agent)
+        sticky = bool(_CHAINS.get(key, {}).get("ever_claude"))
+    settings = _call_settings("claude" if sticky or agent_tier == "claude" else "local")
+    if not settings.enabled:
+        return
     with _LOCK:
         key = _bound_key(agent)
         for stale in [k for k, v in _CHAINS.items() if now - v["updated"] > settings.cooldown_seconds]:
@@ -89,6 +116,9 @@ def on_turn_start(agent: Any, turn_author: Optional[dict], display_kind: Optiona
         state = _CHAINS.get(key)
         if isinstance(turn_author, dict) and turn_author.get("is_bot"):
             state = _CHAINS.setdefault(key, _new_state(now))
+            # Sticky-strict: once a chain has carried a claude-tier hop, it stays in claude_mode for
+            # the rest of its life, even if a later hop runs on a local-tier bot (§4).
+            state["ever_claude"] = bool(state.get("ever_claude")) or agent_tier == "claude"
             state["hops"] = max(state["hops"] + 1, _hops(turn_author))
             state["sent"] = max(state["sent"], state["hops"])
             # The sender's notify-only marker, read from the text like gateway/session_bot_outcome.py
@@ -139,7 +169,11 @@ class Admission:
 def admit_send(agent: Any, recipients: list[str], body: str) -> Admission:
     """Check one ``message_agent`` call to ``recipients`` (resolved identities, see the module doc).
     Admitted recipients reserve their ask and the call's hop until ``Admission.release``."""
-    settings = _settings()
+    agent_tier = _agent_tier(agent)
+    with _LOCK:
+        key = _bound_key(agent)
+        sticky = bool(_CHAINS.get(key, {}).get("ever_claude"))
+    settings = _call_settings("claude" if sticky or agent_tier == "claude" else "local")
     if not settings.enabled:
         return Admission()
     author = getattr(agent, "_turn_author", None) or {}
@@ -148,6 +182,7 @@ def admit_send(agent: Any, recipients: list[str], body: str) -> Admission:
     with _LOCK:
         key = _bound_key(agent)
         state = _CHAINS.setdefault(key, _new_state(time.monotonic()))
+        state["ever_claude"] = bool(state.get("ever_claude")) or agent_tier == "claude"
         bot_turn = state["hops"] > 0
         hop = state["sent"] + 1 if bot_turn else 1
         if hop > settings.max_hops:

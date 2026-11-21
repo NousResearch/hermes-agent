@@ -239,8 +239,12 @@ export const zhHantChrome = {
       thisMonth: '本月'
     },
     statusDivider: {
+      attention: '需要注意',
       working: '進行中',
-      done: '已完成'
+      idle: '今天閒置',
+      idleRecent: '閒置 1–2 天',
+      idleDays: '閒置 3–6 天',
+      idleWeek: '閒置 7 天以上'
     }
   },
 

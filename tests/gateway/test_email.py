@@ -1438,6 +1438,62 @@ class TestSenderAuthentication(unittest.TestCase):
         self.assertTrue(ok, reason)
 
 
+class TestRuntimeStatusPublishedOnConnectDisconnect(unittest.TestCase):
+    """Regression for the 'Restart to apply' badge on the dashboard Channels page.
+
+    connect() set ``_running = True`` directly but never called
+    ``_mark_connected()``, so the Email adapter never wrote its state to the
+    runtime status file while every other adapter did. The dashboard ladder
+    then rendered a permanent pending_restart badge for a healthy, polling
+    adapter. disconnect() had the symmetric gap.
+    """
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def test_connect_disconnect_publish_runtime_status(self):
+        """connect() must publish connected and disconnect() disconnected."""
+        import asyncio
+        adapter = self._make_adapter()
+        adapter._require_authenticated_sender = False
+
+        published = []
+        with patch("gateway.status.publish_runtime_status",
+                   side_effect=lambda **kw: published.append(dict(kw))):
+            mock_imap = MagicMock()
+            mock_imap.capabilities = ("IMAP4REV1", "UIDPLUS")
+            mock_imap.uid.return_value = ("OK", [b""])
+
+            with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+                 patch("smtplib.SMTP") as mock_smtp:
+                mock_smtp.return_value = MagicMock()
+                asyncio.run(adapter.connect())
+
+                poll_task = adapter._poll_task
+                if poll_task is not None:
+                    poll_task.cancel()
+
+                asyncio.run(adapter.disconnect())
+
+        states = [(w.get("platform_state"), w.get("error_code")) for w in published]
+        self.assertIn(("connected", None), states,
+                      "EmailAdapter.connect() must call _mark_connected() so the "
+                      "dashboard does not show a permanent pending_restart badge.")
+        self.assertIn(("disconnected", None), states,
+                      "EmailAdapter.disconnect() must call _mark_disconnected() so "
+                      "teardown is reflected in the runtime status file.")
+        self.assertFalse(adapter._running)
+
+
 def test_oversized_cron_output_is_delivered_as_one_whole_email():
     """No 4000-char truncation footer pointing at a file on the gateway host: the router hands
     the whole cron payload to the email adapter, which sends it as a single message."""

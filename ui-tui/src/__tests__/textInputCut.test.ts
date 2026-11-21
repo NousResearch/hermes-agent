@@ -1,6 +1,17 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { cutSelection } from '../components/textInput.js'
+import { $clipboardFeedback } from '../app/clipboardFeedbackStore.js'
+import { cutSelection } from '../lib/inputClipboard.js'
+
+beforeEach(() => {
+  vi.useFakeTimers()
+  $clipboardFeedback.set(null)
+})
+
+afterEach(() => {
+  vi.clearAllTimers()
+  vi.useRealTimers()
+})
 
 describe('cutSelection (transactional cut)', () => {
   it('removes the selection only after the clipboard write succeeds', async () => {
@@ -12,6 +23,7 @@ describe('cutSelection (transactional cut)', () => {
     expect(ok).toBe(true)
     expect(write).toHaveBeenCalledWith('hello')
     expect(removeSelection).toHaveBeenCalledOnce()
+    expect($clipboardFeedback.get()?.text).toBe('cut 5 characters')
   })
 
   it('keeps the text intact when the clipboard write fails (headless/SSH)', async () => {
@@ -25,6 +37,7 @@ describe('cutSelection (transactional cut)', () => {
     // Text must NOT be removed. A failed write would otherwise destroy it with no
     // clipboard copy to paste back.
     expect(removeSelection).not.toHaveBeenCalled()
+    expect($clipboardFeedback.get()).toBeNull()
   })
 
   it('awaits the write before removing (no fire-and-forget removal)', async () => {
@@ -49,5 +62,11 @@ describe('cutSelection (transactional cut)', () => {
     await pending
 
     expect(removeSelection).toHaveBeenCalledOnce()
+  })
+
+  it('reports a copy if the selection changed before the clipboard write completed', async () => {
+    const write = vi.fn().mockResolvedValue(true)
+    await cutSelection('🧪e\u0301', write, () => false)
+    expect($clipboardFeedback.get()?.text).toBe('copied 2 characters')
   })
 })

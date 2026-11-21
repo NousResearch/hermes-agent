@@ -509,10 +509,12 @@ _STYLE_PALETTE = (
     ("status_critical", "status_bar_critical", "@error"), ("voice_bg", "voice_status_bg", "@status_bg"),
     ("menu_bg", "completion_menu_bg", "#1a1a2e"), ("menu_current_bg", "completion_menu_current_bg", "#333355"),
     ("menu_meta_bg", "completion_menu_meta_bg", "@menu_bg"),
-    ("menu_meta_current_bg", "completion_menu_meta_current_bg", "@menu_current_bg"))
+    ("menu_meta_current_bg", "completion_menu_meta_current_bg", "@menu_current_bg"),
+    ("selection_bg", "selection_bg", "@menu_current_bg"))
 
 # prompt_toolkit style class -> format template over the resolved palette names.
 _STYLE_TEMPLATES = {
+    "selected-text": "bg:{selection_bg} noreverse",
     "input-area": "",  # terminal default fg/bg — `prompt` styles the symbol, NOT typed text
     "placeholder": "{dim} italic", "prompt": "{prompt}", "prompt-working": "{dim} italic",
     "hint": "{dim} italic",

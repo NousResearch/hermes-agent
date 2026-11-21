@@ -34,6 +34,7 @@ import {
   writeDesktopFileText
 } from '@/lib/desktop-fs'
 import { ExternalLink } from '@/lib/external-link'
+import { formatMinifiedJson } from '@/lib/format-json-preview'
 import { Check, Pencil, X } from '@/lib/icons'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { isComposerChord } from '@/lib/keybinds/chords'
@@ -740,6 +741,73 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
 
 export type PreviewViewMode = 'diff' | 'rendered' | 'source'
 
+function RenderedTextPreview({
+  filePath,
+  formattedJson,
+  text
+}: {
+  filePath?: string
+  formattedJson: string | null
+  text: string
+}) {
+  // No filePath: line refs into a reformatted copy would point at the wrong lines.
+  return formattedJson ? (
+    <SourceView language="json" text={formattedJson} />
+  ) : (
+    <MarkdownPreview filePath={filePath} text={text} />
+  )
+}
+
+// Which view toggles a text file offers, and which one opens. Minified JSON gets
+// an indented Preview; Source stays the file's own lines so line refs and edits
+// keep pointing at real line numbers.
+function planTextPreview({
+  diff,
+  filePath,
+  hasRenderedHandoff,
+  language: detected,
+  text,
+  userMode
+}: {
+  diff?: string
+  filePath: string
+  hasRenderedHandoff: boolean
+  language?: string
+  text: string
+  userMode: PreviewViewMode | null
+}) {
+  const language = shikiLanguageForFilename(filePath) || detected || 'text'
+  const isMarkdown = detected === 'markdown'
+  const formattedJson = language === 'json' ? formattedJsonFor(text) : null
+  const hasDiff = Boolean(diff?.trim())
+  const hasRendered = isMarkdown || Boolean(formattedJson)
+
+  // Order the toggle reads left→right; default lands on the most useful view.
+  const modes: PreviewViewMode[] = [
+    ...(hasRendered || hasRenderedHandoff ? (['rendered'] as const) : []),
+    'source',
+    ...(hasDiff ? (['diff'] as const) : [])
+  ]
+
+  const autoMode: PreviewViewMode = hasDiff ? 'diff' : hasRendered ? 'rendered' : 'source'
+  // The pane hands an HTML file over only once Source was picked; that pick
+  // outranks the diff-first default.
+  const mode = userMode && modes.includes(userMode) ? userMode : hasRenderedHandoff ? 'source' : autoMode
+
+  return { formattedJson, hasDiff, language, mode, modes }
+}
+
+let lastJson: { formatted: string | null; text: string } | null = null
+
+// Re-renders (hover, scroll) must not re-scan a 256 KB document each time.
+function formattedJsonFor(text: string): string | null {
+  if (lastJson?.text !== text) {
+    lastJson = { formatted: formatMinifiedJson(text), text }
+  }
+
+  return lastJson.formatted
+}
+
 export function LocalFilePreview({
   onClose,
   onSelectRendered,
@@ -1210,25 +1278,14 @@ export function LocalFilePreview({
   }
 
   if (isText && state.text !== undefined) {
-    const isMarkdown = (state.language || target.language) === 'markdown'
-    const hasDiff = Boolean(state.diff && state.diff.trim())
-    // Order the toggle reads left→right; default lands on the most useful view.
-    const modes: PreviewViewMode[] = []
-
-    if (isMarkdown || onSelectRendered) {
-      modes.push('rendered')
-    }
-
-    modes.push('source')
-
-    if (hasDiff) {
-      modes.push('diff')
-    }
-
-    const autoMode: PreviewViewMode = hasDiff ? 'diff' : isMarkdown ? 'rendered' : 'source'
-    // The pane hands an HTML file over only once Source was picked; that pick
-    // outranks the diff-first default.
-    const mode = userMode && modes.includes(userMode) ? userMode : onSelectRendered ? 'source' : autoMode
+    const { formattedJson, hasDiff, language, mode, modes } = planTextPreview({
+      diff: state.diff,
+      filePath,
+      hasRenderedHandoff: Boolean(onSelectRendered),
+      language: state.language || target.language,
+      text: state.text,
+      userMode
+    })
 
     const selectMode = (next: PreviewViewMode) => {
       if (next === 'rendered' && onSelectRendered) {
@@ -1275,7 +1332,7 @@ export function LocalFilePreview({
         />
         <div className="min-h-0 flex-1 overflow-auto">
           {mode === 'rendered' ? (
-            <MarkdownPreview filePath={filePath} text={state.text} />
+            <RenderedTextPreview filePath={filePath} formattedJson={formattedJson} text={state.text} />
           ) : mode === 'diff' ? (
             <FileDiffPanel
               className="mx-0 mb-0 h-full max-h-none"
@@ -1285,11 +1342,7 @@ export function LocalFilePreview({
               showLineNumbers
             />
           ) : (
-            <SourceView
-              filePath={filePath}
-              language={shikiLanguageForFilename(filePath) || state.language || 'text'}
-              text={state.text}
-            />
+            <SourceView filePath={filePath} language={language} text={state.text} />
           )}
         </div>
       </div>

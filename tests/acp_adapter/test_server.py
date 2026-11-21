@@ -1,6 +1,7 @@
 """Tests for acp_adapter.server — HermesACPAgent ACP server."""
 
 import asyncio
+import contextlib
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -442,6 +443,33 @@ class TestPrompt:
         assert second.stop_reason == "end_turn"
         assert state.queued_prompts == []
         assert state.agent.run_conversation.call_count == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("executor_raises", [False, True])
+    async def test_prompt_surfaces_turn_failures_as_refusals(self, agent, mock_manager, executor_raises):
+        """Provider and executor failures are visible and do not look like completed turns (#138975)."""
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.agent.model, state.agent.provider = "test-model", "openrouter"
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        error = RuntimeError("provider returned HTTP 429")
+        if executor_raises:
+            turn = patch.object(HermesACPAgent, "_run_agent_turn", side_effect=error)
+        else:
+            state.agent.run_conversation = MagicMock(side_effect=error)
+            turn = contextlib.nullcontext()
+
+        with turn:
+            response = await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="hi")], session_id=resp.session_id,
+            )
+
+        assert response.stop_reason == "refusal"
+        updates = [call.args[1] for call in mock_conn.session_update.await_args_list if len(call.args) == 2]
+        assert any("Error: provider returned HTTP 429" in update.content.text for update in updates)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("executor_raises", [False, True])

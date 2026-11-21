@@ -129,5 +129,49 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
     assert head == "wt/sibling"
 
 
+def test_resolve_worktree_reuses_own_checkout_when_linked_probe_fails(tmp_path, monkeypatch):
+    """Regression for #140722: a failed probe must not nest the task worktree."""
+    workspace = tmp_path / ".worktrees" / "t_own"
+    workspace.mkdir(parents=True)
+    (workspace / ".git").write_text("gitdir: /repo/.git/worktrees/t_own\n", encoding="utf-8")
+
+    class _Task:
+        id = "t_own"
+        workspace_path = str(workspace)
+        branch_name = "wt/t_own"
+
+    monkeypatch.setattr(kbw, "_is_linked_worktree_checkout", lambda _path: False)
+    monkeypatch.setattr(kbw, "_git_toplevel", lambda _path: workspace)
+    monkeypatch.setattr(kbw, "_git_current_branch", lambda _path: "wt/t_own")
+    monkeypatch.setattr(
+        kbw,
+        "_anchored_worktree",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not re-anchor own worktree")),
+    )
+
+    resolved, branch = kbw._resolve_worktree_workspace(_Task())
+
+    assert resolved == workspace.resolve()
+    assert branch == "wt/t_own"
 
 
+def test_resolve_worktree_anchors_repository_root_when_linked_probe_fails(tmp_path, monkeypatch):
+    """A repository root still creates the task's canonical worktree."""
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+
+    class _Task:
+        id = "t_own"
+        workspace_path = str(repo)
+        branch_name = "wt/t_own"
+
+    expected = repo / ".worktrees" / "t_own"
+    monkeypatch.setattr(kbw, "_is_linked_worktree_checkout", lambda _path: False)
+    monkeypatch.setattr(kbw, "_git_toplevel", lambda _path: repo)
+    monkeypatch.setattr(kbw, "_git_current_branch", lambda _path: "wt/t_own")
+    monkeypatch.setattr(kbw, "_anchored_worktree", lambda *_args: (expected, "wt/t_own"))
+
+    resolved, branch = kbw._resolve_worktree_workspace(_Task())
+
+    assert resolved == expected
+    assert branch == "wt/t_own"

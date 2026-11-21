@@ -1,0 +1,22 @@
+name: cortex-zero-adaptive
+repo: https://github.com/TheRealBrofessor/cortex-zero-adaptive
+sha: 51b08ad54d231af376395be74c830e47882f8443
+title: Cortex Zero Adaptive
+description: "Local 1B model directed adaptive browser automation with failure recovery. Implements the full OBSERVE→REASON→SELECT→EXECUTE→ANALYZE→ADAPT→VERIFY loop using llama-3.2-1b-cz-router (1.2B params, 128K context). The model selects actions from a structured catalog (baf-navigate, baf-click, baf-extract, baf-evaluate, baf-wait), encounters failures, analyzes them, and autonomously chooses alternative approaches — all within authorized engagement boundaries enforced by domain allowlists, operation allowlists, and fail-closed policy. Three mock demonstrations (navigation failure, element not found, policy blocked) and real BAF integration with 4/4 validation tests passing. Independent verification infrastructure separates model self-report from deterministic flag verification. Evidence logging to JSONL for audit trail. Reuses Cortex Zero Engine deterministic routing and BAF AutomationServer infrastructure."
+maintainer: TheRealBrofessor
+tier: community
+category: tools
+requires_hermes: ">=0.21.0"
+version: "0.1.0"
+docs_url: https://github.com/TheRealBrofessor/cortex-zero-adaptive/blob/51b08ad54d231af376395be74c830e47882f8443/README.md
+platforms:
+  - linux
+capabilities:
+  provides_tools:
+    - cz_adaptive.run
+    - cz_adaptive.status
+    - cz_adaptive.demo
+    - cz_adaptive.config
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -16,6 +16,7 @@ import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
+import { $chatLayout, setChatLayout } from '@/store/chat-layout'
 import { $chatTextScale, CHAT_TEXT_SCALE_PRESETS, setChatTextScale } from '@/store/chat-text-scale'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
@@ -424,6 +425,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
+  const chatLayout = useStore($chatLayout)
   const zoomPercent = useStore($zoomPercent)
   const chatTextScale = useStore($chatTextScale)
   const embedMode = useStore($embedMode)
@@ -700,6 +702,25 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                 description={a.chatTextScaleDesc}
                 id={settingElementId(ids.chatTextScale)}
                 title={a.chatTextScaleTitle}
+              />
+
+              <ListRow
+                action={
+                  <SegmentedControl
+                    onChange={id => {
+                      triggerHaptic('selection')
+                      setChatLayout(id === 'bubbles' ? 'bubbles' : 'stacked')
+                    }}
+                    options={[
+                      { id: 'stacked', label: a.chatLayoutStacked },
+                      { id: 'bubbles', label: a.chatLayoutBubbles }
+                    ]}
+                    value={chatLayout}
+                  />
+                }
+                description={a.chatLayoutDesc}
+                id={settingElementId(ids.chatLayout)}
+                title={a.chatLayoutTitle}
               />
 
               <div id={settingElementId(ids.chatFont)}>

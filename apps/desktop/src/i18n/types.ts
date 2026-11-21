@@ -789,6 +789,10 @@ export interface Translations extends NoticeTranslations {
       hideThreadTimelineDesc: string
       reasoningCollapsedTitle: string
       reasoningCollapsedDesc: string
+      chatLayoutTitle: string
+      chatLayoutDesc: string
+      chatLayoutStacked: string
+      chatLayoutBubbles: string
       chatTextScaleTitle: string
       chatTextScaleDesc: string
       uiScaleTitle: string

@@ -214,8 +214,90 @@ def arm_orphan_close(authority, session_id, reason, grace):
         asyncio.get_running_loop(), grace, partial(_fire_orphan_close, authority, session_id, reason))
 
 
+def _oneshot_orphan_state(authority, session_id):
+    """Blocking: ``(is_oneshot, active_rows)`` for a local session whose last viewer disconnected."""
+    from gateway.session_authority import admission_row
+    store = authority_persistence(authority)
+    is_oneshot = False
+    try:
+        receipt = store.bindings.receipt(session_id)
+        row = store.sessions.get(receipt.current_target)
+        is_oneshot = (
+            receipt.policy.get('source') == 'oneshot'
+            or (row is not None and row.source == 'oneshot')
+        )
+    except (AuthorityRefusal, KeyError, TypeError):
+        row = store.sessions.get(session_id)
+        is_oneshot = row is not None and row.source == 'oneshot'
+    if not is_oneshot:
+        return False, []
+    rows = [
+        admission_row(r)
+        for r in store.admissions.list(session_id=session_id, pending_only=True)
+        if r.status in ('queued', 'started')
+    ]
+    return True, rows
+
+
+def _interrupt_running_turn_as_owner(authority, ref, live):
+    """Hard-interrupt an in-flight turn on *ref* when no viewer remains to send ``session.interrupt``."""
+    worker = getattr(authority, '_managed_workers', {}).get(ref.session_id)
+    if worker is not None:
+        with contextlib.suppress(Exception):
+            worker.control({'type': 'stop'})
+    handle = authority._handle(ref)
+    if handle.execution_state != 'running':
+        return
+    generation = handle.execution_generation
+    agent = None
+    with live.event_stream.lock:
+        adopted_generation, agent = authority.adopted.get(ref.session_id, (None, None))
+        if adopted_generation != generation:
+            returned = (
+                live.event_stream.execution.get('execution_generation') == generation
+                and authority.executing.get(ref.session_id) != generation
+            )
+            agent = None if returned else authority.agent(ref)
+            if not returned and not authority._runs_own_agent(ref):
+                authority.pending_stops[ref.session_id] = generation
+        if agent is not None:
+            authority.delivered_stops[ref.session_id] = generation
+    if agent is not None:
+        from agent.interrupt_compat import request_hard_interrupt
+        request_hard_interrupt(agent, 'One-shot viewer disconnected', tool_reason='viewer disconnected')
+
+
 async def arm_detached_orphan_close(authority, session_id):
-    """``session.detach`` with no ``end_reason`` (a killed terminal, a dropped socket) left no viewer."""
+    """``session.detach`` with no ``end_reason`` (a killed terminal, a dropped socket) left no viewer.
+
+    For ``source='oneshot'`` sessions with an active or queued turn (and no open interactive
+    approval/clarify gate awaiting ``hermes --resume``), cancel in-flight work immediately instead
+    of leaving an orphaned background turn mutating files after client SIGTERM / timeout.
+    """
+    live = authority.sessions.get(session_id)
+    if live is not None and not live.subscribers and not is_history_mount(live) and not _stopping(authority):
+        from gateway.session_server_requests import open_requests
+        if not open_requests(live.event_stream, session_id):
+            is_oneshot, active_rows = await asyncio.to_thread(_oneshot_orphan_state, authority, session_id)
+            if is_oneshot:
+                from gateway.session_contract import SessionRef
+                ref = SessionRef(authority.profile_id, session_id)
+                running = (
+                    bool(active_rows)
+                    or authority._handle(ref).execution_state == 'running'
+                    or session_id in getattr(authority, '_managed_workers', {})
+                )
+                if running and not live.subscribers and not _stopping(authority):
+                    cancel_orphan_close(authority, session_id)
+                    for row in active_rows:
+                        if row['status'] == 'queued' and not live.subscribers:
+                            with contextlib.suppress(AuthorityRefusal):
+                                await authority._commit_cancel(ref, row['admission_id'], authority._receipt(row))
+                    if not live.subscribers:
+                        _interrupt_running_turn_as_owner(authority, ref, live)
+                        await close_viewer_session(authority, session_id, 'oneshot_disconnect')
+                        return
+
     def grace():
         return orphan_close_grace(authority) if orphan_candidate(authority, session_id) else 0
     arm_orphan_close(authority, session_id, 'ws_orphan_reap', await asyncio.to_thread(grace))

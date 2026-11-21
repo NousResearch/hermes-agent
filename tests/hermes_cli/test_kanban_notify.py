@@ -1050,6 +1050,30 @@ def test_create_with_parents_inherits_delivery_metadata(kanban_home):
         conn.close()
     _assert_full_inherited_sub(subs)
 
+@pytest.mark.parametrize("flag,mode,inherited", [
+    (None, "notify", True),            # default: unchanged
+    (True, "notify", True),
+    (False, "notify", False),          # opt-out drops passive subs
+    (False, "notify+wake", True),      # wake subs always inherit
+    (False, "wake", True),
+])
+def test_inherit_passive_notify_config(kanban_home, flag, mode, inherited):
+    if flag is not None:
+        (kanban_home / "config.yaml").write_text(
+            f"kanban:\n  inherit_passive_notify: {str(flag).lower()}\n")
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee=None)
+        kbn.add_notify_sub(
+            conn, task_id=parent, platform="telegram", chat_id="c1", delivery_mode=mode,
+        )
+        child = kb.create_task(conn, title="child", assignee="w1", parents=[parent])
+        subs = kbn.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+    assert len(subs) == (1 if inherited else 0)
+
+
 # ---------------------------------------------------------------------------
 # Stale done-subscription GC (purge_stale_done_notify_subs)
 # ---------------------------------------------------------------------------

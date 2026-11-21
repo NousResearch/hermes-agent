@@ -87,18 +87,12 @@ const plugin: HermesPlugin = {
     ctx.i18n.register(KANBAN_LOCALES)
     ctx.onDispose(bindApi(ctx.rest, ctx.storage, ctx.socket, { os: ctx.os, t: ctx.i18n.t }))
 
-    // The plugin command pattern: ONE action id (`kanban.newTask`) wired into
-    // two areas — a keybind (dispatch + rebindable panel row) and a palette row
-    // whose `action` field points back at it, so ⌘K shows the live combo. The
-    // handler is route-independent: it navigates to the page and parks the
-    // request in `$newTaskLane`, so the hotkey works from anywhere, not just
-    // while the board happens to be mounted.
-    //
-    // ⌘⌥N / Ctrl+Alt+N: `mod+n` is `session.new` and `mod+shift+n` is
-    // `session.newWindow`, both core built-ins a plugin can't shadow. Adding
-    // Alt keeps the "N for new" mnemonic on a chord core leaves free — it uses
-    // `alt` only for the `mod+alt+1…9` profile slots, never with a letter. That
-    // makes ⌘⌥<letter> the natural namespace for plugin commands.
+    // Navigation-only: keep the remembered board and any task draft intact.
+    // The palette and rebindable shortcut share this handler.
+    const openBoard = () => host.navigate('/kanban')
+
+    // New-task navigation separately parks a creation request for the page.
+    // Neither command depends on the board already being mounted.
     const newTask = () => {
       $newTaskLane.set('triage')
       host.navigate('/kanban')
@@ -132,9 +126,10 @@ const plugin: HermesPlugin = {
           area: PALETTE_AREA,
           data: {
             id: 'kanban.open',
+            action: 'kanban.open',
             label: ctx.i18n.t('openBoard'),
             keywords: ['kanban', 'board', 'tasks', 'agents'],
-            run: () => host.navigate('/kanban')
+            run: openBoard
           } satisfies PaletteContribution
         },
         {
@@ -157,6 +152,19 @@ const plugin: HermesPlugin = {
             defaults: ['mod+alt+n'],
             label: ctx.i18n.t('newTaskCommand'),
             run: newTask
+          } satisfies KeybindContribution
+        },
+        // Keep the older action first: an existing new-task rebind to this
+        // chord retains dispatch priority and the shortcuts panel flags it.
+        {
+          id: 'open',
+          area: KEYBINDS_AREA,
+          data: {
+            id: 'kanban.open',
+            category: 'view',
+            defaults: ['mod+alt+k'],
+            label: ctx.i18n.t('openBoard'),
+            run: openBoard
           } satisfies KeybindContribution
         }
       ])

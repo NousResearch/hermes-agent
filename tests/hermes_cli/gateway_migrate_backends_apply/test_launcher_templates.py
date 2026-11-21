@@ -34,10 +34,14 @@ class TemplateHost(FakeHost):
         return {"PATH": "/usr/bin", "SOMEVAR": _LAUNCHER_ONLY}
 
     def unit_environment(self, unit, scope):
-        # The real gateway_environment() reads the gateway's unit through this; the old unit is its launcher.
+        # gateway_environment() reads the gateway's unit through this; the old unit is its launcher.
         if unit == "hermes-dashboard.service":
             return self.process_env(_BACKEND_PID), None
         return dict(self.gateway_env), None
+
+    def gateway_environment(self):
+        # An installed gateway unit, whatever this machine has (test_gateway_service_environment: not yet installed).
+        return self.unit_environment("hermes-gateway.service", "user")
 
 
 def _dotenv(home, text):

@@ -356,7 +356,10 @@ class AuthorityConnection:
             if method in _PROFILE_IMPLICIT:
                 params = {key: value for key, value in params.items() if key != 'profile'}
         from gateway.session_presence import touch
-        touch(self, method, params)  # the user's own input, even when the request is then refused
+        try:
+            touch(self, method, params)  # the user's own input, even when the request is then refused
+        except Exception:  # health: allow BLE001 -- observing input never fails the request
+            logger.debug('presence touch failed for %s', method, exc_info=True)
         ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
         from tui_gateway.contracts.registry import (
             CANONICAL_METHODS, METHODS, canonical_param_problems, check_params_accepted, check_result,

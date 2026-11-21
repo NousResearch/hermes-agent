@@ -12,10 +12,13 @@ viewer's response frame.
 from __future__ import annotations
 
 import contextlib
+import logging
 import threading
 import uuid
 
 from tools.clarify_batch import settle_batch
+
+logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT_S = 120  # main: ``_ask("sudo", ..., timeout=120)``
 _POLL_S = 0.25
@@ -97,7 +100,10 @@ def resolve(frame, *, session_ok=lambda session_id, events: True, answered=None)
     pending.value = value if isinstance(value, str) else ""
     pending.result = result if isinstance(result, dict) else None
     if answered is not None and pending.replay and "error" not in frame:
-        answered(pending.session_id)
+        try:
+            answered(pending.session_id)
+        except Exception:  # health: allow BLE001 -- observing an answer never changes its settlement
+            logger.debug("answered() failed for %s", frame["id"], exc_info=True)
     pending.event.set()
     return True
 

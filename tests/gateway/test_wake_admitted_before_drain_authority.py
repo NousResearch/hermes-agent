@@ -124,10 +124,10 @@ async def test_a_wake_claimed_just_before_a_drain_runs_rather_than_settling_unru
     )
     stamp = authority._stamp_claim
 
-    def drain_begins_after_commit(ref, live, row):
+    def drain_begins_after_commit(ref, live, row, **kwargs):
         if row:
             runner._draining = True
-        return stamp(ref, live, row)
+        return stamp(ref, live, row, **kwargs)
 
     monkeypatch.setattr(authority, "_stamp_claim", drain_begins_after_commit)
     await asyncio.wait_for(deliver_wake(adapter, text=WAKE, source=source), 10)

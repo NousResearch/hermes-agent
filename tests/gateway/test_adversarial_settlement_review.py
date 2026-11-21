@@ -124,11 +124,11 @@ async def test_post_commit_cleanup_error_still_publishes_the_committed_completio
         monkeypatch.setattr(session_ingress_media, 'release_admission_media', unavailable_once)
     else:
         original = authority._publish_pending
-        def unavailable_after_completion(ref):
+        def unavailable_after_completion(ref, **kwargs):
             if any(frame['params']['type'] == 'message.complete' for frame in frames):
                 monkeypatch.setattr(authority, '_publish_pending', original)
                 raise OSError('idle publication temporarily unavailable')
-            return original(ref)
+            return original(ref, **kwargs)
         monkeypatch.setattr(authority, '_publish_pending', unavailable_after_completion)
     with db:
         receipt = await authority.submit(ACTOR, Submission('cleanup', REF, {'text': 'work'}, 'queue'))

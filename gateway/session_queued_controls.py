@@ -35,10 +35,12 @@ def handlers(connection):
             'prompt.replace_queued': partial(replace_queued, connection)}
 
 
-def _interactive(authority, session_id):
+def _interactive(authority, session_id, session_source=None):
     """The session's frozen launch source (a local session's row records it) names a local surface.
     Callers hold the stream lock: one plain read per session, cached (``get_session`` flushes token
     counts, a write). Under WAL it takes the lock-free reader pool, as ``_pending_rows`` does there."""
+    if session_source is not None:
+        return session_source in _INTERACTIVE_SOURCES
     sources = authority.launch_sources
     if session_id not in sources:
         found = authority_persistence(authority).sessions.list_row(session_id)
@@ -48,27 +50,32 @@ def _interactive(authority, session_id):
     return sources[session_id] in _INTERACTIVE_SOURCES
 
 
-def queued_controls(authority, row):
+def queued_controls(authority, row, *, session_source=None):
     """The queued-row verbs this owner serves for ``row``: a client shows only these (an older owner
     lists none, so its clients show none)."""
     payload = row.get('payload') or {}
     text = payload.get('text')
     if (row.get('status') != 'queued' or set(payload) - _TEXT_ONLY or not isinstance(text, str) or not text.strip()
             or (payload.get('display_v1') or {}).get('kind') == 'hidden'
-            or not _interactive(authority, row['target_session_id'])):
+            or not _interactive(authority, row['target_session_id'], session_source=session_source)):
         return []
     return ['steer', 'replace']
 
 
-def pending_rows(authority, ref):
+def pending_rows(authority, ref, *, admission_rows=None, transfer_rows=None):
     """The pending rows a viewer is shown, plus each queued admission in transfer to the running
     claim: listed ``started`` and ``steering``, because it may still go back to its queue place, and a
     client must not retire an admission it no longer sees. The caller holds the stream lock."""
     from gateway.session_authority import admission_row
-    rows = {row['admission_id']: row for row in authority._pending_rows(ref)}
+    if admission_rows is None:
+        rows = {row['admission_id']: row for row in authority._pending_rows(ref)}
+    else:
+        rows = {row['admission_id']: row for row in
+                authority._pending_rows(ref, admission_rows=admission_rows)}
     entry = authority.steer_transfers.get(ref.session_id)
     for admission_id in entry[1] if entry is not None else ():
-        row = authority_persistence(authority).admissions.get(admission_id=admission_id)
+        row = (authority_persistence(authority).admissions.get(admission_id=admission_id)
+               if transfer_rows is None else transfer_rows.get(admission_id))
         if row is not None and row.status == 'terminal' and row.outcome == STEERING:
             rows[admission_id] = admission_row(row)
     return sorted(rows.values(), key=lambda row: row['seq'])

@@ -7,12 +7,15 @@ The authority test is "does this worker act for a ROUTED home", exactly as ``ser
 decides it. The secret scope bound around the env build is what supplies B's OWN values for the
 dispatcher's declared ``terminal.env_passthrough`` names.
 """
+import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban_db_dispatch
+from hermes_cli.kanban_db import Task
 from tools.terminal_scope import get_terminal_scope
 
 
@@ -159,3 +162,40 @@ def test_served_child_env_for_another_profile_drops_the_launch_home_mode(profile
     env = served_profile_child_env(target_home=str(profile_b))
     assert "TERMINAL_HOME_MODE" not in env, (
         f"B's child inherited the launch profile's home mode: {env['TERMINAL_HOME_MODE']!r}")
+
+
+def test_worker_import_uses_runtime_package_when_task_workspace_shadows_it(tmp_path):
+    runtime_package = tmp_path / "runtime" / "hermes_cli"
+    runtime_package.mkdir(parents=True)
+    (runtime_package / "__init__.py").write_text("", encoding="utf-8")
+    worker_module = runtime_package / "kanban_worker_client.py"
+    worker_module.write_text(
+        "import json\n"
+        "from pathlib import Path\n"
+        "print(json.dumps({'module': str(Path(__file__).resolve()), 'cwd': str(Path.cwd())}))\n",
+        encoding="utf-8",
+    )
+
+    workspace = tmp_path / "workspace"
+    workspace_package = workspace / "hermes_cli"
+    workspace_package.mkdir(parents=True)
+    (workspace_package / "__init__.py").write_text("", encoding="utf-8")
+
+    task = Task(
+        id="t_import", title="import shadow probe", body=None, assignee="default",
+        status="claimed", priority=0, created_by=None, created_at=0, started_at=None,
+        completed_at=None, workspace_kind="dir", workspace_path=str(workspace),
+        claim_lock=None, claim_expires=None, tenant=None,
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(runtime_package.parent)
+    result = subprocess.run(
+        kanban_db_dispatch._worker_argv(task, "default", None),
+        cwd=workspace, env=env, capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "module": str(worker_module.resolve()),
+        "cwd": str(workspace.resolve()),
+    }

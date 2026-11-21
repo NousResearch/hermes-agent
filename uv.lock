@@ -2606,6 +2606,8 @@ dev = [
 test = [
     { name = "anthropic" },
     { name = "distlib", marker = "sys_platform == 'win32'" },
+    { name = "fal-client" },
+    { name = "keyring" },
 ]
 
 [package.metadata]
@@ -2794,6 +2796,8 @@ dev = [
 test = [
     { name = "anthropic", specifier = "==0.125.0" },
     { name = "distlib", marker = "sys_platform == 'win32'", specifier = "==0.4.4" },
+    { name = "fal-client", specifier = "==0.14.1" },
+    { name = "keyring", specifier = "==25.7.0" },
 ]
 
 [[package]]

@@ -63,6 +63,62 @@ async def test_cancel_queued_settles_native_waiter_and_publishes_terminal_comple
 
 
 @pytest.mark.asyncio
+async def test_cancel_queued_authorizes_and_restores_evicted_live_session_before_lookup(tmp_path, monkeypatch):
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    with db:
+        queued = await _submit(authority, 'evicted-live')
+        live = authority.sessions.pop('s')
+        restore_calls = []
+        real_authorize = authority.authorize
+
+        def restore_before_authorize(actor, ref, capability):
+            if ref.session_id not in authority.sessions:
+                restore_calls.append((ref.session_id, capability))
+                authority.sessions[ref.session_id] = live
+            return real_authorize(actor, ref, capability)
+
+        monkeypatch.setattr(authority, 'authorize', restore_before_authorize)
+        cancelled = await authority.cancel_queued(ACTOR, REF, queued.admission_id)
+
+        assert (cancelled.status, cancelled.outcome) == ('terminal', 'cancelled')
+        assert restore_calls == [('s', 'session:submit')]
+        assert authority.sessions['s'] is live
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_missing_durable_session_returns_not_found(tmp_path, monkeypatch):
+    db, authority = _authority(tmp_path, monkeypatch)
+    authority.sessions.pop('s')
+    missing_ref = SessionRef('owned', 'absent')
+    with db:
+        with pytest.raises(AuthorityRefusal) as exc:
+            await authority.cancel_queued(ACTOR, missing_ref, 'missing-admission')
+    assert exc.value.reason == 'not_found'
+
+
+@pytest.mark.asyncio
+async def test_stop_run_restores_evicted_api_session_before_cancelling_queued_row(owner, api, monkeypatch):
+    from gateway.platforms.api_server_authority_runs import stop_run
+    from gateway.session_api_turn import admit_api_turn
+
+    monkeypatch.setattr(owner, '_schedule', lambda ref: None)
+    _authority, ref, admitted = admit_api_turn(
+        api, session_id='api-session', request_id='queued-run', user_message='hello',
+        conversation_history=[], gateway_session_key='api-conversation', bind_declared_conversation=True)
+    assert admitted['status'] == 'queued'
+    evicted = owner.sessions.pop(ref.session_id)
+
+    result = await stop_run(api, 'queued-run')
+
+    assert result['status'] == 'cancelled'
+    assert ref.session_id in owner.sessions and owner.sessions[ref.session_id] is not evicted
+    row = owner.persistence.admissions.get(admission_id=admitted['admission_id'])
+    assert row is not None
+    assert (row.status, row.outcome) == ('terminal', 'cancelled')
+
+
+@pytest.mark.asyncio
 async def test_cancelling_the_head_of_a_paused_fifo_resumes_its_successor(tmp_path, monkeypatch):
     from gateway.config import Platform
     from gateway import session_api_turn, session_finite

@@ -574,12 +574,15 @@ dev = [
   "ruff==0.15.22",
   "setuptools==84.1.0",
 ] # starlette: CVE-2026-48710; setuptools: 84.1.0 (GHSA-xmj3-9gf7-h52w; torch >=2.13 requires setuptools 83+)
-# Native launcher and provider-catalog E2E dependencies belong in the test
-# environment, not the core runtime. Keep the Anthropic SDK at the same
-# reviewed version as the optional runtime extra above.
+# Native launcher and provider-catalog test dependencies belong in this
+# isolated environment, not the core runtime. These exact pins also exercise
+# optional FAL SDK and OS-keychain contracts without moving either extra into
+# `[all]`.
 test = [
   "distlib==0.4.4; sys_platform == 'win32'",
   "anthropic==0.125.0",
+  "fal-client==0.14.1",
+  "keyring==25.7.0",
 ]
 
 [build-system]

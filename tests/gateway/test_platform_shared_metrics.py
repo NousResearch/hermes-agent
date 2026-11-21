@@ -121,7 +121,9 @@ def test_one_logical_delivery_is_one_row_whatever_the_retries(rows):
     ]
 
 
-def test_first_reply_latency_is_one_row_per_turn_stopped_only_by_reply_text(rows):
+def test_first_reply_latency_is_one_row_per_turn_stopped_only_by_reply_text(rows, monkeypatch):
+    # This checks row routing/count, not wall time; asyncio startup can exceed the 2s bucket.
+    monkeypatch.setattr(smg, "time", SimpleNamespace(monotonic=lambda: 1.0))
     adapter = _Adapter()
     smg.start_reply_clock(SimpleNamespace(platform=Platform.TELEGRAM, chat_id="42"))
     asyncio.run(adapter._send_with_retry("42", "⏳ still working on the previous message"))  # busy ack

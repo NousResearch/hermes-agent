@@ -98,20 +98,23 @@ def test_cold_cli_builds_own_runtime_discovers_plugins_and_repairs_app(tmp_path,
     source = Path(__file__).resolve().parents[2]
     repo = tmp_path / "source"
     repo.mkdir()
-    for name in ("pm", "hermes_cli", "hermes_agent", "utils"):
+    for name in ("pm", "hermes_cli", "hermes_agent", "agent", "hermes_platform", "tools", "utils"):
         shutil.copytree(source / name, repo / name,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    for name in ("hermes_constants.py", "hermes_yaml.py",
-                 "hermes_bootstrap.py"):
+    for name in ("hermes_constants.py", "hermes_yaml.py", "hermes_bootstrap.py",
+                 "hermes_dir_acl.py", "hermes_scope.py"):
         shutil.copy2(source / name, repo / name)
     # No production application lock or metadata enters this source snapshot.
     recipe = tomllib.loads((repo / "pm" / "pyproject.toml").read_text())
     yaml_requirement = next(dep for dep in recipe["project"]["dependencies"]
                             if dep.startswith("ruamel.yaml"))
+    app_recipe = tomllib.loads((source / "pyproject.toml").read_text())
+    dotenv_requirement = next(dep for dep in app_recipe["project"]["dependencies"]
+                              if dep.startswith("python-dotenv"))
     (repo / "pyproject.toml").write_text(
         '[project]\nname="cold-pm-app"\nversion="0.0.0"\n'
         'requires-python=">=3.14,<3.15"\n'
-        f'dependencies=[{json.dumps(yaml_requirement)}]\n'
+        f'dependencies=[{json.dumps(yaml_requirement)},{json.dumps(dotenv_requirement)}]\n'
         '[project.optional-dependencies]\nall=[]\n'
         '[tool.uv]\npackage=false\n', encoding="utf-8",
     )

@@ -17,6 +17,7 @@ import queue
 import threading
 import time
 from agent.i18n import t
+from agent.interrupt_compat import _accepts_keyword
 from agent.session_activity import format_iteration_progress
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
 from contextlib import nullcontext, suppress
@@ -1470,7 +1471,10 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             if _agent.model == _cfg_model or self._is_intentional_model_switch(session_key, _agent, _cfg_model):
                 return
         _agent._evicted_on_fallback = session_key or True
-        self._evict_cached_agent(session_key)
+        if _accepts_keyword(self._evict_cached_agent, "release_after_turn"):
+            self._evict_cached_agent(session_key, release_after_turn=True)
+        else:
+            self._evict_cached_agent(session_key)
 
     async def _run_agent_finalize_streaming_tts(self, turn_ctx: TurnContext, adapter: Any) -> None:
         """Finalize the streaming-TTS consumer on the outer event-loop thread (covers early returns

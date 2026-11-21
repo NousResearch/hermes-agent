@@ -836,7 +836,7 @@ class GatewayAgentCacheMixin:
         return hashlib.sha256(repr(key_tuple).encode("utf-8")).hexdigest()
 
     def _evict_cached_agent(self, session_key: str, *, commit_memory: bool = False,
-                            release_after_turn: bool = False) -> None:
+                            release_after_turn: bool = True) -> None:
         """Remove a cached agent (/new, /model, ...) and soft-release its LLM client pool (AIAgent
         holds reference cycles; without it RSS grows across /new). Soft = frees clients and child
         subagents but PRESERVES terminal sandbox / browser / bg processes since the session may
@@ -875,7 +875,7 @@ class GatewayAgentCacheMixin:
         if agent is None or agent is _AGENT_PENDING_SENTINEL:
             return
         if id(agent) in self._running_agent_ids():
-            if release_after_turn and state is not None:
+            if release_after_turn and state is not None and agent not in state.turn.retired_agents:
                 state.turn.retired_agents.append(agent)
             return
         if commit_memory:

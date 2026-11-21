@@ -96,6 +96,70 @@ class TestNoninteractiveGitEnv:
         assert values["sequence.editor"] == "true"
         assert values["diff.external"] == ""
 
+    def test_transport_keys_survive_config_isolation(self, tmp_path, monkeypatch):
+        """A host that needs its user git config to reach the remote keeps that route (#141301).
+
+        Without the replay, the isolated probe git loses the proxy/TLS settings a machine needs
+        to dial github.com at all: ``hermes update --check`` on ``stable`` then fails with
+        ``ls-remote ... exit 128`` while ``main`` (no tag probe) works on the same box.
+        """
+        global_config = tmp_path / "gitconfig"
+        global_config.write_text(
+            "[http]\n"
+            "\tproxy = socks5h://127.0.0.1:10808\n"
+            "\tsslBackend = openssl\n"
+            "\tschannelCheckRevoke = false\n"
+            "\tpostBuffer = 524288000\n"
+            "[core]\n"
+            "\teditor = vim\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+        monkeypatch.delenv("GIT_CONFIG_NOSYSTEM", raising=False)
+
+        # Base env carries the two config paths only, so the host's own git config cannot leak in.
+        env = noninteractive_git_env(
+            {"GIT_CONFIG_GLOBAL": str(global_config), "GIT_CONFIG_SYSTEM": os.devnull}
+        )
+        injected = {
+            env[f"GIT_CONFIG_KEY_{idx}"]: env[f"GIT_CONFIG_VALUE_{idx}"]
+            for idx in range(int(env["GIT_CONFIG_COUNT"]))
+        }
+        assert injected["http.proxy"] == "socks5h://127.0.0.1:10808"
+        assert injected["http.sslbackend"] == "openssl"
+        assert injected["http.schannelcheckrevoke"] == "false"
+        # Non-transport keys stay dropped; the hardening pins are not replaced by the user's.
+        assert "http.postbuffer" not in injected
+        assert injected["core.editor"] == "true"
+        # The BatchMode ssh pin stays (canonical spelling, as every internal git call sees it).
+        assert injected["core.sshCommand"] == "ssh -o BatchMode=yes" or (
+            injected.get("core.sshcommand") == "ssh -o BatchMode=yes"
+        )
+        # Isolation itself is unchanged: transport settings ride the KEY_n channel only.
+        assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+        assert env["GIT_CONFIG_SYSTEM"] == os.devnull
+
+    def test_transport_keys_prefer_global_over_system(self, tmp_path, monkeypatch):
+        """git's own precedence: the global value wins over the system one for the same key."""
+        system_config = tmp_path / "system-gitconfig"
+        system_config.write_text("[http]\n\tproxy = http://system:8080\n", encoding="utf-8")
+        global_config = tmp_path / "gitconfig"
+        global_config.write_text("[http]\n\tproxy = http://global:7890\n", encoding="utf-8")
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(system_config))
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+        monkeypatch.delenv("GIT_CONFIG_NOSYSTEM", raising=False)
+
+        env = noninteractive_git_env(
+            {"GIT_CONFIG_GLOBAL": str(global_config), "GIT_CONFIG_SYSTEM": str(system_config)}
+        )
+        proxies = [
+            env[f"GIT_CONFIG_VALUE_{idx}"]
+            for idx in range(int(env["GIT_CONFIG_COUNT"]))
+            if env[f"GIT_CONFIG_KEY_{idx}"] == "http.proxy"
+        ]
+        assert proxies == ["http://global:7890"]
+
     @pytest.mark.real_safe_directory
     def test_safe_directory_preserves_git_ordering_and_reset_markers(self, tmp_path, monkeypatch):
         """The user's effective trust policy is replayed verbatim, resets included.

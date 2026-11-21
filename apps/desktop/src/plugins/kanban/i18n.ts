@@ -8,7 +8,9 @@
 import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@hermes/plugin-sdk'
 import { useMemo } from 'react'
 
-type KanbanMessages = {
+import { ru } from './i18n-ru'
+
+export type KanbanMessages = {
   nav: string
   openBoard: string
   /** Command label — shows in the ⌘K palette AND as the keybind panel row,
@@ -227,9 +229,32 @@ type KanbanMessages = {
     openKanban: string
     artifacts: (n: number) => string
   }
+  /** Label of the collapsible block that keeps the untouched backend text. */
+  techDetails: string
+  /** Localized diagnostic title for a backend diagnostic kind; '' = show the backend's own title. */
+  diagTitle: (kind: string, title: string, count: number, data: Record<string, unknown>) => string
+  /** Localized plain-language explanation for a diagnostic kind; '' = show the backend's own detail. */
+  diagExplain: (kind: string, data: Record<string, unknown>) => string
+  /** Deterministic meaning of known raw error fragments; '' = nothing recognised (never an LLM call). */
+  errorExplain: (raw: string) => string
+  /** Display label for a run outcome; the raw outcome stays the status. */
+  runOutcome: (outcome: string) => string
+  /** Display label for a block kind. */
+  blockKindName: (kind: string) => string
+}
+
+/** Locales without a diagnostics layer show the backend's own English text. */
+const noDiag = {
+  techDetails: 'Technical details',
+  diagTitle: () => '',
+  diagExplain: () => '',
+  errorExplain: () => '',
+  runOutcome: (outcome: string) => outcome,
+  blockKindName: (kind: string) => kind
 }
 
 export const en: KanbanMessages = {
+  ...noDiag,
   nav: 'Kanban',
   openBoard: 'Kanban: Open board',
   newTaskCommand: 'Kanban: New task',
@@ -462,6 +487,7 @@ export const en: KanbanMessages = {
 }
 
 const ja: KanbanMessages = {
+  ...noDiag,
   nav: 'カンバン',
   openBoard: 'カンバン: ボードを開く',
   newTaskCommand: 'カンバン: 新しいタスク',
@@ -693,6 +719,7 @@ const ja: KanbanMessages = {
 }
 
 const zh: KanbanMessages = {
+  ...noDiag,
   nav: '看板',
   openBoard: '看板：打开面板',
   newTaskCommand: '看板：新建任务',
@@ -921,6 +948,7 @@ const zh: KanbanMessages = {
 }
 
 const zhHant: KanbanMessages = {
+  ...noDiag,
   nav: '看板',
   openBoard: '看板：開啟面板',
   newTaskCommand: '看板：新增任務',
@@ -1149,7 +1177,7 @@ const zhHant: KanbanMessages = {
 }
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const KANBAN_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
+export const KANBAN_LOCALES: PluginLocaleBundles = { en, ja, ru, zh, 'zh-hant': zhHant }
 
 // Bind the message SHAPE to a plugin translator: string leaves resolve now,
 // function leaves forward their args through t(path, …). One tiny generic

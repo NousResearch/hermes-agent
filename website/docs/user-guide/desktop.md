@@ -345,6 +345,18 @@ With the setting enabled and a tray available, closing the main window with **X*
 
 On macOS, the Dock icon hides only when no ordinary Hermes window remains visible. On Linux, a registered StatusNotifier tray host is required; desktops without one keep normal minimize behavior. If the host disappears, hidden windows are restored.
 
+### Download a folder as a zip
+
+Right-click a folder in the file browser and choose **Download as zip**, or use the zip button in the
+file browser's header to save the whole workspace. The gateway packs the folder under the same read
+rules as a single-file download (the profile's own sandbox, the dashboard's locked files root,
+credential files refused) and skips what the file tree hides (`.git`, `node_modules`, build output and
+other noise directories), `.env`-style secrets, symlinks, and SQLite databases that are open. One
+archive holds at most **20,000 files** and **1 GiB** of file data; a larger folder is refused before
+anything is sent. The response names the archive's SHA-256 (`X-Content-SHA256`); the app checks the
+saved file against it before moving it into place and shows the digest in the "Saved" notice, so you
+can compare it with `sha256sum` later. Folder zips are not available for SSH workspaces yet.
+
 ### Terminal
 
 A real terminal lives in the right sidebar, next to the file browser:

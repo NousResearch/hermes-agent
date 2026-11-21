@@ -247,6 +247,8 @@ export async function browserApi<T>(bootstrap: BrowserBootstrap, request: Hermes
 }
 
 export interface FileEndpointQuery {
+  /** `zip`: *path* is a folder the download serves as one archive. */
+  format?: 'zip'
   path: string
   profile?: null | string
   session_id?: string

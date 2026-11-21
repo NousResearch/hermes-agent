@@ -419,6 +419,8 @@ export interface GatewayFileSaveResult {
   canceled?: boolean
   path?: string
   saved: boolean
+  /** The saved bytes' SHA-256 when the gateway declared one and the copy matched it. */
+  sha256?: string
 }
 
 export interface GatewayFileOrigin {
@@ -427,6 +429,8 @@ export interface GatewayFileOrigin {
    *  outright: an absent `connectionId` keeps legacy profile-pool routing, and
    *  an explicit `local` stays pinned when the registry primary is remote. */
   owner?: OwnerScope
+  /** `zip`: *path* is a folder, saved as one archive. */
+  format?: 'zip'
   /** Profile of the session that produced the file (artifacts). */
   profile?: string
   sessionId?: string
@@ -456,6 +460,7 @@ export async function downloadGatewayMediaFile(
 
   return window.hermesDesktop.saveGatewayFile({
     ...(owner.connectionId ? { connectionId: owner.connectionId } : {}),
+    ...(origin.format ? { format: origin.format } : {}),
     path,
     ...(owner.profile ? { profile: owner.profile } : {}),
     ...(origin.sessionId ? { sessionId: origin.sessionId } : {}),
@@ -478,7 +483,16 @@ export async function downloadGatewayFileWithFeedback(path: string, origin?: Gat
   try {
     const result = await downloadGatewayMediaFile(path, origin)
 
-    if (result.saved) {
+    if (result.saved && result.sha256) {
+      // The digest the gateway declared, matched by the saved bytes: shown in full so the user
+      // can compare it with `sha256sum` (or forward it with the file).
+      notify({
+        detail: result.sha256,
+        durationMs: 12_000,
+        kind: 'info',
+        message: translateNow('fileMenu.downloadVerified')
+      })
+    } else if (result.saved) {
       notify({ durationMs: 1500, kind: 'info', message: translateNow('fileMenu.downloadSaved') })
     }
   } catch (error) {

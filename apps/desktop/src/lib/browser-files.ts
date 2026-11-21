@@ -142,14 +142,19 @@ export function createBrowserFilesBridge({
         return { saved: await saveExplicitDownload(target.bootstrap, payload, payload.profile ?? currentProfile()) }
       }
 
-      const query = { path: payload.path, profile: payload.profile ?? currentProfile(), session_id: payload.sessionId }
+      const query = {
+        format: payload.format,
+        path: payload.path,
+        profile: payload.profile ?? currentProfile(),
+        session_id: payload.sessionId
+      }
 
       // Validate before handing the transfer to the browser so missing or
       // denied files surface in the chat without navigating away. HEAD keeps
       // large downloads out of renderer memory.
       await target.api({
         method: 'HEAD',
-        path: queryPath(FILE_ENDPOINTS.download, { path: query.path, session_id: query.session_id }),
+        path: queryPath(FILE_ENDPOINTS.download, { format: query.format, path: query.path, session_id: query.session_id }),
         profile: query.profile
       })
 

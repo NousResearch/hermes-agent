@@ -438,7 +438,8 @@ def _windows_interactive_session() -> bool:
     active_session = kernel32.WTSGetActiveConsoleSessionId()
     if active_session != 0xFFFFFFFF and active_session == session_id:
         return True
-    return bool(kernel32.GetProcessWindowStation())
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    return bool(user32.GetProcessWindowStation())
 
 
 def interactive_session() -> bool:

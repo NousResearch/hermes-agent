@@ -89,15 +89,21 @@ export function slashMutation(command: string): { operation: string; payload: Re
 // config.yaml from it), so `--session` carries no extra meaning; any other flag has no canonical
 // field and stays on config.set for the authority to refuse explicitly.
 export function pickerModelMutation(value: unknown): { model: string; provider: string } | null {
-  const [model, ...flags] = String(value ?? '').trim().split(/\s+/)
-  const sessionOnly = flags.at(-1) === '--session'
-  const rest = sessionOnly ? flags.slice(0, -1) : flags
+  // The model ID may itself contain whitespace (custom endpoints expose real IDs
+  // like "Gemini 4 Argon"), so the known `--provider <id> [--session]` suffix is
+  // taken off the END instead of whitespace-splitting the whole value. Anything
+  // before the suffix is the model ID; flag tokens inside it stay refused below
+  // rather than being swallowed into the name.
+  const match = String(value ?? '').trim().match(/^(.+?)\s+--provider\s+(\S+)(?:\s+--session)?$/)
 
-  if (!model || model.startsWith('-') || rest.length !== 2 || rest[0] !== '--provider' || !rest[1] || rest[1].startsWith('-')) {
+  if (!match) { return null }
+  const [, model, provider] = match
+
+  if (model.split(/\s+/).some(part => part.startsWith('-')) || provider.startsWith('-')) {
     return null
   }
 
-  return { model, provider: rest[1] }
+  return { model, provider }
 }
 
 function mutationSummary(operation: string, value: Record<string, unknown>): string {

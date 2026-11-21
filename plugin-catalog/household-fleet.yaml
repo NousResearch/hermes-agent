@@ -1,0 +1,36 @@
+# Plugin-catalog entry for household-fleet.
+#
+# This file is the artifact to submit: copy it to `plugin-catalog/household-fleet.yaml`
+# in NousResearch/hermes-agent and open a PR. The `sha` below is the exact commit it pins;
+# re-pin (new PR) whenever the code changes upstream.
+name: household-fleet
+repo: https://github.com/rishiruben/hermes-household-fleet
+sha: 3cdca4984878725372f33c1cc518684435f5c0b6
+description: >-
+  Signal over schedule for multi-agent setups: a deterministic message gate (silence by
+  default, tiered budgets, quiet hours, per-subject dedupe, nudge ladder, ack/park/snooze)
+  and a task-registry mirror that pushes per-agent summaries and to-do lists into Home
+  Assistant.
+maintainer: rishiruben
+tier: community
+category: automation
+requires_hermes: ">=0.21"
+docs_url: https://github.com/rishiruben/hermes-household-fleet#readme
+version: "0.1.0"
+platforms: [linux, macos]
+title: "Household Fleet"
+capabilities:
+  provides_tools:
+    - fleet_comms_decide
+    - fleet_comms_send
+    - fleet_comms_state
+    - fleet_comms_status
+    - fleet_tasks_push
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - FLEET_COMMS_HOME
+    - FLEET_COMMS_CONFIG
+    - FLEET_TASKS_FILE
+    - HASS_URL
+    - HASS_TOKEN

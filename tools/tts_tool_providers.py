@@ -206,14 +206,11 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: dict[str, 
 
 # --- ElevenLabs ---
 def _elevenlabs_environment_kwargs(el_config: dict[str, Any]) -> dict[str, Any]:
-    """SDK client kwargs for ``tts.elevenlabs.base_url``/``wss_url``; empty (SDK default) without a
-    base_url. ``wss_url`` defaults to the base_url host with a ``ws(s)://`` scheme."""
+    """SDK client kwargs for the configured HTTP synthesis endpoint."""
     base_url = (el_config.get("base_url") or "").rstrip("/")
     if not base_url:
         return {}
-    from elevenlabs.environment import ElevenLabsEnvironment
-    wss_url = (el_config.get("wss_url") or "").rstrip("/") or re.sub(r"^http", "ws", base_url)
-    return {"environment": ElevenLabsEnvironment(base=base_url, wss=wss_url)}
+    return {"base_url": base_url}
 
 
 def _generate_elevenlabs(text: str, output_path: str, tts_config: dict[str, Any]) -> str:

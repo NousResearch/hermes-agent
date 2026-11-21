@@ -1,0 +1,38 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: turbo-notify
+description: Send and receive WhatsApp messages from your AI agent, on your own number, with Turbo Notify.
+source: https://docs.turbonotify.com/en/general/mcp-server/
+
+# Official vendor-hosted remote MCP (URL-only: Hermes never spawns a local
+# process for this entry). Streamable HTTP with native OAuth 2.1 + Dynamic
+# Client Registration (PKCE S256; authorization server auth.turbonotify.com).
+# Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
+# exchange, and refresh. Also published in the official MCP Registry as
+# com.turbonotify/whatsapp.
+transport:
+  type: http
+  url: https://mcp.turbonotify.com
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - turbo notify
+    - turbonotify
+  hosts:
+    - turbonotify.com
+
+post_install: |
+  You need a Turbo Notify account with your own WhatsApp number linked to it
+  (done in the Turbo Notify dashboard). On first connection Hermes opens a
+  browser to sign in to Turbo Notify and approve access, or run
+  `hermes mcp login turbo-notify`. Then restart the session so tools load.
+
+  The 36 tools read and send messages on that number, so the agent can send
+  WhatsApp messages as you. Review the tools you enable with:
+    hermes mcp configure turbo-notify

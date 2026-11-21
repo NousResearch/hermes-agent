@@ -15,12 +15,14 @@ import pytest
 
 from hermes_cli.local_runtime.context_policy import (
     FLOOR,
+    RUNTIME_OVERHEAD_BYTES,
     SPEED_FLOOR_TOK_S,
     WindowDecision,
     growth_decision,
     initial_window,
     ladder,
     launch_args,
+    plan_launch,
     recurrent_spill_blocks,
     spill_overrides,
     ub_logits_bytes,
@@ -31,6 +33,7 @@ from hermes_cli.local_runtime.estimator import (
     ModelProfile,
     PhysicsRefusal,
     ctx_bytes,
+    footprint_bytes,
     physics_check,
 )
 import itertools
@@ -283,6 +286,59 @@ def test_growth_refits_against_live_budget():
     d = _grow(p, starved)
     assert d.action == "compress-default"
     assert "physics" in d.reason
+
+
+# ── plan overrides (window_overrides.json is bidirectional) ──
+
+
+def test_requested_window_below_granted_rung_caps_the_plan():
+    """#133261: an override BELOW the granted rung is the one supported per-model escape
+    hatch when the estimate is wrong for this host (a Vulkan device whose host-visible
+    placements the device query cannot price) — it must be honoured, not silently ignored."""
+    p = dense(per_token_f16=256, weights_gib=2, native=256 * 1024)
+    base = plan_launch(p, card(16)).decision
+    assert isinstance(base, WindowDecision) and base.window == 256 * 1024  # zero-spill rung
+    capped = plan_launch(p, card(16), requested_window=64 * 1024)
+    d = capped.decision
+    assert isinstance(d, WindowDecision)
+    assert d.window == 64 * 1024
+    assert any("override" in r for r in d.reasons)
+    assert d.spill_bytes == max(0, footprint_bytes(
+        p, d.window, overhead_bytes=capped.overhead_bytes) - 16 * GIB)
+    assert d.kv_on_gpu == (ctx_bytes(p, d.window) + capped.overhead_bytes <= 16 * GIB)
+
+
+def test_override_below_a_spilled_rung_reprices_the_spill():
+    """A cheap-KV model rides the spill ladder past the floor (216K here); the override
+    cuts it back down and the spill/kv verdicts must follow the smaller window."""
+    p = dense(per_token_f16=256, weights_gib=20, native=256 * 1024)
+    base = plan_launch(p, card(12)).decision
+    assert isinstance(base, WindowDecision)
+    assert base.window == 221184 and base.spilled
+    capped = plan_launch(p, card(12), requested_window=64 * 1024).decision
+    assert isinstance(capped, WindowDecision)
+    assert capped.window == 64 * 1024
+    assert any("override" in r for r in capped.reasons)
+    assert capped.spill_bytes == footprint_bytes(
+        p, 64 * 1024, overhead_bytes=RUNTIME_OVERHEAD_BYTES) - 12 * GIB
+    assert capped.spill_bytes < base.spill_bytes
+
+
+def test_requested_window_above_granted_rung_still_restores_growth():
+    p = dense(weights_gib=20, native=256 * 1024)
+    grown = plan_launch(p, card(12), requested_window=96 * 1024).decision
+    assert isinstance(grown, WindowDecision)
+    assert grown.window == 96 * 1024
+    assert any("restored" in r for r in grown.reasons)
+    base = plan_launch(p, card(12)).decision
+    assert isinstance(base, WindowDecision) and base.window < 96 * 1024
+
+
+def test_mtp_posture_cap_applies_to_the_returned_plan():
+    p = moe(per_token_f16=128, weights_gib=2, native=256 * 1024)
+    plan = plan_launch(p, card(16), mtp_capable=True, requested_window=64 * 1024)
+    assert isinstance(plan.decision, WindowDecision)
+    assert plan.decision.window == 64 * 1024
 
 
 # ── spill placement + launch args ────────────────────────────

@@ -7,6 +7,7 @@ Prompt strings and config write order are behavior.
 
 from __future__ import annotations
 
+from hermes_cli.model_catalog import merge_remote_models
 from hermes_cli.model_setup_flows_common import (
     _ask, _ensure_dict_section, _finish_model, _note_setup_failure, _pick_model_or_prompt, _say)
 
@@ -73,7 +74,7 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     print()
 
     # Static list — mantle doesn't need boto3 for discovery
-    model_list = _PROVIDER_MODELS.get("bedrock", [])
+    model_list = merge_remote_models("bedrock", _PROVIDER_MODELS.get("bedrock", []))
     print(f"  Showing {len(model_list)} curated models")
     selected = _pick_model_or_prompt(
         model_list, "  Model ID: ", current_model=current_model, confirm_provider="custom",
@@ -152,7 +153,10 @@ def _model_flow_bedrock(config, current_model=""):
 
     # 1. Check for AWS credentials
     try:
-        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region, discover_bedrock_models
+        from agent.bedrock_adapter import (
+            discover_bedrock_models, has_aws_credentials, merge_bedrock_openai_model_ids,
+            resolve_aws_auth_env_var, resolve_bedrock_region,
+        )
     except ImportError:
         _say("  ✗ Could not load the Bedrock adapter.", "  Run hermes pm repair, then restart Hermes.", "")
         return
@@ -187,10 +191,15 @@ def _model_flow_bedrock(config, current_model=""):
     print(f"  Discovering models in {region}...")
     live_models = discover_bedrock_models(region)
     if live_models:
-        model_list = _bedrock_text_model_ids(live_models, region)
-        print(f"  Found {len(model_list)} text model(s) (filtered from {len(live_models)} total)")
+        # Mantle-only OpenAI models never appear in discovery; they join after the regional filter, as
+        # in the /model picker. They are curated choices, not ones AWS confirmed for this region.
+        discovered = _bedrock_text_model_ids(live_models, region)
+        model_list = merge_bedrock_openai_model_ids(discovered)
+        print(f"  Found {len(discovered)} regional text model(s) (filtered from {len(live_models)} total)")
+        if len(model_list) > len(discovered):
+            print(f"  Plus {len(model_list) - len(discovered)} curated Mantle model(s), not verified for this region")
     else:
-        model_list = _PROVIDER_MODELS.get("bedrock", [])
+        model_list = merge_remote_models("bedrock", _PROVIDER_MODELS.get("bedrock", []))
         if not model_list:
             print("  No models found. Check IAM permissions for bedrock:ListFoundationModels.")
             _note_setup_failure("no_models")

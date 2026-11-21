@@ -2,9 +2,17 @@
 """Build the Hermes Model Catalog — a centralized JSON manifest of curated models.
 
 This script reads the in-repo hardcoded curated lists (``OPENROUTER_MODELS``,
-``_PROVIDER_MODELS["nous"]``) and writes them to a JSON manifest that the
+``_PROVIDER_MODELS``) and writes them to a JSON manifest that the
 Hermes CLI fetches at runtime. Publishing the catalog through the docs site
 lets maintainers update model lists without shipping a Hermes release.
+
+OpenRouter and Nous Portal are read as the whole list. Every other provider's
+block only adds picker rows to the list an install already ships (see
+``hermes_cli.model_catalog.merge_remote_models``). ``model_metadata`` and
+``context_lengths`` publish the built-in metadata and context-window tables
+the same way: an install reads them only for a model it has no entry for.
+``model_sets`` publishes the id sets that gate request handling, so a model
+that fits an existing contract is driven correctly before its release ships.
 
 The runtime fetcher falls back to the same in-repo hardcoded lists if the
 manifest is unreachable, so this script is a convenience for keeping the
@@ -33,6 +41,17 @@ sys.path.insert(0, REPO_ROOT)
 # Ensure HERMES_HOME is set for imports that touch it at module level.
 os.environ.setdefault("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes"))
 
+from agent.bedrock_adapter import _BEDROCK_OPENAI_MODEL_IDS_LOWER, BEDROCK_CONTEXT_LENGTHS
+from agent.model_metadata import (
+    _ANTHROPIC_FAST_MODE_MODELS,
+    _CODEX_OAUTH_CONTEXT_FALLBACK,
+    DEFAULT_CONTEXT_LENGTHS,
+)
+from agent.models_dev import _BUILTIN_MODEL_METADATA
+from agent.reasoning_effort import GPT62_MODEL_IDS
+from hermes_cli.model_catalog import MODEL_SETS, OWN_LIST_ROWS
+from hermes_cli.models_catalog_static import _OPENAI_ULTRAFAST_MODELS
+from hermes_cli.models_fast_regions import _FAST_REGION_MODELS
 from hermes_cli.models import (
     OPENROUTER_MODELS,
     PREFERRED_SILENT_DEFAULT_MODEL,
@@ -41,6 +60,16 @@ from hermes_cli.models import (
 
 OUTPUT_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "model-catalog.json")
 CATALOG_VERSION = 1
+
+# The built-in constant behind each name in ``hermes_cli.model_catalog.MODEL_SETS``. A name there
+# with no constant here (or the reverse) fails the build: the two tables are one registry.
+_BUILTIN_MODEL_SETS = {
+    "openai_gpt62_contract": GPT62_MODEL_IDS,
+    "bedrock_openai_responses": _BEDROCK_OPENAI_MODEL_IDS_LOWER,
+    "anthropic_fast_mode": _ANTHROPIC_FAST_MODE_MODELS,
+    "openai_ultrafast": _OPENAI_ULTRAFAST_MODELS,
+    "openai_fast_eu": _FAST_REGION_MODELS["eu.api.openai.com"],
+}
 
 
 def _openrouter_entry(mid: str, desc: str) -> dict:
@@ -56,6 +85,36 @@ def _nous_entry(mid: str) -> dict:
     if mid == PREFERRED_SILENT_DEFAULT_MODEL:
         entry["default"] = True
     return entry
+
+
+def _picker_entry(mid: str) -> dict:
+    """``{"id": mid}``, plus ``requires`` naming each model set the id cannot be driven without."""
+    bare = mid.lower().rsplit("/", 1)[-1]
+    requires = [name for name, required in MODEL_SETS.items() if required and bare in _BUILTIN_MODEL_SETS[name]]
+    return {"id": mid, "requires": requires} if requires else {"id": mid}
+
+
+def _provider_blocks() -> dict:
+    """One ``{"models": [{"id": ...}]}`` block per published built-in row, in table order."""
+    return {
+        provider: {"models": [_picker_entry(mid) for mid in _PROVIDER_MODELS[provider]]}
+        for provider in _PROVIDER_MODELS
+        if provider not in OWN_LIST_ROWS and _PROVIDER_MODELS[provider]
+    }
+
+
+def _model_sets() -> dict:
+    if set(_BUILTIN_MODEL_SETS) != set(MODEL_SETS):
+        raise SystemExit(f"model sets out of step: {sorted(set(_BUILTIN_MODEL_SETS) ^ set(MODEL_SETS))}")
+    return {name: sorted(_BUILTIN_MODEL_SETS[name]) for name in MODEL_SETS}
+
+
+def _model_metadata() -> dict:
+    """``_BUILTIN_MODEL_METADATA`` as ``{models.dev provider id: {model id: entry}}``."""
+    tables: dict = {}
+    for (provider, model), entry in _BUILTIN_MODEL_METADATA.items():
+        tables.setdefault(provider, {})[model] = entry
+    return tables
 
 
 def build_catalog() -> dict:
@@ -95,6 +154,15 @@ def build_catalog() -> dict:
                     for mid in _PROVIDER_MODELS.get("nous", [])
                 ],
             },
+            **_provider_blocks(),
+        },
+        # Read only for a model the install has no entry or row for.
+        "model_sets": _model_sets(),
+        "model_metadata": _model_metadata(),
+        "context_lengths": {
+            "default": dict(DEFAULT_CONTEXT_LENGTHS),
+            "bedrock": dict(BEDROCK_CONTEXT_LENGTHS),
+            "codex_oauth": dict(_CODEX_OAUTH_CONTEXT_FALLBACK),
         },
     }
 

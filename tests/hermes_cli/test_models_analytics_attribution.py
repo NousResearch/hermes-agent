@@ -10,6 +10,7 @@ route active at call time and is the correct source — the same one Insights
 stay summed from ``sessions`` rather than being zeroed by the source switch.
 """
 
+import json
 import time
 
 import pytest
@@ -51,6 +52,26 @@ def _touch(db, session_id, model, provider, *, input_tokens, output_tokens, api_
 
 def _by_pair(result):
     return {(m["model"], m["provider"]): m for m in result["models"]}
+
+
+@pytest.mark.parametrize("selector,expected", [("Default", 777_000), ("current", 333_000)])
+def test_analytics_reads_capabilities_from_the_usage_stores_home(selector, expected):
+    from hermes_cli.profiles import get_profile_dir
+
+    model = "catalog-test-9"
+    for name, window in (("default", 777_000), ("current", 333_000)):
+        home = get_profile_dir(name)
+        cache = home / "cache"
+        cache.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("model_catalog:\n  enabled: true\n", encoding="utf-8")
+        manifest = {"version": 1, "providers": {}, "model_metadata": {"deepseek": {model: {"limit": {"context": window}}}}}
+        (cache / "model_catalog.json").write_text(json.dumps(manifest), encoding="utf-8")
+        with open_persistence(profile_scope(home=home)) as store:
+            seed_session(store, "s1", "cli", model=model)
+            _touch(store, "s1", model, "deepseek", input_tokens=window, output_tokens=1)
+
+    row, = web_server._get_models_analytics(profile=selector)["models"]
+    assert (row["input_tokens"], row["capabilities"]["context_window"]) == (expected, expected)
 
 
 def test_session_switching_providers_yields_separated_rows(db, models):

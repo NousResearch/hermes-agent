@@ -1219,7 +1219,7 @@ _NO_SCHEDULE_CARD_SOURCES = frozenset({"kanban", "oneshot"})
 
 
 def schedule_card_skip_reason(*, platform: str | None = None, session_key: str | None = None,
-                              live: bool = False) -> str | None:
+                              live: bool = False, pattern_key: str = SCHEDULE_PATTERN_KEY) -> str | None:
     """Why a model-created job would be saved without a "Schedule this job?" card, or None when one is
     shown. The one answer both the gate (``tools/cronjob_tools.py``) and the proactive prompt line
     (``agent/system_prompt.py``) read, so the model is never pushed to create jobs where none asks.
@@ -1227,7 +1227,7 @@ def schedule_card_skip_reason(*, platform: str | None = None, session_key: str |
     No card: approvals are bypassed (yolo, ``approvals.mode: off``); no one can answer (cron, ``-q`` and
     other finite turns, kanban workers, unattended platforms including ``api_server``, whose stock
     OpenAI-compatible clients never answer an ``approval.request``); with *session_key*, the user
-    already allowed new jobs; with *live* (the gate, inside the turn), no surface is bound to ask on.
+    already allowed *pattern_key* (new jobs; an edit's key is never granted); with *live* (the gate, inside the turn), no surface is bound to ask on.
     The prompt line is built once per session, so it reads only the session's fixed facts."""
     if _yolo_active() or approval_context._get_approval_mode() == "off":
         return "approvals are off (yolo or approvals.mode: off)"
@@ -1235,7 +1235,7 @@ def schedule_card_skip_reason(*, platform: str | None = None, session_key: str |
     if platform == "cron" or platform in approval_context._UNATTENDED_APPROVAL_PLATFORMS \
             or approval_context._no_user_can_answer() or _launch_source() in _NO_SCHEDULE_CARD_SOURCES:
         return "nobody can answer an approval here"
-    if session_key is not None and is_approved(session_key, SCHEDULE_PATTERN_KEY):
+    if session_key is not None and is_approved(session_key, pattern_key):
         return "the user already allowed new jobs"
     if live and not any(_presence()[1:]):
         return "nobody can answer an approval here"

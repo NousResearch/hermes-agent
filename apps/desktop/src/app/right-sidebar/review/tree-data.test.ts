@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesReviewFile } from '@/global'
 
-import { buildReviewTree, countAllNodes, flattenReviewRows } from './tree-data'
+import {
+  buildReviewSmartList,
+  buildReviewTree,
+  countAllNodes,
+  flattenReviewRows,
+  reconcileReviewOrder,
+  smartReviewOrder
+} from './tree-data'
 
 const file = (path: string, added = 1, removed = 0): HermesReviewFile => ({
   path,
@@ -80,5 +87,63 @@ describe('flattenReviewRows', () => {
     const rows = flattenReviewRows(tree, id => id !== 'a/b')
 
     expect(rows.map(r => r.node.id)).toEqual(['a', 'a/b'])
+  })
+})
+
+describe('buildReviewSmartList', () => {
+  it('orders change-explaining files by churn before supporting files, which are muted', () => {
+    const rows = buildReviewSmartList([
+      file('src/store/review.test.ts', 40, 10),
+      file('package-lock.json', 900, 900),
+      file('src/store/review.ts', 30, 5),
+      file('src/app/pane.tsx', 80, 20)
+    ])
+
+    // Source files first, biggest churn first; supporting files trail (their
+    // own group also churn-ordered), muted.
+    expect(rows.map(r => r.id)).toEqual([
+      'src/app/pane.tsx',
+      'src/store/review.ts',
+      'package-lock.json',
+      'src/store/review.test.ts'
+    ])
+    expect(rows.map(r => Boolean(r.muted))).toEqual([false, false, true, true])
+  })
+
+  it('classifies supporting paths by directory segment and filename shape', () => {
+    const rows = buildReviewSmartList([
+      file('tests/agent/test_loop.py', 5, 0),
+      file('agent/__fixtures__/sample.json', 5, 0),
+      file('agent/loop.py', 1, 0)
+    ])
+
+    expect(rows[0].id).toBe('agent/loop.py')
+    expect(rows.filter(r => r.muted).map(r => r.id).sort()).toEqual([
+      'agent/__fixtures__/sample.json',
+      'tests/agent/test_loop.py'
+    ])
+  })
+})
+
+describe('stable smart order while reviewing', () => {
+  it('keeps the shown order when the diff changes: new files appended, removed files dropped', () => {
+    const before = [file('src/a.ts', 50, 0), file('src/b.ts', 10, 0), file('src/gone.ts', 5, 0)]
+    const shown = smartReviewOrder(before)
+    expect(shown).toEqual(['src/a.ts', 'src/b.ts', 'src/gone.ts'])
+
+    // b.ts grew past a.ts, gone.ts was reverted, new.ts appeared with top churn.
+    const after = [file('src/a.ts', 50, 0), file('src/b.ts', 400, 0), file('src/new.ts', 900, 0)]
+
+    expect(smartReviewOrder(after)).toEqual(['src/new.ts', 'src/b.ts', 'src/a.ts'])
+    expect(buildReviewSmartList(after, shown).map(r => r.id)).toEqual(['src/a.ts', 'src/b.ts', 'src/new.ts'])
+  })
+
+  it('adopts the fresh order once applied (no pinned order)', () => {
+    const files = [file('src/a.ts', 50, 0), file('src/b.ts', 400, 0)]
+    const fresh = smartReviewOrder(files)
+
+    expect(reconcileReviewOrder(['src/a.ts', 'src/b.ts'], fresh)).toEqual(['src/a.ts', 'src/b.ts'])
+    expect(buildReviewSmartList(files, fresh).map(r => r.id)).toEqual(fresh)
+    expect(buildReviewSmartList(files).map(r => r.id)).toEqual(['src/b.ts', 'src/a.ts'])
   })
 })

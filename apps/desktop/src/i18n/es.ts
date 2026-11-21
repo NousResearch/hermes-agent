@@ -4116,6 +4116,8 @@ export const esOverrides = {
       stageAll: 'Preparar todo',
       viewAsTree: 'Ver como árbol',
       viewAsList: 'Ver como lista',
+      viewAsSmart: 'Ver por importancia',
+      applySmartOrder: 'Aplicar el orden actualizado',
       revert: 'Revertir',
       revertAll: 'Revertir todo',
       revertConfirm:

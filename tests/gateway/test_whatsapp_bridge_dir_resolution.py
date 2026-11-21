@@ -30,8 +30,7 @@ def test_readonly_install_mirrors_to_hermes_home(tmp_path, monkeypatch):
     hermes_home.mkdir()
 
     monkeypatch.setattr(
-        whatsapp_common, "__file__",
-        str(install_root / "gateway" / "platforms" / "whatsapp_common.py"),
+        "hermes_cli._startup_fast.project_root_str", lambda: str(install_root)
     )
     monkeypatch.setattr(
         "hermes_constants.get_hermes_home", lambda: hermes_home
@@ -58,3 +57,33 @@ def test_readonly_install_mirrors_to_hermes_home(tmp_path, monkeypatch):
     assert (expected / "package.json").exists()
 
 
+
+
+def test_existing_mirror_is_refreshed_from_the_install_tree_and_keeps_its_deps(tmp_path, monkeypatch):
+    """After an update the read-only install ships new bridge source (e.g. the token proof); a mirror frozen at its
+    first copy would keep spawning the old bridge forever. Source is refreshed; the mirror's node_modules survive."""
+    install_root = tmp_path / "install"
+    install_bridge = install_root / "scripts" / "whatsapp-bridge"
+    _seed_install_tree(install_bridge)
+    (install_bridge / "bridge_auth.js").write_text("// new auth\n")
+    hermes_home = tmp_path / "hermes_home"
+    mirror = hermes_home / "scripts" / "whatsapp-bridge"
+    (mirror / "node_modules" / "dep").mkdir(parents=True)
+    (mirror / "node_modules" / "dep" / "index.js").write_text("// installed\n")
+    (mirror / "bridge.js").write_text("// stale bridge\n")
+
+    monkeypatch.setattr("hermes_cli._startup_fast.project_root_str", lambda: str(install_root))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+    _real_touch = Path.touch
+
+    def _fake_touch(self, *a, **kw):
+        if self.name == ".write_test" and install_bridge in self.parents:
+            raise PermissionError("read-only install tree")
+        return _real_touch(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "touch", _fake_touch)
+
+    assert whatsapp_common.resolve_whatsapp_bridge_dir() == mirror
+    assert (mirror / "bridge.js").read_text() == "// bridge\n"
+    assert (mirror / "bridge_auth.js").read_text() == "// new auth\n"
+    assert (mirror / "node_modules" / "dep" / "index.js").read_text() == "// installed\n"

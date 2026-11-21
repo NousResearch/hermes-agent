@@ -1,0 +1,26 @@
+name: agent-runs
+title: Agent Runs
+repo: https://github.com/0sahil/hermes-agent-runs
+sha: "23957d22b187d5d33f414a48e54eca7dbed173ad"
+version: "0.1.0"
+description: "A read-only Hermes Desktop pane that lists the coding-agent runs on this computer (Claude Code today) and follows each one's log live: status, project folder, the Hermes chat or cron job that started it, and every prompt, message and tool call. It finds runs by itself, however they were started (a Hermes chat's background terminal, cron, a terminal, an IDE): no hooks, flags or setup. Also a status-bar count of live runs, a ⌘K command and an Open large view. Disclosure — reads the process list (command lines of all processes; environment and working folder of Claude Code processes only, to tell where a run came from and which config folder it uses; environment values stay in the backend and the pane gets flags only, never the prompt). Reads Claude Code's files read-only: ~/.claude/sessions/<pid>.json and the session logs under ~/.claude/projects/ (or a run's CLAUDE_CONFIG_DIR); never the .key files and never writes to ~/.claude. Writes only plugin-data/agent-runs/runs.json in the active profile's Hermes home (recently seen runs, so finished ones survive a gateway restart). Asks Hermes for chat titles to label runs. Never sends input to a run or stops one. No network, no subprocesses, no model calls, no telemetry, no update check."
+maintainer: "0sahil"
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/0sahil/hermes-agent-runs#readme
+image: https://raw.githubusercontent.com/0sahil/hermes-agent-runs/23957d22b187d5d33f414a48e54eca7dbed173ad/docs/images/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/0sahil/hermes-agent-runs/23957d22b187d5d33f414a48e54eca7dbed173ad/docs/images/open-large.png
+  - https://raw.githubusercontent.com/0sahil/hermes-agent-runs/23957d22b187d5d33f414a48e54eca7dbed173ad/docs/images/pane.png
+  - https://raw.githubusercontent.com/0sahil/hermes-agent-runs/23957d22b187d5d33f414a48e54eca7dbed173ad/docs/images/run.png
+platforms: []
+known_issues:
+  - "Turn on both switches on the Agent Runs row in Capabilities → Plugins (Agent for the backend, Desktop for the pane), then restart the gateway once, between chats."
+  - "Lists only runs it saw while they were running: runs that ended before install, or while the gateway was off, do not appear."
+  - "Runs started with --no-session-persistence (including Hermes' own Claude model calls) have no log to show."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

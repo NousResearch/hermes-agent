@@ -1,0 +1,16 @@
+name: crash-lab
+repo: https://github.com/8JBern/hermes-crash-lab
+sha: 8b37c4b1806fe03291ea85e3ff9b4cb188601483
+description: "Fault-injection and recovery testing for AI agents. Crash Lab manufactures the failure modes that break real agent workflows — a write that succeeds while the API reports a timeout, a malformed response, transient 503s — behind four registered tools (crash_start, crash_book, crash_inspect, crash_report), wrapping a deterministic, fictional booking service. An independent state oracle reads the persisted service state — verified by deterministic replay, so damaged or edited state is never certified — and returns PASS/FAIL/UNVERIFIED. PASS means the booking-state safety condition holds (exactly one booking, no duplicates); it does not prove the agent reasoned correctly or followed an optimal recovery procedure. Retry diagnostics (call_count, allowed_calls, reconciled, excessive_retries) are reported separately and never affect the verdict. Fully offline: the booking service is fictional — no network calls, no real bookings, payments or customer accounts; no telemetry, background services or stored credentials. Zero Python dependencies; writes JSON run files only in its own plugin-data directory. Concurrency: per-run exclusive write lock (kernel flock on POSIX; owner-release lock file elsewhere, no automatic stale-break). Integrity checking is replay-based consistency verification, not authenticated tamper-proof storage. Tested on Linux (WSL2); Windows/macOS unverified. Scenarios are fixed code constants, not a general fuzzer. Disclosure — verdicts certify simulated service state only, not the agent's reasoning; integrity checking is replay-based consistency, not tamper-proof storage; scenarios are fixed code constants, not a general fuzzer."
+maintainer: 8JBern
+tier: community
+category: tools
+docs_url: https://github.com/8JBern/hermes-crash-lab#readme
+version: "1.0.2"
+requires_hermes: ">=0.22.5"
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: [crash_start, crash_book, crash_inspect, crash_report]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

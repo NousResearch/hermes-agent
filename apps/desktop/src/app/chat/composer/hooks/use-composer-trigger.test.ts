@@ -7,7 +7,7 @@ import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
 import { composerPlainText, renderComposerContents, RICH_INPUT_SLOT } from '../rich-editor'
 
-import { useComposerTrigger } from './use-composer-trigger'
+import { sameTriggerState, useComposerTrigger } from './use-composer-trigger'
 
 beforeEach(() => {
   rememberDesktopCommandsCatalog({
@@ -320,5 +320,17 @@ describe('useComposerTrigger — chip survival (the plaintext-demotion bug class
 
     expect(composerPlainText(editor)).toBe('please run /clean ')
     expect(editor.querySelector('[data-slash-kind]')).not.toBeNull()
+  })
+})
+
+describe('sameTriggerState', () => {
+  it('keeps identity when every popover field is unchanged', () => {
+    const trigger = { inline: false, kind: '@' as const, query: 'fi', scope: undefined, tokenLength: 3, value: 'fi' }
+
+    expect(sameTriggerState(trigger, { ...trigger })).toBe(true)
+    expect(sameTriggerState(trigger, { ...trigger, query: 'fil' })).toBe(false)
+    expect(sameTriggerState(trigger, { ...trigger, kind: '/' })).toBe(false)
+    expect(sameTriggerState(null, null)).toBe(true)
+    expect(sameTriggerState(null, trigger)).toBe(false)
   })
 })

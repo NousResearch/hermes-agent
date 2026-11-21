@@ -6,6 +6,8 @@ must be stable for the life of a session (username only — never a per-message 
 
 from typing import TYPE_CHECKING, Optional
 
+from plugins.platforms.telegram.telegram_entities import addressing_text
+
 if TYPE_CHECKING:
     from telegram import Message
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -20,7 +22,7 @@ def mentions_other_participants(adapter: "TelegramAdapter", message: "Message") 
 
 
 def _mention_entities(adapter: "TelegramAdapter", message: "Message"):
-    """``(source_text, entity)`` for every ``mention``/``text_mention`` in the text and caption."""
+    """``(source_text, entity)`` for every ``mention``/``text_mention`` in the text, caption or rich blocks."""
     for source_text, entities in adapter._entity_sources(message):
         for entity in entities:
             if adapter._entity_type(entity) in {"mention", "text_mention"}:
@@ -58,7 +60,7 @@ def group_reply_expected(adapter: "TelegramAdapter", message: "Message", chat_ty
     """Whether an admitted message needs a reply; None keeps the visible silence fallback."""
     if chat_type != "group":
         return True if chat_type == "dm" else None
-    text = getattr(message, "text", None) or getattr(message, "caption", None) or ""
+    text = addressing_text(message)
     addressed_to_bot = (
         text.lstrip().startswith("/")
         or adapter._is_reply_to_bot(message)
@@ -77,8 +79,8 @@ def group_reply_expected(adapter: "TelegramAdapter", message: "Message", chat_ty
         return None if unknown else False
     if starts_with_other_participant_mention(adapter, message):
         return False
-    # Words in a voice note or audio file are not in the message text, so the "?" rule cannot read them.
-    spoken = not text and any(getattr(message, kind, None) for kind in ("voice", "audio"))
+    # Words in a voice note, video note or audio file are not in the message text, so the "?" rule cannot read them.
+    spoken = not text and any(getattr(message, kind, None) for kind in ("voice", "video_note", "audio"))
     return None if "?" in text or spoken else False
 
 

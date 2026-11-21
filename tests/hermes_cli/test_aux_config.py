@@ -116,3 +116,19 @@ def test_delegation_cfg_as_task_projection():
     assert _format_aux_current(shaped) == "nous · Hermes-4.5"
     # Non-dict delegation section must not crash
     assert _format_aux_current(_delegation_cfg_as_task({"delegation": "bogus"})) == "auto"
+
+
+def test_picker_provider_switch_drops_old_endpoint_credentials(tmp_path, monkeypatch):
+    """Picking a new provider must not leave the old endpoint's key_env/api_mode behind: the aux
+    resolver hands them to whatever provider the block now names (#141832)."""
+    import hermes_yaml as yaml
+    from agent.auxiliary_client import _resolve_task_provider_model
+    _isolate_home(tmp_path, monkeypatch)
+    monkeypatch.setenv("OLD_ENDPOINT_KEY", "sk-old-endpoint")
+    (tmp_path / ".hermes" / "config.yaml").write_text(yaml.safe_dump({"auxiliary": {"vision": {
+        "provider": "custom", "base_url": "https://api.openai.com/v1",
+        "key_env": "OLD_ENDPOINT_KEY", "api_mode": "codex_responses"}}}))
+
+    _save_aux_choice("vision", provider="anthropic", model="claude-haiku-4-5")
+
+    assert _resolve_task_provider_model("vision") == ("anthropic", "claude-haiku-4-5", None, None, None)

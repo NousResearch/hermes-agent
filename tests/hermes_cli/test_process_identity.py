@@ -101,6 +101,15 @@ def test_install_id_stable_and_path_scoped():
     assert len(a) == 12
 
 
+def test_install_id_hashes_the_install_root_the_cli_resolves(monkeypatch):
+    from hermes_cli import _startup_fast
+
+    repo = Path(__file__).resolve().parents[2]
+    assert pi.install_id() == pi.install_id(repo)  # an existing install keeps its id
+    monkeypatch.setattr(_startup_fast, "project_root_str", lambda: "/opt/relocated-hermes")
+    assert pi.install_id() == pi.install_id(Path("/opt/relocated-hermes"))
+
+
 # ---------------------------------------------------------------------------
 # Ledger
 # ---------------------------------------------------------------------------

@@ -192,7 +192,7 @@ def _user_image_display_text(content: Any) -> str | None:
     if len(image_parts) != len(paths) or len(content) not in (1 + len(paths), 2 + len(paths)):
         return None
     if len(content) > 1 + len(paths):
-        from agent.memory_context import sanitize_context
+        from session_rules.turns import sanitize_context
         memory = content[-1]
         if not isinstance(memory, dict) or memory.get("type") != "text" or not isinstance(memory.get("text"), str) or sanitize_context(memory["text"]).strip():
             return None
@@ -298,6 +298,7 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
     """``image_urls=False`` is the ``inline_images=false`` projection (#116511): image parts render ``[image]``
     so a remote client's history read stays kilobytes instead of re-transmitting every stored attachment."""
     from agent.history_commentary import project_history_commentary
+    from session_rules.turns import withheld_prompt_text
 
     messages = []
     tool_call_args = {}
@@ -323,6 +324,8 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
             continue
         if role == "user":
             content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)
+            # A pre_llm_call veto stores a placeholder; the transcript shows what the user typed.
+            content_text = withheld_prompt_text(m) or content_text
         if role == "user" and m.get("display_kind") == STEER_DISPLAY_KIND:
             # Mid-turn /steer: show the user's own words, not the model-facing marker wrapper.
             from agent.conversation_compression import _extract_steer_text_from_message
@@ -334,9 +337,9 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
             # `context` is an 80-char preview; ship args so a full-call renderer isn't truncated.
             labels = _bridged_tool_labels(name, args)
             messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args),
-                             # Edit cards need the original result; other tool outputs
-                             # remain omitted from this compact display projection.
-                             **({"content": m.get("content")} if name in {"write_file", "patch", "skill_manage"} else {}),
+                             # Edit cards and settled clarify cards need the original result; other
+                             # tool outputs remain omitted from this compact display projection.
+                             **({"content": m.get("content")} if name in {"write_file", "patch", "skill_manage", "clarify"} else {}),
                              **{key: m[key] for key in ("tool_call_id", "timestamp", "display_metadata")
                                 if m.get(key) is not None},
                              **({"args": args} if args else {}), **({"labels": labels} if labels else {})})

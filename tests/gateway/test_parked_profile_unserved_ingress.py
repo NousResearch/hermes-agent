@@ -94,7 +94,7 @@ async def test_api_and_shared_listener_requests_to_a_parked_profile_are_retryabl
     from gateway.platforms.shared_ingress import dispatch_profile_ingress
     from gateway.run import _profile_runtime_scope
     from gateway.session_api_turn import admit_api_steps, admit_api_turn_async
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     homes = _homes(tmp_path, monkeypatch)
     runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes)
     api = SimpleNamespace(gateway_runner=runner)
@@ -103,7 +103,7 @@ async def test_api_and_shared_listener_requests_to_a_parked_profile_are_retryabl
         with _profile_runtime_scope(homes[1][1].resolve(), hydrate_secrets=False):
             for door in (lambda: admit_api_turn_async(api), lambda: next(admit_api_steps(api)),
                          lambda: find_admission(api, ('key',), 'request')):
-                with pytest.raises(RuntimeStoreError) as refused:
+                with pytest.raises(AuthorityRefusal) as refused:
                     pending = door()
                     if hasattr(pending, '__await__'):
                         await pending

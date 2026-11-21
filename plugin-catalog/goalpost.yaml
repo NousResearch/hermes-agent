@@ -1,0 +1,25 @@
+name: goalpost
+title: Goalpost
+repo: https://github.com/salch-cred/goalpost
+sha: 00aae8d61595e5c6b75bf21eed41225cc6990409
+description: >-
+  Stops an AI agent from making tests pass by weakening the tests. Before a
+  test-file edit or a test command that hides failures runs, Goalpost reads the
+  change and blocks it: adding a skip or xfail marker, deleting a test, removing
+  an assertion, or appending "|| true", "--exit-zero" or "--no-verify". The agent
+  is told why and steered to fix the code. Text-based and model-free, with a local
+  ledger of every decision; mode is block, warn or off.
+
+maintainer: salch-cred
+tier: community
+category: tools
+requires_hermes: ">=0.23"
+docs_url: https://github.com/salch-cred/goalpost
+version: "0.1.0"
+image: https://raw.githubusercontent.com/salch-cred/goalpost/52e8e1f414418064dbcfa10878544d92d9491fe5/docs/assets/catalog.jpg
+
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: []

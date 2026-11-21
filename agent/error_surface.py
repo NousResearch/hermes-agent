@@ -118,12 +118,23 @@ def _api_key_env(provider: str) -> str:
 
 
 def _provider_label(provider: str) -> str:
+    """Vendor name for advisory copy. A blank provider is "not recorded", not "OpenRouter" (#64).
+
+    Belt-and-braces only: ``_surface`` skips the key entirely when the provider is blank, and the
+    readers fall back to their own neutral phrase. Kept because this module promises never to raise.
+    """
+    raw = str(provider or "").strip()
+    if not raw:
+        try:
+            from agent.turn_failure_copy import PROVIDER_UNKNOWN_LABEL
+        except ImportError:  # pragma: no cover — a broken install must not break advisory copy
+            return "the configured provider"
+        return PROVIDER_UNKNOWN_LABEL
     try:
         from hermes_cli.models import provider_label
-
-        return provider_label(provider)
-    except Exception:  # pragma: no cover — advisory only
-        return provider
+    except ImportError:  # pragma: no cover — same
+        return raw
+    return provider_label(raw)
 
 
 def auth_kind(provider: Optional[str]) -> str:

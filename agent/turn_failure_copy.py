@@ -109,11 +109,43 @@ def failed_turn_notice(turn_messages: Any) -> str:
     return FAILED_TURN_NOTICE
 
 
+PROVIDER_UNKNOWN_LABEL = "the configured provider"
+"""What failure copy says when a turn recorded no provider at all.
+
+``provider_label("")`` answers ``"OpenRouter"`` — correct for the question ``hermes status`` asks
+("what would be used if nothing is configured"), wrong for the question a failure asks ("who
+answered this call"). A blank provider on a failed turn means the vendor was never recorded, so
+inheriting that default accuses a service the request never reached (#64).
+
+This is the mid-sentence form. Templates that put the label at the start of the sentence use the
+derived ``{label_sentence}`` (capitalised); the same trick keeps a real vendor name intact, since
+``"OpenRouter"[:1].upper()`` is itself. The existing desktop copy already does this deliberately —
+``errorGenericProvider: 'The AI service'`` — and the backend must not be the odd one out.
+"""
+
+
+def _sentence(label: str) -> str:
+    """Capitalise a label for sentence-initial use, leaving an already-capitalised name alone."""
+    return label[:1].upper() + label[1:] if label else label
+
+
 def provider_label_for(provider: Any) -> str:
-    """Human-friendly provider name for chat copy (``"OpenRouter"``, ``"Nous Portal"``…)."""
+    """Human-friendly provider name for chat copy (``"OpenRouter"``, ``"Nous Portal"``…).
+
+    A blank provider yields a neutral label, not the default vendor's name (#64): the sentence then
+    reads "isn't available on the configured provider" instead of blaming one. A *recorded* provider
+    is always labelled for real — that is what keeps ``hermes status``, the Telegram model picker and
+    the gateway copy paths honest, and what the regression test pins. A ``custom:<name>`` key is a
+    config identifier, not a vendor, so the name half is what the user gets to read.
+    """
+    raw = str(provider or "").strip()
+    if not raw:
+        return PROVIDER_UNKNOWN_LABEL
+    if raw.lower().startswith("custom:") and raw[7:].strip():
+        return raw.split(":", 1)[1].strip()
     from hermes_cli.models import provider_label
 
-    return provider_label(str(provider or ""))
+    return provider_label(raw)
 
 
 # ---- turn_exit_reason → failure verdict (finalize_turn stamps these) --------------------------
@@ -211,17 +243,17 @@ _NEXT_STEPS_LOOP = (
 
 # Lead sentence per classifier reason once retries and fallback are exhausted.
 _EXHAUSTED_LEADS: dict[str, str] = {
-    FailoverReason.rate_limit.value: "{label} rate-limited every one of {attempts} attempts",
-    FailoverReason.upstream_rate_limit.value: "{label} rate-limited every one of {attempts} attempts",
-    FailoverReason.overloaded.value: "{label} reported it was overloaded on all {attempts} attempts",
-    FailoverReason.server_error.value: "{label} returned a server error on all {attempts} attempts",
-    FailoverReason.timeout.value: "{label} didn't respond in time on any of {attempts} attempts",
+    FailoverReason.rate_limit.value: "{label_sentence} rate-limited every one of {attempts} attempts",
+    FailoverReason.upstream_rate_limit.value: "{label_sentence} rate-limited every one of {attempts} attempts",
+    FailoverReason.overloaded.value: "{label_sentence} reported it was overloaded on all {attempts} attempts",
+    FailoverReason.server_error.value: "{label_sentence} returned a server error on all {attempts} attempts",
+    FailoverReason.timeout.value: "{label_sentence} didn't respond in time on any of {attempts} attempts",
 }
-_EXHAUSTED_DEFAULT_LEAD = "{label} didn't answer after {attempts} attempts"
+_EXHAUSTED_DEFAULT_LEAD = "{label_sentence} didn't answer after {attempts} attempts"
 # One attempt: an attended free-tier session ended the cycle on a cooldown longer than it waits.
 _EXHAUSTED_FIRST_ATTEMPT_LEADS: dict[str, str] = {
-    FailoverReason.rate_limit.value: "{label} is rate-limiting requests right now",
-    FailoverReason.upstream_rate_limit.value: "{label} is rate-limiting requests right now",
+    FailoverReason.rate_limit.value: "{label_sentence} is rate-limiting requests right now",
+    FailoverReason.upstream_rate_limit.value: "{label_sentence} is rate-limiting requests right now",
 }
 
 # Terminal copy for a non-retryable provider rejection, keyed by classifier reason.
@@ -231,11 +263,11 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "(or `hermes model` in a terminal).{prefix_hint}"
     ),
     FailoverReason.format_error.value: (
-        "{label} rejected this request as malformed, so the model didn't answer. Start a clean "
+        "{label_sentence} rejected this request as malformed, so the model didn't answer. Start a clean "
         "session with /new or switch models with /model; if it keeps happening, run `hermes doctor`."
     ),
     FailoverReason.role_alternation.value: (
-        "{label} requires user and assistant turns to strictly alternate and rejected this "
+        "{label_sentence} requires user and assistant turns to strictly alternate and rejected this "
         "conversation's shape. Start a clean session with /new or switch models with /model."
     ),
     FailoverReason.ssl_cert_verification.value: (
@@ -245,7 +277,7 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "with /model."
     ),
     FailoverReason.provider_policy_blocked.value: (
-        "{label} refused this request because of a policy on your account (its data/privacy "
+        "{label_sentence} refused this request because of a policy on your account (its data/privacy "
         "settings, or a block the model's upstream provider placed on the account), so the model "
         "didn't answer and retrying won't help. Check the account with the provider, or switch "
         "models with /model."
@@ -262,7 +294,7 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "the proxy/WAF rules, or switch providers with /model."
     ),
     FailoverReason.guardrail_blocked.value: (
-        "{label}'s prompt-injection guardrail rejected this request before it reached any model, so "
+        "{label_sentence}'s prompt-injection guardrail rejected this request before it reached any model, so "
         "the key is fine — a scanner judged the request payload (tool output is scanned too, not "
         "just what you type), and retrying won't help. On OpenRouter: Workspaces → Guardrails → set "
         "Prompt injection detection to Redact or Flag, or allowlist the phrase under Settings → "
@@ -270,16 +302,23 @@ _NONRETRYABLE_COPY: dict[str, str] = {
     ),
 }
 _NONRETRYABLE_DEFAULT_COPY = (
-    "{label} rejected the request and retrying won't help. Pick another model with /model, "
+    "{label_sentence} rejected the request and retrying won't help. Pick another model with /model, "
     "or check the details in `{home}/logs/agent.log`."
 )
 _AUTH_COPY: dict[str, str] = {
-    "oauth": "{label} rejected your sign-in, so the model can't be reached. Sign in again: `{relogin}`.",
+    "oauth": "{label_sentence} rejected your sign-in, so the model can't be reached. Sign in again: `{relogin}`.",
     "api_key": (
-        "{label} rejected your API key, so the model can't be reached. Update it in "
+        "{label_sentence} rejected your API key, so the model can't be reached. Update it in "
         "Settings → Providers, or run `hermes setup` in a terminal."
     ),
 }
+# A blank provider means the turn never recorded who answered, so ``auth_kind("")``'s ``api_key``
+# default would be a guess — and the copy would send the user to replace a key they may not have.
+_AUTH_COPY_UNKNOWN = (
+    "{label_sentence} rejected the credentials for this session, so the model can't be reached. "
+    "Check the provider's sign-in and API key in Settings → Providers, or run `hermes setup` in a "
+    "terminal."
+)
 
 CONTENT_POLICY_NEXT_STEPS = (
     "That message has been left out of this conversation, so you're not stuck — just ask "
@@ -341,7 +380,7 @@ _FAILURE_CODE_COPY: dict[str, str] = {
         "the work in smaller steps, or raise max_tokens for this model."
     ),
     "invalid_response": (
-        "{label} sent back an empty or broken reply {attempts} times — it is probably overloaded "
+        "{label_sentence} sent back an empty or broken reply {attempts} times — it is probably overloaded "
         "or rate-limiting you. " + _NEXT_STEPS_RETRY + "\n\nDetails: {detail}"
     ),
     "loop_error": (
@@ -393,7 +432,7 @@ _ONE_OFF_COPY: dict[str, str] = {
     # Rides failure_reason="truncated": clean EOF (no transport error, no finish_reason)
     # mid tool-call, retries exhausted — not a network problem on the user's side (#102766).
     "stream_closed_tool_call": (
-        "{label} kept closing the stream before the model finished writing its action, without "
+        "{label_sentence} kept closing the stream before the model finished writing its action, without "
         "reporting an error, so nothing was run. This is usually the provider or a proxy in front "
         "of it cutting long replies short. Send /retry; asking for the work in smaller steps also helps."
     ),
@@ -432,7 +471,7 @@ def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, rese
                 "cap off, if this model legitimately streams this long.")
     first_attempt = attempts == 1 and reason in _EXHAUSTED_FIRST_ATTEMPT_LEADS
     lead = (_EXHAUSTED_FIRST_ATTEMPT_LEADS if first_attempt else _EXHAUSTED_LEADS).get(
-        reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
+        reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, label_sentence=_sentence(label), attempts=attempts)
     # The free-tier cutoff (one attempt) fires on any cooldown over a minute, so it always names the reset.
     if reset_seconds is not None and (reset_seconds >= 120 or first_attempt and reset_seconds > 0):
         from agent.retry_utils import format_reset_window
@@ -539,7 +578,10 @@ def nonretryable_copy(
     if getattr(classified, "is_auth", False):
         from agent.error_surface import auth_kind
 
-        template = _AUTH_COPY[auth_kind(str(provider or ""))]
+        # Only a *recorded* provider justifies naming the credential kind: ``auth_kind("")`` answers
+        # ``api_key`` by default, which would tell the user to replace a key that may not exist.
+        template = (_AUTH_COPY[auth_kind(str(provider or ""))]
+                    if str(provider or "").strip() else _AUTH_COPY_UNKNOWN)
     else:
         template = _NONRETRYABLE_COPY.get(classified.reason.value, _NONRETRYABLE_DEFAULT_COPY)
     prefix_hint = (
@@ -548,14 +590,15 @@ def nonretryable_copy(
         if prefix_suggestion else ""
     )
     relogin = oauth_relogin_command(provider) if "{relogin}" in template else ""
-    body = template.format(label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint,
+    body = template.format(label=label, label_sentence=_sentence(label), model=model,
+                           home=display_hermes_home(), prefix_hint=prefix_hint,
                            relogin=relogin)
     return f"{body}\n\nProvider said: {summary}"
 
 
 def content_policy_copy(*, label: str, summary: str) -> str:
     return (
-        f"{label}'s safety filter refused this request, so the model didn't answer. "
+        f"{_sentence(label)}'s safety filter refused this request, so the model didn't answer. "
         f"{CONTENT_POLICY_NEXT_STEPS}\n\nProvider said: {summary}"
     )
 
@@ -569,4 +612,9 @@ def short_detail(exc: Any, limit: int = 200) -> str:
 
 class _Defaults(dict):
     def __missing__(self, key: str) -> str:
+        # ``{label_sentence}`` is derived, not passed: sentence-initial templates need the label
+        # capitalised (a blank provider yields "the configured provider", #64), and deriving it here
+        # keeps every ``site_copy`` caller unchanged.
+        if key == "label_sentence":
+            return _sentence(str(self.get("label") or ""))
         return ""

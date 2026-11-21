@@ -428,6 +428,7 @@ A consolidated administration panel for installation-wide operations:
 - **Operations** — run `doctor`, a security audit, create a backup, restore from a backup archive, update skills, show the system-prompt size breakdown, generate a support dump, or migrate config for retired settings. Each spawns a background action whose live log streams into the page.
 - **Checkpoints** — see the `/rollback` shadow store size and prune it
 - **Shell hooks** — list configured hooks with their consent + executable status, **create** a hook (event, command, matcher, timeout, with an opt-in consent grant), and remove one. Hooks run arbitrary commands, so the create form carries a security warning and the hook only fires after consent is granted.
+- **Move to a single Hermes** — shown only when an older Hermes server (`hermes dashboard` or `hermes serve`) still serves the selected profile's home, or when the last move needs reporting. See [Moving a dashboard backend to the gateway](#moving-a-dashboard-backend-to-the-gateway).
 
 ![System admin page — host stats and Nous Portal status](/img/dashboard/admin-system-top.png)
 
@@ -614,7 +615,7 @@ same port does not), `--json`. Commands the engine prints
 name this profile (`hermes -p NAME ...`). `--status --json`
 includes `manual_steps` when a rollback was incomplete. Only one run (apply, restore, or the rollback of an
 interrupted run) can change a home at a time: a second one started meanwhile exits 3 with "already
-running" and changes nothing; `--status` and `--dry-run` never wait for it.
+running" and changes nothing (the dashboard's buttons answer 409); `--status` and `--dry-run` never wait for it.
 
 Exit codes: 0 done or nothing to do, 2 invalid invocation, 3 blocked (nothing changed), 4 failed and
 rolled back, 5 rollback incomplete (numbered manual steps printed), 6 this kind of backend cannot be
@@ -624,6 +625,41 @@ root). On Windows the report names the Task Scheduler task or Startup-folder ent
 backend, and the steps end and disable that task (`schtasks /End`, `schtasks /Change ... /DISABLE`) or set
 the entry aside before `hermes gateway install`; they run as typed in PowerShell or Command Prompt. Every
 browser signs in once more afterwards.
+
+The dashboard's **System** page offers the same move as a **Move to a single Hermes** card. The card
+appears only when an older server serves the home of the profile the dashboard manages, or when the
+last run needs reporting (rolled back, failed or still running); otherwise the page looks as before. It
+says what was found and what the move changes, shows the blockers in plain words, and asks for a
+confirmation before it starts `hermes -p PROFILE gateway migrate --backends --apply --yes --detach` for
+that profile. The move is bound to the backend and address you confirmed: if the server now finds a
+different one, nothing starts, and the card shows what it found and asks you to confirm again. **Move
+anyway** appears only when the sole blockers are running replies, which the move then interrupts. While
+the move runs, the card follows `--status` across the switch. When the dashboard that served the page
+stops, the same address answers from the gateway and asks you to sign in again. A second click, or a
+move started from another window, follows the run already going instead of starting another. When
+nothing confirms that the move started (the start request gets no answer, or the background run does
+not report in time), the card says the outcome is not known and gives the
+`hermes -p PROFILE gateway migrate --backends --status` command. It reports that the move did not start
+only when the run recorded why. After a finished move it gives the `--restore` command for undoing it,
+and for a run whose process died part-way it gives the same command as the way back. Every command the
+card shows names the profile. The card asks the server for the plan once per page load. The server
+answers repeated loads for five minutes from one scan of this machine's processes and units, and
+starting a move or an undo always scans again.
+
+The card uses four routes, which other clients (Hermes Desktop's Web Access banner) use too:
+`GET /api/gateway/migrate/backends/plan`, `POST .../apply`, `POST .../restore` and `GET .../status`.
+Each takes `?profile=NAME` and acts on that profile's home, or on the server's own home without it. A
+profile this server does not have gets a 404 with `"error": "unknown_profile"` and never falls back to
+another home. They need the same sign-in as the dashboard's other routes, and `apply` and `restore`
+count as writes. `apply` and `restore` answer 200 when the background run confirmed it holds the home's
+run lock, and 202 with `"confirmed": false` when nothing confirmed it either way. A run already going or
+unfinished, a home already migrated, and a run that could not be started outside this server
+(`not_started`) get a 409, and so does an `apply` whose `expect` (the plan's opaque `expect_token`) no longer
+matches the server's fresh plan (`plan_changed`, with that plan); the background run gets the same token
+as `--expect` and checks it again before it changes anything. A `running` status also says whether the run's process is still
+`alive`. Commands in the answers name the profile, spelled as the CLI prints them (a profile outside
+the standard root keeps its `HERMES_HOME=…` pin; plan and status carry the status and restore commands
+as `commands`), and no answer carries a URL's user name or password.
 
 ## `/reload` Slash Command
 

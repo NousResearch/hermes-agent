@@ -2,7 +2,7 @@ import { act, render, renderHook } from '@testing-library/react'
 import { Suspense } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { SessionInfo, SidebarSessionsResponse } from '@/hermes'
+import { type SessionInfo, type SidebarSessionsResponse, StaleSidebarScopeError } from '@/hermes'
 import { $cronJobs, setCronJobs } from '@/store/cron'
 import {
   beginGatewaySwitch,
@@ -881,6 +881,80 @@ describe('refreshSessions batches slices into one request', () => {
     expect($sessions.get().map(session => session.id)).toEqual(['personal-session'])
     expect($cronSessions.get().map(session => session.id)).toEqual(['personal-cron'])
     expect($messagingSessions.get().map(session => session.id)).toEqual(['personal-signal'])
+  })
+
+  it('supersedes a default-scope refresh the scope guard refuses while coder is ambient, sending no default request', async () => {
+    // Stand-in for the real guard in api/sessions.ts (covered by sessions.test.ts): a request
+    // is accepted only when its recents profile matches the ambient profile. Only accepted
+    // requests are recorded as sent.
+    let ambient = 'default'
+    const sent: string[] = []
+
+    listSidebarSessions.mockImplementation(async ({ recentsProfile }) => {
+      if (recentsProfile !== 'all' && recentsProfile !== ambient) {
+        throw new StaleSidebarScopeError(recentsProfile, ambient)
+      }
+
+      sent.push(recentsProfile)
+
+      return sidebar({ sessions: [row(`${recentsProfile}-session`, { profile: recentsProfile })] })
+    })
+
+    const { rerender, result } = renderHook(({ profileScope }) => useSessionListActions({ profileScope }), {
+      initialProps: { profileScope: 'default' }
+    })
+
+    // The ambient profile moves to coder while the captured scope is still default.
+    ambient = 'coder'
+
+    await act(async () => {
+      await expect(result.current.refreshSessions()).resolves.toBeUndefined()
+    })
+
+    // The refused request was attempted for default, but no default request was sent.
+    expect(listSidebarSessions).toHaveBeenCalledWith(expect.objectContaining({ recentsProfile: 'default' }))
+    expect(sent).not.toContain('default')
+    expect($sessionsLoadError.get()).toBe(false)
+
+    // The coder scope takes ownership and its refresh is the one that lands.
+    rerender({ profileScope: 'coder' })
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect(sent).toEqual(['coder'])
+    expect($sessions.get().map(session => session.id)).toEqual(['coder-session'])
+  })
+
+  it('resolves, not rejects, a superseded refresh that fails after a newer scope takes ownership', async () => {
+    const work = deferred<SidebarSessionsResponse>()
+    const personal = deferred<SidebarSessionsResponse>()
+
+    listSidebarSessions.mockImplementation(({ recentsProfile }) =>
+      recentsProfile === 'work' ? work.promise : personal.promise
+    )
+
+    const { rerender, result } = renderHook(({ profileScope }) => useSessionListActions({ profileScope }), {
+      initialProps: { profileScope: 'work' }
+    })
+
+    const workRefresh = result.current.refreshSessions()
+
+    rerender({ profileScope: 'personal' })
+    const personalRefresh = result.current.refreshSessions()
+
+    await act(async () => {
+      personal.resolve(sidebar({ sessions: [row('personal-session', { profile: 'personal' })] }))
+      await personalRefresh
+
+      work.promise.catch(() => undefined)
+      work.reject(new Error('403: profile_scope_mismatch'))
+      await expect(workRefresh).resolves.toBeUndefined()
+    })
+
+    expect($sessionsLoadError.get()).toBe(false)
+    expect($sessions.get().map(session => session.id)).toEqual(['personal-session'])
   })
 
   it('ignores an in-flight response after the source changes with the same profile', async () => {

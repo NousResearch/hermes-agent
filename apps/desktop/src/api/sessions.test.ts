@@ -26,7 +26,8 @@ const {
   setSessionArchived,
   setSessionPinnedRemote,
   setSessionUnreadRemote,
-  listSidebarSessions
+  listSidebarSessions,
+  StaleSidebarScopeError
 } = await import('./sessions')
 
 const hermesApi = vi.mocked(client.hermesApi)
@@ -270,6 +271,63 @@ describe('listSidebarSessions remote ownership', () => {
     })
 
     expect(result.recents.sessions[0]).toMatchObject({ connection_id: 'prometheus', id: 'remote-session' })
+  })
+})
+
+describe('listSidebarSessions scope guard', () => {
+  const emptyPage = { cron: { sessions: [] }, messaging: { sessions: [] }, recents: { sessions: [] } }
+
+  const request = (recentsProfile: string) => ({
+    recentsProfile,
+    recentsLimit: 40,
+    recentsExclude: [],
+    cronLimit: 20,
+    messagingLimit: 40,
+    messagingExclude: []
+  })
+
+  const sentRecentsProfile = (): string | null => {
+    const path = String(vi.mocked(client.hermesApi).mock.calls[0]?.[0]?.path ?? '')
+
+    return new URLSearchParams(path.split('?')[1] ?? '').get('recents_profile')
+  }
+
+  it('refuses to send recents_profile=default while the ambient profile is coder', async () => {
+    vi.mocked(client.getApiRequestProfile).mockReturnValue('coder')
+
+    await expect(listSidebarSessions(request('default'))).rejects.toBeInstanceOf(StaleSidebarScopeError)
+    expect(vi.mocked(client.hermesApi)).not.toHaveBeenCalled()
+  })
+
+  it.each(['default', 'browser', 'coder'])('sends when recents_profile and the ambient profile agree (%s)', async profile => {
+    vi.mocked(client.getApiRequestProfile).mockReturnValue(profile)
+    vi.mocked(client.hermesApi).mockResolvedValue(emptyPage as never)
+
+    await listSidebarSessions(request(profile))
+
+    expect(vi.mocked(client.hermesApi)).toHaveBeenCalledTimes(1)
+    expect(sentRecentsProfile()).toBe(profile)
+  })
+
+  it('sends recents_profile=all while the ambient profile is coder (all-profiles view is not guarded)', async () => {
+    vi.mocked(client.getApiRequestProfile).mockReturnValue('coder')
+    vi.mocked(client.hermesApi).mockResolvedValue(emptyPage as never)
+
+    await listSidebarSessions(request('all'))
+
+    expect(vi.mocked(client.getApiRequestProfile)()).toBe('coder')
+    expect(vi.mocked(client.hermesApi)).toHaveBeenCalledTimes(1)
+    expect(sentRecentsProfile()).toBe('all')
+  })
+
+  it('sends when no ambient profile is set, as before', async () => {
+    vi.mocked(client.getApiRequestProfile).mockReturnValue(null)
+    vi.mocked(client.hermesApi).mockResolvedValue(emptyPage as never)
+
+    await listSidebarSessions(request('default'))
+
+    expect(vi.mocked(client.hermesApi)).toHaveBeenCalledTimes(1)
+    expect(sentRecentsProfile()).toBe('default')
   })
 })
 

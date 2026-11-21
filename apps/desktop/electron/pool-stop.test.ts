@@ -16,6 +16,7 @@ interface Child {
 function harness() {
   const pool = new Map<string, PoolStopEntry>()
   const events: string[] = []
+  const evicted: Array<[string, PoolStopEntry]> = []
   const exitResolvers = new Map<Child, () => void>()
 
   const stopper = createPoolStopper({
@@ -31,7 +32,8 @@ function harness() {
           events.push('exit')
           resolve()
         })
-      })
+      }),
+    onEvict: (key, entry) => void evicted.push([key, entry])
   })
 
   function addChild(key: string): Child {
@@ -42,8 +44,33 @@ function harness() {
     return child
   }
 
-  return { addChild, events, exitResolvers, pool, stopper }
+  return { addChild, evicted, events, exitResolvers, pool, stopper }
 }
+
+test('hands the departing entry to onEvict once, so its other holdings can be released', async () => {
+  const { addChild, evicted, exitResolvers, stopper } = harness()
+  const child = addChild('selena')
+
+  const first = stopper.stop('selena')
+  // A second caller joins the in-flight stop; the entry only left the pool once.
+  void stopper.stop('selena')
+  exitResolvers.get(child)?.()
+  await first
+
+  assert.deepEqual(
+    evicted.map(([key]) => key),
+    ['selena']
+  )
+  assert.equal(evicted[0][1].process, child)
+})
+
+test('never calls onEvict for a key that was not pooled', async () => {
+  const { evicted, stopper } = harness()
+
+  await stopper.stop('absent')
+
+  assert.deepEqual(evicted, [])
+})
 
 test('evicts the entry immediately but retains the handle until bounded exit', async () => {
   const { addChild, exitResolvers, pool, stopper } = harness()

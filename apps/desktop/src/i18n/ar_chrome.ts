@@ -536,6 +536,7 @@ export const arChrome = {
       'لا توفر هذه البوابة وصولاً إلى الصدفة، لذا لا يمكن إعادة فتح هذه الطرفية. أغلق علامة التبويب هذه.',
     terminalDisconnectedBody:
       'انقطع اتصال الطرفية. اضغط Enter لبدء صدفة جديدة؛ يُحفظ سجل التمرير.',
+    terminalExitedBody: (status: string) => `انتهت الصدفة (${status}). اضغط Enter لبدء صدفة جديدة؛ يُحفظ سجل التمرير.`,
     addToChat: 'إضافة للمحادثة'
   },
   zones: {

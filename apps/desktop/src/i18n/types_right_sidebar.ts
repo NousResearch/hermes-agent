@@ -48,6 +48,7 @@ export interface RightSidebarTranslations {
   terminalGatewayRemovedBody: string
   terminalGatewayNoShellBody: string
   terminalDisconnectedBody: string
+  terminalExitedBody: (status: string) => string
   terminalDropUploadFailed: (name: string) => string
   terminalDropTooLargeTitle: string
   terminalDropTooLarge: (names: string, limit: string) => string

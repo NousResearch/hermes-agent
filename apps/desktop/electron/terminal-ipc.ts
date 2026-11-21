@@ -424,7 +424,8 @@ export function registerTerminalIpc({
 
     ptyProcess.onData(data => outputGate.data(data))
     ptyProcess.onExit(({ exitCode, signal }) => {
-      outputGate.exit({ code: exitCode, signal: signal == null ? null : String(signal) })
+      // node-pty reports signal 0 for a normal exit; only a real signal number is a kill.
+      outputGate.exit({ code: exitCode, signal: signal ? String(signal) : null })
 
       // The child is gone but node-pty keeps the /dev/ptmx master fd open
       // until kill() runs; release it here instead of waiting for the tab to

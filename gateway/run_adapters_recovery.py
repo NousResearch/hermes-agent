@@ -191,19 +191,24 @@ class GatewaySecondaryReconnectMixin:
             owner.add_done_callback(lambda done: self._release_secondary_claims(profile_name, platform, done))
 
     def _release_secondary_claims(self, profile_name: str, platform: Platform, owner) -> None:
-        """Drop the hold on (profile, platform) if ``owner`` still owns it (a newer owner keeps its hold)."""
+        """Drop the hold on (profile, platform) if ``owner`` still owns it (a newer owner keeps its hold), and
+        ``owner``'s teardown hold that outlived its profile's unserve."""
         held = getattr(self, "_secondary_held_claims", None) or {}
         entry = held.get((profile_name, platform))
         if entry is not None and entry[0] is owner:
             del held[(profile_name, platform)]
+        teardown = getattr(self, "_teardown_held_claims", None) or {}
+        if (entry := teardown.get(id(owner))) is not None and entry[0] is owner:
+            del teardown[id(owner)]
 
     def _held_claim_owners(self, exclude: Optional[tuple] = None) -> dict[tuple, str]:
-        """Claim -> profile for every held secondary claim but the ``exclude`` (profile, platform) hold."""
+        """Claim -> profile for every held secondary claim, teardowns that outlived an unserve included, but
+        the ``exclude`` (profile, platform) ones."""
         held = getattr(self, "_secondary_held_claims", None) or {}
-        return {
-            claim: key[0] for key, (_owner, claims) in held.items() if key != exclude
-            for claim in claims if claim is not None
-        }
+        teardown = getattr(self, "_teardown_held_claims", None) or {}
+        holds = [*((key, claims) for key, (_owner, claims) in held.items()),
+                 *((key, claims) for _owner, key, claims in teardown.values())]
+        return {claim: key[0] for key, claims in holds if key != exclude for claim in claims if claim is not None}
 
     def _current_claim_owners(self, exclude: Optional[tuple] = None) -> dict[tuple, str]:
         """Who owns each bot/listener right now: held claims (but ``exclude``'s) plus everything live. Read at

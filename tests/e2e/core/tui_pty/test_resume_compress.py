@@ -52,11 +52,7 @@ CELLS = [
 ]
 # cell -> (regex on the bug's own failure message, "#<issue> <symptom>"): XFAILs only while the cell
 # fails exactly that way, passes once the fix lands, and any other failure stays red.
-KNOWN: dict[str, tuple[str, str]] = {
-    "slash_resume_at_startup_survives": (
-        r"the resumed transcript is gone after startup: protected tail words not exactly once",
-        "#121456 /resume typed while the TUI starts is replaced by the startup session"),
-}
+KNOWN: dict[str, tuple[str, str]] = {}
 
 
 def _reply(t: int) -> str:

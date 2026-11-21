@@ -541,6 +541,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/productivity/productivity-shop',
                     'user-guide/skills/optional/productivity/productivity-siyuan',
                     'user-guide/skills/optional/productivity/productivity-telephony',
+                    'user-guide/skills/optional/productivity/productivity-travel-designer',
                   ],
                 },
                 {

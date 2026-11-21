@@ -39,6 +39,10 @@ _registered_files_var: ContextVar[dict[str, str]] = ContextVar("_registered_file
 
 # Cache for config-based file list, one entry per profile home (tests reset it).
 _config_files: dict[str, list[dict[str, str]]] = {}
+# Staging prefix for the symlink-safe skills copy. docker.py's volatile-mount rule keys
+# on this basename (view-independent across host mapping), so renaming it renames the
+# reuse-fingerprint placeholder contract too.
+SAFE_SKILLS_PREFIX = ".hermes-skills-safe-"
 # Reused across calls so sanitized skill copies don't accumulate.
 _safe_skills_tempdir: Path | None = None
 
@@ -249,7 +253,13 @@ def get_skills_directory_mount(container_base: str = "/root/.hermes") -> list[di
 
 
 def _safe_skills_path(skills_dir: Path) -> str:
-    """Return *skills_dir* if symlink-free, else a sanitized temp copy (same exclusions as sync)."""
+    """Return *skills_dir* if symlink-free, else a sanitized HERMES_HOME-staged copy.
+
+    The copy must live under HERMES_HOME, not the process tempdir: when the gateway runs
+    inside a container, only HERMES_HOME paths are translated for the host daemon by
+    ``docker_host_mapping``; a tempdir source resolves to an empty host sibling and the
+    sandbox loses its skills.
+    """
     global _safe_skills_tempdir
 
     symlinks = [p for p in skills_dir.rglob("*") if p.is_symlink()]
@@ -264,7 +274,12 @@ def _safe_skills_path(skills_dir: Path) -> str:
 
     if _safe_skills_tempdir and _safe_skills_tempdir.is_dir():
         shutil.rmtree(_safe_skills_tempdir, ignore_errors=True)
-    safe_dir = _safe_skills_tempdir = Path(tempfile.mkdtemp(prefix="hermes-skills-safe-"))
+    safe_dir = _safe_skills_tempdir = Path(
+        tempfile.mkdtemp(prefix=SAFE_SKILLS_PREFIX, dir=str(get_hermes_home())))
+    # mkdtemp's 0700 is gateway-private; the daemon-side bind needs the dir traversable
+    # by the container user. Content visibility is widened, mutation is not — the mount
+    # itself is :ro.
+    os.chmod(safe_dir, 0o755)
 
     for base, files in _walk_skill_tree(skills_dir):
         (safe_dir / base.relative_to(skills_dir)).mkdir(parents=True, exist_ok=True)

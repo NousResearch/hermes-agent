@@ -737,7 +737,7 @@ def _resume_paused_gateways_at_exit(token: dict | None, request: dict | None) ->
         from hermes_cli.update_receipt import owe_followup
 
         owe_followup(request["receipt"]["update_id"] if request else None, "windows_resume",
-                     f"Windows gateway recovery failed: {exc}")
+                     f"gateway recovery failed: {exc}")
 
 
 def _complete_source_update(request: dict | None) -> None:
@@ -800,7 +800,7 @@ def _complete_source_update(request: dict | None) -> None:
         except Exception as exc:  # health: allow BLE001 -- the code is committed (C3)
             from hermes_cli.update_receipt import owe_followup
 
-            owe_followup(request["receipt"]["update_id"], "windows_resume", f"Windows gateway recovery failed: {exc}")
+            owe_followup(request["receipt"]["update_id"], "windows_resume", f"gateway recovery failed: {exc}")
         _settle_windows_resume(request)
     if result["exit_code"]:
         raise SystemExit(result["exit_code"])

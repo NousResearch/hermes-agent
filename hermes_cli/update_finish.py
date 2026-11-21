@@ -186,7 +186,7 @@ def main(context: Path, result: Path) -> int:
                 resume(token)
             except Exception as exc:
                 attempted = True
-                update_receipt.owe_followup(request["update_id"], "windows_resume", f"Windows gateway recovery failed: {exc}")
+                update_receipt.owe_followup(request["update_id"], "windows_resume", f"gateway recovery failed: {exc}")
         handled = cli_started or (begun and update_receipt._current.get() is None)
         written = update_receipt.finalize_pending_update_receipt(code, "historical takeover completion")
         result.write_text(json.dumps({

@@ -1630,7 +1630,7 @@ def _resume_paused_set(token: dict) -> None:
         not_launched = sorted(set(profiles) - set(launched)) + [
             f"pid {u.get('pid')}" for u in unmapped if u not in launched_unmapped]
         if not_launched:
-            failures.append("Could not restart every paused Windows gateway: " + ", ".join(not_launched))
+            failures.append("Could not restart every paused gateway: " + ", ".join(not_launched))
     elif token.get("cold_start_if_installed"):
         # Before the per-profile spawns: this guard is fleet-wide (any live gateway ⇒ done).
         def cold_start() -> None:
@@ -1657,7 +1657,7 @@ def _resume_windows_gateways_and_merge_outcome(outcome, _windows_gateway_resume,
         # follow-up; the gateway's /update marker keeps the committed result.
         outcome.incomplete = True
         outcome.phase_errors.append(str(_windows_resume_exc))
-        print(f"  ⚠ Windows gateway service restart incomplete: {_windows_resume_exc}")
+        print(f"  ⚠ Gateway service restart incomplete: {_windows_resume_exc}")
     if not isinstance(_windows_gateway_resume, dict):
         return
 

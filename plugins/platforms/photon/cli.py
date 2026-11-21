@@ -16,7 +16,7 @@ from hermes_cli.colors import Colors, color
 
 from . import auth as photon_auth
 from .adapter import sidecar_deps_installed
-from hermes_constants import find_node_executable, with_hermes_node_path
+from hermes_constants import find_node_executable
 from .sidecar_paths import _NPM_ERROR_LOG_MAX_CHARS, _npm_error_log, _sidecar_dir
 import contextlib
 
@@ -358,15 +358,8 @@ def _install_sidecar() -> int:
     import pm
 
     try:
-        npm = find_node_executable("npm")
-        env = with_hermes_node_path()
-        if npm is None:
-            env = pm.ensure("npm", explicit=True).env
-            installed = pm.installed_package("npm")
-            if installed is None or installed.binary is None:
-                raise pm.InstallError("npm", "ensured but no selected binary was recorded")
-            npm = str(installed.binary)
-    except pm.InstallError as exc:
+        npm, env = pm.npm_command(explicit=True)
+    except (pm.InstallError, OSError) as exc:
         print(f"Could not prepare Photon dependencies: {exc}", file=sys.stderr)
         return 1
     # spectrum-ts is pinned exactly (the SDK ships breaking majors); upgrades are deliberate —

@@ -113,6 +113,68 @@ def copies(dirs: list[str]) -> list[str]:
     return list(dict.fromkeys(c for d in dirs for c in swap.get(os.path.normcase(d), [d])))
 
 
+def node_env(base_env: dict[str, str] | None = None, *,
+             for_subprocess: bool = False, explicit: bool = False) -> dict[str, str]:
+    """PM's paired npm/Node environment, optionally runnable through cmd.exe in a Windows package.
+
+    Dependency setup surfaces refused or failed copies. Use :func:`npm_command` to select
+    the matching npm executable without searching the current directory or ambient PATH.
+    """
+    from pm.install import env_for
+    from pm.package import InstallError
+
+    env = env_for("npm", base_env=base_env)
+    if not for_subprocess or not applies():
+        return env
+    swap: dict[str, list[str]] = {}
+    for name in ("node", "npm"):
+        packaged_dirs = _sealed_dirs(name)
+        if not packaged_dirs:
+            continue  # The caller provisions missing tools before preparing this environment.
+        location = writable_copy(name, explicit=explicit,
+                                 why="a writable npm/Node toolchain is required for Windows subprocesses")
+        if location is None:
+            raise InstallError(name, "installed tool is unavailable outside the Windows package")
+        copied_dirs = _dirs(*location, name)
+        swap.update((os.path.normcase(directory), copied_dirs) for directory in packaged_dirs)
+    path_key = next((key for key in env if key.upper() == "PATH"), "PATH")
+    env[path_key] = os.pathsep.join(dict.fromkeys(
+        copied for directory in env.get(path_key, "").split(os.pathsep)
+        for copied in swap.get(os.path.normcase(directory), [directory]) if copied
+    ))
+    return env
+
+
+def npm_command(base_env: dict[str, str] | None = None, *,
+                explicit: bool = False) -> tuple[str, dict[str, str]]:
+    """The selected PM npm executable and its runnable, paired Node environment.
+
+    Resolve from installed facts, including the writable copy on sealed Windows. Never
+    search CWD or PATH for Hermes's npm. Provision a missing toolchain under PM's
+    existing lazy-install and explicit-consent policy.
+    """
+    from pm import ensure, is_installed
+    from pm.filesystem import native
+    from pm.install import _installed_location, _lockfile
+    from pm.package import InstallError
+    from pm.registry import get_package
+    from pm.store import current_target
+
+    if not all(is_installed(name) for name in ("node", "npm")):
+        ensure("npm", explicit=explicit)
+    env = node_env(base_env, for_subprocess=True, explicit=explicit)
+    package, target = get_package("npm"), current_target()
+    location = (writable_copy("npm", realize=False) if applies()
+                else _installed_location(package, _lockfile(), target))
+    if location is None:
+        raise InstallError("npm", "npm binary is missing after preparation")
+    facts, store = location
+    binary = package.binary(store.entry(facts.get("npm")["entry"]), target)
+    if binary is None:
+        raise InstallError("npm", "npm has no executable for this platform")
+    return native(binary), env
+
+
 def _python_stub_dir(directory: str) -> bool:
     """True for the Windows app-alias dir when its ``python.exe`` is only the Store stub.
 

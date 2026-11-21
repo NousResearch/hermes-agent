@@ -22,7 +22,9 @@ export const PRESENCE_POLL_MS = 15_000
 export const PRESENCE_ACTIVE_SECONDS = 60
 export const PRESENCE_PUSH_MS = 45_000
 
-// Electron answers `'locked'` from `getSystemIdleState` only where the OS reports its lock screen.
+// Electron answers `'locked'` from `getSystemIdleState`, and emits `lock-screen`/`unlock-screen`, only
+// on macOS and Windows. A lock is not reported on Linux: there the idle clock (X11) just keeps
+// growing while the screen is locked, so presence ends a minute after the last input.
 const LOCK_STATE_PLATFORMS = new Set<NodeJS.Platform>(['darwin', 'win32'])
 
 export interface PresenceWebContents {
@@ -92,9 +94,10 @@ function readLocked(monitor: PresencePowerMonitor, platform: NodeJS.Platform): b
 
 /**
  * The main-process half of presence: answers `hermes:presence:get` and pushes `hermes:presence` on
- * lock/unlock/suspend/resume whether or not an idle clock exists; where the OS idle clock is
- * trustworthy, also when the user comes back (idle drops under a minute) and every 45 seconds while
- * they stay. Nothing is pushed while the user is idle, and nothing polls while no window exists.
+ * lock/unlock/suspend/resume (and on a poll that sees the lock or suspend state change) whatever the
+ * idle state, and whether or not an idle clock exists; where the OS idle clock is trustworthy, also
+ * when the user comes back (idle drops under a minute) and every 45 seconds while they stay. The
+ * idle clock alone pushes nothing while the user is idle, and nothing polls while no window exists.
  */
 export function attachPresenceSource({
   app,

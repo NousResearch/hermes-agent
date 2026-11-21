@@ -405,7 +405,8 @@ export function refreshWindowPresence(): void {
 /** Start this window's reporter; called once by the hook that owns the gateway connection. */
 export function startPresenceReporter(): () => void {
   const reporter = createPresenceReporter({
-    // The user sees the reply on screen, or this client's own notification would reach them.
+    // The user sees the reply on screen, or this client would hand its own notification to a host
+    // that can show it.
     canAlert: sessionId =>
       (documentVisible() && documentFocused() && mainChatShowing()) || turnDoneNotificationWouldFire(sessionId),
     focused: documentFocused,

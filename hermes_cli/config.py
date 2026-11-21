@@ -2382,8 +2382,7 @@ def sanitize_env_file() -> int:
 
 
 def _read_env_lines(env_path: Path) -> list:
-    """Read ``.env`` lines, normalized. Explicit UTF-8 (Windows defaults to cp1252) with BOM
-    tolerance (Notepad adds one)."""
+    """Read ``.env`` lines, normalized: explicit UTF-8 (not Windows' cp1252), a BOM (Notepad's) tolerated."""
     with open(env_path, encoding="utf-8-sig", errors="replace") as f:
         return _sanitize_env_lines(f.readlines())
 
@@ -2417,8 +2416,7 @@ def _env_write_lock(env_path: Path):
     under this lock takes other locks, and the only nesting direction that exists
     (credential_lifecycle takes ``_auth_store_lock`` around its own auth-store
     writes, NOT around ``save_env_value``) keeps a single ordering — no cycle.
-    On a filesystem without flock the helper degrades to a depth-only guard
-    (same behavior as auth's locks), never to a crash.
+    Without flock it degrades to a depth-only guard (as auth's locks do), never to a crash.
     """
     from hermes_cli.auth import _file_lock
 
@@ -2432,9 +2430,8 @@ def _env_write_lock(env_path: Path):
 
 
 def _write_env_lines(env_path: Path, lines: list, *, preserve_mode: bool, newline: Optional[str] = None) -> None:
-    """Atomically replace ``.env`` (tmp file + fsync + rename); ``newline=""`` keeps the lines' own endings.
-    ``preserve_mode`` keeps the original file mode (e.g. 0640 for Docker volume mounts) instead of
-    letting ``_secure_file`` tighten to 0600; a new file is always secured."""
+    """Atomically replace ``.env`` (tmp + fsync + rename); ``newline=""`` keeps the lines' own endings. ``preserve_mode``
+    keeps the file's mode (0640 for Docker mounts) over ``_secure_file``'s 0600; a new file is always secured."""
     original_mode = None
     try:
         original_mode = stat.S_IMODE(env_path.stat().st_mode) if preserve_mode else None
@@ -2608,12 +2605,15 @@ def remove_env_value(key: str) -> bool:
         _publish_env_value(key, None)
         return False
 
-    with _env_write_lock(env_path):
-        lines = _read_env_lines(env_path)
-        new_lines = [line for line in lines if not _env_line_defines_key(line, key)]
-        found = len(new_lines) < len(lines)
-        if found:
-            _write_env_lines(env_path, new_lines, preserve_mode=True)
+    from hermes_cli.env_loader import remove_whole_dotenv_assignments
+    with _env_write_lock(env_path):  # a quoted value over several lines: whole assignments, as dotenv reads them
+        found = remove_whole_dotenv_assignments(env_path, key, _write_env_lines)
+        if found is None:
+            lines = _read_env_lines(env_path)
+            new_lines = [line for line in lines if not _env_line_defines_key(line, key)]
+            found = len(new_lines) < len(lines)
+            if found:
+                _write_env_lines(env_path, new_lines, preserve_mode=True)
     _publish_env_value(key, None)
     invalidate_env_cache()
     return found

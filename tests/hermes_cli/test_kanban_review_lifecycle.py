@@ -32,6 +32,15 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_ops
+from hermes_cli import kanban_pr_acceptance as acceptance
+
+
+@pytest.fixture(autouse=True)
+def _stub_pr_state_reads(monkeypatch: pytest.MonkeyPatch):
+    acceptance._pr_state_cache.clear()
+    monkeypatch.setattr(acceptance, "_api", lambda *_args, **_kwargs: None)
+    yield
+    acceptance._pr_state_cache.clear()
 
 
 @pytest.fixture
@@ -550,6 +559,10 @@ def test_active_pr_guard_holds_through_same_profile_reassign_and_unassign(
 
     monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
     monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {})
+    monkeypatch.setattr(
+        "hermes_cli.kanban_pr_acceptance.referenced_pr_is_active",
+        lambda _url: None,
+    )
     pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="same assign", assignee="dev")

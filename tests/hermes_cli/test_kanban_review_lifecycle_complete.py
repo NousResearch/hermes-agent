@@ -20,6 +20,15 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_diagnostics as kd
+from hermes_cli import kanban_pr_acceptance as acceptance
+
+
+@pytest.fixture(autouse=True)
+def _stub_pr_state_reads(monkeypatch: pytest.MonkeyPatch):
+    acceptance._pr_state_cache.clear()
+    monkeypatch.setattr(acceptance, "_api", lambda *_args, **_kwargs: None)
+    yield
+    acceptance._pr_state_cache.clear()
 
 
 @pytest.fixture

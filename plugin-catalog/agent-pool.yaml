@@ -1,0 +1,31 @@
+name: agent-pool
+repo: https://github.com/maxcurrent420/agent-pool
+sha: 5b973a5c3dfd8633840bb438208211da1c78f3cf
+description: Friends form a pool of agents sharing repos — bundles propagate BLAKE3-verified and end-to-end encrypted over Iroh-over-Tor only; tasks, claims and approvals coordinate through the Hermes gateway (e.g. Discord), and a prompt-injection audit gate refuses any bundle that tries to hijack your agent.
+maintainer: maxcurrent420
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "2.8.0"
+screenshots:
+  - https://raw.githubusercontent.com/maxcurrent420/agent-pool/5b973a5c3dfd8633840bb438208211da1c78f3cf/media/pane.png
+  - https://raw.githubusercontent.com/maxcurrent420/agent-pool/5b973a5c3dfd8633840bb438208211da1c78f3cf/media/injection-blocked.png
+title: Agent Pool
+capabilities:
+  provides_tools:
+    - pool_status
+    - pool_report_usage
+    - pool_pane_report
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - AGENT_POOL_ALLOWED_USERS
+    - AGENT_POOL_MAINTAINER_DISCORD_USER_ID
+    - AGENT_POOL_MAINTAINER_BOT_DISCORD_USER_ID
+    - AGENT_POOL_TASK_ALLOCATIONS
+    - AGENT_POOL_WORKTREE_ROOT
+    - AGENT_POOL_DATA_DIR
+    - HERMES_IROH_RELAY
+    - HERMES_IROH_STATE_DIR
+    - HERMES_IROH_SEND_TIMEOUT
+    - HERMES_IROH_FETCH_TIMEOUT

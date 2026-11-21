@@ -5,7 +5,7 @@ import {
   useCallback,
   useRef,
 } from "react";
-import { FileText, RefreshCw } from "lucide-react";
+import { FileText, RefreshCw, X } from "lucide-react";
 import { useSearchParams } from "react-router";
 import { api } from "@/lib/api";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -55,8 +55,10 @@ function isLogFile(value: string | null): value is LogFile {
 
 export default function LogsPage() {
   // `?file=gateway` deep link (System page "Open logs" next to a failed gateway).
-  const [searchParams] = useSearchParams();
+  // `?session=<id>` deep link (Sessions page "View logs"): only that session's lines.
+  const [searchParams, setSearchParams] = useSearchParams();
   const requestedFile = searchParams.get("file");
+  const session = searchParams.get("session") || undefined;
   const [file, setFile] = useState<LogFile>(() =>
     isLogFile(requestedFile) ? requestedFile : "agent",
   );
@@ -76,7 +78,7 @@ export default function LogsPage() {
     setLoading(true);
     setError(null);
     api
-      .getLogs({ file, lines: lineCount, level, component })
+      .getLogs({ file, lines: lineCount, level, component, session })
       .then((resp) => {
         setLines(resp.lines);
         setTimeout(() => {
@@ -87,7 +89,7 @@ export default function LogsPage() {
       })
       .catch((err) => setError(errorMessage(err)))
       .finally(() => setLoading(false));
-  }, [file, lineCount, level, component]);
+  }, [file, lineCount, level, component, session]);
 
   useLayoutEffect(() => {
     setAfterTitle(
@@ -96,6 +98,24 @@ export default function LogsPage() {
           {formatFilterLabel(file)} · {formatFilterLabel(level)} ·{" "}
           {formatFilterLabel(component)}
         </Badge>
+        {session && (
+          <Badge tone="outline" className="gap-1 text-xs font-mono-ui">
+            {t.logs.session}: {session}
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-foreground"
+              aria-label={t.logs.allSessions}
+              title={t.logs.allSessions}
+              onClick={() => {
+                const next = new URLSearchParams(searchParams);
+                next.delete("session");
+                setSearchParams(next);
+              }}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </Badge>
+        )}
         <Button
           type="button"
           ghost
@@ -139,11 +159,16 @@ export default function LogsPage() {
     file,
     level,
     loading,
+    searchParams,
+    session,
     setAfterTitle,
+    setSearchParams,
     setEnd,
     t.common.live,
     t.common.refresh,
     t.logs.autoRefresh,
+    t.logs.allSessions,
+    t.logs.session,
     fetchLogs,
   ]);
 

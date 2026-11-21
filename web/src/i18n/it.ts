@@ -174,6 +174,7 @@ export const it: Translations = {
     selectedSessionsSkippedActive: "{deleted} eliminate; {count} mantenute perché un turno è in corso",
     failedToDeleteSelected: "Impossibile eliminare le sessioni selezionate",
     resumeInChat: "Riprendi nella chat",
+    viewLogs: "Visualizza log",
     newChat: "Nuova chat",
     workspace: "area di lavoro",
     workspaceDefault: "Predefinito",
@@ -235,6 +236,8 @@ export const it: Translations = {
     component: "Componente",
     lines: "Righe",
     noLogLines: "Nessuna riga di log trovata",
+    session: "Sessione",
+    allSessions: "Mostra tutte le sessioni",
   },
 
   cron: {

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
 
-import { LogsPane } from './panes'
+import { LogsPane, sessionRecordLines } from './panes'
 
 // The pane refetches its tail on an interval; the autoscroll contract (#77794)
 // is that refetched data scrolls to the bottom ONLY while the user is already
@@ -132,5 +132,19 @@ describe('LogsPane', () => {
     // reading above the bottom.
     expect(scrollTo).not.toHaveBeenCalled()
     expect(pre.textContent).toContain('second line')
+  })
+})
+
+describe('sessionRecordLines', () => {
+  it('keeps one session\'s records with their tracebacks when the backend returned every session', () => {
+    const lines = [
+      '2026-10-03 10:00:00,001 INFO [sess_a] run_agent: mine',
+      '2026-10-03 10:00:01,002 ERROR [sess_b] tools.x: theirs',
+      'Traceback (most recent call last):',
+      '2026-10-03 10:00:02,003 ERROR [sess_a] tools.x: boom',
+      'RuntimeError: probe'
+    ]
+
+    expect(sessionRecordLines(lines, 'sess_a')).toEqual([lines[0], lines[3], lines[4]])
   })
 })

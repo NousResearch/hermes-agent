@@ -600,7 +600,7 @@ without the route) and does not retry it on every sidebar refresh.
 
 ### GET /api/logs
 
-Returns log lines. Query parameters: `file` (agent/errors/gateway), `lines` (count), `level`, `component`.
+Returns log lines. Query parameters: `file` (agent/errors/gateway), `lines` (count), `level`, `component`, `search` (case-insensitive substring), `session` (session ID substring, same match as `hermes logs --session`; a traceback stays with the record it belongs to).
 
 ### GET /api/analytics/usage
 

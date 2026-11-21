@@ -59,6 +59,7 @@ import type {
   ManagedFilesResponse,
   ManagedFileWriteResponse,
 } from "./api-files";
+import { logsQueryString, type LogsQuery, type LogsResponse } from "./api-logs";
 import { dashboardServingProfile } from "./profile-bootstrap";
 import { PROFILE_SCOPED_PREFIXES, sameOriginRequestUrl as resolveSameOrigin } from "./api-request-scope";
 
@@ -570,14 +571,8 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path, recursive }),
     }),
-  getLogs: (params: { file?: string; lines?: number; level?: string; component?: string }) => {
-    const qs = new URLSearchParams();
-    if (params.file) qs.set("file", params.file);
-    if (params.lines) qs.set("lines", String(params.lines));
-    if (params.level && params.level !== "ALL") qs.set("level", params.level);
-    if (params.component && params.component !== "all") qs.set("component", params.component);
-    return fetchJSON<LogsResponse>(`/api/logs?${qs.toString()}`);
-  },
+  getLogs: (params: LogsQuery) =>
+    fetchJSON<LogsResponse>(`/api/logs?${logsQueryString(params)}`),
   getAnalytics: (days: number, profile = getManagementProfile()) =>
     fetchJSON<AnalyticsResponse>(
       appendProfileParam(`/api/analytics/usage?days=${days}`, profile),
@@ -2133,10 +2128,7 @@ export interface SessionMessagesResponse {
   };
 }
 
-export interface LogsResponse {
-  file: string;
-  lines: string[];
-}
+export type { LogsQuery, LogsResponse } from "./api-logs";
 
 export type {
   ManagedFileEntry,

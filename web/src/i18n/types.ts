@@ -227,6 +227,7 @@ export interface Translations {
     selectedSessionsSkippedActive: string;
     failedToDeleteSelected: string;
     resumeInChat: string;
+    viewLogs: string;
     newChat: string;
     workspace: string;
     workspaceDefault: string;
@@ -291,6 +292,8 @@ export interface Translations {
     component: string;
     lines: string;
     noLogLines: string;
+    session: string;
+    allSessions: string;
   };
 
   // ── Cron page ──

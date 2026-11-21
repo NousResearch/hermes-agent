@@ -174,6 +174,7 @@ export const uk: Translations = {
     selectedSessionsSkippedActive: "Видалено: {deleted}; залишено: {count}, бо хід ще виконується",
     failedToDeleteSelected: "Не вдалося видалити вибрані сесії",
     resumeInChat: "Продовжити в чаті",
+    viewLogs: "Переглянути журнали",
     newChat: "Новий чат",
     workspace: "робоча папка",
     workspaceDefault: "За замовчуванням",
@@ -235,6 +236,8 @@ export const uk: Translations = {
     component: "Компонент",
     lines: "Рядки",
     noLogLines: "Записів журналу не знайдено",
+    session: "Сеанс",
+    allSessions: "Показати всі сеанси",
   },
 
   cron: {

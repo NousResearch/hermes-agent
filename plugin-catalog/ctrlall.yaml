@@ -1,7 +1,7 @@
 name: ctrlall
 title: ctrl+all
 repo: https://github.com/namangoyal3/hermes-ctrlall
-sha: 9b4908974cdafc71a8b46e7e7e95c6ae7beebe25
+sha: e0719cc28550182d5a02942754983ec53c19ccda
 description: >-
   Drive ctrl+all on your Mac from any Hermes conversation: launch and steer
   multiplayer coding-agent chats on the engines you already pay for (Claude
@@ -16,12 +16,14 @@ description: >-
   ctrlall_chat_create, ctrlall_chat_send and ctrlall_chat_mode start or steer
   real coding-agent turns on your Mac under the daemon's permission mode; the
   plugin reads no files, runs no shell commands and starts no background
-  processes; Python standard library only; no self-updater.
+  processes; Python standard library only; no self-updater. Creating a chat
+  in, or switching a chat to, auto-edit/full-auto requests Hermes human
+  approval through a pre_tool_call hook before the tool runs.
 maintainer: namangoyal3
 tier: community
 category: tools
 requires_hermes: ">=0.21.5"
-version: "0.1.0"
+version: "0.1.1"
 docs_url: https://github.com/namangoyal3/hermes-ctrlall#readme
 readme: true
 platforms: [macos]
@@ -41,7 +43,7 @@ capabilities:
     - ctrlall_inbox
     - ctrlall_git_status
     - ctrlall_git_diff
-  provides_hooks: []
+  provides_hooks: [pre_tool_call]
   provides_middleware: []
   requires_env:
     - CTRLALL_DAEMON_TOKEN

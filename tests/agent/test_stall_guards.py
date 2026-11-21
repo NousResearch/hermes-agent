@@ -15,7 +15,7 @@ Two guards, both notice/re-prompt-only:
 These assert behavior contracts, not message snapshots.
 """
 
-from agent.agent_runtime_helpers import trailing_continue_intent
+from agent.agent_runtime_intent import trailing_continue_intent
 from agent.tool_guardrails import (
     IDENTICAL_RESULT_STUB_MIN_CHARS,
     STALL_GUARD_IDENTICAL_CALL_THRESHOLD,
@@ -431,7 +431,7 @@ def test_cycle_guard_stays_silent_for_progressing_and_poller_cycles():
 
 
 def test_promoted_reasoning_detector_catches_first_person_plan_tails():
-    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+    from agent.agent_runtime_intent import promoted_reasoning_announces_action
 
     # Verbatim tails from the #111761 thread — none match the narrow visible-content detector.
     for tail in (
@@ -448,7 +448,7 @@ def test_promoted_reasoning_detector_catches_first_person_plan_tails():
 
 
 def test_promoted_reasoning_detector_ignores_stated_answers():
-    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+    from agent.agent_runtime_intent import promoted_reasoning_announces_action
 
     for text in (
         "The answer is 42.",
@@ -462,7 +462,7 @@ def test_promoted_reasoning_detector_ignores_stated_answers():
 
 
 def test_promoted_reasoning_detector_catches_thai_plan_tails():
-    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+    from agent.agent_runtime_intent import promoted_reasoning_announces_action
 
     # Thai is unsegmented (no spaces between words), so the tail-boundary check falls back to
     # sentence punctuation, an em/en dash, or a run of ellipsis dots (#116495).
@@ -477,7 +477,7 @@ def test_promoted_reasoning_detector_catches_thai_plan_tails():
 
 
 def test_promoted_reasoning_detector_ignores_thai_stated_answers():
-    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+    from agent.agent_runtime_intent import promoted_reasoning_announces_action
 
     for text in (
         "คำตอบคือ 42 ครับ",  # "the answer is 42"

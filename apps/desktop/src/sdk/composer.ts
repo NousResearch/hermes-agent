@@ -8,8 +8,44 @@ import {
   requestComposerSubmit
 } from '@/app/chat/composer/focus'
 import { freshDraftScope, takeSessionDraft } from '@/store/composer'
-import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
-import { $sessionStates } from '@/store/session-states'
+import { $activeSessionId, $composerSelectModelAction, $selectedStoredSessionId } from '@/store/session'
+import { $focusedRuntimeId, $sessionStates } from '@/store/session-states'
+
+/**
+ * A plugin's session address resolved for a model pick: `{ sessionId: null }` = the primary
+ * surface (its live session, or the fresh draft when it has none), `{ sessionId: runtimeId }` = a
+ * tile's session, `null` = no surface owns the address (fail closed). Same addressing as the draft
+ * verbs: `null`/empty = the focused chat, `'new'` = the session-less primary draft only, a stored
+ * or runtime id = that session wherever it is shown.
+ */
+const resolveModelTarget = (sessionId: null | string | undefined): { sessionId: null | string } | null => {
+  const id = typeof sessionId === 'string' ? sessionId.trim() : ''
+  const primary = $activeSessionId.get()
+
+  if (!id) {
+    const focused = $focusedRuntimeId.get()
+
+    return !focused || focused === primary ? { sessionId: null } : { sessionId: focused }
+  }
+
+  if (id === 'new') {
+    return !primary && !$selectedStoredSessionId.get() ? { sessionId: null } : null
+  }
+
+  if (id === primary || id === $selectedStoredSessionId.get()) {
+    return { sessionId: null }
+  }
+
+  const states = $sessionStates.get()
+
+  if (states[id]) {
+    return { sessionId: id }
+  }
+
+  const runtimeId = Object.keys(states).find(key => states[key]?.storedSessionId === id)
+
+  return runtimeId ? { sessionId: runtimeId } : null
+}
 
 /**
  * A plugin's session address resolved for the two composer buses. `target` is
@@ -139,6 +175,32 @@ export const composerHost = {
 
     if (target !== null) {
       requestComposerFocus(target)
+    }
+  },
+
+  /** Switch one chat's model exactly as the user's own pick in the composer's model menu does:
+   *  the pill and the session move together (optimistic paint, `config.set` to that session,
+   *  rollback on a failed write), guarded models go through the app's confirm dialog, and scope
+   *  follows the menu (the primary chat lets the gateway decide persistence; a tile is
+   *  session-only). Use this rather than a raw `host.request('config.set', …)`, which moves the
+   *  session but leaves the pill showing the old model until the next turn. Same addressing as the
+   *  draft verbs; `'new'` sets the pick for the fresh draft so its session is created on it.
+   *  Resolves true when the switch applied now, false when the address owns no surface, the input
+   *  is empty, the write failed, or it awaits the user's confirm (the dialog then finishes it). */
+  selectModel: async (sessionId: null | string, selection: { model: string; provider: string }): Promise<boolean> => {
+    const model = typeof selection?.model === 'string' ? selection.model.trim() : ''
+    const provider = typeof selection?.provider === 'string' ? selection.provider.trim() : ''
+    const action = $composerSelectModelAction.get()
+    const target = resolveModelTarget(sessionId)
+
+    if (!model || !provider || !action || !target) {
+      return false
+    }
+
+    try {
+      return await action({ model, provider, sessionId: target.sessionId })
+    } catch {
+      return false
     }
   }
 }

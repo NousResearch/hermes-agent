@@ -7,10 +7,13 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+from hermes_constants import get_hermes_home, mkdir_under_hermes_home
+
 logger = logging.getLogger(__name__)
 
 
 VALID_RUNTIMES = ("auto", "codex_app_server")
+PROFILE_CODEX_HOME_DIRNAME = "codex-home"
 
 # Human-friendly synonyms accepted by parse_args.
 _ARG_SYNONYMS = {
@@ -72,6 +75,26 @@ def get_configured_codex_binary(config: dict) -> str:
     model_cfg = config.get("model") if isinstance(config, dict) else None
     value = model_cfg.get("codex_bin") if isinstance(model_cfg, dict) else None
     return str(value or "").strip() or "codex"
+
+
+def get_configured_codex_home(config: dict) -> Optional[str]:
+    """``model.codex_home_scope``: ``profile`` → ``<HERMES_HOME>/codex-home``, so each Hermes profile runs
+    codex with its own auth, config.toml and plugins. ``shared`` (default) → None: codex keeps the
+    inherited ``CODEX_HOME`` or ``~/.codex``, the home a bare ``codex`` CLI uses. Read-only."""
+    model_cfg = config.get("model") if isinstance(config, dict) else None
+    scope = model_cfg.get("codex_home_scope") if isinstance(model_cfg, dict) else None
+    if str(scope or "").strip().lower() != "profile":
+        return None
+    return str(get_hermes_home() / PROFILE_CODEX_HOME_DIRNAME)
+
+
+def ensure_configured_codex_home(config: dict) -> Optional[str]:
+    """:func:`get_configured_codex_home`, creating a profile home before codex spawns on it (codex refuses
+    a missing ``CODEX_HOME``); never materializes a deleted named profile."""
+    codex_home = get_configured_codex_home(config)
+    if codex_home:
+        mkdir_under_hermes_home(codex_home)
+    return codex_home
 
 
 def set_runtime(config: dict, new_value: str) -> str:

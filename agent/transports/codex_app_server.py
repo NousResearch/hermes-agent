@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import queue
 import re
 import subprocess
 import threading
+import tomllib
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -21,7 +23,33 @@ from agent.deadline import kill_process_tree
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 from tools.environments.local import hermes_subprocess_env
 
+logger = logging.getLogger(__name__)
+
 MIN_CODEX_VERSION = (0, 125, 0)
+
+_DANGER_DEFAULT_PERMISSIONS = ":danger-full-access"
+
+
+def _codex_home_default_permissions(codex_home: Optional[str]) -> Optional[str]:
+    """Read Codex's top-level ``default_permissions`` from CODEX_HOME."""
+    if not codex_home:
+        return None
+    config_path = os.path.join(codex_home, "config.toml")
+    try:
+        with open(config_path, "rb") as handle:
+            config = tomllib.load(handle)
+    except FileNotFoundError:
+        return None
+    except Exception:
+        logger.debug(
+            "codex app-server: failed to read Codex config %s",
+            config_path,
+            exc_info=True,
+        )
+        return None
+
+    value = config.get("default_permissions")
+    return value if isinstance(value, str) else None
 
 
 @dataclass
@@ -130,11 +158,18 @@ class CodexAppServerClient:
             kanban_db = spawn_env.get("HERMES_KANBAN_DB")
             default_root = os.path.join(spawn_env.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "kanban")
             kanban_root = os.path.dirname(kanban_db) if kanban_db else spawn_env.get("HERMES_KANBAN_ROOT", default_root)
-            cmd += [
-                "-c", 'sandbox_mode="workspace-write"',
-                "-c", f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
-                "-c", "sandbox_workspace_write.network_access=false",
-            ]
+            # An explicit (per-profile) Codex home that deliberately opts into danger-full-access keeps it:
+            # the workspace-write override would silently narrow the worker back to the default sandbox.
+            # An inherited/shared home keeps today's override.
+            if _codex_home_default_permissions(codex_home) == _DANGER_DEFAULT_PERMISSIONS:
+                logger.info("codex app-server: using profile default_permissions for kanban worker (CODEX_HOME=%s)",
+                            codex_home)
+            else:
+                cmd += [
+                    "-c", 'sandbox_mode="workspace-write"',
+                    "-c", f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
+                    "-c", "sandbox_workspace_write.network_access=false",
+                ]
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.
         spawn_env.setdefault("RUST_LOG", "warn")
 

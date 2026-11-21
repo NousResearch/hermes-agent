@@ -709,6 +709,8 @@ skills:
 
 更改后，**重启网关**（`hermes gateway restart` 或终止并重新启动）。Telegram bot 命令菜单在启动时重建。
 
+注意该开关的作用范围：被平台禁用的技能不会出现在 `skills_list` 发现列表中，技能工具（`skill_view`、`skill_run`）按名称拒绝加载；通用文件工具仍可直接读取技能的磁盘文件。因此 `platform_disabled` 是技能接口的范围开关，不是文件系统级的访问边界。
+
 :::tip
 描述过长的技能在 Telegram 菜单中会被截断为 40 个字符，以符合 payload 大小限制。如果技能未出现，可能是总 payload 大小问题而非 100 个命令数量限制 — 禁用未使用的技能对两者都有帮助。
 :::

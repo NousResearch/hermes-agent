@@ -148,6 +148,35 @@ export interface Translations {
     builtinNote: string;
   };
 
+  // ── System page: Shell hooks section ──
+  systemHooks: {
+    heading: string;
+    newHook: string;
+    empty: string;
+    modalTitle: string;
+    eventLabel: string;
+    commandLabel: string;
+    matcherLabel: string;
+    matcherPlaceholder: string;
+    timeoutLabel: string;
+    approveLabel: string;
+    warning: string;
+    create: string;
+    creating: string;
+    created: string;
+    removed: string;
+    commandRequired: string;
+    /** "{detail}" is the backend error message. */
+    createFailed: string;
+    removeFailed: string;
+    /** "{value}" is the hook's matcher string. */
+    matcherInline: string;
+    notExecutable: string;
+    allowed: string;
+    notApproved: string;
+    removeHook: string;
+  };
+
   // ── Status page ──
   status: {
     actionFailed: string;

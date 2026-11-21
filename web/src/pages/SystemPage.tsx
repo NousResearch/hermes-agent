@@ -262,6 +262,7 @@ function DebugShareButton({
 
 export default function SystemPage() {
   const { toast, showToast } = useToast();
+  const { t } = useI18n();
 
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [stats, setStats] = useState<SystemStats | null>(null);
@@ -702,7 +703,7 @@ export default function SystemPage() {
   // ── Hooks ──────────────────────────────────────────────────────────
   const createHook = async () => {
     if (!hookCommand.trim()) {
-      showToast("Command is required", "error");
+      showToast(t.systemHooks.commandRequired, "error");
       return;
     }
     setCreatingHook(true);
@@ -714,14 +715,14 @@ export default function SystemPage() {
         timeout: hookTimeout.trim() ? Number(hookTimeout) : undefined,
         approve: hookApprove,
       });
-      showToast("Hook created", "success");
+      showToast(t.systemHooks.created, "success");
       setHookCommand("");
       setHookMatcher("");
       setHookTimeout("");
       setHookModalOpen(false);
       loadAll();
     } catch (e) {
-      showToast(`Failed to create hook: ${errorMessage(e)}`, "error");
+      showToast(t.systemHooks.createFailed.replace("{detail}", errorMessage(e)), "error");
     } finally {
       setCreatingHook(false);
     }
@@ -735,14 +736,14 @@ export default function SystemPage() {
         const command = key.slice(sep + 1);
         try {
           await api.deleteHook(event, command);
-          showToast("Hook removed", "success");
+          showToast(t.systemHooks.removed, "success");
           loadAll();
         } catch (e) {
-          showToast(`Failed to remove hook: ${errorMessage(e)}`, "error");
+          showToast(t.systemHooks.removeFailed.replace("{detail}", errorMessage(e)), "error");
           throw e;
         }
       },
-      [loadAll, showToast],
+      [loadAll, showToast, t.systemHooks.removeFailed, t.systemHooks.removed],
     ),
   });
 
@@ -850,18 +851,18 @@ export default function SystemPage() {
               size="icon"
               onClick={() => setHookModalOpen(false)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
             <header className="p-5 pb-3 border-b border-border">
               <h2 className="font-mondwest text-display text-base tracking-wider">
-                New shell hook
+                {t.systemHooks.modalTitle}
               </h2>
             </header>
             <div className="p-5 grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="hook-event">Event</Label>
+                <Label htmlFor="hook-event">{t.systemHooks.eventLabel}</Label>
                 <Select
                   id="hook-event"
                   value={hookEvent}
@@ -875,7 +876,7 @@ export default function SystemPage() {
                 </Select>
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="hook-command">Command (absolute path)</Label>
+                <Label htmlFor="hook-command">{t.systemHooks.commandLabel}</Label>
                 <Input
                   id="hook-command"
                   autoFocus
@@ -886,16 +887,16 @@ export default function SystemPage() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="grid gap-2">
-                  <Label htmlFor="hook-matcher">Matcher (optional)</Label>
+                  <Label htmlFor="hook-matcher">{t.systemHooks.matcherLabel}</Label>
                   <Input
                     id="hook-matcher"
-                    placeholder="e.g. terminal"
+                    placeholder={t.systemHooks.matcherPlaceholder}
                     value={hookMatcher}
                     onChange={(e) => setHookMatcher(e.target.value)}
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="hook-timeout">Timeout (s)</Label>
+                  <Label htmlFor="hook-timeout">{t.systemHooks.timeoutLabel}</Label>
                   <Input
                     id="hook-timeout"
                     placeholder="10"
@@ -915,13 +916,11 @@ export default function SystemPage() {
                   className="cursor-pointer text-sm font-normal normal-case tracking-normal text-muted-foreground"
                   htmlFor="hook-approve"
                 >
-                  Approve now (grant consent so it fires; otherwise it stays
-                  configured but inactive)
+                  {t.systemHooks.approveLabel}
                 </Label>
               </div>
               <p className="text-xs text-warning">
-                Shell hooks run arbitrary commands on this host. Only add scripts
-                you trust. Takes effect on the next gateway/session restart.
+                {t.systemHooks.warning}
               </p>
               <div className="flex justify-end">
                 <Button
@@ -931,7 +930,7 @@ export default function SystemPage() {
                   disabled={creatingHook}
                   prefix={creatingHook ? <Spinner /> : undefined}
                 >
-                  {creatingHook ? "Creating" : "Create hook"}
+                  {creatingHook ? t.systemHooks.creating : t.systemHooks.create}
                 </Button>
               </div>
             </div>
@@ -1569,16 +1568,16 @@ export default function SystemPage() {
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-            <Terminal className="h-4 w-4" /> Shell hooks
+            <Terminal className="h-4 w-4" /> {t.systemHooks.heading}
           </H2>
           <Button size="sm" className="uppercase" prefix={<Plus className="h-3.5 w-3.5" />} onClick={() => setHookModalOpen(true)}>
-            New hook
+            {t.systemHooks.newHook}
           </Button>
         </div>
         {(!hooks || hooks.hooks.length === 0) && (
           <Card>
             <CardContent className="py-6 text-center text-sm text-muted-foreground">
-              No shell hooks configured.
+              {t.systemHooks.empty}
             </CardContent>
           </Card>
         )}
@@ -1587,20 +1586,20 @@ export default function SystemPage() {
             <CardContent className="flex items-center gap-3 py-3">
               <Badge tone="outline">{h.event}</Badge>
               {h.matcher && (
-                <span className="text-xs text-muted-foreground">matcher: {h.matcher}</span>
+                <span className="text-xs text-muted-foreground">{t.systemHooks.matcherInline.replace("{value}", h.matcher)}</span>
               )}
               <span className="font-mono text-xs truncate flex-1">{h.command}</span>
               {h.executable === false && (
-                <Badge tone="destructive">not executable</Badge>
+                <Badge tone="destructive">{t.systemHooks.notExecutable}</Badge>
               )}
               <Badge tone={h.allowed ? "success" : "warning"}>
-                {h.allowed ? "allowed" : "not approved"}
+                {h.allowed ? t.systemHooks.allowed : t.systemHooks.notApproved}
               </Badge>
               <Button
                 ghost
                 size="icon"
                 className="text-destructive"
-                aria-label="Remove hook"
+                aria-label={t.systemHooks.removeHook}
                 onClick={() =>
                   hookDelete.requestDelete(`${h.event}|${h.command ?? ""}`)
                 }

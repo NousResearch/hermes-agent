@@ -253,6 +253,20 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
 
     cron_subparsers.add_parser("doctor", help="Check scheduled jobs for common health issues")
 
+    cron_export = cron_subparsers.add_parser(
+        "export", help="Write job definitions to a directory, one YAML file per job",
+        description="Mirror this profile's cron jobs into DIR/jobs/<id>.yaml: authored fields only "
+                    "(no run state, no origin chat), credential-shaped values masked.")
+    cron_export.add_argument("directory", help="Target directory (created if missing)")
+    _flag(cron_export, "--git", help="Commit the jobs/ directory (git init first if needed)")
+    cron_export.add_argument("-m", "--message", help="Commit message for --git")
+
+    cron_import = cron_subparsers.add_parser(
+        "import", help="Load job definitions written by `hermes cron export`",
+        description="Merge DIR/jobs/*.yaml by job id: existing jobs keep their run state, "
+                    "new jobs arrive paused for review.")
+    cron_import.add_argument("directory", help="Directory written by `hermes cron export`")
+
     cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
     add_accept_hooks_flag(cron_tick)
     add_accept_hooks_flag(cron_parser)

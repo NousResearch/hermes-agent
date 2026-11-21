@@ -794,7 +794,7 @@ platforms the gateway would start, and scheduled jobs. No key values are printed
 ## `hermes cron`
 
 ```bash
-hermes cron <list|create|edit|pause|resume|run|remove|status|runs|incidents|doctor|tick>
+hermes cron <list|create|edit|pause|resume|run|remove|status|runs|incidents|doctor|export|import|tick>
 ```
 
 | Subcommand | Description |
@@ -808,6 +808,8 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|runs|incidents|doct
 | `remove` | Delete a scheduled job. |
 | `status` | Check whether the cron scheduler is running. |
 | `doctor` | Read-only fleet health check: failed runs, failed deliveries, overdue/missing `next_run_at`, missing scripts or workdirs. Exits non-zero when issues are found. |
+| `export <dir> [--git] [-m MSG]` | Write every job's definition to `<dir>/jobs/<id>.yaml` (keys sorted, one file per job; files for deleted jobs are removed). Only authored fields are written: no `next_run_at`, last status, run counters, pause state or origin chat, so re-exporting an unchanged store changes nothing. Credential-shaped values are masked and listed under `redacted_fields`. `--git` runs `git init` if needed and commits `jobs/` (no commit when nothing changed); pushing is up to you. |
+| `import <dir>` | Merge a directory written by `export` by job id. Existing jobs get the new definition and keep their run state (fields listed in `redacted_fields` are left as they are); new jobs arrive paused for review. |
 | `tick` | Run due jobs once and exit. |
 
 The cron **trigger** is pluggable via the `cron.provider` config key. Empty

@@ -509,6 +509,8 @@ export const esOverrides = {
       networkTitleNamed: session => `Se necesita acceso a un sitio web — ${session}`,
       scheduleTitle: 'Hermes quiere programar una tarea',
       scheduleTitleNamed: session => `Hermes quiere programar una tarea — ${session}`,
+      scheduleEditTitle: 'Hermes quiere cambiar una tarea programada',
+      scheduleEditTitleNamed: session => `Hermes quiere cambiar una tarea programada — ${session}`,
       allowAction: 'Permitir',
       denyAction: 'Denegar',
       inputTitle: 'Se necesita información',

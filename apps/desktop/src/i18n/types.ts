@@ -521,6 +521,8 @@ export interface Translations extends NoticeTranslations {
       networkTitleNamed: (session: string) => string
       scheduleTitle: string
       scheduleTitleNamed: (session: string) => string
+      scheduleEditTitle: string
+      scheduleEditTitleNamed: (session: string) => string
       allowAction: string
       denyAction: string
       inputTitle: string

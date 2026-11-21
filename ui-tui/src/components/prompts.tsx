@@ -42,6 +42,17 @@ const APPROVAL_CARDS: Record<string, (req: ApprovalReq) => ApprovalCard> = {
       labels: { always: s.always, deny: p.deny, once: s.once, session: s.session, tell: p.tell },
       title: s.title
     }
+  },
+  // An edit of an existing job: the description lists each change; only allow / deny are offered.
+  schedule_edit: req => {
+    const p = messages().prompt.approval
+    const s = p.schedule
+
+    return {
+      body: req.description,
+      labels: { always: s.always, deny: p.deny, once: s.once, session: s.session, tell: p.tell },
+      title: s.editTitle
+    }
   }
 }
 

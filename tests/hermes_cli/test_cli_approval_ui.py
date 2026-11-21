@@ -122,6 +122,10 @@ class TestCliApprovalUi:
                     "approval_deny"):
             assert t(f"cli.tui.{key}") in schedule
 
+        edit = _render(kind="schedule_edit", allow_session=False, allow_permanent=False)
+        assert t("cli.tui.approval_title_schedule_edit") in edit and synthetic not in edit
+        assert t("cli.tui.approval_schedule_session") not in edit
+
         command = _render()
         assert t("cli.tui.approval_title") in command and synthetic in command
         assert t("cli.tui.approval_once") in command and t("cli.tui.approval_view") in command

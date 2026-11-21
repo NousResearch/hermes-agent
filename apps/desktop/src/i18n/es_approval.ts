@@ -46,6 +46,9 @@ export const esApproval: Partial<ApprovalCopy> = {
     alwaysDescription:
       'Hermes creará tareas programadas sin preguntar antes. Puedes volver a activar la pregunta quitando cron_create de command_allowlist en config.yaml.',
     timedOutSystemLine:
-      'La aprobación caducó: no se creó la tarea. Pide a Hermes que lo intente de nuevo o sube el límite en Ajustes → Seguridad → Tiempo de aprobación.'
+      'La aprobación caducó: no se creó la tarea. Pide a Hermes que lo intente de nuevo o sube el límite en Ajustes → Seguridad → Tiempo de aprobación.',
+    editTitle: '¿Cambiar esta tarea?',
+    editTimedOutSystemLine:
+      'La aprobación caducó: no se cambió la tarea. Pide a Hermes que lo intente de nuevo o sube el límite en Ajustes → Seguridad → Tiempo de aprobación.'
   }
 }

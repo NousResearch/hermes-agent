@@ -41,6 +41,9 @@ export const jaApproval: Partial<ApprovalCopy> = {
     alwaysDescription:
       'Hermes は確認せずにスケジュールジョブを作成します。config.yaml の command_allowlist から cron_create を削除すると、確認が再び有効になります。',
     timedOutSystemLine:
-      '承認がタイムアウトしました — ジョブは作成されませんでした。Hermes にもう一度依頼するか、設定 → 安全 → 承認タイムアウトで上限を引き上げてください。'
+      '承認がタイムアウトしました — ジョブは作成されませんでした。Hermes にもう一度依頼するか、設定 → 安全 → 承認タイムアウトで上限を引き上げてください。',
+    editTitle: 'このジョブを変更しますか？',
+    editTimedOutSystemLine:
+      '承認がタイムアウトしました — ジョブは変更されませんでした。Hermes にもう一度依頼するか、設定 → 安全 → 承認タイムアウトで上限を引き上げてください。'
   }
 }

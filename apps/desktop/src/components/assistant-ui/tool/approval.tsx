@@ -45,6 +45,7 @@ import {
   type ApprovalRequest,
   clearApprovalRequest,
   isCommandApproval,
+  isScheduleApproval,
   isTurnApproval,
   networkTarget,
   networkTargetName,
@@ -291,7 +292,7 @@ function ApprovalTargetLines({ request }: { request: ApprovalRequest }) {
 }
 
 const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }) => {
-  if (request.kind !== 'schedule' && !isCommandApproval(request)) {
+  if (!isScheduleApproval(request) && !isCommandApproval(request)) {
     return <AccessApprovalCard position={position} request={request} stack={stack} total={total} />
   }
 
@@ -595,10 +596,10 @@ const TURN_CARD_VIEWS: Record<'command' | 'schedule', (request: ApprovalRequest,
       denyInMenu: true
     }
   },
-  // A new scheduled job: its description says what runs and when; its command is a placeholder.
+  // A new scheduled job (or a change to one): its description says what runs and when; its command is a placeholder.
   schedule: (request, copy) => ({
     icon: 'watch',
-    title: copy.schedule.title,
+    title: request.kind === 'schedule_edit' ? copy.schedule.editTitle : copy.schedule.title,
     body: request.description.trim(),
     code: false,
     deny: copy.deny,
@@ -625,7 +626,7 @@ function turnCardChoices(request: ApprovalRequest) {
 const TurnApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }) => {
   const { t } = useI18n()
   const copy = t.assistant.approval
-  const kind = request.kind === 'schedule' ? 'schedule' : 'command'
+  const kind = isScheduleApproval(request) ? 'schedule' : 'command'
   const view = TURN_CARD_VIEWS[kind](request, copy)
   const { cardRef, rememberFocusOrigin, respond, submitting } = useApprovalResponder(request, stack)
   // "Always allow" persists to config.yaml permanently, so it goes through a confirm step rather

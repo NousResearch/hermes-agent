@@ -506,6 +506,8 @@ export const deOverrides = {
       networkTitleNamed: session => `Website-Zugriff erforderlich — ${session}`,
       scheduleTitle: 'Hermes möchte einen Job planen',
       scheduleTitleNamed: session => `Hermes möchte einen Job planen — ${session}`,
+      scheduleEditTitle: 'Hermes möchte einen geplanten Job ändern',
+      scheduleEditTitleNamed: session => `Hermes möchte einen geplanten Job ändern — ${session}`,
       allowAction: 'Erlauben',
       denyAction: 'Ablehnen',
       inputTitle: 'Eingabe erforderlich',

@@ -98,6 +98,8 @@ export const arDiagnostics = {
       networkTitleNamed: session => `مطلوب الوصول إلى موقع — ${session}`,
       scheduleTitle: 'يريد Hermes جدولة مهمة',
       scheduleTitleNamed: session => `يريد Hermes جدولة مهمة — ${session}`,
+      scheduleEditTitle: 'يريد Hermes تعديل مهمة مجدولة',
+      scheduleEditTitleNamed: session => `يريد Hermes تعديل مهمة مجدولة — ${session}`,
       allowAction: 'السماح',
       denyAction: 'رفض',
       inputTitle: 'مطلوب إدخال',

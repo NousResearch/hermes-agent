@@ -45,6 +45,9 @@ export const enApproval: ApprovalCopy = {
     alwaysDescription:
       'Hermes will create scheduled jobs without asking first. You can turn this back on by removing cron_create from command_allowlist in config.yaml.',
     timedOutSystemLine:
-      'Approval timed out — the job was not created. Ask Hermes to try again, or raise the limit in Settings → Safety → Approval timeout.'
+      'Approval timed out — the job was not created. Ask Hermes to try again, or raise the limit in Settings → Safety → Approval timeout.',
+    editTitle: 'Change this job?',
+    editTimedOutSystemLine:
+      'Approval timed out — the job was not changed. Ask Hermes to try again, or raise the limit in Settings → Safety → Approval timeout.'
   }
 }

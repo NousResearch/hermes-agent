@@ -18,7 +18,7 @@ from typing import Any, Callable, Optional
 from agent.i18n import t
 from gateway.platforms.base import fit_prefix
 from gateway.platforms.base_exec_approval import (
-    approval_kind_of, approval_timeout_seconds, ea_default_reason_text, ea_reason_label_text, ea_t,
+    approval_kind_of, approval_timeout_seconds, is_schedule_kind, ea_default_reason_text, ea_reason_label_text, ea_t,
     format_approval_timed_out_notice, with_approval_kind)
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ def register_timeout_notice(
         timeout_s = approval_timeout_seconds()
     kind = approval_kind_of(approval_data)
     # A schedule card's body already is the description: repeating it as "why it was flagged" says nothing.
-    flagged = "" if kind == "schedule" else approval_data.get("description") or ea_default_reason_text()
+    flagged = "" if is_schedule_kind(kind) else approval_data.get("description") or ea_default_reason_text()
 
     def settle(reason: str) -> None:
         if reason != "timeout":

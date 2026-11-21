@@ -43,6 +43,9 @@ export const frApproval: Partial<ApprovalCopy> = {
     alwaysDescription:
       'Hermes créera des tâches planifiées sans demander. Vous pouvez réactiver la demande en retirant cron_create de command_allowlist dans config.yaml.',
     timedOutSystemLine:
-      'Délai d’approbation dépassé — la tâche n’a pas été créée. Demandez à Hermes de réessayer, ou augmentez la limite dans Réglages → Sécurité → Délai d’approbation.'
+      'Délai d’approbation dépassé — la tâche n’a pas été créée. Demandez à Hermes de réessayer, ou augmentez la limite dans Réglages → Sécurité → Délai d’approbation.',
+    editTitle: 'Modifier cette tâche ?',
+    editTimedOutSystemLine:
+      'Délai d’approbation dépassé — la tâche n’a pas été modifiée. Demandez à Hermes de réessayer, ou augmentez la limite dans Réglages → Sécurité → Délai d’approbation.'
   }
 }

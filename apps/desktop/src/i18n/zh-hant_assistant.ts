@@ -329,7 +329,10 @@ export const zhHantAssistant = {
         alwaysDescription:
           'Hermes 將不經詢問直接建立排程工作。從 config.yaml 的 command_allowlist 移除 cron_create 即可重新開啟詢問。',
         timedOutSystemLine:
-          '審核已逾時 — 工作未建立。請讓 Hermes 再試一次，或在 設定 → 安全 → 審核逾時 中提高上限。'
+          '審核已逾時 — 工作未建立。請讓 Hermes 再試一次，或在 設定 → 安全 → 審核逾時 中提高上限。',
+        editTitle: '修改此工作？',
+        editTimedOutSystemLine:
+          '審核已逾時 — 工作未修改。請讓 Hermes 再試一次，或在 設定 → 安全 → 審核逾時 中提高上限。'
       }
     },
     clarify: {

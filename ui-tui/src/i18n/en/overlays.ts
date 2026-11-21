@@ -19,6 +19,7 @@ export const overlaysEn = {
       // The card for a new scheduled job: its body is the job description, not a command.
       schedule: {
         title: '⏰ schedule this job?',
+        editTitle: '⏰ change this job?',
         once: 'Allow',
         session: 'Allow for this chat',
         always: 'Always allow new jobs'

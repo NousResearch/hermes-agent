@@ -39,6 +39,9 @@ export const zhApproval: Partial<ApprovalCopy> = {
     alwaysDescription:
       'Hermes 将不经询问直接创建计划任务。从 config.yaml 的 command_allowlist 中移除 cron_create 即可重新开启询问。',
     timedOutSystemLine:
-      '审批已超时 — 任务未创建。请让 Hermes 重试，或在 设置 → 安全 → 审批超时 中提高上限。'
+      '审批已超时 — 任务未创建。请让 Hermes 重试，或在 设置 → 安全 → 审批超时 中提高上限。',
+    editTitle: '修改此任务？',
+    editTimedOutSystemLine:
+      '审批已超时 — 任务未修改。请让 Hermes 重试，或在 设置 → 安全 → 审批超时 中提高上限。'
   }
 }

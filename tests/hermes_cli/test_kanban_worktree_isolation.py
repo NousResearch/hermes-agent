@@ -104,6 +104,98 @@ def test_decompose_worktree_children_get_own_workspace(kanban_home):
 
 
 
+def test_decompose_children_anchor_on_the_roots_repo(kanban_home, tmp_path):
+    """A card filed by an outside consumer names its repository, so the anchor a
+    decomposed child needs is already on the root row — no board default needed.
+
+    This is the tix-agent case: ``--workspace worktree:<repo>`` lands on the
+    root, and every child must land in its OWN ``<repo>/.worktrees/<child-id>``
+    so siblings still cannot share a checkout.
+    """
+    repo = _make_repo(tmp_path)
+    with kbc.connect() as conn:
+        root = kb.create_task(
+            conn,
+            title="project view",
+            triage=True,
+            workspace_kind="worktree",
+            workspace_path=str(repo),
+        )
+        child_ids = decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "spec it", "assignee": "alice", "parents": []},
+                {"title": "implement it", "assignee": "bob", "parents": [0]},
+            ],
+            author="decomposer",
+        )
+        assert child_ids is not None and len(child_ids) == 2
+
+        resolved = []
+        for cid in child_ids:
+            row = conn.execute(
+                "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+                (cid,),
+            ).fetchone()
+            assert row["workspace_kind"] == "worktree"
+            # The repo, never the root's checkout and never nothing at all.
+            assert row["workspace_path"] == str(repo)
+            workspace, branch = kbw._resolve_worktree_workspace(kb.get_task(conn, cid))
+            assert workspace == (repo / ".worktrees" / cid).resolve()
+            assert branch == f"wt/{cid}"
+            resolved.append(workspace)
+
+        # Distinct checkouts, one branch each: the isolation property is intact.
+        assert len(set(resolved)) == 2
+        heads = [
+            subprocess.run(
+                ["git", "-C", str(ws), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            for ws in resolved
+        ]
+        assert heads == [f"wt/{cid}" for cid in child_ids]
+
+
+def test_decompose_children_of_a_worktree_root_stay_unanchored(kanban_home, tmp_path):
+    """A root that already lives in a per-task checkout is NOT an anchor.
+
+    ``git rev-parse --show-toplevel`` answers a linked worktree with itself, so
+    a naive "is this a repo root?" test would inherit the root's checkout and
+    put every sibling on that one branch. The guard has to ask the more
+    specific question, and this test pins the answer on a REAL worktree.
+    """
+    repo = _make_repo(tmp_path)
+    root_ws = _add_worktree(repo, repo / ".worktrees" / "root", "wt/root")
+
+    with kbc.connect() as conn:
+        root = kb.create_task(
+            conn,
+            title="build the feature",
+            triage=True,
+            workspace_kind="worktree",
+            workspace_path=str(root_ws),
+        )
+        child_ids = decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "spec it", "assignee": "alice", "parents": []},
+                {"title": "implement it", "assignee": "bob", "parents": [0]},
+            ],
+            author="decomposer",
+        )
+        assert child_ids is not None and len(child_ids) == 2
+        for cid in child_ids:
+            row = conn.execute(
+                "SELECT workspace_path FROM tasks WHERE id = ?", (cid,),
+            ).fetchone()
+            assert row["workspace_path"] is None
+
+
 def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
     repo = _make_repo(tmp_path)
     occupied = _add_worktree(repo, repo / ".worktrees" / "sibling", "wt/sibling")

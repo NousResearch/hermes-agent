@@ -349,6 +349,29 @@ def _cli(args: list[str], env_extra: dict | None = None) -> subprocess.Completed
 class TestCLI:
 
 
+    def test_set_default_workdir_clear_actually_clears(self, tmp_path):
+        """Omitting the path is documented as "clear", and must clear.
+
+        ``write_board_metadata`` treats ``None`` as "unchanged", so a CLI that
+        forwards the omitted argument verbatim re-sets the old value and prints
+        it back as a success — the anchor can then never be removed.
+        """
+        env = {"HERMES_HOME": str(tmp_path)}
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        r = _cli(["boards", "set-default-workdir", "default", str(repo)], env_extra=env)
+        assert r.returncode == 0, r.stderr
+        assert "set to" in r.stdout
+
+        r = _cli(["boards", "set-default-workdir", "default"], env_extra=env)
+        assert r.returncode == 0, r.stderr
+        assert "cleared" in r.stdout
+
+        board_json = tmp_path / "kanban" / "boards" / "default" / "board.json"
+        assert json.loads(board_json.read_text())["default_workdir"] is None
+
+
     def test_per_board_task_isolation_via_cli(self, tmp_path):
         env = {"HERMES_HOME": str(tmp_path)}
         assert _cli(["boards", "create", "projA"], env_extra=env).returncode == 0

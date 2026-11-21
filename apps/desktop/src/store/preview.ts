@@ -2,6 +2,7 @@ import { randomUuid } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
+import type { DesktopFsSessionScope } from '@/lib/desktop-fs'
 import {
   capturePreviewAnnotateDestination,
   clearPreviewAnnotateDestination,
@@ -47,6 +48,8 @@ import { canOpenBrowserWindow, isBrowserWindow, openBrowserInNewWindow, windowBr
 export type PreviewRenderMode = 'preview' | 'source'
 
 export interface PreviewTarget {
+  /** Backend file admission carried by transcript previews; native files omit it. */
+  fileScope?: DesktopFsSessionScope
   binary?: boolean
   byteSize?: number
   /** Inline image bytes (a `data:` URL) when the renderer already holds them —

@@ -726,6 +726,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         without this the recovery is silent and the model keeps assuming the
         old workspace state (lobehub/lobehub#19329 class)."""
         self._recreated_notice_pending = True
+        self._hermes_file_read_token = uuid.uuid4().hex
 
     def _usable_cwd(self, cwd: str) -> tuple[str, dict | None]:
         """Directory the command may actually start in, plus ``{"requested", "used"}`` when it

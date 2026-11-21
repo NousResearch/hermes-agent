@@ -878,10 +878,28 @@ export function sessionReadOwnerPin(id: string, profile?: ProfileScope): { conne
  *  Null when no owner profile is known. A file route looks `session_id` up in
  *  the profile the request names, so the id must never travel with another
  *  profile: a caller that gets null names no session at all. */
-export function sessionFileOwnerScope(id: string): { connectionId?: string; profile: string } | null {
+function fileOwnerMatchesScope(owner: SessionReadOwnerRoute | string, expected: OwnerScope): boolean {
+  const connectionId = typeof owner === 'string' ? undefined : owner.connectionId
+  const expectedConnection = expected.connectionId?.trim()
+
+  if (expectedConnection && expectedConnection !== (connectionId || ambientOwnerConnectionId() || 'local')) {
+    return false
+  }
+
+  const profile = expected.profile?.trim()
+
+  return !profile || (typeof owner === 'string' ? owner.trim() === profile :
+    owner.profile === profile || owner.targetProfile === profile)
+}
+
+export function sessionFileOwnerScope(id: string, expected?: OwnerScope): { connectionId?: string; profile: string } | null {
   const owner = _sessionOwnerResolver?.(id)
 
   if (!owner) {
+    return null
+  }
+
+  if (expected && !fileOwnerMatchesScope(owner, expected)) {
     return null
   }
 

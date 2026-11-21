@@ -70,8 +70,9 @@ def same_key_retry(verdict: ClassifiedError) -> bool:
 
 
 def resend_cannot_help(verdict: ClassifiedError) -> bool:
-    """A cancelled task or a policy refusal: no stripped field or stream flag changes the answer."""
-    return verdict.reason in POLICY_REFUSAL_REASONS or bool(verdict.error_context.get("interrupted"))
+    """A policy/configuration refusal or cancellation that stripped fields and stream flags cannot repair."""
+    return (verdict.reason in POLICY_REFUSAL_REASONS or verdict.reason is _R.reasoning_configuration
+            or bool(verdict.error_context.get("interrupted")))
 
 
 def benches_provider(verdict: ClassifiedError) -> bool:

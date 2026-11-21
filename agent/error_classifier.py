@@ -60,6 +60,7 @@ class FailoverReason(enum.Enum):
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
     reasoning_mandatory = "reasoning_mandatory"  # Route rejects reasoning: {enabled: false} — send the disable no more on this route and retry
+    reasoning_configuration = "reasoning_configuration"  # Workspace refused the effort; requires a configuration change
 
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
@@ -580,6 +581,7 @@ _V_OVERLOADED, _V_SERVER_ERROR, _V_TIMEOUT, _V_UNKNOWN = map(_v, (_R.overloaded,
 _V_IMAGE_TOO_LARGE, _V_IMAGE_CORRUPT = _v(_R.image_too_large), _v(_R.image_corrupt)
 _V_MULTIMODAL, _V_INVALID_ENCRYPTED = _v(_R.multimodal_tool_content_unsupported), _v(_R.invalid_encrypted_content)
 _V_REASONING_MANDATORY = _v(_R.reasoning_mandatory, should_compress=False, should_fallback=False)
+_V_REASONING_CONFIGURATION = _v(_R.reasoning_configuration, retryable=False, should_fallback=False)
 # Same recovery hints as format_error: consumers without a merge-and-retry step (the main loop
 # already merges adjacent users before the call) keep aborting to the fallback chain.
 _V_ROLE_ALTERNATION = _v(_R.role_alternation, **_ABORT_FALLBACK)
@@ -639,6 +641,13 @@ _REASONING_REQUIRED_MARKERS = (
 # right recovery. Neither the strip rung nor its "unsupported" wording matches this message, so
 # without these markers the title lane fails outright instead of retrying at the floor.
 _REASONING_LEVEL_REJECTION_MARKERS = ("must be one of", "invalid value for")
+
+
+def is_workspace_reasoning_rejection(error_msg: str) -> bool:
+    """The workspace refuses the requested effort; changing credentials cannot repair it."""
+    msg = (error_msg or "").lower()
+    return ("reasoning_effort_not_allowed" in msg
+            or "reasoning level isn't available for the selected model in your workspace" in msg)
 
 
 def is_reasoning_level_rejection(error_msg: str) -> bool:
@@ -1243,6 +1252,8 @@ def _status_403(c: _Ctx) -> Verdict:
     # 403 and on established block/challenge markers; any other 403 stays auth.
     if any(p in c.msg for p in _UPSTREAM_BLOCKED_PATTERNS):
         return _V_UPSTREAM_BLOCKED
+    if is_workspace_reasoning_rejection(c.code) or is_workspace_reasoning_rejection(c.msg):
+        return _V_REASONING_CONFIGURATION
     return _V_AUTH_FALLBACK
 
 
@@ -1414,6 +1425,8 @@ def _classify_400(c: _Ctx) -> Verdict:
     # value is the disable — the loop drops it (or, when the disable is refused rather than the
     # field, steps the effort up to the floor) and retries once. Must precede request-validation,
     # which would abort as format_error.
+    if is_workspace_reasoning_rejection(c.code) or is_workspace_reasoning_rejection(msg):
+        return _V_REASONING_CONFIGURATION
     if (_REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg)
             or is_reasoning_level_rejection(msg)):
         return _V_REASONING_MANDATORY

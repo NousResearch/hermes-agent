@@ -1008,6 +1008,7 @@ def _welcome_outage_copy(agent: Any, base_url: Any, classified: Any) -> str:
 
 # Terminal status label per non-retryable reason (default names the HTTP status).
 _NONRETRYABLE_LABELS = {
+    FailoverReason.reasoning_configuration: "Reasoning configuration rejected; configure an available reasoning effort",
     FailoverReason.content_policy_blocked: "The provider's safety filter refused this request",
     FailoverReason.upstream_blocked: "A firewall/CDN in front of the provider blocked this request",
     FailoverReason.guardrail_blocked: "The provider's prompt-injection guardrail rejected this request",

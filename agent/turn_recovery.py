@@ -696,8 +696,17 @@ def recover_after_classification(
             _vlines(agent, "🔐 Nous paid access verified — refreshed runtime credentials and retrying request...")
             return True, False
 
+    # A provider-declared long 429 cooldown warrants first-hit pool rotation whether the
+    # wait came from Retry-After or the shared free-text reset grammar used by pool benching.
+    from agent.retry_utils import LIVE_RETRY_WAIT_CAP_S, provider_retry_after_seconds, reset_delay_from_message
+    message = (
+        error_context.get("message") if isinstance(error_context, dict) else None
+    ) or getattr(api_error, "message", None) or str(api_error)
+    window_spent = status_code == 429 and (
+        provider_retry_after_seconds(api_error) or reset_delay_from_message(str(message)) or 0
+    ) > LIVE_RETRY_WAIT_CAP_S
     recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
-        status_code=status_code, has_retried_429=_retry.has_retried_429,
+        status_code=status_code, has_retried_429=_retry.has_retried_429 or window_spent,
         classified_reason=classified.reason, error_context=_pool_error_context(agent, classified, error_context),
         billing_unverified=classified.billing_unverified,
     )

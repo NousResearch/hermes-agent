@@ -162,6 +162,15 @@ Do not disable Windows security controls to work around that boundary.
 The current installer does not set `HERMES_GIT_BASH_PATH`. MinGit is not a
 replacement for Git for Windows with Bash.
 
+The Git for Windows pin Hermes stages uses Git Credential Manager as its
+credential helper (`credential.helper = manager`), as the Git for Windows
+installer does. The portable build's own default is `helper-selector`, a picker
+window that opens on every credential lookup, so scheduled jobs and the gateway
+would wait on it with nobody there to answer. Existing installs switch over on
+their next `hermes update`; the desktop app's bundled git switches with its next
+release. Helpers set in your own git config (`git config --global
+credential.helper ...`) still apply.
+
 ## UTF-8 console on Windows
 
 Python's default stdio on Windows uses the console's active code page (usually cp1252 or cp437). Hermes's banner, slash-command list, tool feed, Rich panels, and skill descriptions all contain Unicode. Without intervention, any of that crashes with `UnicodeEncodeError: 'charmap' codec can't encode character…`.

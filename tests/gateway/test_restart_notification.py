@@ -1,5 +1,6 @@
 """Tests for /restart notification — the gateway notifies the requester on comeback."""
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -387,3 +388,58 @@ async def test_shutdown_notifications_are_fully_muted_when_flag_disabled():
     adapter.send.assert_not_awaited()
 
 
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notice_that_cannot_send_stays_inside_the_exit_budget():
+    """A host shutdown takes the network down first: the notice must give up, not outlast launchd's leash (#156127)."""
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops Home",
+    )
+    runner._stop_requested_by_signal = True
+    runner._launchd_exit_timeout_s = 2.2
+
+    network_back = asyncio.Event()  # never set: the send hangs until it is cancelled
+
+    async def never_returns(*_args, **_kwargs):
+        await network_back.wait()
+
+    adapter.send = AsyncMock(side_effect=never_returns)
+
+    await asyncio.wait_for(runner._notify_active_sessions_of_shutdown(), timeout=2)
+
+    adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notice_does_not_wait_for_a_cancellation_shielded_send():
+    """A cancellation-shielded Telegram transport must not hold launchd past the notice deadline (#156127)."""
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops Home",
+    )
+    runner._stop_requested_by_signal = True
+    runner._launchd_exit_timeout_s = 5.0  # the reported launchd exit timeout, not a shortened test leash
+
+    release = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def shielded_network_send(*_args, **_kwargs):
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            # A transport shield can continue draining after cancellation (#85125).
+            cancelled.set()
+            await release.wait()
+        return SendResult(success=False, error="network unavailable")
+
+    adapter.send = AsyncMock(side_effect=shielded_network_send)
+    try:
+        await asyncio.wait_for(runner._notify_active_sessions_of_shutdown(), timeout=4.0)
+        await asyncio.wait_for(cancelled.wait(), timeout=1.0)
+        adapter.send.assert_awaited_once()
+        assert runner._home_shutdown_notice != "sent"
+    finally:
+        release.set()
+        await asyncio.sleep(0)

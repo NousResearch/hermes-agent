@@ -9,14 +9,19 @@ a "Gateway online" on the next boot once it was delivered.
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import nullcontext
 from typing import Optional
+
+from agent.deadline import run_bounded_async
 
 logger = logging.getLogger("gateway.run")
 
 # Outcome of this stop's home-channel broadcast, read by ``_stop_persist_exit_state``.
 HOME_NOTICE_SENT = "sent"
 HOME_NOTICE_MUTED = "muted"
+# Per-send cap for a shutdown notice; the pass as a whole gets half the stop's watchdog leash.
+_SHUTDOWN_NOTICE_SEND_TIMEOUT_S = 5.0
 
 
 def settle_home_online_notice_debt(runner) -> None:
@@ -51,6 +56,36 @@ class GatewayHomeShutdownNoticeMixin:
     _planned_takeover_shutdown: bool = False
     _home_shutdown_notice: Optional[str] = None
     _home_notice_loop_checked: bool = False  # this stop was linked into the notice chain
+    _shutdown_notice_deadline: Optional[float] = None  # monotonic; set by this stop's first notice
+
+    async def _send_shutdown_notice(
+        self, adapter, chat_id: str, msg: str, kind: str, platform_str: str, **send_kwargs
+    ) -> bool:
+        """Send one shutdown notice; True when delivered. Failures are logged, never raised.
+
+        Bounded: a host shutdown takes the network down first, and a send that retries into it would
+        spend the exit budget the drain and cleanup need, so the supervisor kills the stop (#156127).
+        """
+        where = "home channel " if kind == "home channel" else ""
+        fail_fmt = f"Failed to send shutdown notification to {where}%s:%s: %s"
+        if self._shutdown_notice_deadline is None:
+            from gateway.run_shutdown import _effective_watchdog_leash
+            self._shutdown_notice_deadline = time.monotonic() + _effective_watchdog_leash(self) / 2
+        budget = min(self._shutdown_notice_deadline - time.monotonic(), _SHUTDOWN_NOTICE_SEND_TIMEOUT_S)
+        if budget <= 0:
+            return False
+        result = await run_bounded_async(
+            self._send_notice_logged(adapter, chat_id, msg, platform_str, fail_fmt, **send_kwargs),
+            timeout=budget, label="gateway-shutdown-notice", dump_on_blocked_loop=False,
+        )
+        if result.timed_out:
+            logger.info("Shutdown notification to %s%s:%s not delivered within the stop budget; continuing",
+                        where, platform_str, chat_id)
+            return False
+        if not result.value:
+            return False
+        logger.info("Sent shutdown notification to %s %s:%s", kind, platform_str, chat_id)
+        return True
 
     def _home_shutdown_notice_muted_by_loop(self) -> bool:
         """Record this broadcast in the persisted notice chain; True once the chain is a loop.

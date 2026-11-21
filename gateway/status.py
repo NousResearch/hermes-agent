@@ -27,7 +27,7 @@ from gateway.status_inline_source import (
     inline_bootstrap_argv,
     inline_source_flag_index,
 )
-from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
+from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home, runtime_kind_fields
 from hermes_cli._subprocess_compat import pid_exists_stdlib, process_start_time_stdlib
 from gateway.status_lock_dir import unusable_lock_dir, unusable_lock_dir_recovered
 from utils import atomic_json_write
@@ -1111,7 +1111,7 @@ def _prepare_runtime_status_update(
             }
         payload.update({key: current_record[key] for key in ("kind", "pid", "argv", "start_time")})
         payload["updated_at"] = _utc_now_iso()
-        payload.update(_get_code_identity_fields())
+        payload.update(_get_code_identity_fields(), **runtime_kind_fields())
         _apply_set_fields(payload, (
             ("gateway_state", gateway_state, None), ("exit_reason", exit_reason, None),
             ("restart_requested", restart_requested, bool),

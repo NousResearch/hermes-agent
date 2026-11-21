@@ -1301,7 +1301,7 @@ def _prune_unanswered_tool_calls(messages: list[dict]) -> tuple[list[dict], int]
     return pruned, repairs
 
 
-def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
+def _merge_consecutive_users(messages: list[dict], agent=None) -> tuple[list[dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     def _plain_text(content: Any) -> bool:
         # never rewrite the persisted row around undecodable content
@@ -1317,6 +1317,7 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             # A summary carrier followed by a new user row is a deliberate durable shape after
             # retry/rewind; never mutate the persisted carrier (sanitizers merge copies later).
             and split_user_originated_turn(prev)[0] is None
+            and split_user_originated_turn(msg)[0] is None
             # A /steer row that ended the previous run is already persisted; merging the next
             # prompt into it would rewrite it in place and re-break replay parity.
             and prev.get("display_kind") != STEER_DISPLAY_KIND
@@ -1337,6 +1338,9 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             else:
                 prev.pop(MERGED_DURABLE_ROWS, None)
             prev["content"] = merged_content
+            if agent is not None:
+                from agent.session_persistence import adopt_persist_user_anchor
+                adopt_persist_user_anchor(agent, prev, msg)
             # The clean-text persist override must replace only the absorbed turn, never the
             # unanswered text before it; kept across replay passes (an empty turn absorbs too).
             if prev_content:
@@ -1381,7 +1385,6 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
 
 _SEQUENCE_REPAIR_PASSES = (
     _merge_consecutive_assistants, _drop_stray_tool_results, _prune_unanswered_tool_calls,
-    _merge_consecutive_users,
 )
 
 def _normalize_sentinel_encoded_content(messages: list[dict]) -> None:
@@ -1417,6 +1420,8 @@ def repair_message_sequence(agent, messages: list[dict]) -> int:
     for repair_pass in _SEQUENCE_REPAIR_PASSES:
         current, made = repair_pass(current)
         repairs += made
+    current, made = _merge_consecutive_users(current, agent=agent)
+    repairs += made
     if repairs > 0:
         # Rewrite in place so persistence/return value/DB flush see the repaired sequence.
         messages[:] = current

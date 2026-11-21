@@ -430,7 +430,7 @@ describe('preprocessMarkdown', () => {
   it('keeps $$<digit>$$ display math intact instead of escaping it as currency', () => {
     const output = preprocessMarkdown('$$5x = 10$$')
 
-    expect(output).toContain('$$5x = 10$$')
+    expect(output).toBe('$$\n5x = 10\n$$')
     expect(output).not.toContain('\\$')
   })
 
@@ -527,7 +527,7 @@ describe('preprocessMarkdown', () => {
   })
 
   it('rewrites [/math] and [/inline] tag pairs to dollar delimiters', () => {
-    expect(preprocessMarkdown('[/math]a+b[/math]')).toContain('$$a+b$$')
+    expect(preprocessMarkdown('[/math]a+b[/math]')).toBe('$$\na+b\n$$')
     expect(preprocessMarkdown('[/inline]x[/inline]')).toContain('$x$')
   })
 
@@ -575,8 +575,8 @@ describe('preprocessMarkdown', () => {
     expect(preprocessMarkdown(input)).toBe('$$\r\n\\begin{aligned}\r\na &= b\r\n\\end{aligned}\r\n$$')
   })
 
-  it('leaves single-line display math alone', () => {
-    expect(preprocessMarkdown('$$x^2 + y^2 = r^2$$')).toBe('$$x^2 + y^2 = r^2$$')
+  it('promotes single-line display math to delimiter-on-own-lines flow math', () => {
+    expect(preprocessMarkdown('$$x^2 + y^2 = r^2$$')).toBe('$$\nx^2 + y^2 = r^2\n$$')
   })
 
   it('leaves a multiline $$ block that sits wholly inside one inline code span alone', () => {
@@ -590,7 +590,7 @@ describe('preprocessMarkdown', () => {
   })
 
   it('keeps a radical index inside display math', () => {
-    expect(preprocessMarkdown('$$\\sqrt[3]{8}$$')).toBe('$$\\sqrt[3]{8}$$')
+    expect(preprocessMarkdown('$$\\sqrt[3]{8}$$')).toBe('$$\n\\sqrt[3]{8}\n$$')
   })
 
   it('keeps a radical index inside a multiline display block', () => {

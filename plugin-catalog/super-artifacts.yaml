@@ -1,15 +1,15 @@
 name: super-artifacts
 title: Super Artifacts
 repo: https://github.com/Super-Artifacts/plugins
-sha: "dce02981a179a09dad6509fe58a3a7b8cf020735"
+sha: "b27887e03cc0587252fa3753844c3f003dabbf42"
 subdir: hermes
-description: "Publish pages, forms, trackers and proofs as live URLs that open on a phone, and read back what visitors submit, through the hosted Super Artifacts MCP server (Streamable HTTP, OAuth 2.1 + DCR), with the super-artifacts workflow skill bundled. Portable Agent Plugins v1 package (mcp.json + skills/), no code. Disclosure — hosted-only connector: every tool call goes to superartifacts.app/mcp; published artifacts and what visitors submit to them are stored on Super Artifacts' servers. Artifacts are private by default, and the skill tells the model to publish private and never widen who can open one unless the person asked; Hermes does not prompt before these tools run unless you set `trust: untrusted` on the server. No telemetry. OAuth must be enabled with `hermes mcp add super-artifacts --url https://superartifacts.app/mcp --auth oauth --connect-timeout 300`; the bundled mcp.json alone yields 401."
+description: "Publish pages, forms, trackers and proofs as live URLs that open on a phone, and read back what visitors submit, through the hosted Super Artifacts MCP server (Streamable HTTP), with the super-artifacts workflow skill and a Hermes dashboard Connect page and Webhooks card bundled. Disclosure — hosted service: every tool call goes to superartifacts.app/mcp; the dashboard backend also calls its account, artifact, device sign-in and webhook endpoints, and the Webhooks card, when you configure it, saves a signing secret in the current profile's webhook route store (never sent to dashboard JavaScript) and never starts or restarts your gateway.; published artifacts and what visitors submit are stored on Super Artifacts' servers. The creator key is saved in the current profile's .env as SUPER_ARTIFACTS_KEY and sent as a bearer header; it never reaches dashboard JavaScript. Disconnect removes the local key; revoke it at superartifacts.app/agents. No telemetry. Artifacts are private by default, and the skill tells the model to publish private and never widen who can open one unless the person asked; Hermes does not prompt before these tools run unless you set `trust: untrusted` on the server."
 maintainer: Super-Artifacts
 tier: community
 category: tools
-requires_hermes: ">=0.21.5"
-version: "0.141.0"
-docs_url: https://github.com/Super-Artifacts/plugins/tree/dce02981a179a09dad6509fe58a3a7b8cf020735/hermes#readme
+requires_hermes: ">=0.23.0"
+version: "0.199.1"
+docs_url: https://github.com/Super-Artifacts/plugins/tree/b27887e03cc0587252fa3753844c3f003dabbf42/hermes#readme
 readme: true
 platforms: []
 capabilities:
@@ -18,11 +18,11 @@ capabilities:
   provides_middleware: []
   requires_env: []
 known_issues:
-  - "Sign-in needs one extra command after install, because a portable mcp.json cannot declare OAuth: hermes mcp add super-artifacts --url https://superartifacts.app/mcp --auth oauth --connect-timeout 300"
-image: https://raw.githubusercontent.com/Super-Artifacts/plugins/dce02981a179a09dad6509fe58a3a7b8cf020735/assets/social/hero-1280x640.jpg
+  - "Webhooks need one public HTTPS address that forwards to your local Hermes webhook listener; the card asks for it once and never starts or restarts the gateway."
+  - "The Connect button lives in hermes dashboard (Super Artifacts tab). Desktop shows a paste-key field under Settings → Plugins; get a key at superartifacts.app/api-keys."
+image: https://raw.githubusercontent.com/Super-Artifacts/plugins/b27887e03cc0587252fa3753844c3f003dabbf42/assets/social/hero-1280x640.jpg
 screenshots:
-  - https://raw.githubusercontent.com/Super-Artifacts/plugins/dce02981a179a09dad6509fe58a3a7b8cf020735/assets/screenshots/07-hello-from-hermes.png
-  - https://raw.githubusercontent.com/Super-Artifacts/plugins/dce02981a179a09dad6509fe58a3a7b8cf020735/assets/screenshots/02-artifact-on-phone.png
-  - https://raw.githubusercontent.com/Super-Artifacts/plugins/dce02981a179a09dad6509fe58a3a7b8cf020735/assets/screenshots/03-data-read-back.png
-  - https://raw.githubusercontent.com/Super-Artifacts/plugins/dce02981a179a09dad6509fe58a3a7b8cf020735/assets/screenshots/05-gallery.png
-  - https://raw.githubusercontent.com/Super-Artifacts/plugins/dce02981a179a09dad6509fe58a3a7b8cf020735/assets/screenshots/06-artifact-versions.png
+  - https://raw.githubusercontent.com/Super-Artifacts/plugins/b27887e03cc0587252fa3753844c3f003dabbf42/assets/screenshots/02-artifact-on-phone.png
+  - https://raw.githubusercontent.com/Super-Artifacts/plugins/b27887e03cc0587252fa3753844c3f003dabbf42/assets/screenshots/03-data-read-back.png
+  - https://raw.githubusercontent.com/Super-Artifacts/plugins/b27887e03cc0587252fa3753844c3f003dabbf42/assets/screenshots/05-gallery.png
+  - https://raw.githubusercontent.com/Super-Artifacts/plugins/b27887e03cc0587252fa3753844c3f003dabbf42/assets/screenshots/06-artifact-versions.png

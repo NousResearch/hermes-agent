@@ -69,6 +69,7 @@ def _prepare_for_chat(monkeypatch, cli_mod, stub):
     stub._ensure_gateway_session = lambda: None
     stub._sync_fallback_chain_with_config = lambda agent: None
     stub._chat_route_images = lambda message, images: message
+    stub._revive_blocked_goal_for_user_turn = lambda message: None
 
     def _stage(agent, message):
         stub.conversation_history.append({"role": "user", "content": message})

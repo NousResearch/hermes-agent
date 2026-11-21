@@ -79,7 +79,13 @@ def _wait(mgr, arg):
 
 
 def _gate_add(mgr, arg):
-    gate = mgr.add_gate(arg)
+    retries = None
+    if arg.split(None, 1)[0] == "--retries":
+        parts = arg.split(None, 2)
+        if len(parts) < 3 or not parts[1].isdigit() or int(parts[1]) < 1:
+            return GoalCommandResult("Usage: /goal gate add [--retries N] <command>", error=True)
+        retries, arg = int(parts[1]), parts[2]
+    gate = mgr.add_gate(arg, max_retries=retries)
     return GoalCommandResult(f"⚿ Gate added: $ {gate.command} "
                              f"({gate.max_retries} retries, {gate.timeout_seconds}s timeout). "
                              "It must pass before the goal can complete.")
@@ -122,7 +128,7 @@ def _gate(mgr, arg, authorize_gate):
     verb, rest = tokens[0].lower(), tokens[1].strip() if len(tokens) > 1 else ""
     handler = _GATE_HANDLERS.get(verb)
     if handler is None or (verb == "clear" and rest) or (verb != "clear" and not rest):
-        return GoalCommandResult("Usage: /goal gate [list | add <command> | remove <N> | clear]", error=True)
+        return GoalCommandResult("Usage: /goal gate [list | add [--retries N] <command> | remove <N> | clear]", error=True)
     # Gates run shell commands without a later approval. The adapter must explicitly
     # authorize creation; recovery commands remain available to non-admin senders.
     if verb == "add" and (denial := authorize_gate()):

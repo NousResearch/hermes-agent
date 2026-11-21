@@ -14,7 +14,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
-import type { DesktopRegistryConnection } from '@/global'
+import type { DesktopProfileRoute, DesktopRegistryConnection } from '@/global'
 import { useI18n } from '@/i18n'
 import {
   CONNECTION_SEARCH_THRESHOLD,
@@ -23,14 +23,34 @@ import {
   sortConnectionsForDisplay
 } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
-import { Loader2 } from '@/lib/icons'
+import { AppWindow, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $activeConnectionId, $connectionsRegistry, $pendingConnectionId, selectConnection } from '@/store/connections'
+import { $defaultProfileRoute } from '@/store/default-profile'
 import { closeFindBar } from '@/store/find-in-page'
 import { notifyError } from '@/store/notifications'
+import { canOpenNewWindow, openNewWindow } from '@/store/windows'
 
 import { ConnectionGlyph } from './connection-glyph'
+import { DEFAULT_PROFILE } from './fleet-rail'
 import { useLocalDeviceSwitch } from './local-device-switch'
+
+/**
+ * A switcher row names a CONNECTION; a new window needs a profile as well.
+ * Prefer the route this app already defaults to when it lives on the target
+ * connection, then the SSH entry's pinned profile, then the gateway's home
+ * profile. It deliberately never falls back to this window's own route —
+ * staying off the source window is the whole point of opening a peer.
+ */
+function windowProfileFor(connection: DesktopRegistryConnection, defaultRoute: DesktopProfileRoute | null): string {
+  const pinned = defaultRoute?.connectionId === connection.id ? defaultRoute.profile.trim() : ''
+
+  if (pinned) {
+    return pinned
+  }
+
+  return connection.remoteProfile?.trim() || DEFAULT_PROFILE
+}
 
 export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: boolean; onConnect: () => void }) {
   const { t } = useI18n()
@@ -42,6 +62,10 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
   const connectionListRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const { dialog: localDeviceDialog, request: requestLocalDevice } = useLocalDeviceSwitch()
+  const defaultProfileRoute = useStore($defaultProfileRoute)
+  // Only Electron can open a peer window; the web dashboard renders the same
+  // switcher and must not advertise a gesture it cannot serve.
+  const windowHint = canOpenNewWindow()
 
   const connections = useMemo(() => sortConnectionsForDisplay(registry?.connections ?? []), [registry?.connections])
 
@@ -90,6 +114,11 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
 
   if (connections.length <= 1) {
     return null
+  }
+
+  const openInNewWindowFor = (connection: DesktopRegistryConnection) => {
+    triggerHaptic('selection')
+    void openNewWindow({ connectionId: connection.id, profile: windowProfileFor(connection, defaultProfileRoute) })
   }
 
   const choose = (connectionId: string) => {
@@ -205,16 +234,51 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
             ) : (
               displayedConnections.map(connection => (
                 <DropdownMenuRadioItem
-                  className={cn('min-w-0', searchable && dropdownMenuRow)}
+                  className={cn('group/item min-w-0', searchable && dropdownMenuRow)}
                   key={connection.id}
+                  // Shift opens a peer window instead of re-homing this one. It
+                  // cannot ride the radio group's onValueChange: re-picking the
+                  // already-active row fires no change, and that is exactly the
+                  // row a second window is most often wanted on.
+                  onKeyDown={event => {
+                    if (!windowHint || !event.shiftKey || (event.key !== 'Enter' && event.key !== ' ')) {
+                      return
+                    }
+
+                    event.preventDefault()
+                    event.stopPropagation()
+                    openInNewWindowFor(connection)
+                  }}
+                  onPointerDown={event => {
+                    if (!windowHint || !event.shiftKey) {
+                      return
+                    }
+
+                    event.preventDefault()
+                    event.stopPropagation()
+                    openInNewWindowFor(connection)
+                  }}
                   value={connection.id}
                 >
                   <ConnectionLabel connection={connection} />
+                  {windowHint && (
+                    <span
+                      aria-hidden="true"
+                      className="ml-auto shrink-0 pl-1 opacity-0 transition-opacity group-focus-within/item:opacity-60 group-hover/item:opacity-60"
+                    >
+                      <AppWindow className="size-3.5" />
+                    </span>
+                  )}
                 </DropdownMenuRadioItem>
               ))
             )}
           </DropdownMenuRadioGroup>
           <DropdownMenuSeparator className={searchable ? 'm-0' : undefined} />
+          {windowHint && (
+            <div className="px-2 pb-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">
+              {t.profiles.openInNewWindowHint}
+            </div>
+          )}
           <DropdownMenuItem className={searchable ? dropdownMenuRow : undefined} onSelect={onConnect}>
             <ManageGatewaysLabel label={t.profiles.connectGateway} />
           </DropdownMenuItem>

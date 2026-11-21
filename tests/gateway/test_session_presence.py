@@ -407,3 +407,22 @@ async def test_a_person_s_answer_to_a_server_request_counts_as_input(tmp_path, m
     finally:
         await client.connection.close()
         await conn.connection.close()
+
+
+def test_a_newer_report_replaces_the_last_report_outright():
+    """A report is the connection's whole statement: a later one that says the user has been idle
+    longer replaces the clock, basis and ``can_alert`` of the one before, never a mix of the two."""
+    from gateway.session_presence import ClientPresence
+    presence = ClientPresence()
+    presence.reported(['s'], 100, 'system', True)
+    presence.reported(['s'], -500, 'page', False)
+    assert presence.read('home', 's', 102) == (602.0, 'page', False)
+
+
+def test_older_owner_seen_input_never_moves_the_clock_back():
+    from gateway.session_presence import ClientPresence
+    presence = ClientPresence()
+    presence.seen('home', 's', 100)
+    presence.seen('home', 's', 50)
+    assert presence.read('home', 's', 102) == (2.0, 'input', None)
+

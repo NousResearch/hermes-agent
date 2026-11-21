@@ -213,7 +213,13 @@ def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is
         if prefix_tag and (prefix_tag == "folder") != is_dir:  # explicit `@folder:`/`@file:` skip the other kind
             continue
         full = pth.join(search_dir, entry)
-        rel = pth.relpath(full, root).replace(os.sep, "/")
+        try:
+            rel = pth.relpath(full, root).replace(os.sep, "/")
+        except ValueError:
+            # Windows device names such as ``nul`` can resolve to the special
+            # NUL device mount. Skip that candidate instead of dropping the
+            # entire completion response.
+            continue
         suffix = "/" if is_dir else ""
         if is_context:
             text = f"@{prefix_tag or ('folder' if is_dir else 'file')}:{rel}{suffix}"

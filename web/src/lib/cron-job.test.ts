@@ -4,6 +4,7 @@ import {
   buildCronJobPayload,
   cronJobHasExecutionContent,
   cronJobFormFromJob,
+  cronJobModelDisplay,
   cronLastResult,
   cronAgoLabel,
   cronNextRunOverdueMs,
@@ -237,5 +238,25 @@ describe("cronSchedulerStaleAgeS", () => {
     expect(cronSchedulerStaleAgeS([{ scheduler_heartbeat_age_s: 25 * 3600, enabled: false }])).toBeNull();
     expect(cronSchedulerStaleAgeS([])).toBeNull();
     expect([7 * 3600 + 120, 90, 3 * 86400].map(cronAgoLabel)).toEqual(["7h ago", "1m ago", "3d ago"]);
+  });
+});
+
+describe("cronJobModelDisplay", () => {
+  it("hides a legacy persisted model pin on a no_agent job — script-only runs never reach it (#132850)", () => {
+    expect(
+      cronJobModelDisplay({ no_agent: true, provider: "openrouter", model: "gpt-4o" }),
+    ).toBe("");
+  });
+
+  it("labels an agent job with provider/model when both are stored", () => {
+    expect(cronJobModelDisplay({ provider: "openrouter", model: "gpt-4o" })).toBe(
+      "openrouter/gpt-4o",
+    );
+  });
+
+  it("falls back to whichever single field is set, and stays empty when neither is", () => {
+    expect(cronJobModelDisplay({ model: "gpt-4o" })).toBe("gpt-4o");
+    expect(cronJobModelDisplay({ provider: "openrouter" })).toBe("openrouter");
+    expect(cronJobModelDisplay({})).toBe("");
   });
 });

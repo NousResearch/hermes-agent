@@ -281,6 +281,12 @@ identify a Messages-tab DM and receive the user's active Slack context with a
 turn. Hermes only supplies that context as a label; it does not read the viewed
 channel's history.
 
+The Agent manifest also subscribes to `agent_session_stopped`, which makes
+Slack show its native **Stop** button while Hermes is working. Clicking it acts
+like typing `/stop` in that thread: the running turn is interrupted and the
+thread's working status clears. Apps on an older manifest can add the
+`agent_session_stopped` bot event by hand under **Event Subscriptions**.
+
 ### Refreshing slash commands after updates
 
 When Hermes adds new commands (e.g. after `hermes update`), regenerate

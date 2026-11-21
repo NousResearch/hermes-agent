@@ -424,10 +424,493 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
   return [...stored, ...refreshedTrailing, ...previousTrailing, ...unplaced]
 }
 
-export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
-  if (refreshedTail.length === 0 || previous.length === 0) {
+function trailingVisibleAssistant(messages: ChatMessage[]): ChatMessage | null {
+  const index = messages.findLastIndex(message => message.role === 'assistant' && !message.hidden)
+
+  return index >= 0 ? messages[index] : null
+}
+
+/**
+ * Trailing assistant still needing refresh protection. Aligns with
+ * mergeOverlappingTail: undefined durableComplete on a bound row is settled.
+ */
+function liveReplyCandidate(previous: ChatMessage[]): ChatMessage | null {
+  const assistant = trailingVisibleAssistant(previous)
+
+  if (!assistant || !chatMessageText(assistant).trim()) {
+    return null
+  }
+
+  if (assistant.pending || assistant.interim || assistant.error) {
+    return null
+  }
+
+  if (assistant.durableComplete === true) {
+    return null
+  }
+
+  if (assistant.durableComplete === false) {
+    return assistant
+  }
+
+  return transcriptRowIds(assistant).length === 0 ? assistant : null
+}
+
+/** Interrupted rows (`durableComplete: false` on hydrated bubbles) keep this true on empty reads too. */
+function previousGuardsEmptyRefresh(previous: ChatMessage[]): boolean {
+  return liveReplyCandidate(previous) !== null
+}
+
+function samePromptUser(message: ChatMessage, anchorText: string): boolean {
+  return message.role === 'user' && !message.hidden && chatMessageText(message).trim() === anchorText
+}
+
+function findAnchorUserIndex(
+  messages: ChatMessage[],
+  anchorUser: ChatMessage,
+  previous?: ChatMessage[],
+  anchorIndexInPrevious?: number
+): number {
+  const byMessageId = messages.findIndex(message => message.id === anchorUser.id)
+
+  if (byMessageId >= 0) {
+    return byMessageId
+  }
+
+  if (anchorUser.rowId !== undefined) {
+    const byRow = messages.findIndex(message => message.rowId === anchorUser.rowId)
+
+    if (byRow >= 0) {
+      return byRow
+    }
+  }
+
+  if (anchorUser.submissionId) {
+    const submissionId = `user-${anchorUser.submissionId}`
+    const bySubmission = messages.findIndex(message => message.id === submissionId)
+
+    if (bySubmission >= 0) {
+      return bySubmission
+    }
+  }
+
+  const anchorText = chatMessageText(anchorUser).trim()
+
+  if (!anchorText) {
+    return -1
+  }
+
+  const textMatches: number[] = []
+
+  messages.forEach((message, index) => {
+    if (samePromptUser(message, anchorText)) {
+      textMatches.push(index)
+    }
+  })
+
+  if (!textMatches.length) {
+    return -1
+  }
+
+  if (textMatches.length === 1) {
+    return textMatches[0] ?? -1
+  }
+
+  if (previous !== undefined && anchorIndexInPrevious !== undefined) {
+    const laterSameText = previous
+      .slice(anchorIndexInPrevious + 1)
+      .filter(message => samePromptUser(message, anchorText)).length
+
+    const pick = textMatches[textMatches.length - 1 - laterSameText]
+
+    return pick ?? -1
+  }
+
+  return -1
+}
+
+function turnEndIndex(messages: ChatMessage[], userIndex: number): number {
+  const nextUser = messages.findIndex(
+    (message, index) => index > userIndex && message.role === 'user' && !message.hidden
+  )
+
+  return nextUser < 0 ? messages.length : nextUser
+}
+
+function assistantHasToolParts(message: ChatMessage): boolean {
+  return message.parts.some(part => part.type === 'tool-call')
+}
+
+function normalizeTranscriptText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+const PERSISTED_FINAL_SUFFIX_MIN_LENGTH = 4
+
+/** Persisted final row landed on the page while the live bubble still holds narration. */
+function persistedTextSatisfiesLive(persistedText: string, liveText: string): boolean {
+  const persisted = normalizeTranscriptText(persistedText)
+  const live = normalizeTranscriptText(liveText)
+
+  if (!persisted || !live || live.length <= persisted.length) {
+    return false
+  }
+
+  if (persisted === live) {
+    return true
+  }
+
+  if (persisted.length < PERSISTED_FINAL_SUFFIX_MIN_LENGTH) {
+    return false
+  }
+
+  if (!live.endsWith(persisted)) {
+    return false
+  }
+
+  const boundaryIndex = live.length - persisted.length
+
+  return boundaryIndex === 0 || /[\s.!?,:;]/.test(live[boundaryIndex - 1] ?? '')
+}
+
+function persistedAssistantTextsBeforeLive(turn: ChatMessage[], liveId: string): string[] {
+  return turn
+    .filter(message => message.role === 'assistant' && !message.hidden && message.id !== liveId)
+    .map(message => chatMessageText(message).trim())
+    .filter(Boolean)
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * Drop narration rows the page already holds before grafting live text onto the turn.
+ * Returns null when the persisted chain is not a leading prefix — graft the full live bubble.
+ * When the chain breaks, the full live bubble is grafted and narration may repeat briefly.
+ */
+function liveTextAfterPersistedPrefix(liveText: string, persistedTexts: string[]): null | string {
+  let remainder = liveText.trim()
+
+  for (const persisted of persistedTexts) {
+    const chunk = normalizeTranscriptText(persisted)
+
+    if (!chunk) {
+      continue
+    }
+
+    if (!normalizeTranscriptText(remainder).startsWith(chunk)) {
+      return null
+    }
+
+    const pattern = escapeRegExp(chunk).replace(/\s+/g, '\\s+')
+    const consumed = remainder.match(new RegExp(`^\\s*${pattern}(?=\\s|$)`))
+
+    if (!consumed) {
+      return null
+    }
+
+    remainder = remainder.slice(consumed[0].length).trim()
+  }
+
+  return remainder
+}
+
+function liveAssistantForGraft(live: ChatMessage, turn: ChatMessage[]): ChatMessage | null {
+  const liveText = chatMessageText(live).trim()
+
+  if (!liveText) {
+    return null
+  }
+
+  const persistedTexts = persistedAssistantTextsBeforeLive(turn, live.id)
+
+  if (!persistedTexts.length) {
+    return live
+  }
+
+  const remainder = liveTextAfterPersistedPrefix(liveText, persistedTexts)
+
+  if (remainder === null) {
+    return live
+  }
+
+  if (!remainder) {
+    return null
+  }
+
+  const nonTextParts = live.parts.filter(part => part.type !== 'text')
+
+  return {
+    ...live,
+    parts: [...nonTextParts, { type: 'text', text: remainder }]
+  }
+}
+
+function pageRowTextCoversLive(pageText: string, liveText: string): boolean {
+  const page = normalizeTranscriptText(pageText)
+  const live = normalizeTranscriptText(liveText)
+
+  if (!page || !live) {
+    return false
+  }
+
+  if (page === live) {
+    return true
+  }
+
+  return page.length >= live.length && page.includes(live)
+}
+
+function turnAlreadyShowsLiveReply(turn: ChatMessage[], live: ChatMessage): boolean {
+  const liveText = chatMessageText(live).trim()
+
+  if (!liveText) {
+    return true
+  }
+
+  const assistants = turn.filter(message => message.role === 'assistant' && !message.hidden)
+
+  if (
+    assistants.some(message => {
+      if (message.id !== live.id) {
+        return false
+      }
+
+      const text = chatMessageText(message).trim()
+
+      return Boolean(text) && pageRowTextCoversLive(text, liveText)
+    })
+  ) {
+    return true
+  }
+
+  const lastAssistant = assistants[assistants.length - 1]
+  const persistedText = lastAssistant ? chatMessageText(lastAssistant).trim() : ''
+
+  if (
+    lastAssistant &&
+    lastAssistant.id !== live.id &&
+    lastAssistant.rowId !== undefined &&
+    persistedText &&
+    !assistantHasToolParts(lastAssistant) &&
+    persistedTextSatisfiesLive(persistedText, liveText)
+  ) {
+    return true
+  }
+
+  return assistants.some(
+    message => message.id !== live.id && chatMessageText(message).trim() === liveText
+  )
+}
+
+function toolPartSettled(part: ChatMessage['parts'][number]): boolean {
+  return part.type === 'tool-call' && (part.result !== undefined || part.completedAt !== undefined)
+}
+
+function mergeAssistantParts(persisted: ChatMessage, live: ChatMessage): ChatMessage['parts'] {
+  // Same-id re-graft keeps the live text; a shorter page cannot clobber it, but longer page
+  // text that still fails pageRowTextCoversLive is discarded here until the final row lands.
+  if (persisted.id === live.id) {
+    const mergedParts = [...live.parts]
+    const toolIndexById = new Map<string, number>()
+
+    mergedParts.forEach((part, index) => {
+      if (part.type === 'tool-call') {
+        toolIndexById.set(part.toolCallId, index)
+      }
+    })
+
+    for (const part of persisted.parts) {
+      if (part.type !== 'tool-call') {
+        continue
+      }
+
+      const existingIndex = toolIndexById.get(part.toolCallId)
+
+      if (existingIndex === undefined) {
+        const insertAt = mergedParts.findIndex(candidate => candidate.type === 'tool-call')
+
+        mergedParts.splice(insertAt >= 0 ? insertAt : mergedParts.length, 0, part)
+        toolIndexById.set(part.toolCallId, insertAt >= 0 ? insertAt : mergedParts.length - 1)
+
+        continue
+      }
+
+      const existing = mergedParts[existingIndex]
+
+      if (
+        existing?.type === 'tool-call' &&
+        toolPartSettled(part) &&
+        !toolPartSettled(existing)
+      ) {
+        mergedParts[existingIndex] = part
+      }
+    }
+
+    return mergedParts
+  }
+
+  const toolIndexById = new Map<string, number>()
+  const mergedParts: ChatMessage['parts'] = []
+
+  const adoptToolPart = (part: ChatMessage['parts'][number]) => {
+    if (part.type !== 'tool-call') {
+      return
+    }
+
+    const existingIndex = toolIndexById.get(part.toolCallId)
+
+    if (existingIndex === undefined) {
+      toolIndexById.set(part.toolCallId, mergedParts.length)
+      mergedParts.push(part)
+
+      return
+    }
+
+    const existing = mergedParts[existingIndex]
+
+    if (
+      existing?.type === 'tool-call' &&
+      toolPartSettled(part) &&
+      !toolPartSettled(existing)
+    ) {
+      mergedParts[existingIndex] = part
+    }
+  }
+
+  for (const part of persisted.parts) {
+    if (part.type === 'tool-call') {
+      adoptToolPart(part)
+    } else {
+      mergedParts.push(part)
+    }
+  }
+
+  for (const part of live.parts) {
+    if (part.type === 'tool-call') {
+      adoptToolPart(part)
+    } else {
+      mergedParts.push(part)
+    }
+  }
+
+  return mergedParts
+}
+
+function graftLiveAssistantOntoMerged(merged: ChatMessage[], liveAssistant: ChatMessage, atIndex: number): ChatMessage[] {
+  return merged.map((message, index) =>
+    index === atIndex
+      ? {
+          ...message,
+          parts: mergeAssistantParts(message, liveAssistant),
+          completedAt: message.completedAt ?? liveAssistant.completedAt,
+          interim: false,
+          pending: false,
+          durableComplete: false
+        }
+      : message
+  )
+}
+
+function mergeLiveAssistantIntoUserTurn(
+  merged: ChatMessage[],
+  userIndex: number,
+  turnEnd: number,
+  live: ChatMessage
+): ChatMessage[] {
+  const existingLiveIndex = merged.findIndex((message, index) => index > userIndex && index < turnEnd && message.id === live.id)
+
+  if (existingLiveIndex >= 0) {
+    return graftLiveAssistantOntoMerged(merged, live, existingLiveIndex)
+  }
+
+  const emptyAssistantIndex = merged.findLastIndex(
+    (message, index) =>
+      index > userIndex && index < turnEnd && message.role === 'assistant' && !message.hidden && !chatMessageText(message).trim()
+  )
+
+  if (emptyAssistantIndex >= 0) {
+    return graftLiveAssistantOntoMerged(merged, live, emptyAssistantIndex)
+  }
+
+  // Last tool row in the turn: if a later text-only commentary row exists, final text lands before it.
+  const toolCarrierIndex = merged.findLastIndex(
+    (message, index) =>
+      index > userIndex &&
+      index < turnEnd &&
+      message.role === 'assistant' &&
+      !message.hidden &&
+      assistantHasToolParts(message)
+  )
+
+  if (toolCarrierIndex >= 0) {
+    return graftLiveAssistantOntoMerged(merged, live, toolCarrierIndex)
+  }
+
+  const next = [...merged]
+  next.splice(turnEnd, 0, { ...live, durableComplete: false })
+
+  return next
+}
+
+/** Re-anchor a live reply onto its own user turn after a refresh graft. */
+function preserveLiveAssistantAfterGraft(merged: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+  const live = liveReplyCandidate(previous)
+
+  if (!live) {
+    return merged
+  }
+
+  const liveIndex = previous.findIndex(message => message.id === live.id)
+
+  if (liveIndex < 0) {
+    return merged
+  }
+
+  const userIndex = previous.findLastIndex(
+    (message, index) => index < liveIndex && message.role === 'user' && !message.hidden
+  )
+
+  if (userIndex < 0) {
+    return merged
+  }
+
+  const anchorUser = previous[userIndex]
+  const mergedUserIndex = findAnchorUserIndex(merged, anchorUser, previous, userIndex)
+
+  if (mergedUserIndex < 0) {
+    return merged
+  }
+
+  const turnEnd = turnEndIndex(merged, mergedUserIndex)
+  const turn = merged.slice(mergedUserIndex, turnEnd)
+
+  if (turnAlreadyShowsLiveReply(turn, live)) {
+    return merged
+  }
+
+  const graftLive = liveAssistantForGraft(live, turn)
+
+  if (!graftLive) {
+    return merged
+  }
+
+  return mergeLiveAssistantIntoUserTurn(merged, mergedUserIndex, turnEnd, graftLive)
+}
+
+function graftRefreshedTailOntoBackfillInner(refreshedTail: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+  if (refreshedTail.length === 0) {
+    // Session switch clears `previous` before this path runs; only the active
+    // runtime transcript is at risk from a transient empty read (#119100).
+    return previousGuardsEmptyRefresh(previous) ? previous : refreshedTail
+  }
+
+  if (previous.length === 0) {
     return refreshedTail
   }
+
+  let merged: ChatMessage[]
 
   // The first rendered message can be a page-local tool fold whose id is not
   // durable. Anchor on the first shared persisted row anywhere in the page.
@@ -448,10 +931,8 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
     previous.slice(0, anchor).every(message => message.rowId === undefined || message.rowId < anchorRowId)
 
   if (anchor === 0) {
-    return retainCompletedTurnTools(refreshedTail, previous)
-  }
-
-  if (prefixIsEarlier) {
+    merged = retainCompletedTurnTools(refreshedTail, previous)
+  } else if (prefixIsEarlier) {
     // A page-local tool fold can sit in front of the anchor on BOTH sides: the
     // window's copy was hydrated from the same page, and the refreshed page
     // re-emits that row with the same id. Keeping both copies makes the graft
@@ -467,19 +948,26 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
       .slice(0, anchor)
       .filter(message => message.rowId !== undefined || !refreshedIds.has(message.id))
 
-    return retainCompletedTurnTools(prefix.length ? [...prefix, ...refreshedTail] : refreshedTail, previous)
+    merged = retainCompletedTurnTools(prefix.length ? [...prefix, ...refreshedTail] : refreshedTail, previous)
+  } else {
+    const refreshedIds = new Set(refreshedTail.map(message => message.id))
+
+    // The page already contains everything on screen, including a live row the
+    // tail really did cover. Take the page. This is what keeps a finished reply
+    // through a long tool turn.
+    merged = pageCoversWindow(previous, refreshedIds, refreshedRowIds)
+      ? retainCompletedTurnTools(refreshedTail, previous)
+      : retainCompletedTurnTools(mergeOverlappingTail(previous, refreshedTail), previous)
   }
 
-  const refreshedIds = new Set(refreshedTail.map(message => message.id))
+  return merged
+}
 
-  // The page already contains everything on screen, including a live row the
-  // tail really did cover. Take the page. This is what keeps a finished reply
-  // through a long tool turn.
-  if (pageCoversWindow(previous, refreshedIds, refreshedRowIds)) {
-    return retainCompletedTurnTools(refreshedTail, previous)
-  }
-
-  return retainCompletedTurnTools(mergeOverlappingTail(previous, refreshedTail), previous)
+export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+  return preserveLiveAssistantAfterGraft(
+    graftRefreshedTailOntoBackfillInner(refreshedTail, previous),
+    previous
+  )
 }
 
 const REFRESH_OVERLAP_PAGE_LIMIT = 4

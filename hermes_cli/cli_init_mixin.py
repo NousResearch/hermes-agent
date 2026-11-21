@@ -378,15 +378,8 @@ class CLIInitMixin:
         self._provider_data_collection = pr.get("data_collection")
 
         # OpenRouter Pareto Code router coding-score floor; out-of-range = unset.
-        _raw_score = (CLI_CONFIG.get("openrouter", {}) or {}).get("min_coding_score")
-        self._openrouter_min_coding_score: Optional[float] = None
-        if _raw_score not in {None, ""}:
-            try:
-                _f = float(_raw_score)
-                if 0.0 <= _f <= 1.0:
-                    self._openrouter_min_coding_score = _f
-            except (TypeError, ValueError):
-                pass
+        from agent.pareto_router import min_coding_score
+        self._openrouter_min_coding_score: Optional[float] = min_coding_score(CLI_CONFIG)
 
         self._fallback_model = get_fallback_chain(CLI_CONFIG)
 

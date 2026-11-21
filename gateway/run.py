@@ -46,6 +46,7 @@ from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance, AwakeIdleMeter
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get, config_exists
 from gateway.run_common import _csv_or_list_to_set
+from gateway.stream_consumer_fences import escape_code_fences_for_display
 from hermes_cli.fallback_config import pre_agent_fallback_notice
 from gateway.turn_executor import _UnboundedThreadExecutor
 
@@ -581,8 +582,7 @@ def _format_exec_approval_fallback(
     the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
     steps a surface without buttons needs. The command is never cut: ``/approve`` must only ever
     answer a command the user could read in full (#62359)."""
-    from gateway.platforms.base_exec_approval import (
-        approval_timeout_seconds, ea_header_text, ea_reason_label_text, format_approval_deadline_line)
+    from gateway.platforms.base_exec_approval import approval_timeout_seconds, ea_header_text, ea_reason_label_text, format_approval_deadline_line
     heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
                else f"⚠️ **{ea_header_text()}**")
 
@@ -593,7 +593,7 @@ def _format_exec_approval_fallback(
             choices.append(t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
     choices.append(t("gateway.exec_approval.text_choice_deny", prefix=command_prefix))
     return (
-        t("gateway.exec_approval.text_body", heading=heading, command=command,  # whole: send() splits it
+        t("gateway.exec_approval.text_body", heading=heading, command=escape_code_fences_for_display(command),  # whole
           reason_label=ea_reason_label_text(), reason=description)
         + t("gateway.exec_approval.text_choice_joiner").join(choices[:-1])
         + t("gateway.exec_approval.text_choice_last", choice=choices[-1])

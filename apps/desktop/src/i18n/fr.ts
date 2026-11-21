@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frBoot } from './fr_boot'
+import { frCatalog } from './fr_catalog'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
@@ -36,6 +37,7 @@ export const frOverrides = {
   },
   sharedMetrics: frSharedMetrics,
   firstRun: frFirstRun,
+  catalog: frCatalog,
   intro: introFr,
   connectors: frConnectorCard,
   connectorsPage: {

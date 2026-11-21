@@ -1,0 +1,7 @@
+{
+  "ok": false,
+  "error": {
+    "code": "provider_unavailable",
+    "message": "The catalog is unavailable."
+  }
+}

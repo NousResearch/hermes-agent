@@ -1,0 +1,43 @@
+{
+  "review_id": "fixture_review_ack01",
+  "action": "install",
+  "identifier": "plugin.1d469f9048c880a6a240f932f11ba28cb5b274d866b46e4f4f2b353ee15c385e.team:example-skill",
+  "version": "1",
+  "installation_revision": null,
+  "target_relative_path": "example-skill",
+  "summary": "Install Example skill version 1.",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "size": 87,
+      "change": "add"
+    }
+  ],
+  "preview_complete": true,
+  "scan": {
+    "verdict": "dangerous",
+    "policy": "acknowledge",
+    "summary": "Review the finding.",
+    "findings": [
+      {
+        "id": "network-access",
+        "severity": "high",
+        "category": "network",
+        "file": "SKILL.md",
+        "line": 5,
+        "description": "This skill describes network access.",
+        "acknowledgement_required": true
+      }
+    ],
+    "complete": true
+  },
+  "acknowledgements_required": [
+    "network-access"
+  ],
+  "policy_revision": "policy-1",
+  "content_digest": "fixture-content-digest-1",
+  "setup_guidance": [],
+  "confirmable": true,
+  "review_token": "fixture_token_ack000000000000001",
+  "expires_at_ms": 2000000900000
+}

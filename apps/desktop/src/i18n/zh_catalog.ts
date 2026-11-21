@@ -62,6 +62,30 @@ export const zhCatalog = {
   installHint: '安装前请检查源代码。更改将在新会话中生效。',
   results: (count: number) => `${count.toLocaleString('zh')} 个结果`,
   back: '返回结果'
+,
+  provider: {
+    review: (action: string) => `审查${action}`,
+    confirm: (action: string) => `确认${action}`,
+    actions: { install: '安装', update: '更新', uninstall: '卸载' },
+    managed: '由此来源管理。请在此审查更改，而不是编辑或删除本地文件。',
+    loading: '正在加载来源…',
+    empty: '此来源没有匹配的技能。',
+    signIn: '请通过提供此来源的插件登录后再浏览。',
+    unavailable: '此来源不可用。您的本地技能未受影响。',
+    incomplete: '审查不完整，或提供方策略不允许确认。',
+    changed: '此审查已过期。请关闭并重新请求审查。',
+    unknown: '结果尚未知晓。请先恢复原始确认，再开始其他操作。',
+    recover: '恢复原始操作',
+    finalizing: '正在确定本地状态…',
+    setup: '仅为设置指引。确认不会执行这些说明。',
+    more: (source: string) => `加载更多${source}`,
+    preview: '技能预览',
+    status: {
+      not_installed: '未安装', installed: '已安装', removed: '已在此来源之外移除',
+      unmanaged_local: '未托管的本地副本', pending: '操作待处理', unavailable: '来源不可用',
+      unknown: '结果未知', completed: '已完成', failed: '操作被拒绝'
+    }
+  }
 } satisfies TranslationOverrides['catalog']
 
 export const zhSkillDeepLink = {

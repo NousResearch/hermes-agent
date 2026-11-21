@@ -1,0 +1,7 @@
+{
+  "ok": false,
+  "error": {
+    "code": "outcome_unknown",
+    "message": "Read the original operation before retrying."
+  }
+}

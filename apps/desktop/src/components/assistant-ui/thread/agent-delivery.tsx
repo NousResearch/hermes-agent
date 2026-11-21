@@ -1,7 +1,7 @@
 import { type ToolCallMessagePartProps } from '@assistant-ui/react'
 import { type FC, useEffect, useState } from 'react'
 
-import { messageContentText } from '@/components/assistant-ui/thread/content'
+import { messageContentText, PROCESS_NOTIFICATION_RE } from '@/components/assistant-ui/thread/content'
 import { AGENT_MESSAGE_RE, agentAvatarCache, resolveAgentAvatar } from '@/components/assistant-ui/thread/user-message'
 
 // Sender-side inter-agent delivery: `hermes -p <agent> chat … -q "Message
@@ -34,6 +34,15 @@ function agentKey(value: unknown): string {
     : ''
 }
 
+type ThreadRow = { content?: unknown; role?: string }
+
+/** Routing keys of an inbound "Message from" text, or null for any other user row. */
+function inboundKeys(text: string): null | Set<string> {
+  const inbound = AGENT_MESSAGE_RE.exec(text)
+
+  return inbound ? new Set([inbound[1], inbound[2], inbound[3]].map(agentKey).filter(Boolean)) : null
+}
+
 /**
  * Did THIS bot send a `message_agent` to `sender` in the CURRENT exchange of
  * `earlier` (the thread up to, not including, the inbound "Message from
@@ -44,31 +53,90 @@ function agentKey(value: unknown): string {
  * answer that follows it, never every later unsolicited delivery (#85884).
  * Matching the sender by handle OR display name (either may sign the inbound
  * row) errs towards "expanded": a missed fold shows content, a wrong fold hides it.
+ *
+ * Only a dispatch made for the human counts. The turn that sent it was working
+ * for the human when its prompt (the nearest earlier user row that is not a
+ * background-process completion, which only continues the exchange that
+ * started the work) is a human row, is missing, or is a teammate's row that was
+ * itself the answer to a dispatch made for the human, so a chain the human
+ * asked for stays visible. A dispatch sent while answering a teammate on the
+ * bot's own account, such as replying to it via `message_agent` as Bot Mode
+ * instructs, is bot-to-bot work: the recipient's next inbound row is a new
+ * exchange and the reply to it folds.
  */
-export function dispatchedTo(
-  earlier: readonly { content?: unknown; role?: string }[],
-  sender: (string | undefined)[]
-): boolean {
+export function dispatchedTo(earlier: readonly ThreadRow[], sender: (string | undefined)[]): boolean {
   const keys = new Set(sender.map(agentKey).filter(Boolean))
 
   if (!keys.size) {
     return false
   }
 
-  for (let i = earlier.length - 1; i >= 0; i--) {
+  // Nothing before the last human row matters: every scan stops there and a
+  // turn prompted by it serves the human. One forward pass from there settles,
+  // per assistant row, whether its turn served the human; each inbound row is
+  // classified once, from rows already classified, so work stays polynomial
+  // and nothing recurses.
+  let start = earlier.length
+
+  while (start > 0) {
+    const row = earlier[start - 1]
+
+    if (row.role === 'user') {
+      const text = messageContentText(row.content).trim()
+
+      if (!AGENT_MESSAGE_RE.test(text) && !PROCESS_NOTIFICATION_RE.test(text)) {
+        break
+      }
+    }
+
+    start--
+  }
+
+  const serves = new Map<number, boolean>()
+  let turnServesHuman = true
+
+  for (let i = start; i < earlier.length; i++) {
+    const row = earlier[i]
+
+    if (row.role === 'assistant') {
+      serves.set(i, turnServesHuman)
+    } else if (row.role === 'user') {
+      const inbound = inboundKeys(messageContentText(row.content).trim())
+
+      if (inbound) {
+        turnServesHuman = answersDispatch(earlier, i, inbound, serves)
+      }
+    }
+  }
+
+  return answersDispatch(earlier, earlier.length, keys, serves)
+}
+
+/** The backward scan of `dispatchedTo` over `earlier[0..end)`, given each row's `serves` verdict. */
+function answersDispatch(
+  earlier: readonly ThreadRow[],
+  end: number,
+  keys: Set<string>,
+  serves: Map<number, boolean>
+): boolean {
+  if (!keys.size) {
+    return false
+  }
+
+  for (let i = end - 1; i >= 0; i--) {
     const row = earlier[i]
 
     if (row.role === 'user') {
-      const inbound = AGENT_MESSAGE_RE.exec(messageContentText(row.content))
+      const inbound = inboundKeys(messageContentText(row.content))
 
-      if (!inbound || [inbound[1], inbound[2], inbound[3]].some(part => keys.has(agentKey(part)))) {
+      if (!inbound || [...inbound].some(key => keys.has(key))) {
         return false
       }
 
       continue
     }
 
-    if (row.role !== 'assistant' || !Array.isArray(row.content)) {
+    if (row.role !== 'assistant' || !Array.isArray(row.content) || !serves.get(i)) {
       continue
     }
 

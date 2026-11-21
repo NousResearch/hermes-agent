@@ -8,7 +8,7 @@ import sqlite3
 import time
 from typing import Any, Optional
 from persistence.sqlite._state.common import _BOUNDARY_END_REASONS, _ended_by_compression, is_automatic_end_reason
-from persistence.sqlite._schema_ddl import _RESET_CHILD_SQL, _sql_json_extract
+from persistence.sqlite._schema_ddl import COMPRESSED_FROM_KEY, _RESET_CHILD_SQL, _sql_json_extract, _tool_fork_sql
 from persistence.sqlite.conversation._store.core import _session_row_dict
 from persistence.sqlite.conversation._store.messages import _carry_parent_timestamps, _clone_message_rows, _execute_transcript_write, _insert_message_rows, _is_explicit_fork_child_row, _tail_rows_after_watermark
 from persistence.sqlite.conversation._store.sql_common import (
@@ -34,7 +34,7 @@ _CHAIN_STEP_SQL = f"""
                       AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
                       AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
                       AND NOT ({_RESET_CHILD_SQL.format(a='child')})
-                      AND COALESCE(child.source, '') != 'tool'
+                      AND NOT {_tool_fork_sql('child.')}
                     ORDER BY
                       CASE
                         WHEN child.end_reason = 'compression' THEN 0
@@ -240,7 +240,7 @@ def reopen_orphaned_compression_session(holder: StoreHolder, session_id: str) ->
     def _do(conn):
         if not _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
             return False
-        # Any non-branch/non-delegate/non-reset/non-tool child is a continuation, ended or not.
+        # Any non-fork child is a continuation, ended or not (tool continuations are parent-bound).
         child = conn.execute(
             """
                 SELECT 1
@@ -412,9 +412,14 @@ def _publish_compression_child_on_conn(
             (parent_session_id,))
     if not messages:
         raise RuntimeError("Compression child handoff must not be empty")
+    child_model_config = model_config
+    if source == "tool":
+        # Owner, worker and canonical mutations publish through this transaction. Rebind on every
+        # rotation without mutating the caller's config; inherited fork markers still fence forks.
+        child_model_config = {**(model_config or {}), COMPRESSED_FROM_KEY: parent_session_id}
     _publish_child_session_row(holder,
         conn, parent, parent_session_id=parent_session_id, child_session_id=child_session_id,
-        source=source, model=model, model_config=model_config, system_prompt=system_prompt,
+        source=source, model=model, model_config=child_model_config, system_prompt=system_prompt,
         cwd=cwd, profile_name=profile_name)
     # Carried handoff tail rows arrive without a timestamp and would otherwise be stamped
     # `now`, breaking their _display_dedupe_key identity with the parent's durable originals

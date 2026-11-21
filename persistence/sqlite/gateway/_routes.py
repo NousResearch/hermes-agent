@@ -10,7 +10,7 @@ from persistence.authority.vocabulary import RETRY_HORIZON_S
 from persistence.gateway.routing import route_namespace
 
 from .._schema import _rebuild_table
-from .._schema_ddl import _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract
+from .._schema_ddl import _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract, _tool_fork_sql
 from ..conversation._store.retirement import RETIRED_PREFIX, _mark_retired, entry_session_id
 
 # Accidental end reasons recovery treats as resumable: superseded_by_resume = sentinel-parked runtime replaced
@@ -137,7 +137,7 @@ _COMPRESSION_LINEAGE_CTE = f"""
                           AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
                           AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
                           AND NOT ({_RESET_CHILD_SQL.format(a='child')})
-                          AND COALESCE(child.source, '') != 'tool'
+                          AND NOT {_tool_fork_sql('child.')}
                     )
                 """
 

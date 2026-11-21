@@ -102,8 +102,9 @@ async def test_a_worker_cut_by_a_restart_wait_waits_outside_it(monkeypatch, tmp_
     monkeypatch.setattr(gateway_client, "connect_gateway", owner.connect())
 
     # The worker waits for the next owner without reading anything from the restarting one, and an
-    # owner that never comes back still fails it at OWNER_WAIT_S (which ends the turn it held).
-    with pytest.raises(gateway_client.GatewayClientError, match="owner silent"):
+    # owner that never comes back still fails it at OWNER_WAIT_S (which ends the turn it held), as
+    # a host stall (exit 74), not a card failure.
+    with pytest.raises(kanban_worker_client.OwnerUnavailableError, match="owner silent"):
         await kanban_worker_client.run({"task_id": "t1"}, str(tmp_path / "kanban.db"))
     assert owner.receipts_in_wait == 0
     assert owner.dials > 2

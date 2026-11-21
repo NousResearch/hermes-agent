@@ -309,6 +309,14 @@ DEFAULT_CRASH_GRACE_SECONDS = 30
 # breaker must never trip on a throttle). 75 == BSD EX_TEMPFAIL.
 KANBAN_RATE_LIMIT_EXIT_CODE = 75
 
+# Worker exit "host infrastructure failure": the owner never completed this attempt — it stayed
+# silent past the submitter's wait, or its receipt settled ``unknown`` with no board result to
+# reconcile (#139612). Nothing about the card ran, so the dispatcher books it through the
+# infrastructure seam of #114720: ``consecutive_failures`` untouched, breaker never trips.
+# 74 == BSD EX_IOERR, the same code chosen for the persistence-failure family so one sentinel
+# covers every host-side stall.
+KANBAN_INFRASTRUCTURE_EXIT_CODE = 74
+
 # Worker exit "provider rejected the configuration": credential revoked (401/403), model gone
 # (404), TLS chain broken — a retry cannot fix it, so the dispatcher parks the card blocked on
 # the FIRST occurrence instead of spending ``failure_limit`` identical spawns. 78 == BSD EX_CONFIG.
@@ -4153,47 +4161,6 @@ def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     return row["summary"] if row else None
 
 
-def latest_summaries(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[str, str]:
-    """``{task_id: newest non-empty run summary}`` in one query (window function,
-    SQLite >= 3.25); tasks without a summary are omitted."""
-    ids = list(task_ids)
-    if not ids:
-        return {}
-    placeholders = ",".join("?" for _ in ids)
-    rows = conn.execute(
-        f"""
-        SELECT task_id, summary FROM (
-            SELECT task_id, summary,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY task_id
-                       ORDER BY COALESCE(ended_at, started_at) DESC, id DESC
-                   ) AS rn
-              FROM task_runs
-             WHERE task_id IN ({placeholders})
-               AND summary IS NOT NULL AND summary != ''
-        ) WHERE rn = 1
-        """,
-        ids,
-    ).fetchall()
-    return {r["task_id"]: r["summary"] for r in rows}
-
-
-def current_run_started_ats(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[str, int]:
-    """``{task_id: started_at of the run ``tasks.current_run_id`` points at}``
-    in one query; tasks with no active run (NULL or dangling pointer) are omitted."""
-    ids = list(task_ids)
-    if not ids:
-        return {}
-    placeholders = ",".join("?" for _ in ids)
-    rows = conn.execute(
-        "SELECT t.id AS task_id, r.started_at AS started_at FROM tasks t "
-        "JOIN task_runs r ON r.id = t.current_run_id "
-        f"WHERE t.id IN ({placeholders})",
-        ids,
-    ).fetchall()
-    return {r["task_id"]: r["started_at"] for r in rows}
-
-
 # --- Split modules (imported at the tail: they import this module as ``_kb``) ---
 from hermes_cli.kanban_db_boards import (
     _default_board_display_name,
@@ -4210,6 +4177,7 @@ from hermes_cli.kanban_db_connect import (
     init_db,
     write_txn,
 )
+from hermes_cli.kanban_db_run_reads import current_run_started_ats, latest_summaries
 from hermes_cli.kanban_db_workspace import (
     _cleanup_workspace,
     _is_managed_scratch_path,

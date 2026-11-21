@@ -127,13 +127,29 @@ def _live_main_key(key: str) -> Optional[str]:
     return None
 
 
-def has_live_connection(path: Path | str) -> bool:
+def has_live_connection(path: Path | str, *, timeout: Optional[float] = None) -> Optional[bool]:
     """Whether this process holds a connection to *path* (or to the database it is a sidecar of).
 
     Point-in-time answer: a raw open/close right after it returns ``False`` can still race a
-    new connection. Hold :func:`offline_file_access` across the I/O whenever possible."""
-    with _live_lock:
+    new connection. Hold :func:`offline_file_access` across the I/O whenever possible.
+
+    The registry read is bounded like every other acquire (``timeout``, default
+    :data:`_LIVE_LOCK_TIMEOUT_S`). Callers report this verdict in *diagnostic* messages -- the
+    fail-closed decision was already made by the bounded reader -- so a wedged holder must not
+    turn message construction into a second unbounded wait. On expiry it answers ``None``
+    ("cannot say"), which is not ``True``: it never invents a live connection, and it never
+    blocks behind one (#board-741).
+    """
+    if not _acquire_live_lock(timeout):
+        logger.warning(
+            "cannot read the connection registry for %s: the connection-lifecycle lock is held "
+            "by a raw read that has not finished in %ss (a wedged reader in another thread)",
+            path, _LIVE_LOCK_TIMEOUT_S if timeout is None else timeout)
+        return None
+    try:
         return _live_main_key(_key(path)) is not None
+    finally:
+        _live_lock.release()
 
 
 class _TrackingMixin:
@@ -285,12 +301,57 @@ def read_header_bytes_preopen(path: Path | str, *, length: int = 100, force: boo
             return None
 
 
+# A raw file read happens UNDER this lock, and every terminal guard call in the
+# process queues behind it. One caller whose read wedges (a cloud placeholder, a
+# TCC-gated path) therefore parked every later guard call for the life of the
+# process: 27 of 27 abandoned ``deadline-terminal.pre-exec-guard`` workers in
+# ``gateway.error.log`` sit at the ``_live_lock`` acquire below. A waiter now
+# fails CLOSED and FAST instead of inheriting the holder's wedge.
+#
+# EVERY wait on this lock is bounded, not just the raw-read one: the guard also
+# reads the registry to LABEL a refusal (``has_live_connection``), and an unbounded
+# wait there re-bought the whole wedge after the bounded reader had already failed
+# fast -- one acquire, 300s elapsed, on a 5s bound (#board-741).
+_LIVE_LOCK_TIMEOUT_S = 5.0
+
+
+def _acquire_live_lock(timeout: Optional[float] = None) -> bool:
+    """Try to take :data:`_live_lock` within a bounded budget; *timeout*=0 polls once.
+
+    ``None`` means the default. A negative budget is a deliberate unbounded wait (no
+    production caller passes one; kept so the bound is never silently unreachable).
+    """
+    budget = _LIVE_LOCK_TIMEOUT_S if timeout is None else timeout
+    if budget is None or budget < 0:
+        _live_lock.acquire()
+        return True
+    return _live_lock.acquire(timeout=budget)
+
+
 @contextlib.contextmanager
-def offline_file_access(path: Path | str, *, what: str = "read"):
+def offline_file_access(path: Path | str, *, what: str = "read", timeout: Optional[float] = None):
     """Hold the connection-lifecycle lock across a raw read of a database file: checking
     :func:`has_live_connection` and *then* doing raw I/O is a check/use race (a connection opened
-    in between loses its POSIX locks to the raw ``close()``). Held only for the raw I/O."""
-    with _live_lock:
+    in between loses its POSIX locks to the raw ``close()``). Held only for the raw I/O.
+
+    The wait for that lock is BOUNDED (``timeout``, default :data:`_LIVE_LOCK_TIMEOUT_S`): the
+    lock is held across caller I/O, so an unbounded wait lets one wedged reader stall every other
+    reader in the process. On expiry this raises :class:`LiveConnectionError` — the same
+    fail-closed answer a live connection gets — because "a raw read is already in progress and
+    will not finish" is exactly the state in which another raw read must not proceed.
+    """
+    budget = _LIVE_LOCK_TIMEOUT_S if timeout is None else timeout
+    acquired = _acquire_live_lock(timeout)
+    if not acquired:
+        logger.warning(
+            "refusing to %s %s: the connection-lifecycle lock has been held for %ss "
+            "(a raw read is wedged in another thread)", what, path, budget)
+        raise LiveConnectionError(
+            f"Refusing to {what} {path}: the connection-lifecycle lock is held by a raw read "
+            f"that has not finished in {budget}s, so this process cannot prove no live "
+            "connection would lose its POSIX advisory locks. Fail closed; retry after the "
+            "stuck read is abandoned.")
+    try:
         main = _live_main_key(_key(path))
         if main is not None:
             subject = "it" if main == _key(path) else f"its main database {main}"
@@ -300,3 +361,5 @@ def offline_file_access(path: Path | str, *, what: str = "read"):
                 "connection's POSIX advisory locks. Close all database "
                 "handles (stop the gateway/dashboard) and retry.")
         yield
+    finally:
+        _live_lock.release()

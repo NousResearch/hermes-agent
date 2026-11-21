@@ -379,6 +379,19 @@ class TestAudioRecorder:
         replacement_stream.start.assert_called_once_with()
         assert recorder._stream is replacement_stream
 
+    def test_dropped_recorder_closes_its_stream(self):
+        """``hermes_cli.voice`` drops recorders between takes; the drop must close the stream."""
+        from tools.voice_mode import AudioRecorder
+
+        stream = MagicMock()
+        recorder = AudioRecorder()
+        recorder._stream = stream
+
+        recorder.__del__()
+
+        assert recorder._stream is None
+        stream.close.assert_called_once_with()
+
     def test_ensure_stream_rebuilds_when_liveness_probe_fails(self, mock_sd):
         from tools.voice_mode import AudioRecorder
 

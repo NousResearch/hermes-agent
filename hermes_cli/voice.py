@@ -303,6 +303,10 @@ def start_recording() -> None:
     with _recorder_lock:
         if _recorder is not None and getattr(_recorder, "is_recording", False):
             return
+        if _recorder is not None:
+            # Dropped below; close its stream instead of leaving that to the GC.
+            with contextlib.suppress(Exception):
+                _recorder.shutdown()
         rec = create_audio_recorder()
         rec.start()  # only publish a recorder that actually started
         _recorder = rec
@@ -317,6 +321,10 @@ def stop_and_transcribe() -> Optional[str]:
     if rec is None:
         return None
     wav_path = rec.stop()
+    # Release the stream now: this recorder is never reused, and letting it be
+    # garbage-collected frees the PortAudio callback under its own native thread.
+    with contextlib.suppress(Exception):
+        rec.shutdown()
     return _transcribe_wav(wav_path, "voice transcription failed: %s") if wav_path else None
 
 

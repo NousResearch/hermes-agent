@@ -661,6 +661,16 @@ class TermuxAudioRecorder(_RecorderBase):
         self.cancel()
 
 
+# ── Stream lifetime ──────────────────────────────────────────────────
+# sounddevice hands PortAudio a cffi closure that calls back into Python, and Stream has no
+# __del__: whoever drops the last Python reference to an OPEN stream frees that closure under
+# PortAudio's running callback thread, which resumes in freed memory and dies in
+# PaUtil_EndBufferProcessing (SIGILL/SIGSEGV). The fix is therefore to always close the stream
+# (AudioRecorder.__del__ / shutdown(), hermes_cli.voice) — not to keep dead ones alive. A close
+# is safe on its own: it runs on a thread whose frame holds the stream, so the closure outlives
+# the close, and sounddevice clears ``_callback`` once PortAudio finishes the stream.
+
+
 class AudioRecorder(_RecorderBase):
     """Thread-safe sounddevice.InputStream recorder: ``start(on_silence_stop=cb)`` ...
     ``stop()`` -> WAV path or None; ``cancel()`` discards. With a callback the recording
@@ -922,6 +932,18 @@ class AudioRecorder(_RecorderBase):
         self._discard()
         self._close_stream_with_timeout()  # outside the lock: avoids deadlock with the callback
         logger.info("AudioRecorder shut down")
+
+    def __del__(self) -> None:
+        """Close the stream if the recorder is dropped without an explicit close.
+
+        sounddevice's Stream has no ``__del__``, so a dropped OPEN stream is freed with its
+        cffi callback still installed and PortAudio's callback thread resumes in freed memory
+        (see the Stream lifetime note above). Closing here is the fallback; callers should
+        close explicitly, because this runs on whichever thread drops the last reference —
+        including PortAudio's callback thread, where the close would just wait for itself.
+        """
+        with suppress(Exception):
+            self.shutdown()
 
     @staticmethod
     def _write_wav(audio_data, *, sample_rate: int = SAMPLE_RATE) -> str:

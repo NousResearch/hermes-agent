@@ -107,21 +107,31 @@ def _next_owner(db, epoch):
     return values
 
 
-@pytest.mark.parametrize("verb", ["rehome_queued", "retarget_local_automation", "recover"])
+@pytest.mark.parametrize("verb", ["rehome_queued", "retarget_local_automation"])
 def test_rehoming_writes_are_one_write_and_roll_back(seeded, verb):
-    seeds = {"rehome_queued": _rehome_seed, "retarget_local_automation": _retarget_seed, "recover": _next_owner}
+    seeds = {"rehome_queued": _rehome_seed, "retarget_local_automation": _retarget_seed}
     path, store, _ = seeded(seeds[verb])
     calls = {
         "rehome_queued": lambda: store.admissions.rehome_queued(epoch=EPOCH, old_session_id="old",
                                                                 new_session_id="new", principal_prefix="local:"),
         "retarget_local_automation": lambda: store.admissions.retarget_local_automation(
             epoch=EPOCH, session_id="owner", principal_id="peer", old_targets=["stale-a"], new_target="tip"),
-        "recover": lambda: store.admissions.recover(epoch=EPOCH + 1),
     }
     assert_rolls_back(path, store.holder(), calls[verb])
     with counted_transactions(store.holder()) as counts:
         calls[verb]()
     assert counts == {"write": 1, "read": 0}
+
+
+def test_recover_scans_without_the_write_lock_then_writes_once(seeded):
+    """The boot recovery reads its four predicates on a read connection first, so the write holds the lock for only
+    the rows it found; the transaction itself is still exactly one write that rolls back as before."""
+    path, store, _ = seeded(_next_owner)
+    call = lambda: store.admissions.recover(epoch=EPOCH + 1)
+    assert_rolls_back(path, store.holder(), call)
+    with counted_transactions(store.holder()) as counts:
+        call()
+    assert counts == {"write": 1, "read": 1}
 
 
 # ── the reads' seed ────────────────────────────────────────────────────────────

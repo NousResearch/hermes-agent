@@ -16,21 +16,38 @@ STAMP = SEEDED.timestamp()
 
 @pytest.mark.parametrize("role", ["user", "assistant", "tool"])
 def test_archive_dropped_compares_loaded_content(backend, scope_a, role):
+    """CONTRACT: a kept row is identified through the loader's projection of the stored bytes. Padding is not
+    normalized away — the read path hands those bytes out, so "  keep  " and "keep" are different content and
+    the old row is archived."""
     store_a = backend.open(scope_a)
     store_a.sessions.create(NewSession("kept", "test"))
     repo = backend.open(scope_a).messages
     original = repo.append("kept", NewMessage(role, "  keep  ", STAMP))
     result = repo.replace_transcript("kept", [NewMessage(role, "keep", STAMP)], ReplaceMode.ARCHIVE_DROPPED)
     rows = repo.read_transcript("kept", TranscriptRead(view=TranscriptView.ALL))
-    if role == "tool":
-        assert result.survivor_ids != (original,)
-        assert [row.content for row in rows] == ["  keep  ", "keep"]
-    else:
-        assert result.survivor_ids == (original,)
-        assert [(row.id, row.content) for row in rows] == [(original, "  keep  ")]
-    # CONTRACT: a kept row's stamp carries no snapshot (only its id and uid are stamped); an inserted row's carries one.
-    assert (result.rows[0].db_row_snapshot is None) is (role != "tool")
+    assert result.survivor_ids != (original,)
+    assert [row.content for row in rows] == ["  keep  ", "keep"]
     assert (totals(backend, scope_a, "kept")).message_count == 1
+
+
+@pytest.mark.parametrize("role", ["user", "assistant"])
+def test_archive_dropped_keeps_a_row_its_scrubbed_projection_matches(backend, scope_a, role):
+    """CONTRACT: a row whose scrubbed projection equals the replacement is the same row — the injected context
+    block is not content the store compares."""
+    from session_rules.turns import sanitize_context
+
+    block = " keep <memory-context>\nprivate\n</memory-context>"
+    assert sanitize_context(block).strip() == "keep"  # test precondition: the block is all that differs
+    store_a = backend.open(scope_a)
+    store_a.sessions.create(NewSession("scrubbed", "test"))
+    repo = backend.open(scope_a).messages
+    original = repo.append("scrubbed", NewMessage(role, block, STAMP))
+    result = repo.replace_transcript("scrubbed", [NewMessage(role, "keep", STAMP)], ReplaceMode.ARCHIVE_DROPPED)
+    rows = repo.read_transcript("scrubbed", TranscriptRead(view=TranscriptView.ALL))
+    assert result.survivor_ids == (original,)
+    assert [(row.id, row.content) for row in rows] == [(original, block)]
+    # CONTRACT: a kept row's stamp carries no snapshot; an inserted row's carries one.
+    assert result.rows[0].db_row_snapshot is None
 
 
 def test_unseen_reactions_include_archived_ancestors(backend, scope_a):

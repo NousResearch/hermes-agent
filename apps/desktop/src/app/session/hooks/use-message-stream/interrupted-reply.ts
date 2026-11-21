@@ -71,6 +71,26 @@ export function extendInterruptedReply(messages: ChatMessage[], rawText: string,
 }
 
 /**
+ * A stopped mark says the reply ended there. A turn that starts with no visible
+ * row after a stopped reply (no prompt on screen: a hidden prompt, such as a
+ * host plugin continuing the turn it paused to apply a grant) goes on with that
+ * reply, so the mark is no longer drawn: the rule toChatMessages applies to the
+ * stored rows. A prompt, a notice or an automation card in between keeps it.
+ * Display only: `interrupted` stays, since the stopped turn's receipt
+ * bookkeeping reads it (transcript-receipt-turns.ts).
+ */
+export function continueStoppedReply(messages: ChatMessage[], start?: { display_kind?: string }): ChatMessage[] {
+  const last = messages.findLastIndex(message => !message.hidden)
+  const reply = messages[last]
+
+  if (!reply || reply.role !== 'assistant' || !reply.interrupted || reply.continued || start?.display_kind) {
+    return messages
+  }
+
+  return messages.map((message, index) => (index === last ? { ...message, continued: true } : message))
+}
+
+/**
  * Stop settles the turn on screen before the backend's interrupted completion
  * arrives, so a refresh can merge the newest page in between. That page already
  * holds the stopped turn's stored rows while the live rows have no stored id

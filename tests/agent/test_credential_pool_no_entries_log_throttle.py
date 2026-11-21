@@ -19,7 +19,7 @@ from agent.credential_pool import (
     PooledCredential,
 )
 
-_NO_ENTRIES_MSG = "credential pool: no available entries (all exhausted or empty)"
+_NO_ENTRIES_MSG = "credential pool test: no available entries (all exhausted or empty)"
 
 
 class _FakeClock:

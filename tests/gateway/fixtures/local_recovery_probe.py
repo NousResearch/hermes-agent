@@ -132,7 +132,7 @@ def probe(tmp_path):
             return dict(db.execute('SELECT request_id,status FROM session_admissions'))
     async def first(desc, proc):
         async with websocket(home, desc) as ws:
-            for name in ('safe', 'unknown', 'foreign', 'missing', 'corrupt'):
+            for name in ('safe', 'unknown', 'tampered', 'missing', 'corrupt'):
                 params[name] = dict(request_id=name, source='gui' if name == 'safe' else 'tui', cwd=str(home), model='frozen-' + name, toolsets=[])
                 result = await rpc(ws, 'session.create', **params[name])
                 assert 'result' in result, result
@@ -143,13 +143,13 @@ def probe(tmp_path):
             await rpc(ws, 'prompt.submit', session_id=sessions['unknown'], input_id='started', text='BLOCK_STARTED')
             assert await asyncio.to_thread(peer.blocked.wait, 20)
             await rpc(ws, 'prompt.submit', session_id=sessions['unknown'], input_id='follower', text='NEVER_REPLAY')
-            for name in ('foreign', 'missing', 'corrupt'):
+            for name in ('tampered', 'missing', 'corrupt'):
                 await rpc(ws, 'prompt.submit', session_id=sessions[name], input_id=name, text=name.upper() + '_QUEUE')
             # The daemon stops itself immediately after this admission commits.
             await ws.send(json.dumps({'id': 'kill-boundary', 'method': 'prompt.submit', 'params': {
                 'session_id': sessions['safe'], 'input_id': 'safe', 'text': 'RECOVER_QUEUED'}}))
             await async_wait_until(lambda: rows().get('safe') == 'queued', timeout=20, what='safe admission queued')
-            assert rows()['foreign'] == 'queued', rows()
+            assert rows()['tampered'] == 'queued', rows()
             proc.kill()
             await asyncio.to_thread(proc.wait, 10)
     async def second(desc):
@@ -165,7 +165,8 @@ def probe(tmp_path):
             assert same['result']['info']['source'] == 'gui' and same['result']['info']['model'] == 'frozen-safe'
             conflict = await rpc(ws, 'session.create', **{**params['safe'], 'model': 'changed'})
             assert conflict['error']['message'] == 'invalid_params', conflict
-            for name, reason in [('foreign', 'profile_mismatch'), ('missing', 'storage_unavailable'), ('corrupt', 'storage_unavailable')]:
+            # A rewritten profile_id no longer hashes to the session id: refused as corrupt.
+            for name, reason in [('tampered', 'storage_unavailable'), ('missing', 'storage_unavailable'), ('corrupt', 'storage_unavailable')]:
                 rejected = await rpc(ws, 'session.resume', session_id=sessions[name])
                 assert rejected['error']['message'] == reason, rejected
             unknown = await rpc(ws, 'session.resume', session_id=sessions['unknown'])
@@ -178,9 +179,9 @@ def probe(tmp_path):
         # Negative fixtures corrupt only owned durable policy after the actual crash.
         with sqlite3.connect(home / 'state.db') as db:
             prefix = 'gateway.local_policy.v1:'
-            row = json.loads(db.execute('SELECT value FROM state_meta WHERE key=?', (prefix + sessions['foreign'],)).fetchone()[0])
+            row = json.loads(db.execute('SELECT value FROM state_meta WHERE key=?', (prefix + sessions['tampered'],)).fetchone()[0])
             row['profile_id'] = str(user)
-            db.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(row), prefix + sessions['foreign']))
+            db.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(row), prefix + sessions['tampered']))
             db.execute('DELETE FROM state_meta WHERE key=?', (prefix + sessions['missing'],))
             db.execute('UPDATE state_meta SET value=? WHERE key=?', ('{}', prefix + sessions['corrupt']))
         cfg['model']['default'] = 'changed-default'
@@ -189,18 +190,18 @@ def probe(tmp_path):
         with daemon(root, home, env, barrier=False) as (proc, desc):
             pids.append(proc.pid); epochs.append(desc['authority_epoch'])
             asyncio.run(second(desc))
-            assert rows() == {'warm': 'terminal', 'started': 'unknown', 'follower': 'queued', 'foreign': 'queued', 'missing': 'queued', 'corrupt': 'queued', 'safe': 'terminal'}, rows()
+            assert rows() == {'warm': 'terminal', 'started': 'unknown', 'follower': 'queued', 'tampered': 'queued', 'missing': 'queued', 'corrupt': 'queued', 'safe': 'terminal'}, rows()
         with daemon(root, home, env, barrier=False) as (proc, desc):
             pids.append(proc.pid); epochs.append(desc['authority_epoch'])
             asyncio.run(second(desc))
         texts = [next((m.get('content') for m in reversed(r['messages']) if m['role'] == 'user'), '') for r in peer.requests]
         assert texts.count('BLOCK_STARTED') == 1 and texts.count('RECOVER_QUEUED') == 1, texts
-        assert not any(t in texts for t in ('NEVER_REPLAY', 'FOREIGN_QUEUE', 'MISSING_QUEUE', 'CORRUPT_QUEUE')), texts
+        assert not any(t in texts for t in ('NEVER_REPLAY', 'TAMPERED_QUEUE', 'MISSING_QUEUE', 'CORRUPT_QUEUE')), texts
         recovered = next(r for r in peer.requests if any(m.get('content') == 'RECOVER_QUEUED' for m in r['messages']))
         assert recovered['model'] == 'frozen-safe' and not recovered.get('tools'), recovered
         assert epochs[1] > epochs[0] and pids[0] != pids[1]
         return {'pids': pids, 'epochs': epochs, 'sessions': sessions, 'inference_texts': texts,
-                'queued_recovered': True, 'unknown_paused': True, 'foreign_missing_corrupt_refused': True,
+                'queued_recovered': True, 'unknown_paused': True, 'tampered_missing_corrupt_refused': True,
                 'history_retained': True, 'frozen_model_toolsets': True}
     finally:
         peer.release.set()

@@ -1,5 +1,5 @@
 """Gateway control socket — the gateway-owned local coordination surface: a local-only socket answering
-versioned JSON verbs (``identify``, ``status``). A connectable socket with a well-formed ``identify``
+versioned JSON verbs (``identify``, ``status``, ``resolve-profile``, ``session-ticket``, ...). A connectable socket with a well-formed ``identify``
 answer IS liveness — no PID-reuse heuristics. Never a TCP port: filesystem/pipe ACLs are the auth
 boundary. POSIX: ``$HERMES_HOME/gateway.sock`` (or a temp-dir socket + ``gateway.sock.path`` pointer
 file when the home path exceeds ``sun_path`` or its filesystem refuses sockets); Windows: named pipe ``\\\\.\\pipe\\hermes-gateway-<hash>``.
@@ -24,6 +24,8 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from gateway.control_dispatch import ControlRequestDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -213,9 +215,12 @@ class GatewayControlServer:
         # symlinked component, so an unresolved symlinked ~/.hermes would never mint tickets.
         self._home = Path(home).resolve()
         self.ticket_store = None
+        # ``resolve-profile`` (gateway.control_resolve); None keeps the unknown-verb answer.
+        self.resolve_handler: Optional[Callable[[dict, Path], dict[str, Any]]] = None
         self.private_handlers = {}
         self._server: Optional[asyncio.AbstractServer] = None
         self._pipe_server: Any = None  # Windows proactor pipe server
+        self._request_dispatch: ControlRequestDispatcher | None = None
         self._bind_path: Optional[Path] = None
         self._pointer_file: Optional[Path] = None
         self._fallback_root: Optional[Path] = None  # mkdtemp root created for a squatted fallback
@@ -226,6 +231,12 @@ class GatewayControlServer:
     async def start(self) -> bool:
         """Bind and start serving. Returns True on success, False otherwise."""
         try:
+            # Build one default ``identify`` answer before accepting. A fresh process's first answer
+            # pays every lazy cost (the code-identity git walk, the first psutil process probe),
+            # which a loaded host stretches past a client's identify deadline; warm, it takes
+            # milliseconds. It also pins the code identity the gateway booted with, not a checkout
+            # an update swapped in before the first client asked.
+            await asyncio.to_thread(build_identify_payload)
             return await (self._start_windows() if _IS_WINDOWS else self._start_posix())
         except Exception as exc:
             await self.stop()
@@ -233,6 +244,8 @@ class GatewayControlServer:
             return False
 
     async def _start_posix(self) -> bool:
+        if self._request_dispatch is None:
+            self._request_dispatch = ControlRequestDispatcher()
         bind_path, pointer_file = resolve_server_socket_path(self._home)
         try:
             bind_path = await self._bind_posix(bind_path, pointer_file)
@@ -304,6 +317,9 @@ class GatewayControlServer:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(self._pipe_server.close)
         self._server = self._pipe_server = None
+        if self._request_dispatch is not None:
+            self._request_dispatch.close()
+            self._request_dispatch = None
         self.cleanup_files()
 
     def cleanup_files(self) -> None:
@@ -336,6 +352,8 @@ class GatewayControlServer:
                     raise PermissionError("authenticated private request required")
                 response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
                             "result": self.private_handlers[verb](request["params"], peer_subject)}
+            elif verb == "resolve-profile" and self.resolve_handler is not None:
+                response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION, "result": self.resolve_handler(request, self._home)}
             elif verb == "session-ticket":
                 response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
                             "result": self._session_ticket(request, peer_subject)}
@@ -350,7 +368,8 @@ class GatewayControlServer:
                 response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
                             "result": handler(params) if wants_params else handler()}
         except Exception as exc:
-            response = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "protocol": CONTROL_PROTOCOL_VERSION}
+            from storage_user_copy import error_type_name
+            response = {"ok": False, "error": f"{error_type_name(exc)}: {exc}", "protocol": CONTROL_PROTOCOL_VERSION}
         if request_id is not None:
             response["id"] = request_id
         try:
@@ -417,10 +436,11 @@ class GatewayControlServer:
             raw = await asyncio.wait_for(reader.readline(), timeout=_DEFAULT_CLIENT_TIMEOUT)
             if not raw or len(raw) > _MAX_REQUEST_BYTES:
                 return
-            # Handlers read disk; keep that off the loop that drives every platform
-            # adapter so a fast-polling consumer can't stall heartbeats.
-            response = await asyncio.get_running_loop().run_in_executor(
-                None, self.handle_request_line, raw.rstrip(b"\n"), self._posix_peer_subject(writer))
+            dispatcher = self._request_dispatch
+            if dispatcher is None:
+                return  # listener shutdown won the race with this connection's read
+            response = await dispatcher.dispatch(
+                self.handle_request_line, raw.rstrip(b"\n"), self._posix_peer_subject(writer))
             writer.write(response)
             await asyncio.wait_for(writer.drain(), timeout=_DEFAULT_CLIENT_TIMEOUT)
         except (TimeoutError, ConnectionError, OSError):
@@ -521,14 +541,19 @@ def identify_gateway(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) ->
     return query_gateway_control(home, "identify", timeout=timeout)
 
 
-def pause_gateway_for_update(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
-    """Ask the gateway serving ``home`` to drain and exit for an update. Returns the ACK ``{"pausing",
-    "already_stopping", "pid", "drain_timeout"}`` or None when no gateway answers (old gateway without
-    the verb, no/dead socket) — the caller then uses the legacy signal/tree-kill pause path.
+def pause_gateway_for_update(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT,
+                             force: bool = False) -> Optional[dict[str, Any]]:
+    """Ask the gateway serving ``home`` to restart for an update. Returns the ACK ``{"pausing",
+    "already_stopping", "pid", "drain_timeout", "force", "waiting_on"}`` or None when no gateway
+    answers (old gateway without the verb, no/dead socket) — the caller then uses the legacy
+    signal/tree-kill pause path.
 
+    Default: restart when idle (the gateway keeps serving and never interrupts live work). ``force``
+    stops live work now; a gateway that predates it answers without ``"force": true``.
     Step 2 of the socket migration (#92091).
     """
-    return query_gateway_control(home, "pause-for-update", timeout=timeout)
+    return query_gateway_control(home, "pause-for-update", params={"force": True} if force else None,
+                                 timeout=timeout)
 
 
 def rescan_gateway_profiles(home: Path, *, timeout: float = 8.0) -> Optional[dict[str, Any]]:

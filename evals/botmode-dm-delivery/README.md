@@ -4,13 +4,13 @@ Real Electron, production Python backend and tool execution, disposable HOME/HER
 loopback scripted inference (no paid model). Linux seat fixture; run from repository root:
 
 ```sh
-npm ci --no-audit --no-fund
+pnpm install --frozen-lockfile
 cp evals/botmode-dm-delivery/probe-dm-delivery.spec.ts apps/desktop/e2e/
 git apply evals/botmode-dm-delivery/mock-trigger.patch
-(cd apps/desktop && npm run build)
+(cd apps/desktop && pnpm run build)
 (cd apps/desktop && DISPLAY=:0 XAUTHORITY=/run/user/1000/xauth_cnpsqU \
   XDG_RUNTIME_DIR=/run/user/1000 VIRTUAL_ENV="$VIRTUAL_ENV" \
-  HERMES_DESKTOP_CDP_PORT=off npx playwright test e2e/probe-dm-delivery.spec.ts --reporter=list)
+  HERMES_DESKTOP_CDP_PORT=off pnpm exec playwright test e2e/probe-dm-delivery.spec.ts --reporter=list)
 git apply -R evals/botmode-dm-delivery/mock-trigger.patch
 rm apps/desktop/e2e/probe-dm-delivery.spec.ts
 ```

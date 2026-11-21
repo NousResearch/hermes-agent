@@ -1,0 +1,26 @@
+name: counterparty
+repo: https://github.com/Mattbusel/hermes-counterparty
+sha: "5527f523a33ccc71bcd7ea8a65c00538e4b42fdf"
+title: Counterparty
+description: "Screens the companies your agent is about to pay, email, sign with or buy from. Before any outward action (email, payment, order, transfer, signature, form submit) a pre_tool_call hook reads the vendor, email domain or URL from the call and checks it against the DoD Section 1260H list, the FCC Covered List, Section 889, the UFLPA Entity List, the BIOSECURE list and OFAC sanctions, with the ownership chain from public records, then escalates hits through Hermes's own approval prompt with the finding and its legal citation (never auto-approves; fails closed under cron). Search and page results that mention a listed vendor get a one-time note. Tools cp_screen, cp_lookup, cp_credit, cp_who_owns_address and cp_brief answer on demand; /whoowns gives a cited one-page brief. Works offline from a bundled list snapshot and says so. Disclosure — Sends the counterparty name, email/URL domain label, and (for cp_screen/cp_brief) the description and amount, or a street address and ZIP for address lookups, over HTTPS to shop.tensorust.com (Tensorust LLC, the plugin author's company) whenever a matching outward tool call (email, payment, order, signature, submit), one of its tools or /whoowns runs, plus a daily list-membership refresh; message bodies are matched locally only; optional TENSORUST_API_KEY through Hermes's secret scope; no telemetry, no shell, no file reads outside its bundled data."
+maintainer: Mattbusel
+tier: community
+category: tools
+version: "0.1.1"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Mattbusel/hermes-counterparty
+image: https://raw.githubusercontent.com/Mattbusel/hermes-counterparty/5527f523a33ccc71bcd7ea8a65c00538e4b42fdf/assets/card.png
+readme: true
+known_issues:
+  - "The alias index covers the vendor groups the lists name and their named subsidiaries (18 groups as of the 2026-11-06 pull), not every shell company; a clear result means not on these lists under this name."
+  - "Address ownership (cp_who_owns_address, /whoowns <address>) covers a set of US counties and says when an address is outside it."
+capabilities:
+  provides_tools:
+    - cp_screen
+    - cp_lookup
+    - cp_credit
+    - cp_who_owns_address
+    - cp_brief
+  provides_hooks: [pre_tool_call, transform_tool_result]
+  provides_middleware: []
+  requires_env: []

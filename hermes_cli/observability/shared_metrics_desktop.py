@@ -1,5 +1,6 @@
 """Shared-metrics facts the Desktop app reports about itself: area use, friction, first-run steps,
-dislike signals, and one daily report (Bot Mode / Sessions split, button presses per action).
+dislike signals, and one daily report (Bot Mode / Sessions split, button presses per action, the
+long-frame histogram).
 
 The renderer dedupes on its side (per-profile state persisted only while collection is on); the
 backend latches again so a second window, a reconnect replay, a backend restart or a cleared
@@ -23,6 +24,7 @@ from datetime import date, datetime, timedelta, timezone, UTC
 from typing import Any
 
 from . import shared_metrics_contract as contract
+from .shared_metrics_desktop_frames import DESKTOP_LONG_FRAMES_MARK, long_frame_rows
 from .shared_metrics_events import _emit
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,7 @@ ONBOARDING_LATCH_DIRNAME = "desktop_onboarding"
 # Room for every distinct (action, via) the renderer can send once it collapses unknown ids to `other`.
 DAILY_ACTION_ROWS_MAX = len(contract.DESKTOP_ACTION_IDS) * len(contract.DESKTOP_ACTION_VIAS)
 DAILY_REPORT_STATE_KEY = "desktop_daily_reported"
+LONG_FRAMES_REPORT_STATE_KEY = "desktop_long_frames_reported"
 # The renderer holds a finished day for at most 7 days; anything older (or in the future) is settled
 # unrecorded, which keeps the durable per-day latch bounded.
 DAILY_REPORT_WINDOW_DAYS = 8
@@ -220,21 +223,27 @@ def _action_rows(actions: Any) -> list[tuple[str, dict[str, str]]]:
     ]
 
 
-def _daily_rollup(usage_day: str, oldest: str, marks: list[tuple[str, dict[str, str]]], resource: dict[str, str]):
+def _frame_rows(frames: Any, visible_ms: Any) -> list[tuple[str, dict[str, str], int]]:
+    visible = contract.desktop_active_minutes_bucket(visible_ms)
+    return [(DESKTOP_LONG_FRAMES_MARK, row["dimensions"], row["amount"]) for row in long_frame_rows(frames, visible)]
+
+
+def _daily_rollup(usage_day: str, oldest: str, marks: list[tuple[str, dict[str, str], int]], resource: dict[str, str]):
     """``update_rollup_state`` step: the usage day's rows, unless that day was already reported."""
-    def update(state: dict[str, Any] | None) -> tuple[dict[str, Any], list[tuple[str, dict, dict, str]]]:
+    def update(state: dict[str, Any] | None) -> tuple[dict[str, Any], list[tuple[str, dict, dict, str, int]]]:
         days = [d for d in (state or {}).get("days", []) if isinstance(d, str) and d >= oldest]
         if usage_day in days:
             return {"days": days}, []
-        return {"days": sorted([*days, usage_day])}, [(mark, data, resource, usage_day) for mark, data in marks]
+        return {"days": sorted([*days, usage_day])}, [
+            (mark, data, resource, usage_day, amount) for mark, data, amount in marks]
     return update
 
 
-def record_desktop_daily(*, day: Any, modes: Any, actions: Any, bot_count: Any) -> bool:
-    """Record one finished Desktop day, in that day's period: a mode_use row per mode used (with the
-    bot count) and an action_use row per (action, via). True once the day is settled (saved, already
-    reported, empty or out of range) so the client drops its copy; False keeps it for the next attach,
-    including when this profile's collection is off (the client's own gate decides what it keeps)."""
+def _record_day(state_key: str, day: Any, rows: Any) -> bool:
+    """Record one finished day's ``(mark, dimensions, amount)`` rows (``rows(day_is_valid)``) once per
+    profile and usage day under ``state_key``. True once settled (saved, already reported, empty or out
+    of range) so the client drops its copy; False keeps it for the next attach, including when this
+    profile's collection is off (the client's own gate decides what it keeps)."""
     try:
         from .relay_shared_metrics import enabled
 
@@ -243,14 +252,27 @@ def record_desktop_daily(*, day: Any, modes: Any, actions: Any, bot_count: Any) 
         today = _utc_day()
         oldest = (date.fromisoformat(today) - timedelta(days=DAILY_REPORT_WINDOW_DAYS)).isoformat()
         usage_day = day if isinstance(day, str) and _DAY.fullmatch(day) and oldest <= day <= today else None
-        marks = _mode_rows(modes, bot_count) + _action_rows(actions) if usage_day else []
+        marks = rows() if usage_day else []
         if marks:
             store, resource = _store_and_resource()
-            store.update_rollup_state(DAILY_REPORT_STATE_KEY, _daily_rollup(usage_day, oldest, marks, resource))
+            store.update_rollup_state(state_key, _daily_rollup(usage_day, oldest, marks, resource))
         return True
     except Exception:
         logger.debug("Desktop daily report not recorded", exc_info=True)
         return False
+
+
+def record_desktop_daily(*, day: Any, modes: Any, actions: Any, bot_count: Any) -> bool:
+    """One finished Desktop day, in that day's period: a mode_use row per mode used (with the bot
+    count) and an action_use row per (action, via). See ``_record_day`` for the result."""
+    return _record_day(DAILY_REPORT_STATE_KEY, day, lambda: [
+        (mark, data, 1) for mark, data in _mode_rows(modes, bot_count) + _action_rows(actions)])
+
+
+def record_desktop_long_frames(*, day: Any, frames: Any, visible_ms: Any) -> bool:
+    """One finished Desktop day's long-frame histogram (uncapped counts) with its visible time, latched
+    apart from the daily report so either can land without the other."""
+    return _record_day(LONG_FRAMES_REPORT_STATE_KEY, day, lambda: _frame_rows(frames, visible_ms))
 
 
 def record_desktop_feature_use(*, area: Any) -> None:

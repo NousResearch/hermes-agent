@@ -974,6 +974,173 @@ class TestLiteLLMOpenAIWire:
         assert inner, "the OpenAI-wire grant must still place real breakpoints"
 
 
+class TestVercelAIGateway:
+    """Vercel AI Gateway (/v1/chat/completions) supports OpenAI-wire envelope cache_control."""
+
+    @pytest.mark.parametrize(
+        "provider,base_url",
+        [
+            ("ai-gateway", "https://ai-gateway.vercel.sh/v1"),
+            ("vercel", "https://ai-gateway.vercel.sh/v1"),
+            ("aigateway", "https://ai-gateway.vercel.sh/v1"),
+            ("vercel-ai-gateway", "https://ai-gateway.vercel.sh/v1"),
+            ("ai_gateway", "https://ai-gateway.vercel.sh/v1"),
+            # Custom AI_GATEWAY_BASE_URL override keeps caching via provider identity.
+            ("ai-gateway", "https://gateway.internal.example/v1"),
+            ("vercel", "https://gateway.internal.example/v1"),
+            # Host-only / custom provider pointed at ai-gateway.vercel.sh.
+            ("custom", "https://ai-gateway.vercel.sh/v1"),
+            ("", "https://ai-gateway.vercel.sh/v1"),
+        ],
+    )
+    def test_claude_on_ai_gateway_caches_with_envelope_layout(self, provider, base_url):
+        agent = _make_agent(
+            provider=provider,
+            base_url=base_url,
+            api_mode="chat_completions",
+            model="anthropic/claude-fable-5.2",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "moonshotai/kimi-k2.6",
+            "moonshotai/kimi-k3.1-pro",
+            "k2-thinking",
+            "alibaba/qwen3.6-plus",
+            "qwen/qwen3-coder-plus",
+        ],
+    )
+    def test_kimi_and_qwen_on_ai_gateway_cache_with_envelope_layout(self, model):
+        agent = _make_agent(
+            provider="ai-gateway",
+            base_url="https://ai-gateway.vercel.sh/v1",
+            api_mode="chat_completions",
+            model=model,
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "openai/gpt-5.4",
+            "google/gemini-4-carbon",
+            "deepseek/deepseek-v4",
+        ],
+    )
+    def test_implicit_cached_models_on_ai_gateway_do_not_emit_markers(self, model):
+        agent = _make_agent(
+            provider="ai-gateway",
+            base_url="https://ai-gateway.vercel.sh/v1",
+            api_mode="chat_completions",
+            model=model,
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_ai_gateway_on_anthropic_messages_uses_native_layout(self):
+        agent = _make_agent(
+            provider="ai-gateway",
+            base_url="https://ai-gateway.vercel.sh",
+            api_mode="anthropic_messages",
+            model="anthropic/claude-opus-5",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    @pytest.mark.parametrize("api_mode", ["codex_responses", "bedrock_converse"])
+    def test_ai_gateway_on_non_chat_transports_does_not_emit_envelope_markers(self, api_mode):
+        agent = _make_agent(
+            provider="ai-gateway",
+            base_url="https://ai-gateway.vercel.sh/v1",
+            api_mode=api_mode,
+            model="anthropic/claude-opus-5",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://ai-gateway.vercel.sh.attacker.invalid/v1",
+            "https://not-ai-gateway.vercel.sh/v1",
+            "https://attacker.example/ai-gateway.vercel.sh/v1",
+        ],
+    )
+    def test_lookalike_ai_gateway_hosts_do_not_cache(self, base_url):
+        agent = _make_agent(
+            provider="custom",
+            base_url=base_url,
+            api_mode="chat_completions",
+            model="anthropic/claude-opus-5",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_operator_disable_and_per_model_false_win_on_ai_gateway(self):
+        agent = _make_agent(
+            provider="ai-gateway",
+            base_url="https://ai-gateway.vercel.sh/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-fable-5.2",
+        )
+        agent._cache_disabled = True
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+        agent2 = _make_agent(
+            provider="custom:vercel",
+            base_url="https://ai-gateway.vercel.sh/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-fable-5.2",
+        )
+        agent2._custom_providers = [
+            {
+                "name": "vercel",
+                "base_url": "https://ai-gateway.vercel.sh/v1",
+                "models": {"anthropic/claude-fable-5.2": {"prompt_caching": False}},
+            }
+        ]
+        assert agent2._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_ai_gateway_destination_plan_keeps_tool_part_markers_and_1h_ttl(self):
+        from agent.agent_runtime_helpers import plan_cache_sections_for_destination
+        from agent.prompt_caching import effective_cache_ttl, envelope_tool_part_cache_markers_supported
+
+        assert envelope_tool_part_cache_markers_supported("ai-gateway", "https://ai-gateway.vercel.sh/v1")
+        assert envelope_tool_part_cache_markers_supported("vercel", "https://ai-gateway.vercel.sh/v1")
+        assert effective_cache_ttl("1h", provider="ai-gateway", model="anthropic/claude-fable-5.2") == "1h"
+        assert effective_cache_ttl("1h", provider="vercel", model="anthropic/claude-fable-5.2") == "1h"
+        assert effective_cache_ttl("1h", provider="ai-gateway", model="alibaba/qwen3.6-plus") == "5m"
+
+        messages = [
+            {"role": "system", "content": "SYSTEM " * 200},
+            {"role": "user", "content": "inspect"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "result " * 100},
+        ]
+        planned, _tools = plan_cache_sections_for_destination(
+            messages,
+            None,
+            provider="ai-gateway",
+            base_url="https://ai-gateway.vercel.sh/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-fable-5.2",
+            cache_disabled=False,
+            cache_ttl="1h",
+        )
+        assert not [m for m in planned if "cache_control" in m]
+        tool_msg = next(m for m in planned if m["role"] == "tool")
+        assert isinstance(tool_msg["content"], list)
+        assert tool_msg["content"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
 class TestNousPortalAnthropicWire:
     def test_portal_claude_on_the_messages_wire_uses_the_native_layout(self):
         agent = _make_agent(

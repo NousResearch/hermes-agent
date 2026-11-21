@@ -1348,14 +1348,15 @@ def anthropic_prompt_cache_policy(
     model_lower = eff_model.lower()
     provider_lower = eff_provider.lower()
     is_claude = "claude" in model_lower
-    # Kimi/Moonshot via OpenRouter takes Claude's envelope cache_control; without it moonshotai/kimi-k2.6
-    # served ~1% hits on 64K prompts (1% → 67% → 84% → 97% with it, #25970). The family matcher covers
-    # bare k1./k2./k25 slugs.
+    # Kimi/Moonshot via OpenRouter/AI Gateway takes Claude's envelope cache_control; without it
+    # moonshotai/kimi-k2.6 served ~1% hits on 64K prompts (1% → 67% → 84% → 97% with it, #25970). The
+    # family matcher covers bare k1./k2./k25 slugs.
     from agent.anthropic_endpoints import _model_name_is_kimi_family
+    from agent.prompt_caching import ALIBABA_FAMILY_PROVIDERS, is_qwen_model, is_vercel_ai_gateway_route
     is_kimi = _model_name_is_kimi_family(eff_model) or "moonshot" in model_lower
     is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
-    # Nous Portal proxies to OpenRouter; treat as OpenRouter-equivalent for cache layout.
     is_nous_portal = base_url_host_matches(eff_base_url, "nousresearch.com")
+    is_ai_gateway = is_vercel_ai_gateway_route(provider_lower, eff_base_url)
     is_anthropic_wire = eff_api_mode == "anthropic_messages"
     is_native_anthropic = is_anthropic_wire and (
         eff_provider == "anthropic" or base_url_hostname(eff_base_url) == "api.anthropic.com"
@@ -1400,12 +1401,14 @@ def anthropic_prompt_cache_policy(
     if eff_api_mode == "chat_completions" and (catalog := learned_or_catalog_markers(
             eff_provider, eff_base_url, eff_model, getattr(agent, "api_key", "") or "")) is not None:
         return catalog, False
-    # Envelope layout is OpenAI-wire only; Portal Claude on native Messages must fall through to the
-    # anthropic_messages branch (inner-block markers) or it serves 0% cache hits.
-    if (is_openrouter or is_nous_portal) and (is_claude or is_kimi) and not is_anthropic_wire:
+    # Envelope layout is OpenAI-wire only; Portal/AI-Gateway Claude on native Messages must fall
+    # through to the anthropic_messages branch (inner-block markers) or it serves 0% cache hits.
+    is_ai_gateway_chat = is_ai_gateway and eff_api_mode in {"chat_completions", ""}
+    if (is_openrouter or is_nous_portal or is_ai_gateway_chat) and (is_claude or is_kimi) and not is_anthropic_wire:
         return True, False
-    # Nous Portal Qwen (catalog unreachable) takes the envelope path; the alibaba check below misses it.
-    if is_nous_portal and "qwen" in model_lower:
+    # Nous Portal (catalog unreachable) and Vercel AI Gateway Qwen take the envelope path too; the
+    # alibaba-family check below only matches provider=opencode/alibaba.
+    if (is_nous_portal and "qwen" in model_lower) or (is_ai_gateway_chat and is_qwen_model(model_lower) and not is_anthropic_wire):
         return True, False
     if is_anthropic_wire and is_claude:
         return True, True  # third-party Anthropic-compatible gateway
@@ -1420,14 +1423,7 @@ def anthropic_prompt_cache_policy(
     if is_anthropic_wire and is_minimax_route:
         return True, True
     # Qwen/Alibaba on OpenCode and DashScope accept envelope cache_control on the OpenAI wire
-    # (pi-mono's "alibaba" cacheControlFormat). DeepSeek on OpenCode is excluded: its relay 400s on
-    # block-array content. Family set/predicate shared with the effective_cache_ttl clamp.
-    # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire transport that accepts
-    # Anthropic-style cache_control markers and rewards them with real cache hits. Without this branch
-    # qwen3.6-plus on opencode-go reports 0% cached tokens and burns through the subscription on every turn.
-    # OpenCode Zen's relay rejects the Anthropic-style content block format that cache markers produce
-    # (content becomes a block array instead of a plain string), causing HTTP 400 (#77217).
-    from agent.prompt_caching import ALIBABA_FAMILY_PROVIDERS, is_qwen_model
+    # (pi-mono's "alibaba" cacheControlFormat). DeepSeek on OpenCode is excluded (#77217).
     if provider_lower in ALIBABA_FAMILY_PROVIDERS and is_qwen_model(model_lower):
         return True, False
     return False, False

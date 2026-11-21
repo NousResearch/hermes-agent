@@ -1047,10 +1047,13 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
         prompt_preview = agent.ephemeral_system_prompt[:60] + "..." if len(agent.ephemeral_system_prompt) > 60 else agent.ephemeral_system_prompt
         print(f"🔒 Ephemeral system prompt: '{prompt_preview}' (not saved to trajectories)")
     if agent._use_prompt_caching:
+        from agent.prompt_caching import is_vercel_ai_gateway_route
         if agent._use_native_cache_layout and agent.provider == "anthropic":
             source = "native Anthropic"
         elif agent._use_native_cache_layout:
             source = "Anthropic-compatible endpoint"
+        elif is_vercel_ai_gateway_route(agent.provider, agent.base_url):
+            source = "Vercel AI Gateway"
         else:
             source = "Claude via OpenRouter"
         from agent.prompt_caching import effective_cache_ttl

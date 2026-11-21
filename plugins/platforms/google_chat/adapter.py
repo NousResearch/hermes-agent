@@ -32,6 +32,7 @@ from gateway.platforms._shared import (
 )
 
 from .cards import card_spec_to_cards_v2, format_message as _format_message
+from .workspace_user import WorkspaceUser, WorkspaceUserSettings
 
 
 def _adc_would_borrow_foreign_credentials() -> bool:
@@ -448,6 +449,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
             extra, "http_events_audience", "GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE", self._http_events_url)
         self._http_events_service_account_email = self._str_setting(
             extra, "http_events_service_account_email", "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL").lower()
+        # Opt-in Workspace user reached by domain-wide delegation (workspace_user.py); None = off.
+        ws_settings = WorkspaceUserSettings.from_extra(extra, _get_scoped_secret("GOOGLE_CHAT_ALLOWED_USERS", "") or "")
+        self._workspace_user = WorkspaceUser(self, ws_settings) if ws_settings else None
 
     @staticmethod
     def _int_setting(extra: dict[str, Any], key: str, env_name: str, default: int) -> int:
@@ -668,6 +672,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
             else:
                 logger.info("[GoogleChat] bot_user_id not yet resolved; will resolve on first addedToSpace or member lookup")
         self._supervisor_task = asyncio.create_task(self._run_supervisor()) if subscription_path is not None else None
+        if self._workspace_user is not None:
+            self._workspace_user.start(pubsub=subscription_path is not None)
         self._mark_connected()
         logger.info(
             "[GoogleChat] Connected; project=%s, inbound=%s, subscription=%s, "
@@ -683,6 +689,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Clean shutdown: stop accepting new messages, wait in-flight, close clients."""
         self._shutting_down = True
+        if self._workspace_user is not None:
+            await self._workspace_user.stop()
         if self._supervisor_task and not self._supervisor_task.done():
             self._supervisor_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
@@ -834,7 +842,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
             logger.exception("[GoogleChat] Could not parse Pub/Sub envelope")
             message.ack()
             return
-        ce_type = dict(getattr(message, "attributes", {}) or {}).get("ce-type") or ""
+        attrs = dict(getattr(message, "attributes", {}) or {})
+        ce_type = attrs.get("ce-type") or ""
         logger.debug("[GoogleChat] Envelope keys=%s, ce-type=%s", list(envelope.keys()), ce_type)
         if self._debug_raw:
             # Contains message text + sender email: redact and gate at DEBUG.
@@ -845,7 +854,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 dump = "<redact filter unavailable>"
             logger.debug("[GoogleChat] RAW envelope (redacted): %s", dump[:2000])
         try:
-            if "membership" in ce_type or "MEMBERSHIP" in ce_type:
+            if self._workspace_user is not None and self._workspace_user.handle_event(attrs, envelope):
+                pass  # a Workspace Events delivery to the impersonated user (workspace_events.py)
+            elif "membership" in ce_type or "MEMBERSHIP" in ce_type:
                 mpl = (envelope.get("chat") or {}).get("membershipPayload") or {}
                 space = mpl.get("space") or {}
                 if "created" in ce_type:
@@ -1320,6 +1331,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # Already have a card (real msg_id, sentinel, or in-flight) — bail.
         if chat_id in self._typing_messages:
             return
+        if self._workspace_user is not None and await self._workspace_user.wait_thinking(chat_id):
+            return  # the Workspace user's thinking reaction stands in for the marker
         if chat_id in self._typing_card_inflight:
             # Bounded wait for the running create so "the card is up when we return".
             with contextlib.suppress(asyncio.TimeoutError, KeyError):
@@ -1361,6 +1374,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug(log_msg, *log_args, exc_info=not _proxy_error(exc))
 
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Put the Workspace user's thinking reaction on the asker's message (when configured)."""
+        if self._workspace_user is not None and event.source is not None:
+            self._workspace_user.begin_thinking(event.source.chat_id, event.message_id or "")
+
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Reap typing card(s) after the turn: pop the SENTINEL on success; on
         failure/cancel patch a still-tracked card to a final label (no tombstone);
@@ -1368,6 +1386,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if event.source is None:
             return
         chat_id = event.source.chat_id
+        if self._workspace_user is not None:
+            await self._workspace_user.end_thinking(chat_id, event.message_id or "")
         try:
             current = self._typing_messages.pop(chat_id, None)
             if current and current != _TYPING_CONSUMED_SENTINEL:

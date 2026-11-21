@@ -76,11 +76,17 @@ def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
         used=budget.used, maximum=budget.max_total
     )
     if kanban_worker:
+        # A disabled-policy card has no kanban_request_review tool: don't offer it.
+        if (os.environ.get("HERMES_KANBAN_REVIEW_POLICY") or "").strip().lower() == "disabled":
+            _handoff = "call kanban_complete only if all task requirements are verified"
+        else:
+            _handoff = (
+                "call kanban_complete only if all task requirements are verified, or "
+                "kanban_request_review if it is ready for review"
+            )
         notice += (
-            " While tools are still available, call kanban_complete only if all task "
-            "requirements are verified, or kanban_request_review if it is ready for "
-            "review; otherwise persist a kanban_comment handoff and "
-            "continue. A diff or commit alone is not completion evidence."
+            f" While tools are still available, {_handoff}; otherwise persist a "
+            "kanban_comment handoff and continue. A diff or commit alone is not completion evidence."
         )
     # Only the current tool-result tail is mutable; an older turn may already be cached.
     from agent.context_compressor import _DB_PERSISTED_MARKER

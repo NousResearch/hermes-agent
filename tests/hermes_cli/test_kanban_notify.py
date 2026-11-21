@@ -849,6 +849,8 @@ async def test_notifier_uploads_review_handoff_artifacts(kanban_home, tmp_path, 
 
     monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
 
+    import hermes_cli.profiles as _profiles
+    monkeypatch.setattr(_profiles, "profile_exists", lambda name: name in ("default", "reviewer"))
     conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="review handoff", assignee="worker1")
@@ -862,7 +864,7 @@ async def test_notifier_uploads_review_handoff_artifacts(kanban_home, tmp_path, 
         # The summary names the scratch original, which still exists at
         # handoff time: it must not ride along as a second upload.
         assert kb.request_review(
-            conn, tid, summary=f"ready for review: {scratch}",
+            conn, tid, reviewer="reviewer", summary=f"ready for review: {scratch}",
             metadata={"artifacts": [str(scratch)]}, expected_run_id=run_id)
         handoff = [e for e in kb.list_events(conn, tid) if e.kind == "review_requested"][-1]
         attachments = kb.list_attachments(conn, tid)

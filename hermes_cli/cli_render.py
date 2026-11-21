@@ -378,16 +378,18 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     return _RichText.from_ansi(text or "")
 
 
-def _strip_markdown_syntax(text: str) -> str:
-    """Best-effort markdown marker removal for plain-text display."""
-    from cli import _rich_text_from_ansi
-    plain = _rich_text_from_ansi(text or "").plain
+def markdown_fence_step(line: str, fence: str | None) -> tuple[bool, str | None]:
+    """``agent.markdown_tables.markdown_fence_step``, imported on first call to keep it off startup."""
+    from agent.markdown_tables import markdown_fence_step as step
+    return step(line, fence)
+
+
+def _strip_prose_markdown(plain: str) -> str:
     # HR markers: "-"/"_" runs of 3+, but "*" only when exactly 3 (cron schedules "* * * * *").
     plain = re.sub(r"^\s{0,3}(?:[-_]\s*){3,}$", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s{0,3}(?:\*\s*){3}\s*$", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s{0,3}#{1,6}\s+", "", plain, flags=re.MULTILINE)
     # Blockquotes, lists, and checkboxes are preserved because they carry structure.
-    plain = re.sub(r"(```+|~~~+)", "", plain)
     plain = re.sub(r"`([^`]*)`", r"\1", plain)
     plain = re.sub(r"!\[([^\]]*)\]\([^\)]*\)", r"\1", plain)
     plain = re.sub(r"\[([^\]]+)\]\([^\)]*\)", r"\1", plain)
@@ -399,8 +401,43 @@ def _strip_markdown_syntax(text: str) -> str:
     plain = re.sub(r"\*([^\s*][^*]*?[^\s*])\*", r"\1", plain)
     plain = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", plain)
     plain = re.sub(r"~~([^~]+)~~", r"\1", plain)
-    plain = re.sub(r"\n{3,}", "\n\n", plain)
-    return plain.strip("\n")
+    return re.sub(r"\n{3,}", "\n\n", plain)
+
+
+def _strip_markdown_syntax(text: str, realign_width: int | None = None) -> str:
+    """Best-effort markdown marker removal for plain-text display.
+
+    Fenced code blocks lose only their fence lines: their contents stay byte-exact, since a
+    ``#`` comment or ``__init__`` in code is not markup and is what the user copies.
+    With ``realign_width``, tables in the prose are re-padded after their cells are stripped;
+    this has to happen here, because once the fence lines are gone a table-shaped code block
+    looks like a table.
+    """
+    from cli import _rich_text_from_ansi, realign_markdown_tables
+    plain = _rich_text_from_ansi(text or "").plain
+    out: list[str] = []
+    prose: list[str] = []
+    fence: str | None = None
+
+    def flush_prose() -> None:
+        stripped = _strip_prose_markdown("\n".join(prose))
+        if realign_width is not None:
+            stripped = realign_markdown_tables(stripped, realign_width)
+        out.extend(stripped.split("\n"))
+        prose.clear()
+
+    for line in plain.split("\n"):
+        is_delimiter, next_fence = markdown_fence_step(line, fence)
+        if not is_delimiter and fence is None:
+            prose.append(line)
+        elif not is_delimiter:
+            out.append(line)
+        elif prose:
+            flush_prose()
+        fence = next_fence
+    if prose:
+        flush_prose()
+    return "\n".join(out).strip("\n")
 
 
 _WINDOWS_PATH_WITH_DOT_SEGMENT_RE = re.compile(r"(?i)(?:\b[a-z]:\\|\\\\)[^\s`]*\\\.[^\s`]*")
@@ -442,7 +479,7 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     normalized_mode = str(mode or "render").strip().lower()
     if normalized_mode == "strip":
         # Strip first (inline markdown changes cell width), then re-align padding.
-        return _RichText(realign_markdown_tables(_strip_markdown_syntax(text), panel_width))
+        return _RichText(_strip_markdown_syntax(text, realign_width=panel_width))
     if normalized_mode == "raw":
         return _rich_text_from_ansi(text or "")
 

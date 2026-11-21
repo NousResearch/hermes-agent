@@ -204,3 +204,21 @@ def test_multiple_tables_in_one_text():
         assert all(o == offsets[0] for o in offsets), (
             "block did not align:\n" + "\n".join(block)
         )
+
+
+def test_fenced_table_shaped_code_is_left_byte_exact():
+    src = "```text\n| key | __init__ |\n|---|---|\n| a | b |\n```\n"
+    assert realign_markdown_tables(src) == src
+
+
+def test_a_table_after_a_closed_fence_is_still_aligned():
+    src = "~~~\n| x |\n~~~\n| a | bb |\n|---|---|\n| ccc | d |"
+    out = realign_markdown_tables(src).split("\n")
+    assert out[:3] == ["~~~", "| x |", "~~~"]
+    assert out[3:] == ["| a   | bb  |", "|-----|-----|", "| ccc | d   |"]
+
+
+def test_a_fence_line_ends_a_table_block():
+    src = "| a | b |\n|---|---|\n| c | d |\n```\n| raw | row |\n```"
+    out = realign_markdown_tables(src).split("\n")
+    assert out[3:] == ["```", "| raw | row |", "```"]

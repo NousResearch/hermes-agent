@@ -45,7 +45,7 @@ def coerce_output_schema(raw: Any) -> tuple[Optional[dict[str, Any]], Optional[s
 def append_output_contract(context: Optional[str], schema: dict[str, Any]) -> str:
     """Append the explicit output contract block to a child's context."""
     try:
-        schema_text = json.dumps(schema, indent=2, ensure_ascii=False)
+        schema_text = json.dumps(schema, indent=None, separators=(",", ":"), ensure_ascii=False)
     except (TypeError, ValueError):
         schema_text = str(schema)
     block = ("OUTPUT CONTRACT (machine-validated):\n"

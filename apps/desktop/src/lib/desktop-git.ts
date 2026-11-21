@@ -104,6 +104,15 @@ function remoteGitVia(api: GitApi): GitBridge {
       revParse: async (repoPath, ref) =>
         (await gitGet<{ sha: null | string }>('review/rev-parse', { path: repoPath, ref })).sha,
 
+      // A remote gateway has no untracked-only route, so derive the paths from
+      // the uncommitted listing (every untracked row answered status '?') rather
+      // than crossing the lastTurn baseline off-device.
+      untracked: async repoPath => {
+        const { files } = await gitGet<HermesReviewList>('review/list', { path: repoPath, scope: 'uncommitted' })
+
+        return files.filter(entry => entry.status === '?').map(entry => entry.path)
+      },
+
       commit: (repoPath, message, push) => gitPost('review/commit', { message, path: repoPath, push }),
 
       commitContext: repoPath => gitGet('review/commit-context', { path: repoPath }),

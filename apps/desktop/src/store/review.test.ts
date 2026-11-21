@@ -21,6 +21,7 @@ import {
   $reviewShipBusy,
   $reviewShipInfo,
   $reviewTurnBase,
+  $reviewTurnUntracked,
   clearReviewSelection,
   closeReview,
   commitChanges,
@@ -81,6 +82,7 @@ function stubReview(over: ReviewStub = {}) {
     unstage: vi.fn(async () => undefined),
     revert: vi.fn(async () => undefined),
     revParse: vi.fn(async () => null),
+    untracked: vi.fn(async () => []),
     commit: vi.fn(async () => undefined),
     commitContext: vi.fn(async () => ({ diff: 'd', recent: 'r' })),
     push: vi.fn(async () => undefined),
@@ -114,6 +116,7 @@ beforeEach(() => {
   $reviewRevertTarget.set(undefined)
   $reviewScope.set('uncommitted')
   $reviewTurnBase.set({})
+  $reviewTurnUntracked.set({})
   $reviewScopeCwd.set(null)
   $reviewScopeTarget.set('main')
   $currentCwd.set('/repo')
@@ -695,6 +698,118 @@ describe('turn baseline capture', () => {
 
     await new Promise(resolve => setTimeout(resolve, 0))
     expect($reviewTurnBase.get()).toEqual({})
+  })
+
+  it('snapshots the untracked paths that exist when the turn starts', async () => {
+    const review = stubReview({
+      revParse: vi.fn(async () => 'deadbeef'),
+      untracked: vi.fn(async () => ['notes.md', 'scratch/probe.ts'])
+    })
+
+    $sessionStates.set({ rt_capture: sessionState(true, '/repo') })
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect($reviewTurnUntracked.get()).toEqual({ '/repo': ['notes.md', 'scratch/probe.ts'] })
+    expect(review.untracked).toHaveBeenCalledWith('/repo')
+  })
+
+  it('keys untracked snapshots by cwd like the HEAD baseline', async () => {
+    stubReview({
+      revParse: vi.fn(async (cwd: string) => `sha-${cwd}`),
+      untracked: vi.fn(async (cwd: string) => [`${cwd}/only.ts`])
+    })
+
+    $sessionStates.set({ rt_main: sessionState(true, '/repo'), rt_tile: sessionState(true, '/tile') })
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect($reviewTurnUntracked.get()).toEqual({ '/repo': ['/repo/only.ts'], '/tile': ['/tile/only.ts'] })
+  })
+
+  it('records no untracked snapshot when HEAD does not resolve', async () => {
+    const review = stubReview({ untracked: vi.fn(async () => ['notes.md']) })
+
+    $sessionStates.set({ rt_norepo: sessionState(true, '/repo') })
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect($reviewTurnUntracked.get()).toEqual({})
+    expect(review.untracked).not.toHaveBeenCalled()
+  })
+
+  it('keeps the previous baselines when a bridge read rejects', async () => {
+    stubReview({
+      revParse: vi.fn(async () => 'deadbeef'),
+      untracked: vi.fn(async () => {
+        throw new Error('status failed')
+      })
+    })
+
+    $sessionStates.set({ rt_broken: sessionState(true, '/repo') })
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect($reviewTurnBase.get()).toEqual({ '/repo': 'deadbeef' })
+    expect($reviewTurnUntracked.get()).toEqual({})
+  })
+})
+
+describe('lastTurn scope', () => {
+  // One turn that edits a tracked file and creates a new one, while an older
+  // scratch file sat untracked the whole time.
+  const lastTurnList = (files: HermesReviewFile[]) =>
+    vi.fn(async (_cwd: string, scope: string) => ({ files: scope === 'lastTurn' ? files : [], base: 'deadbeef' }))
+
+  it('hides untracked files that already existed when the turn began', async () => {
+    stubReview({
+      revParse: vi.fn(async () => 'deadbeef'),
+      untracked: vi.fn(async () => ['old-scratch.ts']),
+      list: lastTurnList([
+        file('config/llm.ts'),
+        file('new-module.ts', { status: '?' }),
+        file('old-scratch.ts', { status: '?' })
+      ])
+    })
+
+    $sessionStates.set({ rt_turn: sessionState(true, '/repo') })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    $reviewOpen.set(true)
+    $reviewScope.set('lastTurn')
+    await refreshReview()
+
+    expect($reviewFiles.get().map(entry => entry.path)).toEqual(['config/llm.ts', 'new-module.ts'])
+  })
+
+  it('keeps every untracked row under the uncommitted scope', async () => {
+    stubReview({
+      revParse: vi.fn(async () => 'deadbeef'),
+      untracked: vi.fn(async () => ['old-scratch.ts']),
+      list: vi.fn(async () => ({
+        files: [file('new-module.ts', { status: '?' }), file('old-scratch.ts', { status: '?' })],
+        base: null
+      }))
+    })
+
+    $sessionStates.set({ rt_turn: sessionState(true, '/repo') })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    $reviewOpen.set(true)
+    await refreshReview()
+
+    expect($reviewFiles.get().map(entry => entry.path)).toEqual(['new-module.ts', 'old-scratch.ts'])
+  })
+
+  it('lists every untracked row when no baseline was captured', async () => {
+    stubReview({
+      list: vi.fn(async () => ({
+        files: [file('new-module.ts', { status: '?' }), file('old-scratch.ts', { status: '?' })],
+        base: 'deadbeef'
+      }))
+    })
+
+    $reviewOpen.set(true)
+    $reviewScope.set('lastTurn')
+    await refreshReview()
+
+    expect($reviewFiles.get().map(entry => entry.path)).toEqual(['new-module.ts', 'old-scratch.ts'])
   })
 })
 

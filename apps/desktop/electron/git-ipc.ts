@@ -20,7 +20,8 @@ import {
   reviewRevParse,
   reviewShipInfo,
   reviewStage,
-  reviewUnstage
+  reviewUnstage,
+  reviewUntracked
 } from './git-review-ops'
 import {
   addWorktree,
@@ -88,6 +89,11 @@ export function registerGitIpc({ resolveGitBinary, resolveGhBinary }: GitIpcDeps
   )
   ipcMain.handle('hermes:git:review:revParse', async (_event, repoPath, ref) =>
     reviewRevParse(repoPath, ref, resolveGitBinary())
+  )
+  // Untracked paths only (no per-file counts): the renderer snapshots them at
+  // turn start to scope the review pane's lastTurn list.
+  ipcMain.handle('hermes:git:review:untracked', async (_event, repoPath) =>
+    reviewUntracked(repoPath, resolveGitBinary())
   )
   ipcMain.handle('hermes:git:review:commit', async (_event, repoPath, message, push) =>
     reviewCommit(repoPath, message, Boolean(push), resolveGitBinary())

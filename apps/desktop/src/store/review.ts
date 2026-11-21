@@ -94,10 +94,34 @@ export const $reviewScope = persistentAtom<HermesReviewScope>(SCOPE_KEY, 'uncomm
 // start on a git probe.
 export const $reviewTurnBase = atom<Record<string, string>>({})
 
+// Untracked paths that already existed when the most recent turn started in a
+// repo, keyed by cwd like $reviewTurnBase. `lastTurn` must not claim a file the
+// turn never touched, and `git status` reports every untracked path in the repo
+// rather than the ones this turn created — so the set is snapshotted at turn
+// start and subtracted from the Electron list, which cannot tell them apart.
+// Absent for a cwd = "no snapshot" → nothing is subtracted (the pre-#155605
+// behaviour rather than a pane that silently drops real work).
+export const $reviewTurnUntracked = atom<Record<string, string[]>>({})
+
 // Cap on tracked baselines. Bounded by repos-worked-in in practice, but a
 // long-lived session shouldn't hoard stale entries for abandoned worktrees:
 // beyond the cap, the least-recently-captured cwd is evicted.
 const MAX_TURN_BASES = 8
+
+// One bounded, cwd-keyed baseline map after recording `value` for `cwd`:
+// re-insert the cwd so object key order tracks recency (oldest first), then
+// evict from the front beyond the cap.
+function boundedBaseline<T>(prev: Record<string, T>, cwd: string, value: T): Record<string, T> {
+  const rest = Object.entries(prev).filter(([key]) => key !== cwd)
+
+  while (rest.length >= MAX_TURN_BASES) {
+    rest.shift()
+  }
+
+  rest.push([cwd, value])
+
+  return Object.fromEntries(rest)
+}
 
 function recordTurnBase(cwd: string, sha: string): void {
   const prev = $reviewTurnBase.get()
@@ -106,16 +130,11 @@ function recordTurnBase(cwd: string, sha: string): void {
     return
   }
 
-  // Re-insert the cwd so object key order tracks recency (oldest first),
-  // then evict from the front beyond the cap.
-  const rest = Object.entries(prev).filter(([key]) => key !== cwd)
+  $reviewTurnBase.set(boundedBaseline(prev, cwd, sha))
+}
 
-  while (rest.length >= MAX_TURN_BASES) {
-    rest.shift()
-  }
-
-  rest.push([cwd, sha])
-  $reviewTurnBase.set(Object.fromEntries(rest))
+function recordTurnUntracked(cwd: string, paths: string[]): void {
+  $reviewTurnUntracked.set(boundedBaseline($reviewTurnUntracked.get(), cwd, paths))
 }
 
 export const $reviewFiles = atom<HermesReviewFile[]>([])
@@ -239,7 +258,15 @@ export async function refreshReview(): Promise<boolean> {
 
     // Hide dep/build/cache dirs and OS noise even when the repo tracks them —
     // .gitignored paths are already dropped upstream by `git status`.
-    const files = result.files.filter(file => !isExcludedPath(file.path))
+    // `lastTurn` additionally subtracts the untracked paths that were already
+    // there when the turn began: Electron reports every untracked path in the
+    // repo, and only the ones the turn created are its work (#155605). Tracked
+    // rows need no such judgement — the baseline diff is already turn-scoped.
+    const preTurnUntracked = scope === 'lastTurn' ? new Set($reviewTurnUntracked.get()[cwd] ?? []) : null
+
+    const files = result.files.filter(
+      file => !isExcludedPath(file.path) && !(file.status === '?' && preTurnUntracked?.has(file.path))
+    )
 
     $reviewFiles.set(files)
 
@@ -713,15 +740,42 @@ $busy.subscribe(busy => {
   prevBusy = busy
 })
 
-// Last-turn baseline capture: HEAD per repo cwd at the moment a turn started in
-// that repo. Driven off $sessionStates (every session — tiles and background
-// sessions included) rather than $busy, which only mirrors the foreground: a
-// pinned tile worktree or a background turn would otherwise inherit the wrong
-// (or no) baseline. Best-effort — a non-repo / remote backend resolves null and
-// lastTurn simply shows empty for that cwd.
+// Last-turn baseline capture: HEAD plus the untracked paths present, per repo
+// cwd at the moment a turn started in that repo. Driven off $sessionStates
+// (every session — tiles and background sessions included) rather than $busy,
+// which only mirrors the foreground: a pinned tile worktree or a background turn
+// would otherwise inherit the wrong (or no) baseline. Best-effort — a non-repo /
+// remote backend resolves null and lastTurn simply shows empty for that cwd.
 let prevBusyByRuntime: Record<string, boolean> = Object.fromEntries(
   Object.entries($sessionStates.get()).map(([runtimeId, state]) => [runtimeId, state.busy])
 )
+
+// HEAD first: it is the diff base, and a cwd with no resolvable HEAD has no
+// lastTurn at all, so the untracked snapshot is only worth reading once it lands.
+// The paths (not their contents) are what the pane subtracts, so this is one
+// extra status read per turn start rather than a per-file stat/read pass.
+async function captureTurnBaseline(cwd: string): Promise<void> {
+  const review = desktopGit()?.review
+
+  try {
+    const sha = await review?.revParse?.(cwd, 'HEAD')
+
+    if (!sha) {
+      return
+    }
+
+    recordTurnBase(cwd, sha)
+
+    const untracked = await review?.untracked?.(cwd)
+
+    if (untracked) {
+      recordTurnUntracked(cwd, untracked)
+    }
+  } catch {
+    // Best-effort: a bridge failure leaves this cwd on its previous baseline
+    // (or none) rather than raising inside the renderer's turn-start path.
+  }
+}
 
 $sessionStates.subscribe(states => {
   const nextBusy: Record<string, boolean> = {}
@@ -734,13 +788,7 @@ $sessionStates.subscribe(states => {
       const cwd = state.cwd?.trim()
 
       if (cwd) {
-        void desktopGit()
-          ?.review?.revParse(cwd, 'HEAD')
-          .then(sha => {
-            if (sha) {
-              recordTurnBase(cwd, sha)
-            }
-          })
+        void captureTurnBaseline(cwd)
       }
     }
   }

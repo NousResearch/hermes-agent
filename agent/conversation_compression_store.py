@@ -88,7 +88,18 @@ def _capture_authoritative_cooldown_under_lease(
             raw = store.messages.read_compression_cooldown_snapshot(session_id)
             durable_state = {"session_exists": raw.present, "cooldown_until": raw.until, "error": raw.error}
         else:
-            raw_reader = getattr(type(session_db), "get_compression_failure_cooldown_row", None)
+            missing = object()
+            raw_reader = getattr(
+                type(session_db),
+                "get_compression_failure_cooldown_row",
+                missing,
+            )
+            if raw_reader is missing:
+                # A pre-cooldown SessionDB class has no raw-row reader at all:
+                # that is "legacy API absent" (None), not a durable read failure
+                # (False). Reporting False makes the rollback path treat unknown
+                # state as an empty row and skip compression entirely.
+                return None, None
             if not callable(raw_reader):
                 return False, None
             durable_state = raw_reader(session_db, session_id)

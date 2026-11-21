@@ -138,6 +138,56 @@ They also coexist inside one run. A kanban task executes in an isolated managed 
 - **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), reaps workers that outlived their finished run (a worker still alive after its own `kanban_complete`/`kanban_block` is terminated once its run has been closed for two minutes, leaving it time to finish its final turn — matched by PID *and* spawn-time fingerprint, so a recycled PID is never signalled; recorded as a `terminal_worker_reaped` event), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
 - **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
 
+## Responsible conversation (notification owner)
+
+By default, a task notifies its creator's subscribed conversation. Creating or
+viewing a card does **not** establish responsibility for an entire project.
+For a board managed by one conversation, explicitly bind that conversation as
+its **notification owner**. Task provenance (`session_id` / `created_by`) stays
+unchanged; notifications and requested wakes go to the owner instead.
+
+```bash
+# Inspect responsibility; does not change the current board.
+hermes kanban boards owner project --json
+
+# Bind an existing desktop conversation, in its owning profile.
+hermes kanban boards owner project --platform local --chat-id SESSION_ID --profile default
+
+# TUI uses its durable session key; messaging platforms use their chat/topic route.
+hermes kanban boards owner project --platform tui --chat-id SESSION_KEY --profile default
+hermes kanban boards owner project --platform telegram --chat-id CHAT_ID --profile bot \
+  --thread-id TOPIC_ID --chat-type group --user-id USER_ID
+
+# Remove ownership and its notification subscriptions (no guessed fallback).
+hermes kanban boards owner project --clear
+```
+
+Setting an owner is an **exclusive, board-local routing change**: existing
+subscriptions on non-archived tasks are transferred atomically, and future
+tasks created through the CLI, tools, dashboard, or task graph use that route.
+An incidental creator cannot add itself back as a second recipient. Boards
+without an owner keep the existing multi-subscriber behavior.
+
+The target includes platform, chat/session, profile, thread, chat type and
+optional user identities. `--delivery-metadata JSON` carries platform-specific
+scope/topic/reply anchors; `--user-id-alt` preserves a platform's alternate user
+identity. `--delivery-mode` accepts `notify`, `notify+wake` (default), or `wake`.
+Local, API-server and TUI targets must name a session in the selected profile's
+store. Ownership never falls back to the last active chat when a target is
+missing, offline or unavailable: normal delivery retries and profile checks
+still apply. No task's work context is copied into a different conversation.
+
+Already acknowledged events are not replayed on transfer; pending events,
+including claims not yet acknowledged by the notifier, remain deliverable.
+When several old subscribers existed, the greatest acknowledged position is
+used. Tasks without subscribers start at their current event high-water mark.
+Owner routing is machine-local and is stripped on both board export and
+import, just like task notification subscriptions.
+
+This is independent of implicit board selection: use `board` / `--board` when
+creating work for a specific project. Ownership controls who receives updates,
+not which board a new task is written to.
+
 ## Boards (multi-project)
 
 Boards let you separate unrelated streams of work — one per project, repo,

@@ -512,7 +512,10 @@ def _launch_tui(
         code = _run_tui(argv, cwd, env, notices)
 
         if code in {0, 130}:
-            _print_tui_exit_summary(resume_session_id, active_session_file)
+            try:
+                _print_tui_exit_summary(resume_session_id, active_session_file)
+            except (KeyboardInterrupt, EOFError):
+                code = 130
     finally:
         attached_session = _read_tui_active_session_file(active_session_file) or resume_session_id
         with contextlib.suppress(OSError):

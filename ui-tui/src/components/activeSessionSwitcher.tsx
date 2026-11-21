@@ -5,6 +5,7 @@ import { sessionScopedModelArg } from '@hermes/shared/slash-input'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
+import { createInFlightGuard } from '../hooks/useGuardedInterval.js'
 import { useSessionDelete } from '../hooks/useSessionDelete.js'
 import { messages } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'
@@ -359,7 +360,7 @@ export function ActiveSessionSwitcher({
     // `quiet` skips the loading spinner (used by the live-status poll);
     // `includeHistory` re-queries the resumable DB list (skipped on the 1.5s
     // poll, which only needs fresh live-session status).
-    async (quiet = false, includeHistory = true) => {
+    async (quiet = false, includeHistory = true, alive: () => boolean = () => true) => {
       if (!quiet) {
         setLoading(true)
       }
@@ -391,6 +392,10 @@ export function ActiveSessionSwitcher({
               })
             : Promise.resolve(null)
         ])
+
+        if (!alive()) {
+          return []
+        }
 
         const r = liveRes.status === 'fulfilled' ? asRpcResult<SessionActiveListResponse>(liveRes.value) : null
 
@@ -463,6 +468,10 @@ export function ActiveSessionSwitcher({
 
         return next
       } catch (e: unknown) {
+        if (!alive()) {
+          return []
+        }
+
         setErr(rpcErrorMessage(e))
         setLoading(false)
 
@@ -478,10 +487,17 @@ export function ActiveSessionSwitcher({
   }, [items, history])
 
   useEffect(() => {
-    void load()
-    const timer = setInterval(() => void load(true, false), 1500)
+    let cancelled = false
+    const run = createInFlightGuard()
+    const alive = () => !cancelled
 
-    return () => clearInterval(timer)
+    void run(() => load(false, true, alive))
+    const timer = setInterval(() => void run(() => load(true, false, alive)), 1500)
+
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
   }, [load])
 
   const submitDraft = useCallback(

@@ -553,13 +553,15 @@ def _create_project(home: Path, name: str, folder: Path, *, use: bool = False) -
         reset_hermes_home_override(token)
 
 
-def _create_session(home: Path, session_id: str, cwd: Path) -> None:
-    """Seed one message-bearing session in ``home``'s state.db."""
+def _create_session(
+    home: Path, session_id: str, cwd: Path | None = None, *, source: str = "cli"
+) -> None:
+    """Seed one message-bearing session in ``home``'s state.db (no cwd = unassigned)."""
     from persistence_assembly import open_persistence, profile_scope
     from tests.fixtures.storage_seed import seed_messages, seed_session
 
     with open_persistence(profile_scope(home=home)) as db:
-        seed_session(db, session_id, "cli", cwd=str(cwd))
+        seed_session(db, session_id, source, cwd=str(cwd) if cwd is not None else None)
         seed_messages(db, session_id, {"role": "user", "content": f"hello from {session_id}"})
 
 
@@ -758,25 +760,78 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
     assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()
 
 
-def test_projects_tree_leaves_messaging_sessions_to_their_own_section(monkeypatch, tmp_path):
-    """Telegram/Slack rows have their own Messaging section; with no workspace cwd they
-    used to land in Home as well, listing the same conversation twice."""
-    from persistence_assembly import open_persistence, profile_scope
-    from tests.fixtures.storage_seed import seed_messages, seed_session
+@pytest.mark.parametrize("source", ["telegram", "discord", "slack"])
+def test_project_assigned_messaging_sessions_stay_in_their_project(monkeypatch, tmp_path, source):
+    """Regression for #157368: a messaging row whose cwd is inside a named project
+    belongs to that project in Projects grouping. The desktop renders no Messaging
+    section there, so excluding the source from the tree hid the conversation."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    repo = tmp_path / "repos" / "product"
+    repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home})
+    project = _create_project(launch_home, "Product", repo, use=True)
+    session_id = f"{source}-in-project"
+    _create_session(launch_home, session_id, repo, source=source)
 
+    with _serving_launch_profile(launch_home):
+        tree = _call("projects.tree")
+        drill = _call("projects.project_sessions", {"project_id": project["id"]})
+
+    node = next(p for p in tree["projects"] if p["id"] == project["id"])
+    assert node["sessionIds"] == [session_id]
+    assert [(s["id"], s["source"]) for s in node["previewSessions"]] == [(session_id, source)]
+    assert tree["scoped_session_ids"] == [session_id]
+    assert all(not p.get("isNoProject") for p in tree["projects"])
+
+    # Drill-in hydrates lanes from the same grouping, so the row must survive there too.
+    lane = drill["project"]["repos"][0]["groups"][0]
+    assert [(s["id"], s["source"]) for s in lane["sessions"]] == [(session_id, source)]
+
+
+def test_unassigned_messaging_sessions_stay_reachable_in_home(monkeypatch, tmp_path):
+    """Regression for #157368: an unassigned messaging row must not vanish.
+
+    Projects grouping hides the per-platform Messaging sections, so Home is its
+    only reachable location there. Each row must be owned by exactly one node.
+    """
     launch_home = _profile_dir(tmp_path, "launch")
     _bind_profiles(monkeypatch, tmp_path, {"default": launch_home})
-    with open_persistence(profile_scope(home=launch_home)) as db:
-        for session_id, source in (("local-chat", "desktop"), ("tg-chat", "telegram"), ("slack-chat", "slack")):
-            seed_session(db, session_id, source)
-            seed_messages(db, session_id, {"role": "user", "content": f"hello from {session_id}"})
+    messaging = ["telegram", "discord", "slack", "whatsapp"]
+    for source in messaging:
+        _create_session(launch_home, f"{source}-unassigned", source=source)
+    _create_session(launch_home, "desktop-unassigned", source="desktop")
 
     with _serving_launch_profile(launch_home):
         tree = _call("projects.tree")
 
-    assert tree["scoped_session_ids"] == ["local-chat"]
+    expected = {f"{source}-unassigned" for source in [*messaging, "desktop"]}
     home = next(p for p in tree["projects"] if p.get("isNoProject"))
-    assert [s["id"] for s in home["previewSessions"]] == ["local-chat"]
+    assert set(home["sessionIds"]) == expected
+    assert set(tree["scoped_session_ids"]) == expected
+    # One node owns each row: no conversation is listed in Home and a project.
+    owners = [sid for p in tree["projects"] for sid in p["sessionIds"]]
+    assert len(owners) == len(set(owners)) == len(expected)
+
+
+def test_project_tree_still_excludes_non_conversation_sources(monkeypatch, tmp_path):
+    """cron/kanban/oneshot are not user conversations and stay out of the tree;
+    the messaging fix must not turn the exclusion list into an empty one."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    repo = tmp_path / "repos" / "worker-repo"
+    repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home})
+    project = _create_project(launch_home, "Worker", repo, use=True)
+    for source in ("cron", "kanban", "oneshot"):
+        _create_session(launch_home, f"{source}-row", repo, source=source)
+    _create_session(launch_home, "local-row", repo, source="desktop")
+
+    with _serving_launch_profile(launch_home):
+        tree = _call("projects.tree")
+
+    node = next(p for p in tree["projects"] if p["id"] == project["id"])
+    assert node["sessionIds"] == ["local-row"]
+    assert tree["scoped_session_ids"] == ["local-row"]
+    assert [sid for p in tree["projects"] for sid in p["sessionIds"]] == ["local-row"]
 
 
 def test_project_tree_rows_name_every_lineage_segment():

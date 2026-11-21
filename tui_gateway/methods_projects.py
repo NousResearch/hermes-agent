@@ -319,17 +319,13 @@ def _discover_repos_payload(
 
 
 # Not user conversations; subagent/compression children are dropped by include_children=False.
-# Messaging-platform rows are user conversations, but the desktop lists them in their own
-# per-platform Messaging section. With no workspace cwd they would all fall into Home too, so the
-# same chat showed twice. Keep in step with MESSAGING_SESSION_SOURCE_IDS in
-# apps/desktop/src/lib/session-source.ts: dropping a source the desktop does not render under
-# Messaging would hide its rows from the sidebar entirely.
-_MESSAGING_SESSION_SOURCES = (
-    "telegram", "discord", "slack", "mattermost", "matrix", "signal", "whatsapp", "bluebubbles",
-    "photon", "homeassistant", "email", "sms", "webhook", "api_server", "weixin", "wecom", "qqbot",
-    "yuanbao", "dingtalk", "feishu",
-)
-_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban", "oneshot", *_MESSAGING_SESSION_SOURCES]
+# Messaging-platform rows ARE user conversations: a project-assigned one belongs in its project,
+# and an unassigned one is the only way the Projects grouping can reach it (the sidebar renders
+# the per-platform Messaging sections only outside that grouping). Keeping them out of this list
+# is what makes the tree complete; the renderer never shows Home and a Messaging section at the
+# same time, so a row carried here cannot appear twice. Excluding a source here hides every row
+# of that source from the Projects view (#157368).
+_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban", "oneshot"]
 
 
 def _project_tree_row(entry) -> dict:

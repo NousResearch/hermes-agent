@@ -8,6 +8,8 @@ reliance on the canonical ``agent.context_compressor`` provenance check (not
 an ad-hoc heuristic), whole-or-drop truncation, and idempotency.
 """
 
+import pytest
+
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     ContextCompressor,
@@ -392,3 +394,72 @@ class TestPrunePreCheckpointItemsMalformedInputs:
         assert len(pruned) == 2
         assert pruned[0]["type"] == "compaction"
         assert pruned[1]["content"] == "Valid user ask"
+
+
+class TestRetainedSummaryIsTypedOnTheCodexBackend:
+    """#157071: a local summary kept before a native checkpoint is rebuilt from its source message after the
+    adapter typed every other message. On the ChatGPT Codex backend it must go out as the same typed parts,
+    exactly once, with its role, through the builder and the final preflight the real call runs."""
+
+    SUMMARY = SUMMARY_PREFIX + "\n\n## Active Task\nKeep the synthetic task."
+
+    @staticmethod
+    def _transport():
+        import agent.transports.codex  # registers the transport
+        from agent.transports import get_transport
+        return get_transport("codex_responses")
+
+    def _history(self, carrier):
+        checkpoint = {"role": "assistant", "content": "Checkpoint answer.", "codex_reasoning_items": [{
+            "type": "compaction", "encrypted_content": "synthetic-checkpoint",
+            "_issuer_kind": "codex_backend", "_issuer_model": "gpt-5.5"}]}
+        head = {
+            "assistant": [{"role": "user", "content": "Original task."},
+                          {"role": "assistant", "content": self.SUMMARY, "_compressed_summary": True}],
+            "user": [{"role": "user", "content": self.SUMMARY, "_compressed_summary": True},
+                     {"role": "assistant", "content": "Ack."}],
+            "tool": [{"role": "user", "content": "Original task."},
+                     {"role": "assistant", "content": "", "tool_calls": [
+                         {"id": "call_1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]},
+                     {"role": "tool", "tool_call_id": "call_1", "content": self.SUMMARY, "_compressed_summary": True}],
+        }[carrier]
+        return [*head, {"role": "user", "content": "Continue."}, checkpoint, {"role": "user", "content": "Next task."}]
+
+    def _summary_items(self, history, *, native, codex_backend=True):
+        transport = self._transport()
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=history, tools=[], instructions="i",
+            provider="openai-codex" if codex_backend else "openai", is_codex_backend=codex_backend,
+            base_url="https://chatgpt.com/backend-api/codex" if codex_backend else "https://api.openai.com/v1",
+            session_id="s", cache_scope_id="c",
+            context_management=[{"type": "compaction", "compact_threshold": 200000}] if native else None,
+        )
+        kw = transport.preflight_kwargs(kw, sanitize_harmony_tokens=True)
+
+        def text_of(item):
+            content = item.get("content")
+            if isinstance(content, str):
+                return content
+            return "".join(p.get("text", "") for p in content or [] if isinstance(p, dict))
+
+        return [i for i in kw["input"] if i.get("type", "message") == "message" and text_of(i) == self.SUMMARY]
+
+    @pytest.mark.parametrize(("carrier", "role", "part_type"), [
+        ("assistant", "assistant", "output_text"),
+        ("user", "user", "input_text"),
+        ("tool", "assistant", "output_text"),  # a tool-result carrier is retained as a synthesized assistant message
+    ])
+    def test_summary_is_typed_after_a_native_checkpoint(self, carrier, role, part_type):
+        items = self._summary_items(self._history(carrier), native=True)
+        assert len(items) == 1
+        assert items[0]["role"] == role
+        assert isinstance(items[0]["content"], list), "raw string content"
+        assert [p["type"] for p in items[0]["content"]] == [part_type]
+
+    def test_control_without_a_native_checkpoint_is_typed(self):
+        items = self._summary_items(self._history("assistant"), native=False)
+        assert len(items) == 1 and isinstance(items[0]["content"], list)
+
+    def test_other_responses_routes_keep_the_string_shorthand(self):
+        items = self._summary_items(self._history("assistant"), native=True, codex_backend=False)
+        assert len(items) == 1 and isinstance(items[0]["content"], str)

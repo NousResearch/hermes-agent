@@ -777,7 +777,7 @@ def _chat_messages_to_responses_input(
     if not native_compaction_eligible:
         return items
     from agent.native_compaction import prune_pre_checkpoint_items
-    return prune_pre_checkpoint_items(items, item_sources=item_sources)
+    return prune_pre_checkpoint_items(items, item_sources=item_sources, typed_text_only=typed_text_only)
 
 
 class ResponsesRouteFlags(NamedTuple):

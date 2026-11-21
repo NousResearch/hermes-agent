@@ -45,6 +45,18 @@ class TestExpandTilde:
             assert ft._expand_tilde("") == ""
 
 
+    def test_backslash_tilde_expands_to_profile_home(self):
+        """``~\\`` (the Windows spelling) resolves to the profile home, not the host user's.
+
+        ``hermes_constants`` and ``agent.skill_utils`` already accept both separators;
+        ``_expand_tilde`` checked ``~/`` alone, so ``~\\config.json`` fell through to
+        ``os.path.expanduser`` and named the process user's home (#148376).
+        """
+        with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):
+            result = ft._expand_tilde("~\\config.json")
+        assert result == "/opt/data/profiles/coder/home/config.json"
+
+
 # ---------------------------------------------------------------------------
 # Integration: _resolve_path_for_task uses profile home
 # ---------------------------------------------------------------------------
@@ -64,6 +76,22 @@ class TestResolvePathUsesProfileHome:
 
         with patch("hermes_constants.get_subprocess_home", return_value=str(profile_home)):
             resolved = ft._resolve_path_for_task("~/test_file.txt", task_id="test")
+
+        assert str(resolved).startswith(str(profile_home))
+        assert "process_home" not in str(resolved)
+
+    def test_backslash_tilde_resolves_to_profile_home(self, tmp_path, monkeypatch):
+        """The Windows spelling resolves through the same chain as ``~/`` (#148376)."""
+        profile_home = tmp_path / "profile_home"
+        profile_home.mkdir()
+        process_home = tmp_path / "process_home"
+        process_home.mkdir()
+
+        monkeypatch.setenv("HOME", str(process_home))
+        monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+
+        with patch("hermes_constants.get_subprocess_home", return_value=str(profile_home)):
+            resolved = ft._resolve_path_for_task("~\\test_file.txt", task_id="test")
 
         assert str(resolved).startswith(str(profile_home))
         assert "process_home" not in str(resolved)

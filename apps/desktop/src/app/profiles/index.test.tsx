@@ -161,6 +161,24 @@ describe('ProfilesView', () => {
     expect(screen.queryByText(missing)).toBeNull()
   })
 
+  it('never offers an empty editor that could save over a SOUL.md it failed to read', async () => {
+    vi.mocked(refreshProfiles).mockResolvedValue([makeProfile('default', true)])
+    vi.mocked(getProfileSoul).mockRejectedValueOnce(new Error('Could not read SOUL.md: EACCES'))
+    vi.mocked(updateProfileSoul).mockClear()
+
+    await renderProfilesView()
+
+    expect(screen.getByText('Could not read SOUL.md: EACCES')).toBeTruthy()
+    expect(screen.queryByLabelText('SOUL.md')).toBeNull()
+    expect((screen.getByRole('button', { name: 'Save SOUL.md' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(updateProfileSoul).not.toHaveBeenCalled()
+
+    vi.mocked(getProfileSoul).mockResolvedValueOnce({ content: '# Persona', exists: true })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Retry' })))
+    expect(screen.getByLabelText('SOUL.md')).toBeTruthy()
+    expect(screen.queryByText('Could not read SOUL.md: EACCES')).toBeNull()
+  })
+
   it('opens the shared create dialog with the SOUL.md field (parity with the rail)', async () => {
     vi.mocked(refreshProfiles).mockResolvedValue([])
 

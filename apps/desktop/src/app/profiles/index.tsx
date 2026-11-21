@@ -276,6 +276,11 @@ function SoulEditor({ profileName }: { profileName: string }) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
+  // A failed read leaves no editor: an empty one whose Save writes over the
+  // SOUL.md we could not read is how a persona gets wiped (Cowork shipped the
+  // same fix for its Global instructions). Retry re-runs the read.
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
   const requestRef = useRef<string>(profileName)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
@@ -283,6 +288,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
     requestRef.current = profileName
     setLoading(true)
     setError(null)
+    setLoadFailed(false)
     setContent('')
     setOriginal('')
     setMissing(false)
@@ -298,6 +304,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
         }
       } catch (err) {
         if (requestRef.current === profileName) {
+          setLoadFailed(true)
           setError(err instanceof Error ? err.message : p.failedLoadSoul)
         }
       } finally {
@@ -306,11 +313,15 @@ function SoulEditor({ profileName }: { profileName: string }) {
         }
       }
     })()
-  }, [p, profileName])
+  }, [p, profileName, reloadKey])
 
   const dirty = content !== original
 
   async function handleSave() {
+    if (loadFailed) {
+      return
+    }
+
     setSaving(true)
     setError(null)
 
@@ -338,7 +349,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
 
       {loading ? (
         <PageLoader className="min-h-44" label={p.loadingSoul} />
-      ) : (
+      ) : loadFailed ? null : (
         <div className="min-h-48">
           <CodeEditor
             filePath="SOUL.md"
@@ -354,12 +365,17 @@ function SoulEditor({ profileName }: { profileName: string }) {
       {error && (
         <div className="flex items-start gap-2 rounded bg-destructive/10 px-3 py-2 text-xs text-destructive">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-          <span>{error}</span>
+          <span className="flex-1">{error}</span>
+          {loadFailed && (
+            <Button onClick={() => setReloadKey(key => key + 1)} size="xs" variant="ghost">
+              {t.common.retry}
+            </Button>
+          )}
         </div>
       )}
 
       <div className="flex justify-end">
-        <Button disabled={!dirty || saving || loading} onClick={() => void handleSave()} size="sm">
+        <Button disabled={!dirty || saving || loading || loadFailed} onClick={() => void handleSave()} size="sm">
           <Save />
           {saving ? p.saving : p.saveSoul}
         </Button>

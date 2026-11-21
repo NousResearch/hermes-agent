@@ -21,6 +21,23 @@ def ack_failure(answer):
     return "host control socket did not answer"
 
 
+def retirement_confirmed(answer, name):
+    """A routing ACK alone cannot prove the old writer relinquished this profile."""
+    return (ack_confirmed(answer, "unserved", name) and not answer.get("pending")
+            and answer.get("writer_settlement") == "settled"
+            and answer.get("reservation") == "released")
+
+
+def retirement_failure(answer):
+    if not isinstance(answer, dict) or answer.get("error") or answer.get("pending"):
+        return ack_failure(answer)
+    if answer.get("reservation") == "retained":
+        return "ownership retained; profile retirement is incomplete"
+    if answer.get("writer_settlement") == "retained":
+        return "a profile writer has not settled"
+    return "host did not confirm writer settlement and reservation release"
+
+
 def mark_planned_stop(pid: int | None = None) -> None:
     """Best-effort planned-stop marker for ``pid`` (default: the recorded gateway PID)."""
     try:
@@ -111,17 +128,19 @@ def profile_lifecycle(command: str, args) -> bool:
         # Persist intent BEFORE teardown: the periodic rescan must not re-add this profile.
         marker.touch()
         answer = request_unserve_profile(host_home, name)
-        if ack_confirmed(answer, "unserved", name):
+        if retirement_confirmed(answer, name):
             print(f"Profile '{name}' parked; its bots and cron are stopped. "
                   f"Start again with: hermes -p {name} gateway start")
+        elif ack_confirmed(answer, "unserved", name):
+            print(f"Profile '{name}' parked and unrouted; {retirement_failure(answer)}.")
         else:
-            print(f"Profile '{name}' parked, but immediate stop was not confirmed: {ack_failure(answer)}.")
+            print(f"Profile '{name}' parked, but immediate stop was not confirmed: {retirement_failure(answer)}.")
             print("The host drops it on its next rescan (within 30s).")
         return True
 
     answer = request_unserve_profile(host_home, name)
-    if not ack_confirmed(answer, "unserved", name):
-        print(f"Profile '{name}' restart was not confirmed: {ack_failure(answer)}.")
+    if not retirement_confirmed(answer, name):
+        print(f"Profile '{name}' restart was not confirmed: {retirement_failure(answer)}.")
         return True
     answer = request_serve_profile_hot(host_home, name)
     if ack_confirmed(answer, "served", name):

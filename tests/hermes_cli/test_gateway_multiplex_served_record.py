@@ -170,7 +170,8 @@ def test_service_verbs_do_not_start_a_second_gateway(served_root, monkeypatch, v
         from gateway import control_socket
         lifecycle = []
         monkeypatch.setattr(control_socket, "request_unserve_profile",
-                            lambda home, name: lifecycle.append("unserve") or {"unserved": name})
+                            lambda home, name: lifecycle.append("unserve") or {
+                                "unserved": name, "writer_settlement": "settled", "reservation": "released"})
         monkeypatch.setattr(control_socket, "request_serve_profile_hot",
                             lambda home, name: lifecycle.append("serve") or {"served": name})
         fn(ns)

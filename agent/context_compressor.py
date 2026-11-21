@@ -2205,6 +2205,8 @@ class ContextCompressor(
         self._reset_real_usage_pairing()
         self._last_compression_telemetry = self._active_compression_telemetry = None
         self._compression_telemetry_seed = None
+        # Tokens the last cut had to keep in the tail; paired with the real count to size the fixed part.
+        self._last_compaction_tail_tokens = 0
         self._reset_proactive_prune_rearm()
 
     def bind_session_state(self, session_db: Any = None, session_id: str = "", *, persistence: Any = None) -> None:
@@ -2789,15 +2791,33 @@ class ContextCompressor(
                 if self.last_prompt_tokens >= self.threshold_tokens:
                     self._record_ineffective_compression_verdict(self._ineffective_compression_count + 1)
                     if not self.quiet_mode:
+                        fixed_tokens, kept_tail_tokens = self._prompt_breakdown_tokens()
                         logger.warning(
                             "Compaction did not clear the threshold: %d real tokens still >= %d. The "
-                            "incompressible prompt (system prompt + tool schemas) may already exceed it, "
-                            "in which case shrinking messages cannot help. ineffective_compression_count=%d",
+                            "incompressible prompt (system prompt + tool schemas ~%d) plus the tail the cut "
+                            "had to keep (~%d) may already exceed it; shrinking messages cannot help then, "
+                            "and the knob is compression.threshold_tokens (or protect_last_n), not /new. "
+                            "ineffective_compression_count=%d",
                             self.last_prompt_tokens, self.threshold_tokens,
-                            self._ineffective_compression_count,
+                            fixed_tokens, kept_tail_tokens, self._ineffective_compression_count,
                         )
                 else:
                     self._record_ineffective_compression_verdict(0)
+
+    def _prompt_breakdown_tokens(self) -> tuple[int, int]:
+        """``(fixed_prompt, kept_tail)`` for the just-compacted request, for the ineffective verdict's log.
+
+        ``fixed_prompt`` = provider's real count minus the rough message estimate taken from that same
+        request, i.e. the system prompt + tool schemas the compressor never sees as messages.
+        Diagnostic only: the verdict above stays keyed on the real count (an analytic floor would absorb
+        tokenizer skew and disable compaction on a healthy session - see test_no_false_positive_under_tokenizer_skew).
+        Both are 0 when a figure is unknown (provider omits usage, native checkpoint, first response).
+        """
+        rough = self.last_compression_rough_tokens
+        real = self.last_real_prompt_tokens
+        if rough <= 0 or real <= 0:
+            return 0, 0
+        return max(0, real - rough), max(0, getattr(self, "_last_compaction_tail_tokens", 0))
 
     def maybe_seed_preflight_display_tokens(self, preflight_tokens: int) -> None:
         """Display-only seed of ``last_prompt_tokens`` from the 0 state; the -1 sentinel and real readings are preserved."""

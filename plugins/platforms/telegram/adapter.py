@@ -151,6 +151,19 @@ from gateway.platforms.base import (
 
 _BOT_COMMAND_DESCRIPTION_LIMIT = 256  # Telegram's ``BotCommand`` description cap
 
+# Telegram's ``GroupAnonymousBot`` id: the pseudo-user behind a group admin posting "as the group".
+# That author is a human, but ``from_user.is_bot`` is True, so the gateway's bot-loop guard used to
+# treat every anonymous-admin message as a peer bot and drop it (state ``reply_to_reply``) as soon as
+# the bot had replied once in that chat.
+_ANONYMOUS_ADMIN_USER_ID = 1087968824
+
+
+def _is_peer_bot_user(user: Any) -> bool:
+    """True for a real bot author only — never for an anonymous group admin."""
+    if user is None or not bool(getattr(user, "is_bot", False)):
+        return False
+    return str(getattr(user, "id", "")) != str(_ANONYMOUS_ADMIN_USER_ID)
+
 
 def _unauthorized() -> str:  # one sentence for every refused tap, resolved per tap (never bound at import)
     return unauthorized_action_notice(Platform.TELEGRAM)[:_TOAST_LIMIT]
@@ -741,7 +754,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         chat = getattr(message, "chat", None)
         user_id = str(getattr(user, "id", "")).strip() or None
         # Carry is_bot so the runner's ``*_ALLOW_BOTS`` branch is reachable, as in build_source.
-        is_bot = bool(getattr(user, "is_bot", False)) if user is not None else False
+        # Anonymous group admins are human: ``_is_peer_bot_user`` keeps them off the bot loop guard.
+        is_bot = _is_peer_bot_user(user)
         user_name = str(getattr(user, "username", "") or getattr(user, "full_name", "") or "").strip() or None
         if not user_id:  # channel post — authorize the sender chat instead
             sender_chat = getattr(message, "sender_chat", None)
@@ -5751,7 +5765,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """True when the sender is a bot other than this one (this bot's own echoes are already
         filtered by ``_is_own_message``)."""
         sender = getattr(message, "from_user", None)
-        if sender is None or not getattr(sender, "is_bot", False):
+        if not _is_peer_bot_user(sender):
             return False
         bot_id = getattr(self._bot, "id", None)
         sender_id = getattr(sender, "id", None)
@@ -6424,7 +6438,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             chat_id=str(chat.id), chat_name=chat.title or (chat.full_name if has_full_name else None), chat_type=chat_type,
             user_id=(str(user.id) if user else (str(chat.id) if chat_type in {"dm", "channel"} else None)),
             user_name=user_name, thread_id=thread_id_str, chat_topic=chat_topic, message_id=str(message.message_id),
-            is_bot=bool(getattr(user, "is_bot", False)) if user else False)
+            is_bot=_is_peer_bot_user(user))
         reply_to_id, reply_to_text = self._reply_context(message)
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
         from plugins.platforms.telegram.telegram_context import group_identity_prompt, group_reply_expected

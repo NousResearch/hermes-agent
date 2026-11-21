@@ -194,7 +194,7 @@ class TestExistingBehaviourIsPreserved:
             "hermes_cli.web_server_gateway._ACTION_PROCS", {"gateway-restart": live}
         ), patch(
             "hermes_cli.web_server_gateway._ACTION_COMMANDS",
-            {"gateway-restart": ("gateway", "restart")},
+            {"gateway-restart": ("gateway", "restart", "--detach")},
         ), patch(
             "hermes_cli.gateway._reap_unsupervised_gateway_orphans"
         ):

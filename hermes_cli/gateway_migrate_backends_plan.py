@@ -323,7 +323,8 @@ def _for_this_home(item: BackendItem, host, plan: Optional[BackendPlan] = None) 
     (``User=``; root when unset, a user unit runs as the caller) and the environment systemd would give it
     (``host.unit_environment``: the manager's environment, ``Environment=``, then every ``EnvironmentFile=``,
     later wins), not by the report's ``this_home`` or the shell's own HERMES_HOME. When that cannot be
-    told (an unreadable environment, a profile chosen on its command line) the plan is blocked."""
+    told (an unreadable environment, an ``env`` launcher that may set its home: :func:`env_line`, a profile
+    chosen on its command line) the plan is blocked."""
     if not item.running and item.unit and item.scope and item.supervisor in ("systemd", "nix-systemd"):
         if item.scope != "user":
             user = host.unit_props(item.unit, item.scope).get("User") or "root"
@@ -333,6 +334,14 @@ def _for_this_home(item: BackendItem, host, plan: Optional[BackendPlan] = None) 
                                         f"its HERMES_HOME is that account's.")
                 return False
         env, problem = host.unit_environment(item.unit, item.scope)
+        if problem is None and (launcher := env_line(host, item.unit, item.scope)[0]):
+            if plan is not None:
+                user = "--user " if item.scope == "user" else ""
+                plan.blockers.append(f"Cannot tell which Hermes home {item.unit} serves: its ExecStart starts it "
+                                     f"through env, {launcher}. Put HERMES_HOME in the unit's Environment= rather "
+                                     f"than on the env line, or stop and disable that unit by hand (systemctl "
+                                     f"{user}disable --now {item.unit}), then re-run. Nothing changed.")
+            return False
         if problem is None and _profile_flag(_argv_of(item, host)):
             problem = "its command line picks a profile (-p/--profile), which moves it to that profile's home"
         if problem:
@@ -354,6 +363,75 @@ def _for_this_home(item: BackendItem, host, plan: Optional[BackendPlan] = None) 
     if item.this_home is not None:
         return item.this_home
     return not item.running and item.hermes_home is None and host.default_home()
+
+
+# env(1) options that leave the environment alone; ``-C``/``--chdir`` also takes the next argument.
+_ENV_INERT = frozenset({"-0", "--null", "-v", "--debug", "--list-signal-handling"})
+_ENV_SIGNALS = ("--block-signal", "--default-signal", "--ignore-signal")
+
+
+def env_line(host, unit: str, scope: str) -> tuple[Optional[str], frozenset[str], frozenset[str]]:
+    """Read a leading ``env`` launcher in *unit*'s ExecStart: ``(why the unit's home cannot be told from its
+    environment, or None; the names its NAME=VALUE pairs set; its -u/-C/-S options)``. ``systemctl show``
+    joins the arguments with spaces and systemd expands ``$`` in them when it runs the command, so this reads only what that line
+    cannot hide: a home variable (``HERMES_HOME``, ``HOME``, ...) set or unset there, an option that changes
+    the environment as a whole (``-i``, ``-S``) or one not read here, or a ``$`` anywhere but inside the value
+    of a NAME=value pair (an option, its operand, a name: systemd may expand it to a home variable). Without
+    those, the home is the unit environment's, as when there is no launcher. Nothing is expanded. Which
+    other variables a -u/-C/-S option leaves set cannot be told (``-C "/srv/b -u AUX"`` shows as
+    ``-C /srv/b -u AUX``), so the template check treats every outside variable as unknown then."""
+    from hermes_cli.gateway_migrate_backends_host import _HOME_KEYS
+    value = host.unit_props(unit, scope).get("ExecStart", "")
+    # systemd prints the arguments unquoted, so whitespace is the only split that hides nothing
+    shown = value.split("argv[]=", 1)[1].split(" ;", 1)[0].split() if "argv[]=" in value else []
+    names: set[str] = set()
+    opaque: set[str] = set()
+    if not (shown and os.path.basename(shown[0]) == "env"):
+        return None, frozenset(), frozenset()
+    for tok in shown:
+        if tok.split("=", 1)[0] in _HOME_KEYS and "=" in tok:
+            return f"which sets {tok.split('=', 1)[0]} on that line", frozenset(names), frozenset(opaque)
+    rest = list(shown)
+    problem = None
+    while rest and os.path.basename(rest[0]) == "env" and problem is None:
+        rest, problem = _env_line_args(rest[1:], names, opaque)
+    if problem is None and rest and "$" in rest[0]:
+        problem = "whose command is a $ substitution that could hold an assignment"
+    return problem, frozenset(names), frozenset(opaque)
+
+
+def _env_line_args(args: list[str], names: set[str], opaque: set[str]) -> tuple[list[str], Optional[str]]:
+    """One ``env`` invocation's options and pairs (*args*, without ``env`` itself): ``(the command after them,
+    why the home cannot be told or None)``; the names its pairs set go into *names*, its -u/-C/-S options
+    into *opaque*."""
+    from hermes_cli.gateway_migrate_backends_host import _HOME_KEYS
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        arg = args[i]
+        if arg == "--":
+            i += 1
+            break
+        if arg.startswith(("-u", "--unset", "-C", "--chdir", "-S", "--split-string")):
+            opaque.add(arg)
+        value = arg[2:] if arg.startswith("-u") and arg != "-u" else (
+            arg.split("=", 1)[1] if arg.startswith("--unset=") else None)
+        if arg in ("-u", "--unset", "-C", "--chdir"):
+            value, i = (args[i + 1] if i + 1 < len(args) else ""), i + 1
+        if "$" in arg or "$" in (value or ""):
+            return [], f"with a $ substitution in an option ({arg} {value or ''}), which may name any variable"
+        if arg.startswith(("-u", "--unset")) and value in _HOME_KEYS:
+            return [], f"which unsets {value} there (-u)"
+        if not (value is not None or arg.startswith(("-C", "--chdir=")) or arg in _ENV_INERT
+                or arg.startswith(_ENV_SIGNALS)):
+            return [], f"with {arg}, which changes the environment as a whole or is not read here"
+        i += 1
+    while i < len(args) and "=" in args[i] and not args[i].startswith("="):
+        name = args[i].split("=", 1)[0]
+        if "$" in name:
+            return [], "with a $ substitution that could hold an assignment"
+        names.add(name)
+        i += 1
+    return args[i:], None
 
 
 def _profile_flag(argv: list[str]) -> bool:
@@ -517,7 +595,7 @@ def _manual_public_url(plan: BackendPlan, host) -> None:
     env = _manual_launcher_env(item, _supervisor_kind(item, host), host)
     if problem := resolve_public_url(host.effective_config(), backend_url_env(host, env))[1]:
         plan.blockers.append(_url_blocker(problem))
-    if blocker := launcher_template_blocker(host, env or None):
+    if blocker := launcher_template_blocker(host, env or None, *_env_line_names(item, host, from_unit=True)):
         plan.blockers.append(blocker)
 
 
@@ -601,11 +679,23 @@ def _credentials(plan: BackendPlan, env: Optional[dict], host, cfg: dict) -> Non
     has_secret = bool(launcher.get(_SECRET_KEY) or dotenv.get(_SECRET_KEY) or os.environ.get(_SECRET_KEY)
                       or (isinstance(basic, dict) and basic.get("secret")))
     plan.generate_secret = not has_secret
-    if blocker := launcher_template_blocker(host, env):
+    item = plan.item
+    from_unit = not (item.pid and host.process_env(item.pid) is not None)  # as _record reads it
+    if blocker := launcher_template_blocker(host, env, *_env_line_names(item, host, from_unit=from_unit)):
         plan.blockers.append(blocker)
 
 
-def launcher_template_blocker(host, launcher: Optional[dict]) -> Optional[str]:
+def _env_line_names(item: Optional[BackendItem], host, *, from_unit: bool) -> tuple[frozenset, frozenset]:
+    """``(the names an env launcher in item's systemd unit sets, its -u/-C/-S options)`` (:func:`env_line`),
+    when the plan read its launch environment from the unit (*from_unit*) rather than from its running
+    process, which already reflects them."""
+    if not from_unit or item is None or item.supervisor != "systemd" or not (item.unit and item.scope):
+        return frozenset(), frozenset()
+    return env_line(host, item.unit, item.scope)[1:]
+
+
+def launcher_template_blocker(host, launcher: Optional[dict], env_line_names: frozenset = frozenset(),
+                              env_line_opaque: frozenset = frozenset()) -> Optional[str]:
     """Why the move would change a sign-in setting (:data:`_SIGN_IN_KEYS`) that the home's ``.env`` sets as a
     ``${VAR}`` template, or None. The ``.env`` loads over the launch environment with ``${VAR}`` read from that
     environment (``env_loader``), so the old backend resolved it against its launcher's (*launcher*; None
@@ -613,7 +703,10 @@ def launcher_template_blocker(host, launcher: Optional[dict]) -> Optional[str]:
     value that depends on a variable from outside the ``.env`` (:func:`_outside_reads`) can differ; an unknown
     environment refuses only such a value. A key the managed ``.env`` sets is not the home ``.env``'s. Since
     the plan copies no key the ``.env`` sets, a template that resolves differently (a blank password: the
-    Webapp's sign-in no longer accepts the old credential) refuses the move."""
+    Webapp's sign-in no longer accepts the old credential) refuses the move. A variable the old unit's ``env``
+    launcher sets (*env_line_names*) has a value not read here, so a template reading one is refused too, and
+    one with a -u/-C/-S option (*env_line_opaque*) leaves no outside variable knowable, so every such
+    template is refused."""
     from hermes_cli.env_loader import _parse_dotenv_file, _resolve_dotenv_assignments
     try:
         assignments = _parse_dotenv_file(host.home / ".env")
@@ -628,11 +721,17 @@ def launcher_template_blocker(host, launcher: Optional[dict]) -> Optional[str]:
     gateway_env, why = host.gateway_environment()
     old = _resolve_dotenv_assignments(assignments, launcher, override=True) if launcher is not None else {}
     new = _resolve_dotenv_assignments(assignments, gateway_env, override=True)
-    keys = sorted(k for k in reads if launcher is None or why is not None or old.get(k) != new.get(k))
+    keys = sorted(k for k in reads if launcher is None or why is not None or env_line_opaque
+                  or reads[k] & env_line_names or old.get(k) != new.get(k))
     if not keys:
         return None
     variables = sorted({v for k in keys for v in reads[k]})
+    on_line = sorted(set(variables) & env_line_names)
     unknown = ("the old backend's launch environment cannot be read" if launcher is None
+               else f"the env line of the old backend's ExecStart ({', '.join(sorted(env_line_opaque))}) changes "
+                    f"the environment in a way this check cannot read" if env_line_opaque
+               else f"{', '.join(on_line)} is set on the env line of the old backend's ExecStart, whose value is "
+                    f"not read here" if on_line
                else f"{why}, so its value there cannot be told" if why else "")
     reason = f" ({unknown})" if unknown else ""
     env_file = host.home / ".env"

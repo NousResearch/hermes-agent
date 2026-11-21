@@ -13,7 +13,7 @@ import contextlib
 import logging
 import os
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
 from gateway.inbound_reply_context import record_cron_delivery, recording_cron_delivery
@@ -1082,6 +1082,8 @@ class _TargetDelivery:
     # is not — so the queue gate keys on this flag, not on widening a string set.
     live_retryable: Optional[bool] = None
     standalone_in_flight: bool = False  # the standalone send may have delivered (timeout, lost answer, partial)
+    # Every message id the live text send produced (send order) — for gateway_message_delivered.
+    delivered_message_ids: list = field(default_factory=list)
 
     @property
     def is_relay(self) -> bool:
@@ -1316,6 +1318,11 @@ def _live_send_text(
     # False, ...} when the silence-narration filter drops the message.
     send_raw_response = _result_field(send_result, "raw_response")
     delivered_message_id = _result_field(send_result, "message_id")
+    try:
+        from gateway.delivery_hooks import delivered_message_ids
+        t.delivered_message_ids = delivered_message_ids(send_result)
+    except Exception:  # observability only — must never turn a confirmed send into a fallback resend
+        t.delivered_message_ids = []
     _evidence_gap: list = []
     send_success = _confirm_adapter_delivery(send_result, job["id"], _evidence_gap)
     if send_success and _evidence_gap:
@@ -1503,12 +1510,27 @@ def _deliver_via_live_adapter(
                 delivered_message_id if delivered_message_id is not None else "-")
             delivered = True
             _seed_live_delivery_sessions(t, delivered_message_id)
+            if text_to_send and not timed_out:  # an in-flight timeout is assumed, not confirmed
+                _fire_cron_delivered(t, text_to_send, route_thread_id, t.delivered_message_ids)
     except Exception as e:
         err_msg = f"live adapter delivery to {t.where} failed: {e}"
         if not any(err_msg in err for err in target_errors):
             target_errors.append(err_msg)
         _warn_live_lane_failure(job, err_msg, t.is_relay)
     return delivered
+
+
+def _fire_cron_delivered(t: _TargetDelivery, text: str, thread_id: Any, message_ids: list) -> None:
+    """``gateway_message_delivered`` (kind="cron"), built on the cron thread inside the job's profile
+    scope and dispatched on the gateway loop (``t.loop``) so async callbacks share the loop that owns
+    the adapters' clients; never waits, never raises."""
+    try:
+        from gateway.delivery_hooks import notify_message_delivered_from_thread
+    except Exception:
+        return
+    notify_message_delivered_from_thread(
+        t.loop, kind="cron", platform=t.platform_name, chat_id=t.chat_id, thread_id=thread_id,
+        message_ids=message_ids, text=text, job_id=t.job.get("id"))
 
 
 def _deliver_standalone(
@@ -1563,6 +1585,9 @@ def _deliver_standalone(
         delivery_errors.append(msg)
     logger.info("Job '%s': delivered to %s:%s", job["id"], t.platform_name, t.chat_id)
     record_cron_delivery(t.platform_name, t.chat_id, content.strip(), result)  # replies to ANY chunk framed
+    if content:
+        _fire_cron_delivered(
+            t, content, t.thread_id, [result.get("message_id")] if isinstance(result, dict) else [])
     # Thread seeding only happens on the live lane, so no thread_seeded gate applies here.
     _maybe_mirror_cron_delivery(
         job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.thread_id,

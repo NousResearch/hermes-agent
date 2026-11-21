@@ -233,6 +233,9 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
+            # The final the adapter sends for this event is an agent turn's, even when the event is a
+            # slash command (gateway_message_delivered skips command replies that ran no turn).
+            event._delivered_from_agent_turn = True
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
             # send (bracketed by the adapter against this event) must be ledgered under that
@@ -246,6 +249,9 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                     event.metadata["notification_category"] = agent_result["queued_terminal_notification_category"]
                 if isinstance(agent_result.get("_notification_reply_muted"), bool):
                     event._notification_reply_muted = agent_result["_notification_reply_muted"]
+                # The turn's final session id (post-compression, the one post_llm_call reported), so
+                # the adapter's ledgered final can hand it to gateway_message_delivered.
+                event._delivered_turn_session_id = agent_result.get("session_id")
 
             await self._hmwa_stop_typing_for_turn(event, source)
 
@@ -1850,17 +1856,44 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                     # A background task that died of a real error must not abort the cleanup path.
                     logger.debug("background turn task failed during cleanup", exc_info=True)
 
+    async def _run_agent_edit_streamed_final(
+        self, _sc, source, response, content, session_key: Optional[str], *,
+        session_id: Optional[str] = None, **kwargs,
+    ) -> None:
+        """``edit_streamed_message`` plus ``gateway_message_delivered`` (kind="final", streamed=True)
+        when the in-place edit delivered the final reply (``response["already_sent"]`` set)."""
+        from gateway.run_turn_final_reconcile import edit_streamed_message
+        await edit_streamed_message(_sc, source, response, content, **kwargs)
+        if response.get("already_sent"):
+            self._notify_streamed_final_delivered(_sc, source, session_key, content, session_id=session_id)
+
+    def _notify_streamed_final_delivered(self, _sc, source, session_key, text, *, session_id=None) -> None:
+        """``gateway_message_delivered`` (kind="final", streamed=True) once the runner has confirmed the
+        stream delivered the final reply. Scheduled in the turn's profile scope as a background task.
+        Only the final message id is known here (the consumer keeps no ordered id list); never raises."""
+        try:
+            from gateway.delivery_hooks import notify_message_delivered
+
+            notify_message_delivered(
+                kind="final", platform=getattr(source, "platform", None), chat_id=getattr(source, "chat_id", None),
+                thread_id=getattr(source, "thread_id", None), message_ids=[getattr(_sc, "message_id", None)],
+                text=text, session_key=session_key, session_id=session_id, streamed=True)
+        except Exception:
+            logger.debug("gateway_message_delivered notify failed (streamed final)", exc_info=True)
+
     async def _run_agent_mark_streamed_delivery(self, response: Any, turn_ctx: TurnContext) -> None:
         """Set ``response["already_sent"]`` when streaming already delivered the final reply.
 
         Never when the agent failed (unseen error), on "(empty)", or on a finite (`-z`, `chat -q`) turn:
         its viewer prints only the completion text, never the deltas (#139666). Both flags reflect call
         success, not content: a mismatch with the recorded turn-final payload never suppresses."""
-        from gateway.run_turn_final_reconcile import edit_streamed_message, owns_reconcilable_preview
+        from gateway.run_turn_final_reconcile import owns_reconcilable_preview
         from gateway.session_finite import finite_turn_required
         _sc, source, session_key = turn_ctx.stream_consumer_holder[0], turn_ctx.source, turn_ctx.session_key
         if not isinstance(response, dict) or response.get("failed") or finite_turn_required() is True:
             return
+        # The turn's final session id (post-compression, as post_llm_call reported it).
+        _turn_session_id = response.get("session_id") or getattr(turn_ctx, "session_id", None)
         _final = response.get("final_response") or ""
         _is_empty_sentinel = not _final or _final == "(empty)"
         # response_previewed: only suppress if that EXACT text was delivered, not unrelated commentary.
@@ -1894,6 +1927,13 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             logger.info("Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).", _sk, _streamed, _previewed, _content_delivered)
             # A stream send counted as shown on a timeout may be lost: the ledger resends it marked.
             response["already_sent"], response["delivery_uncertain"] = True, getattr(_sc, "delivery_uncertain", False) is True
+            # An ambiguous fallback resend or a send counted as shown on a timeout is assumed, not
+            # confirmed: no notice (the ledger may resend it).
+            if (_sc is not None and not getattr(_sc, "_delivery_ambiguous", False)
+                    and not response["delivery_uncertain"]):
+                self._notify_streamed_final_delivered(
+                    _sc, source, session_key, getattr(_sc, "_delivered_final_text", None) or _final,
+                    session_id=_turn_session_id)
         elif not _transformed and _stale_finalized and _sc is not None:
             # Stale finalize: edit the streamed message up to the complete response (on failure the
             # normal send delivers). Not for split delivery — message_id is only the LAST chunk.
@@ -1904,8 +1944,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                     _sk,
                 )
             elif _sc_msg_id and _sc_msg_id != "__no_edit__" and getattr(_sc, "adapter", None) is not None:
-                await edit_streamed_message(
-                    _sc, source, response, _final, sk=_sk,
+                await self._run_agent_edit_streamed_final(
+                    _sc, source, response, _final, session_key, session_id=_turn_session_id, sk=_sk,
                     ok=("Reconciled stale streamed finalize for session %s: edited message %s with the complete response (#71643).", _sk, _sc_msg_id),
                     fail_result="Stale-finalize reconciliation edit failed for session %s (%s); sending complete response via normal final send.",
                     fail_exc="Stale-finalize reconciliation edit failed for session %s: %s; sending complete response via normal final send.",
@@ -1918,8 +1958,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         elif _transformed and _sc is not None:
             # Transformed after streaming: edit the streamed message instead of sending a duplicate.
             if _sc.message_id:
-                await edit_streamed_message(
-                    _sc, source, response, response["final_response"], sk=_sk,
+                await self._run_agent_edit_streamed_final(
+                    _sc, source, response, response["final_response"], session_key, session_id=_turn_session_id, sk=_sk,
                     ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, _sk),
                     fail_result="Transformed-final edit failed for session %s (%s); sending transformed response via normal final send.",
                     fail_exc="Failed to edit streamed message for session %s: %s",
@@ -1927,8 +1967,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         elif not _transformed and owns_reconcilable_preview(_sc, getattr(source, "chat_id", ""), _final):
             # Unconfirmed final, one real preview on screen (a flood-frozen bubble, a cancelled
             # consumer): finish it in place; a plain final send would post the answer twice.
-            await edit_streamed_message(
-                _sc, source, response, _sc._clean_for_display(_final), sk=_sk,
+            await self._run_agent_edit_streamed_final(
+                _sc, source, response, _sc._clean_for_display(_final), session_key, session_id=_turn_session_id, sk=_sk,
                 ok=("Finished streamed preview %s in place for session %s (final not confirmed).", _sc.message_id, _sk),
                 fail_result="Unconfirmed-final preview edit failed for session %s (%s); sending normally.",
                 fail_exc="Unconfirmed-final preview edit failed for session %s: %s; sending normally.")

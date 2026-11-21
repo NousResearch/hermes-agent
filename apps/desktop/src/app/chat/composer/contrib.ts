@@ -14,6 +14,7 @@
  *                             composer.attachments   (ComposerAttachmentProvider)
  *                             composer.microActions  (ComposerMicroActionProvider)
  *                             composer.contextMenu   (ComposerContextMenuProvider)
+ *                             composer.dictationTranscriber (ComposerDictationTranscriber)
  *
  * Core keeps ownership of the transcript, input, and submit engine — these
  * seams AUGMENT the composer, they never replace it. Middleware runs as an
@@ -40,7 +41,8 @@ export const COMPOSER_AREAS = {
   microActions: 'composer.microActions',
   atCompletions: 'composer.atCompletions',
   modelPill: 'composer.modelPill',
-  contextMenu: 'composer.contextMenu'
+  contextMenu: 'composer.contextMenu',
+  dictationTranscriber: 'composer.dictationTranscriber'
 } as const
 
 /** What a `composer.contextMenu` provider sees when the user right-clicks the
@@ -262,4 +264,54 @@ export function useComposerModelPillLabel({
 
     return null
   }, [contributions, compact, model, reasoningEffort])
+}
+
+/** A dictation take a `composer.dictationTranscriber` provider claimed, handed to its
+ *  `transcribe` with the recorded audio. */
+export interface ComposerDictationTake {
+  /** Transcribe this take's audio through the app's own path instead (the
+   *  profile's speech-to-text provider, else the backend), on the owner the
+   *  recording resolved when its mic opened. Resolves the transcript. Call it
+   *  only on the user's request: the claim kept the audio with the plugin. */
+  relay: () => Promise<string>
+}
+
+/** Payload of a `composer.dictationTranscriber` data contribution — a speech-to-text
+ *  engine for the composer's dictation (an on-device model, say), in front of
+ *  the app's own path. `claims()` is asked once, synchronously, when the
+ *  dictation mic opens, and the first provider to answer `true` owns that
+ *  take: the app opens no live provider stream and takes no backend STT
+ *  warm-up for it, and the recorded audio goes to `transcribe` only. Voice
+ *  conversation turns never ask. */
+export interface ComposerDictationTranscriber {
+  claims: () => boolean
+  /** Resolve the transcript (`''` when nothing was said), or `null` when the
+   *  take could not be transcribed: the composer warns, inserts nothing and
+   *  sends the audio nowhere. A rejection is reported like any other
+   *  transcription failure. */
+  transcribe: (audio: Blob, take: ComposerDictationTake) => Promise<null | string>
+}
+
+/** The provider that claims a dictation opening now, or `null` for the app's
+ *  own path. Registry order (`order`, then registration order); a throwing or
+ *  malformed provider is treated as declining, so a broken plugin can't take
+ *  dictation away from the app's own path. */
+export function claimDictationTranscriber(): ComposerDictationTranscriber | null {
+  for (const contribution of registry.getArea(COMPOSER_AREAS.dictationTranscriber)) {
+    const provider = contribution.data as Partial<ComposerDictationTranscriber> | undefined
+
+    if (typeof provider?.claims !== 'function' || typeof provider.transcribe !== 'function') {
+      continue
+    }
+
+    try {
+      if (provider.claims() === true) {
+        return provider as ComposerDictationTranscriber
+      }
+    } catch {
+      // Decline on throw: the next provider, then the app's own path, wins.
+    }
+  }
+
+  return null
 }

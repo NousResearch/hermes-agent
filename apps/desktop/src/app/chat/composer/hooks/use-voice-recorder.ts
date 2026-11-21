@@ -8,6 +8,7 @@ import { type DictationStreamSession, openDictationStream } from '@/lib/voice-st
 import { recordFeatureUse } from '@/store/desktop-metrics'
 import { notify, notifyError } from '@/store/notifications'
 
+import { claimDictationTranscriber, type ComposerDictationTranscriber } from '../contrib'
 import { useComposerScope } from '../scope'
 import type { VoiceActivityState, VoiceStatus } from '../types'
 
@@ -25,9 +26,13 @@ interface VoiceRecorderOptions {
  * resolved once at mic-open and used for the warm-up, the transcription and
  * the release, so a gateway/profile switch mid-recording cannot split them
  * across backends. `warmup` settles when that mic-open warm-up settled.
+ * `transcriber` is decided at mic-open too: a plugin's `composer.dictationTranscriber`
+ * provider that claimed the take, whose take opens no live provider stream
+ * and no warm-up lease, so its audio reaches that plugin only.
  */
 interface Dictation {
   owner: ResolvedOwner
+  transcriber: ComposerDictationTranscriber | null
   warmup: Promise<void>
   /** Live STT session (stt.streaming): resolves to null when the host has no live wire. */
   live?: () => Promise<DictationStreamSession | null>
@@ -79,7 +84,10 @@ export function useVoiceRecorder({
       dictationRef.current = null
 
       if (dictation) {
-        void syncSttLease(VOICE_INPUT_LEASE, false, dictation.owner)
+        if (!dictation.transcriber) {
+          void syncSttLease(VOICE_INPUT_LEASE, false, dictation.owner)
+        }
+
         void dictation.live?.().then(session => session?.cancel())
       }
     },
@@ -116,14 +124,21 @@ export function useVoiceRecorder({
         return
       }
 
-      const transcript =
-        (await liveTranscript(dictation)) ?? (await onTranscribeAudio(result.audio, dictation.owner)).trim()
+      const transcript = dictation.transcriber
+        ? await claimedTranscript(dictation.transcriber, result.audio, () =>
+            onTranscribeAudio(result.audio, dictation.owner)
+          )
+        : ((await liveTranscript(dictation)) ?? (await onTranscribeAudio(result.audio, dictation.owner)).trim())
 
       if (!live()) {
         return
       }
 
-      if (!transcript) {
+      if (transcript === null) {
+        // The claiming plugin could not transcribe the take: nothing is
+        // inserted and the audio goes nowhere else.
+        notify({ kind: 'warning', title: voiceCopy.transcriptionFailed, message: voiceCopy.tryRecordingAgain })
+      } else if (!transcript) {
         notify({ kind: 'warning', title: voiceCopy.noSpeechDetected, message: voiceCopy.tryRecordingAgain })
       } else {
         onTranscript(transcript)
@@ -139,6 +154,17 @@ export function useVoiceRecorder({
         focusInput()
       }
     }
+  }
+
+  // A claimed take's transcript from its plugin, or null when the plugin could not transcribe it.
+  const claimedTranscript = async (
+    transcriber: ComposerDictationTranscriber,
+    audio: Blob,
+    relay: () => Promise<string>
+  ): Promise<null | string> => {
+    const text = await transcriber.transcribe(audio, { relay })
+
+    return typeof text === 'string' ? text.trim() : null
   }
 
   // The live session's final text, or null to transcribe the recorded blob instead (no session,
@@ -164,7 +190,10 @@ export function useVoiceRecorder({
     dictationRef.current = null
     setPartial('')
     void dictation.live?.().then(session => session?.cancel())
-    void syncSttLease(VOICE_INPUT_LEASE, false, dictation.owner)
+
+    if (!dictation.transcriber) {
+      void syncSttLease(VOICE_INPUT_LEASE, false, dictation.owner)
+    }
   }
 
   const start = async () => {
@@ -179,15 +208,18 @@ export function useVoiceRecorder({
     }
 
     const owner = resolveOwnerNow(ownerRef.current)
-    const stream = liveStream(owner)
-    const dictation: Dictation = { live: stream.session, owner, warmup: Promise.resolve() }
+    // A plugin transcriber claims the take before any audio moves: then no
+    // live socket opens, so no PCM leaves the window.
+    const transcriber = claimDictationTranscriber()
+    const stream = transcriber ? null : liveStream(owner)
+    const dictation: Dictation = { live: stream?.session, owner, transcriber, warmup: Promise.resolve() }
     dictationRef.current = dictation
 
     try {
       await handle.start({
         onError: error => notifyError(error, voiceCopy.recordingFailed),
-        onPcm: stream.push,
-        onPcmRate: stream.open
+        onPcm: stream?.push,
+        onPcmRate: stream?.open
       })
 
       if (dictationRef.current !== dictation) {
@@ -199,7 +231,8 @@ export function useVoiceRecorder({
       // speaking instead of inside the transcription timeout (#105955).
       // Fire-and-forget for the MIC UX — but keep the promise: stop() awaits
       // it as the readiness barrier before transcription (see above).
-      dictation.warmup = syncSttLease(VOICE_INPUT_LEASE, true, owner)
+      // A claimed take warms nothing on the backend: the plugin transcribes it.
+      dictation.warmup = transcriber ? Promise.resolve() : syncSttLease(VOICE_INPUT_LEASE, true, owner)
       startedAtRef.current = Date.now()
       setElapsedSeconds(0)
       setVoiceStatus('recording')

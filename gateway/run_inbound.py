@@ -1841,8 +1841,20 @@ class GatewayInboundMixin(
             state.persistent.native_image_paths = []
         return paths
 
+    def _reply_is_private(self, event: Optional[MessageEvent]) -> bool:
+        """True when the adapter answering *event* says its reply has a private lane only this
+        process holds; restart recovery would re-run the turn into the public lane."""
+        from gateway.platforms.base_delivery_ledger import reply_is_private
+        return reply_is_private(self._delivery_adapter_for(getattr(event, "source", None)), event)
+
+    def _running_turn_reply_is_private(self, session_key: str) -> bool:
+        state = self._peek_session_state(session_key)
+        return state is not None and self._reply_is_private(state.turn.event)
+
     async def _mark_durable_active_turn(self, event: MessageEvent, session_key: str) -> bool:
         """Persist the exact resolved routing key for this running turn."""
+        if self._reply_is_private(event):
+            return False
         try:
             token = await self.async_session_store.mark_turn_active(session_key)
         except Exception as exc:

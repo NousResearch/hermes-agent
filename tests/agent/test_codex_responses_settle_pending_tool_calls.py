@@ -120,6 +120,27 @@ def test_control_stream_with_done_still_authoritative():
     assert final.status == "completed"
 
 
+@pytest.mark.parametrize("args_done, item_args, want", [
+    ("", "", '{"city": "SF"}'),                    # blank .done + blank final item (port of oh-my-pi#15099)
+    (None, "", '{"city": "SF"}'),                  # no .done, blank final item
+    ('{"city": "SF"}', "", '{"city": "SF"}'),      # full .done, blank final item
+    ("", '{"city": "LA"}', '{"city": "LA"}'),      # control: a non-blank final item still wins
+])
+def test_blank_terminal_arguments_keep_streamed_arguments(args_done, item_args, want):
+    """Proxies that rebuild a Responses stream can close a call with empty ``arguments`` after streaming
+    the real ones; the call must not reach the tool as ``{}``."""
+    events = _stream_completed_without_done()
+    tail = [] if args_done is None else [SimpleNamespace(
+        type="response.function_call_arguments.done", item_id="fc_1", output_index=0, arguments=args_done)]
+    tail.append(SimpleNamespace(type="response.output_item.done", output_index=0, item=SimpleNamespace(
+        type="function_call", id="fc_1", call_id="call_1", name="get_weather", arguments=item_args)))
+    events[-1:-1] = tail
+    final = _consume_codex_event_stream(events, model="gpt-test")
+
+    calls = [item for item in final.output if getattr(item, "type", "") == "function_call"]
+    assert [call.arguments for call in calls] == [want]
+
+
 @pytest.mark.parametrize('done_id', ['fc_a_done', 'fc_a_alias_2'])
 def test_done_call_coalesces_all_pending_aliases_in_announced_order(done_id):
     """PR #94708: done aliases inherit the earliest call_id announcement."""

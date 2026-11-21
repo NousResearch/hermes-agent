@@ -1,0 +1,24 @@
+name: polytropos
+repo: https://github.com/Lil-Clanky/polytropos
+sha: 4264f5e6d3646df296405a98a4465113843b012e
+subdir: plugins/polytropos
+title: Polytropos
+version: "0.1.1"
+image: https://raw.githubusercontent.com/Lil-Clanky/polytropos/4264f5e6d3646df296405a98a4465113843b012e/docs/images/banner.webp
+description: "Sets up Hermes to use free cloud models through FreeLLMAPI and small local models through Ollama. Adds hermes polytropos (doctor, install, setup, adopt, update, rollback, canary, status, uninstall), which installs FreeLLMAPI and a set of programs at pinned versions and runs FreeLLMAPI as a background service, plus hooks that hold a turn on a local model while memory is low and keep the machine awake while a turn runs. Use it with polytropos-router. Disclosure: runs FreeLLMAPI as a LaunchAgent or systemd user unit on 127.0.0.1:3001. Install, update and uninstall run git, npm, npx, uv, hermes config, mcp and plugins commands and launchctl or systemctl --user, and download pinned releases from GitHub, npm and PyPI (rtk and the macOS Ollama archive checked against SHA-256, git checkouts against pinned commits). Never runs sudo. While a turn runs it holds caffeinate -i or systemd-inhibit, for two hours at most. The memory guard runs sysctl on macOS, reads /proc on Linux and asks the local Ollama API which models are loaded. Fetches stack-canary's public results from raw.githubusercontent.com at most once a day. Changes the profile's config.yaml only through hermes config set and records the old values for uninstall. The doctor reads file names, not contents, in ~/Downloads, ~/Desktop and the home folder. adopt --from copies an existing FreeLLMAPI checkout's database, .env and .encryption-key into its data folder. Reads FREELLMAPI_API_KEY through agent.secret_scope. No telemetry."
+maintainer: Lil-Clanky
+tier: community
+category: models
+requires_hermes: ">=0.23.2"
+docs_url: https://github.com/Lil-Clanky/polytropos/blob/4264f5e6d3646df296405a98a4465113843b012e/README.md
+readme: true
+platforms: [macos, linux]
+known_issues:
+  - "Install, update and uninstall have not been tried in a real Hermes home or on Linux yet. The end-to-end tests run Hermes v0.23.2 in a sandbox on macOS."
+  - "On a machine that rtk has no release build for, hermes polytropos doctor stops with a traceback, and uninstall stops after it restores the config."
+  - "On Linux Polytropos does not install Ollama. Install prints Ollama's own install command for you to run."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, pre_api_request, post_llm_call, on_session_end]
+  provides_middleware: []
+  requires_env: []

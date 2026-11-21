@@ -673,7 +673,7 @@ gateway:
     schedule_truncated_full_above: "Anteprima abbreviata: l'attività completa ({total} caratteri) è nel messaggio sopra."
     schedule_truncated_deny_only: "Anteprima abbreviata ({total} caratteri) e l'attività completa non è stata mostrata qui, quindi è disponibile solo Nega. Controllala nella CLI o nell'app desktop."
     schedule_timed_out_card_body: "{notice}\n\n{command}"
-    schedule_text_body: "{heading}\n\n{command}\n\n"
+    schedule_text_body: "{heading}\n```\n{command}\n```\n\n"
   notify:
     media_kind:
       audio: "audio"

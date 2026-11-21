@@ -673,7 +673,7 @@ gateway:
     schedule_truncated_full_above: "Voorskou verkort: die volledige taak ({total} karakters) is in die boodskap hierbo."
     schedule_truncated_deny_only: "Voorskou verkort ({total} karakters) en die volledige taak kon nie hier gewys word nie, dus word slegs Weier aangebied. Hersien dit in die CLI of die rekenaartoep."
     schedule_timed_out_card_body: "{notice}\n\n{command}"
-    schedule_text_body: "{heading}\n\n{command}\n\n"
+    schedule_text_body: "{heading}\n```\n{command}\n```\n\n"
   notify:
     media_kind:
       audio: "klank"

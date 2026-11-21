@@ -673,7 +673,7 @@ gateway:
     schedule_truncated_full_above: "预览已缩短：完整任务（{total} 个字符）在上面的消息中。"
     schedule_truncated_deny_only: "预览已缩短（{total} 个字符），且此处无法显示完整任务，因此只提供拒绝。请在 CLI 或桌面应用中查看。"
     schedule_timed_out_card_body: "{notice}\n\n{command}"
-    schedule_text_body: "{heading}\n\n{command}\n\n"
+    schedule_text_body: "{heading}\n```\n{command}\n```\n\n"
   notify:
     media_kind:
       audio: "音频"

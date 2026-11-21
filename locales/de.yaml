@@ -673,7 +673,7 @@ gateway:
     schedule_truncated_full_above: "Vorschau gekürzt: Der vollständige Job ({total} Zeichen) steht in der Nachricht oben."
     schedule_truncated_deny_only: "Vorschau gekürzt ({total} Zeichen) und der vollständige Job konnte hier nicht angezeigt werden, daher wird nur Ablehnen angeboten. Prüfe ihn in der CLI oder Desktop-App."
     schedule_timed_out_card_body: "{notice}\n\n{command}"
-    schedule_text_body: "{heading}\n\n{command}\n\n"
+    schedule_text_body: "{heading}\n```\n{command}\n```\n\n"
   notify:
     media_kind:
       audio: "Audio"

@@ -772,7 +772,7 @@ gateway:
     schedule_truncated_full_above: "Aperçu raccourci : la tâche complète ({total} caractères) se trouve dans le message ci-dessus."
     schedule_truncated_deny_only: "Aperçu raccourci ({total} caractères) et la tâche complète n'a pas pu être affichée ici, seul Refuser est donc proposé. Vérifie-la dans la CLI ou l'app de bureau."
     schedule_timed_out_card_body: "{notice}\n\n{command}"
-    schedule_text_body: "{heading}\n\n{command}\n\n"
+    schedule_text_body: "{heading}\n```\n{command}\n```\n\n"
 
   notify:
     media_kind:

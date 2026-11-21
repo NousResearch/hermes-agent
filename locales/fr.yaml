@@ -4356,3 +4356,5 @@ side_thread:
   provider: "❌ L'exploration annexe n'est pas disponible avec ce modèle : son fournisseur exécute ses propres outils."
   too_many: "❌ {count} explorations annexes sont déjà en cours. Arrêtez-en une avec /btw --stop <id>."
   usage: "/btw --explore <tâche> enquête avec des outils dans un fil annexe ; /btw --threads liste les fils annexes ; /btw --promote [id] [note] intègre un rapport à cette conversation ; /btw --stop <id> en arrête un."
+  opened: "⤢ Ouverture de l'exploration annexe {thread_id} en discussion latérale."
+  open_unsupported: "Les discussions latérales s'ouvrent dans l'application de bureau. Ici, /btw --promote {thread_id} intègre le rapport à cette conversation."

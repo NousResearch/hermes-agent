@@ -4034,3 +4034,5 @@ side_thread:
   provider: "❌ 此模型无法使用侧线探索：其提供方会运行自己的工具。"
   too_many: "❌ 已有 {count} 个侧线探索在运行。用 /btw --stop <id> 停止一个。"
   usage: "/btw --explore <任务> 在侧线中使用工具调查；/btw --threads 列出侧线；/btw --promote [id] [备注] 将报告带入此对话；/btw --stop <id> 停止一个。"
+  opened: "⤢ 正在将侧线探索 {thread_id} 作为侧边对话打开。"
+  open_unsupported: "侧边对话在桌面应用中打开。在这里，用 /btw --promote {thread_id} 将报告带入此对话。"

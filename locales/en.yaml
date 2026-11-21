@@ -4151,3 +4151,5 @@ side_thread:
   provider: "❌ Side exploration is unavailable with this model: its provider runs its own tools."
   too_many: "❌ {count} side explorations are already running. Stop one with /btw --stop <id>."
   usage: "/btw --explore <task> investigates with tools in a side thread; /btw --threads lists side threads; /btw --promote [id] [note] brings a report into this conversation; /btw --stop <id> stops one."
+  opened: "⤢ Opening side exploration {thread_id} as a side chat."
+  open_unsupported: "Side chats open in the Desktop app. Here, /btw --promote {thread_id} brings the report into this conversation."

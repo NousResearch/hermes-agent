@@ -4034,3 +4034,5 @@ side_thread:
   provider: "❌ 이 모델에서는 사이드 탐색을 쓸 수 없어요: 공급자가 자체 도구를 실행해요."
   too_many: "❌ 이미 사이드 탐색 {count}개가 실행 중이에요. /btw --stop <id>로 하나를 멈추세요."
   usage: "/btw --explore <작업>은 사이드 스레드에서 도구로 조사해요. /btw --threads는 사이드 스레드 목록을, /btw --promote [id] [메모]는 보고서를 이 대화로 가져오고, /btw --stop <id>는 하나를 멈춰요."
+  opened: "⤢ 사이드 탐색 {thread_id}을(를) 사이드 채팅으로 열게요."
+  open_unsupported: "사이드 채팅은 데스크톱 앱에서 열려요. 여기서는 /btw --promote {thread_id}로 보고서를 이 대화에 가져올 수 있어요."

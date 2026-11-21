@@ -4034,3 +4034,5 @@ side_thread:
   provider: "❌ Nebenerkundung ist mit diesem Modell nicht verfügbar: Sein Anbieter führt eigene Tools aus."
   too_many: "❌ Es laufen bereits {count} Nebenerkundungen. Stoppe eine mit /btw --stop <id>."
   usage: "/btw --explore <Aufgabe> untersucht mit Tools in einem Nebenstrang; /btw --threads listet Nebenstränge; /btw --promote [id] [Notiz] übernimmt einen Bericht in diese Konversation; /btw --stop <id> stoppt einen."
+  opened: "⤢ Nebenerkundung {thread_id} wird als Seitenchat geöffnet."
+  open_unsupported: "Seitenchats öffnen sich in der Desktop-App. Hier übernimmt /btw --promote {thread_id} den Bericht in diese Konversation."

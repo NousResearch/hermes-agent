@@ -4034,3 +4034,5 @@ side_thread:
   provider: "❌ このモデルではサイド探索を使えません: プロバイダーが独自のツールを実行します。"
   too_many: "❌ すでに {count} 件のサイド探索が実行中です。/btw --stop <id> で 1 件停止してください。"
   usage: "/btw --explore <タスク> はサイドスレッドでツールを使って調査します。/btw --threads でサイドスレッドを一覧表示、/btw --promote [id] [メモ] でレポートをこの会話に取り込み、/btw --stop <id> で停止します。"
+  opened: "⤢ サイド探索 {thread_id} をサイドチャットとして開きます。"
+  open_unsupported: "サイドチャットはデスクトップアプリで開きます。ここでは /btw --promote {thread_id} でレポートをこの会話に取り込めます。"

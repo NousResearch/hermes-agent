@@ -4051,3 +4051,5 @@ side_thread:
   provider: "❌ A mellékfelderítés ezzel a modellel nem érhető el: a szolgáltatója saját eszközöket futtat."
   too_many: "❌ Már {count} mellékfelderítés fut. Állíts le egyet: /btw --stop <id>."
   usage: "A /btw --explore <feladat> eszközökkel vizsgálódik egy mellékszálon; a /btw --threads listázza a mellékszálakat; a /btw --promote [id] [megjegyzés] behoz egy jelentést ebbe a beszélgetésbe; a /btw --stop <id> leállít egyet."
+  opened: "⤢ A(z) {thread_id} mellékfelderítés megnyitása oldalsó csevegésként."
+  open_unsupported: "Az oldalsó csevegések az asztali alkalmazásban nyílnak meg. Itt a /btw --promote {thread_id} behozza a jelentést ebbe a beszélgetésbe."

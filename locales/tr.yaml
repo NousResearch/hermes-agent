@@ -4034,3 +4034,5 @@ side_thread:
   provider: "❌ Yan keşif bu modelle kullanılamaz: sağlayıcısı kendi araçlarını çalıştırıyor."
   too_many: "❌ Zaten {count} yan keşif çalışıyor. /btw --stop <id> ile birini durdur."
   usage: "/btw --explore <görev> bir yan iş parçacığında araçlarla araştırır; /btw --threads yan iş parçacıklarını listeler; /btw --promote [id] [not] bir raporu bu sohbete aktarır; /btw --stop <id> birini durdurur."
+  opened: "⤢ Yan keşif {thread_id} yan sohbet olarak açılıyor."
+  open_unsupported: "Yan sohbetler masaüstü uygulamasında açılır. Burada /btw --promote {thread_id} raporu bu sohbete aktarır."

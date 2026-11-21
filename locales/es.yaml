@@ -4034,3 +4034,5 @@ side_thread:
   provider: "❌ La exploración lateral no está disponible con este modelo: su proveedor ejecuta sus propias herramientas."
   too_many: "❌ Ya hay {count} exploraciones laterales en curso. Detén una con /btw --stop <id>."
   usage: "/btw --explore <tarea> investiga con herramientas en un hilo lateral; /btw --threads lista los hilos laterales; /btw --promote [id] [nota] trae un informe a esta conversación; /btw --stop <id> detiene uno."
+  opened: "⤢ Abriendo la exploración lateral {thread_id} como chat lateral."
+  open_unsupported: "Los chats laterales se abren en la app de escritorio. Aquí, /btw --promote {thread_id} trae el informe a esta conversación."

@@ -4034,3 +4034,5 @@ side_thread:
   provider: "❌ A exploração paralela não está disponível com este modelo: o provedor dele executa as próprias ferramentas."
   too_many: "❌ Já há {count} explorações paralelas em andamento. Pare uma com /btw --stop <id>."
   usage: "/btw --explore <tarefa> investiga com ferramentas em uma thread paralela; /btw --threads lista as threads paralelas; /btw --promote [id] [nota] traz um relatório para esta conversa; /btw --stop <id> para uma."
+  opened: "⤢ Abrindo a exploração paralela {thread_id} como chat lateral."
+  open_unsupported: "Chats laterais abrem no app para desktop. Aqui, /btw --promote {thread_id} traz o relatório para esta conversa."

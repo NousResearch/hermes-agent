@@ -4034,3 +4034,5 @@ side_thread:
   provider: "❌ Syverkenning is nie beskikbaar met hierdie model nie: sy verskaffer voer sy eie gereedskap uit."
   too_many: "❌ {count} syverkennings loop reeds. Stop een met /btw --stop <id>."
   usage: "/btw --explore <taak> ondersoek met gereedskap in 'n sydraad; /btw --threads lys sydrade; /btw --promote [id] [nota] bring 'n verslag in hierdie gesprek; /btw --stop <id> stop een."
+  opened: "⤢ Maak syverkenning {thread_id} oop as 'n sygesprek."
+  open_unsupported: "Sygesprekke maak oop in die rekenaartoepassing. Hier bring /btw --promote {thread_id} die verslag in hierdie gesprek."

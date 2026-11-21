@@ -4034,3 +4034,5 @@ side_thread:
   provider: "❌ Níl taiscéaladh taoibh ar fáil leis an tsamhail seo: ritheann a soláthraí a huirlisí féin."
   too_many: "❌ Tá {count} taiscéaladh taoibh ag rith cheana. Stop ceann le /btw --stop <id>."
   usage: "Fiosraíonn /btw --explore <tasc> le huirlisí i snáithe taoibh; liostaíonn /btw --threads na snáitheanna taoibh; tugann /btw --promote [id] [nóta] tuarascáil isteach sa chomhrá seo; stopann /btw --stop <id> ceann acu."
+  opened: "⤢ Taiscéaladh taoibh {thread_id} á oscailt mar chomhrá taoibh."
+  open_unsupported: "Osclaíonn comhráite taoibh san aip deisce. Anseo, tugann /btw --promote {thread_id} an tuarascáil isteach sa chomhrá seo."

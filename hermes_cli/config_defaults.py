@@ -739,11 +739,11 @@ DEFAULT_CONFIG = {
         # and aggregated. Case-insensitive URL substrings; some vendor endpoints are always
         # stream-only.
         "stream_only_base_urls": [],
-        # Per-task blocks share one shape (_aux): provider "auto" = inherit the main model; base_url
-        # overrides provider; api_key falls back to OPENAI_API_KEY (OpenAI hosts only); reasoning_effort:
-        # none|minimal|low|medium|high|xhigh|max|ultra ("" = provider default); extra_body =
-        # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
+        # Per-task blocks share one shape (_aux): provider "auto" = inherit main model; base_url overrides
+        # provider; api_key falls back to OPENAI_API_KEY (OpenAI hosts only); reasoning_effort: none|minimal|
+        # low|medium|high|xhigh|max|ultra ("" = default); extra_body = API fields; vision.download_timeout (s).
         "vision": _aux(120, download_timeout=30),
+        "audio": {"provider": "", "model": "", "base_url": "", "api_key": "", "timeout": 180},
         # web_extract, session_search, skills_hub: no aux LLM any more, leftover blocks are ignored.
         # Compression: raise timeout for local models. no_progress_timeout: seconds a streamed call
         # goes without a substantive chunk before it fails fast into retry/fallback; None = built-in

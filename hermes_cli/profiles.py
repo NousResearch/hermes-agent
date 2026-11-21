@@ -1745,60 +1745,65 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
     shutdown_mcp_servers(scope=hermes_home_key(profile_dir))
 
-    # Release this process's holographic memory-store connections into the profile. The
-    # Desktop's main serve process opens memory_store.db for every profile and is
-    # deliberately not stopped above; on Windows its handles fail rmtree with WinError 32.
-    # Inside serve (DELETE /api/profiles/<name>) the handles live here; from the CLI no-op.
-    with contextlib.suppress(Exception):  # best-effort: never block the delete on the release path
-        # 2c. See #88347.
-        from plugins.memory import import_provider_module
-        _released = import_provider_module("holographic", "store").MemoryStore.release_all_under(profile_dir)
-        if _released:
-            print(f"✓ Released {_released} memory-store connection(s) held by this process")
-    with contextlib.suppress(Exception):
-        from persistence_assembly import close_stores_under
-        _closed = close_stores_under(profile_dir)
-        if _closed:
-            print(f"✓ Released {_closed} session database connection(s) held by this process")
+    # Reserve the home through teardown and file removal so a same-home lookup cannot recreate
+    # callbacks or a host for a directory being deleted.
+    from hermes_cli.plugins_lifecycle import reserve_plugin_manager_for_home
+    with reserve_plugin_manager_for_home(profile_dir) as (_unloaded, teardown_error):
+        if teardown_error is not None:
+            logger.warning("Could not unload plugin manager for deleted profile %s: %s",
+                           profile_dir, teardown_error,
+                           exc_info=(type(teardown_error), teardown_error, teardown_error.__traceback__))
 
-    # The Desktop serve process routes its agent/errors logs for every profile through one
-    # QueueListener. On Windows those ConcurrentRotatingFileHandler instances retain their
-    # ``.__*.lock`` files until explicitly closed, so rmtree otherwise fails with WinError 32.
-    with contextlib.suppress(Exception):
-        from hermes_logging import release_profile_log_handlers
-        _released_logs = release_profile_log_handlers(profile_dir)
-        if _released_logs:
-            print(f"✓ Released {_released_logs} profile log handler(s) held by this process")
-
-    # 3. Remove wrapper script
-    if wrapper_path and remove_wrapper_script(canon):
-        print(f"✓ Removed {wrapper_path}")
-
-    # 4. Remove profile directory
-    remove_error: Exception | None = None
-    try:
-        # A multiplexer still tearing the profile down holds its gateway.lock: never remove a home
-        # a live runtime owns (its writers would recreate the tree under the tombstone).
-        if not wait_profile_unowned(profile_dir):
-            raise RuntimeError("a running gateway still owns this profile; retry the delete once it settles")
-        _rmtree_with_retry(profile_dir, _rmtree_make_writable)
-        print(f"✓ Removed {profile_dir}")
-    except Exception as e:
-        print(f"⚠ Could not remove {profile_dir}: {e}")
-        remove_error = e
-
-    # 5. Clear active_profile if it pointed to this profile
-    _retarget_active_profile(canon, "default", "✓ Active profile reset to default")
-    if remove_error is not None:
-        raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
-    print(f"\nProfile '{canon}' deleted.")
-    if not identity_settled:
-        # Filesystem work and runtime teardown are done; the durable identity is not. Report the
-        # partial settlement as a typed failure (still a RuntimeError for the CLI's handler)
-        # instead of a clean success; the type carries the path and the retry for surfaces that
-        # can report a partial success.
-        raise ProfileIdentitySettlementPending(canon, profile_dir)
-    return profile_dir
+        # Release this process's holographic memory-store connections into the profile. The
+        # Desktop's main serve process opens memory_store.db for every profile and is
+        # deliberately not stopped above; on Windows its handles fail rmtree with WinError 32.
+        # Inside serve (DELETE /api/profiles/<name>) the handles live here; from the CLI no-op.
+        with contextlib.suppress(Exception):  # best-effort: never block the delete on the release path
+            # 2c. See #88347.
+            from plugins.memory import import_provider_module
+            _released = import_provider_module("holographic", "store").MemoryStore.release_all_under(profile_dir)
+            if _released:
+                print(f"✓ Released {_released} memory-store connection(s) held by this process")
+        with contextlib.suppress(Exception):
+            from persistence_assembly import close_stores_under
+            _closed = close_stores_under(profile_dir)
+            if _closed:
+                print(f"✓ Released {_closed} session database connection(s) held by this process")
+        # The Desktop serve process routes its agent/errors logs for every profile through one
+        # QueueListener. On Windows those ConcurrentRotatingFileHandler instances retain their
+        # ``.__*.lock`` files until explicitly closed, so rmtree otherwise fails with WinError 32.
+        with contextlib.suppress(Exception):
+            from hermes_logging import release_profile_log_handlers
+            _released_logs = release_profile_log_handlers(profile_dir)
+            if _released_logs:
+                print(f"✓ Released {_released_logs} profile log handler(s) held by this process")
+        # 3. Remove wrapper script
+        if wrapper_path and remove_wrapper_script(canon):
+            print(f"✓ Removed {wrapper_path}")
+        # 4. Remove profile directory
+        remove_error: Exception | None = None
+        try:
+            # A multiplexer still tearing the profile down holds its gateway.lock: never remove a home
+            # a live runtime owns (its writers would recreate the tree under the tombstone).
+            if not wait_profile_unowned(profile_dir):
+                raise RuntimeError("a running gateway still owns this profile; retry the delete once it settles")
+            _rmtree_with_retry(profile_dir, _rmtree_make_writable)
+            print(f"✓ Removed {profile_dir}")
+        except Exception as e:
+            print(f"⚠ Could not remove {profile_dir}: {e}")
+            remove_error = e
+        # 5. Clear active_profile if it pointed to this profile
+        _retarget_active_profile(canon, "default", "✓ Active profile reset to default")
+        if remove_error is not None:
+            raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
+        print(f"\nProfile '{canon}' deleted.")
+        if not identity_settled:
+            # Filesystem work and runtime teardown are done; the durable identity is not. Report the
+            # partial settlement as a typed failure (still a RuntimeError for the CLI's handler)
+            # instead of a clean success; the type carries the path and the retry for surfaces that
+            # can report a partial success.
+            raise ProfileIdentitySettlementPending(canon, profile_dir)
+        return profile_dir
 
 
 def _s6_runtime_manager():
@@ -2237,40 +2242,45 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # racing writer); after it, the old name is never re-served.
     from hermes_constants import hermes_home_key
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from hermes_cli.plugins_lifecycle import reserve_plugin_manager_for_home
     gw_running = _check_gateway_running(old_dir)
     service_removed = live_mux = renamed = False
     old_identity = None
-    try:
-        service_removed = _cleanup_gateway_service(old_canon, old_dir)
-        _maybe_unregister_gateway_service(old_canon)
-        if gw_running:
-            _stop_gateway_process(old_dir)
-        _stop_bot_desktop(old_dir)
-        live_mux = _live_default_multiplexer()
-        old_identity = old_dir.lstat()
-        if live_mux:
-            mark_named_profile_deleted(old_dir)
-            _notify_multiplexer(old_canon)
-        shutdown_mcp_servers(scope=hermes_home_key(old_dir))
-        if live_mux and not wait_profile_unowned(old_dir):  # same owner wait as delete_profile
-            raise RuntimeError("a running gateway still owns this profile; retry the rename once it settles")
-        old_dir.rename(new_dir)
-        renamed = True
-    finally:
-        moved = renamed  # identity only for an interrupt after the move: FAT/CIFS may change the dir ID
-        if not moved and old_identity is not None:
-            with contextlib.suppress(OSError):  # no new_dir: the move never landed
-                moved = os.path.samestat(new_dir.lstat(), old_identity)
-        if moved:
-            clear_named_profile_deleted(old_dir)
-            clear_named_profile_deleted(new_dir)
-        else:
+    with contextlib.ExitStack() as reservations:
+        try:
+            service_removed = _cleanup_gateway_service(old_canon, old_dir)
+            _maybe_unregister_gateway_service(old_canon)
+            if gw_running:
+                _stop_gateway_process(old_dir)
+            _stop_bot_desktop(old_dir)
+            live_mux = _live_default_multiplexer()
+            old_identity = old_dir.lstat()
             if live_mux:
-                clear_named_profile_deleted(old_dir)
+                mark_named_profile_deleted(old_dir)
                 _notify_multiplexer(old_canon)
-            _maybe_register_gateway_service(old_canon)
-            if service_removed:
-                print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
+            _unloaded, teardown_error = reservations.enter_context(reserve_plugin_manager_for_home(old_dir))
+            if teardown_error is not None:
+                raise teardown_error
+            shutdown_mcp_servers(scope=hermes_home_key(old_dir))
+            if live_mux and not wait_profile_unowned(old_dir):
+                raise RuntimeError("a running gateway still owns this profile; retry the rename once it settles")
+            old_dir.rename(new_dir)
+            renamed = True
+        finally:
+            moved = renamed
+            if not moved and old_identity is not None:
+                with contextlib.suppress(OSError):
+                    moved = os.path.samestat(new_dir.lstat(), old_identity)
+            if moved:
+                clear_named_profile_deleted(old_dir)
+                clear_named_profile_deleted(new_dir)
+            else:
+                if live_mux:
+                    clear_named_profile_deleted(old_dir)
+                    _notify_multiplexer(old_canon)
+                _maybe_register_gateway_service(old_canon)
+                if service_removed:
+                    print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
 
     # 2b. Record the rename so Bot Mode group chats can re-link persisted
@@ -2312,17 +2322,6 @@ def rename_profile(old_name: str, new_name: str) -> Path:
 
 # Profile env resolution (called from _apply_profile_override)
 
-def profile_root_for_env_home(env_home: str, default_root: Path) -> Path:
-    """Hermes root named by an exported ``HERMES_HOME``: the grandparent of a profile-shaped value
-    (``<root>/profiles/<name>``, mirrors ``get_default_hermes_root()``), the value itself otherwise,
-    *default_root* when unset. Pure: callers pass any process's env, not only ``os.environ``."""
-    env_home = env_home.strip()
-    if not env_home:
-        return default_root
-    env_path = Path(env_home)
-    return env_path.parent.parent if env_path.parent.name == "profiles" else env_path
-
-
 def resolve_profile_env(profile_name: str) -> str:
     """Resolve a profile name to a HERMES_HOME path string. Called early in the CLI entry
     point, before hermes modules are imported, to set HERMES_HOME.
@@ -2334,6 +2333,7 @@ def resolve_profile_env(profile_name: str) -> str:
     (junction-transparent); only the spelling is preserved.
     """
     canon = _canon_valid(profile_name)
+    from hermes_cli.profile_env import profile_root_for_env_home
     root = profile_root_for_env_home(os.environ.get("HERMES_HOME", ""), _get_default_hermes_home())
     if canon == "default":
         return str(root)

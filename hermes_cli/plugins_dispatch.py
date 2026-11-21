@@ -440,7 +440,8 @@ class PluginDispatchMixin:
         if not callable(callback):
             raise TypeError("Event subscriber callback must be callable")
         with self._event_lock:
-            self._subscriptions.setdefault(event, []).append(_EventSubscription(owner, callback))
+            if not self._retired:
+                self._subscriptions.setdefault(event, []).append(_EventSubscription(owner, callback))
 
     def _remove_plugin_subscriptions(self, owner: str) -> int:
         """Remove every subscription owned by *owner*; return the count. Queued envelopes re-check
@@ -461,6 +462,26 @@ class PluginDispatchMixin:
                 else:
                     del self._subscriptions[event]
         return removed
+
+    def _reset_event_bus(self) -> None:
+        """Fence old deliveries and let their worker exit after any running callback."""
+        with self._event_idle:
+            self._subscriptions.clear()
+            self._event_generation += 1
+            self._event_pending_by_generation.clear()
+            old_queue = self._event_queue
+            worker = self._event_worker
+            self._event_queue = queue.Queue(maxsize=_EVENT_PENDING_CAP)
+            self._event_worker = None
+            while True:
+                try:
+                    old_queue.get_nowait()
+                    old_queue.task_done()
+                except queue.Empty:
+                    break
+            if worker is not None and worker.is_alive():
+                old_queue.put_nowait(_EVENT_WORKER_STOP)
+            self._event_idle.notify_all()
 
     def _ensure_event_worker_locked(self) -> None:
         worker = self._event_worker
@@ -495,14 +516,14 @@ class PluginDispatchMixin:
     def _deliver_event(self, item: _QueuedPluginEvent) -> None:
         """Deliver one queued event on the host-owned worker thread."""
         with self._event_lock:
-            if item.generation != self._event_generation:
+            if self._retired or item.generation != self._event_generation:
                 return
         previous_depth = getattr(self._emit_depth, "value", 0)
         self._emit_depth.value = item.depth
         try:
             for subscription in item.subscriptions:
                 with self._event_lock:
-                    if item.generation != self._event_generation:
+                    if self._retired or item.generation != self._event_generation:
                         break
                     # Owner unload may have removed this entry after the event was queued.
                     if not any(cur is subscription for cur in self._subscriptions.get(item.event, [])):
@@ -536,6 +557,8 @@ class PluginDispatchMixin:
             return 0
         budget_msg = "Event bus pending budget (%d) exhausted while dispatching '%s' — dropping this emit"
         with self._event_lock:
+            if self._retired:
+                return 0
             subscriptions = tuple(self._subscriptions.get(event, []))
             if not subscriptions:
                 return 0

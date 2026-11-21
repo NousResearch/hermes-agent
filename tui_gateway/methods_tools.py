@@ -7,6 +7,7 @@ Helper names must not collide with server.py's own (``_cmd_`` / ``_toolset_`` / 
 
 import contextlib
 import sys
+import threading
 from pathlib import Path
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -1705,32 +1706,56 @@ def _plugin_rows() -> list[dict]:
 # Latest ``on_plugin_loaded`` summaries by plugin name — the TUI server's own subscription, so an
 # install/toggle/update result reports what the load actually activated (#87770). One listener per manager.
 _plugin_activations: dict = {}
-_plugin_activation_subscribed: set = set()
+_plugin_activation_subscribed: dict = {}
+_plugin_activation_lock = threading.RLock()
 
 
-def _ensure_plugin_activation_listener() -> None:
-    from hermes_cli.plugins import get_plugin_manager
-    manager = get_plugin_manager()
-    if manager.scope_key in _plugin_activation_subscribed:
-        return
-    _plugin_activation_subscribed.add(manager.scope_key)
+def _ensure_plugin_activation_listener(manager=None) -> None:
+    from hermes_cli.plugins import get_plugin_manager, subscribe_plugin_loaded_for_home
+    manager = manager or get_plugin_manager()
+    scope = manager.scope_key
+    with _plugin_activation_lock:
+        previous = _plugin_activation_subscribed.get(scope)
+        if previous is not None and previous.manager is manager and not manager._retired:
+            return
 
-    def _on_loaded(summaries) -> None:
-        for entry in summaries:
-            _plugin_activations[entry["name"]] = entry
-            _plugin_activations[entry["key"]] = entry
-    manager.on_plugin_loaded(_on_loaded)
+    def _on_loaded(source, summaries) -> None:
+        with _plugin_activation_lock:
+            if source._retired:
+                return
+            cached = _plugin_activations.get(scope)
+            if cached is None or cached[0] is not source:
+                cached = _plugin_activations[scope] = (source, {})
+            for entry in summaries:
+                cached[1][entry["name"]] = entry
+                cached[1][entry["key"]] = entry
+    unsubscribe = subscribe_plugin_loaded_for_home(manager, _on_loaded)
+    with _plugin_activation_lock:
+        existing = _plugin_activation_subscribed.get(scope)
+        if manager._retired or (existing is not None and not existing.manager._retired):
+            unsubscribe()
+        else:
+            if existing is not None:
+                existing()
+            _plugin_activation_subscribed[scope] = unsubscribe
+    if manager._retired:
+        raise RuntimeError("cannot subscribe a retired manager")
 
 
 def _with_activation(result: dict, name: str) -> dict:
-    """Fill ``activation`` from this process's listener when the core returned none (the core's own
-    copy carries ``live_now``, which the listener's load-time summary cannot)."""
+    """Fill a missing activation only from the current home's current manager."""
     if result.get("activation"):
         return result
-    for key in (name, result.get("plugin_name"), result.get("name")):
-        if key and key in _plugin_activations:
-            result["activation"] = _plugin_activations[key]
-            break
+    from hermes_cli.plugins import get_plugin_manager
+    manager = get_plugin_manager()
+    with _plugin_activation_lock:
+        cached = _plugin_activations.get(manager.scope_key)
+        if cached is None or cached[0] is not manager:
+            return result
+        for key in (name, result.get("plugin_name"), result.get("name")):
+            if key and key in cached[1]:
+                result["activation"] = cached[1][key]
+                break
     return result
 
 
@@ -1947,38 +1972,6 @@ def _(rid, params: dict) -> dict:
     return _run_action(rid, params, _PLUGINS_ACTIONS, "plugins")
 
 
-@method("shell.exec")
-def _(rid, params: dict) -> dict:
-    cmd = params.get("command", "")
-    if not cmd:
-        return _err(rid, 4004, "empty command")
-    try:
-        approval = _tools_mod("tools.approval_detection")
-        is_hardline, hardline_desc = approval.detect_hardline_command(cmd)
-        if is_hardline:
-            return _err(rid, 4005, f"blocked (hardline): {hardline_desc}. Use the agent for dangerous commands.")
-        is_dangerous, _, desc = approval.detect_dangerous_command(cmd)
-        if is_dangerous:
-            return _err(rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands.")
-    except ImportError:
-        return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
-
-    def done(result):
-        redact = _tools_mod("agent.redact").redact_sensitive_text
-        # Unlike the interactive CLI, this output crosses the RPC boundary and can be persisted
-        # in the transcript. Redact before tailing so a credential crossing the slice boundary
-        # cannot survive as two unmatched fragments.
-        stdout = redact(result.stdout or "", force=True, redact_url_credentials=True)[-4000:]
-        stderr = redact(result.stderr or "", force=True, redact_url_credentials=True)[-2000:]
-        return _ok(rid, {"stdout": stdout, "stderr": stderr, "code": result.returncode})
-
-    # shell=True preserves the user-facing !cmd grammar (pipes, redirects and interpolation).
-    # The child must not inherit credentials held by the long-lived gateway process.
-    env = _tools_mod("tools.environments.local").build_subprocess_env()
-    return _captured_exec(
-        rid, cmd, 30, shell=True, env=env, fail_code=5003,
-        timeout_err=(5002, "command timed out (30s)"), on_result=done)
-
 
 def register(server) -> None:
     """Rebind this module's helpers + handlers onto ``server`` and register the handlers."""
@@ -1986,3 +1979,6 @@ def register(server) -> None:
     from . import methods_tools_plugin_commands  # the plugin-command stage's helpers, same namespace
 
     methods_tools_plugin_commands.register(server)
+    from . import methods_tools_shell
+
+    methods_tools_shell.register(server)

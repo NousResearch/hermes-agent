@@ -710,8 +710,8 @@ exclude-newer-package = { certifi = false }
 # [tool.uv] key: a key written after this header would belong to this table.
 # google-re2's sdist compiles against pybind11 headers without listing pybind11,
 # so a source build (musl) fails on `pybind11/buffer_info.h`. uv does not record
-# this pin in uv.lock; keep it equal to TOOLCHAIN_PINS in
-# scripts/termux/build_config.sh.
+# this pin in uv.lock; it equals TOOLCHAIN_PINS in scripts/termux/build_config.sh
+# (tests/scripts/test_termux_build_wheels.py checks it).
 [tool.uv.extra-build-dependencies]
 google-re2 = ["pybind11==3.1.0"]
 

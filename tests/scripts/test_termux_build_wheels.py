@@ -178,3 +178,22 @@ def test_source_pin_rejects_moved_revision_and_missing_locked_metadata(tmp_path)
     lock.write_text("package = []\n", encoding="utf-8")
     with pytest.raises(ValueError, match="lock"):
         builder.normalize_reqs(export, lock, resolved)
+
+
+@pytest.mark.platforms("posix")
+def test_termux_and_musl_builds_compile_google_re2_against_the_same_pybind11():
+    # Termux builds google-re2 inside the TOOLCHAIN_PINS venv, musl through uv's
+    # extra-build-dependencies table: a bump of one would split the two source builds.
+    import tomllib
+
+    from packaging.requirements import Requirement
+
+    repo = Path(__file__).resolve().parents[2]
+    shell = subprocess.run(
+        ["bash", "-c", 'source scripts/termux/build_config.sh && printf "%s\\n" "${TOOLCHAIN_PINS[@]}"'],
+        cwd=repo, capture_output=True, text=True, check=True)
+    toolchain = [Requirement(pin) for pin in shell.stdout.split()]
+    uv = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8-sig"))["tool"]["uv"]
+    extra = [Requirement(spec) for spec in uv["extra-build-dependencies"]["google-re2"]]
+    pybind11 = [str(requirement) for requirement in toolchain if requirement.name == "pybind11"]
+    assert pybind11 and pybind11 == [str(requirement) for requirement in extra if requirement.name == "pybind11"]

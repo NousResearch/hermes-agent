@@ -98,6 +98,20 @@ sequenceDiagram
   M->>M: next turn starts with the side findings
 ```
 
+### On Desktop
+
+The Desktop app folds a thread's steps into one live row beside the main turn:
+
+![A side thread exploring in the Desktop app](/img/docs/side-threads/desktop-exploring.png)
+
+Its report and `/btw --threads` land as rows of their own:
+
+![The report and /btw --threads in the Desktop app](/img/docs/side-threads/desktop-threads.png)
+
+`/btw --promote` sends the report as your next message (queued if the agent is busy):
+
+![Promoting a side thread in the Desktop app](/img/docs/side-threads/desktop-promoted.png)
+
 Because the fork replays the conversation verbatim, its first request repeats what the main
 conversation already sent — the part a provider's prompt cache can serve. A `/bg` task on the same
 question starts a fresh session with its own system prompt, so none of it matches:

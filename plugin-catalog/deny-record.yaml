@@ -1,0 +1,19 @@
+name: deny-record
+repo: https://github.com/LangerSword/hermes-deny-record
+sha: 87eec67376b6248cc9b408e8542a874894e9b06f
+title: Deny record
+description: "After you deny an agent's cronjob_manage create proposal, this plugin remembers the normalized job and adds a 'you denied a similar job on <date>' note if the agent proposes it again under a new name or phrasing. Only create proposals are annotated; direct `hermes cron add` and unrelated approvals are untouched. Disclosure — writes one identifier-only JSON line per explicit user denial to <HERMES_HOME>/deny-record/denied-jobs.jsonl (0700 dir, 0600 file, profile-scoped), reads it on later create proposals, makes no network calls, and briefly escalates cronjob_manage create to the normal Hermes approval gate; unattended runs fail closed there."
+maintainer: LangerSword
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/LangerSword/hermes-deny-record
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_approval_response
+  provides_middleware: []
+  requires_env: []

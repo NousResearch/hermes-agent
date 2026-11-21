@@ -1119,9 +1119,16 @@ class GatewayAgent:
                 choice = callback(payload.get("command") or "", payload.get("description") or "")
         if choice not in choices:
             choice = "deny"
-        self.connection.call("approval.respond", session_id=self.session_id,
-                             execution_generation=payload.get("execution_generation", self._generation),
-                             prompt_id=payload.get("prompt_id"), choice=choice)
+        # A deny-with-reason is a Denied choice (== "deny", .reason set): the str subclass
+        # flattens to plain "deny" over JSON, so the reason rides as its own field — and
+        # only then, keeping a plain deny's payload shape unchanged for older servers.
+        reason = getattr(choice, "reason", None)
+        params = {"session_id": self.session_id,
+                  "execution_generation": payload.get("execution_generation", self._generation),
+                  "prompt_id": payload.get("prompt_id"), "choice": choice}
+        if isinstance(reason, str) and reason:
+            params["reason"] = reason
+        self.connection.call("approval.respond", **params)
 
     def _on_clarify(self, payload, stream_callback, starts):
         answer = ""

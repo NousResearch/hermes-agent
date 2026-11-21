@@ -2087,6 +2087,7 @@ class TestCliApprovalTimeoutClassifiedSeparately:
         assert "denied" in result["message"].lower()
         assert "Silence is not consent" not in result["message"]
 
+
     def test_run_approval_gate_cli_timeout_is_not_a_denial(self):
         """The shared plugin-escalation gate (_run_approval_gate) also
         distinguishes a prompt timeout from an explicit deny on the CLI
@@ -2110,3 +2111,99 @@ class TestCliApprovalTimeoutClassifiedSeparately:
         assert result.get("user_consent") is False
         assert "timed out without user response" in result["message"]
         assert "Silence is not consent" in result["message"]
+
+
+class TestCliDenyWithReason:
+    """Deny-with-reason: the choice carries free text the gate relays to the agent.
+
+    The gateway already had ``/deny <reason>``; this is the CLI parity — the
+    approval panel's 'deny_reason' option and the input() fallback's reason
+    letter return a ``Denied`` choice (== "deny", ``.reason`` set), and the
+    CLI guard tail embeds the reason verbatim in the BLOCKED message so the
+    agent can adapt instead of only hearing "denied".
+    """
+
+    def _interactive_env(self):
+        return mock_patch.dict(
+            "os.environ",
+            {"HERMES_INTERACTIVE": "1"},
+            clear=False,
+        )
+
+    def test_denied_choice_compares_equal_to_plain_deny(self):
+        from tools.approval_prompt import Denied
+
+        d = Denied("Use the toolbox script instead")
+        assert d == "deny"
+        assert d.reason == "Use the toolbox script instead"
+        assert hash(d) == hash("deny")
+
+    def test_guard_relays_deny_reason_in_blocked_message(self):
+        from unittest.mock import patch as _patch
+        from tools import approval as mod
+        from tools.approval_prompt import Denied
+
+        mod._session_approved.clear()
+        mod._permanent_approved.clear()
+
+        cfg = {"approvals": {"mode": "manual"}}
+        with self._interactive_env():
+            with _patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+                result = mod.check_all_command_guards(
+                    "rm -rf /var/data", "local",
+                    approval_callback=lambda *a, **kw: Denied("use the toolbox script instead"),
+                )
+
+        assert result["approved"] is False
+        assert result.get("outcome") == "denied"
+        assert 'Reason given by the user: "use the toolbox script instead"' in result["message"]
+        assert result.get("deny_reason") == "use the toolbox script instead"
+        assert result.get("user_consent") is False
+
+    def test_plain_deny_still_has_no_reason_addendum(self):
+        from unittest.mock import patch as _patch
+        from tools import approval as mod
+
+        mod._session_approved.clear()
+        mod._permanent_approved.clear()
+
+        cfg = {"approvals": {"mode": "manual"}}
+        with self._interactive_env():
+            with _patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+                result = mod.check_all_command_guards(
+                    "rm -rf /var/data", "local",
+                    approval_callback=lambda *a, **kw: "deny",
+                )
+
+        assert result["approved"] is False
+        assert result.get("outcome") == "denied"
+        assert "Reason given by the user" not in result["message"]
+
+    def test_input_fallback_reason_letter_collects_reason(self):
+        """Typing the reason letter then free text returns a Denied choice,
+        case preserved (the reason is relayed verbatim)."""
+        import builtins
+        from unittest.mock import patch as _patch
+        from tools.approval_prompt import Denied
+
+        answers = iter(["r", "Use the toolbox script instead"])
+        with _patch.object(builtins, "input", lambda _p="": next(answers)):
+            choice = prompt_dangerous_approval(
+                "rm -rf /var/data", "recursive delete", timeout_seconds=5)
+
+        assert choice == "deny"
+        assert isinstance(choice, Denied)
+        assert choice.reason == "Use the toolbox script instead"
+
+    def test_input_fallback_empty_reason_is_plain_deny(self):
+        import builtins
+        from unittest.mock import patch as _patch
+        from tools.approval_prompt import Denied
+
+        answers = iter(["r", "   "])
+        with _patch.object(builtins, "input", lambda _p="": next(answers)):
+            choice = prompt_dangerous_approval(
+                "rm -rf /var/data", "recursive delete", timeout_seconds=5)
+
+        assert choice == "deny"
+        assert not isinstance(choice, Denied)

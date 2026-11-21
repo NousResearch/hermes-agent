@@ -3094,13 +3094,14 @@ export interface ApprovalReceivedParams {
 export interface ApprovalReceivedResult {
   acknowledged: boolean
 }
-/** ``choice`` is one of the offered ``approval`` choices (once / session / always / deny); ``all`` resolves every pending approval, ``request_id`` a specific one, neither the oldest. */
+/** ``choice`` is one of the offered ``approval`` choices (once / session / always / deny); ``all`` resolves every pending approval, ``request_id`` a specific one, neither the oldest. ``reason`` is a deny's free text (deny-with-reason), relayed to the agent like /deny <reason>. */
 export interface ApprovalRespondParams {
   session_id: string
   profile?: string | null
   choice?: string | null
   all?: boolean | null
   request_id?: string | null
+  reason?: string | null
 }
 export interface ApprovalRespondResult {
   resolved: number
@@ -5490,6 +5491,7 @@ export interface CanonicalApprovalParams {
   execution_generation: number
   prompt_id: string
   choice: string
+  reason?: string | null
 }
 export interface CanonicalSteerQueuedParams {
   profile?: string | null

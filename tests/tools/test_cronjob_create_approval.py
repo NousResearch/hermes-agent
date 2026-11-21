@@ -229,6 +229,18 @@ def test_an_approved_edit_is_applied_and_offers_no_standing_grant(cron_store, mo
     assert seen["kind"] == "schedule_edit" and seen.get("allow_session") is False and seen["allow_permanent"] is False
 
 
+def test_allowing_new_jobs_does_not_allow_edits(cron_store, monkeypatch):
+    from tools.approval import approve_session
+    from tools.approval_context import get_current_session_key
+    job = _existing_job(cron_store)
+    asked = _asking(monkeypatch, "deny")
+    approve_session(get_current_session_key(), "cron_create")
+    assert json.loads(registry.dispatch("cronjob_manage", dict(_CREATE)))["success"] is True  # new job: granted
+    registry.dispatch("cronjob_manage", {"action": "update", "job_id": job["id"], "repeat": 9})
+    assert [k for k, _ in asked] == ["schedule_edit"]
+    assert cron_store.get_job(job["id"])["repeat"]["times"] == 3
+
+
 @pytest.mark.parametrize("args", [
     {"action": "pause"}, {"action": "resume"},
     # Fields the card does not list are not asked about.

@@ -65,11 +65,30 @@ class TestCustomValidationCacheFastPath:
 
     def test_api_mode_and_headers_forwarded_to_cache_lookup(self):
         """The cache key is credential-fingerprinted (key + api_mode + headers): the lookup
-        must pass the same shape the picker's probe used, or entries silently miss."""
+        must pass the same shape the picker's write used, or entries silently miss. ``api_mode``
+        is forwarded unconditionally -- a conditional forward (anthropic-only, like the live
+        probe's) would silently miss the chat_completions family, which has no GET /models and
+        must declare its mode explicitly."""
         with patch.object(models_mod, "cached_fetch_api_models", return_value=[]) as cached, \
              patch.object(models_mod, "probe_api_models", return_value=dict(_PROBE_HIT)):
             validate_requested_model(
                 "m-cached", "custom:llmgateway", api_key="sk-x", base_url=_URL,
-                api_mode="anthropic_messages", headers={"x-custom": "1"})
-        assert cached.call_args.kwargs.get("api_mode") == "anthropic_messages"
+                api_mode="chat_completions", headers={"x-custom": "1"})
+        assert cached.call_args.kwargs.get("api_mode") == "chat_completions"
         assert cached.call_args.kwargs.get("headers") == {"x-custom": "1"}
+
+    def test_chat_completions_mode_cache_hit_skips_live_probe(self):
+        """End-to-end shape from the #158531 review: an endpoint that requires
+        ``api_mode: chat_completions`` (no GET /models, e.g. DashScope coding plan / Cline /
+        MiniMax) has its picker-written cache entry keyed over that mode. The fast path must
+        resolve the lookup under the same key, or the probe still fires on every switch."""
+        with patch.object(models_mod, "cached_fetch_api_models",
+                          return_value=["m-cached"]) as cached, \
+             patch.object(models_mod, "probe_api_models") as probe:
+            out = validate_requested_model(
+                "m-cached", "custom:llmgateway", api_key="sk-x", base_url=_URL,
+                api_mode="chat_completions")
+        assert cached.call_args.kwargs.get("api_mode") == "chat_completions"
+        probe.assert_not_called()
+        assert out["accepted"] is True
+        assert out["recognized"] is True

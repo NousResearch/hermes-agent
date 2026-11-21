@@ -364,13 +364,20 @@ def _validate_custom(req: _Request) -> dict[str, Any]:
 
     # Fast path (#158531): the picker persists each custom endpoint's /models listing to the
     # on-disk catalog cache, so an id the user just picked from the picker is already known --
-    # validate it against that cache before spending a live round-trip. ``cache_only`` never
-    # blocks on the network: a miss (or an entry past the stale-serve window) falls through to
-    # the live probe below, which stays authoritative for fuzzy matches, suggestions and
-    # base-URL correction.
+    # validate it against that cache before spending a live round-trip. The lookup must pass
+    # the exact credential shape the picker's write used: ``api_mode`` is part of
+    # ``_custom_endpoint_fingerprint``, so forward it unconditionally (``None`` is a valid,
+    # fingerprint-stable value). A conditional forward -- e.g. only for anthropic-style
+    # probes -- would silently miss every endpoint configured with a non-anthropic mode,
+    # which is exactly the #12220 family (DashScope coding plan, Cline, MiniMax) that must
+    # declare ``api_mode: chat_completions`` because it has no GET /models. ``cache_only``
+    # never blocks on the network: a miss (or an entry past the stale-serve window) falls
+    # through to the live probe below, which stays authoritative for fuzzy matches,
+    # suggestions and base-URL correction.
     if req.base_url:
         cached = _m.cached_fetch_api_models(
-            req.api_key, req.base_url, cache_only=True, headers=req.headers, **probe_kwargs)
+            req.api_key, req.base_url, cache_only=True, headers=req.headers,
+            api_mode=req.api_mode)
         if cached:
             cache_match = _match_in_catalog(req.lookup, cached, suggest_query=req.requested)
             verdict = cache_match.verdict(req)

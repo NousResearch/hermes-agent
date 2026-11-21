@@ -283,6 +283,16 @@
     } catch (_e) { return null; }
   }
 
+  // Deep link: /kanban?search=<query> pre-fills the board's search filter,
+  // read once on mount, so external tools can link to a filtered card view.
+  // switchBoard() still clears the search like any other filter.
+  function readUrlParam(name) {
+    try {
+      const v = new URLSearchParams(window.location.search).get(name);
+      return (v || "").trim() || null;
+    } catch (_e) { return null; }
+  }
+
   function writeSelectedBoard(slug) {
     try {
       // Persist the user's dashboard-side board pin even for "default".
@@ -625,7 +635,9 @@
   function KanbanPage() {
     const { t } = useI18n();
     const kanbanDialogs = useKanbanDialogs(t);
-    const [board, setBoard] = useState(() => readSelectedBoard() || null);
+    // Deep link support (factory notifications link straight to a card):
+    // `?board=<slug>` overrides the remembered board selection.
+    const [board, setBoard] = useState(() => readUrlParam("board") || readSelectedBoard() || null);
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
     const [showNewBoard, setShowNewBoard] = useState(false);
     const [showBoardSettings, setShowBoardSettings] = useState(false);
@@ -646,11 +658,13 @@
     const [tenantFilter, setTenantFilter] = useState("");
     const [assigneeFilter, setAssigneeFilter] = useState("");
     const [includeArchived, setIncludeArchived] = useState(false);
-    const [search, setSearch] = useState("");
+    const [search, setSearch] = useState(function () { return readUrlParam("search") || ""; });
     const [laneByProfile, setLaneByProfile] = useState(true);
     const [configApplied, setConfigApplied] = useState(false);
 
-    const [selectedTaskId, setSelectedTaskId] = useState(null);
+    // Deep link support (factory notifications link straight to a card):
+    // `?task=<id>` opens that task's drawer on load.
+    const [selectedTaskId, setSelectedTaskId] = useState(() => readUrlParam("task"));
     const [selectedIds, setSelectedIds] = useState(() => new Set());
     const [lastSelectedId, setLastSelectedId] = useState(null);
     const [failedIds, setFailedIds] = useState(() => new Set());

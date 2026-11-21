@@ -9,6 +9,7 @@ import time
 from typing import Any, Callable, Iterable, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_links
 from hermes_cli import kanban_workflow
 
 _STATUS_ICONS = {c.key: c.icon for c in kanban_workflow.DEFAULT_WORKFLOW} | {kanban_workflow.ARCHIVED: "—"}
@@ -83,4 +84,20 @@ def _obj_dict(obj: Any, fields: tuple[str, ...]) -> dict[str, Any]:
 def _task_to_dict(t: kb.Task) -> dict[str, Any]:
     d = _obj_dict(t, _TASK_DICT_FIELDS)
     d["skills"] = list(t.skills) if t.skills else []
+    # Canonical dashboard deep link; omitted when the deployment declares no
+    # public URL, so machine-local installs never advertise a 127.0.0.1 link.
+    _link = kanban_links.task_url(t.id)
+    if _link:
+        d["url"] = _link
     return d
+
+
+def _print_task_url(task_id: str, field: Callable[[str, Any], None]) -> None:
+    """Print the card's canonical dashboard link, when one can be built.
+
+    Omitted (never faked) when no public URL is configured: a ``127.0.0.1`` link
+    is only reachable on the machine that printed it.
+    """
+    link = kanban_links.task_url(task_id)
+    if link:
+        field("url", link)

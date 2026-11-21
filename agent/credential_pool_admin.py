@@ -14,7 +14,8 @@ def _cleared_status_copy(entry: PooledCredential) -> PooledCredential:
 
     # The reset marker lets a live pool in another process tell "reset after my cooldown" from
     # "never had a status" — both read as bare None on disk (#89415).
-    return replace(entry, **_CLEAR_STATUS, model_cooldowns=None, status_cleared_at=time.time(),
+    return replace(entry, **_CLEAR_STATUS, model_cooldowns=None, model_cooldown_kinds=None,
+                   status_cleared_at=time.time(),
                    extra={k: v for k, v in entry.extra.items() if k != "failure_reason"})
 
 

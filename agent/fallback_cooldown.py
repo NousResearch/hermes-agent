@@ -111,7 +111,8 @@ def _mark_entitlement_rejected_model(agent, api_error) -> bool:
     if not provider or not model:
         return False
     pool = getattr(agent, "_credential_pool", None)
-    if pool is not None and pool.has_available(model=model):
+    from agent.credential_pool_model_cooldowns import provider_serves_model
+    if pool is not None and provider_serves_model(provider, model) and pool.has_available(model=model):
         return False  # another pool entry is still eligible for this model; rotation owns it
     rejected = getattr(agent, "_entitlement_rejected_models", None)
     if rejected is None:

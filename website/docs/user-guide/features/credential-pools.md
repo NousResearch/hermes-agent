@@ -209,7 +209,9 @@ The pool handles different errors differently:
 | **400 Codex model entitlement** (`The '<model>' model is not supported when using Codex with a ChatGPT account.`) | Bench this key for the rejected model only and rotate to the next key; other models keep using the key. Other 400s never rotate | Until `hermes auth reset` (per model; an entitlement is a plan property, not a window) |
 | **All keys exhausted** | Fall through to `fallback_model` if configured | — |
 
-Provider-supplied `reset_at` timestamps override these default cooldowns.
+Provider-supplied `reset_at` timestamps override these default cooldowns. A per-model window cooldown (a model-scoped 429 or usage-window 402) is capped at 8 days, the longest real allowance window; a `reset_at` further out is treated as a parse error and clamped.
+
+**Per-model cooldowns and model-less callers.** Each per-model cooldown is stored with its kind (`model_cooldown_kinds`: `entitlement` or `window`). A request for a specific model is blocked by either kind until it expires. Callers that do not name a model (usage readers, status, `peek()`) are blocked by window cooldowns only: "this plan lacks model X" says nothing about the login's health. A 400 for a model the provider does not serve at all (for example a `claude-*` id sent to `openai-codex`) is a misroute: it records no cooldown and does not rotate keys. Rows saved by older versions have no kind: on first load each one is classed once (more than half a year left = entitlement, else window, clamped to 8 days), the kind is saved, and any row for a model the provider does not serve is dropped.
 
 The `has_retried_429` flag resets on every successful API call, so a single transient 429 doesn't trigger rotation.
 

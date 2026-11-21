@@ -119,7 +119,10 @@ async def _await_receipt(client, params, board_db, claim):
         receipt = await _receipt(client, claim)
     claim.answered = time.monotonic()
     while receipt['status'] not in {'terminal', 'unknown'}:
-        await asyncio.sleep(.2)
+        # 1 s, not 0.2 s: every poll is an RPC the owner dispatches on its loop, and N workers
+        # polling 5x/s is precisely the loop load that stalls fleet hosts (#145022 field data:
+        # 21 profiles on one gateway, one tick spawned=6/crashed=6).
+        await asyncio.sleep(1)
         receipt = await _receipt(client, claim)
         claim.answered = time.monotonic()
     return receipt

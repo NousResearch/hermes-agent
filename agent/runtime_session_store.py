@@ -34,6 +34,23 @@ def is_worker_process():
 
 
 
+# The worker's reply deadline for an owner RPC must outlast the owner's own transcript-
+# write patience: the owner answers worker.persist only after committing that write, and a
+# worker that gives up first poisons its own store while the save still lands, and the
+# admission books 'execution unknown' despite success, burning the card's retry budget
+# (#145022 field data: worker waited 20 s against the owner's own 60 s). The margin covers
+# dispatch, serialization and the reply hop; the wait stays finite and a genuinely dead
+# owner still fails fast through the socket close path. The base value comes through the
+# sanctioned persistence door so retuning the store's patience retunes this deadline with
+# it; tests/agent/test_worker_rpc_patience.py guards the outlast-and-bounded relation.
+_RPC_REPLY_MARGIN_S = 15.0
+
+
+def _worker_rpc_patience_s() -> float:
+    from persistence_assembly import transcript_write_patience_s
+    return transcript_write_patience_s() + _RPC_REPLY_MARGIN_S
+
+
 def apply_row_annotations(messages, annotations):
     """Mirror the owner's in-place row stamps onto the worker's dicts (None = the owner popped it)."""
     for message, annotation in zip(messages, annotations, strict=True):
@@ -194,7 +211,7 @@ class WorkerRPC:
                     self._drop()
                     link = self._connection()
                     link.send(request_id, message)
-                response = link.receive(20)
+                response = link.receive(_worker_rpc_patience_s())
             except BaseException:
                 # Outcome unknown once sent: surface the error and never resend; the next call redials.
                 self._drop()

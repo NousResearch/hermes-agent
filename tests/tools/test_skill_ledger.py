@@ -254,6 +254,44 @@ def test_blob_dedupe_same_content_one_blob(ledger_env):
     assert len(blobs) == 1  # → one blob on disk
 
 
+def test_stored_blob_is_not_world_readable(ledger_env):
+    """A blob can hold a live credential (a skill file may embed one), so it is
+    created 0600 inside a 0700 directory. `write_bytes` applies the process
+    umask at create time, which under the default 0022 leaves the blob 0644 —
+    readable by every local account."""
+    import stat
+
+    from tools import skill_ledger
+
+    d = ledger_env["skills"] / "secret-src"
+    d.mkdir()
+    (d / "SKILL.md").write_text(
+        "token: PVEAPIToken=root@pam!x=secret", encoding="utf-8"
+    )
+
+    skill_ledger.snapshot_paths(d)
+
+    blobs = list(skill_ledger.blobs_dir().iterdir())
+    assert len(blobs) == 1
+    blob_mode = stat.S_IMODE(blobs[0].stat().st_mode)
+    assert blob_mode == 0o600, f"blob mode {oct(blob_mode)} is not 0600"
+    assert not (blob_mode & stat.S_IROTH), "blob is readable by other users"
+
+    dir_mode = stat.S_IMODE(skill_ledger.blobs_dir().stat().st_mode)
+    assert dir_mode == 0o700, f"blobs dir mode {oct(dir_mode)} is not 0700"
+
+
+def test_blob_content_survives_private_mode(ledger_env):
+    """Tightening the mode must not alter the stored bytes: the blob is the
+    rollback source, so a corrupted blob breaks single-edit rollback."""
+    from tools import skill_ledger
+
+    payload = b"credential-bearing bytes \x00\x01\x02"
+    digest = skill_ledger._store_blob(payload)
+    blob = skill_ledger.blobs_dir() / digest
+    assert blob.read_bytes() == payload
+
+
 def test_snapshot_paths_skips_transient_dirs(ledger_env):
     """Transient local artifacts (venv, node_modules, caches, .git) never reach
     the manifest or the blob store — sweeping them in grows the blob dir

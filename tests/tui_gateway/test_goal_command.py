@@ -595,9 +595,7 @@ def test_recovery_is_not_conditional_on_a_successful_reply(
     server, turn_env, monkeypatch, tmp_path, outcome,
 ):
     from hermes_cli.goals import GoalManager
-    import hermes_state
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     session_key = "profile-recovery"
     secondary = tmp_path / "secondary"
     secondary.mkdir()

@@ -130,7 +130,7 @@ def test_user_turn_revives_a_blocked_goal_on_the_gateway(cli, monkeypatch):
     assert mgr.resume_for_user_input() is True
     assert ('goal', 'resume_for_user_input') in cli.conn.calls
     assert mgr.is_active()
-    assert json.loads(cli.db.get_meta('goal:sid-1'))['status'] == 'active'
+    assert json.loads(cli.db.state_meta.get('goal:sid-1'))['status'] == 'active'
     mgr.pause()
     assert mgr.resume_for_user_input() is False and mgr.state.status == 'paused'  # an explicit pause stays
 

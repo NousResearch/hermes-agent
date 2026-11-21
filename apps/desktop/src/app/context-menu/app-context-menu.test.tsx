@@ -20,6 +20,7 @@ import {
 } from './store'
 import { resolveDomTarget } from './target'
 
+const originalClipboard = navigator.clipboard
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 
 function installBridge(partial: Partial<Window['hermesDesktop']> = {}) {
@@ -52,6 +53,7 @@ afterEach(() => {
   $connection.set(null)
   closeRightRail()
   cleanup()
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: originalClipboard })
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   document.body.innerHTML = ''
@@ -401,7 +403,7 @@ describe('AppContextMenu', () => {
   })
 
   it('opens the image menu with copy, address, and save', async () => {
-    installBridge()
+    installBridge({ contextMenuCopyImage: vi.fn().mockResolvedValue(undefined) })
     mountMenu()
     const host = attach('<img src="https://example.com/pic.png" alt="pic">')
 
@@ -412,7 +414,35 @@ describe('AppContextMenu', () => {
     expect(screen.getByText('Save image as…')).toBeTruthy()
   })
 
+  it.each([
+    ['an insecure context', false, true, true],
+    ['missing ClipboardItem', true, false, true],
+    ['missing clipboard.write', true, true, false]
+  ])('hides Copy image in the Webapp with %s while keeping Copy image address', async (_name, secure, hasItem, hasWrite) => {
+    installBridge()
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    vi.stubGlobal('isSecureContext', secure)
+    vi.stubGlobal('ClipboardItem', hasItem ? class {} : undefined)
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { write: hasWrite ? vi.fn() : undefined, writeText }
+    })
+    mountMenu()
+    const host = attach('<img src="https://example.com/pic.png" alt="pic">')
+
+    fireEvent.contextMenu(host.querySelector('img')!)
+
+    const copyAddress = await screen.findByText('Copy image address')
+
+    expect(screen.queryByText('Copy image')).toBeNull()
+    fireEvent.click(copyAddress)
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://example.com/pic.png'))
+  })
+
   it('copies images via native bridge in Electron and via browser clipboard in Webapp', async () => {
+    vi.stubGlobal('isSecureContext', false)
+    vi.stubGlobal('ClipboardItem', undefined)
     const contextMenuCopyImage = vi.fn().mockResolvedValue(undefined)
     installBridge({ contextMenuCopyImage: contextMenuCopyImage as unknown as Window['hermesDesktop']['contextMenuCopyImage'] })
     mountMenu()
@@ -424,6 +454,9 @@ describe('AppContextMenu', () => {
     expect(contextMenuCopyImage).toHaveBeenCalledTimes(1)
 
     // Webapp: no contextMenuCopyImage on bridge, falls back to copyImageFromUrl.
+    vi.stubGlobal('isSecureContext', true)
+    vi.stubGlobal('ClipboardItem', class {})
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write: vi.fn() } })
     const browserImageCopy = await import('@/lib/browser-image-copy')
     const copySpy = vi.spyOn(browserImageCopy, 'copyImageFromUrl').mockResolvedValue(true)
     installBridge({ contextMenuCopyImage: undefined })

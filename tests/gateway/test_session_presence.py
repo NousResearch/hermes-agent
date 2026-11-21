@@ -428,14 +428,14 @@ def test_older_owner_seen_input_never_moves_the_clock_back():
 
 
 
-class _BrokenPresence:
-    """A presence whose every write fails: observing must change no answer."""
+def _broken_presence():
+    """A presence whose noting of input fails: observing must change no answer."""
+    from gateway.session_presence import ClientPresence
 
-    def seen(self, *args):
-        raise RuntimeError('presence is broken')
-
-    def read(self, *args, **kwargs):
-        return None
+    class Broken(ClientPresence):
+        def seen(self, *args):
+            raise RuntimeError('presence is broken')
+    return Broken()
 
 
 async def _escaped(call):
@@ -453,7 +453,7 @@ async def test_a_failing_presence_does_not_fail_the_input_request(tmp_path, monk
     try:
         sid = await _session(client, 'a')
         await _attach(client, sid)
-        client.transport.client_presence = _BrokenPresence()
+        client.transport.client_presence = _broken_presence()
         escaped, stale = await _escaped(client.call('session.interrupt', session_id=sid, execution_generation=10 ** 6))
         assert escaped is None
         assert stale['error']['message'] == 'stale_generation', stale
@@ -471,7 +471,7 @@ async def test_a_failing_presence_still_settles_the_answered_request(tmp_path, m
         sid = await _session(client, 'a')
         await _attach(client, sid)
         events = conn.authority.sessions[sid].event_stream
-        client.transport.client_presence = _BrokenPresence()
+        client.transport.client_presence = _broken_presence()
         clarify = {'questions': [{'qid': 'q', 'question': 'Proceed?'}]}
         asking = asyncio.create_task(asyncio.to_thread(
             lambda: ask_viewer_result(events, sid, 'clarify', clarify, qids=['q'], timeout=5)))
@@ -520,3 +520,26 @@ def test_input_naming_an_overlong_session_id_is_not_kept(clock):
     for name in names:
         touch(connection, 'prompt.submit', {'session_id': name})
     assert [viewers(authority, name)[0]['basis'] for name in names] == ['input', None]
+
+
+@pytest.mark.asyncio
+async def test_a_report_does_not_carry_over_to_another_profile_after_a_detach(tmp_path, monkeypatch, clock):
+    """A report for an id is dropped once this connection is attached to no session of that id: a
+    later attach to another profile's same-id session starts with no evidence. While one attachment
+    is left the report still counts there."""
+    launch, beta, client = await _profiles(tmp_path, monkeypatch)
+    subscriptions = {}
+    try:
+        for profile in ('beta', None):
+            params = {'profile': profile} if profile else {}
+            subscriptions[profile] = (await client.call('session.resume', session_id='s', **params))['result']['subscription_id']
+        await _report(client, ['s'], 2, can_alert=False)
+        assert _bases(launch, beta) == [[None], [None]]
+        assert 'result' in await client.call('session.detach', session_id='s', subscription_id=subscriptions[None])
+        assert _bases(launch, beta) == [[], ['system']]
+        assert 'result' in await client.call('session.detach', session_id='s', profile='beta',
+                                             subscription_id=subscriptions['beta'])
+        assert 'result' in await client.call('session.resume', session_id='s')
+        assert [(v['basis'], v['can_alert']) for v in _viewers(SimpleNamespace(authority=launch), 's')] == [(None, None)]
+    finally:
+        await client.connection.close()

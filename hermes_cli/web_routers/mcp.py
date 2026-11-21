@@ -162,13 +162,16 @@ async def replace_mcp_servers(body: MCPServersReplace, profile: Optional[str] = 
     """Replace the entire ``mcp_servers`` map (the mcp.json editor's save) —
     the deep-merging ``/api/config`` can never delete a key or drop an
     ``enabled: false``, so removals wouldn't persist through it."""
-    from hermes_cli.mcp_config import _replace_mcp_servers
+    from hermes_cli.mcp_config import _get_mcp_servers, _replace_mcp_servers
 
     def _run():
         with config_write_scope(body.profile or profile):
             from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
 
-            _servers, plugins = server_configs_with_sources({})
+            # Existing native entries take precedence over portable plugin defaults,
+            # just as they do for listing, probing and runtime discovery. Resolve
+            # ownership from saved config, never from the untrusted replacement.
+            _servers, plugins = server_configs_with_sources(_get_mcp_servers())
             for name in body.servers:
                 if plugin := plugins.get(name):
                     return False, [f"Server '{name}' is provided by plugin '{plugin}' and cannot be modified"]

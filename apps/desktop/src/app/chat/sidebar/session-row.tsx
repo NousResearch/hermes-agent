@@ -1,4 +1,5 @@
 import { compactNumber } from '@hermes/shared'
+import { CURRENCY_SYMBOL } from '@hermes/shared/format'
 import { useStore } from '@nanostores/react'
 import { memo } from 'react'
 import type * as React from 'react'
@@ -193,7 +194,7 @@ function SidebarSessionRowImpl({
     rowMeta.includes('tokens') && totalTokens > 0 ? compactNumber(totalTokens) : null,
     // Sub-cent spend rounds to "$0.00", which reads as a bug rather than as a
     // cheap session — below a cent the row says nothing at all.
-    rowMeta.includes('cost') && cost >= 0.01 ? `$${cost.toFixed(2)}` : null
+    rowMeta.includes('cost') && cost >= 0.01 ? `${CURRENCY_SYMBOL}${cost.toFixed(2)}` : null
   ].filter(Boolean) as string[]
 
   // Everything the Show menu puts after the title shares ONE right-aligned

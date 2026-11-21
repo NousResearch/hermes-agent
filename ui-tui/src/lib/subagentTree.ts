@@ -1,3 +1,5 @@
+import { CURRENCY_SYMBOL } from '@hermes/shared/format'
+
 import { t } from '../i18n/runtime.js'
 import type { SubagentAggregate, SubagentNode, SubagentProgress } from '../types.js'
 
@@ -277,14 +279,14 @@ export function fmtCost(usd: number): string {
   }
 
   if (usd < 0.01) {
-    return '<$0.01'
+    return `<${CURRENCY_SYMBOL}0.01`
   }
 
   if (usd < 10) {
-    return `$${usd.toFixed(2)}`
+    return `${CURRENCY_SYMBOL}${usd.toFixed(2)}`
   }
 
-  return `$${usd.toFixed(1)}`
+  return `${CURRENCY_SYMBOL}${usd.toFixed(1)}`
 }
 
 /** Compact token count: `12k`, `1.2k`, `542`. */

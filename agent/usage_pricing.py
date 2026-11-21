@@ -32,6 +32,10 @@ _MODELS_DEV_DIRECT_HOSTS = {
 # instead of $0.00). See #79220.
 _SUBCENT_THRESHOLD = Decimal("0.01")
 
+# 计费货币符号：本机所有端点（自建 transparentllm / dogress 网关）按人民币计价。
+# 只作用于成本金额显示；Nous Portal 的美元余额文案不走这里。切换货币改这一处。
+CURRENCY_SYMBOL = "$"
+
 # Attached to every CostResult with status="included" so consumers can
 # distinguish "free because subscription" from "free because $0 pricing".
 _INCLUDED_NOTE = "subscription-included; no provider invoice for usage"
@@ -46,15 +50,15 @@ def format_cost_label(amount: Decimal) -> str:
     despite amount_usd carrying full Decimal precision.
     """
     if amount == _ZERO:
-        return "$0.00"
+        return f"{CURRENCY_SYMBOL}0.00"
     if amount < _SUBCENT_THRESHOLD:
-        label = f"~${amount:.4f}"
+        label = f"~{CURRENCY_SYMBOL}{amount:.4f}"
         # Compare the rendered label: a naive `< 0.00005` threshold misses
         # the exact boundary under ROUND_HALF_EVEN.
         # A positive amount that rounds to 0.0000 at 4 dp would render "~$0.0000" — a zero-looking label,
         # the exact #79220 dishonesty.
-        return label if label != "~$0.0000" else "~$<0.0001"
-    return f"~${amount:.2f}"
+        return label if label != f"~{CURRENCY_SYMBOL}0.0000" else f"~{CURRENCY_SYMBOL}<0.0001"
+    return f"~{CURRENCY_SYMBOL}{amount:.2f}"
 
 CostStatus = Literal["actual", "estimated", "included", "unknown"]
 CostSource = Literal[

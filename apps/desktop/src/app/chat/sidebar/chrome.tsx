@@ -1,4 +1,5 @@
 import { compactNumber } from '@hermes/shared'
+import { CURRENCY_SYMBOL } from '@hermes/shared/format'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
@@ -272,7 +273,7 @@ export function SidebarGroupRow({
     totals && rowMeta.includes('tokens') && totals.tokens > 0 ? compactNumber(totals.tokens) : null,
     // Sub-cent spend rounds to "$0.00", which reads as a bug rather than as a
     // cheap group — below a cent the header says nothing at all.
-    totals && rowMeta.includes('cost') && totals.costUsd >= 0.01 ? `$${totals.costUsd.toFixed(2)}` : null
+    totals && rowMeta.includes('cost') && totals.costUsd >= 0.01 ? `${CURRENCY_SYMBOL}${totals.costUsd.toFixed(2)}` : null
   ].filter(Boolean) as string[]
 
   return (

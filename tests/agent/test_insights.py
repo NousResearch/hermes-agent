@@ -10,6 +10,7 @@ from agent.insights import (
 )
 from persistence.sqlite.conversation.usage_analytics import _InsightQueries
 from agent.usage_pricing import (
+    CURRENCY_SYMBOL,
     format_duration_compact as _format_duration,
     has_known_pricing as _has_known_pricing,
 )
@@ -561,7 +562,7 @@ class TestEdgeCases:
 
         # The cost section should appear with the buckets this DB has
         # (estimated + included; no unknown-cost session is created here)
-        assert "~$1.50" in text  # estimated
+        assert f"~{CURRENCY_SYMBOL}1.50" in text  # estimated
         assert "included" in text.lower()
         assert "subscription" in text.lower()
 
@@ -584,10 +585,10 @@ class TestEdgeCases:
         terminal_text = engine.format_terminal(report)
         gateway_text = engine.format_gateway(report)
 
-        assert "~$0.00\n" not in terminal_text
-        assert "~$0.0046" in terminal_text
-        assert "~$0.00 estimated" not in gateway_text
-        assert "~$0.0046 estimated" in gateway_text
+        assert f"~{CURRENCY_SYMBOL}0.00\n" not in terminal_text
+        assert f"~{CURRENCY_SYMBOL}0.0046" in terminal_text
+        assert f"~{CURRENCY_SYMBOL}0.00 estimated" not in gateway_text
+        assert f"~{CURRENCY_SYMBOL}0.0046 estimated" in gateway_text
 
 
 def _label(db, session_id, source, created_source):

@@ -148,3 +148,20 @@ def test_a_live_looking_pid_with_a_free_host_lock_is_not_the_host_gateway(tmp_pa
     finally:
         child.kill()
         child.wait(timeout=10)
+def test_standalone_host_record_falls_through_to_served_record(host_gateway, monkeypatch):
+    import os
+
+    from gateway import host_topology
+
+    monkeypatch.setattr("gateway.host_attach._identify", lambda home: {
+        "pid": os.getpid(),
+        "multiplex": False,
+        "hermes_home": str(host_gateway),
+    })
+    monkeypatch.setattr("hermes_cli.gateway_multiplex_served.live_default_gateway_pid", lambda: os.getpid())
+    monkeypatch.setattr("hermes_cli.gateway_multiplex_served.recorded_served_profiles", lambda: ["coder"])
+
+    topology = host_topology.host_gateway_topology()
+    assert topology is not None
+    assert topology.source == "served_record"
+    assert topology.profiles == ("default", "coder")

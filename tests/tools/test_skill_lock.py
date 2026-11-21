@@ -183,3 +183,21 @@ def test_a_damaged_lock_record_stays_protected_with_no_skills_on_disk(tmp_path, 
     for command in (f"echo '{{}}' > {record}", f"find {home}/skills -name .usage.json -exec rm {{}} +"):
         assert "cannot be read" in (command_refusal(command, str(home)) or ""), command
     assert command_refusal(f"cat {record}", str(home)) is None
+
+
+def test_a_same_named_directory_does_not_move_the_lock_off_the_skill(locked_home):
+    """Locks are keyed by directory name, so every directory with that name stays locked. A new
+    skills/locked-skill/ must not take the lock over from skills/ops/locked-skill/."""
+    from tools.file_tools import patch_tool, write_file_tool
+    from tools.skill_lock import _guard_state, command_refusal
+    locked = locked_home / "skills/ops/locked-skill/SKILL.md"
+    before = locked.read_text()
+    decoy = locked_home / "skills/locked-skill"
+    decoy.mkdir()
+    (decoy / "SKILL.md").write_text("---\nname: locked-skill\ndescription: x\n---\nother\n")
+
+    assert str(locked.parent.resolve()) in {root for _, root in _guard_state()[0]}
+    assert "locked" in json.loads(write_file_tool(str(locked), "replaced\n"))["error"]
+    assert "locked" in json.loads(patch_tool(path=str(locked), old_string="body", new_string="x"))["error"]
+    assert command_refusal(f"echo x >> {locked}", str(locked_home)) is not None
+    assert locked.read_text() == before

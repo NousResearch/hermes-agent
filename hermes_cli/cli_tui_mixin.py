@@ -617,6 +617,12 @@ class CLITuiMixin:
             # Window plan past an allowance: say once what happens next (pay as you go or wait), above the hint.
             if limit_line:
                 hint = [limit_line, hint]
+        # A fallback hop answers on a different model than the "Current:" row names (cli.model is
+        # the configured one, which fallback never rewrites). Say so on its own row above the
+        # hint: panel rows do not wrap, so concatenating would overflow the box.
+        if state.get("fallback_note"):
+            hint = ([state["fallback_note"], *hint] if isinstance(hint, (list, tuple))
+                    else [state["fallback_note"], hint])
         return self._render_scroll_list_panel(
             state, title, hint, choices, min_width=46, max_width=84, indent='  ')
 

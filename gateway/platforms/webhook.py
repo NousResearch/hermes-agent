@@ -198,6 +198,17 @@ def _validate_svix_signature(body: bytes, secret: str, msg_id: str, timestamp: s
     return False
 
 
+def _webhook_mirror_message(route: str, content: str) -> str:
+    """Format the delivery mirror turn with boundary tags (#153865).
+
+    Like cron's ``_cron_mirror_message``, the delivery is stored as a user-role row for
+    alternation safety. The opening and closing tags prevent ``_merge_consecutive_users``
+    from engulfing a following genuine user message into the delivery block.
+    """
+    cleaned_route = " ".join(p for p in map(str.strip, str(route or "webhook").splitlines()) if p) or "webhook"
+    return f"[Webhook delivery: {cleaned_route}]\n{content}\n[Webhook delivery end: {cleaned_route}]"
+
+
 class WebhookAdapter(BasePlatformAdapter):
     """Generic webhook receiver that triggers agent runs from HTTP POSTs."""
 
@@ -1097,7 +1108,7 @@ class WebhookAdapter(BasePlatformAdapter):
         route = delivery.get("route") or "webhook"
         try:
             from gateway.mirror import mirror_to_session
-            ok = mirror_to_session(platform_name, chat_id, f"[Webhook delivery: {route}]\n{content}",
+            ok = mirror_to_session(platform_name, chat_id, _webhook_mirror_message(route, content),
                                    source_label="webhook", thread_id=thread_id, role="user")
             logger.log(logging.INFO if ok else logging.DEBUG,
                        "[webhook] Route '%s' delivery %smirrored into %s:%s session", route, "" if ok else "not ",

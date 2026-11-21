@@ -1411,6 +1411,19 @@ def _decode_inline_moa_turn(user_message, persist_user_message):
     return user_message, None, persist_user_message
 
 
+def _fire_pre_turn(agent: Any, user_message: Any, task_id: str | None) -> None:
+    """The ``pre_turn`` observer hook: once per user turn, before any context build.
+
+    Contract in ``hermes_cli/plugins.py``. Return values are ignored, so a callback cannot replace
+    the turn, and the dispatcher isolates one that raises. Gated on ``has_hook`` so a turn with no
+    subscriber only pays a dict lookup.
+    """
+    from hermes_cli.lifecycle import has_hook, invoke_hook
+
+    if has_hook("pre_turn"):
+        invoke_hook("pre_turn", agent=agent, user_message=user_message, task_id=task_id)
+
+
 def _preflight_timeout_result(agent, exc, conversation_history) -> dict[str, Any]:
     """Typed recovery result when turn-start preflight compression timed out (#98424): no
     provider call was sent, and surfaces would otherwise hide the actionable guidance."""
@@ -1666,6 +1679,9 @@ def _run_conversation_turn(
     # before any exit, so an early one never reads the previous turn's hold.
     agent._held_transforms = held_stream_transforms()
     agent._hold_stream = bool(agent._held_transforms)
+
+    # pre_turn: the one hook at the turn boundary itself, before any context build (see _fire_pre_turn).
+    _fire_pre_turn(agent, user_message, task_id)
 
     # Per-turn setup: build_turn_context mutates ``agent`` and returns the locals the loop reads.
     try:

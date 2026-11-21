@@ -210,6 +210,11 @@ VALID_HOOKS: set[str] = {
     # post_curator_run: after a curator pass wrote logs/curator/<run>/ (run.json + REPORT.md). Kwargs:
     # run_dir, run_json_path, report_md_path, dry_run. Observer; returns ignored.
     "post_curator_run",
+    # pre_turn: once per user turn at the top of the loop, BEFORE turn context is built
+    # (agent/conversation_loop.py). Observer only — return values are ignored, so a callback cannot
+    # replace the turn. Kwargs: agent (the live agent object), user_message, task_id. Gated on
+    # has_hook(), and callbacks are isolated by the dispatcher.
+    "pre_turn",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as

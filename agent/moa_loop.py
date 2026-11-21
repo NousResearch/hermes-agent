@@ -15,7 +15,7 @@ import logging
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, wait as _futures_wait
+from concurrent.futures import wait as _futures_wait
 from dataclasses import KW_ONLY, dataclass, replace
 from types import SimpleNamespace
 from typing import Any
@@ -642,10 +642,13 @@ def _run_references_parallel(
     total = len(reference_models)
     results: list[tuple[str, str, Any] | None] = [None] * total
     futures: dict[Any, int] = {}
+    from tools.daemon_pool import DaemonThreadPoolExecutor
     # Propagate the turn's contextvars (approval callbacks, Nous conversation tag).
     from tools.thread_context import propagate_context_to_thread
     completed = 0
-    executor = ThreadPoolExecutor(max_workers=min(_MAX_REFERENCE_WORKERS, total))
+    # Daemon workers: an interrupt abandons in-flight calls, and a stdlib worker would still be
+    # joined at interpreter exit until its provider call returns (up to the reference timeout).
+    executor = DaemonThreadPoolExecutor(max_workers=min(_MAX_REFERENCE_WORKERS, total))
     interrupted = False
     # Shared per-fan-out context-length cache (dict get/set is GIL-atomic).
     ctx_len_cache: dict[tuple[str, str], int | None] = {}

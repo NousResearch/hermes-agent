@@ -82,6 +82,12 @@ dependencies = [
   # Applied at index AND query time so morphological variants match
   # ("issues" finds create_issue).
   "snowballstemmer==3.1.1; python_version >= '3.14'",
+  # Regex engine behind hermes_re: RE2 matches in linear time, so a pattern
+  # cannot be driven into catastrophic backtracking (ReDoS). Wheels cover
+  # glibc Linux, macOS and Windows; musl builds the sdist on the target (it
+  # needs the system RE2 and Abseil headers, and the pybind11 named under
+  # [tool.uv.extra-build-dependencies]); Termux builds it in its wheelhouse.
+  "google-re2==1.1.20251105; python_version >= '3.14'",
   # Requirement and version checks must work in lean installs without
   # relying on another package to bring packaging in transitively.
   "packaging==26.3; python_version >= '3.14'",
@@ -699,6 +705,15 @@ override-dependencies = [
 # Only packages whose job is CA trust belong in exclude-newer-package.
 exclude-newer = "3 days"
 exclude-newer-package = { certifi = false }
+
+# Build requirements an sdist needs but does not declare. Kept below every plain
+# [tool.uv] key: a key written after this header would belong to this table.
+# google-re2's sdist compiles against pybind11 headers without listing pybind11,
+# so a source build (musl) fails on `pybind11/buffer_info.h`. uv does not record
+# this pin in uv.lock; keep it equal to TOOLCHAIN_PINS in
+# scripts/termux/build_config.sh.
+[tool.uv.extra-build-dependencies]
+google-re2 = ["pybind11==3.1.0"]
 
 [tool.setuptools]
 # Root single-file modules are derived by setup.py at build time from the

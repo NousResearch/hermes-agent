@@ -74,6 +74,68 @@ def test_promote_refuses_undone_parent_and_names_the_real_remedy(conn):
 
 
 
+def test_promote_accepts_triage_as_the_manual_accept_as_is_exit(conn):
+    # Triage's only other exits (specify/decompose) route the card through the
+    # auxiliary LLM; an operator who reviewed the card needs to accept it as-is.
+    tid = kb.create_task(conn, title="spec is fine as written", triage=True, assignee="setup")
+    assert kb.get_task(conn, tid).status == "triage"
+    ok, err = kb.promote_task(conn, tid, actor="tester", reason="accepted as-is")
+    assert ok and err is None
+    assert kb.get_task(conn, tid).status == "ready"
+    kinds = [row["kind"] for row in conn.execute(
+        "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id", (tid,))]
+    assert kinds[-1] == "promoted_manual"
+    # The LLM specifier can no longer move the accepted card back to todo.
+    assert kb.specify_triage_task(conn, tid, title="rewritten") is False
+    assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_promote_triage_dry_run_validates_without_mutating(conn):
+    tid = kb.create_task(conn, title="t", triage=True, assignee="setup")
+    ok, err = kb.promote_task(conn, tid, actor="tester", dry_run=True)
+    assert ok and err is None
+    assert kb.get_task(conn, tid).status == "triage"
+
+
+def test_promote_triage_refused_with_unfinished_parent(conn):
+    parent = kb.create_task(conn, title="parent", assignee="setup")
+    tid = kb.create_task(conn, title="child", triage=True, parents=[parent], assignee="setup")
+    ok, err = kb.promote_task(conn, tid, actor="tester")
+    assert not ok and parent in err
+    assert kb.get_task(conn, tid).status == "triage"
+
+
+
+def test_promoted_block_loop_card_returns_to_triage_on_the_same_block(conn):
+    # A card the unblock-loop breaker parked in triage keeps its recurrence count
+    # through promotion, so accepting it cannot restart an unbounded loop.
+    tid = kb.create_task(conn, title="loops", assignee="worker")
+    for _ in range(2):
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        assert kb.claim_task(conn, tid, claimer="worker") is not None
+        kb.block_task(conn, tid, reason="x", kind="capability")
+        if kb.get_task(conn, tid).status == "blocked":
+            kb.unblock_task(conn, tid)
+    assert kb.get_task(conn, tid).status == "triage"
+
+    ok, err = kb.promote_task(conn, tid, actor="tester", reason="one more try")
+    assert ok and err is None
+    assert kb.claim_task(conn, tid, claimer="worker") is not None
+    kb.block_task(conn, tid, reason="x", kind="capability")
+    assert kb.get_task(conn, tid).status == "triage"
+
+
+@pytest.mark.parametrize("status", ["scheduled", "ready", "running", "review", "done", "archived"])
+def test_promote_still_refuses_other_statuses(conn, status):
+    tid = kb.create_task(conn, title="t", assignee="setup")
+    conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, tid))
+    ok, err = kb.promote_task(conn, tid, actor="tester")
+    assert not ok and "'triage', 'todo' or 'blocked'" in err
+    assert kb.get_task(conn, tid).status == status
+
+
+
 
 # ---------------------------------------------------------------------------
 # CLI `_cmd_promote` — bulk via `--ids` (the issue's anti-respawn use case:

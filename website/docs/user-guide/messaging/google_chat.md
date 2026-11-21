@@ -339,6 +339,117 @@ evicts only that user's cache. Users don't disrupt each other.
 
 ---
 
+## Step 11: A Workspace user identity (optional)
+
+A Chat app cannot react to a message (Google accepts reactions from users
+only), and Google delivers a space message to an app only when the app is
+@mentioned. A real Google Workspace user can do both. With the
+`workspace_user` section, Hermes's service account impersonates one Workspace
+user through **domain-wide delegation** for these jobs; the app still posts
+every reply. Everything here is off unless you configure it.
+
+| Feature | Setting | What it does |
+|---|---|---|
+| Thinking reaction | `thinking_reaction` | While the agent works, the user reacts with this emoji on the asker's message instead of posting the "Hermes is thinking…" marker. Only where the user is a member: in the app's own DMs (which the user is not part of) the marker stays. |
+| Listening | `listen_spaces` + `listen_pattern` | A Google Workspace Events subscription on each listed space, so a message from a `GOOGLE_CHAT_ALLOWED_USERS` sender whose text matches `listen_pattern` reaches the agent without an @mention. |
+| DMs to the user | `answer_dms: true` | A Chat app cannot be added to a DM between two people. With this on, a DM that a `GOOGLE_CHAT_ALLOWED_USERS` member opens with the Workspace user is answered by the agent **as that user**: replies, edits, file uploads and downloads all happen with the user's identity. Cards and clarify buttons become plain text there (users cannot post cards). DMs with anyone else are ignored. |
+
+### Security implications — read before enabling
+
+- **The service account acts as a person.** Domain-wide delegation lets the
+  service account key obtain tokens *as the Workspace user* for the scopes
+  the admin grants. Anyone holding the key can do, as that user, whatever
+  those scopes allow, in every space the user belongs to. Use a dedicated
+  user created for the agent, never a person's account, and protect the key
+  file as you would that user's password.
+- **Grant only the scopes you use.** Hermes requests exactly the scopes of
+  the features you enabled; delegation fails if one is missing, so grant
+  these and nothing more:
+
+  | Feature | Scope |
+  |---|---|
+  | `thinking_reaction` | `https://www.googleapis.com/auth/chat.messages.reactions` |
+  | `listen_spaces` | `https://www.googleapis.com/auth/chat.messages.readonly` |
+  | `answer_dms` (replaces the two above) | `https://www.googleapis.com/auth/chat.messages`, `https://www.googleapis.com/auth/chat.spaces.readonly`, `https://www.googleapis.com/auth/chat.memberships.readonly` |
+
+- **Listening reads every message in the listed spaces.** The Workspace
+  Events subscription delivers each new message in those spaces (text
+  included) to your Pub/Sub topic. Hermes admits only the ones that match
+  `listen_pattern` and come from `GOOGLE_CHAT_ALLOWED_USERS`; the rest are
+  dropped before the agent, and their text is not logged (only the opt-in
+  `GOOGLE_CHAT_DEBUG_RAW` envelope dump shows it). Listening is
+  refused unless `GOOGLE_CHAT_ALLOWED_USERS` is set:
+  `GOOGLE_CHAT_ALLOW_ALL_USERS` is not honoured for messages the app was not
+  @mentioned in.
+- **`answer_dms` lets the agent write as a person.** `chat.messages` allows
+  the key to post, edit and delete messages *as the Workspace user* in any
+  space the user belongs to, and to read them. Hermes uses it only in the
+  user's DMs with `GOOGLE_CHAT_ALLOWED_USERS` members (other DMs get no
+  subscription and no reply) and keeps using the app everywhere else, but
+  the scope itself is not limited to those DMs: anyone holding the key has
+  that power. Recipients see messages from the user, not from an app, so
+  make the user's name and profile say it is an agent. `answer_dms` is
+  refused unless `GOOGLE_CHAT_ALLOWED_USERS` is set.
+- **The key is the boundary.** Credentials that cannot impersonate
+  (Application Default Credentials, workload identity) leave the feature off
+  with a warning; it needs a service account JSON key.
+
+### Setup
+
+1. **Create the user.** In the Admin console, create a Workspace user for the
+   agent (for example `assistant@yourdomain.com`), sign in once to accept
+   the terms, and add it to every space where it should react or listen.
+   The Chat app must be a member of those spaces too: it posts the replies.
+2. **Delegate.** In the Cloud console, open your service account → *Details*
+   and copy its **Client ID** (a number). In the Admin console go to
+   *Security → Access and data control → API controls → Manage Domain Wide
+   Delegation → Add new*, paste the Client ID and the scopes from the table
+   above, comma-separated.
+3. **Listening or `answer_dms`: enable the Google Workspace Events API** in the same
+   GCP project (*APIs & Services → Library → Google Workspace Events API*).
+   Events are published to the topic behind `GOOGLE_CHAT_SUBSCRIPTION_NAME`
+   by `chat-api-push@system.gserviceaccount.com`, the publisher you granted
+   in Step 5, so no other IAM change is needed. Both need Pub/Sub inbound;
+   they are not available in HTTP callback mode.
+4. **`answer_dms` only: let DMs open without a click.** A DM someone else
+   starts with the user stays an *invitation* until the user opens it, and
+   the API cannot accept it (Hermes logs a warning per pending DM and picks
+   it up within 5 minutes of acceptance). Either sign in as the user and open
+   each DM once, or in the Admin console turn on *Apps → Google Workspace →
+   Google Chat → Chat invitations → Automatically accept invitations between
+   users*.
+5. **Configure** `~/.hermes/config.yaml`:
+
+   ```yaml
+   platforms:
+     google_chat:
+       workspace_user:
+         email: assistant@yourdomain.com
+         thinking_reaction: "🤔"          # omit or "" to keep the marker message
+         listen_spaces:                    # omit to listen nowhere
+           - spaces/AAAA...
+         listen_pattern: "(?i)\\bhermes\\b"  # a regular expression; "^" admits every message
+         answer_dms: true                  # omit to leave DMs to the user unanswered
+   ```
+
+6. Restart the gateway. The log shows
+   `Workspace user assistant@yourdomain.com via domain-wide delegation: …`
+   and, per listened space,
+   `Workspace Events subscription on spaces/AAAA... created; state=ACTIVE`,
+   and with `answer_dms`, `answering you@yourdomain.com in spaces/BBBB… as
+   assistant@yourdomain.com` for each joined DM.
+
+Google limits how long these subscriptions live (hours, not days). Hermes
+renews each one before it expires, reactivates it when Google suspends it
+(for example after a scope was revoked and granted again), recreates it when
+it is gone, and adopts an existing one after a restart. While a subscription
+cannot be created (delegation not granted yet, API not enabled), the adapter
+logs one warning and retries every 5 minutes; no restart is needed once the
+cause is fixed. A message in a listened space that also @mentions the app is
+handled once, through the app's own delivery.
+
+---
+
 ## Troubleshooting
 
 **Bot stays silent after sending "hola."**
@@ -428,3 +539,7 @@ The auth code is single-use and short-lived (typically a few minutes). Send
   `~/.hermes/google_chat_user_tokens/<sanitized_email>.json` (filesystem
   permissions are the protection — same model as the SA key file). Each
   token is owned by exactly one user; revoke is scoped to that user.
+- **Workspace user (Step 11)**: domain-wide delegation lets the service
+  account key act as that Workspace user for the granted scopes. Use a
+  dedicated user, grant only the scopes of the features you enable, and keep
+  the key as private as that user's password.

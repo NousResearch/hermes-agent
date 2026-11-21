@@ -32,6 +32,7 @@ from gateway.platforms._shared import (
 )
 
 from .cards import card_spec_to_cards_v2, format_message as _format_message
+from .workspace_user import WorkspaceUser, WorkspaceUserSettings
 
 
 def _adc_would_borrow_foreign_credentials() -> bool:
@@ -448,6 +449,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
             extra, "http_events_audience", "GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE", self._http_events_url)
         self._http_events_service_account_email = self._str_setting(
             extra, "http_events_service_account_email", "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL").lower()
+        # Opt-in Workspace user reached by domain-wide delegation (workspace_user.py); None = off.
+        ws_settings = WorkspaceUserSettings.from_extra(extra, _get_scoped_secret("GOOGLE_CHAT_ALLOWED_USERS", "") or "")
+        self._workspace_user = WorkspaceUser(self, ws_settings) if ws_settings else None
 
     @staticmethod
     def _int_setting(extra: dict[str, Any], key: str, env_name: str, default: int) -> int:
@@ -667,6 +671,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 self._save_cached_bot_id(self._bot_user_id)
             else:
                 logger.info("[GoogleChat] bot_user_id not yet resolved; will resolve on first addedToSpace or member lookup")
+        if self._workspace_user is not None:
+            await self._workspace_user.start(pubsub=subscription_path is not None)
         self._supervisor_task = asyncio.create_task(self._run_supervisor()) if subscription_path is not None else None
         self._mark_connected()
         logger.info(
@@ -683,6 +689,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Clean shutdown: stop accepting new messages, wait in-flight, close clients."""
         self._shutting_down = True
+        if self._workspace_user is not None:
+            await self._workspace_user.stop()
         if self._supervisor_task and not self._supervisor_task.done():
             self._supervisor_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
@@ -834,7 +842,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
             logger.exception("[GoogleChat] Could not parse Pub/Sub envelope")
             message.ack()
             return
-        ce_type = dict(getattr(message, "attributes", {}) or {}).get("ce-type") or ""
+        attrs = dict(getattr(message, "attributes", {}) or {})
+        ce_type = attrs.get("ce-type") or ""
         logger.debug("[GoogleChat] Envelope keys=%s, ce-type=%s", list(envelope.keys()), ce_type)
         if self._debug_raw:
             # Contains message text + sender email: redact and gate at DEBUG.
@@ -845,7 +854,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 dump = "<redact filter unavailable>"
             logger.debug("[GoogleChat] RAW envelope (redacted): %s", dump[:2000])
         try:
-            if "membership" in ce_type or "MEMBERSHIP" in ce_type:
+            if self._workspace_user is not None and self._workspace_user.handle_event(attrs, envelope):
+                pass  # a Workspace Events delivery to the impersonated user (workspace_events.py)
+            elif "membership" in ce_type or "MEMBERSHIP" in ce_type:
                 mpl = (envelope.get("chat") or {}).get("membershipPayload") or {}
                 space = mpl.get("space") or {}
                 if "created" in ce_type:
@@ -1029,7 +1040,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
         data: Optional[bytes] = None
         if resource_name:
             def _fetch_media() -> bytes:
-                req = self._chat_api.media().download_media(resourceName=resource_name)
+                api, new_http = self._chat_for(name)
+                req = api.media().download_media(resourceName=resource_name)
+                req.http = new_http()
                 from googleapiclient.http import MediaIoBaseDownload
                 import io
 
@@ -1103,6 +1116,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
                         last_result = await self._create_message(chat_id, body)
                 except HttpError as exc:
                     status = _http_status(exc)
+                    if status == 403 and self._owned_by_workspace_user(chat_id):
+                        self._workspace_user.dms.refused(chat_id)  # one DM, not the whole adapter
+                        return SendResult(success=False, error=_redact_sensitive(str(exc)))
                     if status == 403:
                         self._set_fatal_error(
                             code="chat_forbidden", message="Bot lacks access (removed from space or perms revoked)",
@@ -1134,6 +1150,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
             self.resume_typing_for_chat(chat_id)
 
     async def send_card(self, chat_id: str, card: dict[str, Any], metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        if self._owned_by_workspace_user(chat_id):  # users cannot post cards
+            from .workspace_user_dms import card_text
+            return await self.send(chat_id, card_text(card), metadata=metadata)
         body: dict[str, Any] = {"cardsV2": [card]}
         thread_id = self._resolve_thread_id(None, metadata, chat_id=chat_id)
         if thread_id:
@@ -1152,7 +1171,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str, session_key: str,
         metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
-        if not choices:
+        if not choices or self._owned_by_workspace_user(chat_id):  # a user DM gets the numbered text form
             return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
 
         def _button(text: str, choice: str) -> dict[str, Any]:
@@ -1206,8 +1225,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return False
 
         try:
-            await asyncio.to_thread(
-                lambda: self._chat_api.spaces().messages().delete(name=message_id).execute(http=self._new_authed_http()))
+            await asyncio.to_thread(self._chat_call, message_id, lambda api: api.spaces().messages().delete(name=message_id))
             return True
         except HttpError as exc:
             if _http_status(exc) not in {403, 404}:
@@ -1220,10 +1238,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         """Update a message's text (and optionally cards) in-place."""
         update_mask = ",".join(k for k in ("text", "cardsV2") if k in body) or "text"
         patch_body = {k: v for k, v in body.items() if k != "thread"}  # thread is immutable
-        resp = await asyncio.to_thread(
-            lambda: self._chat_api.spaces().messages().patch(name=message_name, updateMask=update_mask, body=patch_body)
-            .execute(http=self._new_authed_http())
-        )
+        resp = await asyncio.to_thread(self._chat_call, message_name, lambda api: api.spaces().messages().patch(
+            name=message_name, updateMask=update_mask, body=patch_body))
         return SendResult(success=True, message_id=resp.get("name", message_name))
 
     def _chunk_text(self, text: str) -> list[str]:
@@ -1270,6 +1286,22 @@ class GoogleChatAdapter(BasePlatformAdapter):
         client is not thread-safe across ``asyncio.to_thread`` workers."""
         return AuthorizedHttp(self._credentials, http=httplib2.Http(timeout=30))
 
+    def _owned_by_workspace_user(self, name: Optional[str]) -> bool:
+        """True in a person-to-person DM the Workspace user answers as itself (``answer_dms``)."""
+        return self._workspace_user is not None and self._workspace_user.owns(name)
+
+    def _chat_for(self, name: Optional[str]) -> tuple[Any, Callable[[], Any]]:
+        """(Chat client, per-call http factory) for a space / message / attachment ``name``: the
+        delegated Workspace user in its DMs (an app cannot join those), the app everywhere else."""
+        if self._owned_by_workspace_user(name):
+            return self._workspace_user.chat(), self._workspace_user.http
+        return self._chat_api, self._new_authed_http
+
+    def _chat_call(self, name: Optional[str], build: Callable[[Any], Any]) -> Any:
+        """Blocking (run in a thread): ``build(client).execute()`` with the identity ``_chat_for`` picks."""
+        api, new_http = self._chat_for(name)
+        return build(api).execute(http=new_http())
+
     async def _call_with_retry(self, sync_fn: Callable[[], Any], *, op_name: str = "chat-api-call") -> Any:
         """Run ``sync_fn`` in a thread with bounded retry + jittered backoff; only
         transient failures are retried, permanent ones bubble up on the first attempt.
@@ -1304,9 +1336,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         """POST spaces/{space}/messages via REST (with retry), returning SendResult."""
         kwargs = _create_kwargs(chat_id, body)
         resp = await self._call_with_retry(
-            lambda: self._chat_api.spaces().messages().create(**kwargs).execute(http=self._new_authed_http()),
-            op_name="messages.create",
-        )
+            lambda: self._chat_call(chat_id, lambda api: api.spaces().messages().create(**kwargs)),
+            op_name="messages.create")
         self._track_outbound_thread(chat_id, resp)
         return SendResult(success=True, message_id=resp.get("name"))
 
@@ -1320,6 +1351,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # Already have a card (real msg_id, sentinel, or in-flight) — bail.
         if chat_id in self._typing_messages:
             return
+        if self._workspace_user is not None and await self._workspace_user.wait_thinking(chat_id):
+            return  # the Workspace user's thinking reaction stands in for the marker
         if chat_id in self._typing_card_inflight:
             # Bounded wait for the running create so "the card is up when we return".
             with contextlib.suppress(asyncio.TimeoutError, KeyError):
@@ -1361,6 +1394,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug(log_msg, *log_args, exc_info=not _proxy_error(exc))
 
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Put the Workspace user's thinking reaction on the asker's message (when configured)."""
+        if self._workspace_user is not None and event.source is not None:
+            self._workspace_user.begin_thinking(event.source.chat_id, event.message_id or "")
+
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Reap typing card(s) after the turn: pop the SENTINEL on success; on
         failure/cancel patch a still-tracked card to a final label (no tombstone);
@@ -1368,6 +1406,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if event.source is None:
             return
         chat_id = event.source.chat_id
+        if self._workspace_user is not None:
+            await self._workspace_user.end_thinking(chat_id, event.message_id or "")
         try:
             current = self._typing_messages.pop(chat_id, None)
             if current and current != _TYPING_CONSUMED_SENTINEL:
@@ -1524,7 +1564,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"file not found: {path}")
         filename = override_filename or os.path.basename(path) or "upload.bin"
         mime = mime_hint or "application/octet-stream"
-        chat_api, identity = await self._acquire_user_chat_api(self._last_sender_by_chat.get(chat_id))
+        if self._owned_by_workspace_user(chat_id):  # the user uploads as itself: no /setup-files needed
+            chat_api, identity = await asyncio.to_thread(self._workspace_user.chat), "__workspace_user__"
+            exec_kwargs: dict[str, Any] = {"http": self._workspace_user.http()}
+        else:
+            chat_api, identity = await self._acquire_user_chat_api(self._last_sender_by_chat.get(chat_id))
+            exec_kwargs = {}
         if chat_api is None:
             return await self._post_attachment_fallback(chat_id, path, filename, caption, thread_id)
         try:
@@ -1536,9 +1581,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
             upload_resp = await asyncio.to_thread(lambda: chat_api.media().upload(
                 parent=chat_id, body={"filename": filename},
                 media_body=MediaFileUpload(path, mimetype=mime, resumable=False),
-            ).execute())
+            ).execute(**exec_kwargs))
         except HttpError as exc:
             status = _http_status(exc)
+            if status in {401, 403} and exec_kwargs:  # the Workspace user's own DM: /setup-files cannot help
+                logger.warning("[GoogleChat] media.upload as the Workspace user refused in %s (%s)", chat_id, status)
+                return SendResult(success=False, error=_redact_sensitive(str(exc)))
             if status in {401, 403}:
                 logger.warning(
                     "[GoogleChat] media.upload auth failure for identity=%s (token revoked or scope missing) — falling "
@@ -1555,7 +1603,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # also needs user auth.
         create_kwargs = _create_kwargs(chat_id, body)
         try:
-            resp = await asyncio.to_thread(lambda: chat_api.spaces().messages().create(**create_kwargs).execute())
+            resp = await asyncio.to_thread(
+                lambda: chat_api.spaces().messages().create(**create_kwargs).execute(**exec_kwargs))
             self._track_outbound_thread(chat_id, resp)
             return SendResult(success=True, message_id=resp.get("name"))
         except HttpError as exc:
@@ -1583,8 +1632,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return {name, type, chat_id} for a space."""
         try:
-            info = await asyncio.to_thread(
-                lambda: self._chat_api.spaces().get(name=chat_id).execute(http=self._new_authed_http()))
+            info = await asyncio.to_thread(self._chat_call, chat_id, lambda api: api.spaces().get(name=chat_id))
         except HttpError as exc:
             logger.debug("[GoogleChat] get_chat_info failed: %s", _exc_text(exc))
             return {"name": chat_id, "type": "group", "chat_id": chat_id}

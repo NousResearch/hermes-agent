@@ -1073,6 +1073,20 @@ display:
 
 Defaults to `false`. Only platforms whose adapter implements `delete_message` honor the setting (currently Telegram and Discord). Failed runs **skip** cleanup so the bubbles remain as breadcrumbs.
 
+### Long-turn history fold (opt-in)
+
+A long turn can stack dozens of progress bubbles and mid-turn commentary messages in one thread. Set `display.progress_fold_after` to keep only the newest N of them: once a turn has posted more than N progress/commentary messages, the oldest are folded. The first folded message becomes one compact history summary, one line per narration with the steps that followed it (`Checking the build logs · 3 steps`, at most 6 lines / 1,200 characters, with `… N earlier` when it is longer), and every later folded message is deleted. The final reply is never folded.
+
+```yaml
+display:
+  progress_fold_after: 4        # 0 (default) = off: every progress message stays
+  platforms:
+    slack:
+      progress_fold_after: 4    # per-platform override
+```
+
+Works on any platform whose adapter can both edit and delete messages (Slack, Telegram, Discord); elsewhere the setting is ignored. Slack renders the summary as a grey context block, other platforms as plain text. Delivery-side only: the conversation the model sees is unchanged.
+
 ## Next Steps
 
 - [Telegram Setup](telegram.md)

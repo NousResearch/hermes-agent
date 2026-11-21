@@ -109,6 +109,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     after the agent finishes ``consumer.finish()`` then ``await task`` for the final edit."""
 
     _MAX_FLOOD_STRIKES = 3  # consecutive flood failures before edits are disabled
+    _on_interim_delivered: Optional[Callable[[str, str], None]] = None
 
     # Class-wide monotonic draft-id counter (Telegram animates a draft only when the
     # same non-zero draft_id is reused).  RANDOM seed: draft_id keys the relay
@@ -123,6 +124,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
         on_new_message: Optional[callable] = None,
+        on_interim_delivered: Optional[Callable[[str, str], None]] = None,
         on_before_finalize: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
         run_still_current: Optional[Callable[[], bool]] = None):
@@ -133,6 +135,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Hooks (exceptions swallowed): on_new_message per fresh content bubble (next
         # tool-progress bubble goes BELOW it); on_before_finalize once (pause typing).
         self._on_new_message = on_new_message
+        # (message_id, text) of each interim commentary message that landed (history fold).
+        self._on_interim_delivered = on_interim_delivered
         self._on_before_finalize = on_before_finalize
         self._initial_reply_to_id = initial_reply_to_id
         self._turn_id = str(uuid.uuid4())  # keys send_stream_frame() per concurrent consumer
@@ -480,6 +484,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             return
         # Retain the segment's visible text so has_delivered_text still matches.
         finalized = self._clean_for_display(self._last_sent_text).strip()
+        if finalized and self._on_interim_delivered is not None and self._message_id not in (None, "__no_edit__"):
+            self._on_interim_delivered(str(self._message_id), finalized)  # a streamed narration segment
         if finalized:
             self._delivered_segment_texts.append(finalized)
             self._last_segment_delivery = None

@@ -565,6 +565,15 @@ streaming:
   enabled: true       # transport auto/draft lights up Slack native streaming
 ```
 
+### Long-turn history fold
+
+A long turn in a thread can leave many progress bubbles and commentary replies behind. With
+`display.platforms.slack.progress_fold_after: 4` (or the global `display.progress_fold_after`),
+a turn keeps only its newest 4 progress/commentary messages; the older ones collapse into one grey
+context-block summary (`Checking the build logs · 3 steps`) and the rest are deleted with
+`chat.delete`. Off by default. See
+[Long-turn history fold](index.md#long-turn-history-fold-opt-in).
+
 ### Native Task Cards (live tool progress)
 
 With `platforms.slack.extra.native_task_cards: true`, live tool calls render

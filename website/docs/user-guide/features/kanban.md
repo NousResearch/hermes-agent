@@ -43,7 +43,7 @@ This is the shape that covers the workloads `delegate_task` can't:
 - **Engineering pipelines** — decompose → implement in parallel worktrees → review → iterate → PR.
 - **Fleet work** — one specialist managing N subjects (50 social accounts, 12 monitored services).
 
-The eight canonical collaboration patterns are catalogued in [Collaboration patterns](#collaboration-patterns) below.
+The canonical collaboration patterns are catalogued in [Collaboration patterns](#collaboration-patterns) below: five composition shapes you choose for your profile roster and card graph, plus three built-in lifecycle and surface behaviours no roster choice opts into.
 
 ## PR completion contracts
 
@@ -1143,7 +1143,11 @@ In the interactive CLI, typing `/kanban ` and hitting Tab cycles through the bui
 
 ## Collaboration patterns
 
-The board supports these eight patterns without any new primitives:
+The catalogue comes in two kinds. **Composition patterns** are decisions: shapes you choose for your profile roster and card graph. **Lifecycle and surface behaviours** are mechanisms: they already ship with the board or the gateway, and no roster arrangement opts into or out of them. (Earlier revisions mixed both kinds in one table and also listed a P7 "thread-scoped workspace" via `/kanban here`; that verb is not implemented, so the row was removed. Remaining P-numbers are unchanged.)
+
+### Composition patterns (you choose the shape)
+
+The board supports these five patterns without any new primitives:
 
 | Pattern | Shape | Example |
 |---|---|---|
@@ -1151,11 +1155,17 @@ The board supports these eight patterns without any new primitives:
 | **P2 Pipeline** | role chain: scout → editor → writer | daily brief assembly |
 | **P3 Voting / quorum** | N siblings + 1 aggregator | 3 researchers → 1 reviewer picks |
 | **P4 Long-running journal** | same profile + shared dir + cron | Obsidian vault |
-| **P5 Human-in-the-loop** | worker blocks → user comments → unblock | ambiguous decisions |
-| **P6 `@mention`** | inline routing from prose | `@reviewer look at this` |
-| **P7 Thread-scoped workspace** | `/kanban here` in a thread | per-project gateway threads |
 | **P8 Fleet farming** | one profile, N subjects | 50 social accounts |
-| **P9 Triage specifier** | rough idea → `triage` → `hermes kanban specify` expands body → `todo` | "turn this one-liner into a spec'd task" |
+
+### Lifecycle and surface behaviours (built in)
+
+These are not arrangements to set up — they are how the harness and gateway already behave around any composition above:
+
+| Behaviour | What it is | Example |
+|---|---|---|
+| **P5 Human-in-the-loop** | worker blocks → user comments → unblock (lifecycle state; workers are already prompted to block on genuine ambiguity) | ambiguous decisions |
+| **P6 `@mention`** | inline routing from prose (a messaging-gateway affordance, not a board primitive) | `@reviewer look at this` |
+| **P9 Triage specifier** | rough idea → `triage` → `hermes kanban specify` expands body → `todo` (a lane plus a CLI verb) | "turn this one-liner into a spec'd task" |
 
 ## Handing context to follow-up cards (the parent link)
 

@@ -30,6 +30,7 @@ Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hermes-managed OA
 
 - `scripts/setup.py` — OAuth2 setup (run once to authorize)
 - `scripts/google_api.py` — compatibility wrapper CLI. It prefers `gws` for operations when available, while preserving Hermes' existing JSON output contract.
+- `scripts/gmail_read_api.py` — strict read-only Gmail CLI for named accounts. It verifies the exact mailbox before every read and has no mutation commands.
 
 ## First-Time Setup
 
@@ -179,6 +180,75 @@ GAPI="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/
 ```
 
 ### Gmail
+
+For a named account, prefer the separate read-only adapter. The alias resolves
+only to `${HERMES_HOME:-$HOME/.hermes}/google-accounts/<alias>/google_token.json`;
+the deployment independently maps aliases to expected mailbox identities in
+the owner-only `${HERMES_HOME:-$HOME/.hermes}/google-accounts/accounts.json`:
+
+```json
+{
+  "accounts": {
+    "personal": "owner@example.com"
+  }
+}
+```
+
+The optional versioned form is
+`{"schema_version":1,"accounts":{"personal":{"email":"owner@example.com"}}}`.
+Do not mix flat and nested entries or add unrelated top-level fields; malformed
+or ambiguous maps fail closed.
+
+The mapping and each token file must be regular owner-only files. A token's own
+account hint is never an identity authority. The token must carry exactly the
+`gmail.readonly` scope plus, optionally, `drive.readonly`; every other scope is
+rejected. The adapter verifies `users.getProfile` against the independent
+mapping before every mailbox operation. It writes only body-free receipts plus
+explicitly fetched attachments under the private account-scoped source cache.
+The request timeout is capped by the remaining total deadline; result, decoded
+body, message, MIME-part, API-call, retry, and attachment sizes are bounded.
+
+The named-account CLI uses POSIX file permissions and directory synchronization;
+its privacy and attachment durability have been verified on macOS. Windows
+privacy and durability are not established for this CLI. This boundary does
+not change the platform support of the existing `google_api.py` compatibility CLI.
+
+Attachments are written to private same-directory temporary files and synced
+before atomic publication without replacing an existing digest path. Concurrent
+readers reuse only validated complete bytes. The directory is synced before
+success is reported. A process interruption may leave a private temporary file;
+a retry can reuse a complete published attachment even if its publication link
+remains. No automatic cleanup of other writers' temporary files is attempted.
+
+The path checks reject static symlinks, arbitrary hardlinks, broad modes, and
+wrong owners where the OS exposes ownership. The only permitted second link
+is the matching private publication temporary in the same directory. These
+checks do not isolate a hostile process already running as the same OS user;
+use a separate service account when that is the threat boundary.
+
+```bash
+GMAIL_READ="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/gmail_read_api.py"
+
+# Identity/count preflight. Output identifies only the alias, not the email.
+$GMAIL_READ --account personal profile
+
+# Bounded search with an explicit continuation token when one is returned.
+$GMAIL_READ --account personal search "has:attachment filename:pdf newer_than:30d" --max-results 10
+$GMAIL_READ --account personal search "has:attachment" --page-token NEXT_PAGE_TOKEN
+
+# Read one message and list recursive attachment descriptors.
+$GMAIL_READ --account personal get MESSAGE_ID --max-body-bytes 1048576
+
+# Fetch one attachment to private content-addressed storage. Existing matching
+# bytes are reused; a path is never chosen from the remote filename.
+$GMAIL_READ --account personal attachment-get MESSAGE_ID ATTACHMENT_ID --max-bytes 26214400
+```
+
+An authentication, scope, or identity error is a typed blocked result. Do not
+fall back to another account, browser session, or broader OAuth scope.
+
+The compatibility CLI below includes mutations and uses the default account.
+Use it only when the requested operation actually requires that broader surface.
 
 ```bash
 # Search (returns JSON array with id, from, subject, date, snippet)

@@ -22,6 +22,13 @@ from tests.fixtures.storage_seed import seed_session
 SID = '20261012_122515_721bf6'
 
 
+@pytest.fixture(autouse=True)
+def _no_update_recovery(monkeypatch):
+    # This linked worktree's gitdir is under the real Hermes home. Bootstrap's
+    # updater probe is unrelated to these isolated session-adoption tests.
+    monkeypatch.setattr('hermes_cli._early_recovery.restore_interrupted_pull', lambda *_: False)
+
+
 def _adopt_and_resolve(home, legacy_route, source='tui', billing=None):
     from gateway.config import GatewayConfig
     from gateway.run_turn_prepare import _resolve_policy_agent_runtime

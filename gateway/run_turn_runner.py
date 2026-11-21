@@ -527,7 +527,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         agent._gateway_turn_request_overrides = turn_overrides
 
     def _wire_turn_agent_callbacks(self, agent, turn_route, reasoning_config,
-                                   stream_delta_cb, interim_assistant_cb, want_interim_messages):
+                                   stream_delta_cb, interim_assistant_cb, want_interim_messages,
+                                   *, profile_reasoning_unset=False):
         """Per-message state (callbacks, reasoning, voice route) — never baked into the cached agent."""
         ctx = self._ctx
         runner = self._runner
@@ -561,7 +562,31 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # A platform send can't be retracted; a local viewer withdraws the keyed notice.
         agent.notice_clear_callback = self._local_notice_clear_callback_sync if local_viewer_turn(self) else None
         agent.event_callback = ctx._event_callback_sync
-        agent.reasoning_config, agent.service_tier = reasoning_config, turn_route.get("service_tier")
+        from hermes_constants import ProfileReasoningConfig
+        state = vars(agent)
+        if ("_fallback_reasoning_at_bind" in state and
+                ((isinstance(reasoning_config, ProfileReasoningConfig) and reasoning_config.is_baseline()) or
+                 (reasoning_config is None and profile_reasoning_unset))):
+            # This is the primary model's freshly resolved profile, not an edit to
+            # the cached fallback. Refresh both baselines without inventing a pin.
+            # Preserve an actual edit (including an in-place mutation) first.
+            import copy
+            from agent.route_binding import internal_reasoning_assignment
+            current, marker = agent.reasoning_config, state["_fallback_reasoning_at_bind"]
+            if type(current) is not type(marker) or current != marker:
+                agent._fallback_reasoning_session_edit = (copy.deepcopy(current),)
+            agent._fallback_reasoning_primary = copy.deepcopy(reasoning_config)
+            if state.get("_fallback_reasoning_session_edit") is None and not state.get("_reasoning_explicit_none", False):
+                from agent.chat_completion_helpers import _reresolve_fallback_reasoning_config
+                with internal_reasoning_assignment(agent):
+                    agent.reasoning_config = reasoning_config
+                    _reresolve_fallback_reasoning_config(agent)
+                agent._fallback_reasoning_at_bind = copy.deepcopy(agent.reasoning_config)
+        else:
+            # Plain dicts and None may be explicit session/turn choices, including
+            # an assignment equal to the fallback value; the setter records them.
+            agent.reasoning_config = reasoning_config
+        agent.service_tier = turn_route.get("service_tier")
         _load_daybreak = getattr(runner, "_load_daybreak", None)  # absent on minimal test runners
         agent.daybreak = callable(_load_daybreak) and _load_daybreak(ctx.source) is True
         _surface = getattr(runner, "_daybreak_surface", None)  # read by Daybreak delegation routes
@@ -1436,8 +1461,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from gateway.session_authorities import active_authority
         from gateway.session_worker_construct import session_routing
         pr = session_routing(active_authority(runner), policy) if policy else runner._provider_routing
-        reasoning_config = (policy.current_reasoning_config(runner, ctx.session_key) if policy else
+        reasoning_config = (policy.current_reasoning_config(runner, ctx.session_key, model=model) if policy else
             runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model))
+        # The session's own value, kept apart from this admission's one-turn
+        # (`--once --reasoning`) or API request override: only the former may be
+        # assigned to a cached agent as a session edit.
+        session_reasoning_config = reasoning_config
         from gateway.session_cli_turn import one_turn_reasoning
         reasoning_config = one_turn_reasoning(self, reasoning_config)  # `/model --once --reasoning X`
         service_tier = (policy.current_service_tier(runner, ctx.session_key) if policy else
@@ -1457,7 +1486,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs, tier=service_tier)
         agent, reused_cached_agent = self._resolve_turn_agent(
-            turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
+            turn_route, platform_key, combined_ephemeral, max_iterations, session_reasoning_config, pr,
         )
         if pending_fallback_notice:
             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
@@ -1465,7 +1494,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # Set every turn (None clears it): a cached agent must not keep a login failure that resolved.
         from agent.primary_auth_fallback import attach_primary_auth_failure
         attach_primary_auth_failure(agent, pending_primary_auth)
-        self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
+        self._wire_turn_agent_callbacks(
+            agent, turn_route, session_reasoning_config, stream_delta_cb, interim_cb, want_interim,
+            # Gateway policy/one-turn/API resolvers encode explicit "none" as a
+            # dict; a None here is an unset profile, not a new session edit.
+            profile_reasoning_unset=session_reasoning_config is None,
+        )
         from gateway.run_turn_progress import local_viewer_turn
         local_sinks = None
         if local_viewer_turn(self) and not ctx.mute_notification_reply:
@@ -1474,6 +1508,13 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             local_sinks = local_viewer_events.wire(self, agent)
             from gateway.session_usage import TURN_BASE_ATTR
             setattr(agent, TURN_BASE_ATTR, int(getattr(agent, "session_output_tokens", 0) or 0))
+        from contextlib import nullcontext
+        from agent.route_binding import turn_reasoning_override
+        # A one-turn level is scoped to this execution, not written onto the cached
+        # agent as a session edit (which would outlive the turn on a fallback route).
+        reasoning_scope = (turn_reasoning_override(agent, reasoning_config)
+                           if reasoning_config is not session_reasoning_config else nullcontext())
+        reasoning_scope.__enter__()
         try:
             agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
             persist_msg, persist_ts = self._prepare_turn_message(agent_history)
@@ -1486,6 +1527,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 result = run_classic_cli_turn(self, lambda: self._run_conversation_with_approval(
                     agent, agent_history, observed_group_context, persist_msg, persist_ts))
         finally:
+            reasoning_scope.__exit__(None, None, None)
             if local_sinks is not None:
                 from gateway import local_viewer_events
                 local_viewer_events.restore(agent, local_sinks)

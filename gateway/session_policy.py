@@ -80,7 +80,9 @@ SELECTION_KEYS = ('default', 'provider', 'base_url', 'api_mode', 'selection_prof
                   'api_key_env')
 BYPASS_FIELDS = ('safe_mode', 'ignore_user_config')
 _ACTIVE_POLICY: ContextVar = ContextVar('local_session_policy', default=None)
+_POLICY_BINDING: ContextVar = ContextVar('local_session_policy_binding', default=None)
 _TURN_PROFILE: ContextVar = ContextVar('follow_profile_read', default=None)  # (policy, live) for a turn
+_TURN_POLICY_AUTHORITY: ContextVar = ContextVar('turn_policy_authority', default=None)
 # Creation label -> agent surface. ``tool`` (third-party integrations, ``hermes chat --source tool``) and
 # ``oneshot`` (finite ``chat -q`` / ``-z`` runs) run as the CLI but keep their own stored label, so human
 # pickers hide them (INTERNAL_LISTING_SOURCES).
@@ -277,7 +279,7 @@ class LocalSessionPolicy:
         # not switch this conversation's toolsets (prompt cache). Only a profile change (``focus`` off) does.
         return tuple(sorted(_resolve_toolsets({}, config, self.source, self.safe_mode, self.coding_posture)))
 
-    def current_reasoning_config(self, runner, session_key=None):
+    def current_reasoning_config(self, runner, session_key=None, model=None):
         """The next turn's reasoning: a typed session /reasoning (the messaging handler's override), else
         the profile's current effort when following, else the frozen one."""
         peek = getattr(runner, '_peek_session_state', None)
@@ -285,11 +287,17 @@ class LocalSessionPolicy:
         if state is not None and state.conversation.reasoning_override is not None:
             return dict(state.conversation.reasoning_override)
         if not self.follows_profile:
-            return self.reasoning_config
+            return self._session_reasoning(self.config(), model or self.model)
         from gateway.session_authorities import active_authority
+        config, effective_model = self.effective(active_authority(runner), secrets=False)
+        return self._session_reasoning(config, model or effective_model)
+
+    def _session_reasoning(self, config, model):
         from hermes_constants import resolve_reasoning_config
-        config, model = self.effective(active_authority(runner), secrets=False)
-        return resolve_reasoning_config(config, model or '')
+        resolved = resolve_reasoning_config(config, model or '')
+        pinned = session_pinned(config, 'reasoning', 'reasoning' in json.loads(self.request_json))
+        # The effective config includes session pins; they are not profile defaults.
+        return dict(resolved) if pinned and resolved is not None else resolved
 
     def current_service_tier(self, runner, session_key):
         """The next turn's tier: a typed session /fast, else the policy's (frozen, or the profile's when following)."""
@@ -355,8 +363,7 @@ class LocalSessionPolicy:
 
     @property
     def reasoning_config(self):
-        from hermes_constants import resolve_reasoning_config
-        return resolve_reasoning_config(self.config(), self.model or '')
+        return self._session_reasoning(self.config(), self.model)
 
 
 def profile_target(config):
@@ -1309,6 +1316,8 @@ def policy_scope(policy, *, authority=None, home=None):
     owner = home if home is not None else getattr(authority, 'profile_id', None)
     terminal_token = bind_terminal_policy(terminal, profile_home=owner)
     policy_token = _ACTIVE_POLICY.set(active)
+    binding_token = _POLICY_BINDING.set(object())
+    authority_token = _TURN_POLICY_AUTHORITY.set(authority)
     from gateway.session_local_editor import editor_scope
     try:
         from agent.auxiliary_task_config import session_auxiliary_scope
@@ -1321,6 +1330,8 @@ def policy_scope(policy, *, authority=None, home=None):
               policy.client_env_scope()):
             yield
     finally:
+        _TURN_POLICY_AUTHORITY.reset(authority_token)
+        _POLICY_BINDING.reset(binding_token)
         _ACTIVE_POLICY.reset(policy_token)
         reset_terminal_scope(terminal_token)
         cwd_token.var.reset(cwd_token)
@@ -1406,3 +1417,43 @@ def active_policy():
     """The frozen launch policy of the turn executing in this context, or ``None`` (standalone
     serve / messaging turns). Consumers read it instead of re-deriving from live config."""
     return _ACTIVE_POLICY.get()
+
+
+def active_policy_binding():
+    """Identity of this policy scope, including rebindings of the same policy."""
+    return _POLICY_BINDING.get()
+
+
+def active_policy_config():
+    """Effective config for the bound turn, or None when there is no policy.
+
+    Resolve against the original policy held by the scope, not its toolset-adjusted
+    copy, so following sessions reuse the same owning-profile read as the turn.
+    """
+    if _ACTIVE_POLICY.get() is None:
+        return None
+    held = _TURN_PROFILE.get()
+    if held is None:
+        raise RuntimeError('active session policy has no turn profile binding')
+    policy = held[0]
+    authority = _TURN_POLICY_AUTHORITY.get()
+    if policy.followed_sections and authority is None:
+        # Managed workers bind a hydrated, frozen config before importing runtime.
+        from agent.safe_worker_policy import worker_config_snapshot
+        if worker_config_snapshot() is None:
+            raise RuntimeError('following session policy has no owning authority')
+    elif policy.followed_sections and not held[1]:
+        raise RuntimeError('following session policy has no resolved profile config')
+    return policy.config(authority, secrets=False)
+
+
+def turn_policy_config():
+    """The effective config of the policy bound to this context, or None.
+
+    A policy merely copied into a delegated child by ``delegated_child_context``
+    belongs to the parent; the child reads its own binding (or its process config).
+    """
+    from agent.delegation_context import has_inherited_policy_binding
+    if has_inherited_policy_binding():
+        return None
+    return active_policy_config()

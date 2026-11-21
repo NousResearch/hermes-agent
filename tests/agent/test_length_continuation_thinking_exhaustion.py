@@ -102,7 +102,12 @@ class TestReasoningOffOneShotOverride:
 
 @pytest.fixture()
 def loop_agent():
-    from run_agent import AIAgent
+    # Launch recovery is unrelated to continuation behavior and must not probe
+    # the real checkout's linked-worktree metadata under the user's home.
+    from hermes_cli import _early_recovery
+
+    with patch.object(_early_recovery, "restore_interrupted_pull", return_value=False):
+        from run_agent import AIAgent
 
     with (
         patch("model_tools.get_tool_definitions", return_value=[]),

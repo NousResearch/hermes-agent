@@ -210,7 +210,7 @@ def _cwd_prefix(proc) -> str:
 
 _HOLDER_VALUE_FLAGS_FALLBACK = frozenset({
     "--profile", "-p", "--config", "--model", "-m", "--provider", "--reasoning", "--toolsets", "-t",
-    "--skills", "-s", "--continue", "-c", "--resume", "-r", "--oneshot", "-z", "--in", "--usage-file",
+    "--skills", "-s", "--continue", "-c", "--resume", "-r", "--oneshot", "-z", "--in", "--usage-file", "--cpu-profile",
 })
 _holder_value_flags_cache: frozenset | None = None
 

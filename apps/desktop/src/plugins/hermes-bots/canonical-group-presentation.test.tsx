@@ -8,8 +8,8 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { relativeTime } = await import('@/lib/time')
 
   // The shell's shared message renderer; media marks whether MEDIA: paths would resolve locally.
-  const MessageTextContent = ({ media = true, text }: { media?: boolean; text: string }) =>
-    <div data-media={String(media)} data-testid="message-text"><Streamdown>{text}</Streamdown></div>
+  const MessageTextContent = ({ media = true, previewOnly = false, text }: { media?: boolean; previewOnly?: boolean; text: string }) =>
+    <div data-media={String(media)} data-preview-only={String(previewOnly)} data-testid="message-text"><Streamdown>{text}</Streamdown></div>
 
   return { ...await (await import('./group-test-utils')).pluginSdkMock({}), MessageTextContent, Streamdown, relativeTime, useI18n: () => ({ locale: 'en', t: en }),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
@@ -50,6 +50,7 @@ it('renders the canonical log actors, timestamps and Markdown without transport 
 
   const { container } = render(<CanonicalGroupHistory binding={binding} events={events} members={members} />)
 
+  expect([...container.querySelectorAll('[data-room-message] [data-selectable-text]')].map(node => node.getAttribute('dir'))).toEqual(['auto', 'auto', 'auto', 'auto'])
   expect(screen.getByText('Morgan')).toBeTruthy()
   expect(screen.getByText('Historical Helper')).toBeTruthy()
   expect(screen.getByText('Code Reviewer')).toBeTruthy()
@@ -60,6 +61,8 @@ it('renders the canonical log actors, timestamps and Markdown without transport 
   expect(screen.queryByText('turn.settled')).toBeNull()
   // Room text goes through the shared renderer, never resolving MEDIA: paths on this gateway.
   expect(screen.getAllByTestId('message-text').map(node => node.dataset.media)).toEqual(['false', 'false', 'false', 'false'])
+  // Its images, file links and directive cards stay inert too.
+  expect(screen.getAllByTestId('message-text').map(node => node.dataset.previewOnly)).toEqual(['true', 'true', 'true', 'true'])
   expect([...container.querySelectorAll('time')].map(node => node.dateTime)).toEqual(
     events.slice(0, 4).map(event => new Date(event.created_at * 1000).toISOString())
   )
@@ -111,7 +114,7 @@ it('keeps failed, cancelled, deferred and unavailable work visible without print
   const { container } = render(<CanonicalGroupHistory binding={binding} events={events} members={members} />)
 
   for (const label of ['Turn failed', 'Turn cancelled', 'Turn deferred', 'Member unavailable',
-    'Group stopped', 'Group disbanded', 'Group ownership changed', 'Group work limit reached']) {
+    'Stop requested', 'Group disbanded', 'Group ownership changed', 'Group work limit reached']) {
     expect(screen.getByText(label)).toBeTruthy()
   }
 
@@ -120,7 +123,7 @@ it('keeps failed, cancelled, deferred and unavailable work visible without print
   }
 
   expect(screen.getAllByText('Code Helper')).toHaveLength(4)
-  expect(screen.getByText('Group stopped').parentElement?.textContent).toBe('Group stopped')
+  expect(screen.getByText('Stop requested').parentElement?.textContent).toBe('Stop requested')
   expect(container.textContent).not.toMatch(/turn\.(settled|started)|constructor/)
 })
 
@@ -130,4 +133,12 @@ it.each([null, false, '', '1792152000', Number.NaN, Number.POSITIVE_INFINITY, 1e
 
   expect(screen.getByText('Still readable')).toBeTruthy()
   expect(container.querySelector('time')).toBeNull()
+})
+
+it.each(['member turn cancelled', 'Stopped by the operator'])('keeps only useful cancellation detail: %s', reason => {
+  const { container } = render(<CanonicalGroupHistory binding={binding} events={[
+    { seq: 1, kind: 'turn.cancelled', payload: { reason } }
+  ]} />)
+
+  expect(container.textContent).toBe(reason === 'member turn cancelled' ? 'Turn cancelled' : `Turn cancelled: ${reason}`)
 })

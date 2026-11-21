@@ -104,7 +104,7 @@ def test_auxiliary_retries_share_logical_relay_identity(monkeypatch):
             "test-model",
             "openrouter",
             None,
-            "unknown",  # recovered from the unclassifiable invalid first response
+            "incomplete_response",  # recovered from the invalid first response (HTTP 200, no choices)
         )
     ]
 
@@ -177,7 +177,7 @@ def test_auxiliary_provider_fallback_closes_one_real_logical_call(
     assert turn.logical_llm_calls == {}
     assert logical_outputs == [
         {
-            "error_class": "unknown",
+            "error_class": "incomplete_response",
             "model": "openrouter/test-model",
             "outcome": "success",
             "provider": "openrouter",
@@ -259,8 +259,8 @@ def test_auxiliary_provider_fallback_records_one_terminal_model_route(
     assert snapshot[0]["resource"]["hermes_version"] == "test-version"
     assert snapshot[0]["dimensions"] == {
         "call_role": "auxiliary",
-        # The success keeps the error it recovered from; an invalid shape classifies as unknown.
-        "error_class": "unknown",
+        # The success keeps the error it recovered from; an invalid shape is an incomplete response.
+        "error_class": "incomplete_response",
         "model": "accepted/model",
         "outcome": "success",
         "provider": "openrouter",

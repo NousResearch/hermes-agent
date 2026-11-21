@@ -7,7 +7,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.session_api_turn import admit_api_turn, recover_api_turns
 from gateway.session_ingress_media import _media_root
-from hermes_state_runtime import claim_session_input, settle_session_input
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 def _plant(count):
@@ -25,8 +25,8 @@ def _plant(count):
 
 
 def _mention(owner, digest, name):
-    owner.db.create_session('keeper', source='cli')
-    owner.db.append_message('keeper', 'user', f'notes {digest}/{name}')
+    seed_session(owner.persistence, 'keeper', 'cli')
+    seed_messages(owner.persistence, 'keeper', {'role': 'user', 'content': f'notes {digest}/{name}'})
 
 
 def _remaining(planted):
@@ -37,10 +37,10 @@ def _settle_text(api, owner, session_id):
     _, _, row = admit_api_turn(
         api, session_id=session_id, request_id='turn-' + session_id,
         user_message='hello', conversation_history=[])
-    started = claim_session_input(owner.db, epoch=owner.epoch, session_id=row['target_session_id'])
-    settle_session_input(
-        owner.db, epoch=owner.epoch, admission_id=row['admission_id'],
-        generation=started['generation'], outcome='completed')
+    started = owner.persistence.admissions.claim(epoch=owner.epoch, session_id=row['target_session_id'])
+    owner.persistence.admissions.settle(
+        epoch=owner.epoch, admission_id=row['admission_id'],
+        generation=started.generation, outcome='completed')
     return row
 
 
@@ -74,7 +74,7 @@ async def test_delete_session_with_many_api_images_succeeds(api, owner, count):
     _mention(owner, kept_digest, kept_path.name)
     status, body = await _delete(api, 'chat')
     assert status == 200, body
-    assert owner.db.get_session('chat') is None
+    assert owner.persistence.sessions.get('chat') is None
     assert _remaining(planted) == [kept_digest]
 
 
@@ -85,10 +85,10 @@ async def test_a_cleanup_failure_after_the_delete_committed_is_not_a_500(api, ow
     files stay for the next sweep, but the finished delete answers 200."""
     _settle_text(api, owner, 'chat')
     planted = _plant(1)
-    monkeypatch.setattr('gateway.session_ingress_media._history_mentions', _exploding(error))
+    monkeypatch.setattr('persistence.sqlite.authority._admission_media._history_mentions', _exploding(error))
     status, body = await _delete(api, 'chat')
     assert status == 200, body
-    assert owner.db.get_session('chat') is None
+    assert owner.persistence.sessions.get('chat') is None
     assert _remaining(planted) == [planted[0][0]]
 
 
@@ -115,7 +115,7 @@ def test_startup_recovery_continues_when_image_collection_fails(api, owner, monk
         api, session_id='queued', request_id='queued-turn',
         user_message='pending', conversation_history=[])
     _plant(1)
-    monkeypatch.setattr('gateway.session_ingress_media._history_mentions', _exploding(error))
+    monkeypatch.setattr('persistence.sqlite.authority._admission_media._history_mentions', _exploding(error))
     scheduled = []
     monkeypatch.setattr(owner, '_schedule', lambda ref: scheduled.append(ref.session_id))
     recover_api_turns(api)

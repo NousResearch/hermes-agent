@@ -1,0 +1,24 @@
+name: gmi-speech
+title: GMI Cloud speech synthesis
+repo: https://github.com/zkasuran/hermes-gmi-media
+subdir: gmi-speech
+sha: 6760b29d6f9f93f47cef08702bda876fb10af652
+description: "GMI Cloud text-to-speech as a tts provider (tts.provider: gmi-speech). Picks the voice, speed and output format parameters from the chosen model's schema and writes a file whose extension matches the real format; music models are excluded. Disclosure — sends the text to speak and your GMI_API_KEY (read per request through Hermes secret scope) to console.gmicloud.ai; every synthesis spends GMI credits with no Hermes approval prompt (GMI shows its own price per model). The audio is downloaded over HTTPS from the URL GMI returns and written to the output path Hermes supplies; the model catalog is read live and cached in memory for one hour. No telemetry, shell commands, background processes, self-updates or extra Python dependencies."
+maintainer: zkasuran
+tier: community
+category: voice
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/zkasuran/hermes-gmi-media/tree/main/gmi-speech#readme
+version: "0.1.0"
+readme: true
+platforms: []
+known_issues:
+  - "No streaming synthesis and no Opus voice-note conversion; the file format is whatever the model offers."
+  - "Live-tested with minimax-tts-speech-2.6-turbo. GMI prices speech per 1k characters on some models and per character on others, so the plugin shows GMI price text and never totals it."
+  - "Shares one client module with gmi-image and gmi-video from the same repository; each plugin carries its own byte-identical copy."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - GMI_API_KEY

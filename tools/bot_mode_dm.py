@@ -28,7 +28,7 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -193,6 +193,20 @@ def _resolve_local_name(target: str, roster: list[str], root: Path | None = None
     return next(iter(hits)) if len(hits) == 1 else None
 
 
+def _local_claims(target: str, roster: list[str], root: Path) -> set[str]:
+    """Every local folder id ``target`` could name: its exact folder id, or every bot whose
+    friendly name forms match. Unlike ``_resolve_local_name`` an ambiguous friendly name still
+    counts, so two bots titled like a peer cannot hand the bare name to the peer route."""
+    exact = _resolve_local_name(target, roster)  # no root: folder ids only, so aliases are read once
+    if exact is not None:
+        return {exact}
+    from tools.bot_mode_probe import alias_forms, local_alias_map
+
+    want = target.strip().lower()
+    aliases = local_alias_map(root)
+    return set().union(*(aliases.get(form, set()) for form in alias_forms(want) | {want}))
+
+
 def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | None = None) -> str:
     from tools.bot_failure_reasons import classify_agent_error
 
@@ -216,6 +230,8 @@ class Sender:
     teammates: list
     task_id: Optional[str]
     agent: Any
+    # The chain gate's author-envelope fields for this call (``tools/bot_mode_dm_chain.py``).
+    chain: dict = field(default_factory=dict)
 
     def roster_err(self, msg: str) -> str:
         return _err(msg, roster=self.teammates, peers=self.peers)
@@ -274,7 +290,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _err(f"message too long ({len(body)} chars > {MESSAGE_MAX_CHARS}). "
                     "Send the essentials; share large content as a file path instead.")
 
-    from tools.bot_mode_dm_coordination import fan_out, split_targets
+    from tools.bot_mode_dm_coordination import split_targets
 
     targets = split_targets(target, sender)
     if not targets:
@@ -283,11 +299,12 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _err(f"Too many targets ({len(targets)} > {FAN_OUT_MAX}); message the ones the task needs.")
     reply = _wants_reply(expects_reply)
     # Sender signature: the friendly name when the bot has one (#89720); the @handle stays the routing alias.
-    content = (f"Message from 🤖 {_display_name(me, roster_homes.get(me, Path(home)), list(roster_homes))} (@{_handle(me, list(roster_homes))}): "
-               + ("" if reply else f"{NO_REPLY_MARKER} ") + body)
-    if len(targets) == 1:
-        return _dispatch(targets[0], content, sender, wake="notify" if reply else "none")
-    return fan_out(targets, content, sender, expects_reply=reply)
+    signature = f"Message from 🤖 {_display_name(me, roster_homes.get(me, Path(home)), list(roster_homes))} (@{_handle(me, list(roster_homes))}): "
+    from tools.bot_mode_dm_chain import send_gated
+
+    # The runtime's chain rules run before any transport (hop cap, repeated ask, reply to a bot: #137027).
+    return send_gated(targets, reply, body, lambda wants: signature + ("" if wants else f"{NO_REPLY_MARKER} ") + body,
+                      sender)
 
 
 def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> str:
@@ -301,7 +318,7 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
     roster = list(roster_homes)
     delivery = dict(task_id=sender.task_id, agent=sender.agent, wake=wake)
     # Attribution for the recipient's memory hooks; the text prefix stays the human-facing signature.
-    author = {"id": f"bot:{me}", "name": _handle(me, roster), "is_bot": True}
+    author = {"id": f"bot:{me}", "name": _handle(me, roster), "is_bot": True, **sender.chain}
 
     # Peer target: '<peer>/<agent>' or a bare registered peer name.
     peer_match = _PEER_TARGET_RE.match(raw_target)
@@ -309,6 +326,19 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
         peer_name, peer_profile = peer_match.groups() if peer_match else (raw_target.lower(), None)
         if peer_name not in peers:
             return sender.roster_err(f"No registered peer named '{peer_name}'.")
+        # A bare name that also resolves to a local teammate is ambiguous (#145241): the peer
+        # route crosses an identity/privacy boundary, so neither side may take it silently.
+        # Refuse and name both routes — 'peer/<agent>' still reaches the peer, a friendly
+        # name / @-slug still reaches the local bot. A name that only matches the caller's
+        # own profile stays peer-bound: local delivery to yourself is refused anyway.
+        claims = _local_claims(raw_target, roster, root) - {me} if peer_match is None else set()
+        if claims:
+            # A friendly-name claim is reachable by its folder handle; an exact folder id only by a friendly name.
+            handles = sorted(h for h in (_handle(n, roster) for n in claims) if h.lower() not in peers)
+            local = " or ".join(f"@{h}" for h in handles) if handles else "a friendly name of the local bot that no peer uses"
+            return sender.roster_err(
+                f"'{raw_target}' is ambiguous: it names both a local profile and a registered peer. "
+                f"Use '{peer_name}/<agent>' for the peer, or {local} to reach it on this install.")
         dm_target = f"{peer_name}/{peer_profile}" if peer_profile else peer_name
         # A peer dm crosses installs: qualify the id with this host so the peer's own '<me>' stays distinct.
         from agent.turn_author import bot_author_id, local_origin
@@ -319,7 +349,7 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
         # The delivery runs in a background service context whose PATH lacks the gateway's
         # venv bin dir, so a bare "hermes" resolves to a system install and dies on import
         # under the wrong interpreter (#108628). _hermes_cli pins the entrypoint beside
-        # this interpreter; _delivery_lock/_local_delivery_home match argv[0] by basename,
+        # this interpreter; _local_delivery_home matches argv[0] by basename,
         # so the absolute path stays compatible.
         return _start_delivery([_hermes_cli(), "-p", _self_profile_name(root), "peer", "dm", dm_target], content,
                                f"@{peer_profile or peer_name} on peer '{peer_name}'", stdin_file=True,
@@ -356,7 +386,7 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
         return _err(f"@{_handle(resolved, roster)} messaged you this turn and your final response already goes back "
                     "to them: put your reply in it instead of messaging them. Do not retry.")
     # Local teammates are admitted through the profile authority; the argv only names the
-    # profile for the runner's lock/home lookups and is never executed.
+    # profile for the runner's home lookup and is never executed.
     return _start_delivery([_hermes_cli(), "-p", resolved], content, f"@{_handle(resolved, roster)}",
                            stdin_file=False, profile_home=roster_homes[resolved], author=author, **delivery)
 
@@ -470,26 +500,6 @@ def _write_dm_file(content: str) -> str:
         _unlink_dm_file(path)
         raise
     return path
-
-
-def _delivery_lock(argv: list[str], *, stdin_file: bool):
-    """Per-profile turn lock for a LOCAL teammate delivery: local and relay deliveries
-    into one profile both run a Bot Chat turn here, so the turn window is serialized on
-    ``tools.bot_relay``'s cross-process lock. Peer transports (stdin mode) are locked
-    on the remote gateway by its own deliver path.
-
-    See #93091.
-    """
-    # Match the CLI element by basename: argv[0] may be an absolute venv path
-    # (service contexts lack PATH) and carries .exe on Windows; split on both separators.
-    # Split on both separators so the shape matches regardless of which platform built the argv. See #93590.
-    cli = (argv[0] if argv else "").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-    if stdin_file or len(argv) < 3 or cli not in ("hermes", "hermes.exe") or argv[1] != "-p":
-        return contextlib.nullcontext()
-    from tools.bot_mode_probe import _hermes_root
-    from tools.bot_relay import acquire_turn_lock
-
-    return acquire_turn_lock(_hermes_root(Path(_default_home())), argv[2])
 
 
 def _live_intent_file(dm_file: str | os.PathLike) -> str:
@@ -748,12 +758,11 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
         from tools.bot_relay import delivery_env
 
         env = delivery_env(author, profile_home if not stdin_file else None)
-        with _delivery_lock(argv, stdin_file=stdin_file):
-            # Keep the file open until the transport exits; cleanup occurs
-            # after subprocess.run returns, not merely after stdin reaches EOF.
-            with open(dm_file, "r", encoding="utf-8-sig") as stream:
-                # Passing the file descriptor as stdin bypasses the BOM-aware decoder.
-                return subprocess.run(argv, input=stream.read().encode("utf-8"), check=False, env=env).returncode
+        # Keep the file open until the transport exits; cleanup occurs
+        # after subprocess.run returns, not merely after stdin reaches EOF.
+        with open(dm_file, "r", encoding="utf-8-sig") as stream:
+            # Passing the file descriptor as stdin bypasses the BOM-aware decoder.
+            return subprocess.run(argv, input=stream.read().encode("utf-8"), check=False, env=env).returncode
     finally:
         _unlink_dm_file(dm_file)
 
@@ -860,8 +869,9 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
     try:
         from tools.terminal_tool import terminal_tool
 
+        from hermes_cli._startup_fast import project_root_str
         raw = terminal_tool(command, background=True, notify_on_complete=wake != "none", task_id=task_id,
-                            workdir=str(Path(__file__).resolve().parent.parent), _host_local=True,
+                            workdir=project_root_str(), _host_local=True,
                             _completion_output_chars=completion_chars)
         try:
             parsed = json.loads(raw)
@@ -927,11 +937,12 @@ def _persist_reply_when_done(proc_id: str, agent: Any) -> bool:
     completion; mirrors gateway.wake.persist_delegation_delivery). A sender that already read
     the outcome via process(action='wait'/'log') is not told twice. Returns False (nothing
     armed) when the sender has no session transcript or the process is not tracked here."""
+    from persistence.conversation.messages import NewMessage
     from tools.process_registry import process_registry
 
-    db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
+    persistence, session_id = getattr(agent, "persistence", None), getattr(agent, "session_id", None)
     proc = process_registry.get(proc_id)
-    if proc is None or not session_id or not callable(getattr(db, "append_message", None)):
+    if proc is None or not session_id or persistence is None:
         return False
 
     def _run() -> None:
@@ -944,9 +955,9 @@ def _persist_reply_when_done(proc_id: str, agent: Any) -> bool:
             return
         evt = {"type": "completion", "session_id": proc_id, **process_registry._exit_snapshot(proc, "exited")}
         try:
-            db.append_message(session_id, "user", content=format_process_notification(evt),
-                              display_kind="process_complete",
-                              display_metadata={"display_text": process_completion_display_text([evt])})
+            persistence.messages.append(session_id, NewMessage(
+                role="user", content=format_process_notification(evt), display_kind="process_complete",
+                display_metadata={"display_text": process_completion_display_text([evt])}))
         except Exception as exc:
             logger.warning("message_agent: could not persist the reply of %s into session %s: %s",
                            proc_id, session_id, exc)
@@ -1012,8 +1023,8 @@ def _delivery_main(args: list[str]) -> int:
         return _run_delivery(argv, dm_file, stdin_file=mode == "stdin", profile_home=profile_home, author=author)
     except Exception as exc:
         # Every refusal ships a typed reason on stdout so the completion notification carries it
-        # back to the sender (#93091): 'target_busy' from the queue's bounded wait, otherwise the
-        # same vocabulary-guarded classification the relay lane applies.
+        # back to the sender (#93091), with the same vocabulary-guarded classification the relay
+        # lane applies.
         from tools.bot_failure_reasons import delivery_failure_reason
 
         print(json.dumps({"error": str(exc), "reason": delivery_failure_reason(exc)}))
@@ -1024,11 +1035,11 @@ def _delivery_main(args: list[str]) -> int:
 
 
 def _agent_home(agent: Any) -> str:
-    """The calling agent's OWN home (session-db derived), not ambient env."""
+    """The calling agent's OWN home (its store's profile), not ambient env."""
     with contextlib.suppress(Exception):
-        db_path = getattr(getattr(agent, "_session_db", None), "db_path", None)
-        if db_path:
-            return str(Path(db_path).parent)
+        persistence = getattr(agent, "persistence", None)
+        if persistence is not None:
+            return str(persistence.scope.profile_dir)
     return _default_home()
 
 
@@ -1037,17 +1048,27 @@ def _session_title(agent: Any) -> str:
     if title:
         return title
     with contextlib.suppress(Exception):
-        sdb, sid = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
-        if sdb and sid:
-            return str(sdb.get_session_title(sid) or "").strip()
+        from agent.runtime_session_store import RuntimeSessionStore
+
+        persistence, sid = getattr(agent, "persistence", None), getattr(agent, "session_id", None)
+        worker_store = getattr(agent, "_session_db", None)
+        if persistence is not None and sid:
+            return str(persistence.sessions.get_title(sid) or "").strip()
+        if isinstance(worker_store, RuntimeSessionStore) and sid:  # a managed worker reads its owner's row
+            return str(worker_store.get_session_title(sid) or "").strip()
     return ""
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised as a background process
     # Spawned as a script with the sender's sys.executable, which under PM is the bare store
     # interpreter (dependencies are activated in-process, never inherited), so boot like every
-    # entry point before the lazy Hermes imports. Run as a path, sys.path[0] is tools/.
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    # entry point before the lazy Hermes imports. Run as a path, sys.path[0] is this file's
+    # folder, where a subfolder named like an installed package would be imported in its place:
+    # the checkout root takes that entry.
+    _script_dir = Path(__file__).resolve().parent
+    if Path(sys.path[0]).resolve() == _script_dir:
+        del sys.path[0]
+    sys.path.insert(0, str(_script_dir.parent))
     # Only the delivery lane boots: the reply waiter is stdlib only and its stdout is the
     # sender's wake-up, and any other argv exits 2 before a Hermes import.
     if sys.argv[1:2] == ["--run-delivery"]:

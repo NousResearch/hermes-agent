@@ -58,7 +58,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
-Both built-in OpenCode providers send an opaque, per-conversation `x-opencode-session` header on every request (main turns on every transport plus auxiliary calls such as compression, titles, approval checks, skills-hub lookups and `/btw` side questions — including the ones that run in the background after the turn has ended; headless Kanban `specify`/`decompose` and dashboard estimate calls use a per-task key; one-shots with no live session at all, such as Desktop commit-message generation from the review panel, send a fresh ephemeral key). OpenCode uses it to pin a conversation to one backend so its prompt cache stays warm; the value is derived from the Hermes session id (or the Kanban task id) and carries no personal data.
+Both built-in OpenCode providers send an opaque, per-conversation `x-opencode-session` header on every request (main turns on every transport plus auxiliary calls such as compression, titles, approval checks and `/btw` side questions — including the ones that run in the background after the turn has ended; headless Kanban `specify`/`decompose` and dashboard estimate calls use a per-task key; one-shots with no live session at all, such as Desktop commit-message generation from the review panel, send a fresh ephemeral key). OpenCode uses it to pin a conversation to one backend so its prompt cache stays warm; the value is derived from the Hermes session id (or the Kanban task id) and carries no personal data.
 
 The two built-in OpenCode providers each pin their own relay on `opencode.ai` (`opencode-zen` → `/zen/v1`, `opencode-go` → `/zen/go/v1`). A `model.base_url` left behind by the other relay is healed to the selected provider's relay, and the model you pick (`-m`, `/model`, a fallback entry or a channel override) decides which relay is used — so switching from a Zen model to a Go-only one never sends the request to Zen. The same per-model routing is re-applied when a session is resumed (`hermes --resume`, `/resume`, the TUI and desktop resume paths): a wire format or relay URL recorded while the session ran a different OpenCode model never carries over to the model the session is reopened on. OpenCode models whose id carries a `-vision` marker (for example `deepseek-v4-flash-vision-exp`) are treated as vision-capable even before models.dev lists them, so `agent.image_input_mode: auto` attaches images natively without a `supports_vision` override. A custom provider you define under `providers:` whose name extends a family slug (for example `opencode-go-bridge`) still gets the family's per-model API-mode routing and `/v1` handling, but its `base_url` is taken as declared: name it after the relay it actually points at. Auxiliary tasks (`auxiliary.compression`, titles, vision, MoA) pointed at an OpenCode provider follow the same per-model table, so a Responses-only model such as `gpt-5.6-luna` or an Anthropic-wire one such as `minimax-m2.5` works there exactly as it does for the main conversation.
 
@@ -309,6 +309,40 @@ Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_U
 When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoints (global, China, coding variants) to find one that accepts your API key. You don't need to set `GLM_BASE_URL` manually — the working endpoint is detected and cached automatically.
 :::
 
+### OpenAI GPT-6.2 Astra and Sol
+
+Select `gpt-6.2-astra` or `gpt-6.2-sol` with `hermes model` under **OpenAI API**
+(API key) or **OpenAI Codex** (ChatGPT subscription). Explicit model selections are unchanged.
+When no model is configured, OpenAI API defaults to `gpt-6.2-sol`. Codex can use the
+account's catalog when available, with `gpt-6-sol` as its curated offline fallback.
+The Codex picker shows GPT-6.2 when the account's catalog offers it.
+If your ChatGPT plan doesn't include GPT-6.2, select `gpt-6-sol` instead.
+
+If your plan includes GPT-6.2 but the optional [Codex app-server runtime](../user-guide/features/codex-app-server-runtime.md)
+rejects it on an older binary, update the binary Hermes launches (including any explicit
+`model.codex_bin` path) to a compatible release, such as [0.169.1](https://github.com/openai/codex/releases/tag/rust-v0.169.1).
+Alternatively, use `/codex-runtime auto` and start a fresh session to use Hermes' native route.
+Neither option changes your plan's model access.
+
+Both models use Responses for tool calling, accept text and images, and support reasoning
+efforts `low`, `medium`, `high`, `xhigh`, and `max`. An explicit `none` or `minimal` effort
+is clamped to `low`; disabling reasoning omits the unsupported disable field.
+
+The direct API has a 1,050,000-token window, a 922,000-token input cap, and 128,000 maximum
+output tokens. Codex uses its account catalog's window instead, with offline defaults of
+272,000 for Astra and 500,000 for Sol from OpenAI's Codex catalog. Hermes does not invent
+`-900k` or `-pro` picker variants for either model.
+
+`/fast` supports both models. Fast supports US and EU processing; Ultrafast supports US
+processing only and remains account-gated on Codex. Direct API cost estimates use the served
+tier, including the Ultrafast launch discount through February 28, 2027, Pacific time.
+Codex usage stays subscription-included, not an API invoice.
+
+Sources: [Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra),
+[Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol),
+[migration guide](https://developers.openai.com/api/docs/guides/latest-model), and
+[Codex catalog](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
+
 ### xAI (Grok) — Responses API + Prompt Caching
 
 xAI is wired through the Responses API (`codex_responses` transport) for automatic reasoning support on Grok 4 models — no `reasoning_effort` parameter needed, the server reasons by default. Set `XAI_API_KEY` in `~/.hermes/.env` and pick xAI in `hermes model`, or drop `grok` as a shortcut into `/model grok-4-fast-reasoning`.
@@ -514,7 +548,9 @@ Supported models: `MiniMax-M2.7` (main) and `MiniMax-M2.7-highspeed` (wired as t
 
 Use the NVIDIA NIM provider to access Nemotron and other open-source models through NVIDIA’s hosted service or a local NIM endpoint. Model identifiers for hosted endpoints and instructions for local deployment are available at [build.nvidia.com/models](https://build.nvidia.com/models).
 
-:::note The examples below use Nemotron 3.5 Super VL, which supports text and image inputs, reasoning, and tool calls.
+:::note Nemotron 3.5 Super VL
+The examples below use Nemotron 3.5 Super VL, which supports text and image inputs, reasoning, and tool calls.
+:::
 
 #### Cloud (build.nvidia.com)
 
@@ -530,7 +566,9 @@ Then start a chat:
 hermes chat --provider nvidia --model nvidia/nemotron-3.5-super-vl-120b-a12b
 ```
 
-:::note Hermes automatically includes the NIM billing-origin header in requests to `build.nvidia.com`, ensuring consumption is attributed to the correct origin in NVIDIA’s billing dashboard. No additional configuration is required.
+:::info BILLING
+Hermes automatically includes the NIM billing-origin header in requests to `build.nvidia.com`, ensuring consumption is attributed to the correct origin in NVIDIA’s billing dashboard. No additional configuration is required.
+:::
 
 #### Local NIM
 
@@ -541,7 +579,7 @@ NVIDIA_API_KEY=local-no-auth
 NVIDIA_BASE_URL=http://localhost:8000/v1
 ```
 
-:::note Use `local-no-auth` as a placeholder if your endpoint does not require authentication. Otherwise, provide its API key.
+Use `local-no-auth` as a placeholder if your endpoint does not require authentication. Otherwise, provide its API key.
 
 Then start a chat using the model served by your endpoint:
 
@@ -550,6 +588,10 @@ hermes chat --provider nvidia --model nvidia/nemotron-3.5-super-vl-120b-a12b
 ```
 
 Local NIM endpoints expose the same OpenAI-compatible chat completions API as NVIDIA’s hosted service. To switch endpoints, update `NVIDIA_BASE_URL` and adjust the API key and model name as needed.
+
+:::info VISION
+If your local NIM model isn't in models.dev catalog and supports vision, set `model.supports_vision: true` for native image support — see [Native vision for custom-provider models](#named-custom-providers).
+:::
 
 #### Set the default model
 
@@ -560,6 +602,10 @@ model:
   provider: "nvidia"
   default: "nvidia/nemotron-3.5-super-vl-120b-a12b"
 ```
+
+:::info CONTACT
+For issues with the Nemotron models themselves, see the [NVIDIA Nemotron developer forum](https://forums.developer.nvidia.com/c/ai-data-science/nvidia-nemotron/669).
+:::
 
 ### GMI Cloud
 
@@ -1324,6 +1370,12 @@ providers:
 ```
 
 Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key` or `key_cmd` (see below), `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `session_affinity_header` (name of a header that carries the conversation id, for session-aware proxies; off unless set), `ssl_ca_cert` / `ssl_verify`, `catalog_provider` (see below), and `enabled: false` to hide an entry without deleting it.
+
+An entry keyed like a built-in provider (`openrouter:`, `Anthropic:`, `deepseek:`, in any case) that sets its own `api`/`base_url` **is** what that name means: `--provider openrouter`, `/model`, `hermes model` and the dashboard save it as `custom:openrouter` and every turn goes to your endpoint. When the entry declares a key (`api_key`, `key_env` or `key_cmd`), that key is used and the built-in's own key is never sent. An entry with no key gets the built-in's env and pooled keys only while its address is on the built-in's own host (scheme, host and port); anywhere else (a proxy, a mirror, another region's host such as Kimi's `.cn` endpoint) it sends no key, because a built-in's key is never sent to a host other than its own unless you say so. To use the built-in's key on your endpoint, name it: `key_env: DEEPSEEK_API_KEY` (the built-in's variable), or add the endpoint's key with `hermes auth add deepseek` while the entry is configured, which records the entry's address. A same-named block without an endpoint (for example `providers.openrouter: {request_timeout_seconds: 300}`) only tunes the built-in. `hermes doctor` warns when `model.provider` names a built-in that such an entry takes over.
+
+:::note Migration: built-in keys and same-named entries
+Earlier releases sent the built-in's env key (for example `DEEPSEEK_API_KEY`) to a key-less `providers.deepseek` entry on any address. Now that key stays on the built-in's own host. If such an entry now gets `401`, add `key_env: DEEPSEEK_API_KEY` (use your provider's variable) to the entry. Hermes logs one warning per entry naming the remedy when this happens. Pooled keys added before addresses were recorded (`hermes auth add`, the dashboard) for a built-in's pool belong to the built-in's own address. To use one on the entry's host, re-add it with `hermes auth add <name>` while the entry is configured.
+:::
 
 #### Command-minted credentials (`key_cmd`)
 

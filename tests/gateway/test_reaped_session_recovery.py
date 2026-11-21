@@ -118,7 +118,7 @@ async def test_reaped_session_message_reaches_cold_path(tmp_path):
     _occupy_turn_slot(runner, key, agent)
 
     # The durable row is ended out from under the live slot (the reap).
-    store._db.end_session(entry.session_id, "ws_orphan_reap")
+    store.persistence.sessions.end(entry.session_id, "ws_orphan_reap")
     assert store._is_session_ended_in_db(entry.session_id) is True
 
     event = MessageEvent(

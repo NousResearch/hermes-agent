@@ -13,7 +13,7 @@ import {
   saveMcpServers
 } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
+import { completeMcpOAuth } from '@/lib/mcp-oauth-host'
 import { probeCache, probeKey } from '@/lib/mcp-probe-cache'
 import { announceMcpReload, reloadMcp } from '@/lib/mcp-reload'
 import { getServers, type McpServerEntry, type McpServers } from '@/lib/mcp-servers'
@@ -164,7 +164,7 @@ export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpSe
     fleet.setProbe(serverName, 'probing')
 
     try {
-      const flow = await completeMcpDesktopOAuth({
+      const flow = await completeMcpOAuth({
         serverName,
         profile,
         cancelled: () => profileEpoch.current !== epoch

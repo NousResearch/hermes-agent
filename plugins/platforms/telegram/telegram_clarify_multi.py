@@ -26,8 +26,12 @@ def pending_multi_entry(clarify_id: str) -> Optional[Any]:
 def multi_keyboard(adapter: Any, clarify_id: str, count: int, selected: set[int]) -> Any:
     """One toggle row per choice, then Other and Send; callback data stays under Telegram's 64 bytes."""
     from plugins.platforms.telegram import adapter as tg
+    from plugins.platforms.telegram.telegram_clarify_labels import choice_caption
     button, t = tg.InlineKeyboardButton, tg.t
-    rows = [[button(f"{'☑' if idx in selected else '☐'} {idx + 1}", callback_data=f"cl:{clarify_id}:t{idx}")]
+    entry = pending_multi_entry(clarify_id)
+    mode = adapter.config.extra.get("clarify_button_labels", "numbers")
+    labels = [choice_caption(c, i, mode) for i, c in enumerate(entry.choices)] if entry else [str(i + 1) for i in range(count)]
+    rows = [[button(f"{'☑' if idx in selected else '☐'} {labels[idx]}", callback_data=f"cl:{clarify_id}:t{idx}")]
             for idx in range(count)]
     rows.append([button(t("platform.telegram.prompt.other"), callback_data=f"cl:{clarify_id}:other")])
     rows.append([button(t("platform.telegram.prompt.send"), callback_data=f"cl:{clarify_id}:go")])

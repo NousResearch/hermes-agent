@@ -7085,6 +7085,25 @@ describe('routed fresh chat keeps its exact owner across turns', () => {
     await handle!.startFreshSessionDraft({ replaceRoute: true, rotateFreshDraftKey: false })
     expect($freshDraftKey.get()).toBe(before)
   })
+
+  it('keeps the fresh draft key while it holds an unsent message, and rotates once it is empty', async () => {
+    let handle: HarnessHandle | null = null
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    render(<Harness onReady={h => (handle = h)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const key = $freshDraftKey.get()
+    stashSessionDraft(key, 'unsent message typed in a new chat', [])
+    await handle!.startFreshSessionDraft({ replaceRoute: true })
+    // New chat after visiting another session must hand the user their text back, not a blank bucket.
+    expect($freshDraftKey.get()).toBe(key)
+    expect(takeSessionDraft(key).text).toBe('unsent message typed in a new chat')
+
+    clearSessionDraft(key)
+    await handle!.startFreshSessionDraft({ replaceRoute: true })
+    expect($freshDraftKey.get()).not.toBe(key)
+  })
 })
 
 // ── Branch failure recovery ──────────────────────────────────────────────────

@@ -57,10 +57,11 @@ def _quote_tokens(text: str) -> str:
 
 
 def _strip_cjk_wildcards(text: str) -> str:
-    """Trailing ``*`` dropped from each non-operator word unless it is all stars (``_strip_cjk_wildcards``)."""
+    """Drop caller wildcards, retaining stars within quoted text and all-star words."""
     if "*" not in text:
         return text
-    return " ".join(t if t.upper() in _OPERATORS else (t.rstrip("*") or t) for t in text.split()) or text
+    tokens = re.findall(r'"[^"]*"\**|\S+', text)
+    return " ".join(t if t.upper() in _OPERATORS or t.endswith('"') else (t.rstrip("*") or t) for t in tokens) or text
 
 
 def sanitize_query(query: str) -> str:

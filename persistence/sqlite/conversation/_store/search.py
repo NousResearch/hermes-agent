@@ -149,8 +149,8 @@ def _strip_cjk_wildcards(raw_query: str) -> str:
     if "*" not in raw_query:
         return raw_query
     stripped: list[str] = []
-    for token in raw_query.split():
-        if token.upper() in _FTS_OPERATORS:
+    for token in re.findall(r'"[^"]*"\**|\S+', raw_query):
+        if token.upper() in _FTS_OPERATORS or token.endswith('"'):
             stripped.append(token)
         else:
             stripped.append(token.rstrip("*") or token)

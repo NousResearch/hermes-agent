@@ -147,6 +147,94 @@ class TestWeComAdapterAuthzScope:
 class TestWeComConnect:
 
     @pytest.mark.asyncio
+    async def test_closed_websocket_enters_one_reconnect_path_without_spinning(self, monkeypatch):
+        import plugins.platforms.wecom.adapter as wecom_module
+        from plugins.platforms.wecom.adapter import RECONNECT_BACKOFF, WeComAdapter
+
+        class ClosedWebSocket:
+            def __init__(self):
+                self.closed_reads = 0
+
+            @property
+            def closed(self):
+                self.closed_reads += 1
+                if self.closed_reads > 1:
+                    raise asyncio.CancelledError
+                return True
+
+            async def receive(self):
+                raise AssertionError("receive must not run on a closed websocket")
+
+        class ReconnectedWebSocket:
+            closed = False
+
+            async def receive(self):
+                raise asyncio.CancelledError
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        closed_ws = ClosedWebSocket()
+        adapter._ws = closed_ws
+        adapter._running = True
+        reconnect_attempts = 0
+        sleeps = []
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        async def fake_open_connection():
+            nonlocal reconnect_attempts
+            reconnect_attempts += 1
+            adapter._ws = ReconnectedWebSocket()
+
+        monkeypatch.setattr(wecom_module.asyncio, "sleep", fake_sleep)
+        monkeypatch.setattr(adapter, "_open_connection", fake_open_connection)
+
+        await adapter._listen_loop()
+
+        assert closed_ws.closed_reads == 1
+        assert sleeps == [RECONNECT_BACKOFF[0]]
+        assert reconnect_attempts == 1
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_blocked_read_without_reconnecting(self, monkeypatch):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        class BlockingWebSocket:
+            def __init__(self):
+                self.closed = False
+                self.receive_started = asyncio.Event()
+                self.close_calls = 0
+
+            async def receive(self):
+                self.receive_started.set()
+                await asyncio.Future()
+
+            async def close(self):
+                self.close_calls += 1
+                self.closed = True
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        websocket = BlockingWebSocket()
+        reconnect_attempts = 0
+
+        async def unexpected_reconnect():
+            nonlocal reconnect_attempts
+            reconnect_attempts += 1
+
+        monkeypatch.setattr(adapter, "_open_connection", unexpected_reconnect)
+        adapter._ws = websocket
+        adapter._running = True
+        adapter._listen_task = asyncio.create_task(adapter._listen_loop())
+        await websocket.receive_started.wait()
+
+        await asyncio.wait_for(adapter.disconnect(), timeout=2)
+
+        assert adapter._listen_task is None
+        assert adapter._running is False
+        assert websocket.close_calls == 1
+        assert reconnect_attempts == 0
+
+    @pytest.mark.asyncio
     async def test_connect_records_handshake_failure_details(self, monkeypatch):
         import plugins.platforms.wecom.adapter as wecom_module
         from plugins.platforms.wecom.adapter import WeComAdapter

@@ -23,7 +23,10 @@ live gap fixed by #120339); ``kill_before_deps``
 (SIGKILL after the code swap, when the dependency sync starts: new code on the old venv);
 ``offline`` (origin unreachable: must fail loudly and leave N-1 working).
 
-Invariants after every leg (fresh processes only): the final update's exit code matches reality
+Invariants after every leg (fresh processes only): neither the update transcript nor a log line
+written since the leg was staged names the regex engine (``re2``, ``hermes_re``) or a missing module
+(C10 of the RE2 migration: no step of an update from an old release may need google-re2 before it is
+installed); the final update's exit code matches reality
 (0 and HEAD checked out and the editable install serves HEAD's tree, or non-zero and nothing
 changed); ``hermes --version``, ``hermes doctor`` and a one-shot turn succeed; state.db and the
 profile's state.db pass ``integrity_check`` with unchanged row counts and byte-identical
@@ -433,8 +436,31 @@ def _profile_homes(leg: Leg) -> dict[str, Path]:
     return {"default": leg.hermes_home, "work": leg.hermes_home / "profiles" / "work"}
 
 
+def _log_sizes(leg: Leg) -> dict[str, int]:
+    return {str(p): p.stat().st_size for p in (leg.hermes_home / "logs").glob("*.log")}
+
+
+def new_log_text(leg: Leg) -> str:
+    """What the install's logs gained since the leg was staged (the N-1 CLI wrote the rest)."""
+    since = leg.snapshot.get("logs", {})
+    parts = []
+    for p in sorted((leg.hermes_home / "logs").glob("*.log")):
+        with p.open("rb") as fh:
+            fh.seek(since.get(str(p), 0))
+            parts.append(f"--- {p.name} ---\n" + fh.read().decode("utf-8", errors="replace"))
+    return "\n".join(parts)
+
+
+def assert_no_engine_errors(leg: Leg, cp: subprocess.CompletedProcess) -> None:
+    """C10: an update from an old release never trips over the regex engine (google-re2) or a module
+    its old process cannot import, in its own output or in any log line it caused."""
+    bad = I.engine_error_lines(cp.stdout + "\n" + cp.stderr + "\n" + new_log_text(leg))
+    assert not bad, ("the update or a log line written since names the regex engine or a missing module:\n"
+                     + "\n".join(bad[:20]) + "\n" + H.describe(cp))
+
+
 def snapshot_state(leg: Leg) -> dict:
-    snap = {}
+    snap = {"logs": _log_sizes(leg)}
     for name, home in _profile_homes(leg).items():
         snap[name] = {
             "config": (home / "config.yaml").read_bytes(),
@@ -478,6 +504,7 @@ def migrate_oracle(leg: Leg, name: str, before: bytes) -> bytes:
 
 def assert_healthy_at_head(leg: Leg, provider: FakeLLMServer, final: subprocess.CompletedProcess) -> None:
     before = leg.snapshot
+    assert_no_engine_errors(leg, final)
     # 1. exit code matches reality
     assert final.returncode == 0, "final `hermes update` failed:\n" + H.describe(final)
     assert _git("rev-parse", "HEAD", cwd=leg.install) == _refs().head, "update exited 0 but HEAD is not the target"
@@ -647,6 +674,10 @@ def clean_leg(tmp_path_factory, template_home):
 def test_clean_update(clean_leg, provider):
     leg, final = clean_leg
     assert _git("status", "--porcelain", "--untracked-files=no", cwd=leg.install) == "", "update left a dirty tree"
+    # No step of a clean update is left to the user (C10): no owed follow-up, no "run X later". Checked
+    # first: assert_healthy_at_head ends in a known_failure gate, whose xfail would skip anything after it.
+    manual = I.manual_step_lines(final.stdout + final.stderr)
+    assert not manual, "the clean update asks for a manual step:\n" + "\n".join(manual) + "\n" + H.describe(final)
     assert_healthy_at_head(leg, provider, final)
 
 
@@ -694,6 +725,8 @@ def test_update_with_local_edits_and_orphan_autostash(leg, provider):
     pytest.param(True, id="torn-tree"),
 ])
 def test_kill_mid_pull_then_retry_heals(leg, provider, torn):
+    if torn and not I.start_carries("#120339", _refs().base):
+        pytest.skip(f"{_refs().base_tag} predates the #120339 fix: its own retry cannot heal a torn tree")
     changed = sorted(_git("diff", "--name-only", "--no-renames", "--diff-filter=AM", _refs().base, _refs().head,
                           cwd=H.WORKTREE).splitlines())
     assert changed, "N-1 and HEAD have no file differences"
@@ -706,9 +739,10 @@ def test_kill_mid_pull_then_retry_heals(leg, provider, torn):
     assert (leg.install / ".git" / "index.lock").exists()
     _age_git_locks(leg.install)
     final = _update(leg)
-    # Merge-order safe (see _pending_fixes.known_failure): only the import-time death excuses torn-tree.
+    # Merge-order safe (see _pending_fixes.known_failure): only the import-time death excuses torn-tree,
+    # and never one on the regex engine (assert_healthy_at_head checks that first, outside this pattern).
     gate = known_failure(
-        r"(?s)^final `hermes update` failed:.*(cannot import name|No module named)",
+        r"(?s)^final `hermes update` failed:.*(cannot import name|No module named (?!'(?:re2|hermes_re)\b))",
         "#120339 (merged; passes once N-1 is a release carrying it): a fast-forward killed half-way leaves a prefix of the changed files at HEAD while "
         "HEAD still names N-1; every entry point, including `hermes update`, then dies at import (cannot import "
         "name ... from 'utils'), so nothing can heal the install without manual git") if torn else contextlib.nullcontext()
@@ -734,6 +768,7 @@ def test_offline_update_fails_loudly_and_changes_nothing(leg, provider):
     leg.origin.rename(store)
     (leg.install / ".git" / "objects" / "info" / "alternates").write_text(f"{store / 'objects'}\n")
     cp = _update(leg)
+    assert_no_engine_errors(leg, cp)
     assert cp.returncode != 0, "update against an unreachable origin reported success:\n" + H.describe(cp)
     assert TRACEBACK not in cp.stdout + cp.stderr, H.describe(cp)
     assert _git("rev-parse", "HEAD", cwd=leg.install) == _refs().base

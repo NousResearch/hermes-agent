@@ -18,6 +18,7 @@ import functools
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -122,6 +123,69 @@ def upgrade_base(generation: str | None = None) -> UpgradeBase | None:
                                  "the e2e-upgrade job needs full history and tags (fetch-depth: 0)")
         return None
     return UpgradeBase(tags[0], git("rev-parse", f"{tags[0]}^{{commit}}", cwd=H.WORKTREE))
+
+
+# Fixes the old-start cells depend on: the issue a gate or skip names -> a commit on main that carries the
+# fix (the fix itself or a later commit that only holds once it is in). A start version without it fails
+# such a cell for a reason the change under test did not cause (the old updater lacks the fix), so the
+# cell is skipped for that start. v0.21.6, v0.22.7, v0.23.0 and v0.23.3 carry all three.
+FIXED_BY = {
+    "#120339": "c56c0a61c44529bf5e5d5f3058458b99d56f1c02",  # interrupted-pull restore (torn tree)
+    "#124938": "3249512632c623b569f4c4544dc12a2066a62d0b",  # foreign-unit dashboard (fixed by #124940)
+    "#124649": "029445545cf1cd8a9cfbaab65b093d683321d2c2",  # stdlib-only restart watcher
+}
+
+
+def start_carries(issue: str, start: str) -> bool:
+    """Whether the start version ``start`` (a commit) contains the fix of ``issue`` (``FIXED_BY``)."""
+    return subprocess.run(["git", "merge-base", "--is-ancestor", FIXED_BY[issue], start], cwd=str(H.WORKTREE),
+                          capture_output=True, check=False).returncode == 0
+
+
+# What `hermes update` prints when finishing it is left to the user (an owed follow-up, a "run X later",
+# "restore manually", a refused launch). The cues come from the hint literals the updaters of v0.21.6,
+# v0.22.7, v0.23.0 and v0.23.3 print and from this tree's updater, completion children and bootstrap
+# (after the checkout moves, the completion children print the TARGET tree's text).
+_MANUAL_STEP = re.compile(
+    r"did not finish|still owed|could not be finished automatically|previous dependencies"
+    r"|by hand|manually|unexecutable|[Cc]annot (?:start|update):"
+    r"|\b(?:[Rr]e-?run|[Rr]erun|[Rr]un|[Tt]ry|[Uu]se) [`']+(?:hermes|git|launchctl|systemctl)\b"
+    r"|git stash apply|[Tt]o complete this update|[Aa]dd it later|to add later|later to configure"
+)
+# Lines a clean update prints that match a cue but owe the user nothing.
+_INFORMATIONAL = (
+    "API keys require manual entry",  # `--yes` cannot prompt for new keys (update_cmd_config)
+    "this update completes the work it still owed",  # a previous update's follow-up, now done
+)
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _lines(text: str) -> list[str]:
+    return [line.strip() for line in _ANSI.sub("", text).splitlines() if line.strip()]
+
+
+def manual_step_lines(text: str) -> list[str]:
+    """The lines of an update transcript that ask the user to do something to finish the update."""
+    return [line for line in _lines(text)
+            if _MANUAL_STEP.search(line) and not any(info in line for info in _INFORMATIONAL)]
+
+
+# The regex engine (google-re2, through the hermes_re facade) failing to load. A line that only names
+# the package (installer progress, pip's Collecting/Successfully installed, a doctor check) is not an
+# error: the package name counts only next to a refusal or a build failure.
+_ENGINE_ERROR = re.compile(r"(?<![-_.])\bre2\b|hermes_re|ModuleNotFoundError"
+                           r"|[Cc]annot (?:start|update):.*google-re2|(?:Failed to build|[×✗]|error:).*google-re2")
+
+
+def engine_error_lines(text: str) -> list[str]:
+    """Lines that name the regex engine or a missing module: in an old-start cell every one is a
+    failure (C10: no update step may need google-re2 before it is installed)."""
+    return [line for line in _lines(text) if _ENGINE_ERROR.search(line)]
+
+
+def log_texts(*paths: Path) -> str:
+    """The named logs that exist, each under a ``--- <path> ---`` header (missing ones are skipped)."""
+    return "\n".join(f"--- {p} ---\n{p.read_text(errors='replace')}" for p in paths if p.is_file())
 
 
 def make_origin(root: Path, ref: str) -> Path:

@@ -29,6 +29,7 @@ import pytest
 
 from tests.e2e.core._pending_fixes import known_failure, known_gate
 from tests.e2e.core.upgrade import _helpers as H
+from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.handoff import _handoff as X
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
@@ -37,6 +38,7 @@ _TASK_RE = re.compile(r"work kanban task (t_[0-9a-f]+)")
 _PORT_IN_USE = re.compile(r"address already in use|port \d+ is (already )?in use|errno 98", re.IGNORECASE)
 REPLY = "handoff reply"
 _IMPORT_ERR = re.compile(r"ModuleNotFoundError|ImportError|No module named|cannot import name")
+_ENGINE = re.compile(r"\bre2\b|hermes_re")  # google-re2 / the hermes_re facade (RE2 migration)
 
 # Open issues behind a property, per column (a fix PR deletes its entry). Each pattern matches only the
 # verdict text its bug produces; any other failure of the same property propagates.
@@ -48,6 +50,9 @@ _FOREIGN_UNIT_GATE = (r"the update restarted the systemd unit \S+ the dashboard 
                       "gated on #124938: the update restarts the systemd unit whose cgroup a manual dashboard "
                       "was started in instead of respawning the dashboard")
 DASHBOARD_GATES = {"n1": [_FOREIGN_UNIT_GATE]}
+# The fix each column-keyed gate waits for (``_install_helpers.FIXED_BY``): from a start without it the
+# property fails for a reason only that old updater has, so it is skipped for that start instead.
+GATE_FIXES = {"dashboard": "#124938", "relaunch": "#124649"}
 CRON_GATES = {
     "n1": (r"fired into the update swap window and failed importing",
            "gated on #113293: a cron job due during an update fires into the swap window, fails, and loses its slot"),
@@ -292,6 +297,31 @@ def _quiet_wait(pred, *, timeout: float, what: str, interval: float = 1.0):
         return None
 
 
+def _logs(inst: X.Install) -> list[Path]:
+    """Every log the user's machine writes in the cell: process logs, ``$HERMES_HOME/logs``, worker logs."""
+    found = [*inst.logs, *(inst.hermes_home / "logs").glob("*.log"), *inst.hermes_home.rglob("t_*.log")]
+    return sorted(set(p for p in found if p.is_file()))
+
+
+def log_offsets(inst: X.Install) -> dict[Path, int]:
+    return {p: p.stat().st_size for p in _logs(inst)}
+
+
+def log_text_since(inst: X.Install, offsets: dict[Path, int]) -> str:
+    """What every log gained since ``offsets`` (a log created since then, whole)."""
+    parts = []
+    for p in _logs(inst):
+        with p.open("rb") as fh:
+            fh.seek(offsets.get(p, 0))
+            parts.append(f"--- {p.name} ---\n" + fh.read().decode("utf-8", errors="replace"))
+    return "\n".join(parts)
+
+
+def skip_unless_start_carries(column: str, gate: str) -> None:
+    if column == "n1" and not I.start_carries(GATE_FIXES[gate], X.refs().base):
+        pytest.skip(f"{X.refs().base_tag} predates the {GATE_FIXES[gate]} fix this {gate} property depends on")
+
+
 # -- the scenario ---------------------------------------------------------------------------------
 
 
@@ -335,6 +365,7 @@ def run(column: str, root: Path) -> SimpleNamespace:
             o.job_id = job["id"]
             assert not model.cron_calls, "premise: the job ran before it was due"
 
+            offsets = log_offsets(inst)
             o.up = inst.update()
             # Still mid-turn here: the gateway must be the one that started it, its restart pending.
             o.old_alive_after_update = inst.host.alive(o.old_pid)
@@ -399,6 +430,7 @@ def run(column: str, root: Path) -> SimpleNamespace:
         o.runs = {t: _kanban(inst, "SELECT id, outcome, started_at, ended_at FROM task_runs WHERE task_id = ? "
                                    "ORDER BY id", (t,)) for t in (o.card1, o.card2)}
         o.worker_logs = worker_logs(inst)
+        o.engine_text = f"{o.up.stdout}\n{o.up.stderr}\n{log_text_since(inst, offsets)}"
         card_log = {t: next((p.read_text(errors="replace") for p in inst.hermes_home.rglob(f"{t}.log")), "")
                     for t in (o.card1, o.card2)}
         # Workers spawned after the update: every run of the new card, and every re-run of the in-flight one.
@@ -436,6 +468,7 @@ class HandoffProperties:
             shutil.rmtree(root, ignore_errors=True)
 
     def _relaunched(self, o) -> None:
+        skip_unless_start_carries(o.column, "relaunch")
         with known_gate(X.RELAUNCH_GATES, o.column):
             assert not o.relaunch, f"{o.relaunch}\n{o.diag}"
 
@@ -473,6 +506,15 @@ class HandoffProperties:
         status, body = o.chat_after
         assert status == 200 and X.reply_text(body) == REPLY, f"no turn after the update: {body}\n{o.diag}"
 
+    def test_no_regex_engine_error_in_the_update_or_any_log(self, fleet):
+        """C10 of the RE2 migration: no process of the update, and none it starts or resumes (gateway,
+        dashboard, cron, kanban worker), trips over the regex engine (google-re2, ``hermes_re``) or a
+        module it cannot import: not in the update's output, not in a log line written since it began.
+        Never gated: a known gap elsewhere must not hide it."""
+        bad = I.engine_error_lines(fleet.engine_text)
+        assert not bad, ("the update or a log line written since names the regex engine or a missing module:\n"
+                         + "\n".join(bad[:20]) + f"\n{fleet.diag}")
+
     def test_update_exit_status_matches_what_came_back(self, fleet):
         """Nothing is reported as success when it failed, and a failure exit names something real."""
         o = fleet
@@ -494,6 +536,7 @@ class HandoffProperties:
 
     def test_dashboard_is_back_on_its_port(self, fleet):
         o = fleet
+        skip_unless_start_carries(o.column, "dashboard")
         out = o.up.stdout + o.up.stderr
         assert "TypeError" not in out, f"the update tripped over the dashboard\n{o.diag}"
         with _gated(DASHBOARD_GATES.get(o.column, ())):
@@ -550,6 +593,9 @@ def dashboard_verdict(o) -> str:
 def cron_verdict(o) -> str:
     """How many times the job due mid-update reached the provider, and why not when it never did."""
     n = len(o.cron_calls)
+    if n == 0 and _ENGINE.search(o.cron_error or ""):
+        # Never the #113293 verdict below: its gate must not excuse a regex-engine failure.
+        return f"the job due mid-update failed on the regex engine ({o.cron_error[:240]})"
     if n == 0 and _IMPORT_ERR.search(o.cron_error or ""):
         return (f"the job due mid-update fired into the update swap window and failed importing "
                 f"({o.cron_error[:240]}); it never reached the provider")

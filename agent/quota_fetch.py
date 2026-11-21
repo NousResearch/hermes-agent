@@ -18,9 +18,13 @@ Hard boundaries (non-negotiable):
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import math
+import socket
+import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -56,6 +60,137 @@ class _DeadlineExceeded(Exception):
     """Internal: the single total operation budget expired."""
 
 
+class _DeadlineSocket(socket.socket):
+    """Socket whose every blocking I/O call is bounded by the *remaining* total budget.
+
+    A socket inactivity timeout alone cannot bound a trickling peer: each
+    fragment resets it. Refreshing it to the absolute remaining budget before
+    EACH syscall makes DNS-independent connect/header/body I/O honor the total
+    deadline; no background worker is involved.
+    """
+
+    deadline: float = 0.0
+
+    def _apply_deadline(self) -> None:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise _DeadlineExceeded()
+        self.settimeout(remaining)
+
+    def connect(self, address):  # noqa: ANN001,ANN201
+        self._apply_deadline()
+        return super().connect(address)
+
+    def recv(self, bufsize: int, flags: int = 0) -> bytes:
+        self._apply_deadline()
+        return super().recv(bufsize, flags)
+
+    def recv_into(self, buffer, nbytes: int = 0, flags: int = 0):  # noqa: ANN001,ANN201
+        self._apply_deadline()
+        return super().recv_into(buffer, nbytes, flags)
+
+    def send(self, data, flags: int = 0) -> int:  # noqa: ANN001
+        self._apply_deadline()
+        return super().send(data, flags)
+
+    def sendall(self, data, flags: int = 0) -> None:  # noqa: ANN001
+        view = memoryview(data)
+        while view:
+            self._apply_deadline()
+            sent = super().send(view, flags)
+            view = view[sent:]
+
+
+def _bounded_getaddrinfo(host: str, port: int, deadline: float):
+    """Resolve under the remaining aggregate budget; refuse before connecting on timeout.
+
+    The system resolver is not cancellable from Python; the helper thread is a
+    short-lived daemon and performs NO provider request. If it outlives the
+    budget we refuse before any socket is opened, so no provider work continues
+    on a worker owned by this fetch.
+    """
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise _DeadlineExceeded()
+    result: dict[str, Any] = {}
+
+    def _resolve() -> None:
+        try:
+            result["value"] = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except Exception as exc:  # health: allow BLE001 -- surfaced to caller as unavailable
+            result["error"] = exc
+
+    thread = threading.Thread(target=_resolve, daemon=True, name="quota-dns-bound")
+    thread.start()
+    thread.join(remaining)
+    if thread.is_alive():
+        raise _DeadlineExceeded()
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
+
+
+class _DeadlineHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection whose socket and TLS handshake obey the total deadline."""
+
+    def __init__(self, host: str, *, deadline: float, **kwargs: Any) -> None:
+        super().__init__(host, **kwargs)
+        self.deadline = deadline
+
+    def connect(self) -> None:
+        infos = _bounded_getaddrinfo(self.host, self.port, self.deadline)
+        family, socktype, proto, _, sockaddr = infos[0]
+        raw = _DeadlineSocket(family, socktype, proto)
+        raw.deadline = self.deadline
+        raw.connect(sockaddr)
+        # Always build the verifying default context here so the TLS handshake
+        # is owned by the deadline path (and is never weakened by caller state).
+        context = ssl.create_default_context()
+        tls = context.wrap_socket(raw, server_hostname=self.host)
+        self.sock = tls
+        self._tls_established = True
+
+
+class _DeadlineHTTPConnection(http.client.HTTPConnection):
+    """Plain-HTTP counterpart used by offline loopback tests."""
+
+    def __init__(self, host: str, *, deadline: float, **kwargs: Any) -> None:
+        super().__init__(host, **kwargs)
+        self.deadline = deadline
+
+    def connect(self) -> None:
+        infos = _bounded_getaddrinfo(self.host, self.port, self.deadline)
+        family, socktype, proto, _, sockaddr = infos[0]
+        raw = _DeadlineSocket(family, socktype, proto)
+        raw.deadline = self.deadline
+        raw.connect(sockaddr)
+        self.sock = raw
+
+
+class _DeadlineHTTPSHandler(urllib.request.HTTPSHandler):
+    """urllib handler that builds deadline-bound HTTPS connections."""
+
+    def __init__(self, deadline: float) -> None:
+        super().__init__()
+        self.deadline = deadline
+
+    def https_open(self, req):  # noqa: ANN001,ANN201
+        return self.do_open(
+            lambda host, **kw: _DeadlineHTTPSConnection(host, deadline=self.deadline, **kw), req)
+
+
+class _DeadlineHTTPHandler(urllib.request.HTTPHandler):
+    """urllib handler that builds deadline-bound plain-HTTP connections."""
+
+    def __init__(self, deadline: float) -> None:
+        super().__init__()
+        self.deadline = deadline
+
+    def http_open(self, req):  # noqa: ANN001,ANN201
+        return self.do_open(
+            lambda host, **kw: _DeadlineHTTPConnection(host, deadline=self.deadline, **kw), req)
+
+
 def _http_get_json(url: str, token: str, timeout: float) -> tuple[int, Any]:
     """GET *url* with *token*; returns (status, parsed-json|None).
 
@@ -73,7 +208,9 @@ def _http_get_json(url: str, token: str, timeout: float) -> tuple[int, Any]:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise _DeadlineExceeded()
-    with _opener.open(req, timeout=remaining) as resp:
+    opener = urllib.request.build_opener(
+        _DeadlineHTTPHandler(deadline), _DeadlineHTTPSHandler(deadline), _RefuseRedirect())
+    with opener.open(req, timeout=remaining) as resp:
         host = urllib.request.urlparse(resp.geturl()).hostname or ""
         if host.lower() not in _OPENROUTER_HOSTS:
             return 502, None
@@ -129,6 +266,14 @@ def fetch_openrouter_key_limits(token: str, *, credential_scope_id: str,
         # timeout is the mechanism that enforces the total monotonic budget.
         logger.debug("quota_fetch: openrouter key endpoint exceeded the total deadline")
         return _unavailable("fetch_timeout")
+    except urllib.error.URLError as exc:
+        # urllib wraps OSErrors from connect/TLS/headers in URLError.
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, (_DeadlineExceeded, TimeoutError)):
+            logger.debug("quota_fetch: openrouter key endpoint exceeded the total deadline")
+            return _unavailable("fetch_timeout")
+        logger.debug("quota_fetch: openrouter key endpoint unavailable")
+        return _unavailable("fetch_failed")
     except Exception:  # health: allow BLE001 -- network/TLS/HTTP failures are all 'unavailable'; token never logged
         logger.debug("quota_fetch: openrouter key endpoint unavailable")
         return _unavailable("fetch_failed")

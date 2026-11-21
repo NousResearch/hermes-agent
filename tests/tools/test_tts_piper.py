@@ -202,6 +202,34 @@ class TestTextToSpeechToolWithPiper:
         assert data["success"] is False
         assert "piper-tts" in data["error"]
 
+    # Piper sets the WAV format on its first audio chunk. With no chunk, closing the file
+    # raised wave.Error ("# channels not specified") in place of the real outcome.
+    @pytest.mark.parametrize("synthesis_error, expected", [
+        (None, "Piper produced no audio"),  # e.g. text that is only "..."
+        (ModuleNotFoundError("No module named 'unicode_rbnf'"), "unicode_rbnf"),  # zh_CN without piper-tts[zh]
+    ])
+    def test_no_audio_chunk_reports_the_real_outcome(self, tmp_path, monkeypatch, synthesis_error, expected):
+        class _NoChunkVoice(_StubPiperVoice):
+            def synthesize_wav(self, text, wav_file, syn_config=None):
+                if synthesis_error:
+                    raise synthesis_error
+
+        model = tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx"
+        model.write_bytes(b"model")
+        (tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx.json").write_text("{}")
+        monkeypatch.setattr(tts_tool, "_import_piper", lambda: _NoChunkVoice)
+        cfg = {"provider": "piper", "piper": {"voice": str(model)}}
+        monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: cfg)
+
+        from tools.registry import registry
+        data = json.loads(registry.dispatch(
+            "text_to_speech", {"text": "hi", "output_path": str(tmp_path / "clip.mp3")}))
+
+        assert data["success"] is False
+        assert expected in data["error"]
+        assert "channels not specified" not in data["error"]
+        assert not (tmp_path / "clip.wav").exists()
+
 
 # ---------------------------------------------------------------------------
 # check_tts_requirements

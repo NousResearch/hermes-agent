@@ -8,13 +8,14 @@ container. Piper and KittenTTS keep loaded models in small LRU caches registered
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Tuple
 
-from tools.tts_tool_delivery import _finalize_wav_output, _origin, _section, _wav_sidecar_path
+from tools.tts_tool_delivery import _finalize_wav_output, _origin, _remove_quietly, _section, _wav_sidecar_path
 
 logger = logging.getLogger("tools.tts_tool")
 
@@ -160,11 +161,25 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: dict[str, Any])
         except ImportError:
             logger.warning("[Piper] SynthesisConfig not available in this piper-tts version — advanced knobs ignored")
     wav_path = _wav_sidecar_path(output_path)
-    with wave.open(wav_path, "wb") as wav_file:
+    wav_file = wave.open(wav_path, "wb")
+    frames = 0
+    try:
         if syn_config is not None:
             voice.synthesize_wav(text, wav_file, syn_config=syn_config)
         else:
             voice.synthesize_wav(text, wav_file)
+        frames = wav_file.getnframes()
+    finally:
+        # Piper sets the WAV format on its first audio chunk; with none, close() raises
+        # wave.Error ("# channels not specified"), which would mask the synthesis error.
+        with contextlib.suppress(wave.Error):
+            wav_file.close()
+        if not frames:
+            _remove_quietly(wav_path)
+    if not frames:
+        raise RuntimeError(
+            "Piper produced no audio for this text: it found nothing to speak "
+            "(e.g. only punctuation such as '...'). Retry with text that contains words.")
     return _finalize_wav_output(wav_path, output_path)
 
 

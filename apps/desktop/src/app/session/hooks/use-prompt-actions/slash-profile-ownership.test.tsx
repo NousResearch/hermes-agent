@@ -4,11 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { getProfiles } from '@/hermes'
 import { $defaultProfileRoute } from '@/store/default-profile'
-import {
-  $newChatProfile,
-  captureNewChatSource,
-  pinNewChatProfile
-} from '@/store/profile'
+import { $newChatProfile, captureNewChatSource, pinNewChatProfile } from '@/store/profile'
 import { $profileSwitchFailure, invalidateProfileSwitch, trackProfileSwitch } from '@/store/profile-switch-state'
 import { $connection } from '@/store/session'
 import { dropSessionState } from '@/store/session-states'
@@ -47,7 +43,15 @@ it('keeps the newer profile failure retryable when an older slash activation fin
   const beta = Promise.withResolvers<void>()
   fixture.activate.mockReturnValue(alpha.promise)
   let handle: HarnessHandle | null = null
-  await actRender(<Harness onReady={value => { handle = value }} refreshSessions={async () => undefined} requestGateway={vi.fn(async () => ({} as never))} />)
+  await actRender(
+    <Harness
+      onReady={value => {
+        handle = value
+      }}
+      refreshSessions={async () => undefined}
+      requestGateway={vi.fn(async () => ({}) as never)}
+    />
+  )
   const slash = handle!.submitText('/profile alpha')
   await vi.waitFor(() => expect(fixture.activate).toHaveBeenCalledWith('alpha'))
   pinNewChatProfile('beta')
@@ -70,7 +74,15 @@ it('does not rehome a newer generic draft when an older profile lookup resolves'
   const lookup = Promise.withResolvers<Awaited<ReturnType<typeof getProfiles>>>()
   vi.mocked(getProfiles).mockReturnValueOnce(lookup.promise)
   let handle: HarnessHandle | null = null
-  await actRender(<Harness onReady={value => { handle = value }} refreshSessions={async () => undefined} requestGateway={vi.fn(async () => ({} as never))} />)
+  await actRender(
+    <Harness
+      onReady={value => {
+        handle = value
+      }}
+      refreshSessions={async () => undefined}
+      requestGateway={vi.fn(async () => ({}) as never)}
+    />
+  )
   const callsBefore = vi.mocked(getProfiles).mock.calls.length
   const slash = handle!.submitText('/profile alpha')
   await vi.waitFor(() => expect(vi.mocked(getProfiles).mock.calls.length).toBe(callsBefore + 1))
@@ -84,7 +96,15 @@ it('does not rehome a newer generic draft when an older profile lookup resolves'
 it.each([true, false])('keeps the latest slash selection when lookups overlap (older first: %s)', async olderFirst => {
   fixture.activate.mockReset().mockResolvedValue(undefined)
   let handle: HarnessHandle | null = null
-  await actRender(<Harness onReady={value => { handle = value }} refreshSessions={async () => undefined} requestGateway={vi.fn(async () => ({} as never))} />)
+  await actRender(
+    <Harness
+      onReady={value => {
+        handle = value
+      }}
+      refreshSessions={async () => undefined}
+      requestGateway={vi.fn(async () => ({}) as never)}
+    />
+  )
   const alpha = Promise.withResolvers<Awaited<ReturnType<typeof getProfiles>>>()
   const beta = Promise.withResolvers<Awaited<ReturnType<typeof getProfiles>>>()
   vi.mocked(getProfiles).mockReturnValueOnce(alpha.promise).mockReturnValueOnce(beta.promise)

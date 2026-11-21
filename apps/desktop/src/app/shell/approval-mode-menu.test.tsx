@@ -65,9 +65,7 @@ describe('approval mode statusbar item', () => {
     // is 'off'.
     const requestGateway = vi.fn(async () => ({ value: 'off' }))
 
-    const { rerender } = render(
-      <Harness gatewayState="connecting" profile="boot" requestGateway={requestGateway} />
-    )
+    const { rerender } = render(<Harness gatewayState="connecting" profile="boot" requestGateway={requestGateway} />)
 
     expect(requestGateway).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: /smart/i })).toBeTruthy()

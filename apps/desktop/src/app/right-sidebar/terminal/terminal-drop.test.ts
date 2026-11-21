@@ -116,12 +116,14 @@ describe('terminal drop in the browser-hosted Desktop', () => {
   })
 
   it("quotes staged paths for the terminal's own shell", async () => {
-    browserBridge(async () => 'C:\\Users\\me\\.hermes\\uploads\\it\'s.txt')
+    browserBridge(async () => "C:\\Users\\me\\.hermes\\uploads\\it's.txt")
     const { host, unbind, write } = bind('powershell.exe')
 
     drop(host, transfer([file("it's.txt")]))
 
-    await vi.waitFor(() => expect(write).toHaveBeenCalledWith('term-1', "'C:\\Users\\me\\.hermes\\uploads\\it''s.txt' "))
+    await vi.waitFor(() =>
+      expect(write).toHaveBeenCalledWith('term-1', "'C:\\Users\\me\\.hermes\\uploads\\it''s.txt' ")
+    )
     unbind()
   })
 
@@ -206,7 +208,10 @@ describe('terminal drop never types keystrokes', () => {
   it('skips an app file-tree path holding control characters and names it in a warning', () => {
     const { host, unbind, write } = bind('bash')
 
-    drop(host, transfer([], ['/work/drop/notes\x15touch PWNED\r.txt', '/work/drop/ok.txt', '/work/c1\x9b.md', '/work/del\x7f']))
+    drop(
+      host,
+      transfer([], ['/work/drop/notes\x15touch PWNED\r.txt', '/work/drop/ok.txt', '/work/c1\x9b.md', '/work/del\x7f'])
+    )
 
     expect(typedText(write)).not.toMatch(CONTROL_CHARACTER)
     expect(typedText(write)).toBe("'/work/drop/ok.txt' ")
@@ -613,11 +618,14 @@ describe("terminal drop types each path as one literal word of the terminal's sh
     }
   )
 
-  it.each(['csh', 'tcsh', '/bin/tcsh'])('types every path as one literal word with no history substitution for %s', shell => {
-    for (const path of [...HOSTILE_POSIX_PATHS, '/home/me/x!!:s^e^;touch PWNED;^.txt', '/home/me/!-2']) {
-      expect(cshWords(droppedText(shell, path))).toEqual([path])
+  it.each(['csh', 'tcsh', '/bin/tcsh'])(
+    'types every path as one literal word with no history substitution for %s',
+    shell => {
+      for (const path of [...HOSTILE_POSIX_PATHS, '/home/me/x!!:s^e^;touch PWNED;^.txt', '/home/me/!-2']) {
+        expect(cshWords(droppedText(shell, path))).toEqual([path])
+      }
     }
-  })
+  )
 
   it('matches a shell by its program name, not by a directory or a longer name', () => {
     // A directory named like cmd must not give bash the cmd quoting.
@@ -631,7 +639,12 @@ describe('terminal drop in cmd with delayed expansion', () => {
   const env = { HERMESPROBE: 'X"&calc&"Y', PATH: 'C:\\Windows\\system32' }
 
   it('types the same words whether delayed expansion is on or off', () => {
-    for (const path of ['C:\\work\\a%HERMESPROBE%b.txt', 'C:\\work\\a^b & c.txt', 'C:\\work\\100%', 'C:\\work\\a b (1).txt']) {
+    for (const path of [
+      'C:\\work\\a%HERMESPROBE%b.txt',
+      'C:\\work\\a^b & c.txt',
+      'C:\\work\\100%',
+      'C:\\work\\a b (1).txt'
+    ]) {
       const typed = droppedText('cmd.exe', path)
       expect(cmdWords(typed, env)).toEqual([path])
       expect(cmdWords(typed, env, { delayed: true })).toEqual([path])
@@ -659,25 +672,31 @@ describe('terminal drop in cmd with delayed expansion', () => {
 // rules of its own, so POSIX quotes could end early there. Only a path every shell reads as one
 // plain word is typed, as it is; any other is left out and named in a warning.
 describe('terminal drop into a shell the quoter does not name', () => {
-  it.each(['nu', 'xonsh', 'elvish', 'ssh', 'C:\\tools\\nu.exe', '/usr/local/bin/xonsh'])('types only plain paths for %s', shell => {
-    const { host, unbind, write } = bind(shell)
+  it.each(['nu', 'xonsh', 'elvish', 'ssh', 'C:\\tools\\nu.exe', '/usr/local/bin/xonsh'])(
+    'types only plain paths for %s',
+    shell => {
+      const { host, unbind, write } = bind(shell)
 
-    drop(
-      host,
-      transfer([], ['/home/me/notes_v2.md', '/home/me/a b.txt', "/home/me/it's.txt", '/home/me/$HOME', '~/x', '-rf', 'C:\\x'])
-    )
+      drop(
+        host,
+        transfer(
+          [],
+          ['/home/me/notes_v2.md', '/home/me/a b.txt', "/home/me/it's.txt", '/home/me/$HOME', '~/x', '-rf', 'C:\\x']
+        )
+      )
 
-    expect(typedText(write)).toBe('/home/me/notes_v2.md ')
-    const [warning] = $notifications.get()
-    expect(warning?.kind).toBe('warning')
+      expect(typedText(write)).toBe('/home/me/notes_v2.md ')
+      const [warning] = $notifications.get()
+      expect(warning?.kind).toBe('warning')
 
-    for (const path of ['/home/me/a b.txt', "/home/me/it's.txt", '/home/me/$HOME', '~/x', '-rf', 'C:\\x']) {
-      expect(warning?.message).toContain(path)
+      for (const path of ['/home/me/a b.txt', "/home/me/it's.txt", '/home/me/$HOME', '~/x', '-rf', 'C:\\x']) {
+        expect(warning?.message).toContain(path)
+      }
+
+      expect(warning?.message).not.toContain('notes_v2.md')
+      unbind()
     }
-
-    expect(warning?.message).not.toContain('notes_v2.md')
-    unbind()
-  })
+  )
 
   it('types nothing and focuses nothing when no dropped path is plain', () => {
     const { focus, host, unbind, write } = bind('nu')

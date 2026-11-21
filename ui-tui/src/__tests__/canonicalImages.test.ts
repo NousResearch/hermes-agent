@@ -11,7 +11,10 @@ import { patchUiState, resetUiState } from '../app/uiStore.js'
 import { stageClipboardImage, stageImagePath } from '../lib/imageAttachments.js'
 import { loadPendingInputs } from '../lib/pendingInputs.js'
 
-const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=', 'base64')
+const png = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=',
+  'base64'
+)
 
 it('stages private immutable local bytes, uploads remote bytes, and never falls back to a client path', async () => {
   // macOS: tmpdir() is /var/..., a symlink to /private/var; captureDestination() realpaths
@@ -36,20 +39,42 @@ it('stages private immutable local bytes, uploads remote bytes, and never falls 
     expect(request).not.toHaveBeenCalled()
     writeFileSync(source, png)
     const prompt = vi.fn(async (_method: string, _params: any) => ({ status: 'started' }))
-    submitPrompt(source, { gw: { isCanonical: true, request: prompt } as any, appendMessage: vi.fn(), enqueue: vi.fn(), expand: s => s, setLastUserMsg: vi.fn(), sys: vi.fn() })
-    await vi.waitFor(() => expect(prompt).toHaveBeenCalledWith('prompt.submit', expect.objectContaining({ attachments: [{ path: expect.any(String), mime: 'image/png' }] })))
-    expect(readFileSync(prompt.mock.calls.find(([method]) => method === 'prompt.submit')![1].attachments[0].path)).toEqual(png)
+    submitPrompt(source, {
+      gw: { isCanonical: true, request: prompt } as any,
+      appendMessage: vi.fn(),
+      enqueue: vi.fn(),
+      expand: s => s,
+      setLastUserMsg: vi.fn(),
+      sys: vi.fn()
+    })
+    await vi.waitFor(() =>
+      expect(prompt).toHaveBeenCalledWith(
+        'prompt.submit',
+        expect.objectContaining({ attachments: [{ path: expect.any(String), mime: 'image/png' }] })
+      )
+    )
+    expect(
+      readFileSync(prompt.mock.calls.find(([method]) => method === 'prompt.submit')![1].attachments[0].path)
+    ).toEqual(png)
     vi.stubEnv('HERMES_TUI_GATEWAY_URL', 'wss://owner.example/ws')
     const remote = await stageImagePath(source, gw, captureDestination())
     expect(remote.path).toBe('/owner/cache/images/upload.png')
-    expect(request).toHaveBeenCalledWith('image.attach_bytes', expect.objectContaining({
-      content_base64: png.toString('base64'), session_id: 'owner'
-    }))
+    expect(request).toHaveBeenCalledWith(
+      'image.attach_bytes',
+      expect.objectContaining({
+        content_base64: png.toString('base64'),
+        session_id: 'owner'
+      })
+    )
     request.mockRejectedValueOnce(new Error('upload refused'))
     await expect(stageImagePath(source, gw, captureDestination())).rejects.toThrow('upload refused')
     writeFileSync(source, 'not an image')
     await expect(stageImagePath(source, gw, captureDestination())).rejects.toThrow(/image/i)
-  } finally { resetUiState(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }) }
+  } finally {
+    resetUiState()
+    vi.unstubAllEnvs()
+    rmSync(home, { recursive: true, force: true })
+  }
 })
 
 it('resolves a relative image path in the session folder, never the ui-tui install', async () => {
@@ -63,33 +88,53 @@ it('resolves a relative image path in the session folder, never the ui-tui insta
   const gw = { request: vi.fn() } as any
 
   try {
-    resetUiState(); patchUiState({ sid: 'owner', info: { cwd: project } as never })
+    resetUiState()
+    patchUiState({ sid: 'owner', info: { cwd: project } as never })
     expect(readFileSync((await stageImagePath('shot.png caption', gw, captureDestination())).path)).toEqual(png)
     // No session folder yet: the folder `hermes --tui` was launched from.
-    resetUiState(); patchUiState({ sid: 'owner' }); vi.stubEnv('HERMES_CWD', project)
-    expect(await stageImagePath('./shot.png', gw, captureDestination())).toMatchObject({ mime: 'image/png', name: 'shot.png' })
-  } finally { resetUiState(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }) }
+    resetUiState()
+    patchUiState({ sid: 'owner' })
+    vi.stubEnv('HERMES_CWD', project)
+    expect(await stageImagePath('./shot.png', gw, captureDestination())).toMatchObject({
+      mime: 'image/png',
+      name: 'shot.png'
+    })
+  } finally {
+    resetUiState()
+    vi.unstubAllEnvs()
+    rmSync(home, { recursive: true, force: true })
+  }
 })
 
 it('extracts clipboard on the client and uploads only captured bytes to a remote owner', async () => {
   const home = mkdtempSync(join(tmpdir(), 'ink-clipboard-'))
   vi.stubEnv('HERMES_HOME', home)
   vi.stubEnv('HERMES_TUI_GATEWAY_URL', 'wss://remote.example')
-  resetUiState(); patchUiState({ sid: 'owner' })
+  resetUiState()
+  patchUiState({ sid: 'owner' })
   const request = vi.fn(async () => ({ path: '/owner/cache/images/clip.png' }))
 
-  const extract = vi.fn(async (path: string) => { writeFileSync(path, png);
+  const extract = vi.fn(async (path: string) => {
+    writeFileSync(path, png)
 
- return true })
+    return true
+  })
 
   try {
     const image = await stageClipboardImage({ request } as any, captureDestination(), extract)
     expect(image).toMatchObject({ path: '/owner/cache/images/clip.png', mime: 'image/png' })
-    expect(request).toHaveBeenCalledWith('image.attach_bytes', expect.objectContaining({ content_base64: png.toString('base64') }))
+    expect(request).toHaveBeenCalledWith(
+      'image.attach_bytes',
+      expect.objectContaining({ content_base64: png.toString('base64') })
+    )
     expect(() => readFileSync(extract.mock.calls[0]![0])).toThrow()
     expect(await stageClipboardImage({ request } as any, captureDestination(), async () => false)).toBeNull()
     expect(request).toHaveBeenCalledTimes(1)
-  } finally { resetUiState(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }) }
+  } finally {
+    resetUiState()
+    vi.unstubAllEnvs()
+    rmSync(home, { recursive: true, force: true })
+  }
 })
 
 it('journals canonical attachment payload before sending and replays it unchanged after a lost acknowledgement', async () => {
@@ -99,7 +144,14 @@ it('journals canonical attachment payload before sending and replays it unchange
   patchUiState({ sid: 'owner' })
   const destination = captureDestination()
   const attachments = [{ path: join(home, 'cache/images/shot.png'), mime: 'image/png' }]
-  const item = { text: 'caption', display: 'caption [[ Image 1 ]]', attachments, submissionId: randomUUID(), destination, inFlight: true }
+  const item = {
+    text: 'caption',
+    display: 'caption [[ Image 1 ]]',
+    attachments,
+    submissionId: randomUUID(),
+    destination,
+    inFlight: true
+  }
   const wires: any[] = []
 
   const request = vi.fn(async (method, params) => {
@@ -110,7 +162,14 @@ it('journals canonical attachment payload before sending and replays it unchange
     throw new Error('lost acknowledgement')
   })
 
-  const deps = { gw: { isCanonical: true, request } as any, appendMessage: vi.fn(), enqueue: vi.fn(), expand: (s: string) => s, setLastUserMsg: vi.fn(), sys: vi.fn() }
+  const deps = {
+    gw: { isCanonical: true, request } as any,
+    appendMessage: vi.fn(),
+    enqueue: vi.fn(),
+    expand: (s: string) => s,
+    setLastUserMsg: vi.fn(),
+    sys: vi.fn()
+  }
 
   try {
     submitPrompt(item.text, deps, true, item.display, { skipDetectDrop: true, queueItem: item })
@@ -122,5 +181,9 @@ it('journals canonical attachment payload before sending and replays it unchange
     expect(wires).toHaveLength(2)
     expect(wires[0]).toEqual(wires[1])
     expect(wires[0].attachments).toEqual(attachments)
-  } finally { resetUiState(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }) }
+  } finally {
+    resetUiState()
+    vi.unstubAllEnvs()
+    rmSync(home, { recursive: true, force: true })
+  }
 })

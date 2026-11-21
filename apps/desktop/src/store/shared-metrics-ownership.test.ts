@@ -63,8 +63,9 @@ describe('first-run consent ownership', () => {
     const answered = { enabled: choice === 'share', send: choice === 'share', decided: true }
     const unanswered = { enabled: false, send: false, decided: false }
 
-    const request = vi.fn().mockImplementation(method =>
-      method === 'shared_metrics.set' ? saved.promise : Promise.resolve(answered))
+    const request = vi
+      .fn()
+      .mockImplementation(method => (method === 'shared_metrics.set' ? saved.promise : Promise.resolve(answered)))
 
     bindDesktopMetrics(vi.fn().mockResolvedValue({ recorded: true }), 'local|alpha')
     await setMetricsGate(captureDesktopMetricsGate, 'off', false)
@@ -90,26 +91,30 @@ describe('first-run consent ownership', () => {
     expect($sharedMetricsDetailsOpen.get()).toBe(false)
   })
 
-  it.each([true, false])('preserves newer off consent (decided=%s) instead of replaying a saved opt-in', async decided => {
-    const saved = Promise.withResolvers<SharedMetricsConsent>()
-    const withdrawn = { enabled: false, send: false, decided }
+  it.each([true, false])(
+    'preserves newer off consent (decided=%s) instead of replaying a saved opt-in',
+    async decided => {
+      const saved = Promise.withResolvers<SharedMetricsConsent>()
+      const withdrawn = { enabled: false, send: false, decided }
 
-    const request = vi.fn().mockImplementation(method =>
-      method === 'shared_metrics.set' ? saved.promise : Promise.resolve(withdrawn))
+      const request = vi
+        .fn()
+        .mockImplementation(method => (method === 'shared_metrics.set' ? saved.promise : Promise.resolve(withdrawn)))
 
-    bindDesktopMetrics(vi.fn().mockResolvedValue({ recorded: true }), 'local|alpha')
-    await setMetricsGate(captureDesktopMetricsGate, 'off', false)
-    const answer = answerSharedMetricsOffer(request, 'share', 'local|alpha')
+      bindDesktopMetrics(vi.fn().mockResolvedValue({ recorded: true }), 'local|alpha')
+      await setMetricsGate(captureDesktopMetricsGate, 'off', false)
+      const answer = answerSharedMetricsOffer(request, 'share', 'local|alpha')
 
-    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1))
-    await setMetricsGate(captureDesktopMetricsGate, 'off', decided)
-    $sharedMetricsConsent.set(withdrawn)
-    $sharedMetricsDetailsOpen.set(!decided)
-    saved.resolve({ enabled: true, send: true, decided: true })
-    await answer
+      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+      await setMetricsGate(captureDesktopMetricsGate, 'off', decided)
+      $sharedMetricsConsent.set(withdrawn)
+      $sharedMetricsDetailsOpen.set(!decided)
+      saved.resolve({ enabled: true, send: true, decided: true })
+      await answer
 
-    expect($desktopMetricsGate.get()).toBe('off')
-    expect($sharedMetricsConsent.get()).toEqual(withdrawn)
-    expect($sharedMetricsDetailsOpen.get()).toBe(!decided)
-  })
+      expect($desktopMetricsGate.get()).toBe('off')
+      expect($sharedMetricsConsent.get()).toEqual(withdrawn)
+      expect($sharedMetricsDetailsOpen.get()).toBe(!decided)
+    }
+  )
 })

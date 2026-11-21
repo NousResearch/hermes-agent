@@ -232,7 +232,11 @@ function copyDomImage(imageUrl: string) {
   }
 }
 
-function domImageSection(target: ContextMenuDomTarget, copy: Translations['contextMenu'], openInApp: boolean): ReactNode[] {
+function domImageSection(
+  target: ContextMenuDomTarget,
+  copy: Translations['contextMenu'],
+  openInApp: boolean
+): ReactNode[] {
   const imageIsWeb = isWebUrl(target.imageUrl)
 
   return [

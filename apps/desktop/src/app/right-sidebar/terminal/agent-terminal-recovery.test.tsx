@@ -91,12 +91,14 @@ describe('quiet agent terminal recovery', () => {
       configurable: true,
       value: { load: vi.fn().mockResolvedValue([]) }
     })
+
     const procs = Array.from({ length: 26 }, (_, index) => ({
       command: `quiet-command-${index}`,
       output_tail: `snapshot-marker-${index}\r\n`,
       session_id: `quiet-${index}`,
       status: 'running'
     }))
+
     reconcileBackgroundProcesses('other-session', procs.slice(0, 25))
     reconcileBackgroundProcesses('target-session', procs.slice(25))
     const background = $backgroundStatusBySession.get()

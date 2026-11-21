@@ -115,9 +115,15 @@ const stored = await (async () => {
   const writes = new Map<string, unknown>()
   const writer = await vi.importActual<typeof GroupChatModule>('./group-chat')
   const { setPluginCtx } = await import('./shared')
-  setPluginCtx({ storage: { get: async () => null, set: async (key: string, value: unknown) => void writes.set(key, value) } } as never)
+  setPluginCtx({
+    storage: { get: async () => null, set: async (key: string, value: unknown) => void writes.set(key, value) }
+  } as never)
 
-  writer.updateGroupChat('Mixed', room => ({ ...room, engine: 'desktop', members: [{ name: 'alpha' }], roomId: 'r1' }), { sync: false })
+  writer.updateGroupChat(
+    'Mixed',
+    room => ({ ...room, engine: 'desktop', members: [{ name: 'alpha' }], roomId: 'r1' }),
+    { sync: false }
+  )
   writer.updateGroupChat('Plain', room => ({ ...room, members: [{ name: 'beta' }], roomId: 'r2' }), { sync: false })
 
   return writes.get('group-chats')
@@ -130,7 +136,10 @@ describe('group-chat hydration', () => {
         i18n: { register: () => () => undefined },
         onDispose: () => undefined,
         register: () => () => undefined,
-        storage: { get: async (key: string) => (key === 'group-chats' ? stored : undefined), set: async () => undefined }
+        storage: {
+          get: async (key: string) => (key === 'group-chats' ? stored : undefined),
+          set: async () => undefined
+        }
       } as never)
     } catch {
       // Registration walks UI surfaces the stub does not model; hydration is

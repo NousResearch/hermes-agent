@@ -17,6 +17,7 @@ the type (``SecretSource.fetch -> FetchResult``, ``home_path: Path``), :func:`re
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextvars
 import dataclasses
@@ -281,6 +282,13 @@ def signature_from(spec: Optional[list]):
 
 
 _SERVING: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar("plugin_host_serving", default=None)
+_BLOCKED_LOOPS: contextvars.ContextVar[frozenset] = contextvars.ContextVar(
+    "plugin_host_blocked_loops", default=frozenset())
+
+
+def caller_blocks_loop(loop: asyncio.AbstractEventLoop) -> bool:
+    """Whether an ancestor host request is synchronously waiting on this loop's thread."""
+    return loop in _BLOCKED_LOOPS.get()
 
 
 def serving_request() -> Optional[int]:
@@ -330,7 +338,15 @@ class Channel:
         future: Future = Future()
         with self._pending_lock:
             self._pending[request_id] = future
-        self._contexts[request_id] = contextvars.copy_context()
+        context = contextvars.copy_context()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            # Parent-local context follows re-entrant RPC; a child cannot forge this loop marker.
+            context.run(_BLOCKED_LOOPS.set, _BLOCKED_LOOPS.get() | {loop})
+        self._contexts[request_id] = context
         message = {"id": request_id, "method": method, "params": params,
                    "origin": _SERVING.get()}
         try:

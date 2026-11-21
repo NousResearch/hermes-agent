@@ -607,12 +607,11 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             _fast_until = time.monotonic() + 0.05
             while proc.poll() is None:
                 trace.iterations += 1
-                if is_interrupted() or is_thread_interrupted(watch_interrupt_tid):
-                    trace.interrupted()
-                    _kill_and_join()
-                    return {**self._finalize_wait_result(output, output.render(suffix="\n[Command interrupted]"), 130),
-                            "hermes_interrupted": True}
-                if yield_handler is not None and consume_yield(watch_interrupt_tid):
+                interrupted = is_interrupted() or is_thread_interrupted(watch_interrupt_tid)
+                if yield_handler is not None and (
+                    consume_yield(watch_interrupt_tid)
+                    or (interrupted and getattr(yield_handler, "handoff_on_interrupt", False))
+                ):
                     drain_stop.set()
                     drain_thread.join(timeout=1)
                     try:
@@ -625,6 +624,11 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
                         return handed
                     drain_stop.clear()
                     drain_thread = _start_drain_thread(proc, output, drain_stop)
+                if interrupted:
+                    trace.interrupted()
+                    _kill_and_join()
+                    return {**self._finalize_wait_result(output, output.render(suffix="\n[Command interrupted]"), 130),
+                            "hermes_interrupted": True}
                 if time.monotonic() > deadline:
                     trace.timed_out()
                     _kill_and_join()

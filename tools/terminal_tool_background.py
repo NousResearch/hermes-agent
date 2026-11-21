@@ -10,6 +10,8 @@ import logging
 import sys
 from typing import Any, List, Optional
 
+from tools.environments.docker_foreground import adopt_foreground
+
 logger = logging.getLogger("tools.terminal_tool")
 
 # A silent background process (no notify_on_complete / watch_patterns) is right
@@ -263,27 +265,30 @@ _YIELDED_NOTE = (
 
 def yield_to_background_handler(
     *, command: str, env_type: str, cwd: Optional[str], effective_task_id: str,
-    task_id: Optional[str], session_key: str,
+    task_id: Optional[str], session_key: str, env=None,
 ):
     """Build the ``yield_handler`` a foreground ``env.execute`` calls when the tool thread is
-    asked to yield (a user message arrived mid-command). Local backend only: the live Popen
-    is adopted by the process registry as a notify-on-complete background session and the
-    partial output is returned to the model right away. Other backends return None (no
-    adoptable host process) and the foreground wait continues."""
-    if env_type != "local":
+    asked to yield. Local and Docker retain the original process and output stream; Docker
+    manages the namespace process group rather than signalling only the exec client.
+    Other backends still wait in the foreground."""
+    if env_type not in {"local", "docker"}:
         return None
 
     def _handler(proc, output_so_far: str) -> dict:
         from tools.process_registry import process_registry
-        session = process_registry.adopt_local(
-            proc, command=command, cwd=cwd, task_id=effective_task_id,
-            owner_task_id=task_id or effective_task_id, session_key=session_key,
-            output_so_far=output_so_far)
+        kwargs = dict(command=command, cwd=cwd, task_id=effective_task_id,
+                      owner_task_id=task_id or effective_task_id, session_key=session_key,
+                      output_so_far=output_so_far)
+        if env_type == "docker":
+            session = adopt_foreground(process_registry, env._foreground_commands[id(proc)], proc, **kwargs)
+        else:
+            session = process_registry.adopt_local(proc, **kwargs)
         _stamp_routing_if_gateway(process_registry, session, session_key)
         logger.info("foreground command yielded to background as %s (pid %s)", session.id, session.pid)
         return {
             "output": output_so_far, "returncode": None, "yielded_session_id": session.id, "pid": session.pid,
         }
+    _handler.handoff_on_interrupt = env_type == "docker"
     return _handler
 
 

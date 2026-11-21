@@ -2234,9 +2234,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 if session.pid:
                     os.kill(session.pid, signal.SIGTERM)
         elif session.process:
-            # Tree kill: on Windows Popen.terminate() only kills the shell wrapper and
-            # leaves Git Bash descendants behind.
-            self._terminate_host_pid(session.process.pid, session.host_start_time)
+            self._terminate_session_process(session)
         elif session.env_ref and session.pid:
             session.env_ref.execute(f"kill {session.pid} 2>/dev/null", cwd="/", timeout=5)
         elif session.detached and session.pid_scope == "host" and session.pid:

@@ -20,6 +20,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from agent.i18n import t
+from gateway.busy_media import prepare_redirect_text
 from gateway.config import Platform
 from gateway.inbound_reply_context import reply_pointer
 from gateway.platforms.base import EphemeralReply
@@ -684,7 +685,7 @@ class GatewayInboundMixin(
 
         # Telegram photo bursts arrive as near-simultaneous updates — never interrupt for a
         # photo-only follow-up; adapter-level batching absorbs them.
-        if event.message_type == MessageType.PHOTO:
+        if (event.message_type, source.platform) == (MessageType.PHOTO, Platform.TELEGRAM):
             logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
             self._hm_merge_pending_for_source(source, _quick_key, event)
             return True, None
@@ -801,12 +802,11 @@ class GatewayInboundMixin(
     async def _hm_busy_interrupt(
         self, event: MessageEvent, source: SessionSource, running_agent: Any, _quick_key: str
     ) -> None:
-        """Interrupt path: redirect text-only corrections when supported, else ``agent.interrupt()``."""
-        # Text-only corrections redirect the live turn (preserving displayed context) when the
-        # runtime supports it; media/voice and older runtimes use the interrupt path below.
+        """Redirect corrections with their attachment context when supported."""
         _can_redirect = getattr(running_agent, "_supports_active_turn_redirect", False) is True
-        if self._hm_text_only(event) and _can_redirect and hasattr(running_agent, "redirect"):
-            if self._redirect_active_turn(running_agent, (event.text or "").strip(), _quick_key, event):
+        if event.message_type != MessageType.COMMAND and _can_redirect and hasattr(running_agent, "redirect"):
+            text = await prepare_redirect_text(self, event)
+            if self._redirect_active_turn(running_agent, text, _quick_key, event):
                 logger.debug("PRIORITY redirect for session %s", _quick_key)
                 return
         logger.debug("PRIORITY interrupt for session %s", _quick_key)

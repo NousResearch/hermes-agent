@@ -490,7 +490,9 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
             usable = False
         if not usable:
             return _err(f"Cannot create skill '{name}': {skill_dir} already exists (not an empty "
-                        "directory, or unreadable). Choose another name, or move/remove that path and retry.")
+                        "directory, or unreadable). Choose another name, or move/remove that path and retry. "
+                        "If it is this skill's own folder missing its SKILL.md, restore it with "
+                        "action='write_file', file_path='SKILL.md'.")
     skill_md = skill_dir / "SKILL.md"
     if guard := _guarded_write(name, skill_dir, skill_md, "create", "SKILL.md", content):
         with suppress(OSError):  # rmdir, not rmtree: only an empty dir goes, anything foreign stays
@@ -619,6 +621,41 @@ def _rmdir_if_empty(parent: Path, stop: Path) -> None:
         parent.rmdir()
 
 
+def _find_orphan_skill_dir(name: str) -> tuple[Optional[Path], Optional[str]]:
+    """Resolve a missing SKILL.md only for explicit write_file resurrection.
+
+    Do not scan bundled/external roots or guess between same-name orphans.
+    """
+    from agent.skill_utils import get_skill_create_dir, is_excluded_skill_path
+
+    parts = name.replace("\\", "/").split("/")
+    if not 1 <= len(parts) <= 2 or any(not VALID_NAME_RE.fullmatch(p) for p in parts):
+        return None, None
+    roots = [_skills_dir()]
+    try:
+        create_root = get_skill_create_dir()
+        if create_root and create_root not in roots:
+            roots.append(create_root)
+    except Exception:
+        logger.debug("skills.create_dir lookup failed", exc_info=True)
+
+    matches = []
+    for root in roots:
+        candidates = ([root.joinpath(*parts)] if len(parts) == 2 else
+                      [root / parts[0], *root.glob(f"*/{parts[0]}")])
+        for candidate in candidates:
+            target = candidate / "SKILL.md"
+            if (candidate.is_dir() and not _is_path_redirect(candidate)
+                    and not _is_path_redirect(candidate.parent)
+                    and not _is_path_redirect(target) and not target.exists()
+                    and not is_excluded_skill_path(target) and candidate not in matches
+                    and not any(candidate.rglob("SKILL.md"))):  # holds skills = a category
+                matches.append(candidate)
+    if len(matches) > 1:
+        return None, f"Multiple orphan directories match '{name}'; use '<category>/<name>'."
+    return (matches[0], None) if matches else (None, None)
+
+
 def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
     """Add or overwrite a supporting file within any skill directory."""
     if err := _validate_file_path(file_path):
@@ -631,6 +668,14 @@ def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
     if err := _validate_content_size(file_content, label=file_path):
         return _err(err)
     skill_dir, guard = _locate_for_write(name, "write_file", " Create it first with action='create'.")
+    if guard and file_path == "SKILL.md":
+        orphan, orphan_error = _find_orphan_skill_dir(name)
+        if orphan_error:
+            return _err(orphan_error)
+        if orphan is not None:
+            if err := _validate_frontmatter(file_content):
+                return _err(err)
+            skill_dir, guard = orphan, None
     if guard:
         return guard
     target, err = _resolve_supporting_file(skill_dir, file_path)

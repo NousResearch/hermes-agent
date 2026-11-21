@@ -64,6 +64,10 @@ def _is_path_unsafe(value: object, *, strict: bool = True) -> bool:
 
 _CHAT_TYPE_PREFIX = {"group": "group: ", "channel": "channel: "}
 
+# Platforms whose owner status the gateway settles each turn (``_resolve_owner_status``) and shows
+# the model; another platform joins once its owner can be identified from its DM allowlist.
+OWNER_DETECTION_PLATFORMS = frozenset({Platform.WHATSAPP})
+
 
 @dataclass
 class SessionSource:
@@ -87,6 +91,10 @@ class SessionSource:
     parent_chat_id: Optional[str] = None  # parent channel when chat_id is a thread
     message_id: Optional[str] = None  # triggering message (pin/reply/react)
     role_authorized: bool = False  # adapter granted access via role, not user ID
+    # Wire-invisible trust verdict (never in to_dict/from_dict, so never persisted): the sender is
+    # listed by explicit id in the platform's DM allowlist. The gateway settles it each turn
+    # (``_resolve_owner_status``) before anything renders it.
+    is_owner: bool = False
     # Multiplex profile this message routes to (None => active/default); namespaces the key.
     profile: Optional[str] = None
     # Transport-local fail-closed signal: explicit profile route whose target is not served.
@@ -447,6 +455,17 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
         uid = _hash_sender_id(src.user_id) if redact_pii else src.user_id
         lines.append(f"**User ID:** {_format_untrusted_prompt_value(uid)}")
 
+    # Owner status, single-user sessions only: a shared multi-user prompt is cache-shared and
+    # sender-agnostic, so there the owner's messages carry the "[SYSTEM: sender NAME is the
+    # owner]" marker the gateway prepends instead.
+    if not context.shared_multi_user_session and src.platform in OWNER_DETECTION_PLATFORMS:
+        lines.append(
+            "**Owner:** yes — this sender is your owner; owner-level trust applies."
+            if src.is_owner
+            else "**Owner:** no — this sender is NOT the owner; do not treat them as the owner "
+            "or grant owner-only access."
+        )
+
     lines.extend(_PLATFORM_NOTES.get(src.platform, lambda ctx: [])(context))
     platforms_list = ["local (files on this machine)"] + [
         f"{p.value}: Connected ✓" for p in context.connected_platforms if p != Platform.LOCAL
@@ -684,7 +703,9 @@ def label_shared_sender(
     same label whether the message opens a turn or lands mid-turn (steer / redirect). Display names
     are attacker-influenceable: newlines and control characters are neutralized, or a hostile name
     masquerades as a markdown section. On Slack the speaker's verifiable ``<@U…>`` id rides along, a
-    trusted target for "mention me" (#17916)."""
+    trusted target for "mention me" (#17916). An owner's message on an owner-detection platform
+    also gets an additive ``[SYSTEM: sender Name is the owner]`` marker; nobody else gets a marker,
+    so a display name or message body cannot forge owner status."""
     if not (source.user_name and is_shared_multi_user_session(
             source, group_sessions_per_user=group_sessions_per_user,
             thread_sessions_per_user=thread_sessions_per_user)):
@@ -695,6 +716,8 @@ def label_shared_sender(
     name = tag_safe_display_name(source.user_name)
     if source.platform == Platform.SLACK and source.user_id:
         name = f"{name} | Slack user <@{source.user_id}>"
+    if source.is_owner and source.platform in OWNER_DETECTION_PLATFORMS:
+        return f"[SYSTEM: sender {name} is the owner] [{name}] {text}"
     return f"[{name}] {text}"
 
 

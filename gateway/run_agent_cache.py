@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from gateway.config import Platform
-from gateway.session import SessionSource, build_session_context_prompt
+from gateway.session import OWNER_DETECTION_PLATFORMS, SessionSource, build_session_context_prompt
 from gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
 from gateway.run_shutdown import _log_suppressed
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
@@ -825,7 +825,12 @@ class GatewayAgentCacheMixin:
             src.platform.value if src.platform else "",
             _s(src.chat_id), _s(src.thread_id), _s(src.chat_type), _s(src.chat_name), _s(src.chat_topic),
             _s(src.user_name), _s(src.user_id), _s(getattr(src, "profile", None)),
-            bool(context.shared_multi_user_session), discord_ids, discord_tools, slack_tools,
+            bool(context.shared_multi_user_session),
+            # The **Owner:** line renders only in single-user sessions on owner-detection platforms.
+            bool(src.is_owner) if (
+                not context.shared_multi_user_session and src.platform in OWNER_DETECTION_PLATFORMS
+            ) else False,
+            discord_ids, discord_tools, slack_tools,
             tuple(p.value for p in context.connected_platforms),
             tuple(
                 (p.value, _s(getattr(hc, "name", "")), _s(getattr(hc, "chat_id", "")))

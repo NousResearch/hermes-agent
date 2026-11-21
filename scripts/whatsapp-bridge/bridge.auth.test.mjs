@@ -24,6 +24,7 @@ const ROUTES = [
   ['GET', `/chat/${CHAT}`],
   ['POST', '/send', { chatId: CHAT, message: 'hi' }],
   ['POST', '/edit', { chatId: CHAT, messageId: 'M1', message: 'hi' }],
+  ['POST', '/send-reaction', { chatId: CHAT, messageId: 'M1', emoji: '👀' }],
   ['POST', '/send-media', { chatId: CHAT, filePath: '/nonexistent' }],
   ['POST', '/send-poll', { chatId: CHAT, question: 'q', options: ['a', 'b'] }],
   ['POST', '/send-location', { chatId: CHAT, latitude: 1, longitude: 2 }],
@@ -118,6 +119,9 @@ test('bridge.js serves /auth-proof openly and puts every other route behind the 
     assert.equal((await request('GET', '/health', undefined, bearer)).status, 200);
     assert.equal((await request('POST', '/send', ROUTES[3][2], bearer)).status, 200, output);
     assert.match(readFileSync(sentFile, 'utf8'), /send/);
+    const reaction = ROUTES.find(([, route]) => route === '/send-reaction')[2];
+    assert.equal((await request('POST', '/send-reaction', reaction, bearer)).status, 200, output);
+    assert.equal(readFileSync(sentFile, 'utf8').match(/send/g).length, 2);
   } finally {
     if (child && child.exitCode === null) {
       const exited = new Promise(resolve => child.once('exit', resolve));

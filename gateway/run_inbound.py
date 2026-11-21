@@ -1795,6 +1795,7 @@ class GatewayInboundMixin(
         # Reset only this session's per-call buffer; other sessions may be concurrently preparing.
         self._consume_pending_native_image_paths(session_key)
 
+        self._resolve_owner_status(source)  # before the sender label renders it
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
         if image_paths:

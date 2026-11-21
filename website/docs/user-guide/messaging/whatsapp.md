@@ -237,17 +237,38 @@ whatsapp:
 Groups are gated by **group policy**, not by the DM allowlist. `WHATSAPP_GROUP_POLICY` / `whatsapp.group_policy`
 defaults to `pairing`, which forwards nothing from groups. `allowlist` plus `WHATSAPP_GROUP_ALLOWED_USERS` /
 `whatsapp.group_allow_from` (comma-separated **group JIDs**, e.g. `120363001234567890@g.us`) admits the listed
-groups; `open` admits every group the bot is a member of. The sender is then checked like any other gateway
-principal: with `WHATSAPP_ALLOWED_USERS` set, a participant must be on it (or paired) — a sender WhatsApp
-addresses by LID matches through the phone number Baileys supplies alongside it, so a first contact with no
-`lid-mapping` file yet is not dropped; with no sender allowlist,
+groups; `open` admits every group the bot is a member of.
+
+The sender is then checked like any other gateway principal: with `WHATSAPP_ALLOWED_USERS` set, a participant
+must be on it (or paired) — a sender WhatsApp addresses by LID matches through the phone number Baileys supplies
+alongside it, so a first contact with no `lid-mapping` file yet is not dropped; with no sender allowlist,
 `allowlist` trusts the group-JID list alone and admits every participant of a listed group, while `open` still
-needs the participant paired or `WHATSAPP_ALLOW_ALL_USERS=true`. By default the bot answers every admitted group
-message; set `require_mention: true` / `WHATSAPP_REQUIRE_MENTION=true` to answer only @mentions, replies to the
-bot, or `/commands` (groups in `free_response_chats` are exempt). Regex wake words go in `mention_patterns`.
-A captionless voice note can only match them with `voice_mention_patterns: true`, which transcribes the group
-voice note first (off by default: every unaddressed voice note then goes to your speech-to-text provider; the
-turn reuses that transcript).
+needs the participant paired or `WHATSAPP_ALLOW_ALL_USERS=true`. To let every member of an admitted group talk to
+the bot while `WHATSAPP_ALLOWED_USERS` still restricts DMs, list the group in `whatsapp.group_allowed_chats`
+(group JIDs, or `"*"` for every admitted group), as on Telegram.
+
+By default the bot answers every admitted group message; set `require_mention: true` /
+`WHATSAPP_REQUIRE_MENTION=true` to answer only @mentions, replies to the bot, or `/commands` (groups in
+`free_response_chats` are exempt). Regex wake words go in `mention_patterns`. A captionless voice note can only
+match them with `voice_mention_patterns: true`, which transcribes the group voice note first (off by default:
+every unaddressed voice note then goes to your speech-to-text provider; the turn reuses that transcript).
+
+```yaml
+# ~/.hermes/config.yaml: every member of one group may talk to the bot; DMs stay limited to WHATSAPP_ALLOWED_USERS
+whatsapp:
+  group_policy: allowlist
+  group_allow_from: ["120363001234567890@g.us"]
+  group_allowed_chats: ["120363001234567890@g.us"]
+  require_mention: true
+```
+
+### Owner detection
+
+The sender listed by explicit number or LID in `WHATSAPP_ALLOWED_USERS` is the owner (`*` never makes anyone the
+owner), also in a group that shows them only by LID. The bot is told whether the sender is the owner: a session's
+context carries an `**Owner:** yes` or `**Owner:** no` line, and when group members share one session
+(`group_sessions_per_user: false`) the owner's messages carry a `[SYSTEM: sender NAME is the owner]` marker
+instead. Your persona (for example `SOUL.md`) can key owner-only behavior off either.
 
 Then start the gateway:
 
@@ -338,6 +359,11 @@ Code blocks and inline code are preserved as-is since WhatsApp supports triple-b
 
 When the agent calls tools (web search, file operations, etc.), WhatsApp displays real-time progress indicators showing which tool is running. This is enabled by default — no configuration needed.
 
+### Processing Reactions
+
+With `whatsapp.reactions: true` in `config.yaml` the bot reacts 👀 to a message while it works on it, then swaps
+that for ✅ when done or ❌ when the turn failed; a cancelled turn clears it. Off by default.
+
 ### Native Polls, Clarify-as-Poll, and Locations
 
 The Baileys-bridge adapter (bot mode) supports several native WhatsApp message types:
@@ -425,6 +451,7 @@ platforms:
 | **Bot stops working after WhatsApp update** | Update Hermes to get the latest bridge version, then re-pair. |
 | **macOS: "Node.js not installed" but node works in terminal** | launchd services don't inherit your shell PATH. Run `hermes gateway install` to re-snapshot your current PATH into the plist, then `hermes gateway start`. See the [Gateway Service docs](./index.md#macos-launchd) for details. |
 | **Messages not being received** | Verify `WHATSAPP_ALLOWED_USERS` includes the sender's number (with country code, no `+` or spaces), or set it to `*` to allow everyone. Set `WHATSAPP_DEBUG=true` in `.env` and restart the gateway to see raw message events in `bridge.log`. |
+| **Bot answers only allowlisted people in a group** | With `WHATSAPP_ALLOWED_USERS` set, group participants must be on it too. List the group in `whatsapp.group_allowed_chats` to let every member talk to the bot. |
 | **Bot replies to strangers with a pairing code** | Set `whatsapp.unauthorized_dm_behavior: ignore` in `~/.hermes/config.yaml` if you want unauthorized DMs to be silently ignored instead. |
 
 ---

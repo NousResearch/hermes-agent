@@ -80,6 +80,10 @@ def handle_api_error(
     if agent.thinking_callback:
         agent.thinking_callback("")
 
+    # Preserve the stream's terminal decision before any retry/rotation/fallback.
+    if getattr(api_error, "hermes_terminal_stream_error", False) is True:
+        raise api_error
+
     _recovered, active_system_prompt = recover_before_classification(
         agent, api_error, messages=messages, api_messages=api_messages, api_kwargs=api_kwargs,
         active_system_prompt=active_system_prompt,

@@ -56,7 +56,7 @@ function windowResized() {
 
 ### WEBGL
 - Origin: center of canvas
-- X increases rightward, Y increases **upward**, Z increases toward viewer
+- X increases rightward, Y increases **downward**, Z increases toward viewer
 - To get P2D-like coordinates in WEBGL: `translate(-width/2, -height/2)`
 
 ## Draw Loop

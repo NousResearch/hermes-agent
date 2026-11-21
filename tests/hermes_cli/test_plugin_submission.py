@@ -1,4 +1,5 @@
 """Real plugin discovery keeps submission permission and ownership bound to the loading home."""
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,7 @@ def register(ctx):
                    else ctx.submit_message(content, **args))
         return json.dumps({"pid": os.getpid(), "receipt": receipt})
     ctx.register_command("receipt-probe", probe)
+    ctx.register_hook("pre_gateway_dispatch", lambda event: json.loads(probe(event)))
 '''
 
 
@@ -131,5 +133,43 @@ def test_hosted_plugin_submission_and_status_are_plain_json(homes):
         assert submitted["receipt"]["admission_id"] == "receipt"
         assert len(gateway.calls) == 2
         assert all(call["plugin_home"] == a for call in gateway.calls)
+    finally:
+        _close(manager)
+
+
+@pytest.mark.platforms("any")
+@pytest.mark.parametrize("content", ["work", None])
+def test_hosted_sync_hook_refuses_receipt_wait_on_its_blocked_caller_loop(homes, monkeypatch, content):
+    from gateway.plugin_submission import service
+
+    a, _ = homes
+    _install(a, allowed=True, isolation="host")
+    gateway = Gateway()
+    gateway._plugin_injection_accepting = lambda: True
+    gateway._plugin_submission = lambda **kwargs: service.call(gateway, timeout=2, **kwargs)
+    dispatched = []
+
+    async def dispatch(_runner, request):
+        dispatched.append(request)
+        return {"ok": True, "status": "queued"}
+
+    monkeypatch.setattr(service, "dispatch", dispatch)
+    manager = _load(a, gateway)
+
+    async def run():
+        gateway._gateway_loop = asyncio.get_running_loop()
+        args = {"session_key": "route", "expected_session_id": "conversation", "request_id": "retry"}
+        if content is not None:
+            args["content"] = content
+        results = await manager.ainvoke_hook("pre_gateway_dispatch", event=json.dumps(args))
+        receipt = results[0]["receipt"]
+        assert receipt["status"] == "refused" and receipt["error"] == "requires_worker_thread"
+        assert not dispatched
+        # A later off-loop invocation is allowed; the blocked-call marker must not leak.
+        assert (await asyncio.to_thread(_invoke, manager, content=content))["receipt"]["ok"]
+        assert len(dispatched) == 1
+
+    try:
+        asyncio.run(run())
     finally:
         _close(manager)

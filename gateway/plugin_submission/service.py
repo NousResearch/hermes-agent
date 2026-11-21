@@ -17,6 +17,7 @@ from gateway.session_authority import admission_row
 from gateway.session_automation import _owned_by, _route_owner
 from gateway.session_identity import replace_source
 from gateway.session_persistence import authority_persistence
+from hermes_cli.plugin_host_wire import caller_blocks_loop
 from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ def call(runner, *, content=None, session_key, expected_session_id, request_id, 
         current = asyncio.get_running_loop()
     except RuntimeError:
         current = None
-    if current is loop:
+    if current is loop or caller_blocks_loop(loop):
         return request.refused('requires_worker_thread')
     context = getattr(runner, '_plugin_injection_context', None)
     context = contextvars.Context() if context is None else context.copy()

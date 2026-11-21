@@ -184,9 +184,12 @@ def _apply_mcp_change(config: dict, targets: list[str], action: str) -> set[str]
     return failed_servers
 
 
-def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli", stripped: dict | None = None):
+def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli", stripped: dict | None = None,
+                      mcp_active: set | None = None):
     """Print a summary of enabled/disabled toolsets and MCP tool filters. ``stripped`` is
-    ``tools_config.toolsets_partially_stripped`` output: enabled rows that agent.disabled_toolsets cuts down."""
+    ``tools_config.toolsets_partially_stripped`` output: enabled rows that agent.disabled_toolsets cuts down.
+    ``mcp_active`` is the set of MCP servers this platform's sessions actually load (``_get_platform_tools``
+    with default servers included); when given, each server is marked enabled or disabled for the platform."""
     from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_effective_configurable_toolsets
 
     effective_all = _get_effective_configurable_toolsets()
@@ -212,17 +215,27 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
         _print_rows(plugin_entries)
 
     if mcp_servers:
+        from tools.mcp_tool_common import mcp_server_enabled
+
         print()
-        print("MCP servers:")
+        print(f"MCP servers ({platform}):" if mcp_active is not None else "MCP servers:")
         for srv_name, srv_cfg in mcp_servers.items():
             tools_cfg = srv_cfg.get("tools") or {}
             exclude, include = tools_cfg.get("exclude") or [], tools_cfg.get("include")
             if isinstance(include, list):
-                _print_info(f"{srv_name}  [include only: {', '.join(include) or '(none)'}]")
+                note = f"[include only: {', '.join(include) or '(none)'}]"
             elif exclude:
-                _print_info(f"{srv_name}  [excluded: {color(', '.join(exclude), Colors.YELLOW)}]")
+                note = f"[excluded: {color(', '.join(exclude), Colors.YELLOW)}]"
             else:
-                _print_info(f"{srv_name}  {color('all tools enabled', Colors.DIM)}")
+                note = color("all tools enabled", Colors.DIM)
+            if mcp_active is None:
+                _print_info(f"{srv_name}  {note}")
+            elif srv_name in mcp_active:
+                print(f"  {color('✓ enabled', Colors.GREEN)}  {srv_name}  {note}")
+            else:
+                reason = ("disabled in config" if isinstance(srv_cfg, dict) and not mcp_server_enabled(srv_cfg)
+                          else f"not in platform_toolsets.{platform}")
+                print(f"  {color('✗ disabled', Colors.RED)}  {srv_name}  {color(reason, Colors.DIM)}")
 
 
 def _known_tool_platforms() -> set[str]:
@@ -260,7 +273,10 @@ def tools_disable_enable_command(args):
     if action == "list":
         from hermes_cli.tools_config import toolsets_partially_stripped
         enabled = _get_platform_tools(config, platform, include_default_mcp_servers=False)
-        _print_tools_list(enabled, config.get("mcp_servers") or {}, platform, toolsets_partially_stripped(config, enabled))
+        # Sessions load every enabled MCP server when a platform's list names none, so the MCP rows use the
+        # same resolution the gateway and cron use, not the explicit-only set above.
+        _print_tools_list(enabled, config.get("mcp_servers") or {}, platform, toolsets_partially_stripped(config, enabled),
+                          mcp_active=_get_platform_tools(config, platform))
         return
 
     targets: list[str] = args.names

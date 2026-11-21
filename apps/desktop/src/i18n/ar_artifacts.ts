@@ -84,6 +84,8 @@ export const arArtifacts = {
     truncated: 'عرض أول 512 KB.',
     noInlineTitle: 'لا توجد معاينة مضمّنة',
     noInlineBody: mimeType => `${mimeType || 'هذا النوع من الملفات'} لا يزال بالإمكان إرفاقه كسياق.`,
+    model3dLoading: 'جار تحميل النموذج…',
+    model3dFailed: 'تعذّر تحميل هذا النموذج ثلاثي الأبعاد',
     edit: 'تحرير',
     editing: 'جار التحرير',
     unsavedChanges: 'تغييرات غير محفوظة',

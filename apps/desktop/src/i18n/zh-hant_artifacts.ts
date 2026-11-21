@@ -86,6 +86,8 @@ export const zhHantArtifacts = {
     truncated: '顯示前 512 KB。',
     noInlineTitle: '沒有行內預覽',
     noInlineBody: mimeType => `${mimeType || '此檔案類型'} 仍可作為脈絡附件。`,
+    model3dLoading: '正在載入模型…',
+    model3dFailed: '無法載入此 3D 模型',
     edit: '編輯',
     editing: '編輯中',
     unsavedChanges: '未儲存的變更',

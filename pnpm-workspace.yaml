@@ -71,3 +71,5 @@ allowBuilds:
   # apps/desktop/scripts/dev-get-windows.mjs). Keyed by name: the denial holds for every version.
   get-windows: false
   lefthook@2.2.1: true
+  # core-js (online-3d-viewer > @simonwep/pickr) only runs a postinstall that prints a donation banner.
+  core-js: false

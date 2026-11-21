@@ -140,6 +140,7 @@
     "motion": "12.43.0",
     "nanostores": "1.4.2",
     "node-pty": "1.1.0",
+    "online-3d-viewer": "0.18.0",
     "pele": "1.13.0",
     "proxy-from-env": "2.1.0",
     "qrcode": "1.5.4",

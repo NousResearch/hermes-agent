@@ -38,7 +38,7 @@ Load this when the user says things like "let me try this", "I want to see if X 
 ## When NOT to use this
 
 - The answer is knowable from docs or reading code — just do research, don't build
-- The work is production path — use the `plan` skill instead
+- The work is production path — use `/plan` instead
 - The idea is already validated — jump straight to implementation
 
 ## If the user has the full GSD system installed

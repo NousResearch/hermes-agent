@@ -317,7 +317,7 @@ skills/
 │       └── scripts/              # Opcional: scripts auxiliares
 │           └── search_arxiv.py
 ├── productivity/
-│   └── ocr-and-documents/
+│   └── pdf/
 │       ├── SKILL.md
 │       ├── scripts/
 │       └── references/

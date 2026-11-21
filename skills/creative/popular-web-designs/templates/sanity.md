@@ -10,7 +10,7 @@
 > ```html
 > <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 > ```
-> Use `write_file` to create HTML, serve via `generative-widgets` skill (cloudflared tunnel).
+> Use `write_file` to create HTML, serve it locally or over a `cloudflared tunnel --url` quick tunnel.
 > Verify visual accuracy with `browser_exec` (`capture_screenshot()`) after generating.
 
 ## 1. Visual Theme & Atmosphere

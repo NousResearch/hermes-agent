@@ -122,6 +122,58 @@ def test_related_skills_resolve(p):
     if dangling and not _grandfathered(p, "related"):
         pytest.fail(f"{_rel(p)}: dangling related_skills: {dangling}")
 
+# An instruction the agent follows verbatim ("load the `x` skill", ``skill_view("x")``) must name a
+# skill that ships; historical credit ("supersedes the old `x` skill") is prose and stays allowed.
+_SKILL_VIEW_CALL = re.compile(
+    r"skill_view\(\s*(?:name\s*=\s*)?[\"']([\w:/-]+)[\"']"
+    r"(?:\s*,\s*(?:file_path\s*=\s*)?[\"']([^\"']+)[\"'])?")
+_SKILL_INSTRUCTION = re.compile(
+    r"\b(?:[Ll]oad|[Ss]ee|[Uu]se|[Pp]air with|[Rr]oute to|[Pp]refer|[Ff]rom|[Pp]aired with|[Cc]reated by)"
+    r"(?: the)? `([a-z0-9][\w-]*)` (?:skill|workflow)\b")
+
+
+def _shipped_skill_dirs():
+    return sorted({p.parent for p in [*_skill_paths(), *REPO.glob("plugins/**/SKILL.md")]})
+
+
+def _resolve_skill(name, dirs):
+    # skill_view accepts a bare name, ``plugin:name`` and a ``category/name`` path; every dir sharing the
+    # final name is a candidate, so a plugin skill reusing a bundled name never hides either.
+    leaf = name.rsplit(":", 1)[-1]
+    return [d for d in dirs if d.name == leaf.rsplit("/", 1)[-1] and str(d).endswith(leaf)]
+
+
+def _dangling_skill_refs(text, where, dirs):
+    found = []
+    for name, file_path in _SKILL_VIEW_CALL.findall(text):
+        targets = _resolve_skill(name, dirs)
+        if not targets:
+            found.append(f"{where}: skill_view({name!r}) names no shipped skill")
+        elif (file_path and not any(c in file_path for c in "<*…") and "..." not in file_path
+              and not any((d / file_path).exists() for d in targets)):
+            found.append(f"{where}: skill_view({name!r}, {file_path!r}) has no such file")
+    names = {d.name for d in dirs}
+    return found + [f"{where}: `{n}` skill does not ship" for n in _SKILL_INSTRUCTION.findall(text) if n not in names]
+
+
+def test_skill_instructions_resolve():
+    dirs = _shipped_skill_dirs()
+    dangling = [line for d in dirs for md in sorted(d.rglob("*.md"))
+                for line in _dangling_skill_refs(md.read_text(encoding="utf-8", errors="replace"), md.relative_to(REPO), dirs)]
+    assert not dangling, "dangling skill references:\n" + "\n".join(sorted(set(dangling)))
+
+
+def test_skill_instruction_check_catches_positional_and_category_refs(tmp_path):
+    skill = tmp_path / "creative" / "demo"
+    (skill / "templates").mkdir(parents=True)
+    (skill / "templates" / "ok.html").write_text("x")
+    body = ('skill_view("demo", "templates/ok.html") skill_view("creative/demo", "templates/typo.html") '
+            'skill_view("other/demo")')
+    assert _dangling_skill_refs(body, "probe.md", [skill]) == [
+        "probe.md: skill_view('creative/demo', 'templates/typo.html') has no such file",
+        "probe.md: skill_view('other/demo') names no shipped skill"]
+
+
 @pytest.mark.parametrize("p", _params())
 def test_no_machine_local_paths(p):
     _, content = _frontmatter(p)

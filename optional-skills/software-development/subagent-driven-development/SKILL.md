@@ -22,7 +22,7 @@ Execute implementation plans by dispatching fresh subagents per task with system
 ## When to Use
 
 Use this skill when:
-- You have an implementation plan (from the `plan` skill or user requirements)
+- You have an implementation plan (from `/plan` or user requirements)
 - Tasks are mostly independent
 - Quality and spec compliance are important
 - You want automated review between tasks
@@ -256,7 +256,7 @@ git add -A && git commit -m "feat: complete [feature name] implementation"
 
 ### With plan
 
-This skill EXECUTES plans created by the `plan` skill:
+This skill EXECUTES plans created by `/plan`:
 1. User requirements → plan → implementation plan
 2. Implementation plan → subagent-driven-development → working code
 

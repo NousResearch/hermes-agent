@@ -331,28 +331,28 @@ def _terminate_desktop_managed_gateway() -> None:
         pass  # exited between poll() and terminate()
 
 
-def _named_profile_from_action(subcommand: list[str]) -> Optional[str]:
-    """Return the named-profile selector that :func:`_profile_cli_args` puts in front of an action.
+def _split_profile_selector(subcommand: list[str]) -> tuple[Optional[str], list[str]]:
+    """The named-profile selector that :func:`_profile_cli_args` puts in front of an action, and
+    the arguments after it.
 
     Deliberately inspects only the leading selector: values after the real subcommand may
     legitimately contain ``-p`` / ``--profile`` for a nested process (``mcp add --args ...``).
     """
-    if len(subcommand) >= 2 and subcommand[0] in {"-p", "--profile"}:
-        return str(subcommand[1]).strip() or None
-    if subcommand and str(subcommand[0]).startswith("--profile="):
-        return str(subcommand[0]).split("=", 1)[1].strip() or None
-    return None
-
-
-def _starts_a_gateway(subcommand: list[str]) -> bool:
-    """True for a gateway verb that runs a gateway process: ``start``, ``restart`` or ``run``. The
-    leading profile selector is skipped first: a profile may be called ``gateway``."""
     args = list(subcommand)
-    if args and args[0] in {"-p", "--profile"}:
-        args = args[2:]
-    elif args and str(args[0]).startswith("--profile="):
-        args = args[1:]
-    return len(args) >= 2 and args[0] == "gateway" and args[1] in {"start", "restart", "run"}
+    if len(args) >= 2 and args[0] in {"-p", "--profile"}:
+        return str(args[1]).strip() or None, args[2:]
+    if args and str(args[0]).startswith("--profile="):
+        return str(args[0]).split("=", 1)[1].strip() or None, args[1:]
+    return None, args
+
+
+def _named_profile_from_action(subcommand: list[str]) -> Optional[str]:
+    return _split_profile_selector(subcommand)[0]
+
+
+def _is_gateway_action(subcommand: list[str]) -> bool:
+    """True for a ``gateway`` command after the selector: a profile may be called ``gateway``."""
+    return _split_profile_selector(subcommand)[1][:1] == ["gateway"]
 
 
 def _is_host_gateway_spawn(subcommand: list[str]) -> bool:
@@ -361,16 +361,7 @@ def _is_host_gateway_spawn(subcommand: list[str]) -> bool:
     ``hermes gateway restart`` and ``hermes -p default gateway restart`` are the host.
     ``hermes -p coder gateway stop`` is not.
     """
-    profile = _named_profile_from_action(subcommand)
-    if profile not in (None, "default"):
-        return False
-    args = list(subcommand)
-    if profile is not None:
-        if args and args[0] in {"-p", "--profile"}:
-            args = args[2:]
-        elif args and str(args[0]).startswith("--profile="):
-            args = args[1:]
-    return bool(args) and args[0] == "gateway"
+    return _named_profile_from_action(subcommand) in (None, "default") and _is_gateway_action(subcommand)
 
 
 def _profile_action_environment(
@@ -390,7 +381,7 @@ def _profile_action_environment(
     normal startup then loads that profile's own ``.env``. A host-gateway verb (bare ``gateway``
     or ``-p default gateway``) starts from ``host_gateway_child_env`` so a named-profile dashboard
     cannot donate its dotenv to the multiplexer. Other actions without a profile selector keep
-    the historical environment exactly.
+    the historical environment, less the deployment's stamps unless the action is ``update``.
     """
     profile = _named_profile_from_action(subcommand)
     if _is_host_gateway_spawn(subcommand):
@@ -398,6 +389,9 @@ def _profile_action_environment(
         action_env = host_gateway_child_env()
     elif profile is None:
         action_env = dict(os.environ)
+        if subcommand[:1] != ["update"]:  # update restarts gateways and keeps the deployment's stamps
+            from tools.environments.local import drop_deployment_stamps
+            drop_deployment_stamps(action_env)
     else:
         from hermes_cli.env_loader import (
             _PROFILE_MANAGED_ENV_KEYS, _env_keys_defined_in_dotenv, get_secret_source_values,
@@ -433,7 +427,9 @@ def _profile_action_environment(
         # and resolves to the same validated directory.
         action_env["HERMES_HOME"] = str(target_home)
         apply_subprocess_home_env(action_env)
-        if _starts_a_gateway(subcommand):  # the scrub removed the deployment's stamps; a gateway keeps them
+        # Every gateway verb, as for the host's (host_gateway_child_env): install can start one too.
+        # The scrub removed the deployment's stamps.
+        if _is_gateway_action(subcommand):
             from tools.environments.local import keep_deployment_stamps
             keep_deployment_stamps(action_env)
 

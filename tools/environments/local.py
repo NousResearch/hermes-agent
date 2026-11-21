@@ -438,7 +438,7 @@ def build_subprocess_env(
 
 def served_profile_child_env(
     base: Mapping[str, str] | None = None, *, target_home: str | Path | None = None,
-    inherit_credentials: bool = False, for_gateway: bool = False,
+    inherit_credentials: bool = False,
 ) -> dict[str, str]:
     """Child env for a process that acts FOR the active (possibly served) profile: ``hermes -p X``
     workers, ``key_cmd`` helpers, browser drivers. The process env is the LAUNCH profile's. When the
@@ -454,9 +454,22 @@ def served_profile_child_env(
     (``get_secret``'s fail-closed contract): minting with the launch environ would sign in as the wrong
     profile. ``False`` keeps the provider scrub; the caller re-adds the few keys the child needs via
     ``get_secret``. ``target_home`` defaults to the active override; ``base`` replaces the
-    ``hermes_subprocess_env`` snapshot. ``for_gateway=True`` is for a gateway this process starts or
-    restarts: it keeps the URLs the deployment stamped into the launch environment
-    (``DEPLOYMENT_STAMP_ENV``), which the scrub removes from every other child."""
+    ``hermes_subprocess_env`` snapshot. The deployment's launch stamps (``DEPLOYMENT_STAMP_ENV``) are
+    removed last, whatever *base* or the profile overlay carried: only ``gateway_child_env`` keeps them."""
+    return drop_deployment_stamps(_profile_child_env(base, target_home, inherit_credentials))
+
+
+def drop_deployment_stamps(env: dict[str, str]) -> dict[str, str]:
+    """Remove ``DEPLOYMENT_STAMP_ENV`` from *env* in place, any casing (a Windows env block is not
+    case-sensitive), for a child built from an unscrubbed base that is not a gateway."""
+    for name in [key for key in env if key.upper() in DEPLOYMENT_STAMP_ENV]:
+        del env[name]
+    return env
+
+
+def _profile_child_env(
+    base: Mapping[str, str] | None, target_home: str | Path | None, inherit_credentials: bool,
+) -> dict[str, str]:
     from agent.secret_scope import (
         UnscopedSecretError, build_profile_secret_scope, current_secret_scope, is_multiplex_active)
     from hermes_constants import apply_scratch_tmp_env, get_hermes_home_override
@@ -483,18 +496,17 @@ def served_profile_child_env(
         if not (_is_routed_home(target) if target else secrets is not None):
             _restore_bootstrap_tokens(env, os.environ if base is None else base)
     _carry_bridge_markers(env, base if base is not None else os.environ, own_profile=not routed)
-    if for_gateway:
-        keep_deployment_stamps(env, os.environ if base is None else base)
     return env
 
 
 def keep_deployment_stamps(env: dict, source: Mapping[str, str] | None = None) -> dict:
     """Put the deployment's launch stamps (``DEPLOYMENT_STAMP_ENV``) from *source* (the process env)
-    back into the env of a gateway this process starts: the scrub removes them from every child,
-    and a respawned gateway without them stops reporting and cannot suspend its machine."""
+    into the env of a gateway this process starts, where the scrub removed them. A value already in
+    *env* (the target profile's own ``GATEWAY_RELAY_SLEEP_URL``) is kept, as it was before stamps
+    were scrubbed. Without them a respawned gateway stops reporting and loses the brokered suspend."""
     source = os.environ if source is None else source
     for name in DEPLOYMENT_STAMP_ENV:
-        if source.get(name):
+        if source.get(name) and not env.get(name):
             env[name] = source[name]
     return env
 
@@ -526,7 +538,7 @@ def _restore_bootstrap_tokens(env: dict[str, str], source: Mapping[str, str]) ->
 def gateway_child_env(target_home: str | Path, base: Mapping[str, str] | None = None) -> dict[str, str]:
     """Child env for a gateway this process starts on *target_home*: that profile's own secrets
     (``served_profile_child_env``) plus the deployment's launch stamps."""
-    return served_profile_child_env(base=base, target_home=target_home, inherit_credentials=True, for_gateway=True)
+    return keep_deployment_stamps(_profile_child_env(base, target_home, True), os.environ if base is None else base)
 
 
 def host_gateway_child_env(

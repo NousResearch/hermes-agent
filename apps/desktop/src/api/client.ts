@@ -439,7 +439,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
     if (redirected) { return redirected }
     params = this.routeCanonicalParams(method, params)
 
-    await this.attachForRequest(method, params, deadline, signal)
+    params = await this.attachForRequest(method, params, deadline, signal)
     this.requireConnectionGeneration(generation)
     // The attach may have identified the named launch profile behind an
     // implicit route. Its revision and generation are cached under that owner.
@@ -529,7 +529,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
   // Resume the session (and, for branch-like methods, its parent) on THIS socket before a
   // method that needs an authority subscription here.
-  private async attachForRequest(method: string, params: Record<string, unknown>, deadline: number, signal?: AbortSignal): Promise<void> {
+  private async attachForRequest(method: string, params: Record<string, unknown>, deadline: number, signal?: AbortSignal): Promise<Record<string, unknown>> {
     const sid = typeof params.session_id === 'string' ? params.session_id : null
 
     const resume = (sessionId: string) => this.request('session.resume', {
@@ -544,8 +544,16 @@ export class HermesGateway extends JsonRpcGatewayClient {
     const parent = PARENT_ATTACH_REQUIRED.has(method) ? params.parent_session_id ?? params.session_id ?? params.session_key : null
 
     if (typeof parent === 'string' && parent && !this.attached.has(canonicalSessionKey(parent, params.profile))) {
-      await resume(parent)
+      const attached = await resume(parent) as { session_id?: unknown } | undefined
+
+      // A compressed local conversation is listed under its tip segment, but the owner attaches
+      // (and keys its CAS revision) under the conversation's id: move that conversation.
+      if (method === 'session.workspace.move' && typeof attached?.session_id === 'string' && attached.session_id !== parent) {
+        return { ...params, session_key: attached.session_id }
+      }
     }
+
+    return params
   }
 
   private adoptAttachedSnapshot(settled: { session_id?: string; replay_epoch?: string; info?: { profile_name?: string }; prompts?: Array<Record<string, unknown>> }, profile?: unknown): void {

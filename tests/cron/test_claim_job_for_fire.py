@@ -406,3 +406,65 @@ def test_heartbeat_does_not_wait_on_the_fence_its_own_run_holds(temp_home, monke
         holder.join(timeout=5)
     assert result == {"owns": True}
     assert holder.is_alive() is False
+
+
+def test_fire_lock_file_cleaned_up_after_release(temp_home):
+    """The .fire-*.lock file is unlinked after the flock is released."""
+    from cron import jobs
+    import glob
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="cleanup-test")
+    jid = job["id"]
+    cron_dir = temp_home / "cron"
+
+    # Acquire and release the fire fence
+    with jobs._fire_job_lock(jid) as acquired:
+        assert acquired is True
+        # While held, the lock file should exist
+        lock_files = list(cron_dir.glob(".fire-*.lock"))
+        assert len(lock_files) == 1, f"Expected 1 lock file, found {len(lock_files)}"
+
+    # After release, the lock file should be gone
+    lock_files = list(cron_dir.glob(".fire-*.lock"))
+    assert len(lock_files) == 0, f"Expected 0 lock files after release, found {len(lock_files)}: {lock_files}"
+
+
+def test_fire_lock_file_cleaned_up_on_acquisition_failure(temp_home, monkeypatch):
+    """The .fire-*.lock file is unlinked even when flock acquisition fails."""
+    from cron import jobs
+    import threading
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="cleanup-fail")
+    jid = job["id"]
+    cron_dir = temp_home / "cron"
+
+    # Force flock acquisition to fail quickly
+    monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.01)
+
+    # First, hold the lock in one thread
+    acquired_event = threading.Event()
+    released_event = threading.Event()
+    result = {}
+
+    def holder():
+        with jobs._fire_job_lock(jid) as acquired:
+            result["acquired"] = acquired
+            acquired_event.set()
+            released_event.wait(timeout=5)
+
+    t = threading.Thread(target=holder, daemon=True)
+    t.start()
+    assert acquired_event.wait(timeout=5), "Holder didn't acquire in time"
+
+    # Now try to acquire in another thread - should fail due to timeout
+    with jobs._fire_job_lock(jid) as acquired:
+        result["second_acquired"] = acquired
+        assert acquired is False
+
+    # Clean up holder
+    released_event.set()
+    t.join(timeout=5)
+
+    # Lock file should be cleaned up
+    lock_files = list(cron_dir.glob(".fire-*.lock"))
+    assert len(lock_files) == 0, f"Expected 0 lock files after failed acquisition, found {len(lock_files)}: {lock_files}"

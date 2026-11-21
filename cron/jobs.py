@@ -396,8 +396,17 @@ def _fire_job_lock(job_id: str):
             if lock_fd is not None:
                 if acquired:
                     _release_flock(lock_fd)
+                    # Unlink the lock file after releasing the flock
+                    try:
+                        lock_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 else:
                     lock_fd.close()
+                    try:
+                        lock_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
     finally:
         local_lock.release()
 

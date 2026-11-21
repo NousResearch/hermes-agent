@@ -473,7 +473,7 @@ None of them are required; include only the layers you need.
 | `name` | Yes | Unique plugin identifier. Lowercase, hyphens ok. Used in URLs and registration. |
 | `label` | Yes | Display name shown in the nav tab. |
 | `description` | No | Short description (shown in dashboard admin surfaces). |
-| `icon` | No | Lucide icon name. Defaults to `Puzzle`. Unknown names fall back to `Puzzle`. |
+| `icon` | No | Lucide icon name (a string). Defaults to `Puzzle`. Unknown names, and any non-string or blank value, fall back to `Puzzle`. |
 | `version` | No | Semver string. Defaults to `0.0.0`. |
 | `tab.path` | Yes | URL path for the tab (e.g. `/my-plugin`). |
 | `tab.position` | No | Where to insert the tab. `"end"` (default), `"after:<path>"`, or `"before:<path>"` — value after the colon is the **path segment** of the target tab (no leading slash). Examples: `"after:skills"`, `"before:config"`. |

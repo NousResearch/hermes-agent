@@ -96,13 +96,114 @@ def test_launch_budget_counts_own_server_as_free(monkeypatch):
         CARD_TOTAL - 5 * GIB - hardware._LAUNCH_HEADROOM, abs=1 << 20)
 
 
-def test_launch_budget_skips_unified_memory_and_failed_probes(monkeypatch):
+def test_launch_budget_skips_nvidia_unified_memory_and_failed_probes(monkeypatch):
+    """An NVIDIA unified-memory pool sits partly behind a carve-out RAM readings cannot see."""
     uma = replace(CARD_CAPACITY, uma=True)
     monkeypatch.setattr(hardware, "_nvidia_vram", lambda: pytest.fail("UMA must not probe"))
     monkeypatch.setattr(hardware, "_windows_memory_status", lambda: None)  # Windows narrows by commit
+    monkeypatch.setattr(hardware, "_ram_reading", lambda: pytest.fail("carve-out pools must not read RAM"))
     assert hardware.launch_budget(uma) is None
     monkeypatch.setattr(hardware, "_nvidia_vram", lambda: None)
     assert hardware.launch_budget(CARD_CAPACITY) is None
+
+
+# ── unified memory budgeted from system RAM ──────────────────
+
+MAC_TOTAL = 18 * GIB
+MAC_CAPACITY = HardwareBudget(usable_vram_bytes=int(MAC_TOTAL * (1 - hardware._UMA_HEADROOM_FRACTION)),
+                              total_device_bytes=MAC_TOTAL, ram_available_bytes=0, uma=True,
+                              platform="darwin", ram_backed=True)
+
+
+def _free_ram(monkeypatch, avail_gib: float, *, measured: bool = True, total: int = MAC_TOTAL):
+    monkeypatch.setattr(hardware, "_ram_reading", lambda: (total, int(avail_gib * GIB), measured))
+    monkeypatch.setattr(hardware, "_nvidia_vram", lambda: pytest.fail("RAM-backed UMA must not probe NVIDIA"))
+    monkeypatch.setattr(hardware, "_accelerator_device",
+                        lambda **_: pytest.fail("RAM-backed UMA must not probe the engine's device"))
+
+
+def test_ram_backed_launch_budget_is_free_ram_less_headroom(monkeypatch):
+    """Measured on an 18 GiB Mac: capacity (80% of total) granted a 27B 221K while ~5 GiB was free,
+    and the load drove free memory to 5% before failing."""
+    _free_ram(monkeypatch, 5.0)
+    budget = hardware.launch_budget(MAC_CAPACITY)
+    assert budget.uma is True and budget.ram_backed is True
+    assert budget.usable_vram_bytes == 5 * GIB - hardware._LAUNCH_HEADROOM
+
+
+def test_ram_backed_launch_budget_never_exceeds_capacity_and_counts_own_server(monkeypatch):
+    _free_ram(monkeypatch, 17.5)
+    assert hardware.launch_budget(MAC_CAPACITY).usable_vram_bytes == MAC_CAPACITY.usable_vram_bytes
+    _free_ram(monkeypatch, 2.0)
+    budget = hardware.launch_budget(MAC_CAPACITY, own_bytes=6 * GIB)
+    assert budget.usable_vram_bytes == 8 * GIB - hardware._LAUNCH_HEADROOM
+
+
+def test_ram_backed_launch_budget_bottoms_out_at_zero(monkeypatch):
+    _free_ram(monkeypatch, 0.25)
+    assert hardware.launch_budget(MAC_CAPACITY, own_bytes=256 << 20).usable_vram_bytes == 0
+
+
+def test_a_guessed_free_ram_figure_keeps_the_capacity_plan(monkeypatch):
+    """vm_stat failing leaves half of total as a guess; a guess must not size a launch."""
+    _free_ram(monkeypatch, 9.0, measured=False)
+    assert hardware.launch_budget(MAC_CAPACITY) is None
+    _free_ram(monkeypatch, 0.0, measured=False, total=0)  # sysctl failed too
+    assert hardware.launch_budget(MAC_CAPACITY) is None
+
+
+@pytest.mark.platforms("macos")
+def test_mac_ram_reading_flags_the_vm_stat_fallback(monkeypatch):
+    page = 16384
+
+    def stdout(*argv):
+        if argv[0].endswith("sysctl"):
+            return str(MAC_TOTAL)
+        return vm_stat[0]
+
+    monkeypatch.setattr(hardware, "_stdout", stdout)
+    vm_stat = [f"Mach Virtual Memory Statistics: (page size of {page} bytes)\n"
+               f"Pages free:                  {GIB // page}.\n"
+               f"Pages inactive:              {2 * GIB // page}.\n"]
+    assert hardware._ram_reading() == (MAC_TOTAL, 3 * GIB, True)
+    assert hardware._ram_bytes() == (MAC_TOTAL, 3 * GIB)
+    vm_stat[0] = ""  # vm_stat missing or unparseable
+    assert hardware._ram_reading() == (MAC_TOTAL, MAC_TOTAL // 2, False)
+
+
+def _no_discrete_gpu(monkeypatch):
+    monkeypatch.setattr(hardware, "_nvidia_vram", lambda: None)
+    monkeypatch.setattr(hardware, "_device_pool_view", lambda: None)
+    monkeypatch.setattr(hardware, "_accelerator_device", lambda **_: None)
+    monkeypatch.setattr(hardware, "_ram_bytes", lambda: (32 * GIB, 6 * GIB))
+    monkeypatch.setattr(hardware, "_ram_reading", lambda: (32 * GIB, 6 * GIB, True))
+
+
+@pytest.mark.platforms("linux")
+def test_linux_igpu_budget_is_ram_backed(monkeypatch):
+    """A Linux integrated GPU (or Asahi) builds its budget from RAM, so it gets the launch-time
+    reading too, not just macOS."""
+    _no_discrete_gpu(monkeypatch)
+    capacity = hardware.probe_budget(planning=True)
+    assert capacity.uma and capacity.ram_backed
+    assert hardware.launch_budget(capacity).usable_vram_bytes == 5 * GIB
+
+
+@pytest.mark.platforms("windows")
+def test_windows_igpu_pool_is_ram_backed(monkeypatch):
+    _no_discrete_gpu(monkeypatch)
+    monkeypatch.setattr(hardware, "_windows_igpu_bytes", lambda device: 18 * GIB)
+    pool = hardware.probe_budget(planning=True)
+    assert pool.ram_backed and pool.total_device_bytes == 18 * GIB
+
+
+def test_nvidia_unified_pool_budget_is_not_ram_backed(monkeypatch):
+    monkeypatch.setattr(hardware, "_ram_bytes", lambda: (128 * GIB, 100 * GIB))
+    monkeypatch.setattr(hardware, "_nvidia_vram", lambda: (16 * GIB, 15 * GIB, "NVIDIA GB10", None))
+    monkeypatch.setattr(hardware, "_device_pool_view", lambda: (120 * GIB, True))
+    capacity = hardware.probe_budget(planning=True)
+    assert capacity.uma and not capacity.ram_backed
+    assert hardware.launch_budget(capacity) is None
 
 
 # ── launch windows for the real catalog 27B ─────────────────
@@ -276,12 +377,12 @@ def test_a_replan_keeps_the_draft_the_serving_engine_loads(hermes_home, monkeypa
     _card(monkeypatch, 2.0)
     path = hermes_home / "presets.ini"
     bootstrap._generate_presets(mdir, path, engine_tag=engine.tag)
-    assert "spec-type = draft-dflash" in path.read_text(encoding="utf-8")
+    assert "spec-type = draft-dflash" in path.read_text(encoding="utf-8-sig")
 
     _card(monkeypatch, 0.0)  # the user closed the heavy apps
     bootstrap.refit_idle_presets(_Router(path, {MODEL_ID: "unloaded"}))
 
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")
     assert "spec-type = draft-dflash" in text and "parallel = 1" in text
 
 
@@ -356,6 +457,94 @@ def test_growth_refuses_a_rung_other_programs_leave_no_room_for(hermes_home, mon
     assert growth.maybe_grow_window(MODEL_ID, base_url="http://127.0.0.1:1/v1",
                                     session_tokens=140 * 1024, current_window=144 * 1024) is None
     assert not growth.load_window_overrides()
+
+
+# ── unified memory: refusal and re-planning ─────────────────
+
+# A 36 GiB Mac: capacity grants the catalog 27B its 216K window from total RAM alone.
+BIG_MAC = HardwareBudget(usable_vram_bytes=int(36 * GIB * (1 - hardware._UMA_HEADROOM_FRACTION)),
+                         total_device_bytes=36 * GIB, ram_available_bytes=0, uma=True,
+                         platform="darwin", ram_backed=True)
+
+
+@pytest.fixture
+def mac_probe(monkeypatch):
+    monkeypatch.setattr(hardware, "probe_budget", lambda **kwargs: BIG_MAC)
+
+
+def _mac_free(monkeypatch, free_gib: float):
+    monkeypatch.setattr(hardware, "_ram_reading", lambda: (36 * GIB, int(free_gib * GIB), True))
+
+
+def test_unified_memory_window_follows_free_ram(hermes_home, monkeypatch):
+    from hermes_cli.local_runtime import presets
+
+    _mdir, gguf = _stage_27b(hermes_home, monkeypatch)
+    assert presets.preset_for_model(gguf, BIG_MAC, set(), requested_window=0).window == 216 * 1024
+    _mac_free(monkeypatch, 24.0)
+    entry = presets.preset_for_model(gguf, BIG_MAC, set(), requested_window=0,
+                                     live=hardware.launch_budget(BIG_MAC))
+    assert entry.refusal is None and entry.window == 96 * 1024
+
+
+def test_unified_memory_refuses_weights_free_ram_cannot_hold(hermes_home, monkeypatch):
+    """There is no CPU to fall back to: holding the 64K floor here launched a load that failed."""
+    from hermes_cli.local_runtime import presets
+
+    _mdir, gguf = _stage_27b(hermes_home, monkeypatch)
+    _mac_free(monkeypatch, 10.0)
+    entry = presets.preset_for_model(gguf, BIG_MAC, set(), requested_window=0,
+                                     live=hardware.launch_budget(BIG_MAC))
+    assert entry.window == 0 and entry.keys is None
+    assert "free now" in entry.refusal and "close other apps" in entry.refusal
+    rendered = presets.render_presets([entry])
+    assert "ctx-size" not in rendered and f"[{MODEL_ID}]" not in rendered
+
+
+def test_a_discrete_card_still_holds_the_floor_rather_than_refusing(hermes_home, monkeypatch):
+    """Only RAM-backed budgets refuse: a busy card's reading may include memory about to be freed."""
+    from hermes_cli.local_runtime import presets
+
+    _mdir, gguf = _stage_27b(hermes_home, monkeypatch)
+    _card(monkeypatch, 28.0)
+    entry = presets.preset_for_model(gguf, CARD_CAPACITY, set(), requested_window=0,
+                                     live=hardware.launch_budget(CARD_CAPACITY))
+    assert entry.refusal is None and entry.window == 64 * 1024
+
+
+def test_idle_replan_admits_a_refused_model_once_ram_frees(hermes_home, monkeypatch, mac_probe):
+    from hermes_cli.local_runtime import bootstrap, presets
+
+    mdir, _gguf = _stage_27b(hermes_home, monkeypatch)
+    _mac_free(monkeypatch, 10.0)
+    path = hermes_home / "presets.ini"
+    bootstrap._generate_presets(mdir, path)
+    assert presets.read_preset_decisions(path)[MODEL_ID].refusal
+    router = _Router(path, {})
+    _mac_free(monkeypatch, 30.0)  # the user quit the heavy apps: free RAM now exceeds capacity
+    assert bootstrap.refit_idle_presets(router) is True and router.reloads == 1
+    assert presets.read_preset_decisions(path)[MODEL_ID].window == 216 * 1024
+
+
+def test_free_ram_drift_does_not_replan_every_pass(hermes_home, monkeypatch, mac_probe):
+    """Free RAM moves by hundreds of MiB between readings; that must not re-read every header."""
+    from hermes_cli.local_runtime import bootstrap, presets
+
+    mdir, _gguf = _stage_27b(hermes_home, monkeypatch)
+    _mac_free(monkeypatch, 24.0)
+    path = hermes_home / "presets.ini"
+    bootstrap._generate_presets(mdir, path)
+    router = _Router(path, {MODEL_ID: "unloaded"})
+    assert bootstrap.refit_idle_presets(router) is False  # same reading as boot: same file
+    real_plan = presets.plan_presets
+    monkeypatch.setattr(presets, "plan_presets", lambda *a, **k: pytest.fail("re-planned"))
+    for drift_gib in (24.6, 23.4, 24.9):  # past the discrete-card step, inside the UMA one
+        assert bootstrap._REFIT_STEP_BYTES < abs(drift_gib - 24) * GIB < bootstrap._UMA_REFIT_STEP_BYTES
+        _mac_free(monkeypatch, drift_gib)
+        assert bootstrap.refit_idle_presets(router) is False
+    monkeypatch.setattr(presets, "plan_presets", real_plan)
+    _mac_free(monkeypatch, 30.0)
+    assert bootstrap.refit_idle_presets(router) is True
 
 
 # ── budget source ────────────────────────────────────────────

@@ -14,6 +14,13 @@ from tools.tool_search_catalog import BRIDGE_TOOL_NAMES, _registry_entry
 logger = logging.getLogger("tools.tool_search")
 
 _SCHEMA_LITERAL_KEYS = frozenset({"const", "default", "enum", "example", "examples"})
+# Budget for the parameters schema echoed in a validation error: a failed call must stay
+# cheap enough for a small-context model to read after a retry (#155742).
+_ECHO_SCHEMA_MAX_CHARS = 4000
+_HINT_RETRY = "Retry tool_call with 'arguments' matching the parameters schema above."
+_HINT_ECHO_TRIMMED = (
+    "The schema above is trimmed to the part this call failed on; call tool_describe for "
+    "the complete parameters schema, then retry tool_call with matching 'arguments'.")
 
 
 def _schema_for_local_validation(node: Any) -> Any:
@@ -65,10 +72,58 @@ def _validation_path(error: Any) -> str:
     return path
 
 
-def _validation_error(message: str, *, path: str, constraint: str, parameters: Any) -> str:
+def _validation_error(message: str, *, path: str, constraint: str, parameters: Any,
+                      keys: Iterable[str] = ()) -> str:
+    echoed, trimmed = _bounded_parameters(parameters, keys=keys)
     return tool_error(
-        message, path=path, constraint=constraint, parameters=parameters,
-        hint="Retry tool_call with 'arguments' matching the parameters schema above.")
+        message, path=path, constraint=constraint, parameters=echoed,
+        hint=_HINT_ECHO_TRIMMED if trimmed else _HINT_RETRY)
+
+
+def _json_size(value: Any) -> int:
+    try:
+        return len(json.dumps(value, ensure_ascii=False))
+    except (TypeError, ValueError):
+        return _ECHO_SCHEMA_MAX_CHARS + 1
+
+
+def _bounded_parameters(parameters: Any, *, keys: Iterable[str] = ()) -> tuple[Any, bool]:
+    """The ``parameters`` echo for a validation error, trimmed once it would cost more than
+    ``_ECHO_SCHEMA_MAX_CHARS``. A tool's whole schema can be tens of KB (a plugin tool with
+    many discriminated branches answered ~33 KB per failed call, #155742), which the model
+    pays for on every retry. Returns ``(echo, trimmed)``; a trimmed echo carries the
+    ``required`` list plus the schemas of *keys* — the arguments the call failed on — and a
+    ``note`` naming the omission, so the caller can point at ``tool_describe``.
+    """
+    if _json_size(parameters) <= _ECHO_SCHEMA_MAX_CHARS:
+        return parameters, False
+    note = (f"parameters schema omitted beyond {_ECHO_SCHEMA_MAX_CHARS} chars "
+            f"(the tool's full schema is {_json_size(parameters)} chars); call tool_describe.")
+    if not isinstance(parameters, dict):
+        return {"note": note}, True
+    excerpt: dict[str, Any] = {"note": note}
+    required = parameters.get("required")
+    if isinstance(required, list):
+        excerpt["required"] = required
+    properties = parameters.get("properties")
+    picked = {k: properties[k] for k in keys
+              if isinstance(properties, dict) and k in properties}
+    if picked:
+        excerpt["properties"] = picked
+    if _json_size(excerpt) > _ECHO_SCHEMA_MAX_CHARS:
+        # Even the branch the call failed on is too big to echo.
+        excerpt.pop("properties", None)
+    if _json_size(excerpt) > _ECHO_SCHEMA_MAX_CHARS:
+        excerpt = {"note": note}
+    return excerpt, True
+
+
+def _failing_keys(error: Any) -> tuple[str, ...]:
+    """Top-level argument names on a jsonschema error's path: the branch (or field) the call
+    failed on, so a trimmed echo still carries the schema the model has to repair."""
+    for part in getattr(error, "absolute_path", ()):
+        return (part,) if isinstance(part, str) else ()
+    return ()
 
 
 def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str]:
@@ -100,7 +155,8 @@ def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str
             return _validation_error(
                 f"tool_call to '{name}' is missing required argument(s): "
                 f"{', '.join(missing)}. The tool was NOT invoked.",
-                path="arguments", constraint="required", parameters=params)
+                path="arguments", constraint="required", parameters=params,
+                keys=missing)
         validation_schema = _schema_for_local_validation(params)
         if _schema_has_external_ref(validation_schema):
             logger.debug("Skipping local deferred-argument validation for %s: external $ref", name)
@@ -132,7 +188,8 @@ def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str
         return _validation_error(
             f"tool_call to '{name}' failed argument validation at {path} "
             f"({constraint}): {detail}. The tool was NOT invoked.",
-            path=path, constraint=constraint, parameters=params)
+            path=path, constraint=constraint, parameters=params,
+            keys=_failing_keys(validation_error))
     except Exception:  # pragma: no cover — never block dispatch on validator bugs
         logger.debug("validate_deferred_call_args failed for %s", name, exc_info=True)
         return None

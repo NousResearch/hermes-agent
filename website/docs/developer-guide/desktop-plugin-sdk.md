@@ -61,7 +61,9 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
   stays quiet on cancel; the promise settles when the save does and never
   rejects.
 - **`ctx.rest` / `ctx.socket`** — your plugin's own backend namespace
-  (`/api/plugins/<id>`) if you ship a `plugin_api.py`.
+  (`/api/plugins/<id>`) if you ship a `plugin_api.py`. `ctx.restProfile` reaches
+  that namespace on the machine that serves a profile route, for a Bot on a
+  second connection.
 - **`ui.*`** — the design language: the app's real components, theme variables,
   icons, and formatters, so your UI matches the app pixel-for-pixel.
 
@@ -2338,6 +2340,23 @@ register(ctx) {
 `ctx.rest` is profile-aware and rejects path traversal (`..`) so you can never
 address another plugin's API or a core route through it. `PluginRestOptions` is
 `{ method?, body?, upload?: { filename, contentType?, bytes }, timeoutMs? }`.
+
+A Bot on a second connection (a server this window reaches over SSH, listed
+next to this computer's own Bots) runs on its own backend, with its own copy of
+your `plugin_api.py`. `ctx.rest` always asks the window's backend, so for data
+that belongs to such a Bot pass its descriptor from `host.profileRoutes()` to
+`ctx.restProfile`:
+
+```javascript
+const owner = host.state.focusedSessionOwner.get()   // { connectionId, profile } of the chat in front
+const route = (await host.profileRoutes()).find(r => r.connectionId === owner.connectionId && r.profile === owner.profile)
+const usage = await ctx.restProfile(route, '/usage') // GET /api/plugins/<id>/usage on that Bot's machine
+```
+
+It takes the same `PluginRestOptions`, keeps the same namespace rules, and dials
+at background priority like `host.requestProfile`. Feature-detect it on older
+hosts (`typeof ctx.restProfile === 'function'`): they have no way to reach that
+backend, and `ctx.rest` would answer with the window's data instead.
 
 `ctx.socket` auto-reconnects with backoff until disposed. **It resolves to a no-op
 on OAuth remotes** (single-use WS tickets are core-managed) — treat the socket as

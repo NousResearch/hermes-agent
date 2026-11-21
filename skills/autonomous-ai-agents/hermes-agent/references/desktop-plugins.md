@@ -178,7 +178,10 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   it with `ctx.rest('/path', { method?, body?, timeoutMs? })` and its live twin
   `ctx.socket('/events', onMessage)` — both scoped to `/api/plugins/<id>` by
   construction (traversal rejected). `ctx.socket` is a **no-op on OAuth
-  remotes**, so always keep a polling fallback. The Python backend is imported
+  remotes**, so always keep a polling fallback. For a Bot on a second
+  connection, `ctx.restProfile(route, '/path', opts?)` asks the same namespace
+  on that Bot's machine (route from `host.profileRoutes()`; feature-detect with
+  `typeof ctx.restProfile === 'function'`). The Python backend is imported
   only when the plugin is in `plugins.enabled` in `config.yaml` (separate from
   the in-app enable toggle). For gateway-wide data use `host.request` /
   `host.onEvent` instead.

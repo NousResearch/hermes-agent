@@ -639,6 +639,64 @@ def test_failed_agent_flush_with_handle_falls_back_to_gateway_writer(tmp_path):
     asyncio.run(check())
 
 
+def test_launch_credentials_refusal_persists_activity_stamp(tmp_path):
+    import asyncio
+    import sqlite3
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource, SessionStore
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+        runner._session_db = object()
+
+        async def noop(*args, **kwargs):
+            return None
+
+        runner._refresh_agent_cache_message_count = noop
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="refused-activity", user_id="u")
+        entry = store.get_or_create_session(source)
+        sid = entry.session_id
+        db = store._persistence_for_session_id(sid)
+        stale = 1.0
+        with sqlite3.connect(store_location(db.scope)) as conn:
+            conn.execute("UPDATE sessions SET last_activity_at = ? WHERE id = ?", (stale, sid))
+
+        result = {
+            "failed": True,
+            "failure_reason": "launch_credentials_unavailable",
+            "final_response": "This chat cannot use its saved credentials.",
+            "messages": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+            "agent_persisted": False,
+        }
+        await runner._hmwa_persist_turn_transcript(
+            event=MessageEvent(text="please retry", source=source, message_id="m-refused"),
+            source=source, session_entry=entry, session_key=entry.session_key,
+            agent_result=result, agent_messages=[],
+            prepared=runner._PreparedTurn(
+                [], "", "please retry", None, None, None, sid, "owner-refused",
+            ),
+            response=result["final_response"], agent_failed_early=True,
+            hidden_reasoning_incomplete=False, is_context_overflow_failure=False,
+        )
+
+        rows = [m for m in transcript_rows(db, sid) if m["role"] != "session_meta"]
+        assert [m["role"] for m in rows] == ["user", "assistant"]
+        with sqlite3.connect(store_location(db.scope)) as conn:
+            activity = conn.execute(
+                "SELECT last_activity_at FROM sessions WHERE id = ?", (sid,)
+            ).fetchone()[0]
+        assert activity > stale
+        close_stores_under(db.scope.profile_dir)
+
+    asyncio.run(check())
+
+
 def test_failed_tool_round_after_turn_start_flush_writes_the_user_row_once(tmp_path):
     """A turn-start flush that already wrote the user row stays the row's writer when a later
     tool-round flush fails: the gateway must not append it again, even for an event with no

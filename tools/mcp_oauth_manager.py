@@ -111,12 +111,11 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             build_oauth_authorization_server_metadata_discovery_urls,
             build_protected_resource_metadata_discovery_urls, create_oauth_metadata_request,
             handle_auth_metadata_response, handle_protected_resource_response)
-        from tools.mcp_oauth_provider import stamp_default_user_agent
         server_url = self.context.server_url
 
         async def _send(client, url: str, label: str):
             try:
-                return await client.send(stamp_default_user_agent(create_oauth_metadata_request(url)))
+                return await client.send(self._hermes_stamp_outgoing(create_oauth_metadata_request(url)))
             except httpx.HTTPError as exc:
                 logger.debug("MCP OAuth '%s': %s discovery to %s failed: %s", self._hermes_server_name, label, url, exc)
                 return None
@@ -318,9 +317,11 @@ class MCPOAuthManager:
         # Strong refs to in-flight 401 tasks so the loop's weak bookkeeping cannot GC them mid-run.
         self._inflight_tasks: set[asyncio.Task] = set()
 
-    def get_or_build_provider(self, server_name: str, server_url: str, oauth_config: Optional[dict]) -> Optional[Any]:
+    def get_or_build_provider(self, server_name: str, server_url: str, oauth_config: Optional[dict],
+                              headers: Optional[dict] = None) -> Optional[Any]:
         """Cached OAuth provider for ``server_name``, built on first use (rebuilt when ``server_url`` changes);
-        None if the MCP SDK's OAuth support is unavailable."""
+        None if the MCP SDK's OAuth support is unavailable. ``headers`` (the server's resolved configured
+        headers, from the connect path) replace the provider's set for its OAuth requests."""
         key = self._key(server_name)
         with self._entries_lock:
             entry = self._entries.get(key)
@@ -333,6 +334,8 @@ class MCPOAuthManager:
                 entry.provider = self._build_provider(server_name, entry)
                 if entry.provider is not None:
                     entry.provider._hermes_home = key[0]
+            if headers is not None and entry.provider is not None:
+                entry.provider.set_forward_headers(headers)
             return entry.provider
 
     @staticmethod

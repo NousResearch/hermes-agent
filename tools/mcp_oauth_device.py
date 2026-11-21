@@ -201,11 +201,12 @@ async def _authorize(client, provider, cfg):
         raise RuntimeError(f"Device authorization failed: {safe_error}")
 
 
-async def login_device(name, server_url, oauth_config):
-    """Authorize then commit state in the active profile; failed grants preserve old state."""
+async def login_device(name, server_url, oauth_config, headers=None):
+    """Authorize then commit state in the active profile; failed grants preserve old state. ``headers``
+    are the server's resolved configured headers, sent on requests to its own origin (auth proxies)."""
     from tools.mcp_oauth import _build_client_metadata
     from tools.mcp_oauth_manager import HermesMCPOAuthProvider, get_manager
-    from tools.mcp_oauth_provider import prepare_oauth_config
+    from tools.mcp_oauth_provider import prepare_oauth_config, stamp_configured_headers
     from tools.mcp_tool import sdk_httpx
 
     cfg, storage = prepare_oauth_config(name, server_url, oauth_config)
@@ -215,8 +216,12 @@ async def login_device(name, server_url, oauth_config):
                                      client_metadata=_build_client_metadata(cfg),
                                      token_user_agent=cfg.get("user_agent"))
     httpx = sdk_httpx()
+
+    async def _stamp(request):  # a request hook: it also covers the hand-built token poll sent with client.send()
+        stamp_configured_headers(request, headers or {}, server_url)
+
     try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False, event_hooks={"request": [_stamp]}) as client:
             await _discover(client, provider)
             await _register(client, provider, cfg)
             tokens = await _authorize(client, provider, cfg)

@@ -39,7 +39,7 @@ if str(_checkout_root) not in sys.path:
 
 from agent.compression_marker import ELISION_MARKER_MAX_LEN, elide
 from agent.i18n import t
-from gateway.platforms.base import approval_expired_text, card_kind_scope, ea_t
+from gateway.platforms.base import approval_expired_text, approval_kind_scope, ea_t
 from agent.retry_utils import parse_retry_after_seconds
 from agent.secret_scope import get_secret
 from gateway.config import Platform, PlatformConfig
@@ -1064,6 +1064,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: dict[Any, bool] = {}
         self._approval_request_ids: dict[Any, str] = {}  # same key → tools.approval request id
+        self._approval_kinds: dict[Any, str] = {}  # same key → card kind, when not a command
         self._clarify_resolved: dict[Any, bool] = {}
         # clarify_id → (channel_id, message_ts, rendered_question) so the gateway can retire a
         # card whose clarify ended without a click (timeout, reset, superseding prose).
@@ -5082,10 +5083,14 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         result = await self._send_interactive_prompt(
             prompt.chat_id, prompt.metadata, _build, "send_exec_approval",
             resolved=self._approval_resolved, resolved_max=self._APPROVAL_RESOLVED_MAX)
-        if result.success and prompt.request_id:  # keyed like the double-click guard
-            key = self._workspace_message_marker(self._metadata_team_id(prompt.metadata), result.message_id)
-            self._approval_request_ids[key] = prompt.request_id
-            self._trim_oldest_dict_entries(self._approval_request_ids, self._APPROVAL_RESOLVED_MAX)
+        if not result.success:
+            return result
+        key = self._workspace_message_marker(self._metadata_team_id(prompt.metadata), result.message_id)
+        for store, value in ((self._approval_request_ids, prompt.request_id),  # keyed like the double-click guard
+                             (self._approval_kinds, prompt.kind if prompt.kind != "command" else None)):
+            if value:
+                store[key] = value
+                self._trim_oldest_dict_entries(store, self._APPROVAL_RESOLVED_MAX)
         return result
 
     async def send_slash_confirm(
@@ -5743,6 +5748,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         if self._approval_resolved.pop(approval_key, True):  # double-click guard (atomic pop)
             return
         request_id = self._approval_request_ids.pop(approval_key, None)
+        kind = self._approval_kinds.pop(approval_key, "command")
         # Resolve FIRST (unblocks the agent); render after so a click past the
         # timeout (count == 0) shows "expired", not "approved".
         try:
@@ -5755,7 +5761,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Slack button: %s", exc)
             count = 0
-        with card_kind_scope(request_id):  # the click runs outside the send's binding: rebuild as the card was sent
+        with approval_kind_scope(kind):  # the click runs outside the send's binding: rebuild as the card was sent
             decision_text = t(self._APPROVAL_DECISION_KEYS[choice], user=user_name)
             if not count:
                 decision_text = approval_expired_text("platform.shared.approval_expired")

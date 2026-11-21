@@ -436,3 +436,25 @@ async def test_a_tapped_schedule_card_keeps_the_schedule_wording(count):
     final = query.edit_message_text.call_args.kwargs["text"]
     assert "the job will NOT be created" in sent and "the job will NOT be created" not in final
     assert "no command was waiting" not in final
+
+
+@pytest.mark.asyncio
+async def test_a_tapped_schedule_card_keeps_its_kind_without_a_request_id():
+    """The card's kind lives with the card itself, not in a store keyed by request id: a schedule card sent
+    with no request id (or after any number of other cards) still resolves as a schedule card."""
+    from gateway.platforms.base_exec_approval import with_approval_kind
+    adapter = _make_adapter()
+    adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=42))
+    plan = 'Schedule "check-in" (tomorrow at 09:00): remind me to check in'
+    with patch("gateway.platforms.base_exec_approval.approval_timeout_seconds", return_value=300):
+        await with_approval_kind("schedule", adapter.send_exec_approval(
+            chat_id="12345", command=plan, session_key="agent:main:telegram:dm:12345", description=plan))
+        query = AsyncMock()
+        query.data = f"ea:once:{next(iter(adapter._approval_state))}"
+        query.message = MagicMock(chat_id=12345, text_html=adapter._bot.send_message.call_args.kwargs["text"])
+        query.from_user = MagicMock(first_name="Ana", id="12345")
+        query.edit_message_text = AsyncMock()
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False), \
+                patch("tools.approval.resolve_gateway_approval_card", return_value=0):
+            await adapter._handle_callback_query(MagicMock(callback_query=query), MagicMock())
+    assert "no command was waiting" not in query.edit_message_text.call_args.kwargs["text"]

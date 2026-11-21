@@ -1,10 +1,14 @@
-"""``hermes plugins`` subcommand parser."""
+"""``hermes plugins`` subcommand parser, and attaching a plugin-provided top-level command."""
 
 from __future__ import annotations
 
+import argparse
+import logging
 from typing import Callable
 
 from hermes_cli.subcommands._shared import add_json_flag
+
+logger = logging.getLogger(__name__)
 
 
 def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
@@ -221,3 +225,44 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_config.add_argument("name", help="Plugin name or key to configure")
 
     plugins_parser.set_defaults(func=cmd_plugins)
+
+
+def attach_plugin_cli_command(subparsers, cmd_info) -> None:
+    """Register one plugin-provided top-level command from its descriptor.
+
+    Never raises: a taken name or a failing ``setup_fn`` skips only this command, so one
+    plugin cannot crash ``hermes`` or hide another plugin's commands.
+    """
+    name = cmd_info["name"]
+    if name in subparsers.choices:
+        # Built-ins win: a core release that adds a name a plugin already used must
+        # cost that plugin one command, not break the CLI.
+        logger.warning(
+            "Plugin %r CLI command %r skipped: the name is already a hermes command",
+            cmd_info.get("plugin"), name,
+        )
+        return
+    try:
+        plugin_parser = subparsers.add_parser(
+            name,
+            help=cmd_info["help"],
+            description=cmd_info.get("description", ""),
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
+        # Python < 3.14 accepts a malformed help (a bare "%") here, then every
+        # `hermes --help` crashes formatting it; 3.14 raises from add_parser.
+        if cmd_info["help"]:
+            plugin_parser._get_formatter()._expand_help(subparsers._choices_actions[-1])
+        cmd_info["setup_fn"](plugin_parser)
+        if cmd_info.get("handler_fn") is not None:
+            plugin_parser.set_defaults(func=cmd_info["handler_fn"])
+    except Exception as exc:
+        # A half-built parser would still parse and dispatch to nothing.
+        subparsers._name_parser_map.pop(name, None)
+        subparsers._choices_actions[:] = [
+            a for a in subparsers._choices_actions if a.dest != name
+        ]
+        logger.warning(
+            "Plugin %r CLI command %r skipped: setup failed: %s",
+            cmd_info.get("plugin"), name, exc, exc_info=True,
+        )

@@ -32,7 +32,7 @@ from hermes_cli._early_recovery import git_operation_in_progress, interrupted_pu
 from hermes_cli import update_cmd_commit as _commit
 from hermes_cli import update_cmd_posix_pause as _posix_pause
 from hermes_cli.update_cmd_pause_gate import _checkout_move, _moves_for
-from hermes_cli import update_cmd_check as _check
+from hermes_cli import update_cmd_check as _check, update_releases as _releases
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
 from hermes_cli.update_abort_recovery import (
@@ -294,10 +294,12 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
         return result
 
 
-def _heal_stale_shallow_checkout(repo_root: Path, branch: str) -> None:
+def _heal_stale_shallow_checkout(repo_root: Path, branch: str, *, local_target: bool = False) -> None:
     """Unshallow a shallow checkout before the bounded fetch (#123254). Non-fatal: on failure the
-    update proceeds with the fetch it always ran."""
+    update proceeds with the fetch it always ran. A recorded rollback target is already local."""
     from hermes_cli.gitlock import heal_shallow_history
+    if local_target:
+        return
 
     try:
         if heal_shallow_history(repo_root, branch, **_no_prompt_git_kwargs()):
@@ -1610,14 +1612,8 @@ def _verify_head_after_pull(
 ) -> str | None:
     """Return the post-pull HEAD SHA; ``sys.exit(1)`` if the pull was a no-op or landed off-branch."""
     # A detached checkout pinned to a SHA can report "N new commit(s)" and a successful
-    # merge --ff-only yet stay put; surface the no-op instead of claiming "Code updated!".
-    # Verify HEAD actually moved (issue #79678). ``merge --ff-only`` succeeding only means the merge
-    # completed, not that the update applied: a checkout that is pinned to a raw SHA (detached HEAD) can
-    # report "N new commit(s)" against origin yet still sit on the old commit afterward (the branch-switch
-    # step re-detaches to the SHA). Before this guard, ``hermes update`` printed "✓ Code updated!" and
-    # reinstalled deps + rebuilt the desktop app against the stale tree — no error, no warning, ``hermes
-    # doctor`` healthy. Compare pre-pull and post-pull HEAD; if they match, surface the no-op instead of
-    # claiming success.
+    # merge --ff-only yet stay put; surface the no-op instead of claiming "Code updated!" (#79678:
+    # the branch-switch step re-detaches to the SHA, and deps/Desktop were rebuilt on the stale tree).
     post_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
     if pre_pull_sha and post_pull_sha == pre_pull_sha:
         print()
@@ -1750,6 +1746,7 @@ def _apply_pulled_update(
             _record_stop("head_moved")
             sys.exit(1)
         completion_request["expected_sha"] = pinned or observed
+        _releases.record_left(git_cmd, completion_request)  # the move landed: now the ledger may rotate
     _complete_source_update(completion_request)
 
 
@@ -1868,7 +1865,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if pruned:
             print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
 
-        # Surface autostashes left by earlier updates (--keep-stash, failed restores).
         # Surface autostash entries left behind by earlier updates (#63717 problem 6) — parked --keep-stash
         # runs and failed restores preserve the stash but nothing ever mentioned it again.
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
@@ -1876,7 +1872,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # A shallow checkout's plain fetch drags in ~the whole history and cannot finish inside
         # the network cap (#123254); its grafts also make merge-base report orphan divergence
         # (#123346, #124645). Unshallow it (commits only) first.
-        _heal_stale_shallow_checkout(_m().PROJECT_ROOT, branch)
+        _heal_stale_shallow_checkout(_m().PROJECT_ROOT, branch, local_target=bool(completion_request.get("local_target")))
 
         if release_sha and target_is_head:
             # Forward-only default: the checkout already contains the release; nothing to fetch.

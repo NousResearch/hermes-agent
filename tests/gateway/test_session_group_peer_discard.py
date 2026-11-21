@@ -129,3 +129,46 @@ async def test_discard_keeps_the_turn_on_a_member_that_cannot_answer_without_sta
     assert await call(gateway.owner, 'groups.discard', **control) == 'peer_unreachable'
     assert driver.get_task(db, identity, placement='profile')['status'] == 'deferred'
     assert gateway.adapter._run_statuses == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('linked_peer', [True], indirect=True)
+async def test_delayed_discard_cannot_cancel_a_newer_deferred_attempt(gateway, monkeypatch, linked_peer):
+    service, db, identity = await _never_admitted_deferred_turn(gateway, monkeypatch, linked_peer)
+    close = service.close_peer_admission
+
+    def delayed_confirmation(binding, task):
+        closed = close(binding, task)
+        lease = service.runtime._ensure_lease(binding)
+        service.runtime._fenced(driver.requeue_deferred_task, None, task, lease)
+        attempt = driver.start_task(db, identity, lease, placement='profile', expected_cancel_generation=0, clock=time.time)
+        driver.mark_attempt_indeterminate(db, attempt, lease, placement='profile', clock=time.time)
+        service.runtime._fenced(driver.defer_indeterminate_task, None, driver.get_task(db, identity, placement='profile'),
+                                lease, reason='member_unavailable')
+        return closed
+
+    monkeypatch.setattr(service, 'close_peer_admission', delayed_confirmation)
+    result = await call(gateway.owner, 'groups.discard', room_id='linked', member_id='reviewer',
+                        task_id=identity.task_id, execution_generation=1)
+    assert result == 'stale_generation'
+    task = driver.get_task(db, identity, placement='profile')
+    assert (task['status'], task['execution_generation']) == ('deferred', 2)
+
+
+@pytest.mark.asyncio
+async def test_overlapping_discards_return_the_same_confirmation(gateway, monkeypatch, linked_peer):
+    from threading import Barrier
+
+    service, _, identity = await _never_admitted_deferred_turn(gateway, monkeypatch, linked_peer)
+    close = service.close_peer_admission
+    both_closed = Barrier(2)
+
+    def confirm_together(binding, task):
+        closed = close(binding, task)
+        both_closed.wait(timeout=10)
+        return closed
+
+    monkeypatch.setattr(service, 'close_peer_admission', confirm_together)
+    params = dict(room_id='linked', member_id='reviewer', task_id=identity.task_id, execution_generation=1)
+    first, second = await asyncio.gather(*(call(gateway.owner, 'groups.discard', **params) for _ in range(2)))
+    assert first == second and first['discarded']

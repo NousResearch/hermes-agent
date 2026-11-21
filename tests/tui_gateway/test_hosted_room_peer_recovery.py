@@ -298,8 +298,8 @@ def test_peer_completion_is_observed_after_the_first_recovery_probe(tmp_path, mo
 
 
 def test_a_recovered_peer_turn_still_running_is_stopped_at_its_execution_deadline(tmp_path, monkeypatch):
-    """A peer run that keeps going holds the room only until the turn's own time limit, measured
-    from when it started; then it is stopped through the exact Stop protocol and fails."""
+    """An unchanged activity timestamp reaches the limit after recovery's first observation;
+    the exact Stop protocol then fails the quiet turn."""
     stops, peer = [], _RecoveringPeerClient()
     turn = _crashed_turn(tmp_path, peer, indeterminate_defer_seconds=60, turn_timeout_seconds=300)
     service, db, identity, binding, lease, now = (
@@ -308,7 +308,7 @@ def test_a_recovered_peer_turn_still_running_is_stopped_at_its_execution_deadlin
     monkeypatch.setattr(peer, "history", lambda **_: [])
     monkeypatch.setattr(peer, "status", lambda **_: {
         "active": not stops, "status": "cancelled" if stops else "running",
-        "task_id": identity.task_id, "execution_generation": 1})
+        "task_id": identity.task_id, "execution_generation": 1, "progress_at": 7777.0})
     peer.stop_receipt = lambda **kwargs: stops.append(kwargs) or {"status": "cancelled"}
 
     # Past the deferral window but inside the turn's time limit, a running peer keeps the room waiting.
@@ -316,7 +316,7 @@ def test_a_recovered_peer_turn_still_running_is_stopped_at_its_execution_deadlin
     assert service.runtime._reconcile_indeterminate(binding, lease) is True
     assert driver.get_task(db, identity, placement="profile")["status"] == "indeterminate" and not stops
 
-    now[0] = 401.0
+    now[0] = 471.0
     service.runtime._reconcile_indeterminate(binding, lease)
     stopped = driver.get_task(db, identity, placement="profile")
     assert [(s["task_id"], s["execution_generation"]) for s in stops] == [(identity.task_id, 1)]
@@ -397,7 +397,8 @@ def test_a_retried_deferred_peer_turn_gets_its_own_time_limit(tmp_path, monkeypa
     monkeypatch.setattr(peer, "prepare", lambda **_: peer.session)
     monkeypatch.setattr(peer, "history", lambda **_: [])
     monkeypatch.setattr(peer, "status", lambda **_: {
-        "active": True, "status": "running", "task_id": identity.task_id, "execution_generation": 1})
+        "active": True, "status": "running", "task_id": identity.task_id,
+        "execution_generation": 1, "progress_at": 7777.0})
     peer.stop_receipt = lambda **kwargs: stops.append(kwargs) or {"status": "cancelled"}
     now = [100.0 + 7200]  # two hours after the first start
     service.runtime.clock = lambda: now[0]
@@ -432,3 +433,33 @@ def test_a_retried_peer_run_is_watched_when_its_first_status_read_fails(tmp_path
     assert (watched["status"], watched["execution_generation"]) == ("indeterminate", 1)
     assert {r["dispatch"]["execution_generation"] for r in peer.recoveries} == {1}
 
+
+def test_peer_lead_finishing_during_confirmation_keeps_its_assignment(tmp_path, monkeypatch):
+    from gateway.hosted_room_context import set_room_context
+
+    db = storage_handle(tmp_path)
+    peer = _RecoveringPeerClient()
+    service = _peer_room(db, peer)
+    set_room_context(db, placement='profile', room_id='room-1', event_id='ctx', purpose='review',
+                     notes='', routing='lead', lead_member_id='member-peer')
+    service.send(room_id='room-1', event_id='ask', payload={'text': 'Please review.', 'thread_id': 'thread'})
+    task, = driver.list_tasks(db, placement='profile', room_id='room-1', status='queued')
+    assert task['payload']['lead_routing']
+    now = [100.]
+    runtime = service.runtime
+    runtime.clock = lambda: now[0]
+    binding, = service.bindings()
+    lease = runtime._ensure_lease(binding)
+    attempt = driver.start_task(db, task['identity'], lease, placement='profile', expected_cancel_generation=0,
+                                clock=runtime.clock)
+    driver.mark_attempt_indeterminate(db, attempt, lease, placement='profile', clock=runtime.clock)
+    now[0] += runtime.indeterminate_defer_seconds + 1
+    output = '{"assign":["hermes"]}'
+    ended = {'status': 'completed', 'output': output, 'run_id': 'run-recovered'}
+    monkeypatch.setattr(peer, 'prepare', lambda **_: peer.session)
+    monkeypatch.setattr(peer, 'history', lambda **_: [])
+    monkeypatch.setattr(peer, 'status', lambda **_: {'status': 'completed', 'active': False})
+    monkeypatch.setattr(peer, 'stop_receipt', lambda **_: ended, raising=False)
+    runtime._reconcile_indeterminate(binding, runtime._ensure_lease(binding))
+    result = driver.get_task(db, task['identity'], placement='profile')
+    assert (result['status'], (result['result'] or {}).get('text')) == ('settled', output)

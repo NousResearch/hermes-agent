@@ -234,6 +234,10 @@ class StaleLeaseError(_OneMessage, DriverStateError, Conflict):
     """Raised when a lease generation can no longer mutate room state."""
 
 
+class AuthorityChangedError(StaleLeaseError):
+    """Another gateway or epoch now owns the room."""
+
+
 class TaskConflictError(_OneMessage, DriverStateError, Conflict):
     """Raised when an idempotency key is reused for different task state."""
 
@@ -743,11 +747,15 @@ class HostedRoomDriverRepository(Protocol):
         """Settle a stopping task that completed before its stop."""
         ...
 
+    def settle_recovered_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, settlement_id: str, status: TerminalStatus, result: JsonValue, now: float | None = None) -> Mapping[str, JsonValue]:
+        """Settle a running or deferred attempt from its exact receipt."""
+        ...
+
     def resolve_indeterminate_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, settlement_id: str, status: TerminalStatus, result: JsonValue, now: float | None = None) -> Mapping[str, JsonValue]:
         """Settle an indeterminate task from reconciled evidence."""
         ...
 
-    def resolve_indeterminate_cancellation(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, cancel_id: str, now: float | None = None) -> Mapping[str, JsonValue]:
+    def resolve_indeterminate_cancellation(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, cancel_id: str, reason: str | None = None, now: float | None = None) -> Mapping[str, JsonValue]:
         """Cancel an indeterminate task with a cancellation proof."""
         ...
 
@@ -781,6 +789,10 @@ class HostedRoomDriverRepository(Protocol):
 
     def cancel_task(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:
         """Cancel a queued or deferred task directly."""
+        ...
+
+    def cancel_deferred_task(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_execution_generation: int, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:
+        """Cancel the selected deferred attempt after confirmation."""
         ...
 
     def begin_task_cancel(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:

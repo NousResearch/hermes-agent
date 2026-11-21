@@ -1,7 +1,12 @@
 """Exact operator controls for canonical hosted attempts, never legacy replay."""
+from dataclasses import asdict
+
 from gateway import hosted_room_driver as tasks
 from persistence.core.errors import AuthorityRefusal
-from tui_gateway.hosted_room_driver import HostedRoomBinding, discarded_receipt
+from persistence.gateway.hosted_rooms import StaleTaskError
+from tui_gateway.hosted_room_driver import (
+    ROOM_SESSION_SOURCE, HostedRoomBinding, _TerminalReceipt, discarded_receipt, room_session_title,
+)
 from tui_gateway.hosted_room_prepare_stall import RETRY_TASK_PREFIX
 from tui_gateway.hosted_room_service import attempt_action, task_member_id
 
@@ -41,10 +46,22 @@ class HostedControls:
         if task['status'] != 'indeterminate':
             raise AuthorityRefusal('stale_generation')
         rpc = self._resolve_member_transport(binding, task)
+        profile = task['payload']['target_profile']
+        ref = getattr(rpc, 'ref', None)
+        if ref is None:
+            # A fresh cross-profile transport learns its session ref by resolving the room.
+            session = rpc.resolve_exact(profile=profile, title=room_session_title(binding.room_id),
+                                        source=ROOM_SESSION_SOURCE)
+            if session is None:
+                # Without the member session, cancellation of this attempt cannot be confirmed.
+                raise AuthorityRefusal('stale_generation')
+            session_id = session['session_id']
+        else:
+            session_id = ref.session_id
         # Canonical receipt commits first. If the driver write fails, exact
         # RPC replay must recover it rather than invent another execution.
-        discarded = rpc.discard(profile=task['payload']['target_profile'], source='bot_room',
-                                session_id=rpc.ref.session_id, expected_task_id=task['identity'].task_id,
+        discarded = rpc.discard(profile=profile, source='bot_room',
+                                session_id=session_id, expected_task_id=task['identity'].task_id,
                                 execution_generation=task['execution_generation'])
         lease = self.runtime._ensure_lease(binding)
         # Resolving the lost attempt may commit its retained answer: settle and publish that.
@@ -55,6 +72,17 @@ class HostedControls:
             result = self.runtime._fenced(tasks.resolve_indeterminate_cancellation,
                 binding, task, lease, cancel_id=cancel_id)
         self.runtime._set_blocked(binding.room_id, False)
+        self.runtime.wakeup()
+        return result
+
+    def _cancel_deferred(self, task, cancel_id):
+        try:
+            result = tasks.cancel_deferred_task(
+                self.store, task['identity'], placement=self.placement, cancel_id=cancel_id,
+                expected_execution_generation=task['execution_generation'],
+                expected_cancel_generation=task['cancel_generation'], clock=self.runtime.clock)
+        except StaleTaskError as exc:
+            raise AuthorityRefusal('stale_generation') from exc
         self.runtime.wakeup()
         return result
 
@@ -83,11 +111,7 @@ class HostedControls:
         if not closed and not self._stop_deferred_peer(binding.room_id, task):
             raise AuthorityRefusal('session_busy', detail=(
                 "the member's gateway has not confirmed this turn's run stopped; Discard again once it has"))
-        result = tasks.cancel_task(self.store, task['identity'], placement=self.placement, cancel_id=cancel_id,
-                                   expected_cancel_generation=task['cancel_generation'],
-                                   clock=self.runtime.clock)
-        self.runtime.wakeup()
-        return result
+        return self._cancel_deferred(task, cancel_id)
 
     def retry_room_task(self, room_id, *, member_id, task_id, execution_generation):
         if isinstance(task_id, str) and task_id.startswith(RETRY_TASK_PREFIX):
@@ -98,7 +122,10 @@ class HostedControls:
         if local:
             # Every daemon is asked before the policy lock (a reverse RPC under it deadlocks real
             # gateways); a deferred turn is never admitted meanwhile, and the requeue is fenced.
-            self._local_retry_probe(room_id, member_id, task_id, execution_generation)
+            probed, authority = self._control_task(room_id, member_id, task_id, execution_generation)
+            settled = self._local_retry_probe(authority, probed)
+            if settled is not None:
+                return settled
         with self._policy_lock:
             task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
             # Unknown is not non-admission. Never advance its hosted generation
@@ -108,19 +135,25 @@ class HostedControls:
             if task['status'] != 'deferred':
                 raise AuthorityRefusal('stale_generation')
             if local:
+                if binding != authority or task['cancel_generation'] != probed['cancel_generation']:
+                    raise AuthorityRefusal('stale_generation')
                 lease = self.runtime._ensure_lease(binding)
-                return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
+                return self.runtime._requeue(tasks.requeue_deferred_task, probed, lease, room_id)
         return self._retry_peer(binding, task)
 
-    def _local_retry_probe(self, room_id, member_id, task_id, execution_generation):
+    def _local_retry_probe(self, binding, task):
         """Refuse Retry while any home could still run this generation. A turn from before attempt
         homes were recorded may run at an older home of its profile, which must first answer that
-        it holds nothing; then the home the Stop is asked at must be idle (unless it is gone)."""
+        it holds nothing; then the home the Stop is asked at must be idle (unless it is gone).
+        A reply already stored for this attempt settles the turn instead, and that row is returned:
+        running it again would answer twice. Reading the receipts fails the Retry when it fails."""
         from gateway.session_hosted_member_homes import moved_attempt_gone, unsettled_legacy_homes
-        task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
+        room_id = binding.room_id
+        if task['status'] == 'indeterminate':
+            raise AuthorityRefusal('unknown_execution')
         if task['status'] != 'deferred':
-            return  # refused under the lock
-        held = unsettled_legacy_homes(self, room_id, task)
+            raise AuthorityRefusal('stale_generation')
+        held = unsettled_legacy_homes(self, room_id, task, for_retry=True)
         if held:
             raise AuthorityRefusal('session_busy', field='home', detail=(
                 f'an older home of this profile may still run this turn: {held[0]}'))
@@ -132,11 +165,24 @@ class HostedControls:
         session_id = ref.session_id if ref is not None else self.runtime._resume_exact(rpc, room_id, profile)
         if session_id is None:
             return  # that daemon answered: no room session, nothing runs
-        info = rpc.info(profile=profile, source='bot_room', session_id=session_id)
-        if info.get('status') == 'unknown':
-            raise AuthorityRefusal('unknown_execution')
-        if info.get('active'):
-            raise AuthorityRefusal('session_busy')
+        receipt = self.runtime._terminal_receipt(rpc, profile, session_id, task)
+        if receipt is None:
+            info = rpc.info(profile=profile, source='bot_room', session_id=session_id)
+            lost = self.runtime._settle_lost_attempt(rpc, profile, session_id, task, info)
+            if lost is False:
+                raise AuthorityRefusal('unknown_execution')
+            if info.get('active'):
+                raise AuthorityRefusal('session_busy')
+            receipt = (lost if isinstance(lost, _TerminalReceipt) else
+                       self.runtime._terminal_receipt(rpc, profile, session_id, task))
+            if receipt is None:
+                if (getattr(rpc, 'served_elsewhere', False) and lost is not True
+                        and info.get('exact_attempt_results') is not True):
+                    # Older daemons can omit finished turns from their bounded results list.
+                    raise AuthorityRefusal('unknown_execution')
+                return None
+        return self.runtime._fenced(tasks.settle_recovered_task, binding, task,
+                                    self.runtime._ensure_lease(binding), **asdict(receipt))
 
     def _retry_peer(self, binding, task):
         """A member on another gateway may still hold this generation: replay it under its own key
@@ -152,11 +198,7 @@ class HostedControls:
                 # key proves cancellation; a conflicting admitted run must keep the turn.
                 if exc.error_code != 'idempotency_key_conflict' or not self.close_peer_admission(binding, task):
                     raise
-                result = tasks.cancel_task(self.store, task['identity'],
-                    placement=self.placement, cancel_id=f"discard:{task['execution_generation']}",
-                    expected_cancel_generation=task['cancel_generation'], clock=self.runtime.clock)
-                self.runtime.wakeup()
-                return result
+                return self._cancel_deferred(task, f"discard:{task['execution_generation']}")
         except PeerRunsHTTPError as exc:
             raise AuthorityRefusal(
                 exc.error_code if exc.error_code in _GRANT_ERRORS else 'peer_unreachable') from exc

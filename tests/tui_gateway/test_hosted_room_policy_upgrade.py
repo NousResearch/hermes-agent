@@ -192,3 +192,22 @@ def test_upgrade_preserves_an_already_admitted_frozen_turn(tmp_path, monkeypatch
     assert log(store) == history
     with sqlite3.connect(db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM hosted_room_driver_tasks WHERE room_id='upgrade-room'").fetchone()[0] == 1
+
+
+def test_version_five_checkpoint_replays_unread_interval(tmp_path, store):
+    rooms.create_room(store, placement='profile', room_id='upgrade-room', name='Upgrade', authority_gateway_id='home',
+                      members=[{'member_id': profile, 'profile': profile} for profile in PROFILES])
+    append(store, 'source', 'message.user', {'thread_id': 'thread', 'text': 'Original input'})
+    common = {'thread_id': 'thread', 'discussion_event_id': 'source'}
+    append(store, 'intervening', 'message.member', {**common, 'member_id': 'reviewer', 'text': 'New evidence'}, 'member')
+    append(store, 'late', 'message.member', {**common, 'member_id': 'writer', 'text': 'Finished'}, 'member')
+    append(store, 'settled', 'turn.settled', {**common, 'member_id': 'writer', 'message_event_id': 'late',
+                                               'task_id': 'slow', 'seen_through_seq': 1}, 'gateway')
+    checkpoint = HostedRoomPolicyCheckpoint(store, placement='profile')
+    checkpoint.snapshot(room_id='upgrade-room', latest_seq=4)
+    # v5 consumed the settlement at 4 and credited the writer through its own message at 3.
+    with sqlite3.connect(tmp_path / 'state.db') as conn:
+        conn.execute("UPDATE hosted_room_policy_transcript_state SET schema_version=5 WHERE room_id='upgrade-room'")
+        conn.execute("UPDATE hosted_room_policy_watermarks SET seen_through_seq=3 WHERE member_id='writer'")
+    snapshot = checkpoint.snapshot(room_id='upgrade-room', latest_seq=4)
+    assert snapshot.watermarks[('thread', 'writer')] == 1

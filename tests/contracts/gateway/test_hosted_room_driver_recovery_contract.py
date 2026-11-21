@@ -104,6 +104,20 @@ def test_resolve_indeterminate_task_settles_under_the_current_lease_and_replays(
         resolve(status="failed")
 
 
+def test_late_receipt_settles_only_the_deferred_attempt_it_names(backend, scope_a):
+    store = backend.open(scope_a)
+    lease = _indeterminate(store)
+    driver = store.hosted_room_driver
+    driver.defer_indeterminate_task(_identity(), lease, placement="profile", expected_execution_generation=1,
+                                    expected_cancel_generation=0, reason="member_unavailable", now=210)
+    receipt = dict(placement="profile", expected_cancel_generation=0, settlement_id="answer",
+                   status="settled", result={"text": "done"}, now=220)
+    with pytest.raises(StaleTaskError):
+        driver.settle_recovered_task(_identity(), lease, expected_execution_generation=2, **receipt)
+    settled = driver.settle_recovered_task(_identity(), lease, expected_execution_generation=1, **receipt)
+    assert (settled["status"], settled["result"]) == ("settled", {"text": "done"})
+
+
 def test_resolve_indeterminate_cancellation_cancels_with_the_next_cancel_generation(backend, scope_a):
     store = backend.open(scope_a)
     lease = _indeterminate(store)
@@ -261,7 +275,21 @@ def test_cancel_task_cancels_queued_and_deferred_work_directly(backend, scope_a)
     driver.defer_indeterminate_task(_identity(), lease, placement="profile", expected_execution_generation=1, expected_cancel_generation=0, reason="peer-unreachable", now=230.0)
     store.hosted_rooms.disband_room(placement="profile", room_id=ROOM, expected_gateway_id="gw", expected_epoch=1, now=240.0)
     # CONTRACT: no room check: a deferred task of a disbanded room still cancels.
-    assert cancel(1, now=250.0)["status"] == "cancelled"
+    stopped = cancel(1, now=250.0)
+    assert (stopped["status"], stopped["result"]) == ("cancelled", None)
+
+
+def test_discard_only_cancels_the_selected_deferred_generation(backend, scope_a):
+    store = backend.open(scope_a)
+    lease = _indeterminate(store)
+    driver = store.hosted_room_driver
+    driver.defer_indeterminate_task(_identity(), lease, placement="profile", expected_execution_generation=1,
+                                    expected_cancel_generation=0, reason="member_unavailable", now=210)
+    cancel = dict(placement="profile", cancel_id="discard:1", expected_cancel_generation=0, now=220)
+    with pytest.raises(StaleTaskError):
+        driver.cancel_deferred_task(_identity(), expected_execution_generation=2, **cancel)
+    stopped = driver.cancel_deferred_task(_identity(), expected_execution_generation=1, **cancel)
+    assert (stopped["status"], stopped["result"], stopped["cancel_id"]) == ("cancelled", None, "discard:1")
 
 
 def test_begin_task_cancel_records_a_stop_intent_for_running_and_indeterminate_work(backend, scope_a):

@@ -226,6 +226,19 @@ def settle_stopping_task(
         result=result, now=now)
 
 
+def settle_recovered_task(
+    store, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement,
+    expected_execution_generation: int, expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus,
+    result: Any, clock: Clock) -> dict[str, Any]:
+    """Accept a running or deferred attempt's late reply under the current lease."""
+    _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
+    settlement_id, now = _settlement(settlement_id, status, result, clock)
+    return store.hosted_room_driver.settle_recovered_task(
+        identity, lease, placement=placement, expected_execution_generation=expected_execution_generation,
+        expected_cancel_generation=expected_cancel_generation, settlement_id=settlement_id, status=status,
+        result=result, now=now)
+
+
 def resolve_indeterminate_task(
     store, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement,
     expected_execution_generation: int, expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus,
@@ -241,7 +254,8 @@ def resolve_indeterminate_task(
 
 def resolve_indeterminate_cancellation(
     store, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement,
-    expected_execution_generation: int, expected_cancel_generation: int, cancel_id: Any, clock: Clock
+    expected_execution_generation: int, expected_cancel_generation: int, cancel_id: Any, clock: Clock,
+    reason: str | None = None,
 ) -> dict[str, Any]:
     """Commit a verified terminal cancellation for an uncertain attempt."""
     _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
@@ -249,7 +263,7 @@ def resolve_indeterminate_cancellation(
     now = _timestamp(clock)
     return store.hosted_room_driver.resolve_indeterminate_cancellation(
         identity, lease, placement=placement, expected_execution_generation=expected_execution_generation,
-        expected_cancel_generation=expected_cancel_generation, cancel_id=cancel_id, now=now)
+        expected_cancel_generation=expected_cancel_generation, cancel_id=cancel_id, reason=reason, now=now)
 
 
 def requeue_indeterminate_task(
@@ -335,6 +349,17 @@ def cancel_task(
     return store.hosted_room_driver.cancel_task(
         identity, placement=placement, cancel_id=cancel_id, expected_cancel_generation=expected_cancel_generation,
         now=now)
+
+
+def cancel_deferred_task(
+    store, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str,
+    expected_execution_generation: int, expected_cancel_generation: int, clock: Clock,
+) -> dict[str, Any]:
+    """Commit a confirmed Discard only while the selected attempt remains deferred."""
+    return store.hosted_room_driver.cancel_deferred_task(
+        identity, placement=placement, cancel_id=_identifier(cancel_id, label="cancel_id"),
+        expected_execution_generation=expected_execution_generation,
+        expected_cancel_generation=expected_cancel_generation, now=_timestamp(clock))
 
 
 def begin_task_cancel(

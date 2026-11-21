@@ -36,7 +36,7 @@ MAX_ACTIVE_POLICY_EVENTS = 64
 # budget, so they are bounded on their own: sizing the reply budget exactly must leave room.
 MAX_ACTIVE_RETRY_RECEIPTS = 64
 MAX_THREAD_TRANSCRIPT_EVENTS = 24
-_TRANSCRIPT_SCHEMA_VERSION = 5  # 5: rebuild threads an old settle closed under a newer message
+_TRANSCRIPT_SCHEMA_VERSION = 6  # Replay v5 watermarks that skipped unread messages before a late reply.
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 # What a Continue restores into a reopened discussion's active projection (the cap's activity is not one).
 _REOPENED_KINDS = (*sorted(_TERMINAL_KINDS), "message.member", "room.assignment", "room.routed", "room.continued")
@@ -265,7 +265,13 @@ def _apply_discussion_event(conn: sqlite3.Connection, event: Mapping[str, Any], 
     if kind == "turn.settled" and payload.get("message_event_id"):
         committed = _settled_message(conn, room_id, discussion_event_id, payload["message_event_id"])
         if committed is not None:
-            seen_through_seq = max(seen_through_seq, int(committed["seq"]))
+            # Keep intervening messages visible to a bot whose reply arrived late.
+            if conn.execute("""SELECT 1 FROM hosted_room_events WHERE room_id=? AND seq>? AND seq<?
+                    AND kind IN ('message.user', 'message.member')
+                    AND json_extract(payload_json, '$.thread_id')=?
+                    AND COALESCE(json_extract(payload_json, '$.member_id'), '')!=? LIMIT 1""",
+                    (room_id, seen_through_seq, int(committed["seq"]), thread_id, member_id)).fetchone() is None:
+                seen_through_seq = max(seen_through_seq, int(committed["seq"]))
             _store_transcript_event(conn, event=committed, thread_id=thread_id, settled_seq=seq)
     else:
         # Non-visible receipts still supply historical reconstruction watermarks.

@@ -47,6 +47,20 @@ class WorkerPersistenceError(RuntimeError):
     pass
 
 
+# Operations whose refusal may leave the store usable. A capacity refusal on
+# these operations is safe to release because the operation's own caller keeps
+# the original transcript when the write is refused (context_compressor_prune:
+# "keeping the original transcript"), so no durable row is lost.
+#
+# A refused ``transcript.append`` must stay sticky: the refused row never
+# received a sequence (the sequence counter advances only over entries the
+# journal admitted), so a later append would take that same sequence and the
+# owner would accept it — the refused row would be missing from the durable
+# transcript with no error anywhere. The owner cannot detect that gap, so the
+# store must refuse to continue instead.
+_CAPACITY_RELEASABLE = frozenset({'compression.archive'})
+
+
 def _caller_summary(limit=8):
     """module:function:line of the frames above this store (its own frames skipped), never
     locals or argument values: best-effort callers swallow the guard's raise (#139029)."""
@@ -324,6 +338,16 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             candidate['next_sequence'] += 1
             try:
                 self._save(candidate)
+            except WorkerPersistenceError as exc:
+                if str(exc) == 'outbox_full' and operation in _CAPACITY_RELEASABLE:
+                    # _save refused the candidate before writing it, so self.journal,
+                    # next_sequence and pending are all untouched, the owner never saw
+                    # this sequence, and the gate above proved failure was None. Restore
+                    # exactly that state so the refusal does not latch the whole store.
+                    self.failure = None
+                else:
+                    self.failure = str(exc)
+                raise
             except Exception as exc:
                 self.failure = str(exc)
                 raise

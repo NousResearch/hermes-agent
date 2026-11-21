@@ -111,8 +111,11 @@ for lifecycle cleanup that must happen once per session identity.
 Once `pre_llm_call` has been dispatched, `on_session_end` is delivered once even
 if an early return (including the native Codex runtime) or an exception bypasses
 normal finalization. These fallback notifications preserve the start event's
-`session_id`, `task_id`, and `turn_id`. `turn_exit_reason` is `early_return`,
-`exception`, or `interrupted` when no more specific result reason exists.
+`session_id`, `task_id`, and `turn_id`. A turn that ends because the provider
+kept failing (retries and fallbacks exhausted) reports `failed: true` with the
+classified cause as `turn_exit_reason` (for example `server_error`,
+`rate_limit`, `billing`). `turn_exit_reason` is `early_return`, `exception`, or
+`interrupted` when no more specific result reason exists.
 An exit before `pre_llm_call`, or a persistence-disabled internal fork, does not
 produce a synthetic turn-end event. Process termination cannot guarantee delivery.
 

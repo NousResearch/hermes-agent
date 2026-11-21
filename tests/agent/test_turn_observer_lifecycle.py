@@ -55,7 +55,7 @@ _FINALIZED_TURN = {
 
 
 @pytest.mark.parametrize("exit_kind,observer_fails", [
-    ("early", False), ("error", False), ("interrupt", False), ("finalized", False),
+    ("early", False), ("error", False), ("interrupt", False), ("finalized", False), ("provider_failed", False),
     ("early", True), ("error", True), ("interrupt", True),
 ])
 def test_observed_turn_has_one_correlated_end_across_exit_paths(exit_kind, observer_fails):
@@ -79,6 +79,8 @@ def test_observed_turn_has_one_correlated_end_across_exit_paths(exit_kind, obser
             raise KeyboardInterrupt
         if exit_kind == "finalized":
             return finalize_turn(agent, **_FINALIZED_TURN)
+        if exit_kind == "provider_failed":
+            return {"messages": [], "completed": False, "failed": True, "failure_reason": "server_error"}
         return {"messages": [], "completed": True}
 
     with (
@@ -102,6 +104,8 @@ def test_observed_turn_has_one_correlated_end_across_exit_paths(exit_kind, obser
         assert end["interrupted"] and not end["completed"]
     if exit_kind == "error":
         assert end["failed"] and not end["completed"]
+    if exit_kind == "provider_failed":  # retries exhausted: the cause reaches the observer
+        assert end["failed"] and not end["completed"] and end["turn_exit_reason"] == "server_error"
 
 
 @pytest.mark.parametrize("persist_disabled", [False, True])

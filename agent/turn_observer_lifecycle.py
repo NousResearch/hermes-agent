@@ -57,7 +57,7 @@ def observe_turn_completion(agent):
                     completed=bool(result.get("completed", False)) and error is None and not interrupted,
                     failed=(error is not None and not interrupted) or bool(result.get("failed", False)),
                     interrupted=interrupted,
-                    turn_exit_reason=result.get("turn_exit_reason") or (
+                    turn_exit_reason=result.get("turn_exit_reason") or result.get("failure_reason") or (
                         "interrupted" if interrupted else "exception" if error is not None else "early_return"
                     ),
                 )

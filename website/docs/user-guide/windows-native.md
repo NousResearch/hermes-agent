@@ -242,6 +242,13 @@ hermes gateway uninstall   # Removes schtasks entry, Startup shortcut, pid file
 
 Login auto-start is only ever installed on an explicit answer: `hermes gateway install`, a `Y` on a real terminal, or `HERMES_GATEWAY_INSTALL_START_ON_LOGIN=1`. A scripted or piped `hermes gateway start` (no TTY, or `HERMES_NONINTERACTIVE=1`) starts the gateway without touching the Scheduled Task or the Startup folder; set `HERMES_GATEWAY_INSTALL_START_ON_LOGIN=0` to skip the question on a terminal too.
 
+The Scheduled Task uses priority **4**, which keeps CPU, I/O, and memory priorities normal.
+Windows' default task priority 7 lowers all three and can delay gateway startup and responses
+while the machine is busy. `hermes gateway status` reports older registrations, including tasks
+that omit the priority setting. `hermes gateway start` and `hermes update` refresh those
+registrations; the priority applies to the next task-launched gateway process.
+See [Microsoft's task priority mapping](https://learn.microsoft.com/en-us/windows/win32/taskschd/taskschedulerschema-priority-settingstype-element).
+
 ### Why not a Windows Service?
 
 Services require admin rights to install and tie the gateway's lifecycle to machine boot, not user login. The typical Hermes user wants: log in → gateway available, log out → gateway gone. Scheduled Tasks do exactly that without elevation. If you genuinely want a service, use `nssm` or `sc create` manually — but you probably don't. If you do, name it `Hermes*` or point its binary path inside the Hermes install (`venv\Scripts\hermes.exe`, the checkout, or `gateway-service\`): `hermes update` stops and restarts only services it can positively identify as Hermes-owned through the Service Control Manager, and pauses a Scheduled-Task-launched gateway by PID (Task Scheduler itself is never touched).

@@ -3,6 +3,7 @@
 import logging
 import os
 import subprocess
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -657,7 +658,7 @@ def test_scheduled_task_drift_names_missing_hardening_leaves(monkeypatch):
     template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
     drift = gateway_windows.compare_scheduled_task_drift(_PRE_HARDENING_TASK_XML, template)
     assert drift == [
-        "missing: RestartOnFailure, LogonTrigger Delay",
+        "missing: RestartOnFailure, Priority, LogonTrigger Delay",
         "launcher arguments differs",
         "version 1.3 vs 1.4",
     ]
@@ -689,7 +690,7 @@ def test_scheduled_task_drift_is_silent_when_aligned_or_unqueryable(monkeypatch)
     assert printed == []
 
 
-def test_install_scheduled_task_registers_the_xml_principal_only(monkeypatch, tmp_path):
+def test_install_scheduled_task_registers_normal_priority_and_interactive_principal(monkeypatch, tmp_path):
     """#152218: ``/RU <user> /NP`` on top of ``/XML`` replaced the template's InteractiveToken +
     LeastPrivilege principal with S4U, which an elevated install ran at High integrity in session 0.
     The task must be created from the XML alone, and that XML must carry the user's principal."""
@@ -712,6 +713,10 @@ def test_install_scheduled_task_registers_the_xml_principal_only(monkeypatch, tm
     assert "<UserId>PC\\me</UserId>" in xml_seen["text"]
     assert "<LogonType>InteractiveToken</LogonType>" in xml_seen["text"]
     assert "<RunLevel>LeastPrivilege</RunLevel>" in xml_seen["text"]
+    # Task Scheduler priority 4 keeps CPU, I/O and memory priorities normal;
+    # 5/6 lower memory priority, while 7 also lowers CPU and I/O priority.
+    task = ET.fromstring(xml_seen["text"])
+    assert task.findtext("{*}Settings/{*}Priority") == "4"
 
 
 def test_scheduled_task_drift_flags_an_s4u_principal():
@@ -758,6 +763,44 @@ def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_pat
     calls.clear()
     assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is False
     assert not any(c[0] in ("/Delete", "/Create") for c in calls)
+
+
+@pytest.mark.parametrize("registered_priority", ["7", None], ids=["background", "default-omitted"])
+def test_reconcile_scheduled_task_restores_normal_resource_priority(monkeypatch, tmp_path, registered_priority):
+    """Existing background tasks, including an omitted Priority (Windows defaults to 7),
+    reach normal CPU/I/O/memory priority through the same refresh used by start/update."""
+    script_path = tmp_path / "gateway.cmd"
+    task = ET.fromstring(gateway_windows._build_scheduled_task_xml(
+        "Hermes_Gateway", script_path.with_suffix(".vbs"), r"PC\me"))
+    settings = task.find("{*}Settings")
+    priority = settings.find("{*}Priority")
+    if registered_priority is None:
+        settings.remove(priority)
+    else:
+        priority.text = registered_priority
+    registered = {"xml": ET.tostring(task, encoding="unicode")}
+    calls = []
+
+    def fake_schtasks(args):
+        calls.append(list(args))
+        if "/Query" in args:
+            return (0, registered["xml"], "")
+        if "/Create" in args:
+            registered["xml"] = Path(args[args.index("/XML") + 1]).read_text(encoding="utf-16")
+        return (0, "", "")
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"PC\me")
+
+    assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is True
+    assert [call[0] for call in calls if call[0] in ("/Delete", "/Create")] == ["/Delete", "/Create"]
+    assert ET.fromstring(registered["xml"]).findtext("{*}Settings/{*}Priority") == "4"
+
+    calls.clear()
+    assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is False
+    assert not any(call[0] in ("/Delete", "/Create") for call in calls)
 
 
 def _arrange_uninstalled_start(monkeypatch):

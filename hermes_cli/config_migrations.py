@@ -244,6 +244,7 @@ def _migrate_to_14(results: dict[str, Any], quiet: bool) -> None:
     config = read_raw_config()
     stt = config.get("stt", {})
     stt.pop("model", None)
+    placed: list[str] = []
 
     def _place(section: str) -> None:
         existing = raw_stt.get(section, {})
@@ -252,6 +253,7 @@ def _migrate_to_14(results: dict[str, Any], quiet: bool) -> None:
             if not isinstance(target, dict):  # stt.<section>: 5 — replace, don't index a scalar
                 target = stt[section] = {}
             target["model"] = legacy_model
+            placed.append(section)
 
     if provider in {"local", "local_command"}:
         # An OpenAI model name is dropped; the local section already defaults to "base".
@@ -260,8 +262,10 @@ def _migrate_to_14(results: dict[str, Any], quiet: bool) -> None:
     else:
         _place(provider)
     config["stt"] = stt
+    added = (f"stt.model → stt.{placed[0]}.model" if placed
+             else "stt.model removed (legacy key)")
     _commit(
-        config, results, quiet, None, "  ✓ Migrated legacy stt.model to provider-specific config")
+        config, results, quiet, added, "  ✓ Migrated legacy stt.model to provider-specific config")
 
 
 def _migrate_to_16(results: dict[str, Any], quiet: bool) -> None:
@@ -316,7 +320,12 @@ def _migrate_to_17(results: dict[str, Any], quiet: bool) -> None:
             "  ✓ Migrated compression.summary_* → auxiliary.compression: "
             f"{', '.join(migrated_keys)}"
             if migrated_keys else "  ✓ Removed unused compression.summary_* keys")
-        _commit(config, results, quiet, None, message)
+        # Key names only: these notes are printed for every sibling profile, and a value can be a
+        # credential-bearing base_url.
+        added = (f"compression.summary_* → auxiliary.compression "
+                 f"({', '.join(k.split('=', 1)[0] for k in migrated_keys)})"
+                 if migrated_keys else "compression.summary_* removed (unused)")
+        _commit(config, results, quiet, added, message)
 
 
 def _installed_user_plugins(disabled: set) -> list[str]:
@@ -450,6 +459,9 @@ def _migrate_to_33(results: dict[str, Any], quiet: bool) -> None:
     if not (isinstance(raw_deleg, dict) and "max_async_children" in raw_deleg):
         return
     old_async = raw_deleg.pop("max_async_children")
+    added: Optional[str] = (
+        "delegation.max_async_children removed (deprecated; "
+        "max_concurrent_children now caps background delegations)")
     try:
         old_async_i = int(old_async)
     except (TypeError, ValueError):
@@ -464,9 +476,10 @@ def _migrate_to_33(results: dict[str, Any], quiet: bool) -> None:
             results["config_added"].append(
                 f"delegation.max_concurrent_children={old_async_i} "
                 f"(folded from deprecated max_async_children)")
+            added = None  # the fold note above already names the removed key
     config["delegation"] = raw_deleg
     _commit(
-        config, results, quiet, None,
+        config, results, quiet, added,
         "  ✓ Removed deprecated delegation.max_async_children — "
         "delegation.max_concurrent_children now caps background "
         "delegations too.")

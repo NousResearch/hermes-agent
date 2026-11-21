@@ -130,6 +130,27 @@ class TestCliApprovalUi:
         assert t("cli.tui.approval_title") in command and synthetic in command
         assert t("cli.tui.approval_once") in command and t("cli.tui.approval_view") in command
 
+    def test_a_cut_schedule_card_printed_the_job_above(self):
+        """A short pane cuts even a one-line job; whenever the panel says "full job printed above", the
+        whole job really went to scrollback first (100x18, a 380-char job on one line)."""
+        import shutil as _shutil
+
+        job = 'Schedule "trip" (once at 09:00): ' + "pack the bags and check the train times " * 9
+        assert len(job) >= 380 and "\n" not in job
+        printed = []
+        cli = _make_cli_stub()
+        with patch("cli.shutil.get_terminal_size", return_value=_shutil.os.terminal_size((100, 18))), \
+                patch("cli._cprint", side_effect=printed.append):
+            thread = threading.Thread(target=cli._approval_callback, args=("<cronjob_manage>", job),
+                                      kwargs={"kind": "schedule"}, daemon=True)
+            thread.start()
+            wait_until(lambda: cli._approval_state is not None, what="the approval panel")
+            rendered = "".join(text for _style, text in cli._get_approval_display_fragments())
+            cli._approval_state["response_queue"].put("deny")
+            thread.join(timeout=2)
+        assert t("cli.tui.approval_schedule_truncated") in rendered
+        assert any(job in line for line in printed), printed
+
     def test_session_less_gate_offers_only_once_and_deny(self):
         """A gate that re-asks every time must not advertise a session scope.
 

@@ -6,6 +6,7 @@ conversation with correct formatting, truncation, and config behavior.
 """
 
 from io import StringIO
+import json
 from unittest.mock import MagicMock, patch
 from agent.i18n import t
 
@@ -448,3 +449,138 @@ class TestResumeDisplaySanitization:
         assert "\x07" not in output
         assert "hi" in output and "there" in output
         assert "fine" in output
+
+
+class TestTranscriptResumeDisplay:
+    """``resume_display: transcript`` replays every message in full."""
+
+    def _capture(self, cli_obj, monkeypatch):
+        lines = []
+        monkeypatch.setattr("cli._cprint", lambda text: lines.append(str(text)))
+        cli_obj._display_resumed_history()
+        return "\n".join(lines)
+
+    def test_full_history_not_capped_or_truncated(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        cli.conversation_history = _large_history(15)
+        output = self._capture(cli, monkeypatch)
+
+        # All 15 exchanges survive — no "last 10" cap, no earlier-messages line.
+        for i in range(1, 16):
+            assert f"Question #{i}" in output
+            assert f"Answer #{i}" in output
+        assert "earlier message" not in output.lower()
+
+    def test_long_assistant_and_user_text_are_not_truncated(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        long_user = "user-start " + ("x" * 900) + " user-end"
+        long_assistant = "assistant-start " + ("y" * 900) + " assistant-end"
+        cli.conversation_history = [
+            {"role": "user", "content": long_user},
+            {"role": "assistant", "content": long_assistant},
+        ]
+        output = self._capture(cli, monkeypatch)
+
+        assert "user-start" in output and "user-end" in output
+        assert "assistant-start" in output and "assistant-end" in output
+        assert "..." not in output.replace("…", "")
+
+    def test_tool_calls_keep_a_row_and_tool_results_stay_hidden(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        cli.conversation_history = _tool_call_history()
+        output = self._capture(cli, monkeypatch)
+
+        assert "Search for Python tutorials" in output
+        assert "Here are some great Python tutorials" in output
+        assert "Found 5 results" not in output  # tool result bodies are not replayed
+        assert "web_search" in output or "Search" in output
+
+    def test_off_suppresses_all_history(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "off"}})
+        cli.conversation_history = _simple_history()
+        assert self._capture(cli, monkeypatch).strip() == ""
+
+    def test_transcript_strips_terminal_escapes(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        cli.conversation_history = [
+            {"role": "user", "content": "hi \x1b[2J there"},
+            {"role": "assistant", "content": "ok \x1b]0;pwned\x07 fine"},
+        ]
+        output = self._capture(cli, monkeypatch)
+        assert "\x1b[2J" not in output
+        assert "\x1b]0;pwned" not in output
+        assert "hi" in output and "there" in output
+        assert "fine" in output
+
+    def test_withheld_prompt_replays_original_typed_ask(self, monkeypatch):
+        """Transcript mode must show the typed ask, not the model-facing policy placeholder."""
+        from agent.message_metadata import PRE_LLM_BLOCK_WITHHELD_PROMPT, WITHHELD_PROMPT
+
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        cli.conversation_history = [{
+            "role": "user",
+            "content": PRE_LLM_BLOCK_WITHHELD_PROMPT,
+            "display_metadata": {WITHHELD_PROMPT: "My original typed question"},
+        }]
+        previewed = []
+        monkeypatch.setattr(cli, "_print_user_message_preview", lambda text, **kwargs: previewed.append(text))
+
+        cli._display_resumed_history()
+
+        assert previewed == ["My original typed question"]
+
+    def test_multiline_user_message_is_not_cut_in_the_middle(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        long_user = "\n".join(f"user-line-{i}" for i in range(1, 41))
+        formatted = cli._format_submitted_user_message_preview(long_user, full=True)
+
+        for i in (1, 20, 40):
+            assert f"user-line-{i}" in formatted
+        assert "more lines" not in formatted.lower()
+
+    def test_reasoning_is_replayed_in_full_before_the_answer(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        cli._modern_layout = True
+        cli.conversation_history = [
+            {"role": "assistant", "reasoning_content": "THINK-ALPHA\nTHINK-OMEGA", "content": "ANSWER"},
+            {"role": "assistant", "reasoning_details": [{"text": "THINK-ONLY-ROW"}], "content": ""},
+        ]
+        output = self._capture(cli, monkeypatch)
+
+        for thought in ("THINK-ALPHA", "THINK-OMEGA", "THINK-ONLY-ROW"):
+            assert thought in output
+        assert output.index("THINK-ALPHA") < output.index("ANSWER")
+
+    def test_terminal_tool_call_replays_every_command_line(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        cli._modern_layout = True
+        command = "echo one\necho two\necho three\necho four\necho five"
+        cli.conversation_history = [{
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "terminal", "arguments": json.dumps({"command": command})},
+            }],
+        }]
+        output = self._capture(cli, monkeypatch)
+
+        for line in command.splitlines():
+            assert line in output
+        assert "+ 5 commands" not in output
+
+    def test_large_transcript_batches_without_losing_rows(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        cli._modern_layout = True
+        history = []
+        for i in range(1, 151):
+            history.append({"role": "user", "content": f"Question {i}\nsecond line\nthird line"})
+            history.append({"role": "assistant", "content": f"Answer {i}\nmore text"})
+        cli.conversation_history = history
+        output = self._capture(cli, monkeypatch)
+
+        for i in (1, 75, 150):
+            assert f"Question {i}" in output
+            assert f"Answer {i}" in output
+        assert output.count("Question ") == 150

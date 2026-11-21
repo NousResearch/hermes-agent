@@ -29,6 +29,48 @@ BINARY_PACKAGES = {
 }
 
 
+@pytest.mark.platforms("windows")
+def test_flocked_serializes_processes_and_releases_after_exception(tmp_path):
+    """Windows hosts need the sandbox-start lock even though the desktop itself runs in Linux."""
+    import subprocess
+    import sys
+
+    lock_path = tmp_path / "start.lock"
+    repo = str(Path(__file__).resolve().parents[2])
+    contender_code = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(0, {repo!r})\n"
+        "from tools.bot_desktop.runtime import _flocked\n"
+        "with _flocked(Path(sys.argv[1])):\n"
+        "    print('acquired', flush=True)\n"
+    )
+
+    with runtime._flocked(lock_path):
+        contender = subprocess.Popen(
+            [sys.executable, "-c", contender_code, str(lock_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        with pytest.raises(subprocess.TimeoutExpired):
+            contender.wait(timeout=2)
+
+    stdout, stderr = contender.communicate(timeout=10)
+    assert contender.returncode == 0, stderr
+    assert stdout.strip() == "acquired"
+    assert contender.poll() is not None
+
+    with pytest.raises(RuntimeError, match="release lock"):
+        with runtime._flocked(lock_path):
+            raise RuntimeError("release lock")
+
+    probe = subprocess.run(
+        [sys.executable, "-c", contender_code, str(lock_path)],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    assert probe.returncode == 0, probe.stderr
+    assert probe.stdout.strip() == "acquired"
+
+
 @pytest.mark.parametrize("pm", sorted(runtime.PACKAGES))
 def test_every_required_binary_maps_to_an_installed_package(pm):
     """Each binary the launcher execs must come from a package the distro list actually installs; dnf5
@@ -428,6 +470,7 @@ def test_a_running_desktop_is_never_refused_for_the_memory_it_is_using(tmp_path,
     """The gate guards the allocation, not the session: a running desktop is itself what consumes the
     memory, so checking before the running-check made Start fail on a healthy screen."""
     _startable_host(monkeypatch, tmp_path, running=True)
+    monkeypatch.setattr("tools.bot_desktop.browser.executable", lambda: None)
     runtime.start()  # returns status(); must not raise about headroom
 
 

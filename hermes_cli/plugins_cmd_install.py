@@ -7,6 +7,7 @@ imported late here, never at module level).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -66,6 +67,23 @@ class _ConsentRefusal(str):
         return refusal
 
 
+def _node_sidecar_declares_runtime_deps(target: Path) -> bool:
+    """Whether package.json declares deps a plain ``npm ci`` installs for runtime.
+
+    Desktop/dashboard plugins often ship a prebuilt bundle and keep package.json
+    only for their build toolchain (esbuild, TypeScript, vitest) — everything
+    under devDependencies. Those get no Node question: nothing in the manifest
+    is used at runtime, and consenting installs the whole dev toolchain for
+    nothing (#138640). A package.json that fails to parse keeps the prompt
+    rather than silently skipping the sidecar — npm itself reports the breakage.
+    """
+    try:
+        declared = json.loads((target / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    return bool(declared.get("dependencies") or declared.get("optionalDependencies"))
+
+
 def _install_plugin_python_deps(
     manifest: dict, target: Path, console, *, assume_yes: bool = False
 ) -> tuple[bool, Optional[str]]:
@@ -97,20 +115,27 @@ def _install_plugin_python_deps(
 
     # Node sidecar (package.json): the npm ci executor — separate consent
     # question, same try-then-enable posture. Failure never blocks the
-    # python path below.
+    # python path below. A build-only manifest (toolchain under
+    # devDependencies, no runtime deps) skips the question entirely.
     node_reason = None
     if has_package_json:
-        console.print(f"\n[bold]{manifest.get('name', 'this plugin')}[/bold] declares Node dependencies (package.json).")
-        node_ok = sys.stdin.isatty() and sys.stdout.isatty() and _ask_yes_no(
-            ("node", manifest.get("name")), "  Install them into the plugin's own node_modules now? [y/N]: ", console)
-        if node_ok:
-            from pm.workspace import install_node_sidecar
+        if _node_sidecar_declares_runtime_deps(target):
+            console.print(f"\n[bold]{manifest.get('name', 'this plugin')}[/bold] declares Node dependencies (package.json).")
+            node_ok = sys.stdin.isatty() and sys.stdout.isatty() and _ask_yes_no(
+                ("node", manifest.get("name")), "  Install them into the plugin's own node_modules now? [y/N]: ", console)
+            if node_ok:
+                from pm.workspace import install_node_sidecar
 
-            node_reason = install_node_sidecar(target, explicit=True)
-            if node_reason:
-                console.print(f"[yellow]⚠[/yellow] Node deps: {node_reason}")
+                node_reason = install_node_sidecar(target, explicit=True)
+                if node_reason:
+                    console.print(f"[yellow]⚠[/yellow] Node deps: {node_reason}")
+            else:
+                console.print("[dim]Skipped Node deps — run `hermes plugins install` again to retry.[/dim]\n")
         else:
-            console.print("[dim]Skipped Node deps — run `hermes plugins install` again to retry.[/dim]\n")
+            console.print(
+                f"[dim]{manifest.get('name', 'this plugin')}'s package.json declares no runtime "
+                "Node dependencies (build toolchain only) — skipping the Node sidecar install.[/dim]\n"
+            )
 
     if not has_python:
         return True, None

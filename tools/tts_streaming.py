@@ -77,19 +77,33 @@ class SentenceChunker:
     speak-stream WebSocket so every surface cuts speech identically. Strips ``<think>`` blocks (even
     split across deltas) and merges fragments shorter than *min_len* into the following sentence."""
 
-    def __init__(self, min_len: int = 20):
+    def __init__(self, min_len: int = 20, next_min_len: int | None = None):
         self.min_len = min_len
+        # Chunks after the first one of a segment; None keeps the single-threshold behaviour.
+        self.next_min_len = min_len if next_min_len is None else next_min_len
         self.buf = ""
+        self._emitted = False  # a chunk of the current segment has been cut
 
     @classmethod
     def from_config(cls, tts_config: dict) -> SentenceChunker:
         """Chunker honouring ``tts.streaming.min_len``. 20 suits English; a CJK opener of 5–7
         characters is a whole clause, so voice setups lower it to speak the first sentence
-        alone instead of buffering it behind the second. Floor 1: 0 would emit every boundary."""
+        alone instead of buffering it behind the second. Floor 1: 0 would emit every boundary.
+
+        ``tts.streaming.next_min_len`` (optional) is the threshold for every chunk after the
+        first: a provider with a fixed cost per request speaks a short opener at once and the
+        rest in larger blocks, which also gives it more context for prosody. Unset = ``min_len``."""
         try:
-            return cls(min_len=max(1, int((tts_config.get("streaming") or {}).get("min_len", 20))))
+            streaming = tts_config.get("streaming") or {}
+            min_len = max(1, int(streaming.get("min_len", 20)))
         except (AttributeError, TypeError, ValueError):  # non-mapping / non-numeric → default
             return cls()
+        try:
+            nxt = streaming.get("next_min_len")
+            next_min_len = None if nxt is None else max(1, int(nxt))
+        except (TypeError, ValueError):
+            next_min_len = None
+        return cls(min_len=min_len, next_min_len=next_min_len)
 
     def feed(self, delta: str) -> list[str]:
         """Absorb *delta*; return every complete sentence now ready to speak."""
@@ -100,10 +114,11 @@ class SentenceChunker:
         start = 0  # skip boundaries that would leave the head too short
         while m := SENTENCE_BOUNDARY_RE.search(self.buf, start):
             head = self.buf[: m.end()]
-            if len(head.strip()) < self.min_len:
+            if len(head.strip()) < (self.next_min_len if self._emitted else self.min_len):
                 start = m.end()
                 continue
             out.append(head)
+            self._emitted = True
             self.buf = self.buf[m.end():]
             start = 0
         return out
@@ -111,6 +126,7 @@ class SentenceChunker:
     def flush(self) -> list[str]:
         """Drain the tail (end-of-text or long-idle flush)."""
         tail, self.buf = _THINK_BLOCK_RE.sub("", self.buf), ""
+        self._emitted = False  # the next segment opens with a short chunk again
         if m := _THINK_OPEN_RE.search(tail):
             tail = tail[: m.start()]  # unterminated reasoning block: never speak it
         tail = tail.strip()

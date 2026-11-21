@@ -48,6 +48,30 @@ class TestSentenceChunker:
         ]
 
 
+    def test_next_min_len_keeps_the_opener_short_and_bundles_the_rest(self):
+        c = ts.SentenceChunker(min_len=10, next_min_len=30)
+        out = c.feed("A short opener. Second one here. Third one follows now. Fourth. ")
+        assert out == ["A short opener. ", "Second one here. Third one follows now. "]
+        assert c.flush() == ["Fourth."]
+
+
+    def test_flush_makes_the_next_segment_open_short_again(self):
+        c = ts.SentenceChunker(min_len=10, next_min_len=40)
+        assert c.feed("A short opener. ") == ["A short opener. "]
+        assert c.feed("Too short now. ") == []
+        assert c.flush() == ["Too short now."]
+        assert c.feed("Another opener. ") == ["Another opener. "]
+
+
+    def test_from_config_reads_next_min_len_and_defaults_to_min_len(self):
+        c = ts.SentenceChunker.from_config({"streaming": {"min_len": 12, "next_min_len": 150}})
+        assert (c.min_len, c.next_min_len) == (12, 150)
+        c = ts.SentenceChunker.from_config({"streaming": {"min_len": 12}})
+        assert (c.min_len, c.next_min_len) == (12, 12)
+        c = ts.SentenceChunker.from_config({"streaming": {"min_len": 12, "next_min_len": "many"}})
+        assert (c.min_len, c.next_min_len) == (12, 12)
+
+
 # ── Interruption latch ───────────────────────────────────────────────────
 
 

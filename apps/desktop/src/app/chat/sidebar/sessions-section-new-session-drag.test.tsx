@@ -3,8 +3,11 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { $backgroundStatusBySession } from '@/store/composer-status'
 import { $dismissedWorktreeIds, $sidebarShowAllSessions, dismissWorktree, restoreWorktree } from '@/store/layout'
 import { listRepoBranches, removeWorktreePath, switchBranchInRepo } from '@/store/projects'
+import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 
 import {
   EnteredProjectContent,
@@ -75,7 +78,8 @@ vi.mock('@/i18n', () => ({
           reveal: 'Reveal in file manager',
           toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`
         },
-        showMoreIn: (count: number, label: string) => `Show ${count} more in ${label}`
+        showMoreIn: (count: number, label: string) => `Show ${count} more in ${label}`,
+        statusDivider: { done: 'Done', working: 'Working' }
       },
       profiles: { switchToProfile: (label: string) => `Switch to ${label}` },
       statusStack: { coding: { switchFailed: (label: string) => `Could not switch to ${label}` } }
@@ -658,6 +662,42 @@ describe('flat-list date-divider new-session drag source', () => {
     fireEvent.pointerDown(screen.getByRole('button', { name: 'New session' }), { button: 0 })
 
     expect(startNewSessionDrag).not.toHaveBeenCalled()
+  })
+})
+
+describe('status grouping', () => {
+  afterEach(() => {
+    $backgroundStatusBySession.set({})
+    clearAllSessionStates()
+  })
+
+  it('keeps a monitored task outside Done until its background obligation settles', () => {
+    publishSessionState('runtime', createClientSessionState('monitor'))
+
+    const process = {
+      awaitingNotification: true,
+      id: 'watch',
+      state: 'running' as const,
+      title: 'Watching checks',
+      type: 'background' as const
+    }
+
+    $backgroundStatusBySession.set({ runtime: [process] })
+
+    render(
+      <SidebarSessionsSection
+        {...baseProps()}
+        grouping="status"
+        label="Sessions"
+        sessions={[{ id: 'monitor', last_active: 1, started_at: 1 } as SessionInfo]}
+      />
+    )
+
+    expect(screen.getByText('Working')).toBeTruthy()
+    expect(screen.queryByText('Done')).toBeNull()
+    act(() => $backgroundStatusBySession.set({ runtime: [{ ...process, state: 'done' }] }))
+    expect(screen.getByText('Done')).toBeTruthy()
+    expect(screen.queryByText('Working')).toBeNull()
   })
 })
 

@@ -68,10 +68,19 @@ def _release(events) -> None:
         is_delegation = evt.get("type") == "async_delegation"
         if is_delegation:
             return_completion_offer(evt)
+        else:
+            _settle_dropped(evt)
         unhold([evt])
         (logger.warning if is_delegation else logger.debug)(
             "Dropping parked %s notification past its retention window (key=%r)",
             evt.get("type", "completion"), str(evt.get("session_key") or ""))
+
+
+def _settle_dropped(evt: dict) -> None:
+    """A process notice the park lets go of is a deliberate drop: settle it so its process stops reading as
+    awaiting a notification (``ProcessRegistry.settle_notification`` ignores every other event type)."""
+    from tools.process_registry import process_registry
+    process_registry.settle_notification(evt)
 
 
 def _key(evt: dict) -> str:
@@ -110,6 +119,7 @@ def park(evt: dict) -> bool:
     for held in displaced:
         logger.debug("Dropping parked %s notification to make room for a %s (key=%r)",
                      held.get("type"), evt.get("type", "completion"), _key(held))
+        _settle_dropped(held)
     return admitted
 
 

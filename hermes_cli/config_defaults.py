@@ -116,8 +116,9 @@ DEFAULT_CONFIG = {
         # many slow/unreachable MCP servers.
         # See #63078.
         "build_wait_timeout": 600,
-        # Hermes-level retries for API errors (connection drops, timeouts, 5xx) around the whole call; the
-        # SDK also retries (max_retries=2). Set 1 for fast failover to fallbacks; raise for longer hiccups.
+        # Base attempts per Hermes-level API retry cycle, including the first call (minimum 1).
+        # SDK/stream retries are separate; primary transport recovery can restart the cycle,
+        # and provider-specific error handling can adjust the budget or fall back early.
         "api_max_retries": 3,
         "codex_request_compression": True,  # zstd to official Codex; a bare-400 frame resends as JSON
         # Once api_max_retries AND the fallback chain are spent on a transient outage (5xx,

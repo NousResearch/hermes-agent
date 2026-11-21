@@ -15,6 +15,22 @@ For ad-hoc, one-off MCP tool calls from the terminal without configuring anythin
 
 ## Prerequisites
 
+### Review the executable and access scope first
+
+The `npx` and `uvx` configurations below are templates, **not ready to run**.
+Replace `<reviewed-version>` with an actual version you have reviewed; it is not
+an instruction to install the latest release. Pin the package or use an approved
+local executable. A version pin makes selection reproducible, not inherently safe.
+Check the publisher, package provenance and available integrity evidence before
+execution; never invent a version, digest or claim of verification.
+
+Obtain explicit approval for installing dependencies, changing configuration,
+launching a server or restarting the client. Review the exact command, filesystem
+roots, network endpoints and credentials exposed to that server. Use only the
+minimum approved directories and least-privileged credentials; placeholders below
+are not real secrets and must not be copied into shared configuration as credentials.
+Do not print secrets while diagnosing a connection. See `references/security-privacy.md`.
+
 - **MCP Python dependencies** — included in the standard PM install through the `all` extra. Use PM to add the `mcp` extra.
 - **Node.js** -- required for `npx`-based MCP servers (most community servers)
 - **uv** -- required for `uvx`-based MCP servers (Python-based servers)
@@ -33,7 +49,7 @@ Add MCP servers to `~/.hermes/config.yaml` under the `mcp_servers` key:
 mcp_servers:
   time:
     command: "uvx"
-    args: ["mcp-server-time"]
+    args: ["mcp-server-time==<reviewed-version>"]
 ```
 
 Restart Hermes Agent. On startup it will:
@@ -54,7 +70,7 @@ Each entry under `mcp_servers` is a server name mapped to its config. There are 
 mcp_servers:
   server_name:
     command: "npx"             # (required) executable to run
-    args: ["-y", "pkg-name"]   # (optional) command arguments, default: []
+    args: ["-y", "pkg-name@<reviewed-version>"]   # (optional) command arguments, default: []
     env:                       # (optional) environment variables for the subprocess
       SOME_API_KEY: "value"
     timeout: 120               # (optional) per-tool-call timeout in seconds, default: 120
@@ -138,7 +154,7 @@ The most common transport. Hermes launches the MCP server as a subprocess and co
 mcp_servers:
   filesystem:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem@<reviewed-version>", "/home/user/projects"]
 ```
 
 The subprocess inherits a **filtered** environment (see Security section below) plus any variables you specify in `env`.
@@ -172,7 +188,7 @@ All other environment variables (API keys, tokens, secrets) are excluded unless 
 mcp_servers:
   github:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-github"]
+    args: ["-y", "@modelcontextprotocol/server-github@<reviewed-version>"]
     env:
       # Only this token is passed to the subprocess
       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
@@ -239,7 +255,7 @@ The client retries up to 5 times with exponential backoff (1s, 2s, 4s, 8s, 16s, 
 mcp_servers:
   time:
     command: "uvx"
-    args: ["mcp-server-time"]
+    args: ["mcp-server-time==<reviewed-version>"]
 ```
 
 Registers tools like `mcp_time_get_current_time`.
@@ -250,7 +266,7 @@ Registers tools like `mcp_time_get_current_time`.
 mcp_servers:
   filesystem:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/documents"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem@<reviewed-version>", "/home/user/documents"]
     timeout: 30
 ```
 
@@ -262,7 +278,7 @@ Registers tools like `mcp_filesystem_read_file`, `mcp_filesystem_write_file`, `m
 mcp_servers:
   github:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-github"]
+    args: ["-y", "@modelcontextprotocol/server-github@<reviewed-version>"]
     env:
       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_xxxxxxxxxxxxxxxxxxxx"
     timeout: 60
@@ -289,15 +305,15 @@ mcp_servers:
 mcp_servers:
   time:
     command: "uvx"
-    args: ["mcp-server-time"]
+    args: ["mcp-server-time==<reviewed-version>"]
 
   filesystem:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem@<reviewed-version>", "/path/to/allowed/dir"]
 
   github:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-github"]
+    args: ["-y", "@modelcontextprotocol/server-github@<reviewed-version>"]
     env:
       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_xxxxxxxxxxxxxxxxxxxx"
 
@@ -320,7 +336,7 @@ Sampling is **enabled by default**. Configure per server:
 mcp_servers:
   my_server:
     command: "npx"
-    args: ["-y", "my-mcp-server"]
+    args: ["-y", "my-mcp-server@<reviewed-version>"]
     sampling:
       enabled: true           # default: true
       model: "gemini-3-flash" # model override (optional)

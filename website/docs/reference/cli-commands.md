@@ -262,7 +262,22 @@ Interactive provider + model selector. **This is the command for adding new prov
 
 ```bash
 hermes model
+hermes model --refresh      # wipe the picker's model cache and re-fetch every provider's live list
 ```
+
+| Option | Description |
+|--------|-------------|
+| `--refresh` | Wipe the model picker disk cache and re-fetch every provider's live `/v1/models` list before the picker opens. |
+| `--portal-url URL` | Nous login: Portal base URL (default: the production portal). |
+| `--inference-url URL` | Nous login: inference API base URL (default: the production inference API). |
+| `--client-id ID` | Nous login: OAuth client id (default: `hermes-cli`). |
+| `--scope SCOPE` | Nous login: OAuth scope to request. |
+| `--no-browser` | Nous login: do not open the browser automatically. |
+| `--timeout SECONDS` | Nous login: HTTP request timeout (default: 15). |
+| `--ca-bundle PATH` | Nous login: CA bundle PEM file for TLS verification. |
+| `--insecure` | Nous login: disable TLS verification (testing only). |
+
+`hermes model` needs an interactive terminal; run through a pipe or a non-interactive subprocess it exits with status 1.
 
 Use this when you want to:
 - **add a new provider** (OpenRouter, Anthropic, DeepSeek, custom, etc.)
@@ -729,9 +744,10 @@ hermes auth reset openrouter 2                           # Clear the cooldown on
 hermes auth refresh openai-codex work                    # Refresh one OAuth credential and clear its cooldown
 hermes auth status anthropic                             # Show auth status for a provider
 hermes auth logout anthropic                             # Log out and clear stored auth state
+hermes auth upgrade                                      # Sign the Nous free tier into a Nous account, keeping its connectors
 ```
 
-Subcommands: `add`, `list`, `remove`, `reset`, `priority`, `refresh`, `status`, `logout`. Spotify login moved to the `spotify` catalog plugin's `hermes spotify login`. When called with no subcommand, launches the interactive management wizard.
+Subcommands: `add`, `list`, `remove`, `reset`, `priority`, `refresh`, `status`, `logout`, `upgrade`. Spotify login moved to the `spotify` catalog plugin's `hermes spotify login`. When called with no subcommand, launches the interactive management wizard.
 
 ## `hermes usage`
 

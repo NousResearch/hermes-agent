@@ -186,3 +186,81 @@ def test_a_host_already_running_for_that_profile_is_left_alone(hosted_home):
     host = manager._running_plugin_host()
     assert host is not None and host.pid == pid
     assert json.loads((play / "hook.json").read_text())["name"] == "work"  # created hook, cloned along
+
+
+@pytest.mark.platforms("any")
+def test_a_profile_hook_teardown_leaves_a_concurrent_load_on_the_shared_host(hosted_home):
+    """The hook runs in its own throwaway host: a real load of the same profile's provider while the
+    hook runs keeps the shared host, its registrations and its next call (#155595 F10)."""
+    from hermes_cli import profile_memory_config as pmc
+    from hermes_cli.profiles import create_profile
+    from plugins.memory import load_memory_provider
+    from tools.registry import registry
+
+    work = create_profile("work", clone_config=True, no_alias=True)
+    (work / "hostedprov.json").write_text(json.dumps({"workspace": "w"}), encoding="utf-8")
+    shared = []
+
+    def hook(provider):  # notify binds work's home: this load goes through work's shared manager
+        shared.append((plugins_mod.get_plugin_manager(), load_memory_provider("hostedprov")))
+
+    pmc.notify_memory_provider(work, hook)
+
+    (manager, provider), = shared
+    assert manager._running_plugin_host() is not None
+    assert any(manager._ownership_ledger.values())
+    assert registry.get_entry("hostedprov_probe", scope=manager.scope_key) is not None
+    assert provider.read_config_fields(str(work)) == {"values": {"workspace": "w"}}
+
+
+_REF = """
+from agent.context_references import ContextCompletionItem, ContextReferenceProvider
+
+
+class _Ref(ContextReferenceProvider):
+    prefix = "hostedprov"
+
+    async def autocomplete(self, query, *, limit=10):
+        return [ContextCompletionItem(text=query)]
+
+    async def expand(self, target):
+        return str(os.getpid())
+
+
+_register = register
+
+
+def register(ctx):
+    _register(ctx)
+    ctx.register_context_reference(_Ref())
+"""
+
+
+@pytest.mark.platforms("any")
+def test_a_profile_hook_leaves_the_at_prefix_to_the_profiles_own_load(hosted_home, monkeypatch):
+    """The @-prefix table is process-wide: a hook-only load that claimed a prefix would hold it past its
+    stopped host and refuse the profile's own load of the same plugin."""
+    import asyncio
+
+    from agent import context_references as refs
+    from hermes_cli.profiles import create_profile
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from plugins.memory import load_memory_provider
+
+    monkeypatch.setattr(refs, "_context_reference_providers", {})
+    monkeypatch.setattr(refs, "_context_reference_owners", {})
+    for plugin_dir in (hosted_home / "plugins").iterdir():
+        (plugin_dir / "__init__.py").write_text(_INIT + _REF, encoding="utf-8")
+    work = create_profile("work", clone_config=True, no_alias=True)
+    assert "hostedprov" not in refs.get_context_reference_providers()
+
+    token = set_hermes_home_override(str(work))
+    try:
+        load_memory_provider("hostedprov")
+        host = plugins_mod.get_plugin_manager()._running_plugin_host()
+        expanded = asyncio.run(refs.get_context_reference_providers()["hostedprov"].expand("x"))
+    finally:
+        reset_hermes_home_override(token)
+    # The host child reports its own os.getpid() in the hello handshake. On Windows, Popen.pid is the
+    # venv launcher's pid, not the interpreter's, so it can't be compared with a pid the plugin returns.
+    assert expanded == str(host.info["pid"])

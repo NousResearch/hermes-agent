@@ -22,7 +22,7 @@ PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [("--profile", True), ("-
 # snapshot lacks AND derivation regresses.
 _VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({
     "-z", "--oneshot", "-m", "--model", "--provider", "--reasoning", "-t", "--toolsets",
-    "-r", "--resume", "-s", "--skills", "--usage-file", "--in", "--cpu-profile",
+    "-r", "--resume", "-s", "--skills", "--usage-file", "--in", "--cpu-profile", "--execution-mode",
 })
 _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
 
@@ -153,6 +153,9 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "previews, no session_id line. Tools, memory, rules, and "
         "AGENTS.md in the CWD are loaded as normal; approvals are "
         "auto-bypassed. Intended for scripts / pipes."))
+    add("--execution-mode", choices=("agent", "auto", "direct", "bounded"), default="agent",
+        help="One-shot execution choice: agent (default), auto (conservative pre-route), "
+             "direct (one OpenAI-compatible request, no tools), bounded (max two tool iterations).")
     add("--usage-file", metavar="PATH", default=None, help=(
         "One-shot mode only: after the run, write a JSON usage report "
         "(estimated cost, token counts, model, api_calls) to PATH. "

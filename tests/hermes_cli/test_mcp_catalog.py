@@ -263,6 +263,31 @@ class TestManifestParsing:
         assert cfg["url"] == "https://mcp.example.com/sse"
         assert cfg["headers"] == {"Authorization": "Bearer ${MCP_DEMO_API_KEY}"}
 
+    def test_events_manifest_turns_on_the_server_events_flag(self, catalog_dir):
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/mcp"},
+            auth={"type": "oauth"},
+            events=True,
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import _build_server_config
+
+        cfg = _build_server_config(_entry("demo"), None)
+        assert cfg == {"url": "https://mcp.example.com/mcp", "auth": "oauth", "events": True}
+
+    def test_events_defaults_off(self, catalog_dir):
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+        from hermes_cli.mcp_catalog import _build_server_config
+
+        assert "events" not in _build_server_config(_entry("demo"), None)
+
+    def test_events_must_be_a_boolean(self, catalog_dir):
+        _write_manifest(catalog_dir, "demo", _basic_manifest(events="yes"))
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        with pytest.raises(CatalogError, match="'events' must be true or false"):
+            _parse_manifest(catalog_dir / "demo" / "manifest.yaml")
+
     def test_http_api_key_requires_matching_env_declaration(self, catalog_dir):
         """http+api_key manifests must declare the env key the header references.
 

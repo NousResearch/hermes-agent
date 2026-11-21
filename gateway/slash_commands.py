@@ -853,8 +853,12 @@ class GatewaySlashCommandsMixin(
         if not prompt:
             return t("gateway.background.usage")
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+        # The background agent runs on a fresh session with no history: when /bg is sent as a
+        # reply, the reply-to pointer is the only way it knows which message "that" refers to.
+        # Same helper as a normal inbound turn; the ack preview keeps the bare command args.
+        agent_prompt = self._prepend_inbound_reply_context(event, event.source, prompt)
         self._track_background_task(self._run_background_task(
-            prompt, event.source, task_id, event_message_id=self._reply_anchor_for_event(event),
+            agent_prompt, event.source, task_id, event_message_id=self._reply_anchor_for_event(event),
             # Forward image/audio attachments so the background agent can see them.
             media_urls=list(event.media_urls or []), media_types=list(event.media_types or [])))
         return t("gateway.background.started", preview=_preview(prompt), task_id=task_id)

@@ -78,6 +78,25 @@ def _make_adapter(extra=None):
     return adapter
 
 
+@pytest.mark.parametrize("content", [
+    "# Heading", "> blockquote", "**> expandable quote", "1. ordered item",
+    "[^1]: footnote", "---", "inline math $x+y$",
+])
+def test_needs_rich_rendering_for_extended_markdown(content):
+    adapter = _make_adapter()
+    assert adapter._needs_rich_rendering(content)
+
+
+@pytest.mark.parametrize("content", [
+    "```markdown\n# heading inside code\n```",
+    "```shell\n> prompt inside code\n```",
+    "```shell\n---\n```",
+])
+def test_needs_rich_rendering_ignores_markup_inside_code_fences(content):
+    adapter = _make_adapter()
+    assert not adapter._needs_rich_rendering(content)
+
+
 def _rich_api_kwargs(adapter):
     """Return the api_kwargs dict from the single sendRichMessage call."""
     call = adapter._bot.do_api_request.call_args

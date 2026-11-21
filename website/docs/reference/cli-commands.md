@@ -57,7 +57,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
 | `hermes whatsapp-cloud` | Configure the official Meta WhatsApp Business Cloud API adapter (Business account + public webhook required). Distinct from `hermes whatsapp` (Baileys personal-account bridge). |
-| `hermes slack` | Slack helpers (currently: generate the app manifest with every command as a native slash). |
+| `hermes slack` | Slack helpers: generate the app manifest with every command as a native slash, or create and sync the app from one App Configuration token. |
 | `hermes auth` | Manage credentials — add, list, remove, reset, status, logout. Handles OAuth flows for Codex/Nous/Anthropic. |
 | `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
 | `hermes send` | Send a one-shot message to a configured messaging platform (Telegram, Discord, Slack, Signal, SMS, …). Useful from shell scripts, cron jobs, CI hooks, and monitoring daemons — no agent loop, no LLM. |
@@ -508,6 +508,42 @@ reinstall if scopes or slash commands changed.
 
 Run `hermes slack manifest --write` again after `hermes update` to pick
 up any new commands.
+
+### `hermes slack create`
+
+```bash
+hermes slack create                    # create the app from one App Configuration token
+hermes slack create                    # later runs: sync the app's manifest with Hermes
+hermes slack create --app-id A0123ABCD # adopt and sync an app you created by hand
+```
+
+Creates the Hermes Slack app through Slack's App Manifest API instead of
+copy-pasting a manifest. Generate an App Configuration token at
+[https://api.slack.com/apps](https://api.slack.com/apps) (**Your App
+Configuration Tokens → Generate Token**) and paste its **Refresh Token**
+when prompted. The prompt is masked; the token is never accepted as an
+argument. Hermes rotates it (`tooling.tokens.rotate`), creates the app
+(`apps.manifest.create`), saves the app id as `slack.app_id` in
+`config.yaml`, and saves the rotated refresh token as
+`SLACK_CONFIG_REFRESH_TOKEN` in `.env`.
+
+Slack has no API that mints the bot token or the Socket Mode app-level
+token, so the command prints the app's **Install App** and **Basic
+Information → App-Level Tokens** links and prompts (masked) for the
+`xoxb-` and `xapp-` tokens. Press Enter to skip either.
+
+Re-running it rotates the stored refresh token, exports the app's live
+manifest, replaces its slash commands with the current Hermes list,
+adds any bot scopes or events Hermes now needs, and saves the result
+with `apps.manifest.update`. Your own edits (name, description, extra
+scopes) are kept. Requires an interactive terminal.
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--app-id A...` | `slack.app_id` | Sync this existing app instead of creating one; saved as `slack.app_id`. |
+| `--name NAME` | `Hermes` | Display name for a new app. |
+| `--description DESC` | default blurb | Description for a new app. |
+| `--messaging {agent,assistant,none}` | `agent` | Slack messaging experience for a new app. |
 
 
 ## `hermes send`

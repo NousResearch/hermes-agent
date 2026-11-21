@@ -1477,11 +1477,11 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
         "require_mention_channels": "",  # channel IDs where @mention is ALWAYS required
-        # Ignore messages whose first token @mentions another user unless the bot is also mentioned.
-        # Env: SLACK_IGNORE_OTHER_USER_MENTIONS.
+        # Skip messages whose first token @mentions another user unless the bot is also mentioned (env SLACK_IGNORE_OTHER_USER_MENTIONS).
         "ignore_other_user_mentions": False,
         "thread_require_mention": False,  # require @mention in thread replies too
         "channel_prompts": {},  # per-channel ephemeral system prompts
+        "app_id": "",  # app `hermes slack create` made/syncs (public id; its tokens live in .env)
     },
 
     "discord": {

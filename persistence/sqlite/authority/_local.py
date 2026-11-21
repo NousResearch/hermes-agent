@@ -397,6 +397,17 @@ def local_session_ids(holder):
             'SELECT key FROM state_meta WHERE key LIKE ?', (POLICY_PREFIX + '%',))]
 
 
+def acp_candidate_ids(holder):
+    """Ids that can hold an ACP policy receipt, read from the indexed ``sessions`` table.
+
+    A receipt with ``policy.source='acp'`` creates its row as ``source='acp'``, and a peer refresh
+    relabels it ``source='local'`` with ``created_source='acp'`` (``session_policy.STORED_AS_LOCAL``).
+    A candidate is only a lookup key: the caller still judges the receipt's own policy."""
+    with holder._read_ctx() as conn:
+        return [row[0] for row in conn.execute(
+            "SELECT id FROM sessions WHERE source='acp' OR (source='local' AND created_source='acp')")]
+
+
 def local_lineages(holder):
     """``(owner, lineage)`` of every receipt, as the catalog reads them: an undecodable receipt, a non-string owner
     or a non-list lineage is skipped, and non-string members are dropped."""

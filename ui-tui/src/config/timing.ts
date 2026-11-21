@@ -13,6 +13,12 @@ export const REASONING_PULSE_MS = 700
 // trailing edge always lands the final width so the settled layout is exact.
 export const RESIZE_COALESCE_MS = 32
 
+// Ceiling for the ADAPTIVE flush gap (see turnController's adaptiveFloor).
+// Under heavy load the gap stretches to 3x the measured flush cost so the
+// main thread stays responsive to input; this cap guarantees streaming text
+// still visibly updates at least ~4x per second no matter the load.
+export const MAX_STREAM_FLUSH_GAP_MS = 250
+
 // Two Esc presses within this window discard the draft (Claude Code /
 // Gemini CLI parity). Long enough for a deliberate double-tap, short
 // enough that two unrelated Escs — dismissing a completion, then a

@@ -315,18 +315,23 @@ export async function normalizeOrLocalPreviewTarget(
   cwd?: string | null,
   scope?: DesktopFsSessionScope
 ): Promise<PreviewTarget | null> {
+  // A remote backend's files are not on this machine. The main process would
+  // resolve them against the local filesystem, and on Windows rewrite a POSIX
+  // path into a WSL UNC path the gateway cannot read. Only web URLs go there.
+  if (isDesktopFsRemoteMode() && !/^https?:\/\//i.test(rawTarget.trim())) {
+    return enrichPreviewTarget(localPreviewTarget(rawTarget, cwd), scope)
+  }
+
   try {
     const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
 
     if (normalized) {
       // Directories and dead links arrive as typed non-previewable results
-      // (#101683). Locally they must not fall through to the renderer's blind
+      // (#101683). They must not fall through to the renderer's blind
       // classification below, which would fabricate a text tab for a path
-      // that cannot be previewed. A remote backend's paths are not on this
-      // machine, so remote mode keeps the fabricated fallback the gateway
-      // read resolves later.
+      // that cannot be previewed.
       if (normalized.previewKind === 'directory' || normalized.previewKind === 'missing') {
-        return isDesktopFsRemoteMode() ? enrichPreviewTarget(localPreviewTarget(rawTarget, cwd), scope) : null
+        return null
       }
 
       return enrichPreviewTarget(normalized, scope)

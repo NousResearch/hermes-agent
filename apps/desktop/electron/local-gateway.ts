@@ -656,6 +656,41 @@ export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose:
     throw error
   }
 
+  // A stalled gateway main loop breaks the control socket before any verdict arrives. Those two
+  // transient errors alone earn a bounded re-dial of the same one-use request; every other verdict
+  // (invalid reply, unsafe or noncanonical home) says something about the endpoint and surfaces on
+  // the first connection — a stale owner belongs to redialLocalGateway's forget-and-re-ensure.
+  const startedAt = Date.now()
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await openTicketControlSocket(socketPath, endpoint, home, purpose)
+    } catch (error) {
+      const backoffMs = TICKET_MINT_RETRY_BACKOFF_MS[attempt]
+
+      if (backoffMs === undefined || !isTransientTicketMintError(error)) {throw error}
+
+      // ponytail: three full 5s-deadline dials would run ~17s; gating each retry on the ~10s
+      // budget keeps the worst case at one deadline past the cap while fast-fail transients
+      // still get every dial.
+      if (Date.now() - startedAt + backoffMs >= TICKET_MINT_RETRY_BUDGET_MS) {throw error}
+      await new Promise(resolve => setTimeout(resolve, backoffMs))
+    }
+  }
+}
+
+const TICKET_MINT_RETRY_BACKOFF_MS = [500, 1500]
+const TICKET_MINT_RETRY_BUDGET_MS = 10_000
+
+/** The mint errors a stalled-but-alive gateway leaves behind: the socket broke before any verdict,
+ *  so the one-use dial can simply be attempted again. */
+function isTransientTicketMintError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return message === 'Gateway ticket bootstrap failed' || message === 'Gateway ticket connection closed'
+}
+
+function openTicketControlSocket(socketPath: string, endpoint: GatewayEndpoint, home: string, purpose: GatewayTicketPurpose): Promise<string> {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath)
     let buffer = ''

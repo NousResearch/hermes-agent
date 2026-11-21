@@ -922,7 +922,8 @@ def _cmd_rename(args, *, persistence=None):
         print("Error: title cannot contain newlines.")
         return 1
     try:
-        if not persistence.sessions.set_title(resolved_session_id, title):
+        # A compressed chat lists under its live compression tip: the id it was created with renames that tip.
+        if not persistence.sessions.set_title(persistence.lineage.tip(resolved_session_id), title):
             return _not_found(args.session_id)
     except ValueError as e:
         print(f"Error: {e}")

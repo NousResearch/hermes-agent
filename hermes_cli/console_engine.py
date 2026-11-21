@@ -700,7 +700,8 @@ def _sessions_rename(_engine: HermesConsoleEngine, args: list[str]) -> None:
     with _session_db(read_only=False) as store:
         resolved_session_id = store.sessions.resolve_id(ns.session_id)
         title = " ".join(ns.title)
-        if not resolved_session_id or not store.sessions.set_title(resolved_session_id, title):
+        # A compressed chat lists under its live compression tip: the id it was created with renames that tip.
+        if not resolved_session_id or not store.sessions.set_title(store.lineage.tip(resolved_session_id), title):
             raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
         print(f"Session '{resolved_session_id}' renamed to: {title}")
 

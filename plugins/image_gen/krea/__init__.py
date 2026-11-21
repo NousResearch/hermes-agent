@@ -104,8 +104,9 @@ _POLL_FAILURES: dict[str, tuple[str, Callable[[str, Any], str]]] = {
         f"Krea job {job_id} did not complete within "
         f"{int(_POLL_TIMEOUT_SECONDS)}s (last status: {detail or 'unknown'})")),
 }
-# Managed gateway prices base text-to-image and URL style references only.
-_MANAGED_UNSUPPORTED = (("trained styles (LoRAs)", "styles"), ("moodboards", "moodboards"))
+# The managed gateway accepts `styles` on Krea 2 (Krea's public library; a style trained in the caller's
+# own Krea workspace still needs KREA_API_KEY) and refuses moodboards.
+_MANAGED_UNSUPPORTED = (("moodboards", "moodboards"),)
 
 
 def _load_krea_config() -> dict[str, Any]:
@@ -477,7 +478,7 @@ def _krea2_payload(
     """Krea 2 request body: the pictures given are style references whose look is copied."""
     style_refs = _collect_style_refs(image_url, reference_image_urls, kwargs.get("image_style_references"))
     payload = _build_payload(prompt, krea_ar, _resolve_creativity(kwargs.get("creativity")), style_refs, kwargs)
-    # LoRAs/moodboards are rejected by the managed gateway: fail fast with guidance, not a raw 400.
+    # Moodboards are rejected by the managed gateway: fail fast with guidance, not a raw 400.
     if managed:
         for what, arg in _MANAGED_UNSUPPORTED:
             if arg in payload:

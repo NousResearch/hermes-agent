@@ -671,6 +671,7 @@ from hermes_cli.main_provider_setup import (
     _aux_config_menu,
     _build_provider_picker_rows,
     _clear_stale_openai_base_url,
+    _dotenv_has_provider_key,
     _is_profile_api_key_provider,
     _model_choice_save_count,
     _named_custom_provider_map,
@@ -894,24 +895,6 @@ def _termux_should_prefetch_update_check() -> bool:
     if not _is_termux_startup_environment():
         return True
     return os.environ.get("HERMES_TERMUX_PREFETCH_UPDATES") == "1"
-
-
-def _dotenv_has_provider_key(env_file: Path, provider_env_vars: set) -> bool:
-    """True if ~/.hermes/.env assigns a non-empty value to any provider key."""
-    if not env_file.exists():
-        return False
-    try:
-        for line in env_file.read_text(encoding="utf-8-sig").splitlines():
-            line = line.strip()
-            if line.startswith("#") or "=" not in line:
-                continue
-            line = line.removeprefix("export ")
-            key, _, val = line.partition("=")
-            if key.strip() in provider_env_vars and val.strip().strip("'\""):
-                return True
-    except Exception:
-        pass
-    return False
 
 
 def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool) -> bool:
@@ -1578,6 +1561,17 @@ def cmd_chat(args):
 
         begin_process("cli")
         cli_main(**kwargs)
+    except KeyboardInterrupt:
+        # _signal_handler_q raises KI for SIGINT on every chat run, and the whole
+        # cli.run() startup window (banner, gateway-session ensure) sits OUTSIDE
+        # run()'s own KI catch — a Ctrl+C during boot escaped here as an unhandled
+        # traceback (#80210). Mid-turn interrupts are still handled by run()
+        # itself; this backstop only owns the startup escape. The notice is
+        # suppressed so a closed stderr cannot trade the clean 130 for a
+        # BrokenPipeError traceback.
+        with contextlib.suppress(OSError):
+            print("\nInterrupted.", file=sys.stderr)
+        sys.exit(130)
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)

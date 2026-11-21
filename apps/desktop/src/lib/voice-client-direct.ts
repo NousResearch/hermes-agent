@@ -176,27 +176,32 @@ async function providerErrorText(response: Response): Promise<string> {
  * Mistral Voxtral ignores that flag and returns JSON
  * `{ text, model, usage, ... }` — dumping that object into the Desktop
  * composer is the dictation regression (plain speech becomes raw JSON).
+ * Some gateways (observed on Bifrost) double-encode: the outer `{ text }`
+ * holds a *string* that is itself a JSON `{ text, usage }` envelope.
+ * Unwrap `{ text: <string> }` layers repeatedly (bounded) until the value
+ * is no longer a JSON object with a string `text`.
  */
 export function transcriptFromOpenAiMultipartBody(body: string): string {
-  const trimmed = String(body || '').trim()
+  let transcript = String(body || '').trim()
 
-  if (!trimmed) {
-    return ''
-  }
-
-  if (trimmed.startsWith('{')) {
+  for (let depth = 0; depth < 8 && transcript.startsWith('{'); depth += 1) {
     try {
-      const parsed = JSON.parse(trimmed) as { text?: unknown }
+      const parsed = JSON.parse(transcript) as { text?: unknown }
 
-      if (typeof parsed?.text === 'string') {
-        return parsed.text.trim()
+      if (typeof parsed?.text !== 'string') {
+        break
+      }
+      transcript = parsed.text.trim()
+      if (!transcript) {
+        break
       }
     } catch {
       // Not JSON — treat the body as the transcript.
+      break
     }
   }
 
-  return trimmed
+  return transcript
 }
 
 const DEFAULT_STT_TIMEOUT_S = 60

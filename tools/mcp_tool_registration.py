@@ -156,12 +156,13 @@ def _restore_server_toolset_alias(key) -> None:
 
     server_name = _key_name(key)
     with _core._lock:
-        owned = [(server, set(_core._server_tool_scopes.get(k, ())))
+        owned = [(getattr(server, "_registered_tool_names", ()), set(_core._server_tool_scopes.get(k, ())))
                  for k, server in _core._servers.items() if _key_name(k) == server_name]
+        owned += [(names, {_key_scope(k)}) for k, names in _core._lazy_server_tool_names.items()
+                  if _key_name(k) == server_name]
     if any(
         registry.snapshot_registration(tool_name, scope=scope) is not None
-        for server, scopes in owned for scope in scopes
-        for tool_name in getattr(server, "_registered_tool_names", ())
+        for names, scopes in owned for scope in scopes for tool_name in names
     ):
         registry.register_toolset_alias(server_name, f"mcp-{server_name}")
 
@@ -538,6 +539,13 @@ def register_connected_into_current_scope(servers: dict) -> int:
         return _register_connected_into_current_scope(servers)
 
 
+def _has_tool_session(server) -> bool:
+    # An intentional stdio recycle keeps its manifest and reconnects on the next call.
+    # A failed/parked transport has no recycle reason and must still lose its tools.
+    return server is not None and (getattr(server, "session", None) is not None
+                                   or getattr(server, "_recycled_reason", None) is not None)
+
+
 def _register_connected_into_current_scope(servers: dict) -> int:
     """Heal the current profile's MCP overlay from already-connected shared servers.
 
@@ -576,7 +584,7 @@ def _register_connected_into_current_scope(servers: dict) -> int:
                         if name in foreign and config is not None and mcp_server_enabled(config)}
 
     with _core._lock:
-        stale = []
+        stale, stale_lazy, kept_lazy = [], [], []
         for key, scopes in _core._server_tool_scopes.items():
             if scope not in scopes:
                 continue
@@ -586,24 +594,41 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             server = _core._servers.get(key)
             config = judged[name]
             cross_profile = _key_scope(key) != scope
-            if (config is None or not mcp_server_enabled(config) or server is None
-                    or getattr(server, "session", None) is None
+            lazy = _core._lazy_server_configs.get(key)
+            if lazy is not None and not cross_profile:
+                # Schema-cached tools have no live task until first use. Keep them
+                # callable while this profile still selects the same connection.
+                if (config is not None and mcp_server_enabled(config)
+                        and _connection_identity(lazy) == _connection_identity(config)):
+                    kept_lazy.append((name, config))
+                else:
+                    stale_lazy.append(key)
+                continue
+            if (config is None or not mcp_server_enabled(config) or not _has_tool_session(server)
                     or not _same_server_route(server, config, cross_profile=cross_profile,
                                               resolved_identity=resolved_ids.get(name))):
                 stale.append(key)
     for key in stale:
         _remove_server_scope(key, scope)
+    for name, config in kept_lazy:
+        _record_scope_trust(name, config, scope)
+    if stale_lazy:
+        from tools.mcp_tool_discovery import _forget_lazy_server
+        for key in stale_lazy:
+            _forget_lazy_server(key)
 
     registered_servers = 0
     for name, config in servers.items():
         if not mcp_server_enabled(config):
             continue
         with _core._lock:
-            if _server_key(name, scope, current=False) in _core._servers:
-                continue  # this profile has its own connection for the name
+            own_key = _server_key(name, scope, current=False)
+            own = _core._servers.get(own_key)
             # Any other profile's live connection with the same route AND credentials is shareable.
-            shared = [(key, live) for key, live in _core._servers.items()
-                      if _key_name(key) == name and getattr(live, "session", None) is not None
+            shared = ([(own_key, own)] if _has_tool_session(own) and _same_server_route(own, config) else [])
+            if own is None:
+                shared = [(key, live) for key, live in _core._servers.items()
+                      if _key_name(key) == name and _has_tool_session(live)
                       and _same_server_route(live, config, cross_profile=True,
                                              resolved_identity=resolved_ids.get(name))]
         if not shared:

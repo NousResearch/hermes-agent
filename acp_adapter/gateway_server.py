@@ -326,6 +326,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         await asyncio.sleep(0)  # after the session reply: the editor routes updates by a known id
         try:
             await self._conn.session_update(session_id=editor_id, update=available_commands_update())
+            # Local patch: resend after a short delay — some editors attach after
+            # the first update races past; the resend is idempotent.
+            await asyncio.sleep(3)
+            await self._conn.session_update(session_id=editor_id, update=available_commands_update())
             await self._project_usage(session_id, editor_id,
                                       await (await self._client()).rpc("session.stats", session_id=session_id))
         except Exception:

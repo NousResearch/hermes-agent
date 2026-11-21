@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import logging
 from collections import Counter
@@ -71,20 +72,55 @@ class SlashCommandsMixin:
 
 
     @classmethod
+    def _skill_command_entries(cls) -> dict[str, str]:
+        """Installed skills as {name: description} for /<skill-name> autocomplete.
+        Local patch: the CLI/gateway expose installed skills as dynamic /<name>
+        commands; the ACP adapter historically advertised only _COMMANDS. Empty on
+        any API mismatch so ACP never breaks."""
+        try:
+            from agent.skill_commands import get_interactive_skill_commands
+            commands = get_interactive_skill_commands()
+        except Exception:
+            logger.debug("Could not enumerate skill commands for ACP", exc_info=True)
+            return {}
+        taken = set(cls._COMMANDS)  # built-ins win, same rule as CLI/gateway
+        entries: dict[str, str] = {}
+        for key, meta in (commands or {}).items():
+            name = (key or "").lstrip("/").strip()
+            if not name or name in taken or name in entries:
+                continue
+            desc = " ".join(str((meta or {}).get("description") or f"Invoke the {name} skill").split())
+            entries[name] = desc[:117] + "..." if len(desc) > 120 else desc
+        return entries
+
+    @classmethod
     def _available_commands(cls) -> list[AvailableCommand]:
-        return [
+        commands = [
             AvailableCommand(name=name, description=desc, input=UnstructuredCommandInput(hint=hint) if hint else None)
             for name, (_help, desc, hint) in cls._COMMANDS.items()
         ]
+        for name, desc in cls._skill_command_entries().items():
+            commands.append(AvailableCommand(name=name, description=desc))
+        return commands
 
     async def _send_available_commands_update(self, session_id: str) -> None:
-        """Advertise supported slash commands to the connected ACP client."""
+        """Advertise supported slash commands to the connected ACP client.
+
+        Local patch: sent twice, immediately and again after a short delay.
+        Some ACP hosts attach the session after `session/new` resolves, so an
+        update racing the attach is dropped; the delayed resend lands after
+        attach and is idempotent for clients that already adopted the list."""
         if not self._conn:
             return
-        update = AvailableCommandsUpdate(
-            session_update="available_commands_update", available_commands=self._available_commands()
-        )
-        await self._send(session_id, update, fail_msg="Failed to advertise ACP slash commands for session %s")
+        for delay in (0.0, 3.0):
+            if delay:
+                await asyncio.sleep(delay)
+            if not self._conn:
+                return
+            update = AvailableCommandsUpdate(
+                session_update="available_commands_update", available_commands=self._available_commands()
+            )
+            await self._send(session_id, update, fail_msg="Failed to advertise ACP slash commands for session %s")
 
     def _schedule_available_commands_update(self, session_id: str) -> None:
         self._schedule_soon(lambda: self._send_available_commands_update(session_id))

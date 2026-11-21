@@ -1502,7 +1502,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         from gateway.session_ingress import executing_admission
         pending_event = None
         pending = None
-        if result and adapter and session_key:
+        if result and adapter and session_key and not self._draining:
             pending_event = _dequeue_pending_event(adapter, session_key)
             if result.get("compression_exhausted") and pending_event is not None:
                 self._defer_past_exhaustion_reset(result, adapter, source, session_key, pending_event)
@@ -1554,7 +1554,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         if self._draining and getattr(pending_event, "_admitted_before_drain", False) is not True:
             if pending_event or pending:
                 logger.info("Discarding pending follow-up for session %s during gateway %s", session_key or "?", self._status_action_label())
-            # Without a result the caller runs nothing next: leave the queue to the adapter.
+            # A queued follow-up stays in the slot for the shutdown flush; only a pre-drain wake runs.
             pending_event = self._take_wake_admitted_before_drain(session_key, adapter) if result and adapter and session_key else None
             pending = (pending_event.text or _build_media_placeholder(pending_event)) if pending_event is not None else None
         return pending_event, pending

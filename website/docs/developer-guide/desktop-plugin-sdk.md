@@ -1795,6 +1795,7 @@ union; `PLUGIN_APP_ACTIONS` is the same list at runtime:
 | `session.new` | Start a new chat |
 | `session.focusSearch` | Focus session search |
 | `conversation.scrollPageUp` / `conversation.scrollPageDown` | Scroll the transcript a page |
+| `conversation.scrollToEnd` | Jump the transcript to the newest message (End / ⌘↓) |
 | `nav.commandPalette` | Toggle the command palette |
 | `nav.settings`, `nav.profiles`, `nav.capabilities`, `nav.messaging`, `nav.artifacts`, `nav.cron`, `nav.agents` | Open that page |
 | `keybinds.openPanel` | Open Settings ▸ Keyboard Shortcuts |

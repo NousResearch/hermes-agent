@@ -1658,8 +1658,7 @@ class GatewayStartupMixin:
         self._spawn_supervised(self._drain_control_watcher, "drain_control_watcher")
 
     def _start_status_report_watcher(self) -> None:
-        """Only when the launch environment carries the stamp; the reporter is imported only then,
-        so a gateway with reports off loads none of it."""
+        """Only when the launch environment carries the stamp; ``reporter`` is imported only then."""
         from gateway.status_report.target import STATUS_REPORT_URL_ENV
         if not os.environ.get(STATUS_REPORT_URL_ENV, "").strip():
             return

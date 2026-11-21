@@ -4,8 +4,8 @@ import { useStore } from '@nanostores/react'
 import { type FC, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
-import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import { DiffusionCanvas } from '@/components/chat/image-generation-placeholder'
+import { sessionFileOrigin } from '@/components/chat/session-file-origin'
 import { ImageActionButton, ImageLightbox } from '@/components/chat/zoomable-image'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useMediaImage } from '@/hooks/use-media-image'
@@ -22,7 +22,6 @@ import {
 } from '@/lib/media'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
-import { profileScopeForSessionOwner } from '@/store/session-request-router'
 
 // A hint is only a placeholder shape, not a promise about the delivered image.
 const ASPECT_HINTS: Record<string, number> = {
@@ -42,23 +41,15 @@ function hintedRatio(aspectRatio?: string): number {
 }
 
 /** A relative path names a file in the producing session's working directory, on its profile. The
- *  gateway resolves it there only for a save that names that session, and in its own cwd otherwise.
- *  A chat not stored yet names its live runtime session, as the chat's other file opens do. */
-async function sessionFileOrigin(storedSessionId: null | string, runtimeId: null | string): Promise<GatewayFileOrigin> {
-  if (!storedSessionId) {
-    if (runtimeId) {
-      return { sessionId: runtimeId }
-    }
+ *  gateway resolves it there only for a save that names that session, and in its own cwd otherwise. */
+async function relativeImageOrigin(storedSessionId: null | string, runtimeId: null | string): Promise<GatewayFileOrigin> {
+  const origin = await sessionFileOrigin(storedSessionId, runtimeId)
 
+  if (!origin) {
     throw new Error('No session to resolve a relative image path in')
   }
 
-  const scope = profileScopeForSessionOwner(await resolveSessionOwner(storedSessionId))
-
-  return {
-    sessionId: storedSessionId,
-    ...(typeof scope === 'string' ? { profile: scope } : scope ? { owner: scope } : {})
-  }
+  return origin
 }
 
 export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({ aspectRatio, result }) => {
@@ -105,7 +96,7 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
           } else if (isRemoteGateway() && isFileMediaPath(image)) {
             void downloadGatewayMediaFile(image).catch(error => notifyError(error, copy.imageDownloadFailed))
           } else if (isRemoteGateway() && !isInlineMediaSrc(image)) {
-            void sessionFileOrigin(storedSessionId, runtimeId)
+            void relativeImageOrigin(storedSessionId, runtimeId)
               .then(origin => downloadGatewayMediaFile(image, origin))
               .catch(error => notifyError(error, copy.imageDownloadFailed))
           } else {

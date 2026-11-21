@@ -90,7 +90,8 @@ function ArtifactLiveView({ content, kind, title }: { content: string; kind: Art
   if (kind === 'svg') {
     return (
       <div className="grid h-full place-items-center overflow-auto bg-background p-4 [&_svg]:h-auto [&_svg]:max-h-full [&_svg]:w-auto [&_svg]:max-w-full">
-        <div dangerouslySetInnerHTML={{ __html: svgClean }} />
+        {/* w-full: a viewBox-only SVG has no intrinsic width, so a shrink-wrapped parent collapses it to 0x0. */}
+        <div className="w-full" dangerouslySetInnerHTML={{ __html: svgClean }} />
       </div>
     )
   }

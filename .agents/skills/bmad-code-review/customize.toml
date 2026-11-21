@@ -1,0 +1,110 @@
+# DO NOT EDIT -- overwritten on every update.
+#
+# Workflow customization surface for bmad-code-review. Mirrors the
+# agent customization shape under the [workflow] namespace.
+
+[workflow]
+
+# --- Configurable below. Overrides merge per BMad structural rules: ---
+#   scalars: override wins • arrays (persistent_facts, activation_steps_*): append
+#   arrays-of-tables with `code`/`id`: replace matching items, append new ones.
+
+# Steps to run before the standard activation (config load, greet).
+# Overrides append. Use for pre-flight loads, compliance checks, etc.
+
+activation_steps_prepend = []
+
+# Steps to run after greet but before the workflow begins.
+# Overrides append. Use for context-heavy setup that should happen
+# once the user has been acknowledged.
+
+activation_steps_append = []
+
+# Persistent facts the workflow keeps in mind for the whole run
+# (standards, compliance constraints, stylistic guardrails).
+# Distinct from the runtime memory sidecar — these are static context
+# loaded on activation. Overrides append.
+#
+# Each entry is either:
+#   - a literal sentence, e.g. "All stories must include testable acceptance criteria."
+#   - a file reference prefixed with `file:`, e.g. "file:{project-root}/docs/standards.md"
+#     (glob patterns are supported; the file's contents are loaded and treated as facts).
+
+persistent_facts = []
+
+# Scalar: executed when the workflow reaches its final step,
+# after review findings are presented and sprint status is synced. Override wins.
+# Leave empty for no custom post-completion behavior.
+
+on_complete = ""
+
+# Review layers for the review step. `instruction` is the layer's whole
+# execution recipe — subagents by default, but an override may run anything
+# (e.g. an external reviewer via bash). {diff_file} and {spec_file} are
+# substituted at run time; both are paths, and {diff_file} is the unified
+# diff file the layer reads. `when` (optional) gates a layer; empty
+# `instruction` disables it.
+
+[[workflow.review_layers]]
+id = "blind-hunter"
+name = "Blind Hunter"
+instruction = """
+Launch a context-free subagent with this prompt:
+
+Conduct a review of CONTENT.
+Look for what's missing, not only what's wrong.
+Compute your finding floor N from the diff file's size: N = min(floor(sqrt(kB) + 1), 10), where kB is the file's size in kilobytes. State the arithmetic in one line, then find at least N issues to fix or improve.
+Output a Markdown list of findings only — no severity, priority, or ranking.
+If the content is empty, stop and say so.
+If you have zero findings, re-check and keep thinking; do not stop with an empty list.
+
+CONTENT: the unified diff at `{diff_file}`. Read that file — it is the content under review.
+
+Do not invoke any skill, and do not spawn subagents of your own — you are the reviewer. Return your findings as text in your final message; do not route them through any findings-reporting tool the host may offer.
+
+"""
+
+[[workflow.review_layers]]
+id = "edge-case-hunter"
+name = "Edge Case Hunter"
+instruction = """
+Launch a context-free subagent with this prompt:
+
+Read `{skill-root}/review-prompts/edge-case-hunter.md` completely and follow it as your review instructions.
+
+claims_file (leave unread until your instructions call for it): {claims_file}
+
+Review content: the unified diff at `{diff_file}`. Read that file — it is the content under review.
+
+Do not invoke any skill, and do not spawn subagents of your own — you are the reviewer. If the instruction file is unreadable, report that exact failure and stop. Return your findings as text in your final message; do not route them through any findings-reporting tool the host may offer.
+
+"""
+
+[[workflow.review_layers]]
+id = "verification-gap"
+name = "Verification Gap Reviewer"
+instruction = """
+Launch a context-free subagent with this prompt:
+
+Read `{skill-root}/review-prompts/verification-gap.md` completely and follow it as your review instructions.
+
+Review content: the unified diff at `{diff_file}`. Read that file — it is the content under review.
+
+Do not invoke any skill, and do not spawn subagents of your own — you are the reviewer. If the instruction file is unreadable, report that exact failure and stop. Return your findings as text in your final message; do not route them through any findings-reporting tool the host may offer.
+
+"""
+
+[[workflow.review_layers]]
+id = "acceptance-auditor"
+name = "Acceptance Auditor"
+when = 'Only when {review_mode} = "full".'
+instruction = """
+Launch a subagent with this prompt:
+
+You are an Acceptance Auditor. Review the provided diff against `{spec_file}` and any loaded context docs. Check for: violations of acceptance criteria, deviations from spec intent, missing implementation of specified behavior, contradictions between spec constraints and actual code. Output findings as a Markdown list. Each finding: one-line title, which AC/constraint it violates, and evidence from the diff.
+
+Diff: the unified diff at `{diff_file}`. Read that file — it is the content under review.
+
+Do not invoke any skill, and do not spawn subagents of your own — you are the reviewer. Return your findings as text in your final message; do not route them through any findings-reporting tool the host may offer.
+
+"""

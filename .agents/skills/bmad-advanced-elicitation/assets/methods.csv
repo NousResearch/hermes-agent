@@ -1,0 +1,72 @@
+num,category,method_name,description,output_pattern
+1,advanced,Tree of Thoughts,Explore multiple reasoning paths simultaneously then evaluate and select the best - perfect for complex problems with multiple valid approaches,paths → evaluation → selection
+2,advanced,Graph of Thoughts,Model reasoning as an interconnected network of ideas to reveal hidden relationships - ideal for systems thinking and discovering emergent patterns,nodes → connections → patterns
+3,advanced,Thread of Thought,Maintain coherent reasoning across long contexts by weaving a continuous narrative thread - essential for RAG systems and maintaining consistency,context → thread → synthesis
+4,advanced,Self-Consistency Validation,Generate multiple independent approaches then compare for consistency - crucial for high-stakes decisions where verification matters,approaches → comparison → consensus
+5,advanced,Meta-Prompting Analysis,Step back to analyze the approach structure and methodology itself - valuable for optimizing prompts and improving problem-solving,current → analysis → optimization
+6,advanced,Reasoning via Planning,Build a reasoning tree guided by world models and goal states - excellent for strategic planning and sequential decision-making,model → planning → strategy
+7,advanced,Chain-of-Thought Scaffolding,Force explicit intermediate reasoning steps before any conclusion — prevents intuitive leaps that skip flawed logic,premise → step → step → conclusion
+8,advanced,Few-Shot Exemplar Priming,Provide 2-3 worked examples of the desired reasoning pattern before the real task — aligns output format and depth through demonstration,examples → pattern recognition → application
+9,collaboration,Stakeholder Round Table,Convene multiple personas to contribute diverse perspectives - essential for requirements gathering and finding balanced solutions across competing interests,perspectives → synthesis → alignment
+10,collaboration,Expert Panel Review,Assemble domain experts for deep specialized analysis - ideal when technical depth and peer review quality are needed,expert views → consensus → recommendations
+11,collaboration,Debate Club Showdown,Two personas argue opposing positions while a moderator scores points - great for exploring controversial decisions and finding middle ground,thesis → antithesis → synthesis
+12,collaboration,User Persona Focus Group,Gather your product's user personas to react to proposals and share frustrations - essential for validating features and discovering unmet needs,reactions → concerns → priorities
+13,collaboration,Time Traveler Council,Past-you and future-you advise present-you on decisions - powerful for gaining perspective on long-term consequences vs short-term pressures,past wisdom → present choice → future impact
+14,collaboration,Cross-Functional War Room,Product manager + engineer + designer tackle a problem together - reveals trade-offs between feasibility desirability and viability,constraints → trade-offs → balanced solution
+15,collaboration,Mentor and Apprentice,Senior expert teaches junior while junior asks naive questions - surfaces hidden assumptions through teaching,explanation → questions → deeper understanding
+16,collaboration,Good Cop Bad Cop,Supportive persona and critical persona alternate - finds both strengths to build on and weaknesses to address,encouragement → criticism → balanced view
+17,collaboration,Improv Yes-And,Multiple personas build on each other's ideas without blocking - generates unexpected creative directions through collaborative building,idea → build → build → surprising result
+18,collaboration,Customer Support Theater,Angry customer and support rep roleplay to find pain points - reveals real user frustrations and service gaps,complaint → investigation → resolution → prevention
+19,collaboration,Six Thinking Hats,Rotate through six modes (facts - feelings - caution - optimism - creativity - process) to ensure a group covers every angle without crosstalk,white → red → black → yellow → green → blue
+20,collaboration,Delphi Method,Experts give independent estimates - see anonymized results - then revise — converges on calibrated group judgment while avoiding anchoring bias,independent estimates → reveal → revise → converge
+21,competitive,Red Team vs Blue Team,Adversarial attack-defend analysis to find vulnerabilities - critical for security testing and building robust solutions,defense → attack → hardening
+22,competitive,Shark Tank Pitch,Entrepreneur pitches to skeptical investors who poke holes - stress-tests business viability and forces clarity on value proposition,pitch → challenges → refinement
+23,competitive,Code Review Gauntlet,Senior devs with different philosophies review the same code - surfaces style debates and finds consensus on best practices,reviews → debates → standards
+24,core,First Principles Analysis,Strip away assumptions to rebuild from fundamental truths - breakthrough technique for innovation and solving impossible problems,assumptions → truths → new approach
+25,core,5 Whys Deep Dive,Repeatedly ask why to drill down to root causes - simple but powerful for understanding failures,why chain → root cause → solution
+26,core,Socratic Questioning,Use targeted questions to reveal hidden assumptions and guide discovery - excellent for teaching and self-discovery,questions → revelations → understanding
+27,core,Critique and Refine,Systematic review to identify strengths and weaknesses then improve - standard quality check for drafts,strengths/weaknesses → improvements → refined
+28,core,Explain Reasoning,Walk through step-by-step thinking to show how conclusions were reached - crucial for transparency,steps → logic → conclusion
+29,core,Expand or Contract for Audience,Dynamically adjust detail level and technical depth for target audience - matches content to reader capabilities,audience → adjustments → refined content
+30,core,Second-Order Thinking,Think beyond immediate consequences to anticipate cascading effects and long-term implications - essential for strategic decisions where first-order solutions create hidden downstream problems,action → consequences → second-order effects → informed choice
+31,core,Inversion Analysis,Flip the problem by asking what would guarantee failure instead of how to succeed - reveals hidden obstacles and blind spots by approaching challenges from the opposite direction,goal → invert → failure paths → avoidance → solution
+32,core,Problem Decomposition,Break a complex problem into independent sub-problems - solve each - then reassemble — essential when a task is too large or tangled to tackle whole,whole → parts → solutions → reassembly
+33,core,Analogy Mapping,Find a well-understood parallel domain and transfer its structure to the current problem — unlocks insight by borrowing proven mental models,source domain → mapping → target insight
+34,core,Steelmanning,Construct the strongest possible version of an opposing argument before responding — builds credibility and catches blind spots that strawmanning misses,opposing view → strongest form → honest rebuttal
+35,creative,SCAMPER Method,Apply seven creativity lenses (Substitute/Combine/Adapt/Modify/Put/Eliminate/Reverse) - systematic ideation for product innovation,S→C→A→M→P→E→R
+36,creative,Reverse Engineering,Work backwards from desired outcome to find implementation path - powerful for goal achievement and understanding endpoints,end state → steps backward → path forward
+37,creative,What If Scenarios,Explore alternative realities to understand possibilities and implications - valuable for contingency planning and exploration,scenarios → implications → insights
+38,creative,Random Input Stimulus,Inject unrelated concepts to spark unexpected connections - breaks creative blocks through forced lateral thinking,random word → associations → novel ideas
+39,creative,Exquisite Corpse Brainstorm,Each persona adds to the idea seeing only the previous contribution - generates surprising combinations through constrained collaboration,contribution → handoff → contribution → surprise
+40,creative,Genre Mashup,Combine two unrelated domains to find fresh approaches - innovation through unexpected cross-pollination,domain A + domain B → hybrid insights
+41,creative,Constraint Injection,Deliberately add an artificial limitation (budget - time - technology) to force novel solutions — creativity thrives under pressure,add constraint → forced creativity → remove constraint → evaluate
+42,creative,Morphological Analysis,List independent parameters of a problem - enumerate options for each - then systematically combine — ensures you don't miss non-obvious configurations,parameters → options grid → combinations → evaluation
+43,creative,Subtraction,Improve by deliberately removing elements instead of adding them - counters the well-documented additive bias where people overlook subtractive changes that would simplify and strengthen the work,current state → what to remove → simplified result
+44,framing,Abstraction Laddering,"Move up (""why?"") for strategic clarity or down (""how?"") for tactical detail — ensures you're solving at the right altitude",concrete ↔ abstract → right level
+45,framing,Reframe the Question,Challenge whether the stated problem is the real problem — often the question itself is wrong and a better framing unlocks an easy answer,stated problem → reframe → true problem → solution
+46,framing,Stakeholder Lens Rotation,Serially adopt each stakeholder's world-view to see the same situation differently — reveals whose needs are being overlooked,perspective A → B → C → gaps found
+47,framing,Map Is Not the Territory,Treat any model or diagram as a lossy abstraction of reality - check where the representation diverges from the real system before trusting it,model → reality check → divergences found → corrected understanding
+48,learning,Feynman Technique,Explain complex concepts simply as if teaching a child - the ultimate test of true understanding,complex → simple → gaps → mastery
+49,learning,Active Recall Testing,Test understanding without references to verify true knowledge - essential for identifying gaps,test → gaps → reinforcement
+50,learning,Deliberate Practice Loop,Identify a specific sub-skill - drill it with immediate feedback - adjust - repeat — targeted improvement beats general repetition,isolate → drill → feedback → adjust → repeat
+51,philosophical,Occam's Razor Application,Find the simplest sufficient explanation by eliminating unnecessary complexity - essential for debugging,options → simplification → selection
+52,philosophical,Trolley Problem Variations,Explore ethical trade-offs through moral dilemmas - valuable for understanding values and difficult decisions,dilemma → analysis → decision
+53,research,Literature Review Personas,Optimist researcher + skeptic researcher + synthesizer review sources - balanced assessment of evidence quality,sources → critiques → synthesis
+54,research,Thesis Defense Simulation,Student defends hypothesis against committee with different concerns - stress-tests research methodology and conclusions,thesis → challenges → defense → refinements
+55,research,Comparative Analysis Matrix,Multiple analysts evaluate options against weighted criteria - structured decision-making with explicit scoring,options → criteria → scores → recommendation
+56,research,Source Triangulation,Require at least three independent source types (quantitative - qualitative - expert) before accepting a claim — guards against single-source bias,claim → source A → source B → source C → confidence rating
+57,retrospective,Hindsight Reflection,Imagine looking back from the future to gain perspective - powerful for project reviews,future view → insights → application
+58,retrospective,Lessons Learned Extraction,Systematically identify key takeaways and actionable improvements - essential for continuous improvement,experience → lessons → actions
+59,risk,Pre-mortem Analysis,Imagine future failure then work backwards to prevent it - powerful technique for risk mitigation before major launches,failure scenario → causes → prevention
+60,risk,Failure Mode Analysis,Systematically explore how each component could fail - critical for reliability engineering and safety-critical systems,components → failures → prevention
+61,risk,Challenge from Critical Perspective,Play devil's advocate to stress-test ideas and find weaknesses - essential for overcoming groupthink,assumptions → challenges → strengthening
+62,risk,Identify Potential Risks,Brainstorm what could go wrong across all categories - fundamental for project planning and deployment preparation,categories → risks → mitigations
+63,risk,Chaos Monkey Scenarios,Deliberately break things to test resilience and recovery - ensures systems handle failures gracefully,break → observe → harden
+64,risk,Assumption Audit,Explicitly list every assumption underlying a plan - rate each by confidence and impact - then stress-test the weakest — prevents building on shaky foundations,list → rate → stress-test → shore up
+65,risk,Cascading Failure Simulation,Trace how one component's failure propagates through dependencies — reveals hidden coupling and single points of failure,trigger failure → trace propagation → find amplifiers → decouple
+66,technical,Architecture Decision Records,Multiple architect personas propose and debate architectural choices with explicit trade-offs - ensures decisions are well-reasoned and documented,options → trade-offs → decision → rationale
+67,technical,Rubber Duck Debugging Evolved,Explain your code to progressively more technical ducks until you find the bug - forces clarity at multiple abstraction levels,simple → detailed → technical → aha
+68,technical,Algorithm Olympics,Multiple approaches compete on the same problem with benchmarks - finds optimal solution through direct comparison,implementations → benchmarks → winner
+69,technical,Security Audit Personas,Hacker + defender + auditor examine system from different threat models - comprehensive security review from multiple angles,vulnerabilities → defenses → compliance
+70,technical,Performance Profiler Panel,Database expert + frontend specialist + DevOps engineer diagnose slowness - finds bottlenecks across the full stack,symptoms → analysis → optimizations
+71,technical,Boundary & Edge Case Sweep,Systematically test extremes - zeros - nulls - maximums - and type mismatches — catches the failures that happy-path thinking always misses,inputs → boundaries → edge cases → failures found

@@ -1,0 +1,141 @@
+# DO NOT EDIT -- overwritten on every update.
+#
+# Workflow customization surface for bmad-review.
+#
+# Override files (not edited here):
+#   {project-root}/_bmad/custom/bmad-review.toml         (team)
+#   {project-root}/_bmad/custom/bmad-review.user.toml    (personal)
+
+[workflow]
+
+# --- Configurable below. Overrides merge per BMad structural rules: ---
+#   scalars: override wins
+#   arrays (persistent_facts, activation_steps_*, review_guidance): append
+#   arrays of tables keyed by `code`: matching key replaces, new keys append
+
+# Steps executed on activation: prepend runs before the skill's own
+# activation flow, append runs after the lens plan is settled and before the
+# lenses run. Each entry is a literal instruction.
+activation_steps_prepend = []
+activation_steps_append = []
+
+# Standing context held for every review, code and document alike. Entries
+# prefixed `file:` are paths or globs whose contents load as facts; all others
+# are literal facts. The shipped entry is a project-wide glob — set it to []
+# if you don't want every review scanning for it.
+persistent_facts = []
+
+# Standing review directives applied on every run alongside each lens's own
+# method. Each entry is a literal sentence or a `file:`-prefixed path/glob
+# whose contents load as directives.
+#
+# Examples:
+#   "Flag passive voice in headings."
+#   "Second-person imperative is the house voice; never suggest changing it."
+#   "file:{project-root}/docs/terminology.md"
+review_guidance = []
+
+# Executed after the findings are delivered. Freeform directive; empty = the
+# review ends with the findings.
+#
+# Example:
+#   on_complete = "Append a one-line review summary to {project-root}/docs/review-log.md"
+on_complete = ""
+
+# How findings are presented when the caller doesn't say: "json" (the raw
+# findings array only), "markdown" (the human report only), or "both". A lens
+# that declares its own rendering keeps it for its own findings.
+output_format = "both"
+
+# Where to write the review report. Empty = present in chat only. Accepts
+# {project-root}-prefixed paths.
+report_path = ""
+
+# How findings are presented — shaping, not destination. Freeform directive;
+# empty = each lens's default ordering and rollup.
+#
+# Example:
+#   output_preferences = "Cap output at the 20 highest-impact findings."
+output_preferences = ""
+
+# --- Editorial lens settings (used by the structure and prose lenses) ---
+
+# Default reader the editorial lenses calibrate for when the request doesn't
+# say:
+#   "humans"  clarity, flow, comprehension aids preserved
+#   "llm"     precision, consistent terminology, no hedging
+# A reader type stated in the request wins for that run.
+reader_type = "humans"
+
+# The baseline style guide for every editorial review: the name of a guide the
+# model knows well, a `file:`-prefixed path to a style guide document, or the
+# rules inline as text. A style guide stated in the request wins for that run.
+# Where the guide in effect conflicts with the lens's generic principles, the
+# guide wins — except content is sacrosanct.
+#
+# Examples (set in team/user override TOML):
+#   style_guide = "file:{project-root}/_bmad/style-guides/company-voice.md"
+#   style_guide = "Sentence-case headings. No Oxford comma. Address the reader as 'you'."
+style_guide = "Microsoft Writing Style Guide"
+
+# ---------------------------------------------------------------------------
+# Review lenses. Each lens is a pass over the content with its own method and
+# stance. `instruction` is the lens's whole execution recipe — the shipped
+# lenses load a reference file from the skill root, but an override may inline
+# any prompt.
+#
+# `applies_to` is the content this lens can review: "code", "docs", or "any".
+# It is the first filter — a lens never joins a default review for content it
+# does not apply to. `when` (optional) refines that judgement in prose. An
+# explicitly requested lens always runs, whatever both say.
+#
+# `after` (optional) names a lens this one builds on: it runs once that lens
+# has completed and receives its findings, instead of running independently.
+#
+# Empty `instruction` disables a lens. Keyed by `code`: an override with a
+# matching code replaces the shipped lens, a new code appends.
+#
+# Example (add an org-specific lens in team/user override TOML):
+#   [[workflow.lenses]]
+#   code = "accessibility"
+#   name = "Accessibility"
+#   applies_to = "any"
+#   when = "UI code or user-facing documents."
+#   instruction = "Review against WCAG 2.2 AA. Emit findings in the canonical fields."
+# ---------------------------------------------------------------------------
+
+[[workflow.lenses]]
+code = "adversarial"
+name = "Adversarial"
+applies_to = "any"
+when = "always"
+instruction = "Load `references/lens-adversarial.md` from the skill root and follow it."
+
+[[workflow.lenses]]
+code = "edge-case-hunter"
+name = "Edge-Case Hunter"
+applies_to = "any"
+when = "Content with behavior to trace: code, diffs, and the specs, requirements, plans, and stories that define behavior. Skip for prose documents with no behavioral surface."
+instruction = "Load `references/lens-edge-case-hunter.md` from the skill root and follow it."
+
+[[workflow.lenses]]
+code = "verification-gap"
+name = "Verification Gap"
+applies_to = "code"
+when = "Reviewed inside a repo where tests can be searched and read."
+instruction = "Load `references/lens-verification-gap.md` from the skill root and follow it."
+
+[[workflow.lenses]]
+code = "structure"
+name = "Editorial Structure"
+applies_to = "docs"
+when = "Documents whose shape is the author's to change."
+instruction = "Load `references/lens-structure.md` from the skill root and follow it."
+
+[[workflow.lenses]]
+code = "prose"
+name = "Editorial Prose"
+applies_to = "docs"
+after = "structure"
+when = "Documents being copy-edited."
+instruction = "Load `references/lens-prose.md` from the skill root and follow it."

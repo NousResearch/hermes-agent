@@ -1,0 +1,16 @@
+{
+  "module-code": "bmm",
+  "capabilities": [
+    {
+      "name": "working-backwards",
+      "menu-code": "WB",
+      "description": "Produces a PRFAQ document and an optional condensed version for use as PRD input.",
+      "supports-headless": true,
+      "phase-name": "plan",
+      "preceded-by": ["brainstorming", "perform-research"],
+      "followed-by": ["create-prd"],
+      "is-required": false,
+      "output-location": "{planning_artifacts}"
+    }
+  ]
+}

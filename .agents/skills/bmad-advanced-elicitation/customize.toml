@@ -1,0 +1,54 @@
+# DO NOT EDIT -- overwritten on every update.
+#
+# Workflow customization surface for bmad-advanced-elicitation.
+#
+# Override files (not edited here):
+#   {project-root}/_bmad/custom/bmad-advanced-elicitation.toml         (team)
+#   {project-root}/_bmad/custom/bmad-advanced-elicitation.user.toml    (personal)
+
+[workflow]
+
+# --- Configurable below. Overrides merge per BMad structural rules: ---
+#   scalars: override wins • plain arrays: append
+#   arrays of tables keyed by `code`: matching key replaces, new keys append
+
+# The elicitation method catalog served by scripts/pick_methods.py
+# (columns: num,category,method_name,description,output_pattern). Swap the path
+# in team/user TOML to ship a different catalog. Kept `{skill-root}`-anchored so
+# it resolves regardless of the working directory (pick_methods.py is always
+# invoked with `--file {workflow.methods_file}`).
+methods_file = "{skill-root}/assets/methods.csv"
+
+# Persistent preferences the refiner honors for every session — methods to
+# favor or avoid, how pushback should land, house rules for applying changes.
+# Literal sentences; append-merges, so team and personal preferences both apply.
+#
+# Examples (set in team/user override TOML):
+#   preferences = [
+#     "Lead with a risk-category method for anything touching production systems.",
+#     "Never offer roleplay or persona methods.",
+#   ]
+preferences = []
+
+# Extra methods — and whole new categories — merged into the catalog without
+# editing the shipped CSV. Passed to pick_methods.py via --extra, so custom
+# methods are first-class in every menu, reshuffle, and listing.
+#
+# Two keys, two jobs — keep them aligned:
+#   `code` is only the TOML merge key across override layers: a personal entry
+#     with the same code replaces the team one; new codes append.
+#   `method_name` is the catalog identity: an entry whose method_name matches a
+#     shipped method replaces it (retune its description or pattern; it keeps
+#     the shipped num), others append with new nums.
+#   To override another layer's entry, reuse its `code`. Two entries with
+#     different codes but the same method_name both survive the TOML merge, and
+#     only the later one reaches the catalog.
+#
+# Example (set in team/user override TOML):
+#   [[workflow.additional_methods]]
+#   code = "regulatory-inversion"
+#   category = "domain-specific"
+#   method_name = "Regulatory Inversion"
+#   description = "Start from the compliance constraint and ask what becomes possible only because of it - turns the rule into a generative frame"
+#   output_pattern = "constraint → possibilities → design"
+additional_methods = []

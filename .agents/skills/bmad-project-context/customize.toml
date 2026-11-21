@@ -1,0 +1,24 @@
+# DO NOT EDIT -- overwritten on every update.
+#
+# Workflow customization surface for bmad-project-context.
+# Team overrides:     {project-root}/_bmad/custom/bmad-project-context.toml
+# Personal overrides: {project-root}/_bmad/custom/bmad-project-context.user.toml
+#
+# Merge rules: scalars override (last layer wins); arrays append.
+
+[workflow]
+
+# --- Universal defaults ---
+activation_steps_prepend = []
+activation_steps_append = []
+# Deliberately empty: this skill's own output (AGENTS.md) is loaded by the
+# harness, not through this array. Users append their own standing facts.
+persistent_facts = []
+on_complete = ""
+
+# Standing outside-the-repo sources offered at every setup/refresh run
+# (untrusted until verified against the repo or user-confirmed).
+# Append-only. Entries: "file:{project-root}/..." or "file:/abs/path" for
+# docs, "skill:name" to consult a skill, plain text for a standing fact,
+# "tool:name" for an MCP knowledgebase.
+external_sources = []

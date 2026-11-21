@@ -123,10 +123,16 @@ def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: lis
     duplicate. The ledger carries text only; dropped attachments are reported."""
     try:
         from gateway.delivery_ledger import (
-            compute_obligation_id, is_reconnect_only, ledger_enabled, mark_failed, record_obligation)
+            NETWORK_UNREACHABLE, compute_obligation_id, is_reconnect_only, ledger_enabled, mark_failed,
+            record_obligation)
         retryable_live_rejection = is_reconnect_only(t.live_error) or (
             t.live_retryable is True and t.live_error in _PRE_SEND_LIVE_REJECTIONS)
-        if not retryable_live_rejection or not ledger_enabled():
+        # No live adapter to reject anything (it is down and reconnecting, e.g. a laptop in a
+        # network-less maintenance wake) and the standalone request never left the host: the same
+        # outage took both lanes. Reconnect-only, so no timer hammers a dead network.
+        network_down = (not retryable_live_rejection and t.live_error is None
+                        and not t.live_adapter_ready and t.standalone_never_left)
+        if not (retryable_live_rejection or network_down) or not ledger_enabled():
             return
         session_key = f"cron:{t.platform_name}:{t.chat_id}" + (f":{t.thread_id}" if t.thread_id else "")
         obligation_id = compute_obligation_id(session_key, f"job:{t.job.get('id', '?')}", content)
@@ -134,7 +140,7 @@ def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: lis
             obligation_id=obligation_id, session_key=session_key, platform=t.platform_name,
             chat_id=str(t.chat_id), thread_id=t.thread_id, content=content,
             adapter_profile=getattr(getattr(t.transport, "adapter", None), "_owner_profile", None))
-        mark_failed(obligation_id, str(t.live_error))
+        mark_failed(obligation_id, NETWORK_UNREACHABLE if network_down else str(t.live_error))
         # Arm the in-process drain: this row lands in ``pending_retries`` (backoff tier 0, due in
         # ~30s), but the only arming sites for the flood worker are boot adoption and the
         # agent-reply finalizer — cron enters neither, so without this a retryable-marked row on

@@ -14,6 +14,7 @@
 
 import type { ReadableAtom } from 'nanostores'
 
+import type { HermesActionConfirmation, HermesActionProposal } from '@/global'
 import { pluginRest, type PluginRestOptions, pluginSocket } from '@/hermes'
 import { createPluginI18n, type PluginI18n } from '@/i18n'
 import {
@@ -29,12 +30,14 @@ import { $petActive } from '@/store/pet'
 import { clearPetMessages, type PetSayOptions, sayPetMessage } from '@/store/pet-plugin-messages'
 
 import { type GatewayEventListener, onGatewayEvent } from './events'
+import { createPluginConfirmAction } from './plugin-confirm'
 import { createPluginFiles, type PluginFiles } from './plugin-files'
 import { createPluginPreview, type PluginPreview } from './plugin-preview'
 import { $pluginRecords } from './plugins-store'
 import { registry } from './registry'
 import { type PluginSettingsPage, settingsPageContribution } from './settings-pages'
 
+export type { PluginActionConfirmation, PluginActionProposal, PluginSignedActionReceipt } from './plugin-confirm'
 export type { PluginFileEntry, PluginFiles, PluginFilesResult, PluginFolder } from './plugin-files'
 export type { PluginPreview } from './plugin-preview'
 import type { Contribution } from './types'
@@ -180,6 +183,14 @@ export interface PluginContext {
    *  the app asks the user once per page origin before anything runs.
    *  Feature-detect on older hosts: `ctx.preview?.executeJavaScript`. */
   preview: PluginPreview
+  /** Ask the user to confirm ONE exact action a local service proposed, in a
+   *  native dialog the page cannot click. Only Confirm yields a receipt,
+   *  signed by the app, that the service verifies (action, revision, profile,
+   *  service instance, nonce) before it acts; cancel, expiry or a busy dialog
+   *  never do. Closed unless the plugin declares `capabilities:
+   *  ['confirm.action']`. Never throws. Feature-detect on older hosts:
+   *  `ctx.confirmAction?.(...)`. */
+  confirmAction: (proposal: HermesActionProposal) => Promise<HermesActionConfirmation>
   /** Plugin-scoped persistence. */
   storage: PluginStorage
   /** Folder-scoped file access: this plugin's own data folder plus folders
@@ -204,7 +215,8 @@ export interface HermesPlugin {
    *  user flips the switch. */
   defaultEnabled?: boolean
   /** Sensitive doors this plugin uses, declared up front so the app can show
-   *  them and gate them. Today: `'preview.executeJavaScript'` (`ctx.preview`).
+   *  them and gate them. Today: `'preview.executeJavaScript'` (`ctx.preview`)
+   *  and `'confirm.action'` (`ctx.confirmAction`).
    *  A door the plugin did not declare refuses every call. */
   capabilities?: readonly string[]
   /** Called once at load; wire contributions through `ctx`. */
@@ -400,6 +412,7 @@ export function createPluginContext(
     runAction: id => runPluginAppAction(pluginId, id),
     listActions: listPluginAppActions,
     preview: createPluginPreview(pluginId, capabilities),
+    confirmAction: createPluginConfirmAction(pluginId, capabilities),
     storage: createPluginStorage(pluginId),
     files: createPluginFiles(pluginId),
     i18n: createPluginI18n(pluginId, track)

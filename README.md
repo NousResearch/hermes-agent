@@ -232,6 +232,7 @@ for activation, daily use, dependency changes, and leaving the environment.
 - 📚 [Skills Hub](https://agentskills.io)
 - 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
 - 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
+- 🔌 [Harness Mate](https://github.com/liaosiliangCodeLife/harness-mate-plat) — Web platform for end-to-end remote management of a local Hermes Agent: connect it over the WebSocket gateway and use it from a browser.
 - 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
 
 ---

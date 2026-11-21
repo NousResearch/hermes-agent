@@ -68,3 +68,19 @@ def inject_plugin_message(
     except Exception:
         logger.warning("inject_message: gateway scheduling failed for plugin %s", ctx.plugin_id, exc_info=True)
         return False
+
+
+def plugin_submission(ctx, *, content, session_key, expected_session_id, request_id, read_only=False) -> dict:
+    """Route receipt-bearing calls only to the gateway published for this manager."""
+    refused = dict(ok=False, status="refused", request_id=request_id, session_id=expected_session_id,
+                   admission_id=None, outcome=None, result=None)
+    if not read_only and (not isinstance(content, str) or not content.strip()):
+        return {**refused, "error": "invalid_params"}
+    if not ctx._gateway_injection_allowed():
+        return {**refused, "error": "permission_denied"}
+    registered = ctx._manager._gateway_message_injector
+    callback = getattr(registered[0], "_plugin_submission", None) if registered else None
+    if callback is None:
+        return {**refused, "error": "gateway_unavailable"}
+    return callback(content=content, session_key=session_key, expected_session_id=expected_session_id,
+                    request_id=request_id, plugin_id=ctx.plugin_id, plugin_home=ctx._manager.home_path)

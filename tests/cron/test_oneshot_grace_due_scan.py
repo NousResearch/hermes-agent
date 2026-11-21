@@ -97,6 +97,34 @@ class TestOneShotGraceDueScan:
         # Record preserved (not retired) despite being beyond grace.
         assert [j["id"] for j in load_jobs()] == ["claimed"]
 
+    @pytest.mark.parametrize("claim_field", ["run_claim", "fire_claim"])
+    def test_stale_claim_from_a_dead_process_is_retired_with_diagnostic(
+        self, cron_store, monkeypatch, claim_field
+    ):
+        """#147102: a claim left behind by a process that died between claim_dispatch() and
+        mark_job_run() is not a run in flight. Presence alone used to suppress retirement forever
+        (no fire, no retire, no missed-run diagnostic); a claim whose ``by`` names a process on
+        this host that provably no longer exists must retire the record like an unclaimed one."""
+        import socket
+
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: pid != 424242)
+        dead = _oneshot(
+            "deadclaim",
+            FIXED_NOW - timedelta(hours=3),
+            completed=1,
+            **{claim_field: {"at": (FIXED_NOW - timedelta(hours=3)).isoformat(),
+                             "by": f"{socket.gethostname()}:424242"}},
+        )
+        save_jobs([dead])
+
+        due = get_due_jobs()
+
+        assert [d["id"] for d in due] == []
+        assert [j["id"] for j in load_jobs()] == [], "a dead process's claim wedged the job forever"
+        out_dir = cron_store / "cron" / "output" / "deadclaim"
+        diag = list(out_dir.glob("*.md")) if out_dir.exists() else []
+        assert diag, "expected a missed-run diagnostic for the retired one-shot"
+
     def test_retriggered_stale_oneshot_is_due(self, cron_store):
         # A user can still explicitly re-run a stale one-shot: trigger_job
         # sets next_run_at=now, which is inside the grace window -> due.

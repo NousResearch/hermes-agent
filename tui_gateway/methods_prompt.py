@@ -1380,7 +1380,7 @@ def _(rid, params: dict) -> dict:
         rid, "resolved",
         lambda a: a.resolve_gateway_approval(
             session["session_key"], params.get("choice", "deny"),
-            resolve_all=params.get("all", False), request_id=params.get("request_id")))
+            resolve_all=params.get("all", False), request_id=params.get("request_id"), **_deny_reason(params)))
 
 
 # ── attachments ─────────────────────────────────────────────────────────────

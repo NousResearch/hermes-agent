@@ -909,10 +909,19 @@ def _file_step(m: dict, home: str, key: str, name: str) -> str:
     return f"cp {backup} {target}" + (f" && chmod {b.get('env_mode') or 0o600:o} {target}" if key == "env" else "")
 
 
+def _remove_staged_leftovers(home: Path) -> None:
+    """Remove the staged copies (and their writer's lock files) a run killed mid-write left in the backup
+    folder: such a copy may hold the migration's new password."""
+    for path in (Path(home) / BACKUP_DIR).glob("*.migrate*"):
+        with contextlib.suppress(OSError):
+            path.unlink()
+
+
 def rollback(host, run: Run, *, reason: str, final_state: str = "rolled_back") -> int:
     """Compensate in reverse and verify the old backend answers. 4 when verified, 5 otherwise."""
     m = run.data
     m.setdefault("home", str(host.home))
+    _remove_staged_leftovers(host.home)
     errors: list[str] = []
     _undo(run, errors)
     if m.get("kind") == "restore":

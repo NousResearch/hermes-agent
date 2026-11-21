@@ -41,13 +41,14 @@ def scratch(tmp_path, monkeypatch):
     (race_dir / "release").write_text("", encoding="utf-8")  # never leave a paused run behind
 
 
-def _killed_after_publishing(env, race_dir, name):
+def _killed_after_publishing(env, race_dir, name, *, before=False):
+    pause, marker = ("KILL_BEFORE_PUBLISH", "staged") if before else ("KILL_AFTER_PUBLISH", "published")
     proc = subprocess.Popen([sys.executable, "-m", MODULE, *_APPLY], cwd=_REPO,
-                            env={**env, "KILL_AFTER_PUBLISH": name}, stdout=subprocess.PIPE,
+                            env={**env, pause: name}, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
-    marker = race_dir / f"published-{name}"
+    marker = race_dir / f"{marker}-{name}"
     try:
-        wait_until(marker.exists, timeout=60, what=f"the run right after renaming {name} into place")
+        wait_until(marker.exists, timeout=60, what=f"the run at the rename of {name} into place")
     finally:
         proc.send_signal(signal.SIGKILL)
         out, _ = proc.communicate(timeout=60)
@@ -107,3 +108,41 @@ def test_the_steps_after_a_kill_before_the_stop_leave_the_running_old_backend_al
     assert [s for s in steps if unit in s] == [], steps  # no enable / start / mv .disabled / bootstrap
     assert any("stopped while writing" in s and f"{home}/config.yaml" in s for s in steps), steps
     assert any(f"{home}/.env" in s for s in steps), steps
+
+
+@pytest.mark.parametrize("name", [".env", "config.yaml"])
+def test_a_run_killed_while_a_copy_is_staged_leaves_it_only_in_the_guarded_folder(scratch, monkeypatch, name):
+    """Killed between the staged write and its rename: the copy holding the migration's writes (for .env, the
+    new password) is in ``backend_migration/``, which the Files routes refuse, never directly in the home. The
+    next run's recovery removes it and the run after that migrates."""
+    from tests.hermes_cli.test_web_server_files import _client_with_app_state, _close_client, _restore_app_state
+    home, race_dir, env = scratch
+    before = {n: (home / n).read_bytes() for n in ("config.yaml", ".env")}
+
+    first = _killed_after_publishing(env, race_dir, name, before=True)
+    if name == ".env":  # the first write: nothing was renamed into the home yet
+        assert {n: (home / n).read_bytes() for n in before} == before, first
+    assert list(home.glob("*.migrate")) == [] and list(home.glob(".*.migrate")) == [], sorted(os.listdir(home))
+    (leftover,) = (home / "backend_migration").glob("*.migrate")
+    assert name != ".env" or b"HERMES_DASHBOARD_BASIC_AUTH_PASSWORD" in leftover.read_bytes()
+
+    monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(home.parent))
+    (home / "notes.txt").write_text("ordinary\n", encoding="utf-8")
+    client, prev_auth_required, prev_bound_host = _client_with_app_state()
+    try:
+        for path, code in ((leftover, 403), (home / "notes.txt", 200)):
+            for route in ("read", "download"):
+                got = client.get(f"/api/files/{route}", params={"path": str(path)})
+                assert got.status_code == code, (route, path, got.text)
+    finally:
+        _close_client(client)
+        _restore_app_state(prev_auth_required, prev_bound_host)
+
+    recovery = subprocess.run([sys.executable, "-m", MODULE, *_APPLY], cwd=_REPO, env=env, capture_output=True,
+                              text=True, timeout=120, check=False)
+    assert recovery.returncode == engine.EXIT_ROLLED_BACK, recovery.stdout + recovery.stderr
+    assert list(home.rglob("*.migrate")) == []
+    again = subprocess.run([sys.executable, "-m", MODULE, *_APPLY], cwd=_REPO, env=env, capture_output=True,
+                           text=True, timeout=120, check=False)
+    assert again.returncode == engine.EXIT_OK, again.stdout + again.stderr
+    assert engine.read_manifest(home)["state"] == "done"

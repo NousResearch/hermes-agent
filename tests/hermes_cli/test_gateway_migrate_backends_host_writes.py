@@ -502,3 +502,39 @@ def test_a_legacy_unit_is_reported_for_a_systemd_gateway_only(tmp_path, monkeypa
     assert host.legacy_gateway_units() is True
     host.kind = "launchd"
     assert host.legacy_gateway_units() is False
+
+
+@pytest.mark.platforms("linux", "macos")
+@pytest.mark.parametrize("name", [".env", "config.yaml"])
+def test_the_staged_copy_is_made_in_the_guarded_backup_folder_and_renamed_into_place(tmp_path, monkeypatch, name):
+    """The copy that receives the migration's writes sits in ``<home>/backend_migration/`` (created 0700 when
+    it is missing), never beside the file in the home, and the same inode is then renamed over the file: the
+    publish is one rename on one filesystem, not a copy."""
+    import hashlib
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    target = tmp_path / name
+    target.write_text("OPENAI_API_KEY=x\n" if name == ".env" else "model:\n  default: m\n", encoding="utf-8")
+    seen: dict = {}
+    real_publish = host_module._publish
+
+    def publish(staged, path):
+        info = staged.stat()
+        seen.update(staged=staged, mode=stat.S_IMODE(info.st_mode), inode=(info.st_dev, info.st_ino),
+                    folder=stat.S_IMODE(staged.parent.stat().st_mode),
+                    in_home=sorted(p.name for p in tmp_path.glob("*.migrate")))
+        return real_publish(staged, path)
+
+    monkeypatch.setattr(host_module, "_publish", publish)
+    expect = hashlib.sha256(target.read_bytes()).hexdigest()
+    host = SystemHost(tmp_path)
+    if name == ".env":
+        host.set_env({"HERMES_DASHBOARD_BASIC_AUTH_PASSWORD": "t2-throwaway-pw"}, expect=expect)
+    else:
+        host.set_config({"webapp.enabled": True}, expect=expect)
+
+    assert seen["staged"].parent == tmp_path / "backend_migration", seen["staged"]
+    assert seen["folder"] == 0o700 and seen["in_home"] == []
+    assert seen["mode"] == 0o600 if name == ".env" else seen["mode"] & 0o007 == 0, oct(seen["mode"])
+    info = target.stat()
+    assert (info.st_dev, info.st_ino) == seen["inode"]  # renamed, not copied
+    assert not seen["staged"].exists() and list(tmp_path.rglob("*.migrate")) == []

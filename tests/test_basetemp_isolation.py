@@ -82,6 +82,44 @@ def test_fallback_root_escapes_a_repo_checked_out_inside_the_native_home(tmp_pat
     assert relocated is not None and not relocated.resolve().is_relative_to(native.resolve())
 
 
+def test_read_only_var_tmp_falls_back_to_system_temp(tmp_path, monkeypatch):
+    """Conftest uses the same distinct fallback when the named root only probes as unusable."""
+    native = tmp_path / "native-home"
+    native.mkdir()
+    monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: native)
+    monkeypatch.setattr(suite_conftest.os.path, "isdir", lambda path: str(path) == "/var/tmp")
+    monkeypatch.setattr(suite_conftest.tempfile, "gettempdir", lambda: str(tmp_path))
+    real_makedirs = suite_conftest.os.makedirs
+    real_mkdtemp = suite_conftest.tempfile.mkdtemp
+
+    uid_suffix = f"-{suite_conftest.os.getuid()}" if hasattr(suite_conftest.os, "getuid") else ""
+    blocked_var_tmp_roots = {
+        Path("/var/tmp") / f"hermes-pytest{uid_suffix}",
+        Path("/var/tmp") / f"hermes-pytest{uid_suffix}-fallback",
+    }
+
+    def deny_var_tmp(path, *args, **kwargs):
+        if Path(path) in blocked_var_tmp_roots:
+            raise PermissionError("read-only test fixture")
+        return real_makedirs(path, *args, **kwargs)
+
+    def fail_existing_root(*args, **kwargs):
+        if Path(kwargs["dir"]) == tmp_path / "hermes-pytest-{uid}".format(
+            uid=suite_conftest.os.getuid() if hasattr(suite_conftest.os, "getuid") else ""
+        ):
+            raise PermissionError("existing root is not writable")
+        return real_mkdtemp(*args, **kwargs)
+
+    monkeypatch.setattr(suite_conftest.os, "makedirs", deny_var_tmp)
+    monkeypatch.setattr(suite_conftest.tempfile, "mkdtemp", fail_existing_root)
+    config = _config_with_basetemp(native / ".repro")
+
+    suite_conftest._relocate_basetemp_outside_operator_home(config)
+
+    relocated = config._tmp_path_factory._given_basetemp
+    assert relocated is not None and relocated.parent == tmp_path / f"hermes-pytest{uid_suffix}-fallback"
+
+
 def test_relocation_root_sweeps_basetemps_of_killed_runs_and_keeps_live_ones(tmp_path, monkeypatch):
     import os
     import time

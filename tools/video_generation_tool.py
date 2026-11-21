@@ -103,13 +103,17 @@ def check_video_generation_requirements() -> bool:
 
 
 def _resolve_active_provider():
-    """Active provider or None; a miss forces a discovery refresh (sessions older than the plugin install)."""
+    """Active provider or None; a miss forces one discovery refresh per plugin-source stamp (sessions
+    older than the plugin install), never one per call — see :mod:`hermes_cli.plugin_provider_retry`."""
     try:
-        registry_mod, ensure_discovered = _discovered_registry()
+        registry_mod, _ = _discovered_registry()
         provider = registry_mod.get_active_provider()
         if provider is None:
-            ensure_discovered(force=True)
-            provider = registry_mod.get_active_provider()
+            from agent.provider_registry import configured_provider_name
+            from hermes_cli.plugin_provider_retry import lookup_with_forced_refresh
+            provider = lookup_with_forced_refresh(
+                "video_gen", configured_provider_name("video_gen", logger) or "",
+                registry_mod.get_active_provider)
         return provider
     except Exception as exc:
         logger.debug("video_gen provider resolution failed: %s", exc)

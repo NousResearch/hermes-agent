@@ -8,7 +8,7 @@ import pytest
 
 from agent.skill_preprocessing import preprocess_skill_content
 
-CFG = {"inline_shell": True, "inline_shell_timeout": 5}
+CFG = {"inline_shell": True, "inline_shell_allowlist": ["mlops/hubskill", "mlops/my-own", "dyn-comm", "mine", "outer"], "inline_shell_timeout": 5}
 SNIPPET = "Dynamic: !`printf SENTINEL`"
 
 
@@ -52,11 +52,31 @@ def test_trusted_hub_install_still_expands(tmp_path):
 
 
 def test_local_skill_without_hub_entry_still_expands(tmp_path):
-    """Bundled-synced and user-created skills carry no lock entry and keep expanding."""
+    """An explicitly allowlisted local skill keeps the operator's opt-in."""
     skill_dir = _make_skill(tmp_path, "mlops/my-own")
     with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
         rendered = preprocess_skill_content(SNIPPET, skill_dir, skills_cfg=dict(CFG))
     assert rendered == "Dynamic: SENTINEL"
+
+
+def test_local_skill_not_in_allowlist_does_not_expand(tmp_path):
+    """A global inline_shell flag is not authorization for arbitrary local skills."""
+    skill_dir = _make_skill(tmp_path, "mlops/not-listed")
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        rendered = preprocess_skill_content(SNIPPET, skill_dir, skills_cfg=dict(CFG))
+    assert rendered == SNIPPET
+
+
+def test_same_leaf_name_in_different_categories_is_not_interchangeable(tmp_path):
+    """Allowlisting 'trusted/helper' must not authorize 'other/helper'."""
+    trusted = _make_skill(tmp_path, "trusted/helper")
+    other = _make_skill(tmp_path, "other/helper")
+    cfg = dict(CFG, inline_shell_allowlist=["trusted/helper"])
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        rendered_trusted = preprocess_skill_content(SNIPPET, trusted, skills_cfg=dict(cfg))
+        rendered_other = preprocess_skill_content(SNIPPET, other, skills_cfg=dict(cfg))
+    assert rendered_trusted == "Dynamic: SENTINEL"
+    assert rendered_other == SNIPPET
 
 
 def test_slash_invocation_leaves_community_snippet_raw(tmp_path):
@@ -108,6 +128,24 @@ def test_community_provenance_follows_the_owning_lock(tmp_path, lock_text, viewe
     owner = _community_bundle_home(tmp_path / "owner", lock_text)
     active = owner if viewer == "owner" else (tmp_path / "other" / "skills")
     active.mkdir(parents=True, exist_ok=True)
-    with patch("tools.skills_tool.SKILLS_DIR", active):
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", active),
+        patch("agent.skill_utils.get_all_skills_dirs",
+              return_value=[active, owner] if viewer == "other" else [active]),
+    ):
         rendered = preprocess_skill_content(SNIPPET, owner / rel, skills_cfg=dict(CFG))
     assert rendered == ("Dynamic: SENTINEL" if expands else SNIPPET)
+
+
+def test_allowlisted_skill_outside_configured_roots_fails_closed(tmp_path):
+    """A same-named skill under an unconfigured */skills/ tree must stay raw."""
+    configured = tmp_path / "active" / "skills"
+    _make_skill(configured, "mlops/my-own")
+    stray = _make_skill(tmp_path / "stray" / "skills", "helper")
+    cfg = dict(CFG, inline_shell_allowlist=["helper"])
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", configured),
+        patch("agent.skill_utils.get_all_skills_dirs", return_value=[configured]),
+    ):
+        rendered = preprocess_skill_content(SNIPPET, stray, skills_cfg=dict(cfg))
+    assert rendered == SNIPPET

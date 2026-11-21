@@ -13,9 +13,12 @@ from typing import Any
 @contextmanager
 def hook_profile_scope(hermes_home):
     """Discover and invoke plugins in the payload owner's profile, including worker threads."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
-    token = set_hermes_home_override(str(hermes_home)) if hermes_home is not None else None
+    # Already in the owner's home: no switch. A hosted scope refuses any profile setter call, even
+    # one naming the bound profile, so the no-op must not reach the setter.
+    same = hermes_home is None or Path(hermes_home).resolve() == Path(get_hermes_home()).resolve()
+    token = None if same else set_hermes_home_override(str(hermes_home))
     try:
         yield
     finally:

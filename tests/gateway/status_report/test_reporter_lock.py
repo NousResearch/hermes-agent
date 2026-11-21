@@ -518,3 +518,34 @@ async def test_a_lock_taken_after_a_cancel_is_kept_while_another_confirmation_is
     assert await asyncio.wait_for(other, timeout=5) is True
     assert list(gateway_status._get_lock_dir().glob("*.lock")), "the sender holds no lock file"
     await reporter.run(lambda: False)
+
+
+async def test_a_lock_taken_after_a_cancel_is_given_back_when_the_other_confirmation_is_refused(clock, monkeypatch):
+    """The release a cancelled confirmation owes waits for the one still out. That one coming back
+    refused (another gateway holds the lock) leaves no sender, so the owed lock is given back."""
+    gates = [threading.Event(), threading.Event()]
+    took = []
+
+    def take_or_refuse(scope, identity):
+        index = len(took)
+        result = gateway_status.acquire_scoped_lock(scope, identity) if index == 0 else (False, None)
+        took.append(result[0])
+        gates[index].wait(timeout=5)
+        return result
+
+    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_or_refuse)
+    reporter = make_reporter(Receiver())
+    cancelled = asyncio.create_task(reporter._become_sender())
+    await async_wait_until(lambda: len(took) == 1, timeout=5, what="the first confirmation")
+    refused = asyncio.create_task(reporter._become_sender())
+    await async_wait_until(lambda: len(took) == 2, timeout=5, what="the second confirmation")
+    cancelled.cancel()
+    await asyncio.wait({cancelled}, timeout=5)
+
+    gates[0].set()
+    await async_wait_until(lambda: len(reporter._taking) == 1, timeout=5, what="the cancelled one to be decided")
+    assert list(gateway_status._get_lock_dir().glob("*.lock")), "given back while another confirmation was out"
+    gates[1].set()
+
+    assert await asyncio.wait_for(refused, timeout=5) is False
+    assert not list(gateway_status._get_lock_dir().glob("*.lock")), "the owed lock was never given back"

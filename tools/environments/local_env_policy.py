@@ -20,10 +20,9 @@ _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 _AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({"AWS_BEARER_TOKEN_BEDROCK"})
 
 # URLs a hosting deployment stamps into the gateway's launch environment, each with its credential:
-# the status report URL and the brokered sleep URL. Tier 1: every sanitized child env loses them
-# (the terminal tool, credentialed CLIs, ``served_profile_child_env`` whatever its base). A gateway
-# this process starts keeps them (``gateway_child_env``), and so does an unscrubbed env such as
-# ``hermes update``'s, which restarts gateways.
+# the status report URL and the brokered sleep URL. Tier 1, so the scrub drops them (the terminal
+# tool, credentialed CLIs) and ``served_profile_child_env`` drops them whatever its base; the
+# gateway launch builders (``gateway_child_env``) put them back.
 DEPLOYMENT_STAMP_ENV: frozenset[str] = frozenset({"GATEWAY_STATUS_REPORT_URL", "GATEWAY_RELAY_SLEEP_URL"})
 
 _STATIC_PROVIDER_ENV_BLOCKLIST = DEPLOYMENT_STAMP_ENV | frozenset({

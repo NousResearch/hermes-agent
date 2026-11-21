@@ -285,6 +285,29 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
         },
         max_reference_images=10,
     ),
+    # Seedream 5.5 (Nov 2026): total pixels 921,600..4,624,220. The 16:9 presets
+    # (1024x576) fall under the floor, so the same explicit dicts as Pro; all three
+    # stay at or under 2.61 MP, the $0.03 billing tier.
+    "bytedance/seedream/v5.5/text-to-image": _model(
+        "Seedream 5.5", "~10s", "Latest Seedream: multi-turn edits, in-image text editing, 14-language text", "$0.03/image (≤2.61 MP)",
+        style="image_size_preset", sizes={
+            "landscape": {"width": 2048, "height": 1152},
+            "square": {"width": 1536, "height": 1536},
+            "portrait": {"width": 1152, "height": 2048},
+        },
+        defaults={
+            "num_images": 1, "output_format": "png", "enable_safety_checker": False,
+        },
+        supports={
+            "prompt", "image_size", "num_images", "output_format", "sync_mode", "enable_safety_checker",
+        },
+        edit_endpoint="bytedance/seedream/v5.5/edit",
+        edit_supports={
+            "prompt", "image_urls", "image_size", "num_images", "output_format", "sync_mode",
+            "enable_safety_checker",
+        },
+        max_reference_images=10,
+    ),
     # Lite wants 2560x1440..4096x4096 total pixels: use the documented presets (FAL
     # auto-scales under the floor) rather than hand-rolled dicts that drift.
     "bytedance/seedream/v5/lite/text-to-image": _model(

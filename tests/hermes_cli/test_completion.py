@@ -5,7 +5,11 @@ import os
 import subprocess
 import tempfile
 
-from hermes_cli.completion import _walk, generate_bash, generate_fish
+import shutil
+
+import pytest
+
+from hermes_cli.completion import _walk, generate_bash, generate_fish, generate_zsh
 
 
 # ---------------------------------------------------------------------------
@@ -124,3 +128,58 @@ class TestProfileCompletion:
         count = out.count("(__hermes_profiles)")
         # At least the -p flag + the profile action completions
         assert count >= 2, f"Expected >=2 profile completion entries, got {count}"
+
+
+# ---------------------------------------------------------------------------
+# 4. Profile names honour HERMES_HOME
+# ---------------------------------------------------------------------------
+
+class TestProfilesUnderHermesHome:
+    """Profiles live in <HERMES_HOME>/profiles: a relocated home (a container's
+    HERMES_HOME=/opt/data, no ~/.hermes) must still complete its profiles, and an
+    unset HERMES_HOME keeps ~/.hermes/profiles."""
+
+    def _homes(self, tmp_path):
+        relocated = tmp_path / "relocated"
+        for name in ("finance", "research"):
+            (relocated / "profiles" / name).mkdir(parents=True)
+        home = tmp_path / "home"
+        (home / ".hermes" / "profiles" / "coder").mkdir(parents=True)
+        return home, relocated
+
+    @pytest.mark.parametrize("hermes_home, want", [(True, "default finance research"), (False, "default coder")])
+    def test_bash(self, tmp_path, hermes_home, want):
+        home, relocated = self._homes(tmp_path)
+        script = tmp_path / "completion.bash"
+        script.write_text(generate_bash(_make_parser()))
+        env = {"HOME": str(home), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+        if hermes_home:
+            env["HERMES_HOME"] = str(relocated)
+        out = subprocess.run(["bash", "-c", f". {script}; _hermes_profiles"], env=env, capture_output=True, text=True, check=True)
+        assert out.stdout.split() == want.split()
+
+    @pytest.mark.skipif(shutil.which("zsh") is None, reason="zsh is not installed")
+    @pytest.mark.parametrize("hermes_home, want", [(True, "default finance research"), (False, "default coder")])
+    def test_zsh(self, tmp_path, hermes_home, want):
+        home, relocated = self._homes(tmp_path)
+        script = tmp_path / "completion.zsh"
+        script.write_text(generate_zsh(_make_parser()))
+        env = {"HOME": str(home), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+        if hermes_home:
+            env["HERMES_HOME"] = str(relocated)
+        # Outside the completion system: stub what the script calls, then list the profiles.
+        prog = f"compdef() {{ :; }}; _arguments() {{ :; }}; source {script} 2>/dev/null; _describe() {{ print -r -- ${{(P)2}}; }}; _hermes_profiles"
+        out = subprocess.run(["zsh", "-f", "-c", prog], env=env, capture_output=True, text=True, check=True)
+        assert out.stdout.split() == want.split()
+
+    @pytest.mark.skipif(shutil.which("fish") is None, reason="fish is not installed")
+    @pytest.mark.parametrize("hermes_home, want", [(True, "default finance research"), (False, "default coder")])
+    def test_fish(self, tmp_path, hermes_home, want):
+        home, relocated = self._homes(tmp_path)
+        script = tmp_path / "completion.fish"
+        script.write_text(generate_fish(_make_parser()))
+        env = {"HOME": str(home), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+        if hermes_home:
+            env["HERMES_HOME"] = str(relocated)
+        out = subprocess.run(["fish", "-c", f"source {script}; __hermes_profiles"], env=env, capture_output=True, text=True, check=True)
+        assert out.stdout.split() == want.split()

@@ -796,3 +796,101 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+def _local_runner(adapter):
+    """A gateway whose only connected adapter is LOCAL (the desktop transport),
+    running as the desktop session's profile — mirroring the real setup where
+    the notifier's profile matches the sub's ``notifier_profile`` and the
+    ``local`` adapter lives on the primary map."""
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._running = True
+    runner.adapters = {Platform.LOCAL: adapter}
+    runner._kanban_sub_fail_counts = {}
+    runner._kanban_dispatcher_lock_handle = object()
+    runner._kanban_notifier_profile = "game-dev-godot-buddy"
+    return runner
+
+
+def test_webui_desktop_subscription_delivers_via_local_adapter(tmp_path, monkeypatch):
+    """Regression: a 'webui' (desktop) sub is served by the connected 'local'
+    adapter. ``Platform`` has no WEBUI member, so before the alias the
+    notifier's active_platforms check skipped the sub at DEBUG — the card
+    finished silently and ``last_ping_event_id`` stayed 0. Now the completion
+    ping + wake must land on the local adapter while the cursor row keeps its
+    original 'webui' platform (so the subscription stays correctly keyed).
+    """
+    db_path = tmp_path / "webui-local.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="desktop card", assignee="worker",
+            session_id="agent:main:local:dm:local-abc123",
+        )
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="webui", chat_id="local-abc123",
+            notifier_profile="game-dev-godot-buddy", delivery_mode="notify+wake",
+        )
+        kb.complete_task(conn, tid, summary="redraw landed")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _local_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    # Ping delivered through the local adapter, addressed to the local chat.
+    assert len(adapter.sent) == 1
+    assert tid in adapter.sent[0]["text"]
+    assert adapter.sent[0]["chat_id"] == "local-abc123"
+    # Wake accepted on the local session.
+    assert len(adapter.handled) == 1
+
+    # Cursor row keeps its original 'webui' platform and the ping checkpoint
+    # advanced off 0 — the exact symptom of the silent-skip bug.
+    conn = kbc.connect()
+    try:
+        subs = kbn.list_notify_subs(conn, tid)
+        assert len(subs) == 1
+        assert subs[0]["platform"] == "webui"
+        assert subs[0]["last_ping_event_id"] > 0
+        _, remaining = kbn.unseen_events_for_sub(
+            conn, task_id=tid, platform="webui", chat_id="local-abc123",
+            kinds=["completed", "blocked", "gave_up", "crashed", "timed_out"],
+        )
+        assert remaining == []
+    finally:
+        conn.close()
+
+
+def test_webui_subscription_without_local_adapter_is_skipped(tmp_path, monkeypatch):
+    """The alias must NOT fabricate a delivery path: with no 'local' adapter
+    connected, a webui sub stays undelivered and its cursor is untouched."""
+    db_path = tmp_path / "webui-nolocal.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="orphan desktop card", assignee="worker")
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="webui", chat_id="local-xyz",
+            delivery_mode="notify+wake",
+        )
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)  # TELEGRAM only — no local adapter
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.sent == []
+    assert adapter.handled == []
+    conn = kbc.connect()
+    try:
+        subs = kbn.list_notify_subs(conn, tid)
+        assert subs[0]["last_ping_event_id"] == 0
+    finally:
+        conn.close()

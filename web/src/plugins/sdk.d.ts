@@ -59,6 +59,8 @@ export type FetchJSON = <T = unknown>(
  * the raw ``Response``, does not parse, does not throw on non-2xx, and does
  * not run the 401 redirect. Plugins MUST use this (or ``fetchJSON``) instead
  * of calling ``fetch`` with a hand-read ``window.__HERMES_SESSION_TOKEN__``.
+ * Both reject a URL on another origin instead of sending it the session
+ * token; fetch third-party URLs with plain ``fetch``.
  */
 export type AuthedFetch = (url: string, init?: RequestInit) => Promise<Response>;
 

@@ -35,9 +35,10 @@ class ProcessSessionsMixin:
         with self._lock:
             sessions.update(self._finished)
             sessions.update(self._running)
+        from tools.environments.sandbox_scope import sandbox_visible
         all_sessions = [
             refreshed for refreshed in (
-                self._refresh_detached_session(s) for s in sessions.values()
+                self._refresh_detached_session(s) for s in sessions.values() if sandbox_visible(s.sandbox_key)
             ) if refreshed is not None and not self._uncollected_gone(refreshed)
         ]
         if task_id or session_key:

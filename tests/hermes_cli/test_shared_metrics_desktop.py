@@ -112,11 +112,14 @@ def test_disabled_profile_records_nothing_and_leaves_no_latch(marks):
     _rpc("shared_metrics.desktop_dislike", signal="quick_close", target="terminal_pane")
     daily = _rpc("shared_metrics.desktop_daily", day="2026-09-26",
                  modes=[{"mode": "sessions", "active_ms": 60_000, "messages_sent": 3}])
+    frames = _rpc("shared_metrics.desktop_long_frames", day="2026-09-26",
+                  frames=[{"bucket": "100ms_to_250ms", "count": 300}], visible_ms=60_000)
 
-    assert daily["result"] == {"recorded": False}  # never "settled" into another profile's off switch
+    assert daily["result"] == frames["result"] == {"recorded": False}  # never "settled" into another profile's off switch
     assert marks.rows == []
     assert desktop._daily == {}
     assert not (marks.home / "telemetry").exists()
+    assert _stored(contract.DESKTOP_LONG_FRAMES_METRIC) == []
 
     marks.policy["on"] = True  # the earlier calls claimed nothing, so opting in later still counts
     _rpc("shared_metrics.desktop_feature_use", area="projects")
@@ -210,7 +213,28 @@ def test_v3_schema_accepts_exactly_the_desktop_contract_values():
     by_name = {d["properties"]["name"]["const"]: d for d in schema["$defs"].values() if "properties" in d}
     for metric in (contract.DESKTOP_FEATURE_USE_METRIC, contract.DESKTOP_FRICTION_METRIC,
                    contract.DESKTOP_ONBOARDING_METRIC, contract.DESKTOP_MODE_USE_METRIC,
-                   contract.DESKTOP_ACTION_USE_METRIC, contract.DESKTOP_DISLIKE_METRIC):
+                   contract.DESKTOP_ACTION_USE_METRIC, contract.DESKTOP_DISLIKE_METRIC,
+                   contract.DESKTOP_LONG_FRAMES_METRIC):
         dims = by_name[metric]["properties"]["dimensions"]["properties"]
         assert {f: set(spec["enum"]) for f, spec in dims.items() if "enum" in spec} == {
             f: set(values) for f, values in contract._COUNTER_DIMENSION_VALUES[metric].items()}
+
+
+def test_long_frames_are_counted_uncapped_per_bucket_with_the_days_visible_time(marks):
+    params = {"day": "2026-09-26", "visible_ms": 3 * 3_600_000, "frames": [
+        {"bucket": "50ms_to_100ms", "count": 1200}, {"bucket": "100ms_to_250ms", "count": 300},
+        {"bucket": "gte_5s", "count": 0},
+    ]}
+    assert _rpc("shared_metrics.desktop_long_frames", **params)["result"] == {"recorded": True}
+    assert _rpc("shared_metrics.desktop_long_frames", **params)["result"] == {"recorded": True}  # replay: no rows
+
+    assert sorted(_stored(contract.DESKTOP_LONG_FRAMES_METRIC), key=lambda r: r[2]) == [
+        ("2026-09-26", {"frame_bucket": "100ms_to_250ms", "visible_minutes_bucket": "2h_to_6h"}, 300),
+        ("2026-09-26", {"frame_bucket": "50ms_to_100ms", "visible_minutes_bucket": "2h_to_6h"}, 1200),
+    ]
+
+
+def test_a_visible_day_without_long_frames_still_counts_toward_the_rate(marks):
+    _rpc("shared_metrics.desktop_long_frames", day="2026-09-26", visible_ms=10 * 60_000)
+    assert _stored(contract.DESKTOP_LONG_FRAMES_METRIC) == [
+        ("2026-09-26", {"frame_bucket": "none", "visible_minutes_bucket": "5m_to_30m"}, 1)]

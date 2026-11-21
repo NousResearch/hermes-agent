@@ -23,11 +23,11 @@ FIXTURE = Path(__file__).parents[1] / "fixtures" / "cua_driver_0_9_tools_list.js
 
 @pytest.fixture(autouse=True)
 def _reset_computer_use_state():
-    from tools.computer_use.tool import reset_backend_for_tests
+    from tests.computer_use_fakes import reset_backend
 
-    reset_backend_for_tests()
+    reset_backend()
     yield
-    reset_backend_for_tests()
+    reset_backend()
 
 
 class _FakeSession:
@@ -100,7 +100,6 @@ def test_foreground_support_is_discovered_from_tool_input_schema():
     session = _CuaDriverSession.__new__(_CuaDriverSession)
     session._capabilities = {}
     session._input_properties = {}
-    session._capability_version = ""
     asyncio.run(session._populate_capabilities(_McpSession()))
 
     assert session.supports_input_property("click", "delivery_mode") is True

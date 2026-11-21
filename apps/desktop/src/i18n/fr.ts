@@ -20,6 +20,7 @@ import { frNotifications } from './fr_notifications'
 import { frOnboarding } from './fr_onboarding'
 import { frPluginPreviewAccess } from './fr_plugin_preview_access'
 import { frPluginUpdate } from './fr_plugin_update'
+import { frPluginUpdateAll } from './fr_plugin_update_all'
 import { frPreviewWeb } from './fr_preview_web'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
@@ -29,6 +30,11 @@ import { frUpdateChannel } from './fr_update_channel'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
+  gatewayGroupOpen: {
+    opening: "Ouverture de la discussion de groupe…",
+    lookupFailed: "Impossible de retrouver ce groupe sur la passerelle. Réessayez.",
+    missing: "Cette discussion de groupe n’existe plus."
+  },
   sharedMetrics: frSharedMetrics,
   firstRun: frFirstRun,
   intro: introFr,
@@ -769,6 +775,8 @@ export const frOverrides = {
       mcp: 'MCP',
       archivedChats: 'Conversations archivées',
       sessions: 'Sessions',
+      backup: 'Sauvegarde et transfert',
+      backupOnly: 'Sauvegarde',
       about: 'À propos',
       billing: 'Facturation',
       notifications: 'Notifications',
@@ -1549,6 +1557,9 @@ export const frOverrides = {
         "Taille maximale d'un fichier local que Desktop chargera pour les aperçus et les pièces jointes image, en Mo. La valeur par défaut est 16. Les pièces jointes distantes non-image utilisent une limite distincte de 256 Mo. Une valeur très élevée charge le fichier entier en mémoire et peut figer ou planter l'application.",
       attachmentSizeUnit: 'Mo',
       attachmentSizeLabel: 'Taille maximale de chargement des aperçus / images en mégaoctets',
+      desktopReadAloudTitle: 'Lire les réponses à haute voix dans cette app',
+      desktopReadAloudDesc:
+        "Lit chaque réponse terminée dans Desktop. Même interrupteur que celui du compositeur ; il s'applique à toutes les fenêtres ouvertes, et le désactiver coupe une réponse en pleine phrase. « Lire les réponses à haute voix » ci-dessous concerne la messagerie et la CLI.",
       showOptions: 'Afficher les options'
     },
     hudModifier: {
@@ -2392,16 +2403,21 @@ export const frOverrides = {
       browserRealProfile: {
         label: 'Utiliser mon profil de navigateur réel',
         description:
-          "Copie les identifiants de connexion et les cookies de votre navigateur par défaut dans un instantané géré que l'agent utilise pour naviguer. Votre profil actif n'est jamais ouvert directement. S'applique aux nouvelles sessions.",
+          'Copie les identifiants de connexion et les cookies de votre navigateur par défaut dans un instantané géré que l\'agent utilise pour naviguer, et connecte aussi le navigateur intégré avec eux. Votre profil actif n\'est jamais ouvert directement. S\'applique aux nouvelles sessions.',
         enabledTitle: 'Navigation avec le profil réel activée',
         enabledMessage: 'Les nouvelles sessions utiliseront un instantané de votre profil de navigateur par défaut.',
         disabledTitle: 'Navigation avec le profil réel désactivée',
         disabledMessage:
-          "L'instantané du profil sera supprimé ; les nouvelles sessions utiliseront un navigateur vierge.",
+          'L\'instantané du profil sera supprimé et le navigateur intégré en sera déconnecté ; les nouvelles sessions utiliseront un navigateur vierge.',
         failedSave: "Impossible d'enregistrer le paramètre du profil réel",
+        reimportSignins: 'Réimporter les connexions',
+        signinsImportedTitle: 'Connexions du navigateur intégré',
+        signinsImported: count => `Navigateur intégré connecté avec ${count} cookie${count === 1 ? '' : 's'} de votre profil de navigateur.`,
+        signinsRemote: 'Ce backend s\'exécute sur une autre machine, son profil de navigateur n\'est donc pas importé dans le navigateur intégré.',
+        signinsFailed: 'Impossible d\'importer les connexions dans le navigateur intégré',
         prompt: {
           title: 'Restez connecté à vos sites',
-          body: "Autorisez Hermes à naviguer avec un instantané de votre profil de navigateur par défaut afin que les sites s'ouvrent avec vos sessions déjà connectées.",
+          body: 'Autorisez Hermes à naviguer avec un instantané de votre profil de navigateur par défaut afin que les sites s\'ouvrent avec vos sessions déjà connectées, pour l\'agent et dans le navigateur intégré.',
           bulletSnapshot: 'Les cookies et identifiants de connexion sont copiés dans un instantané géré.',
           bulletLiveProfile: "Votre profil de navigateur actif n'est jamais ouvert directement.",
           bulletLocal: 'Rien ne quitte cet ordinateur.',
@@ -2528,6 +2544,7 @@ export const frOverrides = {
         `Épinglé au commit ${sha}. Les mises à jour sont refusées tant qu’il n’est pas réinstallé avec un nouvel épinglage.`,
       pinnedBadge: (sha: string) => `épinglé @ ${sha}`,
       ...frPluginUpdate,
+      ...frPluginUpdateAll,
       ...frPluginPreviewAccess,
       uninstall: 'Désinstaller',
       uninstallTip: (name: string, profile: string) => `Désinstaller ${name} de ${profile}`,
@@ -2608,11 +2625,6 @@ export const frOverrides = {
       openLog: 'Ouvrir le journal',
       actionLog: "Journal d'action",
       alreadyInstalled: name => `« ${name} » est déjà installé`,
-      pickerTitle: 'Hub de skills',
-      pickerBrowse: 'Parcourir tout le hub',
-      pickerHide: 'Masquer le navigateur du hub',
-      pickerHint:
-        'Cliquez sur « + Ajouter à cet agent » pour installer un skill : il apparaîtra ensuite dans la liste ci-dessus.',
       loadFailed: 'Échec du chargement du hub de skills',
       previewFailed: "Échec de l'aperçu du skill",
       scanFailed: 'Échec du scan de sécurité',
@@ -2871,7 +2883,10 @@ export const frOverrides = {
       backupDesc: 'Archiver en zip la configuration, les mémoires, les skills et les sessions',
       debugShare: 'Partage de débogage',
       debugShareDesc:
-        'Téléverser un rapport expurgé + journaux, obtenir des liens partageables (auto-suppression après 6h)',
+        'Téléverser un résumé (versions, clés de configuration, compteurs d’erreurs ; aucun texte de journal), obtenir un lien partageable (auto-suppression après 6h)',
+      debugShareConfirm: 'Téléverser le rapport de débogage vers un paste public ?',
+      debugShareConfirmDesc:
+        'Téléverse un résumé vers un service de paste public : versions de Hermes, de Python et du système, noms des plateformes connectées et des toolsets, clés de configuration (sans valeurs) et compteurs d’avertissements/erreurs. Il ne contient aucune ligne de journal ni texte de message. Les pastes sont supprimés automatiquement après 6 heures ; si paste.rs est injoignable, le service de secours dpaste.com les garde publics 1 jour et ils ne peuvent pas être supprimés plus tôt.',
       debugShareRunning: 'Téléversement du rapport de débogage...',
       debugShareLinks: 'Liens de partage',
       debugShareFailed: 'Échec du partage de débogage',
@@ -3224,6 +3239,14 @@ export const frOverrides = {
     fieldSkillsPlaceholder: 'noms de skills séparés par des virgules (facultatif)',
     fieldDeliver: 'Livrer vers',
     fieldDeliverOnly: 'Livrer le payload uniquement',
+    fieldSignature: 'Signature',
+    fieldSignatureHint: 'Le seul schéma de signature accepté par cette route. Les livraisons GitHub, GitLab et Linear exigent leur propre schéma.',
+    signatureOptions: {
+      generic: 'Générique (horodatée)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: 'Invite',
     fieldPromptPlaceholder: "Instructions pour l'agent quand ce webhook se déclenche (facultatif)",
     nameRequired: 'Nom requis',
@@ -3712,7 +3735,10 @@ export const frOverrides = {
   },
   composer: {
     message: 'Message',
-    wakingProfile: profile => `Réveil de ${profile}…`,
+    switchingProfile: profile => `Passage à ${profile}…`,
+    switchingProfileSlow: 'Connexion en cours. Les messages envoyés maintenant attendront et iront à cet agent.',
+    switchProfileFailed: profile => `Impossible de passer à ${profile}`,
+    willSendTo: profile => `Sera envoyé à ${profile}`,
     placeholderStarting: 'Démarrage de Hermes…',
     placeholderReconnecting: 'Reconnexion à Hermes…',
     placeholderFollowUp: 'Envoyer un suivi',
@@ -3852,7 +3878,7 @@ export const frOverrides = {
       '/topup': 'Afficher votre solde Nous et gérer la facturation sur le portail',
       '/platform': 'Suspendre, reprendre ou lister une plateforme de gateway en échec',
       '/version': 'Afficher la version de Hermes Agent',
-      '/debug': 'Téléverser un rapport de débogage (infos système + journaux) et obtenir des liens partageables',
+      '/debug': 'Rapport de débogage (versions, clés de configuration, compteurs d’erreurs ; aucun texte de journal) : affiche d\'abord l\'avis de confidentialité ; /debug upload partage les liens',
       '/model': 'Changer le modèle de cette session'
     },
     hotkeyDescs: {
@@ -4609,6 +4635,15 @@ export const frOverrides = {
           system_prompt: 'Invite système',
           tool_definitions: "Définitions d'outils"
         },
+        compact: {
+          action: 'Compacter la conversation',
+          busyHint: "Terminez ou arrêtez d'abord la réponse en cours",
+          confirm: 'Compacter',
+          hint: 'Résumez le contexte ancien pour libérer de la place. Continuez dans cette même conversation.',
+          question: 'Compacter cette conversation en un résumé ?',
+          questionNamed: title => `Compacter « ${title} » en un résumé ?`,
+          working: 'Compaction…'
+        },
         empty: 'Aucune donnée de contexte pour le moment',
         loading: 'Chargement du détail…',
         percentFull: percent => `${percent}% plein`,
@@ -4857,6 +4892,7 @@ export const frOverrides = {
       branchNewChat: 'Créer une branche dans une nouvelle conversation',
       react: 'Réagir',
       dismissError: "Ignorer l'erreur",
+      responseContinuing: 'Reprise en cours…',
       responseStopped: 'Réponse interrompue',
       ...frErrorLayers,
       errorCodes: {
@@ -5066,6 +5102,7 @@ export const frOverrides = {
       readAloud: 'Lire à voix haute',
       copyFullResponse: 'Copier la réponse complète',
       readAloudFullResponseHint: 'Maj+clic : lire la réponse complète',
+      contentRefusedNotice: 'Ce message a été refusé par le filtre de sécurité du modèle — essayez une autre requête.',
       editMessage: 'Modifier le message',
       expandMessage: 'Développer le message',
       scrollToBottom: 'Défiler vers le bas',
@@ -5145,6 +5182,10 @@ export const frOverrides = {
       authorized: server => `${server} autorisé`,
       failed: server => `Échec de la configuration de ${server}`,
       toolCount: count => (count === 1 ? '1 outil' : `${count} outils`),
+      launchCommand: target => `Exécute : ${target}`,
+      launchRemote: target => `Se connecte à : ${target}`,
+      launchEnv: keys => `Environnement : ${keys}`,
+      launchCwd: dir => `Dossier de travail : ${dir}`,
       envRequired: "Renseignez d'abord les identifiants requis",
       sendFailed: "Impossible d'envoyer la réponse de configuration MCP",
       reloadFailed:

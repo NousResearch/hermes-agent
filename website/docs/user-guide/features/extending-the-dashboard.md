@@ -12,7 +12,7 @@ The Hermes web dashboard (`hermes dashboard`) is built to be reskinned and exten
 2. **UI plugins** — a directory with `manifest.json` + a JavaScript bundle that registers a tab, replaces a built-in page, augments one via page-scoped slots, or injects components into named shell slots.
 3. **Backend plugins** — a Python file inside that plugin directory that exposes a FastAPI `router`; routes are mounted under `/api/plugins/<name>/` and called from the plugin's UI.
 
-All three are **drop-in at runtime**: no repo clone, no `npm run build`, no patching the dashboard source. This page is the canonical reference for all three.
+All three are **drop-in at runtime**: no repo clone, no `pnpm run build`, no patching the dashboard source. This page is the canonical reference for all three.
 
 If you just want to use the dashboard, see [Web Dashboard](./web-dashboard). If you want to reskin the terminal CLI (not the web dashboard), see [Skins & Themes](./skins) — the CLI skin system is unrelated to dashboard themes.
 
@@ -547,7 +547,7 @@ SDK.fetchJSON("/api/plugins/my-plugin/data")
   .catch((err) => console.error("API call failed:", err));
 ```
 
-`fetchJSON` injects the session auth token, surfaces errors as thrown exceptions, and parses JSON automatically.
+`fetchJSON` injects the session auth token, surfaces errors as thrown exceptions, and parses JSON automatically. `fetchJSON` and `authedFetch` only call this dashboard's own origin: an absolute URL to another host is rejected rather than sent the session token, so fetch third-party URLs (CDN assets, a game server) with plain `fetch`.
 
 #### Calling built-in Hermes endpoints
 
@@ -762,23 +762,19 @@ delays only that profile's hosted plugin requests, and one with no answer after 
 
 #### Accessing Hermes internals
 
-Backend routes run inside the dashboard process, so they can import from the hermes-agent codebase directly:
+Backend routes run inside the dashboard process, so they can import from the hermes-agent codebase directly. Session history is read through the storage interface (`persistence_assembly`, see [Session Storage](../../developer-guide/session-storage.md#common-operations)); a reader handle never creates or migrates the store, and a plain `def` route keeps the read off the event loop:
 
 ```python
 from fastapi import APIRouter
-from hermes_state import SessionDB
 from hermes_cli.config import load_config
+from persistence_assembly import open_persistence_reader, profile_scope
 
 router = APIRouter()
 
 @router.get("/session-count")
-async def session_count():
-    db = SessionDB()
-    try:
-        count = len(db.list_sessions(limit=9999))
-        return {"count": count}
-    finally:
-        db.close()
+def session_count():
+    with open_persistence_reader(profile_scope().profile_dir) as store:
+        return {"count": store.sessions.count_sessions()}
 
 @router.get("/config-snapshot")
 async def config_snapshot():

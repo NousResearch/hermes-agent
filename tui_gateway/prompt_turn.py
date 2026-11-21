@@ -207,9 +207,9 @@ class _TurnScopes:
 
     approval: Any = None
     session_tokens: list = dataclasses.field(default_factory=list)
-    home: Any = None  # per-turn HERMES_HOME override for a resumed remote profile
-    secret: Any = None
-    terminal: Any = None
+    # The turn's profile state (home, secrets, terminal policy, runtime scope) as ONE bind; released
+    # whole after post-turn housekeeping, which still runs under the session's own profile.
+    profile: Any = None
 
 
 def _route_turn_images(agent, prompt: Any, images: list[str]) -> Any:
@@ -401,8 +401,8 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
     if _pending := session.get("pending_title"):
         _session_key = session.get("session_key") or sid
         try:
-            with _session_db(session) as _pdb:
-                if _pdb and _pdb.set_session_title(_session_key, _pending):
+            with _session_db(session) as _pdb, _persistence_for(_pdb) as persistence:
+                if persistence is not None and persistence.sessions.set_title(_session_key, _pending):
                     session["pending_title"] = None
         except ValueError as exc:
             # Invalid/duplicate title — non-retryable, drop it; auto-title takes over.
@@ -414,7 +414,8 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
     # everything otherwise); barge-aware.
     if st.tts_queue is None and isinstance(raw, str) and raw.strip() and _voice_tts_enabled():
         try:
-            threading.Thread(target=_speak_text_with_barge, args=(raw,), daemon=True).start()
+            from agent.memory_provider import spawn_context_thread
+            spawn_context_thread(_speak_text_with_barge, name="voice-tts-fallback", args=(raw,)).start()
         except ImportError:
             logger.warning("voice TTS skipped: hermes_cli.voice unavailable")
         except Exception as e:
@@ -424,7 +425,8 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
 def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str, *,
                             on_done=None, on_error=None) -> None:
     """Chain one follow-up turn (caller set ``running``); on failure run ``on_error``, log,
-    release ``running``."""
+    release ``running`` while it is still the caller's claim (``_notif_release_claim``)."""
+    claim = session.get("_notif_turn_claim")
     try:
         _emit("message.start", sid)
         _run_prompt_submit(rid, sid, session, prompt)
@@ -434,8 +436,7 @@ def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str
         if on_error is not None:
             on_error()
         _hook_failure(what, exc)
-        with session["history_lock"]:
-            session["running"] = False
+        _notif_release_claim(session, claim)
 
 
 def _run_post_turn_followups(
@@ -457,6 +458,7 @@ def _run_post_turn_followups(
             if session.get("_turn_cancel_requested"):
                 return  # the user pressed Stop; the goal resumes after their next prompt
             session["running"] = True
+            session["_notif_turn_claim"] = object()  # _dispatch_followup_turn's failure release frees only this claim
         _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch")
     # Safety net for completion events that arrived mid-turn.  Ownership is positive-proof
     # and compression-chain aware (same fail-closed gate as the poller): session B must
@@ -543,16 +545,18 @@ def _adopt_out_of_band_turns(session: dict) -> None:
     # Address the live session, not session_key: a rotation moves the tip mid-session, so the parent
     # holds none of the foreign rows (Telegram reply, cron) this function exists to adopt and the model
     # silently never sees them (#123545).
-    with _session_db(session) as db:
+    from persistence.conversation.messages import TranscriptRead
+    with _session_db(session) as db, _persistence_for(db) as persistence:
         try:
-            newer = db.get_messages(_submit_row_target_key(session), after_id=seen) if db is not None else []
+            newer = persistence.messages.read_transcript(
+                _submit_row_target_key(session), TranscriptRead(after_id=seen)) if persistence is not None else ()
         except Exception:
             logger.debug("out-of-band history probe failed; turn runs on the in-memory history", exc_info=True)
             return
-    newer = [row for row in newer if _foreign(row.get("id"))]
+    newer = [row for row in newer if _foreign(row.id)]
     if not newer:
         return
-    rewritten = any(row.get("_compressed_summary") for row in newer)
+    rewritten = any(row.compressed_summary for row in newer)
     rows = _load_durable_truncation_history(session, repair_alternation=rewritten) or []
     keep = _below_ceiling if rewritten else _foreign
     tail = canonicalize_replay_history([m for m in rows if keep(_message_row_id(m))])
@@ -623,8 +627,8 @@ def _install_has_prior_sessions(session: dict) -> bool:
     its first-ever message holds exactly one row.
     """
     try:
-        with _session_db(session) as db:
-            return db is not None and db.session_count_ge(2)
+        with _session_db(session) as db, _persistence_for(db) as persistence:
+            return persistence is not None and persistence.sessions.count_at_least(2)
     except Exception:
         logger.debug("session count probe failed for first-contact check", exc_info=True)
         return False
@@ -690,9 +694,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     # built from the env frozen at activation — get_secret() fails closed then, so an unscoped default
     # member's hosted-room turn otherwise died with UnscopedSecretError, and ambient TERMINAL_* a
     # secondary context poisoned must never become the launch turn's authority.
-    bound = _profile_runtime_scope_tokens(session.get("profile_home"))
-    if bound is not None:
-        scopes.home, scopes.secret, scopes.terminal = bound.home, bound.secret, bound.terminal
+    scopes.profile = _profile_runtime_scope_tokens(session.get("profile_home"))
     # The sudo password callback is thread-local: without re-wiring here, sudo prompts
     # fall through to /dev/tty and hang the headless gateway (re-run is a no-op).
     _wire_callbacks(sid)
@@ -847,11 +849,11 @@ def _absorb_turn_result(
     result, agent = st.result, st.agent
     if display_kind and isinstance(text, str):
         # Post-turn fallback stamp of a synthesized turn's display kind (DB row + result).
-        db = getattr(agent, "_session_db", None)
+        persistence = getattr(agent, "persistence", None)
         current_session_id = getattr(agent, "session_id", None) or session.get("session_key")
-        if db is not None:
+        if persistence is not None:
             try:
-                db.set_latest_matching_message_display_kind(
+                persistence.messages.set_latest_matching_message_display_kind(
                     current_session_id, role="user", content=text, display_kind=display_kind,
                     display_metadata=display_metadata)
             except Exception:
@@ -920,6 +922,28 @@ def _persisted_turn_receipt(st: _TurnRun, raw: Any, status: str) -> dict | None:
             committed_row_id(before) is not None and committed_row_id(before) == committed_row_id(after)))
 
 
+def _retain_refused_turn(agent, result: dict) -> None:
+    """Take the refused turn out of the agent's durable model transcript, keeping it for display."""
+    from agent.agent_init_session import agent_interface
+    from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+    store, sid = agent_interface(agent), getattr(agent, "session_id", None)
+    if store is None or not sid:
+        return
+    try:
+        store.messages.retain_refused_turn_for_display(
+            sid, notice=CONTENT_REFUSED_NOTICE, boundary_row_id=result.get("refused_turn_boundary_row_id"))
+    except Exception:  # best-effort: a refusal must never crash turn teardown
+        logger.warning("content-policy refusal: could not retain the refused turn for %s", sid, exc_info=True)
+
+
+def _pause_mark(session: dict, status: str) -> dict:
+    """``{"paused": True}`` for an interrupted turn its interrupter continues itself (``session.interrupt``
+    ``resume``: ``methods_session_interrupt._note_turn_pause``). Consumes the turn's mark either way."""
+    turn = session.get("inflight_turn")
+    pause = turn.pop("_pause", None) if isinstance(turn, dict) else None
+    return {"paused": True} if status == "interrupted" and pause is True else {}
+
+
 def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int):
     """``(payload, raw, status)`` for message.complete; retains/clears the inflight turn and
     settles the hosted-room terminal receipt."""
@@ -936,12 +960,20 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
         except Exception:
             _error_surface = None
     raw, status, last_reasoning = _turn_outcome(result, _error_surface)
+    # Safety refusal, standalone tui_gateway owner: the agent flushed the refused turn to its durable
+    # transcript at turn start, but result["messages"] is already the clean pre-refusal history. This
+    # path owns the session's SessionDB directly and never reaches the gateway's owner cleanup, so drop
+    # the refused turn durably HERE too — else a /resume or reopen re-sends the blocked content and the
+    # deterministic filter re-locks the chat (#149708 review). Best-effort; the live refusal notice was
+    # already delivered.
+    if result.get("failure_reason") == "content_policy_blocked":
+        _retain_refused_turn(agent, result)
     # The receipt verifies the stored row's body, which keeps the model's text as written;
     # only the delivered copy drops a silence marker.
     receipt = _persisted_turn_receipt(st, raw, status)
     if _is_bot_mode_session(session):
         raw = _bot_mode_delivery_text(raw, successful=status == "complete")
-    payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+    payload = {"text": raw, "usage": _get_usage(agent), "status": status, **_pause_mark(session, status)}
     if receipt:
         payload["persisted_turn"] = receipt
     if last_reasoning:
@@ -1007,6 +1039,8 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
 def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseException) -> None:
     """Except-path of the turn: crash log, history restore, terminal error frame."""
     import traceback
+
+    from storage_user_copy import error_type_name
     with contextlib.suppress(Exception):
         os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
         with open(_CRASH_LOG, "a", encoding="utf-8") as f:
@@ -1014,7 +1048,7 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
                 f"\n=== turn-dispatcher exception · "
                 f"{time.strftime('%Y-%m-%d %H:%M:%S')} · sid={sid} ===\n")
             f.write(traceback.format_exc())
-    print(f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+    print(f"[gateway-turn] {error_type_name(e)}: {e}", file=sys.stderr, flush=True)
     # A finalizer exception can leave in-memory history at the turn-start snapshot.
     _restore_agent_history_after_turn_error(session, st.agent)
     if st.terminal_callback is not None and not st.receipt_attempted:
@@ -1028,7 +1062,7 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
         # Same terminal error frame shape as the returned-error path.
         _emit_terminal_turn_error(sid, session, e, retire_marker=st.receipt_committed)
         st.error_retained = True
-        st.error_detail = _turn_failure_detail(e, type(e).__name__, st.prompt_text)
+        st.error_detail = _turn_failure_detail(e, error_type_name(e), st.prompt_text)
     except Exception as emit_exc:
         print(
             f"[gateway-turn] terminal error emit failed: {type(emit_exc).__name__}: {emit_exc}",
@@ -1037,7 +1071,8 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
 
 
 def _release_turn_scopes(sid: str, session: dict, st: _TurnRun) -> None:
-    """Finally-path, before settlement: drop snapshots, end turn audio, undo a one-turn model, reset scopes (not home)."""
+    """Finally-path, before settlement: drop snapshots, end turn audio, undo a one-turn model, reset the
+    approval and session-context scopes. The profile scope stays bound, whole, for housekeeping."""
     # Drop both pre-turn history snapshots before asking glibc to return pages (a test
     # inspects these two locals by name).
     history, run_kwargs = st.history, st.run_kwargs
@@ -1063,25 +1098,20 @@ def _release_turn_scopes(sid: str, session: dict, st: _TurnRun) -> None:
         if scopes.approval is not None:
             from tools.approval_context import reset_current_session_key
             reset_current_session_key(scopes.approval)
-    if scopes.secret is not None:
-        reset_secret_scope(scopes.secret)
-    if scopes.terminal is not None:
-        from tools.terminal_scope import reset_terminal_scope
-        reset_terminal_scope(scopes.terminal)
     _clear_session_context(scopes.session_tokens)
 
 
 def _post_turn_housekeeping(sid: str, session: dict, st: _TurnRun) -> None:
     """Best-effort tail AFTER the turn settled: a slow trim must not hold the bookend (#131740)."""
-    try:  # while the profile HERMES_HOME override is still active (session's own config)
+    try:  # while the session's profile scope is still bound (its own config, secrets and policy)
         from hermes_cli.mem_trim import trim_memory
         # Every OTHER session must be idle (#58576).
         if _sessions_quiescent(exclude=sid):
             trim_memory(reason="tui turn completion", collect=False)
     except Exception:
         logger.debug("post-turn memory trim failed", exc_info=True)
-    if st.scopes.home is not None:
-        reset_hermes_home_override(st.scopes.home)
+    if st.scopes.profile is not None:
+        st.scopes.profile.reset()
 
 
 # Bounded so a contended state.db cannot hold ``_sessions_lock``; a skipped heal is retried on the next prompt.
@@ -1089,7 +1119,7 @@ _ROUTING_REOPEN_PATIENCE_S = 0.5
 
 
 def _routing_provenance_db(session: dict):
-    """The session's own SessionDB for :func:`_reopen_routed_session_row`, or a ``None`` context."""
+    """The session's own SessionDB (its handle goes to :func:`_reopen_routed_session_row`), or a ``None`` context."""
     try:
         return _session_db(session)
     except Exception:
@@ -1097,7 +1127,7 @@ def _routing_provenance_db(session: dict):
         return contextlib.nullcontext(None)
 
 
-def _reopen_routed_session_row(db, sid: str, session: dict) -> None:
+def _reopen_routed_session_row(persistence, sid: str, session: dict) -> None:
     """Routing provenance for #106459, called under ``_sessions_lock`` while this backend still has the
     session registered and is about to start a turn for it: an explicit-close stamp on its row missed a
     live conversation, so it is cleared (the gateway's #54878 stale-route self-heal, which this backend
@@ -1105,10 +1135,10 @@ def _reopen_routed_session_row(db, sid: str, session: dict) -> None:
     ``_finalize_session`` stamps, so a close of THIS session is either not written yet or already stops
     the turn -- it is never cleared here. Best-effort: a failure never blocks the turn."""
     session_id = getattr(session.get("agent"), "session_id", None)  # the compression tip this turn writes
-    if db is None or not session_id:
+    if persistence is None or not session_id:
         return
     try:
-        db.reopen_if_explicitly_closed(
+        persistence.sessions.reopen_if_explicitly_closed(
             session_id, provenance=f"TUI session {sid} is still registered and accepting a turn",
             patience_s=_ROUTING_REOPEN_PATIENCE_S)
     except Exception:
@@ -1255,14 +1285,14 @@ def _run_prompt_submit(
             _run_post_turn_followups(rid, sid, session, *followup)
     # The handle is resolved BEFORE _sessions_lock: a profile session opens its own SessionDB through the
     # state registry, and _sessions_lock gates every create/close/prompt on this backend.
-    with _routing_provenance_db(session) as routing_db, _sessions_lock:
+    with _routing_provenance_db(session) as routing_db, _persistence_for(routing_db) as routing, _sessions_lock:
         registered = _sessions.get(sid)
         can_start = not session.get("_closing") and (registered is None or registered is session)
         if can_start:
             # Only a registered session is proof the conversation is routed here; an unregistered one may
             # still run its turn, but its stamp stays (#106459).
             if registered is session:
-                _reopen_routed_session_row(routing_db, sid, session)
+                _reopen_routed_session_row(routing, sid, session)
             can_start = _start_session_work(run, name=f"prompt-turn-{sid}", session=session) is not None
     if not can_start:
         with session["history_lock"]:

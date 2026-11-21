@@ -58,7 +58,6 @@ Hermes 使用两类模型槽位：
 | **Compression（压缩）** | 当你在用 Opus/M2.7 的推理 token 来摘要上下文时。快速聊天模型以 1/50 的成本即可完成此工作。 |
 | **Approval（审批）** | 用于 `approval_mode: smart` — 由快速/廉价模型（haiku、flash、gpt-5-mini）决定是否自动批准低风险命令。此处使用昂贵模型是浪费。 |
 | **Review（审查）** | `/review` 审查子 agent。`auto` 使用主模型；可固定一个单独的（通常更强的）模型用于审查。参见[子智能体委派](./features/delegation.md)。 |
-| **Skills Hub（技能中心）** | `hermes skills search` 使用此槽位。通常保持 `auto` 即可。 |
 | **MCP** | MCP 工具路由。通常保持 `auto` 即可。 |
 | **Voice Chat（语音对话）** | 语音对话回复。通常选用比主模型更快的模型；语音轮次默认关闭推理，GPT-Live 语音对话不使用此槽位。参见[语音模式](./features/voice-mode.md)。 |
 

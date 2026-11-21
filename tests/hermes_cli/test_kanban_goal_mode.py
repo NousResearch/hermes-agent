@@ -242,16 +242,11 @@ class TestCLIJudgeGate:
         monkeypatch.setattr("hermes_cli.kanban.kbc.connect_closing", fake_connect_closing)
         monkeypatch.setattr("hermes_cli.kanban._worker_run_id_for", lambda _: None)
 
-        _aux_client = (object(), "judge-model") if judge_available else (None, None)
-        monkeypatch.setattr(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            lambda name: _aux_client,
-        )
         # Match the real judge_goal contract:
         # (verdict, reason, parse_failed, wait_directive, transport_failed)
         monkeypatch.setattr(
             "hermes_cli.goals.judge_goal",
-            lambda **kw: (verdict, reason, False, None, False),
+            lambda **kw: (verdict, reason, False, None, not judge_available),
         )
 
         args = argparse.Namespace(task_ids=["t1"], summary=summary, result=None, metadata=None)

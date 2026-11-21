@@ -829,8 +829,8 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     """Goal judge for every terminal worker handoff (including review).
 
     Returns ``(verdict, reason_or_None)``: ``"done"`` allows; ``"blocked"`` = judge ruled the goal
-    unachievable; ``"continue"``/``"wait"`` reject with the judge's reason. Judge failures allow
-    the handoff (logged).
+    unachievable; ``"continue"``/``"wait"`` reject with the judge's reason. A judge transport
+    failure does not reject an explicit handoff (#83610); board validation still applies.
 
     See #100954.
     ``{"done", None}`` means the judge allows the handoff; anything else is a rejection whose verdict
@@ -839,15 +839,12 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     """
     if task is None or not task.goal_mode:
         return ("done", None)
-    try:
-        from agent.auxiliary_client import get_text_auxiliary_client
-
-        client, model = get_text_auxiliary_client("goal_judge")
-    except Exception:
-        client, model = None, None
-    if client is None or not model:
+    worker = os.environ.get("HERMES_KANBAN_TASK") == task.id
+    evidence = evidence.strip()
+    if not evidence and not worker:
+        # Manual approvals need not repeat the evidence already on the card.
+        # The native transition still enforces the card's state and evidence rules.
         return ("done", None)
-
     from hermes_cli.goals import judge_goal
 
     verdict, reason, transport_failed = "done", "", False
@@ -859,18 +856,17 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
         try:
             verdict, reason, _, _, transport_failed = judge_goal(
                 goal=f"{task.title}\n\n{task.body or ''}".strip(),
-                last_response=evidence.strip())
+                last_response=evidence)
         finally:
             if affinity_token is not None:
                 reset_affinity_scope(affinity_token)
     except Exception as judge_exc:
         import logging as _logging
 
-        _logging.getLogger(__name__).warning("goal judge check failed, allowing lifecycle handoff: %s",
-                                             judge_exc, exc_info=True)
+        _logging.getLogger(__name__).warning(
+            "goal judge check failed, allowing lifecycle handoff: %s", judge_exc, exc_info=True)
+        return ("done", None)
     if transport_failed:
-        # ``judge_goal`` fails open to ``continue`` on transport errors (relay 400, auth, timeout);
-        # an unreachable judge is not a human "not done" and must not reject the handoff (#83610).
         import logging as _logging
 
         _logging.getLogger(__name__).warning("goal judge unreachable (%s), allowing lifecycle handoff", reason)
@@ -911,7 +907,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
         def op(tid):
             gate_err = _goal_gate_error(
-                conn, tid, (summary or args.result or "").strip(), "completion",
+                conn, tid, _stripped_or_none(summary) or _stripped_or_none(args.result) or "", "completion",
                 "Re-scope with kanban edit, or record the block with kanban block instead of completing.",
                 "Provide evidence matching the task's acceptance criteria.")
             if gate_err:
@@ -1001,9 +997,26 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 return f"{tid} → triage (unblock loop detected — {verdict}){suffix}"
             return f"Blocked {tid}{suffix}"
 
-        op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
-            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid)))
-        return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot block {tid}")
+        def block(tid):
+            run_id = _worker_run_id_for(tid)
+            task = kb.get_task(conn, tid) if os.environ.get("HERMES_KANBAN_TASK") else None
+            if task and task.goal_mode:
+                if run_id is None or kb.goal_run_status(conn, tid, run_id) != "running":
+                    print("Goal block requires this worker's current run ID.", file=sys.stderr)
+                    return False
+                from hermes_cli.goals import kanban_goal_block_reason
+                parents = kb.unsatisfied_parents(conn, tid) if kind == "dependency" else None
+                effective_reason, error = kanban_goal_block_reason(task, reason or "", kind, parents=parents or ())
+                if error:
+                    print(error, file=sys.stderr)
+                    return False
+                # Successful blocks already record the reason in the transaction's run/event.
+                return kb.block_task(conn, tid, reason=effective_reason, kind=kind, expected_run_id=run_id,
+                                     expected_open_parents=parents)
+            return _commented(conn, reason, author, "BLOCKED", lambda _: kb.block_task(
+                conn, tid, reason=reason, kind=kind, expected_run_id=run_id))(tid)
+
+        return _bulk_apply(ids, block, ok_msg, lambda tid: f"cannot block {tid}")
 
 
 def _cmd_schedule(args: argparse.Namespace) -> int:
@@ -1012,8 +1025,14 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
     ids = _bulk_ids(args)
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
-        op = _commented(conn, reason, author, "SCHEDULED", lambda tid: kb.schedule_task(
-            conn, tid, reason=reason, expected_run_id=_worker_run_id_for(tid)))
+        def op(tid):
+            run_id = _worker_run_id_for(tid)
+            task = kb.get_task(conn, tid) if os.environ.get("HERMES_KANBAN_TASK") else None
+            if task and task.goal_mode:
+                print("Goal-mode workers cannot schedule their own task.", file=sys.stderr)
+                return False
+            return _commented(conn, reason, author, "SCHEDULED", lambda _: kb.schedule_task(
+                conn, tid, reason=reason, expected_run_id=run_id))(tid)
         return _bulk_apply(ids, op, lambda tid: f"Scheduled {tid}{suffix}", lambda tid: f"cannot schedule {tid}")
 
 

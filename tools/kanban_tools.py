@@ -17,7 +17,7 @@ from typing import Any, Callable, Optional
 
 from agent.delegation_context import owned_kanban_task
 from agent.redact import redact_sensitive_text
-from hermes_cli.goals import judge_goal
+from hermes_cli.goals import KANBAN_EXTERNAL_BLOCK_KINDS, judge_goal, kanban_goal_block_reason
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
@@ -463,19 +463,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
 
 # --- Goal-mode judge gate ---
 
-_GOAL_MODE_BLOCK_ALLOWED_KINDS = frozenset({"dependency", "needs_input"})
 
-
-def _goal_judge_available() -> bool:
-    """``judge_goal`` fails open (no auxiliary model -> ``"continue"``), which is
-    indistinguishable from "not done yet" and would wedge every goal_mode
-    worker; so the gate is enforced only when a judge is actually reachable."""
-    try:
-        from agent.auxiliary_client import get_text_auxiliary_client
-        client, model = get_text_auxiliary_client("goal_judge")
-    except Exception:
-        return False
-    return client is not None and bool(model)
 
 
 # Per-tool guidance for a judge rejection: verdict -> message. ``{reason}``/``{tid}`` are filled in.
@@ -502,9 +490,11 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
     """Goal-mode pre-handoff judge gate: a worker must not complete / request
     review before acceptance criteria are met. ``blocked`` gets its own
     guidance; any other non-``done`` verdict gets the ``continue`` guidance.
-    A broken judge fails open (logged) so it cannot permanently wedge work."""
-    if not task or not task.goal_mode or not _goal_judge_available():
+    A judge transport failure does not reject an explicit handoff (#83610);
+    board validation still applies."""
+    if not task or not task.goal_mode:
         return
+    # The judge owns provider resolution, including the configured fallback chain.
     try:
         # Headless gate runs outside any agent turn: bind the per-task relay-affinity scope
         # (mirrors kanban_specify) so the relay does not reject the judge call (#113669).
@@ -521,8 +511,6 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
             "goal judge check failed, allowing lifecycle handoff: %s", judge_exc, exc_info=True)
         return
     if transport_failed:
-        # ``judge_goal`` fails open to ``continue`` on transport errors (relay 400, auth, timeout);
-        # an unreachable judge is not a human "not done" and must not reject the handoff (#83610).
         logger.warning("goal judge unreachable (%s), allowing lifecycle handoff", reason)
         return
     if verdict == "done":
@@ -759,11 +747,10 @@ def _handle_complete(args: dict, **kw) -> str:
     _require_dict_metadata(metadata)
     metadata = _stamp_worker_session_metadata(tid, metadata)
     with _board(args.get("board")) as (kb, conn):
-        # Goal-mode pre-completion judge gate (Issue #38367). Prevent workers from bypassing the auxiliary
-        # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
-        # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
+        # A whitespace-only summary must not hide a result from the Goal judge.
         task = kb.get_task(conn, tid)
-        _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
+        evidence = (summary or "").strip() or (result or "").strip()
+        _goal_gate("kanban_complete", task, tid, evidence)
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
@@ -836,24 +823,19 @@ def _handle_block(args: dict, **kw) -> str:
     with _board(args.get("board")) as (kb, conn):
         _check(kind is None or kind in kb.VALID_BLOCK_KINDS,
                f"kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)")
-        # The goal loop treats ANY blocked status as terminal, so kanban_block
-        # would be an escape hatch around the completion judge: goal_mode tasks
-        # may only block on genuine external blockers.
-        # Goal-mode block gate (Issue #38696, sibling of the kanban_complete judge gate in #38367).
-        # kanban_block is a second exit path out of the goal loop — run_kanban_goal_loop() treats ANY
-        # `blocked` status as terminal, identically to `done`, regardless of kind. Without this, a worker
-        # that learns kanban_complete is gated can just call kanban_block(reason="anything") to escape the
-        # loop instead. Restrict goal_mode tasks to the kinds that represent a genuine external blocker the
-        # worker cannot resolve itself; `capability` and `transient` (or an unset kind) route back through
-        # kanban_complete, which the judge now gates.
         task = kb.get_task(conn, tid)
-        _check(not (task and task.goal_mode and kind not in _GOAL_MODE_BLOCK_ALLOWED_KINDS),
-               f"goal_mode tasks can only block with kind in "
-               f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
-               f"finished or cannot proceed for another reason, call kanban_complete instead — "
-               f"the completion judge will evaluate it.")
-        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
-        _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
+        parents = None
+        if task and task.goal_mode:
+            _check(kind in KANBAN_EXTERNAL_BLOCK_KINDS,
+                   "goal_mode tasks can only block on a genuine dependency or missing human input")
+            if owned_kanban_task() == tid:
+                if kind == "dependency":
+                    parents = kb.unsatisfied_parents(conn, tid)
+                reason, error = kanban_goal_block_reason(task, reason, kind, parents=parents or (), judge=judge_goal)
+                _check(error is None, error)
+        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid),
+                           expected_open_parents=parents)
+        _check(ok, f"could not block {tid} (task, run or parent state changed)")
         landed_kind = kb.get_task(conn, tid).block_kind
         extra: dict = {"block_kind": landed_kind}
         if kind == "dependency" and landed_kind != kind:
@@ -880,7 +862,7 @@ def _handle_schedule(args: dict, **kw) -> str:
         task = kb.get_task(conn, tid)
         _check(not (task and task.goal_mode),
                "goal_mode tasks cannot be scheduled: use kanban_block with kind "
-               f"in {sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} for a genuine external "
+               f"in {sorted(KANBAN_EXTERNAL_BLOCK_KINDS)} for a genuine external "
                "blocker, or kanban_complete so the completion judge can evaluate it.")
         ok = kb.schedule_task(
             conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))

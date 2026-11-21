@@ -31,12 +31,14 @@ _DEFAULT_MAX_ATTEMPTS = 2
 
 
 def kanban_stop_nudge_enabled() -> bool:
-    """On when ``HERMES_KANBAN_TASK`` is set for the dispatcher-owned worker, unless
-    ``HERMES_KANBAN_STOP_NUDGE`` disables it. In-process delegate_task children and cron runs
-    inherit the env var but own no board task and carry no kanban toolset."""
+    """Nudge an owned, non-Goal worker unless explicitly disabled.
+
+    A Goal worker's text ends a turn, not the run. The outer Goal loop must
+    receive it before deciding whether to continue, ask for handoff, or block.
+    """
     if (os.environ.get("HERMES_KANBAN_STOP_NUDGE") or "").strip().lower() in {"0", "false", "no", "off"}:
         return False
-    return bool(owned_kanban_task())
+    return bool(owned_kanban_task()) and os.environ.get("HERMES_KANBAN_GOAL_MODE") != "1"
 
 
 def _tool_call_name(tc: Any) -> str:

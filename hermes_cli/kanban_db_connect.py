@@ -1236,6 +1236,19 @@ def _main_db_file(conn: sqlite3.Connection) -> Optional[str]:
     return None
 
 
+def worker_handoff_guard(expected_run_id: Optional[int]) -> tuple[str, tuple]:
+    """A Goal handoff may return from its judge before the expired lease is reaped."""
+    if expected_run_id is None:
+        return "", ()
+    now = int(time.time())
+    return (
+        " AND current_run_id = ? AND (NOT goal_mode OR (status = 'running' AND claim_expires >= ?"
+        " AND EXISTS (SELECT 1 FROM task_runs WHERE id = tasks.current_run_id"
+        " AND ended_at IS NULL AND claim_expires >= ?)))",
+        (int(expected_run_id), now, now),
+    )
+
+
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     """IMMEDIATE write transaction; a claim CAS inside is atomic — at most one

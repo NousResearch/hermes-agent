@@ -2679,7 +2679,9 @@ def complete_task(
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
             return False
-        if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
+        # The receipt and completion settle under one lease observation and write lock.
+        run_guard, run_params = _worker_handoff_guard(expected_run_id)
+        if acceptance is not None and not record_acceptance(conn, task_id, acceptance, run_guard, run_params):
             return False
         trow = conn.execute(
             "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
@@ -2704,11 +2706,7 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
                 """
-        params: tuple = (result, now, task_id)
-        if expected_run_id is not None:
-            sql += " AND current_run_id = ?"
-            params = (*params, int(expected_run_id))
-        if conn.execute(sql, params).rowcount != 1:
+        if conn.execute(sql + run_guard, (result, now, task_id, *run_params)).rowcount != 1:
             return False
         if isinstance(metadata, dict):
             _stage_completion_artifacts(conn, task_id, metadata, now)
@@ -3125,13 +3123,12 @@ def edit_task(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    expected_open_parents: Optional[list[tuple[str, str]]] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
-    re-kinded to ``needs_input`` (sticky) so ``recompute_ready`` cannot
-    promote it into a context-free respawn. ``transient`` still counts
-    toward the loop breaker so a forever-flaky task escalates. True on any
-    transition.
+    re-kinded to ``needs_input`` unless the caller requires an exact snapshot of
+    open parents (``expected_open_parents``). Returns True if the transition landed.
 
     An already-``blocked`` card that the failure breaker parked UNTYPED
     (``block_kind IS NULL``, no live run) is classified in place when *kind*
@@ -3171,12 +3168,9 @@ def block_task(
             })
             return True
         source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
-        requested_kind = kind
-        rekind_reason = None
-        # ``dependency`` only waits on incomplete parents. A worker filing that
-        # kind with none open would park in ``todo`` and ``recompute_ready``
-        # would promote+respawn it context-free on the next tick. Re-kind to
-        # ``needs_input`` so it is sticky until a human unblocks.
+        requested_kind, rekind_reason = kind, None
+        if expected_open_parents is not None and unsatisfied_parents(conn, task_id) != expected_open_parents:
+            return False
         if kind == "dependency" and _parents_satisfied(conn, task_id):
             kind = "needs_input"
             rekind_reason = "no_open_parent"
@@ -3197,11 +3191,8 @@ def block_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """
-        params = (*params, task_id)
-        if expected_run_id is not None:
-            sql += " AND current_run_id = ?"
-            params = (*params, int(expected_run_id))
-        if conn.execute(sql, params).rowcount != 1:
+        run_guard, run_params = _worker_handoff_guard(expected_run_id)
+        if conn.execute(sql + run_guard, (*params, task_id, *run_params)).rowcount != 1:
             return False
         run_id = _end_or_synthesize_run(
             conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
@@ -3338,10 +3329,10 @@ def request_review(
             if implementer is None and trow["assignee"] != reviewer:
                 implementer = trow["assignee"]
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
-            run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
+            run_guard, run_params = _worker_handoff_guard(expected_run_id)
             params: tuple[Any, ...] = (
                 *(() if reviewer is None else (reviewer,)), task_id,
-                *(() if expected_run_id is None else (int(expected_run_id),)),
+                *run_params,
             )
             cur = conn.execute(
                 """
@@ -3358,7 +3349,7 @@ def request_review(
             )
             if cur.rowcount != 1:
                 return _ret(
-                    False, "task is not in running/ready (or expected_run_id did not match the current run)",
+                    False, "task is not in running/ready or the worker no longer holds its current run",
                 )
             if isinstance(metadata, dict):
                 staged_copies = _stage_completion_artifacts(
@@ -4208,6 +4199,7 @@ from hermes_cli.kanban_db_boards import (
 from hermes_cli.kanban_db_connect import (
     _INITIALIZED_PATHS,
     init_db,
+    worker_handoff_guard as _worker_handoff_guard,
     write_txn,
 )
 from hermes_cli.kanban_db_workspace import (

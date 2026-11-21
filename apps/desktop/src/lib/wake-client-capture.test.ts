@@ -46,6 +46,14 @@ class FakeGain {
   disconnect = vi.fn()
 }
 
+class FakeConstantSource {
+  offset = { value: 1 }
+  connect = vi.fn()
+  disconnect = vi.fn()
+  start = vi.fn()
+  stop = vi.fn()
+}
+
 const instances: FakeAudioContext[] = []
 
 class FakeAudioContext {
@@ -53,6 +61,7 @@ class FakeAudioContext {
   state = 'running'
   destination = {}
   processors: FakeProcessor[] = []
+  constantSources: FakeConstantSource[] = []
   resume = vi.fn().mockResolvedValue(undefined)
   close = vi.fn().mockResolvedValue(undefined)
 
@@ -73,6 +82,13 @@ class FakeAudioContext {
 
   createGain(): FakeGain {
     return new FakeGain()
+  }
+
+  createConstantSource(): FakeConstantSource {
+    const source = new FakeConstantSource()
+    this.constantSources.push(source)
+
+    return source
   }
 }
 
@@ -132,6 +148,27 @@ describe('startClientWakeCapture (issue #119089)', () => {
     // 48 kHz -> 16 kHz: 4096 input samples become 1365, so one 80 ms frame ships.
     expect(Buffer.from(params.pcm, 'base64')).toHaveLength(1280 * 2)
     expect(handle.active).toBe(true)
+  })
+
+  it('keeps the graph output non-silent so a hidden window cannot slow the capture', async () => {
+    const handle = await start()
+    handles.push(handle)
+
+    const context = instances[instances.length - 1]
+    const [keepAwake] = context.constantSources
+
+    // Chromium slows an all-zero graph in a hidden window and the capture
+    // drops PCM; an inaudible offset into the destination prevents that.
+    expect(keepAwake).toBeDefined()
+    expect(keepAwake.offset.value).toBeGreaterThan(0)
+    expect(keepAwake.offset.value).toBeLessThanOrEqual(1e-5)
+    expect(keepAwake.connect).toHaveBeenCalledWith(context.destination)
+    expect(keepAwake.start).toHaveBeenCalled()
+
+    handle.stop()
+
+    expect(keepAwake.stop).toHaveBeenCalled()
+    expect(keepAwake.disconnect).toHaveBeenCalled()
   })
 
   it('reports sustained digital silence instead of staying deaf forever', async () => {

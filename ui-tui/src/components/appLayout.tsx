@@ -11,6 +11,7 @@ import { $inputSelection } from '../app/inputSelectionStore.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $petBox } from '../app/petFlashStore.js'
+import { $sessionSidebarVisible } from '../app/sessionSidebarStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
 import { $voicePartial } from '../app/voicePartialStore.js'
@@ -44,6 +45,7 @@ import { MessageLine } from './messageLine.js'
 import { PasteHint } from './pasteSections.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { RewindFocusScroller, useBacktrackHint, useRewindFocusIndex } from './rewindFocus.js'
+import { SessionSidebar } from './sessionSidebar.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { type InputCursorSnapshot, TextInput, type TextInputMouseApi } from './textInput.js'
 
@@ -367,6 +369,7 @@ const ComposerPane = memo(function ComposerPane({
   const voicePartial = useStore($voicePartial)
   const T = useT()
   const isBlocked = useStore($isBlocked)
+  const sidebarVisible = useStore($sessionSidebarVisible)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
 
   const promptText = composerPromptText(
@@ -529,6 +532,7 @@ const ComposerPane = memo(function ComposerPane({
                   color={ui.theme.color.text}
                   columns={inputColumns}
                   cursorSnapshotRef={cursorSnapshotRef}
+                  focus={!sidebarVisible}
                   mouseApiRef={inputMouseRef}
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
@@ -643,8 +647,11 @@ export const AppLayout = memo(function AppLayout({
   status,
   transcript
 }: AppLayoutProps) {
+  const { gw } = useGateway()
   const overlay = useStore($overlayState)
+  const sidebarVisible = useStore($sessionSidebarVisible)
   const ui = useStore($uiState)
+  const sidebarWidth = Math.min(28, Math.max(12, composer.cols - 28))
 
   const cursorSnapshotRef = useRef<InputCursorSnapshot | null>(null)
   useEffect(() => {
@@ -662,6 +669,19 @@ export const AppLayout = memo(function AppLayout({
       <Box flexDirection="column" flexGrow={1} position={NATIVE_MODE ? undefined : 'relative'}>
         <Box flexDirection="row" flexGrow={1}>
           {!overlay.agents && !overlay.journey && <AmbientRail side="left" />}
+          {sidebarVisible ? (
+            <SessionSidebar
+              currentSessionId={ui.sid}
+              gw={gw}
+              onClose={actions.closeLiveSession}
+              onHide={() => $sessionSidebarVisible.set(false)}
+              onNew={actions.newLiveSession}
+              onResume={actions.resumeById}
+              onSelect={actions.activateLiveSession}
+              t={ui.theme}
+              width={sidebarWidth}
+            />
+          ) : null}
           {overlay.agents ? (
             <PerfPane id="agents">
               <AgentsOverlayPane />
@@ -674,7 +694,7 @@ export const AppLayout = memo(function AppLayout({
             <PerfPane id="transcript">
               <TranscriptPane
                 actions={actions}
-                composer={composer}
+                composer={sidebarVisible ? { ...composer, cols: Math.max(1, composer.cols - sidebarWidth) } : composer}
                 nativeMode={NATIVE_MODE}
                 progress={progress}
                 transcript={transcript}

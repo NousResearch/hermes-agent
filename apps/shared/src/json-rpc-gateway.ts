@@ -242,7 +242,20 @@ export class JsonRpcGatewayClient {
 
     this.setState('connecting')
 
-    const socket = this.options.socketFactory?.(wsUrl) ?? new WebSocket(wsUrl)
+    // A socketFactory may refuse the URL synchronously — a local dial with no fresh ticket throws
+    // rather than hand back a credential-free socket. Letting that throw escape here would strand
+    // the client in 'connecting' with no socket and no timer, and the guard above would turn every
+    // later connect() into a silent no-op (Desktop pinned on "Backend connecting", no TCP at all).
+    // A refused dial is a failed connect, so it settles like every other failure class.
+    let socket: WebSocketLike
+
+    try {
+      socket = this.options.socketFactory?.(wsUrl) ?? new WebSocket(wsUrl)
+    } catch (error) {
+      this.setState('error')
+      throw this.connectFailure(error instanceof Error ? error.message : String(error))
+    }
+
     const transport = socketTransport(socket)
     this.socket = socket
     this.channel.stopHeartbeat()

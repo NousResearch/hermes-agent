@@ -67,3 +67,58 @@ describe('JsonRpcGatewayClient.connect failure classes', () => {
     expect(error.message).not.toBe(connectErrorMessage)
   })
 })
+
+// A local Electron dial resolves its ticket through main and deliberately falls back to the bare
+// `?native_dial=unminted` descriptor when that mint fails, so the reconnect loop owns the retry
+// (apps/desktop/src/lib/gateway-ws-url.test.ts, "local Electron native dial"). `openGatewaySocket`
+// refuses exactly that URL synchronously. When the throw escaped connect(), the client was left in
+// 'connecting' with no socket and no timer, and the `state === 'connecting'` guard turned every
+// later connect() into a silent no-op — the Desktop then sat on "Backend connecting" forever,
+// burning a core, opening no TCP. A factory throw is a failed dial, not a wedged client.
+describe('JsonRpcGatewayClient.connect factory throw', () => {
+  const ticketError = () => new Error('Native gateway requires a fresh private ticket')
+
+  const wedged = (connectTimeoutMs = 1000) => {
+    const calls: string[] = []
+
+    const client = new JsonRpcGatewayClient({
+      socketFactory: () => {
+        calls.push('dial')
+        throw ticketError()
+      },
+      heartbeatIntervalMs: 0,
+      heartbeatDeadlineMs: 0,
+      connectTimeoutMs,
+      connectErrorMessage
+    })
+
+    return { calls, client }
+  }
+
+  it('rejects the connect instead of leaving the client wedged in connecting', async () => {
+    const { client } = wedged()
+
+    const pending = client.connect('ws://gateway.test/api/ws?native_dial=unminted')
+
+    await expect(pending).rejects.toThrow(ticketError().message)
+    expect(client.connectionState).toBe('error')
+  })
+
+  it('lets the next connect() dial again — the retry the fallback contract promises', async () => {
+    const { calls, client } = wedged()
+
+    await expect(client.connect('ws://gateway.test/api/ws?native_dial=unminted')).rejects.toThrow()
+
+    // Still throwing is fine; being refused before the factory ran is the wedge.
+    await expect(client.connect('ws://gateway.test/api/ws?native_dial=unminted')).rejects.toThrow()
+    expect(calls).toEqual(['dial', 'dial'])
+  })
+
+  it('names the factory failure in the overlay headline the same way every other class does', async () => {
+    const { client } = wedged()
+
+    await expect(client.connect('ws://gateway.test/api/ws?native_dial=unminted')).rejects.toThrow(
+      new RegExp(`^${connectErrorMessage}`)
+    )
+  })
+})

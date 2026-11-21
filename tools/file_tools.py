@@ -41,7 +41,8 @@ from tools.file_tools_read_tracking import (
     _file_metadata, _file_version, _on_host,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _note_read_served, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
-    _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
+    _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp,
+    programmatic_read_active)
 
 logger = logging.getLogger(__name__)
 
@@ -1138,7 +1139,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 m.content = redact_sensitive_text(
                     m.content, file_read=True,
                     secret_file=_is_secret_file_arg(_resolved_match_path(m.path, task_id)))
-        result_dict = result.to_dict(densify=True)
+        # The path-grouped rendering trades fields for tokens, so only the MODEL gets it:
+        # code callers read ``matches`` and the wrapper's docstring promises exactly that.
+        result_dict = result.to_dict(densify=not programmatic_read_active())
 
         if omitted:
             result_dict["_omitted"] = (

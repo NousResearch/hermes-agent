@@ -55,6 +55,13 @@ export function catalogTags(entries: CatalogEntry[], selected: string[], limit: 
   return ranked.filter(([value]) => shown.has(value)).map(([value, count]) => ({ value, label: value, count }))
 }
 
+/** Query words, split where catalog ids separate them, so 'make plain' and 'make-plain' both become
+ *  ['make', 'plain'] and match 'hermes-make-plain'. */
+const queryTerms = (query: string) => query.toLowerCase().split(/[\s\-_/.,:;]+/).filter(Boolean)
+
+/** Every word must appear somewhere in the entry's search blob, in any order. */
+const matchesQuery = (search: string, terms: string[]) => terms.every(term => search.includes(term))
+
 /** Facets combine as AND across groups and OR within one. */
 export function filterCatalog(
   entries: CatalogEntry[],
@@ -64,6 +71,7 @@ export function filterCatalog(
   kind: CatalogKind
 ) {
   const { sources, categories, tags, installedOnly, updatesOnly } = facets
+  const terms = query ? queryTerms(query) : []
 
   return entries.filter(
     entry =>
@@ -72,7 +80,7 @@ export function filterCatalog(
       (!tags.length || tags.some(tag => entry.tags.includes(tag))) &&
       (!installedOnly || isInstalled(entry)) &&
       (!updatesOnly || Boolean(entry.updateAvailable)) &&
-      (!query || entry.search.includes(query))
+      (!terms.length || matchesQuery(entry.search, terms))
   )
 }
 

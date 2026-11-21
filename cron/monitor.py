@@ -6,8 +6,14 @@ normalization — scripts must emit stable output) against the hash from the las
 tick: unchanged → agent run suppressed (silent ``no_change`` run); changed/first run → a "MONITOR
 CHANGE DETECTED" block (capped unified diff + new output) is injected into the prompt; source
 failure → an ERROR, never a change, and the stored hash is left untouched. State:
-``job["monitor_state"]`` in jobs.json (hash + last_changed_at) and
-``OUTPUT_DIR/<job_id>/monitor_last_output.txt`` (for the diff).
+``job["monitor_state"]`` in jobs.json (hash + last_changed_at, plus ``source_failed_at`` while a
+failure window is open) and ``OUTPUT_DIR/<job_id>/monitor_last_output.txt`` (for the diff).
+
+Failure-window contract: while ``source_failed_at`` is set, change detection is DOWN
+— a hash pinned before the window cannot prove "unchanged". The first tick after the source works
+again therefore NEVER suppresses: identical output surfaces a visible "MONITOR SOURCE RECOVERED"
+re-baseline tick; different output takes the normal change path. Either success clears the flag
+and re-arms detection from the current baseline.
 """
 
 from __future__ import annotations
@@ -152,24 +158,69 @@ def job_has_monitor(job: dict) -> bool:
     return bool(_field(job, "monitor_script") or _field(job, "monitor_url"))
 
 
+def _persist_failure_flag(job_id: str, job: dict) -> None:
+    """Open the failure window in the store: ``monitor_state.source_failed_at``.
+
+    Written once per failure window (not per failing tick) and cleared by the next successful
+    ``_persist_monitor_state``. Purpose: a hash pinned BEFORE the window must never
+    silently suppress the tick that discovers the source healthy again — the recovery tick
+    reads this flag and re-baselines visibly instead.
+    """
+    raw_state = job.get("monitor_state")
+    if isinstance(raw_state, dict) and raw_state.get("source_failed_at"):
+        return  # window already open — one flag per failure, not one write per failing tick
+    from cron.jobs import _hermes_now, update_job
+
+    prior = {k: v for k, v in raw_state.items() if k != "source_failed_at"} \
+        if isinstance(raw_state, dict) else {}
+    try:
+        update_job(job_id, {"monitor_state": {
+            **prior, "source_failed_at": _hermes_now().isoformat()}})
+    except Exception:  # a store write failure must not kill the tick
+        logger.warning("Monitor: failed to persist the failure flag for %r", job_id, exc_info=True)
+
+
 def check_monitor(job: dict) -> MonitorOutcome:
     """Run the monitor source and decide whether the agent should run.
 
     On change (or first run) the new hash + snapshot are persisted BEFORE the agent runs — detection
     time is the state boundary, so a failed agent run doesn't re-alert on the same content forever.
-    On failure nothing is persisted.
+    On failure nothing about the hash is persisted; the failure window opens instead (see
+    ``_persist_failure_flag``).
     """
     job_id = str(job.get("id") or "")
     ok, output = _run_monitor_source(job)
     if not ok:
+        _persist_failure_flag(job_id, job)
         return MonitorOutcome(ok=False, error=output)
 
     new_hash = hash_monitor_output(output)
     raw_state = job.get("monitor_state")
     last_hash = raw_state.get("last_output_hash") if isinstance(raw_state, dict) else None
+    source_failed = bool(isinstance(raw_state, dict) and raw_state.get("source_failed_at"))
 
     if last_hash is not None and new_hash == last_hash:
-        return MonitorOutcome(ok=True, changed=False)
+        if not source_failed:
+            return MonitorOutcome(ok=True, changed=False)
+        # Recovery after a failure window, output identical to the pinned hash: the hash was
+        # pinned BEFORE the window, so "unchanged" is no longer trustworthy evidence of "no
+        # change" — the source was unrunnable in between and may have changed unseen.
+        # Surface a visible re-baseline tick instead of a silent suppression; the
+        # canonical persist below clears the flag and re-arms detection from this baseline.
+        shown_output = output
+        if len(shown_output) > MAX_OUTPUT_CHARS:
+            shown_output = shown_output[:MAX_OUTPUT_CHARS] + "\n... [output truncated]"
+        context_block = (
+            "## MONITOR SOURCE RECOVERED\n\n"
+            "The monitored source failed on one or more previous ticks, so change detection was "
+            "down and the stored baseline predates the failure window. This tick succeeded and "
+            "the output is identical to the pre-failure baseline — nothing changed while the "
+            "source was down (or a change was missed and has since reverted). Detection is "
+            "re-armed from this baseline.\n\n"
+            f"### Current output\n\n```\n{shown_output}\n```"
+        )
+        _persist_monitor_state(job_id, new_hash, output)
+        return MonitorOutcome(ok=True, changed=True, context_block=context_block)
 
     first_run = last_hash is None
     old_output = "" if first_run else _read_last_output(job_id)

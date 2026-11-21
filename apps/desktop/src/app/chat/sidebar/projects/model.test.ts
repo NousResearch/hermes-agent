@@ -1,6 +1,7 @@
+import { act, renderHook } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
-import { orderProjectsByIds, sortProjectsForOverview } from './model'
+import { orderProjectsByIds, sortProjectsForOverview, useRevealedRows } from './model'
 import { NO_PROJECT_ID, type SidebarProjectTree } from './workspace-groups'
 
 function makeProject(id: string, sessionCount: number): SidebarProjectTree {
@@ -74,5 +75,36 @@ describe('sortProjectsForOverview', () => {
     const projects = [makeProject('scanned', 0), active, home()]
 
     expect(ids(sortProjectsForOverview(projects, 'active'))).toEqual([NO_PROJECT_ID, 'active', 'scanned'])
+  })
+})
+
+describe('useRevealedRows', () => {
+  // The reveal page is disposable: closing the group resets it, so reopening
+  // starts back at the short first page instead of restoring a drilled-down
+  // list (the sidebar's "collapse, then reopen shows the brief few" behavior).
+  it('starts back at the first page after the group closes', () => {
+    const rows = Array.from({ length: 60 }, (_, index) => index)
+
+    const { result, rerender } = renderHook(({ open }) => useRevealedRows(rows, 5, open), {
+      initialProps: { open: true }
+    })
+
+    act(() => result.current.showMore())
+    expect(result.current.shown).toHaveLength(55)
+
+    // Collapse, then reopen: the drill-down is gone.
+    rerender({ open: false })
+    rerender({ open: true })
+    expect(result.current.shown).toHaveLength(5)
+    expect(result.current.more).toBe(50)
+  })
+
+  it('keeps revealing within a group that never closed', () => {
+    const rows = Array.from({ length: 60 }, (_, index) => index)
+    const { result } = renderHook(() => useRevealedRows(rows, 5))
+
+    act(() => result.current.showMore())
+    expect(result.current.shown).toHaveLength(55)
+    expect(result.current.more).toBe(5)
   })
 })

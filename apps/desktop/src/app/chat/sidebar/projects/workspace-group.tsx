@@ -90,8 +90,9 @@ export function SidebarWorkspaceGroup({
   // A lane ranks by whatever the sort key says before it trims itself, so the
   // rows it hides are the ones the sort ranked last.
   const sessions = rankSessions(group.sessions, rankIds)
-  // A lane opens on its first few rows and pages the rest in on demand.
-  const lane = useRevealedRows(sessions, SIDEBAR_GROUP_PAGE)
+  // A lane opens on its first few rows and pages the rest in on demand; the
+  // page resets while the lane is collapsed, so reopening shows the short head.
+  const lane = useRevealedRows(sessions, SIDEBAR_GROUP_PAGE, open)
 
   // A profile previews the same handful a project does, and clicking its label
   // is how you see the rest. Workspace groups page within what's loaded unless

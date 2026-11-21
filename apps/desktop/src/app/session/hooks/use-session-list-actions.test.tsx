@@ -2,7 +2,9 @@ import { act, render, renderHook } from '@testing-library/react'
 import { Suspense } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { HermesConnection } from '@/global'
 import type { SessionInfo, SidebarSessionsResponse } from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { $cronJobs, setCronJobs } from '@/store/cron'
 import {
   beginGatewaySwitch,
@@ -21,6 +23,7 @@ import {
   $sessions,
   $sessionsLoadError,
   $sessionsLoading,
+  setConnection,
   setCronSessions,
   setMessagingPlatformTotals,
   setMessagingSessions,
@@ -32,6 +35,12 @@ import {
   setSessionsLoadError,
   setSessionsLoading
 } from '@/store/session'
+import {
+  $workingSessionIds,
+  clearAllSessionStates,
+  publishSessionState,
+  recordSessionEventScope
+} from '@/store/session-states'
 
 import { deferred } from '../../../test/deferred'
 
@@ -1153,5 +1162,79 @@ describe('messaging profile scope', () => {
 
     expect(listAllProfileSessions).toHaveBeenCalledTimes(2)
     expect($messagingSessions.get().map(session => session.id)).toEqual(['tg'])
+  })
+})
+
+// A gateway PICK is a live activation, not a switch: the outgoing backend keeps
+// its socket, so its turns stay busy in the mirror while the window shows the
+// new backend. The sidebar refresh pages ONE backend, and carrying a row into
+// it only because that row is running elsewhere paints the other backend's
+// conversation into this sidebar as if it lived here.
+describe('live rows stay on the backend that runs them', () => {
+  const connection = (connectionId: string, mode: 'local' | 'remote') =>
+    ({ baseUrl: 'http://127.0.0.1:9', connectionId, mode, profile: 'default' }) as unknown as HermesConnection
+
+  afterEach(() => {
+    clearAllSessionStates()
+    setConnection(null)
+  })
+
+  it('drops a row still running on the backend the window left', async () => {
+    setConnection(connection('homelab', 'remote'))
+    setSessions([row('local-running')])
+    // Local primary events arrive untagged, so this turn is this device's.
+    publishSessionState('rt-local', { ...createClientSessionState('local-running'), busy: true })
+
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('remote-idle')] }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['remote-idle'])
+    // Only the row left this sidebar; the turn keeps running where it started.
+    expect($workingSessionIds.get()).toContain('local-running')
+  })
+
+  it("keeps this backend's running row the page has not returned yet", async () => {
+    setConnection(connection('local', 'local'))
+    setSessions([row('just-started')])
+    publishSessionState('rt-local', { ...createClientSessionState('just-started'), busy: true })
+
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('older')] }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect(
+      $sessions
+        .get()
+        .map(s => s.id)
+        .sort()
+    ).toEqual(['just-started', 'older'])
+  })
+
+  it("keeps a running row the active backend's own socket reported", async () => {
+    setConnection(connection('homelab', 'remote'))
+    setSessions([row('remote-running')])
+    recordSessionEventScope({ connectionId: 'homelab', profile: 'default', session_id: 'rt-remote' })
+    publishSessionState('rt-remote', { ...createClientSessionState('remote-running'), busy: true })
+
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('remote-old')] }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect(
+      $sessions
+        .get()
+        .map(s => s.id)
+        .sort()
+    ).toEqual(['remote-old', 'remote-running'])
   })
 })

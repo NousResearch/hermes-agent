@@ -166,7 +166,7 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
         header = title or t(f'approval.{_HEADER_KEYS.get(kind, "dangerous")}_header',
                             description=display_description)
         # A schedule card's command is a synthetic ``<cronjob_manage> ...`` string; its header carries the job.
-        body = "" if kind == "schedule" else f"\n      {display_command}"
+        body = "" if kind in ("schedule", "schedule_edit") else f"\n      {display_command}"
         print(f"\n  {header}{body}\n\n{t(menu_key)}\n")
         sys.stdout.flush()
         choice = _read_choice(t(prompt_key), timeout_seconds)

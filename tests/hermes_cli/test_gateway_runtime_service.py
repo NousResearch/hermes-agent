@@ -355,6 +355,58 @@ def test_task_discovery_skips_listing_lines_that_are_not_task_rows(tmp_path, mon
         assert found is None and len(queries) == 1
 
 
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("gui_code,user_code", [(125, 113), (125, 125), (113, 113), (5, 113)])
+@pytest.mark.parametrize("installed", [False, True])
+def test_launchd_domain_absence_preserves_installed_service(tmp_path, monkeypatch, gui_code, user_code, installed):
+    """Exercise launchctl response classification directly, without pretending to be macOS."""
+    import plistlib
+    import pwd
+    from types import SimpleNamespace
+    from hermes_cli import gateway_runtime_service as service
+
+    home = tmp_path / "profile"
+    home.mkdir(mode=0o700)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(tmp_path), pw_name="owner"))
+    label = "ai.hermes.gateway-" + service.service_suffix(home)
+    plist = tmp_path / "Library/LaunchAgents" / (label + ".plist")
+    original = None
+    if installed:
+        plist.parent.mkdir(parents=True)
+        original = plistlib.dumps(dict(Label=label,
+            ProgramArguments=[sys.executable, "-m", "hermes_cli.main", "gateway", "run"],
+            EnvironmentVariables=dict(HERMES_HOME=str(home), HERMES_SUPERVISED_CHILD="1")))
+        plist.write_bytes(original)
+
+    peer = tmp_path / "launchctl_peer.py"
+    peer.write_text("import sys\n" +
+                    f"sys.exit({gui_code} if sys.argv[-1].startswith('gui/') else {user_code})\n",
+                    encoding="utf-8")
+    actual = subprocess.run
+    calls = []
+
+    def boundary(argv, **kwargs):
+        assert argv[:2] == ["launchctl", "print"]
+        calls.append(argv)
+        return actual([sys.executable, str(peer), *argv[1:]], **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", boundary)
+    if gui_code == 5:
+        with pytest.raises(service.RuntimeStartError, match="service_manager_unavailable"):
+            service._launchd(home, time.monotonic() + 5)
+        assert len(calls) == 1
+    else:
+        found = service._launchd(home, time.monotonic() + 5)
+        if installed:
+            assert found == service.ExistingService("launchd", (
+                "launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)))
+        else:
+            assert found is None
+        assert [argv[2] for argv in calls] == [f"{domain}/{os.getuid()}/{label}" for domain in ("gui", "user")]
+    assert plist.read_bytes() == original if installed else not plist.exists()
+
+
 @pytest.mark.platforms("macos")
 @pytest.mark.parametrize("case,reason", [("loaded_good_disk_wrong", None), ("loaded_wrong_disk_good", "profile_mismatch"), ("bootstrap", None)])
 def test_native_launchd_checks_loaded_job_before_disk(case, reason, tmp_path, monkeypatch):

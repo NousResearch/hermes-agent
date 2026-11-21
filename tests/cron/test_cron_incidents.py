@@ -330,6 +330,79 @@ def test_ack_holds_when_only_a_measured_duration_differs(monkeypatch, tmp_path, 
         assert [row["id"] for row in inc.list_incidents()] == [first["id"]]
 
 
+def test_ack_holds_when_only_a_log_timestamp_differs(monkeypatch, tmp_path, cron_owner):
+    """A script that logs with a timestamp reports the same failure with a different clock value
+    on every run. One weekly backup job failing identically produced four incidents and four
+    pings, and acking one bought a single quiet run; the ack must hold across the timestamps."""
+    inc = _point_db(monkeypatch, tmp_path)
+    deliveries = []
+    job = _job()
+    runs = [
+        "script exited with code 1 stdout: [2026-09-07 02:00:03] === hermes weekly backup start "
+        "(monday 2026-09-07 02:00:03) === [2026-09-07 02:00:03] error: external drive not mounted",
+        "script exited with code 1 stdout: [2026-09-14 02:00:34] === hermes weekly backup start "
+        "(monday 2026-09-14 02:00:34) === [2026-09-14 02:00:34] error: external drive not mounted",
+        "script exited with code 1 stdout: [2026-09-21 02:00:11] === hermes weekly backup start "
+        "(monday 2026-09-21 02:00:11) === [2026-09-21 02:00:11] error: external drive not mounted",
+    ]
+    with cron_jobs.use_cron_store(tmp_path):
+        cron_jobs.save_jobs([job])
+        _tick_failing(job, tmp_path, deliveries, error=runs[0])
+        assert len(deliveries) == 1
+        (first,) = inc.list_incidents()
+        assert inc.ack_incident(first["id"]) is True
+
+        for line in runs[1:]:
+            _tick_failing(job, tmp_path, deliveries, error=line)
+
+        assert len(deliveries) == 1, "acked failure must not re-ping when only the timestamp moved"
+        assert [row["id"] for row in inc.list_incidents()] == [first["id"]]
+
+
+def test_timestamp_mask_covers_iso_forms_without_merging_distinct_failures(monkeypatch, tmp_path):
+    """Both separator forms (space and ``T``, with or without fractional seconds) sign the same
+    failure, while a bare date — which names WHICH thing failed — stays part of the signature."""
+    inc = _point_db(monkeypatch, tmp_path)
+
+    space_id, _ = inc.upsert_incident("job-1", "failed at 2026-09-07 02:00:03: disk full")
+    iso_id, _ = inc.upsert_incident("job-1", "failed at 2026-09-14T02:00:34.512Z: disk full")
+    assert space_id == iso_id, "a clock value must not mint a new incident"
+
+    cert_early, _ = inc.upsert_incident("job-1", "certificate expired on 2026-09-06")
+    cert_late, _ = inc.upsert_incident("job-1", "certificate expired on 2026-10-06")
+    assert cert_early != cert_late, "a bare date identifies the failure and must stay signed"
+
+    mount_id, _ = inc.upsert_incident(
+        "job-1", "[2026-09-07 02:00:03] error: external drive not mounted at /media/backup",
+    )
+    sum_id, _ = inc.upsert_incident(
+        "job-1", "[2026-09-07 02:00:03] error: checksum mismatch on /media/backup/2026-09-01.tar",
+    )
+    assert mount_id != sum_id, "different failures on the same clock value stay distinct"
+
+
+def test_python_logging_comma_milliseconds_do_not_split_an_incident(monkeypatch, tmp_path):
+    """The stdlib `logging` default ``%(asctime)s`` writes COMMA milliseconds, and those digits
+    change on every run while the failure does not, so that form must be masked too."""
+    inc = _point_db(monkeypatch, tmp_path)
+
+    first, _ = inc.upsert_incident(
+        "job-1", "[2026-09-07 02:00:03,005] ERROR backup: external drive not mounted",
+    )
+    second, _ = inc.upsert_incident(
+        "job-1", "[2026-09-14 02:00:34,987] ERROR backup: external drive not mounted",
+    )
+    assert first == second, "comma milliseconds must be masked like dot fractions"
+
+    iso_comma, _ = inc.upsert_incident("job-1", "failed at 2026-09-07T02:00:03,005Z: disk full")
+    iso_dot, _ = inc.upsert_incident("job-1", "failed at 2026-09-14T02:00:34.512Z: disk full")
+    assert iso_comma == iso_dot
+
+    miss, _ = inc.upsert_incident("job-1", "backup window 2026-09-07 02:00:03, retry later")
+    other, _ = inc.upsert_incident("job-1", "backup window 2026-09-14 09:11:22, retry later")
+    assert miss == other, "a comma with no fraction digits must not defeat the mask"
+
+
 def test_mark_incident_alerted_sets_state_never_resurrects(monkeypatch, tmp_path):
     """The post-delivery 'alerted' transition records that a ping went out,
     and is a no-op on a closed (acked) incident — it can never resurrect one."""

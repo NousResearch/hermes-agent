@@ -46,6 +46,15 @@ _MAX_SIGNATURE_ERROR_CHARS = 200
 _DURATION_RE = re.compile(
     r"\b\d+(?:\.\d+)?\s*(?:ms|s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?)\b"
 )
+# A log line's clock value is the other thing that reliably differs between runs of one failure
+# ("[2026-09-07 02:00:03] error: ..."), so a full date+time is masked the same way. Both fractional
+# separators count: Python's default `logging` formatter writes comma milliseconds
+# ("2026-09-07 02:00:03,005"), while ISO-8601 writes a dot. A BARE date is deliberately kept: it can
+# name which backup set, certificate or billing period failed.
+_TIMESTAMP_RE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?(?![0-9A-Za-z])",
+    re.IGNORECASE,
+)
 
 _lock = threading.RLock()
 
@@ -130,7 +139,10 @@ def _redact_error(error: str) -> str:
 
 def _error_signature(job_id: str, error: str) -> str:
     """Dedup key: stable for same job + same normalized error prefix."""
-    normalized = _DURATION_RE.sub("#s", _normalize_error(error))[:_MAX_SIGNATURE_ERROR_CHARS]
+    normalized = _normalize_error(error)
+    normalized = _TIMESTAMP_RE.sub("#t", normalized)
+    normalized = _DURATION_RE.sub("#s", normalized)
+    normalized = normalized[:_MAX_SIGNATURE_ERROR_CHARS]
     return hashlib.sha256(job_id.encode() + normalized.encode()).hexdigest()[:12]
 
 

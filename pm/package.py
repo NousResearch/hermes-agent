@@ -31,6 +31,11 @@ def compose_env(diffs: list[dict], base: Optional[dict] = None) -> dict[str, str
     Diff values are paths under a store root, which PM spells extended-length
     on Windows; a child environment gets their ordinary spelling."""
     env = dict(os.environ if base is None else base)
+    # Fork-mode supervisors (pm2) leak their node IPC channel vars into whatever
+    # they manage; a spawned node child adopts the named fd — already closed by
+    # close_fds — and libuv aborts on exit. PM children are never channel peers (#139556).
+    env.pop("NODE_CHANNEL_FD", None)
+    env.pop("NODE_CHANNEL_SERIALIZATION_MODE", None)
     path_dirs: list[str] = []
     for diff in reversed(diffs):
         for key, value in diff.items():

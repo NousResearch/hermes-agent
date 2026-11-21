@@ -60,7 +60,8 @@ def session_viewers() -> list[dict]:
     user's last input there (``None`` when none was ever seen for this session), ``"basis"`` (``"system"``:
     the device's idle clock, ``"page"``: input inside the Hermes window, ``"input"``: only what this
     gateway saw, ``None`` with no input) and ``"can_alert"`` (whether that client can get the user's
-    attention itself; ``None`` until it says). The calling session is the one this context bound: a
+    attention itself; ``None`` while no report of that client counts for this session, and a report
+    that leaves it out says ``True``). The calling session is the one this context bound: a
     turn's, or the one a plugin's own slash command was typed in (no turn runs there, so
     ``turn_client()`` is ``None``). ``[]`` when none is bound (a context that bound only a route, such
     as a session open or a built-in slash command), in a delegated child, in a managed worker or under

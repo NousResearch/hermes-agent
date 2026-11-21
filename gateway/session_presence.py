@@ -3,12 +3,15 @@
 A notification plugin asks, at the end of a turn, whether someone is at a client that shows the
 session, so a phone can stay quiet. Each connection keeps, per session, the newest "last input"
 time of two sources: input the owner itself sees on that connection (``INPUT_METHODS`` via
-``touch`` from ``AuthorityConnection.dispatch``, and a person's accepted answer to a server request
-via ``seen``) and the client's own ``client.activity`` reports (``report``), which say how long ago
-the user last touched the device or the Hermes window. Idle time is simply ``now - last input``:
-nothing expires, it grows until new input. A report is the connection's whole statement: every
-record of a session it does not list is dropped, owner-seen input included (``sessions: []`` drops
-them all). ``away`` (screen locked, machine suspending) clears the connection's records at once.
+``touch`` from ``AuthorityConnection.dispatch``, and a result frame answering a server request a
+reconnecting viewer is handed again, a skip or cancel included, via ``seen``) and the client's own
+``client.activity`` reports (``report``), which say how long ago the user last touched the device or
+the Hermes window. Idle time is simply ``now - last input``: no timer ages a record out, so it grows
+until new input. A report is the connection's whole statement: it replaces the last report of each
+session it lists, and every record of a session it does not list is dropped, owner-seen input
+included (``sessions: []`` drops them all). ``away`` (screen locked, machine suspending) clears the
+connection's records at once, and each source keeps at most ``MAX_SESSIONS`` records, dropping the
+least recently touched.
 
 One socket can serve several profiles, and session ids are unique only per profile. Owner-seen
 input is kept for the profile whose authority saw it. A report names sessions by id alone, so it is
@@ -120,8 +123,9 @@ def touch(connection, method, params):
 
 def seen(connection, session_id):
     """Owner-seen input for *session_id* on *connection*, kept for the profile of the authority it
-    was dispatched on. Reads attributes with defaults only: observing input can never fail (or
-    change the answer of) the request it runs in, whatever connection it is handed."""
+    was dispatched on. Reads attributes with defaults only, whatever connection it is handed; both
+    callers log a failure and carry on, so observing input never fails (or changes the answer of)
+    the request it runs in."""
     presence = getattr(getattr(connection, 'transport', None), 'client_presence', None)
     if presence is not None:
         profile_id = getattr(getattr(connection, 'authority', None), 'profile_id', None)
@@ -200,8 +204,9 @@ def detached(authority, transport, session_id):
 def viewers(authority, session_id) -> list[dict]:
     """One entry per connection attached to the live *session_id* on *authority* right now:
     ``{name, kind, idle_seconds, basis, can_alert}`` (``name``/``kind`` None without a hello,
-    ``idle_seconds``/``basis`` None when nothing was seen for this session, ``can_alert`` None until
-    reported). ``[]`` for a session that is not live here."""
+    ``idle_seconds``/``basis`` None when nothing was seen for this session, ``can_alert`` None while no
+    report of this connection counts for it; a report that leaves ``can_alert`` out says True).
+    ``[]`` for a session that is not live here."""
     live = authority.sessions.get(session_id)
     if live is None:
         return []

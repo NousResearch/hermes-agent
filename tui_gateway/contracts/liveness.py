@@ -43,8 +43,9 @@ class ClientCapabilitiesParams(Params):
     desktop_local: bool = False
     #: Which client this connection is (``{name, version?, kind?}``), kept for the connection's life. A
     #: self-declared label for attribution only: it grants nothing. Sent as its own call, so a backend
-    #: older than the field refuses only that call; a malformed one answers ``4001`` and keeps the
-    #: identity the connection already had.
+    #: older than the field refuses only that call. A malformed one keeps the identity the connection
+    #: already had: an unknown key in it answers ``4000`` (the generic unknown-key check), any other
+    #: problem ``4001``.
     client: CanonicalClientIdentity | None = None
 
 

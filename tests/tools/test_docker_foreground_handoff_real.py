@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import shlex
 import subprocess
 import threading
 import uuid
@@ -30,14 +31,15 @@ class _Agent(InterruptControlMixin):
     _interrupt_requested = False
 
 
-@pytest.mark.parametrize("signal_kind", ["yield", "interrupt", "attachment", "kill"])
+@pytest.mark.parametrize("signal_kind", ["yield", "interrupt", "attachment", "kill", "graceful-kill", "stale-kill"])
 def test_foreground_handoff_keeps_one_process_and_real_completion(docker_task, signal_kind):
     ready, release, writes = (f"/tmp/{uuid.uuid4().hex}" for _ in range(3))
     result = {}
 
     def worker():
+        trap = f"trap 'printf cleaned > {ready}.cleaned; exit 130' TERM; " if signal_kind == "graceful-kill" else ""
         try:
-            result.update(_run(f"printf 'started\\n'; printf '1\\n' >> {writes}; touch {ready}; "
+            result.update(_run(trap + f"printf 'started\\n'; printf '1\\n' >> {writes}; touch {ready}; "
                                f"while ! test -e {release}; do sleep 0.05; done; printf 'done\\n'; exit 7",
                                docker_task, timeout=60))
         finally:
@@ -54,7 +56,7 @@ def test_foreground_handoff_keeps_one_process_and_real_completion(docker_task, s
 
     try:
         wait_until(lambda: control("test", "-e", ready).returncode == 0, what="running sandbox command")
-        if signal_kind in {"yield", "kill"}:
+        if signal_kind in {"yield", "kill", "graceful-kill", "stale-kill"}:
             interrupt.request_yield(thread.ident)
         elif signal_kind == "interrupt":
             interrupt.set_interrupt(True, thread_id=thread.ident)
@@ -79,8 +81,19 @@ def test_foreground_handoff_keeps_one_process_and_real_completion(docker_task, s
         assert session.pid_scope == "sandbox"
         assert control("kill", "-0", str(result["pid"])).returncode == 0
         assert process_registry.poll(sid)["status"] == "running"
-        if signal_kind == "kill":
-            sentinel = control("bash", "-c", "sleep 1000 >/dev/null 2>&1 & echo $!").stdout.strip()
+        if signal_kind.endswith("kill"):
+            sentinel = control("bash", "-c", "set -m; sleep 1000 >/dev/null 2>&1 & echo $!").stdout.strip()
+            if signal_kind == "stale-kill":
+                record = session.env_ref._foreground_commands[id(session.process)]
+                published = control("cat", record.directory + "/pid").stdout
+                control("bash", "-c", f"printf '%s' {sentinel} > {record.directory}/pid")
+                try:
+                    record.kill()
+                    alive = control("bash", "-c", f'read -r s < /proc/{sentinel}/stat || exit 1; '
+                                    's=${s##*) }; set -- $s; test "$1" != Z')
+                    assert alive.returncode == 0, "a stale ownership record must not kill another process"
+                finally:
+                    control("bash", "-c", f"printf '%s' {shlex.quote(published)} > {record.directory}/pid")
             assert process_registry.kill_process(sid)["status"] == "killed"
             group = result["pid"]
             live_group = control("bash", "-c", 'for f in /proc/[0-9]*/stat; do '
@@ -88,6 +101,8 @@ def test_foreground_handoff_keeps_one_process_and_real_completion(docker_task, s
                                  f'[ "$3" = "{group}" ] && [ "$1" != Z ] && exit 1; done; exit 0')
             assert live_group.returncode == 0
             assert control("kill", "-0", sentinel).returncode == 0
+            if signal_kind == "graceful-kill":
+                assert control("test", "-f", ready + ".cleaned").returncode == 0
             return
         control("touch", release)
         wait_until(lambda: session.exited, what="managed sandbox completion")

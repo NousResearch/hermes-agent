@@ -791,7 +791,7 @@ hermes dashboard        # "Kanban" tab appears in the nav, after "Skills"
   - **Editable assignee / priority** — click the meta row to rewrite.
   - **Editable description** — markdown-rendered by default (headings, bold, italic, inline code, fenced code, `http(s)` / `mailto:` links, bullet lists), with an "edit" button that swaps in a textarea. Markdown rendering is a tiny, XSS-safe renderer — every substitution runs on HTML-escaped input, only `http(s)` / `mailto:` links pass through, and `target="_blank"` + `rel="noopener noreferrer"` are always set.
   - **Dependency editor** — chip list of parents and children, each with an `×` to unlink, plus dropdowns over every other task to add a new parent or child. Cycle attempts are rejected server-side with a clear message.
-  - **Status action row** (→ triage / → ready / → running / block / unblock / complete / archive) with confirm prompts for destructive transitions. For cards in the **Triage** column the row also exposes two LLM-driven actions: **⚗ Decompose** fans the task out into a graph of child tasks routed to specialist profiles by description, and **✨ Specify** does a single-task spec rewrite. Decompose falls back to specify-style promotion when the LLM decides the task doesn't benefit from fan-out, so it's a strict superset. Both are reachable from the CLI (`hermes kanban decompose <id>` / `specify <id>` / `--all`), from any gateway platform (`/kanban decompose <id>`), and programmatically via `POST /api/plugins/kanban/tasks/:id/decompose` and `…/specify`. Configure the models under `auxiliary.kanban_decomposer` and `auxiliary.triage_specifier` in `config.yaml`.
+  - **Status action row** (→ triage / → ready / → running / block / unblock / complete / archive) with confirm prompts for destructive transitions. For cards in the **Triage** column the row also exposes two LLM-driven actions: **⚗ Decompose** fans the task out into a graph of child tasks routed to specialist profiles by description, and **✨ Specify** does a single-task spec rewrite. Decompose falls back to specify-style promotion when the LLM decides the task doesn't benefit from fan-out, so it's a strict superset; an entry whose premise rests on an undecided choice instead becomes a parked question card (`blocked`/`needs_input`, no assignee, no children). Both are reachable from the CLI (`hermes kanban decompose <id>` / `specify <id>` / `--all`), from any gateway platform (`/kanban decompose <id>`), and programmatically via `POST /api/plugins/kanban/tasks/:id/decompose` and `…/specify`. Configure the models under `auxiliary.kanban_decomposer` and `auxiliary.triage_specifier` in `config.yaml`.
   - Result section (also markdown-rendered), comment thread with Enter-to-submit, the last 20 events.
 - **Toolbar filters** — free-text search, tenant dropdown (defaults to `dashboard.kanban.default_tenant` from `config.yaml`), assignee dropdown, "show archived" toggle, "lanes by profile" toggle, and a **Nudge dispatcher** button so you don't have to wait for the next 60 s tick.
 
@@ -808,6 +808,21 @@ that root back to Triage does not create another graph; ordinary prerequisite
 links do not prevent a task's first decomposition. The completion marker survives
 event retention until the task is deleted. This is not semantic deduplication of
 independently created manual graphs, nor a repair for previously pruned history.
+
+**An open question is not work.** When the entry's premise rests on a decision
+nobody has made — the entry says the work *depends on the choice of* a provider
+or *depends on a decision*, records that there is *no decision*
+(*aucune décision enregistrée*), or carries an explicit *to be decided* / *à
+arbitrer* / *à décider* / *undecided* / *TBD* marker — the decomposer never
+fans it out into an implementation graph. It parks the card itself as a single
+**question card**: the title becomes the open question (or `Open question: <original
+title>`), the body carries the decision needed, the options exactly as the entry
+records them, the impact, and the source line verbatim; the assignee is cleared
+and the card lands `blocked` with `needs_input` — no children, no branches, no
+workers, until a human answers it. A deterministic marker check backs the prompt
+rule: even if the model answers with a work graph, the entry's own words win and
+the card is parked instead. A decided entry decomposes normally — the question
+mode is never manufactured out of decided work.
 
 When a new task omits its tenant, creation inherits the first nonempty tenant
 among its parents, in supplied order. An explicit tenant (including the worker's

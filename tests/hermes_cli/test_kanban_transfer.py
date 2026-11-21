@@ -16,7 +16,9 @@ with it":
 
 from __future__ import annotations
 
+import contextlib
 import json
+import sqlite3
 import sys
 import tarfile
 import time
@@ -31,6 +33,7 @@ if str(_WORKTREE) not in sys.path:
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_transfer as kt
 from hermes_cli.archive_safe import normalize_archive_parts, safe_extract_targz
 
@@ -218,6 +221,34 @@ def test_gateway_subscriptions_never_travel(kanban_root, tmp_path):
         ).fetchone()[0] == 0
 
     assert b"12345" not in Path(archive).read_bytes()
+
+
+def test_automatic_unsub_never_puts_the_chat_id_in_the_archive(kanban_root, tmp_path):
+    """An automatic unsubscribe records a ``notify_unsubscribed`` event, and that
+    event must not carry the gateway chat id.
+
+    ``_scrub_local_state`` deletes the sub row on export but never touches
+    ``task_events``, so an id left in the event payload rides the archive past
+    the scrub that exists to keep it off the machine (PR #127304). The archive
+    is gzip, so the check unpacks it and reads the exported ``kanban.db``.
+    """
+    ids = _seed_board()
+    _subscribe(ids["scratch"])  # inserts chat_id '12345'
+    with kbc.connect_closing(board="alpha") as conn:
+        assert kbn.remove_notify_sub(
+            conn, task_id=ids["scratch"], platform="telegram",
+            chat_id="12345", thread_id="", reason="archived",
+        ) is True
+    archive = kt.export_board("alpha", str(tmp_path / "alpha"))["archive"]
+
+    unpacked = tmp_path / "unpacked"
+    unpacked.mkdir()
+    safe_extract_targz(Path(archive), unpacked)
+    with contextlib.closing(sqlite3.connect(str(unpacked / "alpha" / "kanban.db"))) as exported:
+        leaked = [row[0] for row in exported.execute(
+            "SELECT payload FROM task_events WHERE payload LIKE '%12345%'")]
+
+    assert leaked == [], f"chat id travelled in the exported archive: {leaked}"
 
 
 def test_unresolvable_workspaces_are_parked_not_dispatched(kanban_root, tmp_path):

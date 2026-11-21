@@ -1,4 +1,4 @@
-"""Compact emoji-reaction markers for Slack thread context.
+"""Slack emoji reactions: compact markers for thread context, and the busy-ack reaction.
 
 In channels where people answer by reacting instead of replying, a message
 with twelve :white_check_mark: and no replies otherwise reads as "nobody
@@ -43,3 +43,25 @@ def slack_reactions_marker(msg: dict[str, Any]) -> str:
     extra = len(parts) - REACTION_MARKER_MAX
     shown = parts[:REACTION_MARKER_MAX] + ([f"+{extra} more"] if extra > 0 else [])
     return "[reactions: " + " ".join(shown) + "]"
+
+
+# Unicode emoji the gateway reacts with (``busy_ack_reaction``) -> Slack ``reactions.add`` names.
+_SLACK_EMOJI_NAMES = {
+    "⏩": "fast_forward", "↪️": "leftwards_arrow_with_hook", "⏳": "hourglass_flowing_sand",
+    "⚡": "zap", "👀": "eyes",
+}
+
+
+class SlackReactionAckMixin:
+    """``send_reaction`` for the gateway's busy acks (``display.platforms.slack.busy_ack_reaction``)."""
+
+    _react: Any
+    _reactions_enabled: Any
+
+    async def send_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
+        """React to ``message_id``; False (the gateway posts its text ack instead) when reactions
+        are off or Slack refuses."""
+        name = _SLACK_EMOJI_NAMES.get(emoji, emoji.strip(":"))
+        if not (self._reactions_enabled() and message_id and name):
+            return False
+        return await self._react(chat_id, message_id, name, "", remove=False)

@@ -29,6 +29,9 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "long_running_notifications": True,
     "busy_ack_detail": True,
     "busy_steer_ack_enabled": True,  # busy_input_mode=steer echo; the text still lands in the run
+    "busy_ack_reaction": False,  # react to the follow-up (⏩ steer, ⏳ queue, …) instead of a bubble
+    # After a steer/redirect, the turn's next tool lines start a new progress bubble below it.
+    "busy_continue_below": False,
     # Delete tool-progress / "⏳ Working" bubbles after a SUCCESSFUL final response where deletion is
     # supported (Telegram); failed runs keep them as breadcrumbs.
     "cleanup_progress": False,
@@ -206,6 +209,8 @@ _NORMALISERS: dict[str, Any] = {
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,
     "busy_steer_ack_enabled": _norm_bool,
+    "busy_ack_reaction": _norm_bool,
+    "busy_continue_below": _norm_bool,
     "thinking_progress": _norm_bool,
     "cleanup_progress": _norm_cleanup_progress,
     "live_status": _norm_tristate("full", "off", {"full", "verb", "off"}, extra_truthy={"all"}),

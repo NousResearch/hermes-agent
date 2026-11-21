@@ -782,8 +782,9 @@ class GatewayInboundMixin(
     def _hm_text_only(event: MessageEvent) -> bool:
         return event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
 
-    def _hm_busy_steer(self, event: MessageEvent, running_agent: Any, _quick_key: str) -> None:
-        """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics."""
+    def _hm_busy_steer(self, event: MessageEvent, running_agent: Any, _quick_key: str) -> bool:
+        """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics.
+        True when the text landed in the running turn."""
         steer_text = (event.text or "").strip()
         steered = False
         if self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer"):
@@ -794,9 +795,10 @@ class GatewayInboundMixin(
         if steered:
             self._fold_into_running_turn(running_agent, _quick_key, event)
             logger.debug("PRIORITY steer for session %s", _quick_key)
-            return
+            return True
         logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
         self._queue_or_replace_pending_event(_quick_key, event)
+        return False
 
     async def _hm_busy_interrupt(
         self, event: MessageEvent, source: SessionSource, running_agent: Any, _quick_key: str
@@ -892,7 +894,11 @@ class GatewayInboundMixin(
             self._queue_or_replace_pending_event(_quick_key, event)
             return None
         if effective_busy_input_mode == "steer":
-            self._hm_busy_steer(event, running_agent, _quick_key)
+            # Priority steers post no ack bubble; an opted-in reaction still marks the message.
+            if (self._hm_busy_steer(event, running_agent, _quick_key) and self._busy_ack_enabled(_quick_key)
+                    and self._busy_steer_ack_enabled(event, _quick_key)
+                    and (adapter := self._delivery_adapter_for(source))):
+                await self._try_busy_reaction_ack(event, adapter, _quick_key, "steer")
             return None
         # Subagent protection: an interrupt cascades through ``_active_children`` and aborts
         # in-flight delegate_task work (/stop reached its handler above — still an escape hatch).

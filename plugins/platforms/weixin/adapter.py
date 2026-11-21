@@ -47,13 +47,12 @@ def _extra_or_secret(extra: dict[str, Any], key: str, default: str = "") -> str:
     return str(_extra_or_env(extra, key, f"WEIXIN_{key.upper()}", default)).strip()
 
 
-ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
+from .protocol import CHANNEL_VERSION, ILINK_APP_CLIENT_VERSION, ILINK_APP_ID, ILINK_BASE_URL
+
 WEIXIN_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
-ILINK_APP_ID, CHANNEL_VERSION, ILINK_APP_CLIENT_VERSION = "bot", "2.2.0", (2 << 16) | (2 << 8) | 0
 EP_GET_UPDATES, EP_SEND_MESSAGE, EP_SEND_TYPING = "ilink/bot/getupdates", "ilink/bot/sendmessage", "ilink/bot/sendtyping"
 EP_GET_CONFIG, EP_GET_UPLOAD_URL = "ilink/bot/getconfig", "ilink/bot/getuploadurl"
-EP_GET_BOT_QR, EP_GET_QR_STATUS = "ilink/bot/get_bot_qrcode", "ilink/bot/get_qrcode_status"
-LONG_POLL_TIMEOUT_MS, API_TIMEOUT_MS, CONFIG_TIMEOUT_MS, QR_TIMEOUT_MS = 35_000, 15_000, 10_000, 35_000
+LONG_POLL_TIMEOUT_MS, API_TIMEOUT_MS, CONFIG_TIMEOUT_MS = 35_000, 15_000, 10_000
 MAX_CONSECUTIVE_FAILURES, RETRY_DELAY_SECONDS, BACKOFF_DELAY_SECONDS = 3, 2, 30
 SESSION_EXPIRED_ERRCODE, RATE_LIMIT_ERRCODE = -14, -2  # -2: iLink frequency limit — backoff and retry
 MESSAGE_DEDUP_TTL_SECONDS = 300
@@ -289,11 +288,6 @@ async def _api_post(
 ) -> dict[str, Any]:
     body = json.dumps({**payload, "base_info": {"channel_version": CHANNEL_VERSION}}, ensure_ascii=False, separators=(",", ":"))
     return await _api_request(session, "POST", base_url=base_url, endpoint=endpoint, headers=_headers(token, body), timeout_ms=timeout_ms, body=body)
-
-
-async def _api_get(session: aiohttp.ClientSession, *, base_url: str, endpoint: str, timeout_ms: int) -> dict[str, Any]:
-    headers = {"iLink-App-Id": ILINK_APP_ID, "iLink-App-ClientVersion": str(ILINK_APP_CLIENT_VERSION)}
-    return await _api_request(session, "GET", base_url=base_url, endpoint=endpoint, headers=headers, timeout_ms=timeout_ms)
 
 
 async def _get_updates(session: aiohttp.ClientSession, *, base_url: str, token: str, sync_buf: str, timeout_ms: int) -> dict[str, Any]:
@@ -586,11 +580,6 @@ def _save_sync_buf(hermes_home: str, account_id: str, sync_buf: str) -> None:
     atomic_json_write(_account_dir(hermes_home) / f"{account_id}.sync.json", {"get_updates_buf": sync_buf})
 
 
-async def _fetch_qr(session: aiohttp.ClientSession, bot_type: str) -> tuple[str, str]:
-    qr_resp = await _api_get(session, base_url=ILINK_BASE_URL, endpoint=f"{EP_GET_BOT_QR}?bot_type={bot_type}", timeout_ms=QR_TIMEOUT_MS)
-    return str(qr_resp.get("qrcode") or ""), str(qr_resp.get("qrcode_img_content") or "")
-
-
 def _print_qr(qrcode_value: str, qrcode_url: str, *, report_render_error: bool) -> None:
     """Print the QR URL + ASCII render; WeChat must scan the liteapp URL (``qrcode_img_content``), not the bare hex token."""
     if qrcode_url:
@@ -606,62 +595,34 @@ def _print_qr(qrcode_value: str, qrcode_url: str, *, report_render_error: bool) 
             print(f"（终端二维码渲染失败: {_qr_exc}，请直接打开上面的二维码链接）")
 
 
-async def qr_login(hermes_home: str, *, bot_type: str = "3", timeout_seconds: int = 480) -> Optional[dict[str, str]]:
+async def qr_login(
+    hermes_home: str, *, bot_type: str = "3", timeout_seconds: int = 480,
+    prompt_bind_owner: bool | None = None, verify_pin: bool | None = None,
+    acctweb_base_url: str | None = None, acctweb_proxy: str | None = None,
+) -> Optional[dict[str, str]]:
+    """Bind an account; optional security test switches default to disabled."""
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError("aiohttp is required for Weixin QR login")
-    async with _new_session() as session:
-        try:
-            qrcode_value, qrcode_url = await _fetch_qr(session, bot_type)
-        except Exception as exc:
-            logger.error("weixin: failed to fetch QR code: %s", exc)
-            return None
-        if not qrcode_value:
-            logger.error("weixin: QR response missing qrcode")
-            return None
-        print("\n请使用微信扫描以下二维码：")
-        _print_qr(qrcode_value, qrcode_url, report_render_error=True)
-        deadline = time.monotonic() + timeout_seconds
-        current_base_url, refresh_count = ILINK_BASE_URL, 0
-        while time.monotonic() < deadline:
-            try:
-                status_resp = await _api_get(session, base_url=current_base_url, endpoint=f"{EP_GET_QR_STATUS}?qrcode={qrcode_value}", timeout_ms=QR_TIMEOUT_MS)
-            except Exception as exc:
-                if not isinstance(exc, asyncio.TimeoutError):
-                    logger.warning("weixin: QR poll error: %s", exc)
-                await asyncio.sleep(1)
-                continue
-            status = str(status_resp.get("status") or "wait")
-            if status == "wait":
-                print(".", end="", flush=True)
-            elif status == "scaned":
-                print("\n已扫码，请在微信里确认...")
-            elif status == "scaned_but_redirect" and status_resp.get("redirect_host"):
-                current_base_url = f"https://{status_resp['redirect_host']}"
-            elif status == "expired":
-                refresh_count += 1
-                if refresh_count > 3:
-                    print("\n二维码多次过期，请重新执行登录。")
-                    return None
-                print(f"\n二维码已过期，正在刷新... ({refresh_count}/3)")
-                try:
-                    qrcode_value, qrcode_url = await _fetch_qr(session, bot_type)
-                    _print_qr(qrcode_value, qrcode_url, report_render_error=False)
-                except Exception as exc:
-                    logger.error("weixin: QR refresh failed: %s", exc)
-                    return None
-            elif status == "confirmed":
-                creds = {
-                    "account_id": str(status_resp.get("ilink_bot_id") or ""), "token": str(status_resp.get("bot_token") or ""),
-                    "base_url": str(status_resp.get("baseurl") or ILINK_BASE_URL), "user_id": str(status_resp.get("ilink_user_id") or "")}
-                if not creds["account_id"] or not creds["token"]:
-                    logger.error("weixin: QR confirmed but credential payload was incomplete")
-                    return None
-                save_weixin_account(hermes_home, **creds)
-                print(f"\n微信连接成功，account_id={creds['account_id']}")
-                return creds
-            await asyncio.sleep(1)
-        print("\n微信登录超时。")
+    from .login import LoginError, LoginFlow, load_login_options, local_tokens
+
+    try:
+        options = load_login_options(
+            prompt_bind_owner=prompt_bind_owner, verify_pin=verify_pin,
+            acctweb_base_url=acctweb_base_url, acctweb_proxy=acctweb_proxy,
+        )
+    except LoginError as exc:
+        print(f"微信连接配置无效：{exc}")
         return None
+    async with _new_session() as session:
+        flow = LoginFlow(
+            session, options=options, tokens=local_tokens(hermes_home), headers=_headers,
+            render_qr=_print_qr, bot_type=bot_type, timeout_seconds=timeout_seconds,
+        )
+        credentials = await flow.run()
+    if credentials:
+        save_weixin_account(hermes_home, **credentials)
+        print(f"\n微信连接成功，account_id={credentials['account_id']}")
+    return credentials
 
 
 # Outbound item shapes: item type -> (item key, extra fields after the shared ``media`` block).
@@ -775,7 +736,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             logger.debug("[%s] Token lock unavailable (non-fatal): %s", self.name, exc)
         self._poll_session = _new_session()
         # total=None disables aiohttp's ClientTimeout so send() works via run_coroutine_threadsafe() from cron;
-        # _api_post/_api_get enforce timeouts with asyncio.wait_for() instead.
+        # _api_post enforces timeouts with asyncio.wait_for() instead.
         self._send_session = _new_session(timeout=aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None))
         self._token_store.restore(self._account_id)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
@@ -1308,108 +1269,61 @@ async def _standalone_send(pconfig: Any, chat_id: str, message: str, *, thread_i
         return send_error(f"Weixin send failed: {shown or e}")
 
 
-# Weixin DM policy by menu index (index 2 = allowlist is prompted separately).
-_WEIXIN_DM_POLICIES = {0: ("pairing", "false", "success", "  DM pairing enabled."),
-                       1: ("open", "true", "warning", "  Open DM access enabled for Weixin."),
-                       3: ("disabled", "false", "warning", "  Direct messages disabled.")}
-
-_WEIXIN_GROUP_NOTE = (
-    "  Note: QR login connects an iLink bot identity (e.g. ...@im.bot), not a",
-    "  scriptable personal WeChat account. Ordinary WeChat groups typically cannot",
-    "  invite an @im.bot identity, and iLink does not deliver ordinary-group events",
-    "  to most bot accounts. The settings below only apply when iLink actually",
-    "  delivers group events for your account type — otherwise DM remains the only",
-    "  working channel regardless of this choice.",
-)
-
-
-def interactive_setup() -> None:
+def interactive_setup(**login_options) -> bool:
     """``hermes gateway setup`` flow for Weixin / WeChat personal accounts (QR login via :func:`qr_login`).
     Helpers resolve through the ``hermes_cli.gateway`` facade so the prompts/output match every other
     wizard and the facade seams tests patch keep intercepting."""
     from hermes_cli import gateway as gw
     from hermes_cli.gateway_setup_wizard import (
-        confirm_reconfigure, offer_home_channel, print_setup_header, prompt_csv, save_env_values)
+        confirm_reconfigure, print_setup_header, save_env_values)
 
     print_setup_header("💬 Weixin / WeChat")
     print()
     gw._print_info_lines(
-        "  1. Hermes will open Tencent iLink QR login in this terminal.",
-        "  2. Use WeChat to scan and confirm the QR code.",
-        "  3. Hermes will store the returned account_id/token in ~/.hermes/.env.",
-        "  4. This adapter supports native text, image, video, and document delivery.",
+        "  1. 在终端显示微信连接二维码，用手机微信扫码并确认。",
+        "  2. 连接成功后自动保存账号，即可给机器人发消息。",
+        "  3. 自动允许绑定的微信账号使用，并将通知发送给该账号；群聊关闭。",
     )
     if not confirm_reconfigure("Weixin", "WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"):
-        return
+        return False
     if not check_weixin_requirements():
-        gw.print_error("  Missing dependencies: Weixin needs aiohttp and cryptography.")
-        gw.print_info("  Install them, then rerun `hermes gateway setup`.")
-        return
+        gw.print_error("  缺少微信连接所需的 aiohttp 和 cryptography 依赖。")
+        gw.print_info("  安装依赖后重新运行 `hermes weixin login`。")
+        return False
     print()
-    if not gw.prompt_yes_no("  Start QR login now?", True):
-        gw.print_info("  Cancelled.")
-        return
+    if not gw.prompt_yes_no("  现在开始扫码连接？", True):
+        gw.print_info("  已取消微信连接。")
+        return False
     try:
-        credentials = gw.asyncio.run(qr_login(str(gw.get_hermes_home())))
+        credentials = gw.asyncio.run(qr_login(str(gw.get_hermes_home()), **login_options))
     except KeyboardInterrupt:
         print()
-        gw.print_warning("  Weixin setup cancelled.")
-        return
+        gw.print_warning("  已取消微信连接。")
+        return False
     except Exception as exc:  # health: allow BLE001 -- interactive wizard: any QR-login failure is shown and setup stops
-        gw.print_error(f"  QR login failed: {exc}")
-        return
+        gw.print_error(f"  微信扫码连接失败：{exc}")
+        return False
     if not credentials:
-        gw.print_warning("  QR login did not complete.")
-        return
+        gw.print_warning("  微信连接尚未完成。")
+        return False
 
-    account_id = credentials.get("account_id", "")
-    user_id = credentials.get("user_id", "")
-    gw.save_env_value("WEIXIN_ACCOUNT_ID", account_id)
-    gw.save_env_value("WEIXIN_TOKEN", credentials.get("token", ""))
-    if credentials.get("base_url", ""):
-        gw.save_env_value("WEIXIN_BASE_URL", credentials.get("base_url", ""))
-    gw.save_env_value("WEIXIN_CDN_BASE_URL", gw.get_env_value("WEIXIN_CDN_BASE_URL") or WEIXIN_CDN_BASE_URL)
-
+    user_id = credentials.get("user_id", "").strip()
+    if not user_id:
+        gw.print_error("  微信未返回绑定用户标识，无法完成配置，请重新扫码连接。")
+        return False
+    save_env_values(
+        WEIXIN_ACCOUNT_ID=credentials["account_id"], WEIXIN_TOKEN=credentials["token"],
+        WEIXIN_BASE_URL=credentials.get("base_url") or ILINK_BASE_URL,
+        WEIXIN_CDN_BASE_URL=gw.get_env_value("WEIXIN_CDN_BASE_URL") or WEIXIN_CDN_BASE_URL,
+        WEIXIN_DM_POLICY="allowlist", WEIXIN_ALLOW_ALL_USERS="false", WEIXIN_ALLOWED_USERS=user_id,
+        WEIXIN_GROUP_POLICY="disabled", WEIXIN_GROUP_ALLOWED_USERS="",
+        WEIXIN_HOME_CHANNEL=user_id, WEIXIN_HOME_CHANNEL_NAME="Weixin",
+    )
     print()
-    access_choices = [
-        "Use DM pairing approval (recommended)", "Allow all direct messages", "Only allow listed user IDs",
-        "Disable direct messages",
-    ]
-    access_idx = gw.prompt_choice("  How should direct messages be authorized?", access_choices, 0)
-    if access_idx == 2:
-        allowlist = prompt_csv("  Allowed Weixin user IDs (comma-separated)", user_id or "")
-        save_env_values(WEIXIN_DM_POLICY="allowlist", WEIXIN_ALLOW_ALL_USERS="false", WEIXIN_ALLOWED_USERS=allowlist)
-        gw.print_success("  Weixin allowlist saved.")
-    else:
-        policy, allow_all, level, message = _WEIXIN_DM_POLICIES.get(access_idx, _WEIXIN_DM_POLICIES[3])
-        save_env_values(WEIXIN_DM_POLICY=policy, WEIXIN_ALLOW_ALL_USERS=allow_all, WEIXIN_ALLOWED_USERS="")
-        (gw.print_success if level == "success" else gw.print_warning)(message)
-        if access_idx == 0:
-            gw.print_info("  Unknown DM users can request access and you approve them with `hermes pairing approve`.")
+    gw.print_success("微信配置完成，可以直接给机器人发消息。")
+    gw.print_info("  已自动允许绑定的微信账号使用，并设置为通知接收对象；群聊已关闭。")
 
-    print()
-    gw._print_info_lines(*_WEIXIN_GROUP_NOTE)
-    group_choices = ["Disable group chats (recommended)", "Allow all group chats", "Only allow listed group chat IDs"]
-    group_idx = gw.prompt_choice("  How should group chats be handled?", group_choices, 0)
-    if group_idx == 0:
-        save_env_values(WEIXIN_GROUP_POLICY="disabled", WEIXIN_GROUP_ALLOWED_USERS="")
-        gw.print_info("  Group chats disabled.")
-    elif group_idx == 1:
-        save_env_values(WEIXIN_GROUP_POLICY="open", WEIXIN_GROUP_ALLOWED_USERS="")
-        gw.print_warning("  All group chats enabled (only takes effect if iLink delivers group events).")
-    else:
-        allow_groups = prompt_csv("  Allowed group chat IDs (comma-separated, not member user IDs)", "")
-        save_env_values(WEIXIN_GROUP_POLICY="allowlist", WEIXIN_GROUP_ALLOWED_USERS=allow_groups)
-        gw.print_success("  Group allowlist saved (only takes effect if iLink delivers group events).")
-
-    if user_id:
-        print()
-        offer_home_channel("WEIXIN_HOME_CHANNEL", user_id, "your Weixin user ID")
-    print()
-    gw.print_success("Weixin configured!")
-    gw.print_info(f"  Account ID: {account_id}")
-    if user_id:
-        gw.print_info(f"  User ID: {user_id}")
+    return True
 
 
 # System-prompt platform hint (PlatformEntry.platform_hint); cached-prompt bytes, keep stable.
@@ -1425,7 +1339,12 @@ _SEND_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from . import cli as weixin_cli
     from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    ctx.register_cli_command(
+        name="weixin", help="连接微信并测试实名授权或 PIN 绑定",
+        setup_fn=weixin_cli.register_cli, handler_fn=weixin_cli.dispatch,
+    )
     ctx.register_platform(
         target_ref_syntax_fn=regex_groups_parser(_SEND_TARGET_RE, thread_group=False),
         standalone_send=StandaloneSendPolicy(label="Weixin", media=True),

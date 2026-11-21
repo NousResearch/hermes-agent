@@ -102,7 +102,7 @@ hermes setup --portal
 |----------|-----------|---------------|
 | **Nous Portal** | 订阅制，零配置 | 通过 `hermes model` 进行 OAuth 登录 |
 | **OpenAI Codex** | ChatGPT 或 Codex 订阅，使用 Codex 模型 | 通过 `hermes model` → **ChatGPT or Codex Subscription** 进行设备码认证 |
-| **Anthropic** | 直接使用 Claude 模型——Max 计划 + 额外用量积分（OAuth），或按 token 付费的 API key | `hermes model` → OAuth 登录（需要 Max + 额外积分），或 Anthropic API key |
+| **Anthropic** | 直接使用 Claude 模型——Claude Pro 或 Max 订阅（OAuth），或按 token 付费的 API key | `hermes model` → 使用 Claude 账户进行 OAuth 登录，或 Anthropic API key |
 | **OpenRouter** | 跨多个 provider 的多模型路由 | 输入 API key |
 | **Z.AI** | GLM / Zhipu 托管模型 | 设置 `GLM_API_KEY` / `ZAI_API_KEY` |
 | **Kimi / Moonshot** | Moonshot 托管的编程和对话模型 | 设置 `KIMI_API_KEY`（或 Kimi-Coding 专用的 `KIMI_CODING_API_KEY`） |

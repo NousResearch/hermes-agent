@@ -66,8 +66,9 @@ _POOL_NEGATIVE_TTL_S = 60.0
 _pool_probe_cache: tuple[float, tuple[int, bool | None] | None] | None = None
 
 # '  CUDA0: NVIDIA Example Device (1234-core Example GPU) (46464 MiB, 46284 MiB free)'
+# '  Vulkan0: AMD Radeon RX 9060 XT (8144 MiB, 7283 MiB free)'
 # — greedy .* pins the LAST parenthesized group, so device names with parentheses parse.
-_DEVICE_LINE_RE = re.compile(r"CUDA\d+:.*\((\d+)\s*MiB,\s*\d+\s*MiB free\)\s*$")
+_DEVICE_LINE_RE = re.compile(r"(?:CUDA|Vulkan|ROCm|HIP)\d+:.*\((\d+)\s*MiB,\s*\d+\s*MiB free\)\s*$")
 
 
 def _stdout(*argv: str) -> str:

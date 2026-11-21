@@ -45,11 +45,59 @@ def _library(directory: Path, name: str) -> Path:
     return directory / (f"{name}.dll" if os.name == "nt" else f"lib{name}.so")
 
 
+def _cli_fallback_devices(directory: Path, backend: str) -> list[dict]:
+    """Fallback device query via the engine CLI binaries when in-process ctypes loading fails."""
+    import re
+
+    candidates = ["llama-server", "llama-bench", "llama-cli"]
+    if os.name == "nt":
+        candidates = [f"{c}.exe" for c in candidates]
+
+    line_re = re.compile(
+        r"^\s*(?:CUDA|Vulkan|ROCm|HIP)\d+:\s*(.*?)\s*\(\s*(\d+)\s*MiB,\s*(\d+)\s*MiB free\)\s*$"
+    )
+    for name in candidates:
+        exe = directory / name
+        if exe.is_file():
+            try:
+                proc = subprocess.run(
+                    [str(exe), "--list-devices"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=15,
+                    cwd=str(directory),
+                    check=False,
+                )
+                devices = []
+                for line in (proc.stdout + proc.stderr).splitlines():
+                    m = line_re.search(line)
+                    if m:
+                        desc = m.group(1).strip()
+                        total_bytes = int(m.group(2)) * 1024 * 1024
+                        free_bytes = int(m.group(3)) * 1024 * 1024
+                        devices.append({
+                            "description": desc,
+                            "type": GGML_DEVICE_GPU,
+                            "free": min(free_bytes, total_bytes),
+                            "total": total_bytes,
+                        })
+                if devices:
+                    return devices
+            except Exception:
+                continue
+    return []
+
+
 def _read_devices(directory: Path, backend: str) -> list[dict]:
     dll_directory = os.add_dll_directory(str(directory)) if os.name == "nt" else None
     try:
-        base = ctypes.CDLL(str(_library(directory, "ggml-base")), mode=ctypes.RTLD_GLOBAL)
-        core = ctypes.CDLL(str(_library(directory, "ggml")), mode=ctypes.RTLD_GLOBAL)
+        try:
+            base = ctypes.CDLL(str(_library(directory, "ggml-base")), mode=ctypes.RTLD_GLOBAL)
+            core = ctypes.CDLL(str(_library(directory, "ggml")), mode=ctypes.RTLD_GLOBAL)
+        except OSError:
+            return _cli_fallback_devices(directory, backend)
         core.ggml_backend_load.argtypes = [ctypes.c_char_p]
         core.ggml_backend_load.restype = ctypes.c_void_p
         registry = core.ggml_backend_load(os.fsencode(_library(directory, f"ggml-{backend}")))

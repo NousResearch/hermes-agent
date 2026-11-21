@@ -157,7 +157,7 @@ Bot 间投递是按次调用的：接收方 Bot 会在它下一次运行时取�
 
 - **花名册会自行同步。** 只要 Desktop 在运行，它就会定期告诉每个已连接的 gateway，*其他*连接上都有哪些 agent。每个 Bot Chat 的队友花名册随即会列出它们（"在其他已连接机器上的队友"），包含名称、角色以及所在的机器——当 agent 出现、消失或被重命名时，这份花名册也会刷新（能力版本）。
 - **`message_agent` 可以直接触达它们。** 你笔记本上的 Bot 可以用 `message_agent(target="moxie", …)` 给云端 agent 发消息，和给本地队友发消息完全一样。如果同一个 handle 在多台机器上都存在，用 `target="moxie@<connection>"` 消除歧义（这个工具的报错信息会告诉 Bot 确切的写法）。投递走的是 Desktop：发送方的 gateway 把消息入队，Desktop 把它中继到目标连接自己的 gateway，目标 Bot 在它自己的规范 Bot Chat 中运行一轮，回复以本地私信同样使用的那种后台完成通知的形式返回给发送方。发给不同 Bot 的消息会并行投递，因此一个 Bot 的长轮次永远不会拖延另一个 Bot 的邮件（也不会让它超过 `bot_mode.envelope_ttl_seconds` 而过期）；发给*同一个* Bot 的消息则按顺序、一次一轮地投递。
-- **Desktop 是信使。** 只要一台同时认识两个连接的 Desktop 在运行，跨连接投递就能工作（它持有 socket 和凭据——gateway 之间彼此看不到对方的认证信息）。如果 Desktop 在投递途中被关闭，发送方的 Bot 会被告知回复没有送达，而不是被无限期挂起。若需要完全不经过 Desktop 的、永远在线的机器对机器消息，请注册一个 peer（见下方 `hermes peer`）——这两条路径可以共存。
+- **Desktop 是信使。** 只要一台同时认识两个连接的 Desktop 在运行，跨连接投递就能工作（它持有 socket 和凭据——gateway 之间彼此看不到对方的认证信息）。如果 Desktop 在投递途中被关闭，发送方的 Bot 会被告知回复没有送达，而不是被无限期挂起。如果发送方等待约 52 分钟后仍未收到回复，它会被告知属于哪种情况：在 `bot_mode.envelope_ttl_seconds` 内没有任何 Desktop 取走的消息会被撤回并报告为未送达（请重新发送）；已被 Desktop 取走的消息不会再重试，结果未知（重新发送前请先向对方确认）；仍在 TTL 内排队的消息可能会在 Desktop 重新连接后送达。若需要完全不经过 Desktop 的、永远在线的机器对机器消息，请注册一个 peer（见下方 `hermes peer`）——这两条路径可以共存。
 
 ### Bot 发起的跨机器私信（`hermes peer`）
 

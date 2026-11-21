@@ -517,6 +517,30 @@ class TestCompleteLogin:
             )
         assert session.refresh_token == ""
 
+    def test_login_without_refresh_token_warns_once_naming_offline_access(self, provider, rsa_keypair, caplog):
+        # Cloudflare Access / authentik return no refresh_token unless offline_access is requested;
+        # silently accepting that ends every dashboard login at ID-token expiry.
+        body = {"id_token": _mint_id_token(rsa_keypair), "token_type": "Bearer"}
+        with patch("plugins.dashboard_auth.self_hosted.httpx.post", return_value=_mock_post(200, body)), \
+                caplog.at_level("WARNING", logger="plugins.dashboard_auth.self_hosted"):
+            for _ in range(2):
+                provider.complete_login(
+                    code="abc", state="s", code_verifier="vfy",
+                    redirect_uri="https://hermes.example/auth/callback")
+        warnings = [r.getMessage() for r in caplog.records if "no refresh_token" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "offline_access" in warnings[0]
+        assert "dashboard.oauth.self_hosted.scopes" in warnings[0]
+
+    def test_login_with_refresh_token_does_not_warn(self, provider, rsa_keypair, caplog):
+        body = {"id_token": _mint_id_token(rsa_keypair), "token_type": "Bearer", "refresh_token": "rt"}
+        with patch("plugins.dashboard_auth.self_hosted.httpx.post", return_value=_mock_post(200, body)), \
+                caplog.at_level("WARNING", logger="plugins.dashboard_auth.self_hosted"):
+            provider.complete_login(
+                code="abc", state="s", code_verifier="vfy",
+                redirect_uri="https://hermes.example/auth/callback")
+        assert not [r for r in caplog.records if "no refresh_token" in r.getMessage()]
+
     def test_missing_id_token_raises(self, provider):
         mock_resp = _mock_post(
             200, {"access_token": "opaque", "token_type": "Bearer"}

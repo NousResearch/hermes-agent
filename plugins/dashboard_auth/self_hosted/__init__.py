@@ -86,6 +86,8 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
     # Class-level default so partially-constructed instances (object.__new__ in
     # tests) still verify with the standard clock-skew leeway.
     _id_token_leeway: float = DEFAULT_TOKEN_LEEWAY_SECONDS
+    # A login without a refresh token is logged once per process, not on every sign-in.
+    _warned_no_refresh_token: bool = False
 
     def __init__(
         self, *, issuer: str, client_id: str, scopes: str = _DEFAULT_SCOPES, client_secret: str = "",
@@ -120,6 +122,25 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
         disco = self._get_discovery()
         return pkce_login_start(
             disco["authorization_endpoint"], client_id=self._client_id, scope=self._scopes, redirect_uri=redirect_uri)
+
+    def complete_login(self, *, code: str, state: str, code_verifier: str, redirect_uri: str) -> Session:
+        session = super().complete_login(code=code, state=state, code_verifier=code_verifier, redirect_uri=redirect_uri)
+        if not session.refresh_token and not self._warned_no_refresh_token:
+            self._warned_no_refresh_token = True
+            logger.warning("%s: %s", _TAG, self._no_refresh_token_hint(session))
+        return session
+
+    def _no_refresh_token_hint(self, session: Session) -> str:
+        # Without a refresh token the session ends at ID-token expiry, which on some IDPs is
+        # minutes (Cloudflare Access: 5) regardless of the configured access-token lifetime.
+        lifetime = max(0, int(session.expires_at - time.time()))
+        cause = (f"the IDP's token response carried no refresh_token, so each dashboard login "
+                 f"ends when its ID token expires (in ~{lifetime}s) and the browser is sent to sign in again")
+        if "offline_access" in self._scopes.split():
+            return f"{cause}. Scopes already include offline_access; enable refresh tokens on the IDP client."
+        return (f"{cause}. Many IDPs (Cloudflare Access, authentik) issue refresh tokens only for the "
+                f"offline_access scope: add it to dashboard.oauth.self_hosted.scopes "
+                f"(currently {self._scopes!r}) and enable refresh tokens on the IDP client.")
 
     def revoke_session(self, *, refresh_token: str) -> None:
         # Best-effort RFC 7009 revocation when the IDP advertises an endpoint.

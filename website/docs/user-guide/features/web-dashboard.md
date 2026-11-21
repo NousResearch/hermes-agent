@@ -976,6 +976,21 @@ The provider verifies the OpenID Connect **ID token** (RS256/ES256) against the 
 
 The ID token is what establishes identity — the access token is treated as opaque (the OIDC spec does not require it to be a JWT). Endpoint URLs are required to be HTTPS (loopback `http://` is allowed for local-dev IDPs), and the discovery document's advertised `issuer` must match your configured one (a trailing-slash difference is tolerated). Refresh tokens, when the IDP issues them, are used for silent re-auth via the standard `refresh_token` grant; logout calls the IDP's RFC 7009 `revocation_endpoint` when advertised.
 
+#### Staying signed in: refresh tokens and `offline_access`
+
+The dashboard session lasts as long as the **ID token**, unless the IDP also returns a refresh token. Without one, every login ends at ID-token expiry and the browser is sent back to sign in. Some IDPs mint short ID tokens whatever access-token lifetime you configure (Cloudflare Access: 5 minutes), so a missing refresh token shows up as "I have to log in every few minutes".
+
+Several IDPs issue a refresh token only when the client requests the `offline_access` scope, even with refresh tokens enabled on the client. For **Cloudflare Access** (SaaS OIDC app) and **authentik**, add it:
+
+```yaml
+dashboard:
+  oauth:
+    self_hosted:
+      scopes: "openid profile email offline_access"
+```
+
+and enable refresh tokens on the IDP client (Cloudflare Access: set **Refresh token lifetime**; authentik 2024.2+: add the `offline_access` scope mapping to the provider). Cloudflare's discovery document doesn't list `offline_access` in `scopes_supported`, but it accepts the scope and needs it. When a login comes back without a refresh token, the dashboard logs a one-time `dashboard-auth-self-hosted` warning saying so. A working setup shows `refresh_success` events in `$HERMES_HOME/logs/dashboard-auth.log` once the first ID token expires.
+
 > **Confidential clients** (those with a `client_secret`) are not supported yet — configure a public + PKCE client, which is the typical choice for a browser-facing dashboard.
 
 #### Worked example: Keycloak

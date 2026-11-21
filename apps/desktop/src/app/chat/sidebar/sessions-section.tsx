@@ -176,6 +176,8 @@ interface SidebarSessionsSectionProps {
   onReorderSessions?: (ids: string[]) => void
   // Drag-to-reorder for the project overview list (top-level projects).
   onReorderProjects?: (ids: string[]) => void
+  // Drag-to-reorder for repositories/folders within an entered multi-folder project.
+  onReorderRepos?: (ids: string[]) => void
   // Rendered atop the entered-project body (a "back to overview" row).
   projectBackRow?: React.ReactNode
   dndSensors?: ReturnType<typeof useSensors>
@@ -241,6 +243,7 @@ export function SidebarSessionsSection({
   manualOrderIds,
   onReorderSessions,
   onReorderProjects,
+  onReorderRepos,
   projectBackRow,
   dndSensors,
   showProfileTags = false,
@@ -507,10 +510,12 @@ export function SidebarSessionsSection({
             liveSessions={liveSessions}
             onNewSession={onNewSessionInWorkspace}
             onNewSessionSplit={onNewSessionSplit}
+            onReorderRepos={onReorderRepos}
             project={projectContent}
             removedSessionIds={removedSessionIds}
             renderRows={renderRowsDated}
             repoWorktrees={projectRepoWorktrees}
+            sensors={dndSensors}
           />
         ) : (
           emptyState

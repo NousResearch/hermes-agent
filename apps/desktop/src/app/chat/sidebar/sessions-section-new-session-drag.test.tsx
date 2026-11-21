@@ -492,6 +492,43 @@ describe('project-associated new-session drag sources', () => {
     expect(screen.queryByText('No sessions in this project')).toBeNull()
   })
 
+  it('enables drag-to-reorder for repository folders when a project has multiple folders', () => {
+    const onReorderRepos = vi.fn()
+    const repo = (id: string, label: string) => ({ groups: [], id, label, path: id, sessionCount: 0 })
+
+    render(
+      <SidebarSessionsSection
+        {...baseProps()}
+        onReorderRepos={onReorderRepos}
+        projectContent={project({
+          repos: [repo('/repo/a', 'Repo A'), repo('/repo/b', 'Repo B')],
+          sessionCount: 0
+        })}
+      />
+    )
+
+    expect(screen.getByLabelText('Reorder Repo A')).toBeTruthy()
+    expect(screen.getByLabelText('Reorder Repo B')).toBeTruthy()
+  })
+
+  it('keeps folders non-draggable when a project has only a single folder', () => {
+    const onReorderRepos = vi.fn()
+    const repo = (id: string, label: string) => ({ groups: [], id, label, path: id, sessionCount: 0 })
+
+    render(
+      <SidebarSessionsSection
+        {...baseProps()}
+        onReorderRepos={onReorderRepos}
+        projectContent={project({
+          repos: [repo('/repo/a', 'Repo A')],
+          sessionCount: 0
+        })}
+      />
+    )
+
+    expect(screen.queryByLabelText('Reorder Repo A')).toBeNull()
+  })
+
   it('drags profile-group add buttons to start a session in that profile', async () => {
     const onNewSessionSplit = vi.fn()
 

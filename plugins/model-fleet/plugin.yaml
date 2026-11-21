@@ -1,0 +1,38 @@
+name: model-fleet
+version: "1.0.0"
+description: >-
+  Model fleet management — repoint the default model, sub-agent (delegation) model,
+  profile configs, and cron jobs at one provider/model in a single command. Lists
+  authenticated providers and models on demand; supports dry-run and file backups.
+author: NousResearch
+kind: standalone
+provides_hooks: []
+config_schema:
+  include_profiles:
+    type: bool
+    default: true
+    description: "Also repoint named profile configs under $HERMES_HOME/profiles/."
+  include_cron:
+    type: bool
+    default: true
+    description: "Also repoint cron jobs (agent jobs only; no_agent script jobs are skipped)."
+  include_auxiliary:
+    type: bool
+    default: false
+    description: "Also repoint auxiliary.* models (vision, compression, titles). Off by default — these are usually pinned to a cheap model on purpose."
+  profile_allowlist:
+    type: list
+    default: []
+    description: "When non-empty, only these profile names are repointed."
+  profile_blocklist:
+    type: list
+    default: []
+    description: "Profile names to skip."
+  backup:
+    type: bool
+    default: true
+    description: "Copy every config.yaml / jobs.json to <name>.bak-model-fleet-<stamp> before writing."
+  model_allowlist:
+    type: list
+    default: []
+    description: "When non-empty, only these providers may be picked."

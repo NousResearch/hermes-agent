@@ -401,10 +401,12 @@ def build_monitor_application(monitor, **kwargs):
     normal = Condition(lambda: not state['steering'] and not state['confirm'])
     listing = normal & Condition(lambda: not monitor.detail)
 
+    @kb.add('c-p', filter=listing)
     @kb.add('up', filter=listing)
     def up(event):
         monitor.select(-1)
 
+    @kb.add('c-n', filter=listing)
     @kb.add('down', filter=listing)
     def down(event):
         monitor.select(1)

@@ -18,6 +18,7 @@ import type { GatewayClient } from '../gatewayClient.js'
 import { messages } from '../i18n/runtime.js'
 import type { Translations } from '../i18n/types.js'
 import { useT } from '../i18n/useT.js'
+import { isListDown, isListUp } from '../lib/listNavigation.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { statusGlyph as agentStatusGlyph } from '../lib/subagentGlyph.js'
 import {
@@ -888,11 +889,11 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         return scrollDetail(wheelDetailDy)
       }
 
-      if (key.upArrow || ch === 'k') {
+      if (isListUp(ch, key) || ch === 'k') {
         return scrollDetail(-2)
       }
 
-      if (key.downArrow || ch === 'j') {
+      if (isListDown(ch, key) || ch === 'j') {
         return scrollDetail(2)
       }
 
@@ -912,11 +913,11 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       return setMode(key.return && !replayMode ? 'tail' : 'detail')
     }
 
-    if (key.upArrow || ch === 'k' || key.wheelUp) {
+    if (isListUp(ch, key) || ch === 'k' || key.wheelUp) {
       return setCursor(c => Math.max(0, c - 1))
     }
 
-    if (key.downArrow || ch === 'j' || key.wheelDown) {
+    if (isListDown(ch, key) || ch === 'j' || key.wheelDown) {
       return setCursor(c => Math.min(Math.max(0, rows.length - 1), c + 1))
     }
 

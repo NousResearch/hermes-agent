@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
 import { useT } from '../i18n/useT.js'
+import { isListDown, isListUp } from '../lib/listNavigation.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -111,13 +112,13 @@ export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
 
     const count = effectiveRows.length
 
-    if (key.upArrow && clampedIdx > 0) {
+    if (isListUp(ch, key) && clampedIdx > 0) {
       setIdx(clampedIdx - 1)
 
       return
     }
 
-    if (key.downArrow && clampedIdx < count - 1) {
+    if (isListDown(ch, key) && clampedIdx < count - 1) {
       setIdx(clampedIdx + 1)
 
       return

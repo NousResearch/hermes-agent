@@ -5,6 +5,7 @@ import type { GatewayClient } from '../gatewayClient.js'
 import type { Translations } from '../i18n/types.js'
 import { useT } from '../i18n/useT.js'
 import { openInEditor } from '../lib/editor.js'
+import { isListDown, isListUp } from '../lib/listNavigation.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { deriveStarmapPalette, fadeHex, fadeInk, type StarmapPalette } from '../lib/starmapPalette.js'
 import type { Theme } from '../theme.js'
@@ -315,11 +316,11 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
         return setMode('timeline')
       }
 
-      if (key.upArrow || ch === 'k') {
+      if (isListUp(ch, key) || ch === 'k') {
         return scrollItem(-2)
       }
 
-      if (key.downArrow || ch === 'j') {
+      if (isListDown(ch, key) || ch === 'j') {
         return scrollItem(2)
       }
 
@@ -356,11 +357,11 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
       return setMode('item')
     }
 
-    if (key.upArrow || ch === 'k') {
+    if (isListUp(ch, key) || ch === 'k') {
       return setCursor(v => stepRow(v, -1))
     }
 
-    if (key.downArrow || ch === 'j') {
+    if (isListDown(ch, key) || ch === 'j') {
       return setCursor(v => stepRow(v, 1))
     }
 

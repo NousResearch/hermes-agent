@@ -1911,6 +1911,11 @@ class CLITuiMixin:
             lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state
             and not self._sudo_state and not self._secret_state and not self._connection_state
             and not self._model_picker_state and not self._command_palette_state)
+        _normal_input &= Condition(lambda: not self._prompt_stash.panel_open)
+        _completion = _normal_input & Condition(
+            lambda: self._tui_input.buffer.complete_state is not None)
+        kb.add('c-n', filter=_completion)(lambda event: event.current_buffer.complete_next())
+        kb.add('c-p', filter=_completion)(lambda event: event.current_buffer.complete_previous())
         kb.add('up', filter=_normal_input)(self._tui_history_up)
         kb.add('down', filter=_normal_input)(self._tui_history_down)
         kb.add('c-l')(self._tui_handle_ctrl_l)
@@ -1960,7 +1965,9 @@ class CLITuiMixin:
         )
         _stash_panel_filter = Condition(lambda: self._prompt_stash.panel_open and bool(len(self._prompt_stash)))
         kb.add('c-s', filter=_stash_filter)(self._tui_handle_prompt_stash)
+        kb.add('c-p', filter=_stash_panel_filter, eager=True)(self._tui_handle_stash_panel_up)
         kb.add('up', filter=_stash_panel_filter, eager=True)(self._tui_handle_stash_panel_up)
+        kb.add('c-n', filter=_stash_panel_filter, eager=True)(self._tui_handle_stash_panel_down)
         kb.add('down', filter=_stash_panel_filter, eager=True)(self._tui_handle_stash_panel_down)
         kb.add('enter', filter=_stash_panel_filter, eager=True)(self._tui_handle_stash_panel_restore)
         kb.add('d', filter=_stash_panel_filter, eager=True)(
@@ -1972,10 +1979,14 @@ class CLITuiMixin:
     def _tui_bind_overlay_navigation(self, kb) -> None:
         """Clarify / approval / slash-confirm / model picker / command palette navigation keys."""
         _clarify_nav = Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext)
+        kb.add('c-p', filter=_clarify_nav)(self._tui_clarify_up)
         kb.add('up', filter=_clarify_nav)(self._tui_clarify_up)
+        kb.add('c-n', filter=_clarify_nav)(self._tui_clarify_down)
         kb.add('down', filter=_clarify_nav)(self._tui_clarify_down)
         _connection_nav = Condition(lambda: bool(self._connection_state))
+        kb.add('c-p', filter=_connection_nav)(self._tui_connection_up)
         kb.add('up', filter=_connection_nav)(self._tui_connection_up)
+        kb.add('c-n', filter=_connection_nav)(self._tui_connection_down)
         kb.add('down', filter=_connection_nav)(self._tui_connection_down)
         kb.add('left', filter=_connection_nav)(self._tui_connection_side)
         kb.add('right', filter=_connection_nav)(self._tui_connection_side)
@@ -1997,11 +2008,17 @@ class CLITuiMixin:
         _approval = Condition(lambda: bool(self._approval_state))
         _slash_confirm = Condition(lambda: bool(self._slash_confirm_state))
         _picker = Condition(lambda: bool(self._model_picker_state))
+        kb.add('c-p', filter=_approval)(self._tui_approval_up)
         kb.add('up', filter=_approval)(self._tui_approval_up)
+        kb.add('c-n', filter=_approval)(self._tui_approval_down)
         kb.add('down', filter=_approval)(self._tui_approval_down)
+        kb.add('c-p', filter=_slash_confirm)(self._tui_slash_confirm_up)
         kb.add('up', filter=_slash_confirm)(self._tui_slash_confirm_up)
+        kb.add('c-n', filter=_slash_confirm)(self._tui_slash_confirm_down)
         kb.add('down', filter=_slash_confirm)(self._tui_slash_confirm_down)
+        kb.add('c-p', filter=_picker)(self._tui_model_picker_up)
         kb.add('up', filter=_picker)(self._tui_model_picker_up)
+        kb.add('c-n', filter=_picker)(self._tui_model_picker_down)
         kb.add('down', filter=_picker)(self._tui_model_picker_down)
 
         def _model_picker_typing_active() -> bool:
@@ -2020,8 +2037,12 @@ class CLITuiMixin:
             lambda: not self._command_palette_state and not self._model_picker_state and not self._clarify_state
             and not self._approval_state and not self._slash_confirm_state and not self._sudo_state
             and not self._secret_state and not self._connection_state
+            and not self._prompt_stash.panel_open
+            and self._tui_input.buffer.complete_state is None
         ))(self._tui_open_command_palette)
+        kb.add('c-p', filter=_palette)(self._tui_command_palette_up)
         kb.add('up', filter=_palette)(self._tui_command_palette_up)
+        kb.add('c-n', filter=_palette)(self._tui_command_palette_down)
         kb.add('down', filter=_palette)(self._tui_command_palette_down)
         kb.add('enter', filter=_palette)(self._tui_command_palette_enter)
         kb.add('backspace', filter=_palette)(self._tui_command_palette_backspace)

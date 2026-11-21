@@ -685,3 +685,82 @@ async def test_passkey_required_stops_retries_at_startup_and_during_polling(pass
     assert adapter.fatal_error_code == ("whatsapp_bridge_exited" if retryable else "whatsapp_passkey_required")
     if not retryable:
         assert "hermes whatsapp --passkey-browser" in adapter.fatal_error_message
+
+
+# ---------------------------------------------------------------------------
+# Bridge spawn: CREATE_BREAKAWAY_FROM_JOB fallback
+# ---------------------------------------------------------------------------
+
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+_CREATE_NO_WINDOW = 0x08000000
+
+
+class TestBridgeBreakawayFallback:
+    """A parent Job Object that forbids breakaway must not strand the bridge.
+
+    ``windows_detach_flags`` bundles CREATE_BREAKAWAY_FROM_JOB so the bridge outlives a
+    job-wrapped launcher (Electron Desktop, the Tauri bootstrap installer). A parent job
+    allowing neither JOB_OBJECT_LIMIT_BREAKAWAY_OK nor BREAKAWAY_FLAG_SILENT_BREAKAWAY_OK
+    rejects that bit, and CreateProcess fails with ERROR_ACCESS_DENIED (WinError 5) before
+    node ever runs. The spawn used to surface that OSError uncaught, so every reconnect retry
+    failed identically for as long as the launcher stayed up (observed: ~1035 consecutive
+    attempts over days, then an instant success on the next gateway restart). Retry without
+    the bit - the rest of the detach flags are what actually detach the child here.
+    """
+
+    @staticmethod
+    def _recording_spawn(side_effects):
+        calls = []
+        proc = MagicMock()
+
+        def fake_spawn(argv, **kwargs):
+            calls.append(kwargs)
+            outcome = side_effects[len(calls) - 1]
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return proc
+
+        return fake_spawn, calls, proc
+
+    def test_happy_path_still_spawns_once_with_the_full_detach_flags(self):
+        """No regression for the normal case: one spawn, breakaway included."""
+        from hermes_cli._subprocess_compat import windows_detach_flags
+        from plugins.platforms.whatsapp import adapter as wa
+
+        fake_spawn, calls, proc = self._recording_spawn([None])
+        with patch.object(wa, "spawn_owned", fake_spawn):
+            assert wa._spawn_bridge_process(["node", "bridge.js"], None, {}) is proc
+
+        assert len(calls) == 1
+        if sys.platform == "win32":
+            assert calls[0]["creationflags"] == windows_detach_flags()
+            assert calls[0]["creationflags"] & _CREATE_BREAKAWAY_FROM_JOB
+
+    def test_retries_without_breakaway_when_the_parent_job_refuses_it(self):
+        from hermes_cli._subprocess_compat import (windows_detach_flags,
+                                                   windows_detach_flags_without_breakaway)
+        from plugins.platforms.whatsapp import adapter as wa
+
+        fake_spawn, calls, proc = self._recording_spawn([OSError(5, "Access is denied"), None])
+        with patch.object(wa, "spawn_owned", fake_spawn):
+            assert wa._spawn_bridge_process(["node", "bridge.js"], None, {}) is proc
+
+        assert len(calls) == 2, "the refused spawn must be retried, not reported as unstartable"
+        if sys.platform == "win32":
+            assert calls[1]["creationflags"] == windows_detach_flags_without_breakaway()
+            assert not calls[1]["creationflags"] & _CREATE_BREAKAWAY_FROM_JOB
+            assert calls[1]["creationflags"] & _CREATE_NO_WINDOW
+        assert calls[1]["purpose"] == "whatsapp-bridge"
+
+    def test_a_non_breakaway_oserror_is_not_swallowed_by_the_retry(self):
+        """Two refusals must reach connect(), which reports the bridge as unstartable."""
+        from plugins.platforms.whatsapp import adapter as wa
+
+        fake_spawn, calls, _proc = self._recording_spawn(
+            [OSError(5, "Access is denied"), OSError(5, "Access is denied")])
+        with patch.object(wa, "spawn_owned", fake_spawn):
+            with pytest.raises(OSError) as excinfo:
+                wa._spawn_bridge_process(["node", "bridge.js"], None, {})
+
+        assert len(calls) == 2, "the retry runs exactly once - no masking loop"
+        assert excinfo.value.errno == 5

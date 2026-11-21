@@ -145,6 +145,17 @@ changing defaults must not overwrite a user's existing choices. The shared
 `apps/shared/src/translucency.ts` resolver owns these defaults for both the
 renderer and Electron's first window paint.
 
+**Sidebar only** follows the visible Sessions rail's physical bounds, not the
+window's logical start or the sidebar-side preference. Swapping or rearranging
+panes, resizing a neighboring pane, and hiding or mounting the rail must update
+that glass interval without changing tint, fade, material, or the theme. Outside
+the interval, the content field stays opaque in both LTR and RTL layouts.
+
+Position-only layout commits must also refresh panel titlebar reservations before
+paint. Keyed, equally sized panels can move without a ResizeObserver callback;
+their native drag handles must never overlap the fixed topbar controls. Swapping
+panes must leave those controls clickable without a maximize/restore workaround.
+
 ## Stroke & color tokens
 
 | Token | Use |

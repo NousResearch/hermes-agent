@@ -18,7 +18,12 @@ function themeStyle(style: CSSStyleDeclaration): string {
   for (let i = 0; i < style.length; i += 1) {
     const name = style.item(i)
 
-    if (name === '--workspace-left' || name === '--workspace-right' || name === '--glass-rail-edge') {
+    if (
+      name === '--workspace-left' ||
+      name === '--workspace-right' ||
+      name === '--glass-rail-left' ||
+      name === '--glass-rail-right'
+    ) {
       continue
     }
 

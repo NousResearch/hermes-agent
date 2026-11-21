@@ -674,29 +674,20 @@
     background: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
   }
 
-  /* Sidebar scope (the Finder shape): glass rail, opaque content column.
-     <body> stays the one painter but splits at the rail's visual edge — the
-     store publishes it as --glass-rail-edge (live-tracked through collapse
-     animation and pane resizes). Left of the seam: the normal glass mix.
-     Right of it: the full opaque chrome. A hard gradient stop, so there is
-     no smear across the seam; RTL mirrors via html[dir='rtl']. The content
-     column's own surfaces stay transparent (they'd double-paint the tint
-     otherwise) — the body backdrop alone restores the opaque look. */
+  /* Sidebar scope: one physical glass interval, opaque on BOTH sides. The
+     store publishes the visible rail's viewport bounds after layout commits
+     and throughout sash resizing. Geometry, not locale direction or a side
+     preference, determines where glass belongs. The content surfaces remain
+     transparent so <body> still paints the field exactly once. */
   :root[data-hermes-glass][data-hermes-glass-scope='sidebar'] body {
     background: linear-gradient(
       to right,
+      var(--ui-bg-chrome) var(--glass-rail-left, 0px),
       color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent)
-        var(--glass-rail-edge, 0px),
-      var(--ui-bg-chrome) var(--glass-rail-edge, 0px)
-    );
-  }
-
-  :root[data-hermes-glass][data-hermes-glass-scope='sidebar'][dir='rtl'] body {
-    background: linear-gradient(
-      to left,
+        var(--glass-rail-left, 0px),
       color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent)
-        var(--glass-rail-edge, 0px),
-      var(--ui-bg-chrome) var(--glass-rail-edge, 0px)
+        var(--glass-rail-right, 0px),
+      var(--ui-bg-chrome) var(--glass-rail-right, 0px)
     );
   }
 

@@ -76,7 +76,7 @@ WATCH_STRIKE_LIMIT = 3
 # watch_patterns is documented as "ONLY for rare one-shot mid-process signals", so once a session has
 # delivered this many matches over its whole life we disable it and fall back to notify_on_complete, same as
 # the strike-limit path.
-WATCH_LIFETIME_MAX_HITS = 8
+WATCH_LIFETIME_MAX_HITS = 3
 # Heartbeat: an opt-in periodic "still running, here is the output since last time" event for
 # long bounded jobs (merge trains, full test suites, deploys). Unlike watch patterns it is
 # time-driven, so it is bounded by construction (≤ 3600/HEARTBEAT_MIN_SECONDS events per hour
@@ -808,6 +808,21 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # Late chunks after the reader declared exit are post-exit noise; dropping them
         # avoids stale notifications minutes after the process ended.
         if session.exited:
+            return
+        # Single-word patterns are the recurring flood source: a poll loop that prints
+        # "minute N" or "tick" every iteration matches a bare word on every cycle, each
+        # match landing outside the cooldown so strikes never accumulate. A watch pattern
+        # must be a multi-word phrase; reject the whole set once and fall back to
+        # notify_on_complete so the agent sees why.
+        bare = [p for p in session.watch_patterns
+                if not str(p).strip() or len(str(p).split()) < 2]
+        if bare:
+            session._watch_disabled = True
+            session.notify_on_complete = True
+            self._emit_watch_disabled(
+                session, 0,
+                f"single-word watch pattern(s) {bare!r} rejected — a poll loop's own "
+                f"per-iteration output (\"minute 1\", \"tick\", ...) matches them every cycle. ")
             return
         hits = [  # (first matching pattern, line) — one match per line
             (next(p for p in session.watch_patterns if p in line), line.rstrip())
@@ -1646,6 +1661,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     def is_completion_consumed(self, session_id: str) -> bool:
         """True once wait/log/kill/acked poll consumed it; keyed by the full id, never a short prefix."""
         return session_id in self._completion_consumed
+
+    def is_session_running(self, session_id: str) -> bool:
+        """True while the process is tracked as still running (not exited, finished, reaped or
+        orphaned by a restart). A watch match or heartbeat queued just before a kill is stale by
+        delivery time; the notification renderer drops it using this instead of spending a turn."""
+        with self._lock:
+            return session_id in self._running
 
     def is_session_waiting(self, session_id: str) -> bool:
         """Whether a goal loop (``hermes_cli.goals`` wait barrier) should stay parked on

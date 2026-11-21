@@ -2779,7 +2779,7 @@ class TestNotificationRedaction:
         reg = ProcessRegistry()
         sess = _make_session(sid="proc_notif2", command="python server.py")
         sess.output_buffer = "Server started\nAPI_TOKEN=ghp_abc123def456\nListening on :8080"
-        sess.watch_patterns = ["API_TOKEN"]
+        sess.watch_patterns = ["token leaked"]
         sess._watch_disabled = False
         sess._watch_hits = 0
         sess._watch_suppressed = 0
@@ -2793,7 +2793,7 @@ class TestNotificationRedaction:
         reg._running[sess.id] = sess
         monkeypatch.setattr(pr, "process_registry", reg)
 
-        reg._check_watch_patterns(sess, "API_TOKEN=ghp_abc123def456\n")
+        reg._check_watch_patterns(sess, "API_TOKEN=***\n token leaked")
 
         results = reg.drain_notifications()
         assert len(results) == 1

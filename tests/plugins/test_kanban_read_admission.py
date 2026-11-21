@@ -12,6 +12,7 @@ import pytest
 from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
 
+from hermes_cli import kanban_board_delta as kbdelta
 from hermes_cli import kanban_db as kb
 
 OK = 200
@@ -51,7 +52,7 @@ async def test_board_burst_preserves_http_worker_capacity(tmp_path, monkeypatch)
     release = threading.Event()
     count_lock = threading.Lock()
     calls = 0
-    original = kb.list_tasks
+    original = kbdelta.board_rows  # the board read's one query of every card
 
     def blocked_read(*args, **kwargs):
         nonlocal calls
@@ -61,7 +62,7 @@ async def test_board_burst_preserves_http_worker_capacity(tmp_path, monkeypatch)
         assert release.wait(10), "test did not release board read"
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(kb, "list_tasks", blocked_read)
+    monkeypatch.setattr(kbdelta, "board_rows", blocked_read)
     limiter = anyio.to_thread.current_default_thread_limiter()
     old_tokens = limiter.total_tokens
     limiter.total_tokens = 2

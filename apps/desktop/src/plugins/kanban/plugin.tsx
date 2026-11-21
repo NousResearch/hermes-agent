@@ -45,7 +45,7 @@ function KanbanCount() {
 
   // Socket-invalidated like the page (same cache); slow socketless heartbeat.
   const { data: board } = useQuery({
-    queryFn: () => fetchBoard(false),
+    queryFn: () => fetchBoard(false, scope, slug),
     queryKey: boardKey(scope, slug, false),
     refetchInterval: 60_000
   })

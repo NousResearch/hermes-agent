@@ -24,11 +24,13 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 from fastapi import (
-    APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status)
+    APIRouter, File, Form, HTTPException, Query, Response, UploadFile, WebSocket, WebSocketDisconnect,
+    status as http_status)
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
+from hermes_cli import kanban_board_delta as kbdelta
 from hermes_cli import kanban_workflow
 from hermes_cli.web_read_coalescing import coalesced_read
 from hermes_cli import kanban_db_connect as kbc
@@ -203,14 +205,17 @@ def _placeholders(ids: list) -> str:
     return ",".join(["?"] * len(ids))
 
 
-def _compute_task_diagnostics(conn: sqlite3.Connection, task_ids: Optional[list[str]] = None) -> dict[str, list[dict]]:
+def _compute_task_diagnostics(conn: sqlite3.Connection, task_ids: Optional[list[str]] = None, *,
+                              diag_config: Optional[dict] = None) -> dict[str, list[dict]]:
     """``{task_id: [diagnostic_dict, ...]}`` (tasks with none omitted) via three aggregate
-    queries (tasks, events, runs) — slurps the board; paginate if profiling shows a hotspot."""
+    queries (tasks, events, runs) — slurps the board when ``task_ids`` is None; the board read
+    passes only the cards it rebuilds, and the diagnostics config it already loaded."""
     from hermes_cli.config import load_config
 
     if task_ids is not None and not task_ids:
         return {}
-    diag_config = kd.config_from_runtime_config(load_config())
+    if diag_config is None:
+        diag_config = kd.config_from_runtime_config(load_config())
     if task_ids is not None:
         rows = conn.execute(f"SELECT * FROM tasks WHERE id IN ({_placeholders(task_ids)})", tuple(task_ids)).fetchall()
     else:
@@ -284,6 +289,46 @@ def _link_tasks(conn: sqlite3.Connection, links: dict[str, list[str]]) -> list[d
 
 
 # --- GET /board -------------------------------------------------------------
+#
+# The board keeps each card's built JSON between requests and rebuilds only what changed; a client
+# that sends the ``since``/``etag`` of the board it holds gets ``unchanged`` or a delta instead of
+# the snapshot. The cache, the rebuild rules and the wire contract live in
+# ``hermes_cli/kanban_board_delta.py``; this module supplies the card itself.
+
+def _board_card(task: kanban_db.Task, summary: Optional[str], run_started_at: Optional[int],
+                link_counts: dict[str, int], comment_count: int, progress: Optional[dict[str, int]],
+                diags: Optional[list[dict]]) -> dict[str, Any]:
+    """One board card, key for key what a full snapshot lists. Cards get a truncated summary preview
+    (the full text comes from /tasks/:id); the run clock ticks from the active run's start, not the
+    task's first-ever start."""
+    d = _task_dict(task, latest_summary=(summary[:_CARD_SUMMARY_PREVIEW_CHARS] if summary else None),
+                   current_run_started_at=run_started_at)
+    d["link_counts"] = link_counts
+    d["comment_count"] = comment_count
+    d["progress"] = progress  # per parent: children done / total, rendered as "N/M"; None without children
+    _attach_diagnostics(d, diags)
+    return d
+
+
+# Late-bound, so the card pieces stay this module's own names.
+_BOARD_HOOKS = kbdelta.CardHooks(
+    diagnostics=lambda conn, task_ids, **kw: _compute_task_diagnostics(conn, task_ids, **kw),
+    build=lambda *args: _board_card(*args))
+
+
+def _serve_board(
+    tenant: Optional[str], include_archived: bool, board: Optional[str],
+    workflow_template_id: Optional[str], current_step_key: Optional[str],
+    since: Optional[int] = None, etag: Optional[str] = None,
+) -> kbdelta.BoardReply:
+    with _board_conn(board) as (board, conn):
+        # Queue columns keep the dispatch order (priority DESC, created_at ASC); the done column is
+        # history, newest-completed first. Assignees union on-disk profiles with task assignees
+        # (``known_assignees``), so a fresh profile shows up as an empty lane at once.
+        return kbdelta.cache_for(kanban_db.kanban_db_path(board=board)).reply(
+            conn, columns=BOARD_COLUMNS, hooks=_BOARD_HOOKS, tenant=tenant, include_archived=include_archived,
+            workflow_template_id=workflow_template_id, current_step_key=current_step_key, since=since, etag=etag)
+
 
 def get_board(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
@@ -292,66 +337,12 @@ def get_board(
     workflow_template_id: Optional[str] = Query(None, description="Restrict to tasks using this workflow template id"),
     current_step_key: Optional[str] = Query(None, description="Restrict to tasks at this workflow step key")):
     """Full board grouped by status column; omitting ``board`` uses the active board
-    (``HERMES_KANBAN_BOARD`` env → on-disk ``current`` pointer → ``default``)."""
-    with _board_conn(board) as (board, conn):
-        tasks = kanban_db.list_tasks(
-            conn, tenant=tenant, include_archived=include_archived,
-            workflow_template_id=workflow_template_id, current_step_key=current_step_key)
-        # Link / comment / progress rollups are each one aggregate query rather than N per-task lookups.
-        link_counts: dict[str, dict[str, int]] = {}
-        for row in conn.execute("SELECT parent_id, child_id FROM task_links").fetchall():
-            link_counts.setdefault(row["parent_id"], {"parents": 0, "children": 0})["children"] += 1
-            link_counts.setdefault(row["child_id"], {"parents": 0, "children": 0})["parents"] += 1
-        comment_counts: dict[str, int] = {
-            r["task_id"]: r["n"] for r in conn.execute("SELECT task_id, COUNT(*) AS n FROM task_comments GROUP BY task_id")}
-        progress: dict[str, dict[str, int]] = {}  # per parent: children done / total, rendered as "N/M"
-        for row in conn.execute(
-            "SELECT l.parent_id AS pid, t.status AS cstatus FROM task_links l JOIN tasks t ON t.id = l.child_id").fetchall():
-            p = progress.setdefault(row["pid"], {"done": 0, "total": 0})
-            p["total"] += 1
-            p["done"] += row["cstatus"] == "done"
-        diagnostics_per_task = _compute_task_diagnostics(conn, task_ids=None)
-        latest_event_id = conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM task_events").fetchone()["m"]
-        columns: dict[str, list[dict]] = {c: [] for c in BOARD_COLUMNS}
-        if include_archived:
-            columns["archived"] = []
-        # One window-function query for latest summaries (avoids N+1); cards get a
-        # truncated preview, the full text comes from /tasks/:id.
-        summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
-        # One query for the active run's start per card (avoids N+1); the run
-        # clock ticks from this, not the task's first-ever start.
-        run_start_map = kanban_db.current_run_started_ats(conn, [t.id for t in tasks])
-        for t in tasks:
-            full = summary_map.get(t.id)
-            d = _task_dict(t, latest_summary=(full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None),
-                           current_run_started_at=run_start_map.get(t.id))
-            d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
-            d["comment_count"] = comment_counts.get(t.id, 0)
-            d["progress"] = progress.get(t.id)  # None when the task has no children
-            _attach_diagnostics(d, diagnostics_per_task.get(t.id))
-            columns[t.status if t.status in columns else "todo"].append(d)
-
-        # Queue lanes keep the list_tasks dispatch order; the done column is
-        # history, so order it newest-completed-first. Two stable sorts compose
-        # into the "completed_at DESC NULLS LAST, id DESC" SQL key.
-        columns["done"].sort(key=lambda d: d["id"], reverse=True)
-        columns["done"].sort(key=lambda d: (d["completed_at"] is None, -(d["completed_at"] or 0)))
-
-        # Queue columns keep list_tasks' dispatch order (priority DESC, created_at ASC).
-        tenants = [r["tenant"] for r in conn.execute("SELECT DISTINCT tenant FROM tasks WHERE tenant IS NOT NULL ORDER BY tenant")]
-        # List of known assignees for the lane-by-profile sub-grouping.
-        # Uses kanban_db.known_assignees so the lane set unions profiles
-        # currently holding non-archived tasks with profiles configured on
-        # disk — a freshly-added profile shows up as a (possibly empty)
-        # lane immediately, matching the assignee picker at /assignees
-        # which already uses this helper.
-        assignees = [entry["name"] for entry in kanban_db.known_assignees(conn)]
-        return {
-            "columns": [{"name": name, "tasks": columns[name]} for name in columns], "tenants": tenants,
-            "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time())}
+    (``HERMES_KANBAN_BOARD`` env → on-disk ``current`` pointer → ``default``). The HTTP route serves
+    the same bytes without decoding them; this is the dict form for in-process callers."""
+    return json.loads(_serve_board(tenant, include_archived, board, workflow_template_id, current_step_key).body)
 
 
-_read_board = coalesced_read(get_board)
+_read_board = coalesced_read(_serve_board)
 
 
 @router.get("/board")
@@ -361,15 +352,22 @@ async def get_board_endpoint(
     board: Optional[str] = _BOARD_Q,
     workflow_template_id: Optional[str] = Query(None, description="Restrict to tasks using this workflow template id"),
     current_step_key: Optional[str] = Query(None, description="Restrict to tasks at this workflow step key"),
+    since: Optional[str] = Query(None, description="Newest event id of the board the client holds: answer with a delta"),
+    etag: Optional[str] = Query(None, description="The etag of the board the client holds"),
 ):
     # Resolve selection before keying so a board switch cannot join an older read.
-    return await _read_board(
+    reply = await _read_board(
         tenant=tenant,
         include_archived=include_archived,
         board=board or kanban_db.get_current_board(),
         workflow_template_id=workflow_template_id,
         current_step_key=current_step_key,
+        since=kbdelta.parse_since(since),
+        etag=(etag or None),
     )
+    # The etag travels in the body and the URL only, never as an HTTP ETag: a snapshot carries ``now``
+    # and every card's ``age``, so a browser cache revalidating to a 304 would keep showing an old clock.
+    return Response(content=reply.body, media_type="application/json")
 
 
 # --- GET /tasks/:id ---------------------------------------------------------

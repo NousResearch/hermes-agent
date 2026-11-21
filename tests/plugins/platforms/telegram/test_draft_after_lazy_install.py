@@ -1,8 +1,9 @@
-"""Streaming drafts on the first gateway run after python-telegram-bot is installed on demand.
+"""Streaming drafts and vault-code prompts on the first gateway run after on-demand PTB install.
 
 The registry installs a missing platform SDK when the gateway starts (#79812), and the installer rebinds
-the SDK names only in the adapter copy the gateway runs. ``send_draft`` must still go out as MarkdownV2
-on that run instead of raising, which turns drafts off until the gateway restarts.
+the SDK names only in the adapter copy the gateway runs. ``send_draft`` and ``send_vault_code_prompt``
+must still read ``ParseMode`` from ``telegram.constants`` on that run instead of raising on the stale
+``plugins.platforms.telegram.adapter`` copy.
 """
 
 import json
@@ -51,16 +52,32 @@ pm.ensure_import = lambda name: None
 adapter = platform_registry.create_adapter("telegram", load_gateway_config().platforms[Platform.TELEGRAM])
 adapter._bot = MagicMock()
 adapter._bot.send_message_draft = AsyncMock(return_value=True)
-try:
-    result = asyncio.run(adapter.send_draft("123", 7, "**bold** and `code`", None))
-    outcome = {"success": result.success, "error": result.error}
-except Exception as exc:
-    outcome = {"raised": f"{type(exc).__name__}: {exc}"}
+adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=99, chat_id=123))
+adapter._bot.edit_message_text = AsyncMock(return_value=True)
+async def _exercise():
+    try:
+        result = await adapter.send_draft("123", 7, "**bold** and `code`", None)
+        draft_outcome = {"success": result.success, "error": result.error}
+    except Exception as exc:
+        draft_outcome = {"raised": f"{type(exc).__name__}: {exc}"}
+    try:
+        v_res = await adapter.send_vault_code_prompt("123", "example.com", "6-digit code", user_id="42",
+                                                     submit=lambda _c: True, timeout_s=60)
+        vault_outcome = {"success": v_res.success, "error": v_res.error}
+        if v_res.success:
+            await adapter._retire_vault_code_reply(("123", "99"), "submitted")
+    except Exception as exc:
+        vault_outcome = {"raised": f"{type(exc).__name__}: {exc}"}
+    return draft_outcome, vault_outcome
+outcome, vault_outcome = asyncio.run(_exercise())
 print("RESULT " + json.dumps({
     "live_module": type(adapter).__module__,
     "preinstall_disconnected": preinstall_disconnected,
     "outcome": outcome,
-    "parse_modes": [str(c.kwargs.get("parse_mode")) for c in adapter._bot.send_message_draft.await_args_list]}))
+    "parse_modes": [str(c.kwargs.get("parse_mode")) for c in adapter._bot.send_message_draft.await_args_list],
+    "vault_outcome": vault_outcome,
+    "vault_send_modes": [str(c.kwargs.get("parse_mode")) for c in adapter._bot.send_message.await_args_list],
+    "vault_edit_modes": [str(c.kwargs.get("parse_mode")) for c in adapter._bot.edit_message_text.await_args_list]}))
 """
 
 
@@ -75,3 +92,6 @@ def test_first_draft_after_on_demand_install_goes_out_as_markdown_v2(tmp_path):
     assert result["preinstall_disconnected"] == {"success": False, "error": "not_connected"}
     assert result["outcome"] == {"success": True, "error": None}
     assert result["parse_modes"] == ["MarkdownV2"]
+    assert result["vault_outcome"] == {"success": True, "error": None}
+    assert result["vault_send_modes"] == ["HTML"]
+    assert result["vault_edit_modes"] == ["HTML"]

@@ -183,7 +183,7 @@ class GatewayTurnPersistenceMixin:
             # processed" lines are new inbound messages for its turn loop (#137027).
             if automatic_notices_allowed(source):
                 response = _normalize_empty_agent_response(agent_result, response, history_len=len(history))
-            response = _sanitize_gateway_final_response(source.platform, response)
+            response = _sanitize_gateway_final_response(source.platform, response, agent_result=agent_result)
 
         # The agent thread already updated the contextvar; propagate to SessionEntry + _save() only
         # if the binding still points at the session this run was launched against.

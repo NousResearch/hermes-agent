@@ -1,7 +1,12 @@
 import pytest
+from unittest.mock import patch
+
 from agent.model_metadata import (
+    get_cached_context_length,
     is_output_cap_error,
     parse_available_output_tokens_from_error,
+    parse_context_limit_from_error,
+    save_provider_context_length,
 )
 
 
@@ -250,3 +255,34 @@ class TestParseOpenAiCompletionSplit:
                "(5000 in the messages, 1000 in the completion). Please reduce the length of the messages or completion.")
         assert parse_available_output_tokens_from_error(msg) is None
         assert not is_output_cap_error(msg)
+
+
+@pytest.mark.parametrize("msg, available", [
+    ("max_tokens exceeds the limit of 65536 (request id: abc)", 65536),
+    ("'max_tokens': 65536 is greater than the maximum of 4096 - 'max_tokens'", 4096),
+    ("max_tokens cannot be greater than max_model_len=8192 (request id: abc)", 8192),
+])
+def test_bare_provider_output_cap_comparisons(msg, available):
+    assert parse_available_output_tokens_from_error(msg) == available
+    assert is_output_cap_error(msg) is True
+
+
+@pytest.mark.parametrize("msg", [
+    "max_tokens exceeds the limit of 4096",
+    "max_completion_tokens exceeds the limit of 65536",
+    "'max_tokens': 65536 is greater than the maximum of 8192",
+])
+def test_max_tokens_cap_is_never_read_as_window(msg):
+    """A limit on max_tokens is the OUTPUT cap; reading it as the window poisoned the cache (#150519)."""
+    assert parse_context_limit_from_error(msg) is None
+    assert parse_context_limit_from_error("max_tokens cannot be greater than max_model_len=8192") == 8192
+
+
+def test_provider_window_below_minimum_never_persisted(tmp_path):
+    """Agent init rejects a sub-64K window on every later session, so the figure must not outlive the
+    request that reported it (#150519: 11 hours of failed cron inits)."""
+    with patch("agent.model_metadata._get_context_cache_path", return_value=tmp_path / "cache.yaml"):
+        save_provider_context_length("test/model", "http://x", 4096)
+        assert get_cached_context_length("test/model", "http://x") is None
+        save_provider_context_length("test/model", "http://x", 131072)
+        assert get_cached_context_length("test/model", "http://x") == 131072

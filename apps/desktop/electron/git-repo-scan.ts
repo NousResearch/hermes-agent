@@ -90,18 +90,63 @@ export function repoScanPathIsWithin(candidate: string, parent: string, options:
   )
 }
 
-async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+interface TraversalItem {
+  dir: string
+  depth: number
+}
+
+async function runTraversalQueue(
+  initialItems: TraversalItem[],
+  limit: number,
+  visit: (item: TraversalItem) => Promise<TraversalItem[]>
+): Promise<void> {
+  const queue = [...initialItems]
   let cursor = 0
+  let active = 0
 
-  async function worker(): Promise<void> {
-    while (cursor < items.length) {
-      const index = cursor
-      cursor += 1
-      await fn(items[index])
+  await new Promise<void>((resolve, reject) => {
+    let settled = false
+
+    const pump = (): void => {
+      if (settled) {
+        return
+      }
+
+      if (active === 0 && cursor >= queue.length) {
+        settled = true
+        resolve()
+
+        return
+      }
+
+      while (active < limit && cursor < queue.length) {
+        const item = queue[cursor]
+        cursor += 1
+        active += 1
+
+        void visit(item)
+          .then(
+            nextItems => {
+              if (!settled) {
+                queue.push(...nextItems)
+              }
+            },
+            error => {
+              if (!settled) {
+                settled = true
+                reject(error)
+              }
+            }
+          )
+          .finally(() => {
+            active -= 1
+            pump()
+          })
+      }
     }
-  }
 
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()))
+    pump()
+  })
 }
 
 /**
@@ -140,9 +185,9 @@ export async function scanGitRepos(roots: string[], options: RepoScanOptions = {
     return exclusions.some(excluded => repoScanPathIsWithin(candidate, excluded.value, pathOptions))
   }
 
-  async function walk(dir: string, depth: number): Promise<void> {
+  async function visit({ dir, depth }: TraversalItem): Promise<TraversalItem[]> {
     if (depth > maxDepth || isExcluded(dir)) {
-      return
+      return []
     }
 
     let entries: fs.Dirent[]
@@ -150,7 +195,7 @@ export async function scanGitRepos(roots: string[], options: RepoScanOptions = {
     try {
       entries = await fsp.readdir(dir, { withFileTypes: true })
     } catch {
-      return
+      return []
     }
 
     const gitDir = entries.find(entry => entry.name === '.git' && entry.isDirectory())
@@ -159,7 +204,7 @@ export async function scanGitRepos(roots: string[], options: RepoScanOptions = {
       try {
         await fsp.access(path.join(dir, '.git', 'HEAD'), fs.constants.R_OK)
       } catch {
-        return
+        return []
       }
 
       const normalized = normalizeRepoScanPath(dir, pathOptions)
@@ -171,12 +216,12 @@ export async function scanGitRepos(roots: string[], options: RepoScanOptions = {
         })
       }
 
-      return
+      return []
     }
 
     const skipTccProtectedPaths = (pathOptions.platform ?? process.platform) === 'darwin'
 
-    const subdirs = entries
+    return entries
       .filter(entry => entry.isDirectory() && !entry.name.startsWith('.') && !JUNK_DIRS.has(entry.name))
       .filter(entry => {
         if (!skipTccProtectedPaths) {
@@ -192,12 +237,16 @@ export async function scanGitRepos(roots: string[], options: RepoScanOptions = {
 
         return !isLibraryPackage(entry.name)
       })
-      .map(entry => path.join(dir, entry.name))
-
-    await mapLimit(subdirs, MAX_CONCURRENCY, subdir => walk(subdir, depth + 1))
+      .map(entry => ({ dir: path.join(dir, entry.name), depth: depth + 1 }))
   }
 
-  await mapLimit(searchRoots, MAX_CONCURRENCY, root => walk(root, 0))
+  await runTraversalQueue(
+    searchRoots.map(dir => ({ dir, depth: 0 })),
+    MAX_CONCURRENCY,
+    visit
+  )
 
-  return [...found.values()]
+  return [...found.entries()]
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([, repo]) => repo)
 }

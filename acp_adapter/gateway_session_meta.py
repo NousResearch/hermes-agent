@@ -12,11 +12,12 @@ from pathlib import Path
 
 from acp.schema import (
     AvailableCommand, AvailableCommandsUpdate, SessionConfigOptionSelect, SessionConfigSelectOption,
-    SessionInfoUpdate, SessionMode, SessionModeState, SessionModelState, UnstructuredCommandInput, Usage, UsageUpdate,
+    SessionInfoUpdate, SessionMode, SessionModeState, UnstructuredCommandInput, Usage, UsageUpdate,
 )
 
 from acp_adapter.modes import (
-    DEFAULT_EDIT_APPROVAL_POLICY, DEFAULT_MODE, EDIT_APPROVAL_POLICY_CONFIG_ID, EDIT_APPROVAL_POLICY_TO_MODE, MODES,
+    DEFAULT_EDIT_APPROVAL_POLICY, DEFAULT_MODE, EDIT_APPROVAL_POLICY_CONFIG_ID,
+    EDIT_APPROVAL_POLICY_TO_MODE, MODES,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,17 +80,16 @@ def reasoning_choices() -> tuple[str, ...]:
     return ("default", "none", *VALID_REASONING_EFFORTS)
 
 
-def config_options(models: SessionModelState | None, info: dict, mode_id: str) -> list:
+def config_options(models: SessionConfigOptionSelect | None, info: dict, mode_id: str) -> list:
     """Zed renders its composer pickers only from ``configOptions``: the edit mode, the model
-    (``set_session_model``'s picker ids) and the reasoning effort (``session.info``'s level)."""
+    (the provider-qualified picker ids) and the reasoning effort (``session.info``'s level)."""
     def select(config_id, name, category, current, choices):
         return SessionConfigOptionSelect(id=config_id, name=name, category=category, type="select", current_value=current,
                                          options=[SessionConfigSelectOption(value=v, name=n) for v, n in choices])
     options = [select(EDIT_APPROVAL_POLICY_CONFIG_ID, "Edits", "mode", MODES[mode_id][0],
                       [(policy, name) for policy, name, _ in MODES.values()])]
     if models is not None:
-        options.append(select("model", "Model", "model", models.current_model_id,
-                              [(m.model_id, m.name) for m in models.available_models]))
+        options.append(models)
     # ``session.info`` reports the level in force, never ``default`` (a reset session reads the profile's), so
     # ``default`` is offered only while no level is set: a pick never shows as another value than the one chosen.
     levels = reasoning_choices()[1:]
@@ -124,14 +124,15 @@ async def session_config_options(client, session_id, models, info, mode_id):
     return options
 
 
-def model_state(info: dict) -> SessionModelState | None:
-    """The picker for ``session.info`` from shared inventory, with a current-model fallback. Blocking."""
+def model_state(info: dict) -> SessionConfigOptionSelect | None:
+    """The picker for the session's model (``session.info``), from the shared inventory; a single
+    current-model row when nothing is listable, as main's ``_build_model_state``. Blocking."""
     from acp_adapter.auth import detect_provider
     from acp_adapter.model_catalog import build_model_state, fallback_model_state
     model = str(info.get("model") or "").strip()
-    provider = info.get("provider") or detect_provider() or "openrouter"
+    provider = info.get("provider_route") or info.get("provider") or detect_provider() or "openrouter"
     try:
-        picker = build_model_state(model, provider, "")
+        picker = build_model_state(model, provider, str(info.get("base_url") or ""))
         if picker is not None:
             return picker
     except Exception:

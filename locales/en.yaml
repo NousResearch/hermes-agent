@@ -237,6 +237,7 @@ gateway:
       timed_out: "timed out; dispatcher will retry"
       blocked: "blocked; needs attention"
       review_requested: "handed off for review; the implementation is done"
+      scheduled: "parked in scheduled; waiting on time or an external event, not resumed by this notification"
       changes_requested: "review requested changes (BLOCK); implementation is not approved"
       block_loop_detected: "routed to triage after repeated blocks; orchestration attention needed"
       status_default: "status changed"
@@ -248,6 +249,7 @@ gateway:
     ping:
       completed: "✔ {head} done — {title}{handoff}"
       review_requested: "👀 {head} ready for review — {title}{handoff}"
+      scheduled: "🕒 {head} scheduled — {title}{handoff}"
       changes_default_reason: "reviewer feedback requires changes"
       reviewer_suffix: " — reviewer @{reviewer}"
       implementer_suffix: " → implementer @{implementer}"

@@ -49,6 +49,36 @@ beforeEach(() => {
 })
 
 describe('loadArchivedSessions', () => {
+  it('publishes only archived rows while preserving archived pins and profile identities', async () => {
+    const archived = row('same', { profile: 'default' })
+    const archivedPin = row('same', { profile: 'work', pinned: true })
+    listAllProfileSessions.mockResolvedValueOnce({
+      sessions: [pinnedRow('live-pin'), archived, archivedPin],
+      total: 2,
+      limit: PAGE_SIZE,
+      offset: 0
+    })
+
+    await loadArchivedSessions()
+
+    expect($archivedSessions.get()).toEqual([archived, archivedPin])
+  })
+
+  it('publishes an empty archive when the backend returns only live pins', async () => {
+    $archivedSessions.set([row('previously-archived')])
+    listAllProfileSessions.mockResolvedValueOnce({
+      sessions: [pinnedRow('live-pin')],
+      total: 0,
+      limit: PAGE_SIZE,
+      offset: 0
+    })
+
+    await loadArchivedSessions()
+
+    expect($archivedSessions.get()).toEqual([])
+    expect($archivedSessionsLoading.get()).toBe(false)
+  })
+
   it('keeps same-id archived sessions from different profiles across pages', async () => {
     listAllProfileSessions
       .mockResolvedValueOnce({
@@ -179,7 +209,7 @@ describe('listEveryArchivedSession', () => {
     const sessions = await listEveryArchivedSession()
 
     expect(sessions.filter(session => session.archived)).toHaveLength(PAGE_SIZE)
-    expect(sessions.filter(session => session.id === 'pin-x')).toHaveLength(1)
+    expect(sessions.filter(session => session.id === 'pin-x')).toHaveLength(0)
     expect(listAllProfileSessions).toHaveBeenCalledTimes(2)
   })
 
@@ -251,9 +281,9 @@ describe('listEveryArchivedSession', () => {
 
     const sessions = await listEveryArchivedSession()
 
-    // Every archived row plus the pin — none skipped, pin listed once.
-    expect(sessions).toHaveLength(2 * PAGE_SIZE + 2)
-    expect(sessions.filter(s => s.id === 'pin-x')).toHaveLength(1)
+    // Every archived row — none skipped, live pins excluded.
+    expect(sessions).toHaveLength(2 * PAGE_SIZE + 1)
+    expect(sessions.filter(s => s.id === 'pin-x')).toHaveLength(0)
     expect(sessions.filter(s => s.archived).map(s => s.id)).toContain(`a-${2 * PAGE_SIZE}`)
     expect(listAllProfileSessions).toHaveBeenNthCalledWith(2, PAGE_SIZE, 0, 'only', 'recent', 'all', {}, PAGE_SIZE)
     expect(listAllProfileSessions).toHaveBeenNthCalledWith(3, PAGE_SIZE, 0, 'only', 'recent', 'all', {}, 2 * PAGE_SIZE)
@@ -286,8 +316,8 @@ describe('listEveryArchivedSession', () => {
     // reached total.
     expect(calls).toBe(5)
     expect(sessions.filter(s => s.archived)).toHaveLength(total)
-    // The 100 distinct pins ride along once each, not once per page.
-    expect(sessions.filter(s => !s.archived)).toHaveLength(100)
+    // Back-filled live pins never enter either archive view.
+    expect(sessions.filter(s => !s.archived)).toHaveLength(0)
   })
 
   it('reads a deep archive in backend-sized pages so the merge path re-reads its prefix fewer times', async () => {

@@ -299,6 +299,8 @@ declare global {
       }
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
+      /** Withdraw this session's OS notifications (all kinds, or only `kinds`); resolves to how many closed. */
+      dismissNotifications?: (payload: { sessionId: string; kinds?: string[] }) => Promise<number>
       /** Launch -> ready ms for the first caller per app launch, null afterwards. Absent on older shells. */
       claimStartupLatency?: () => Promise<null | number>
       requestMicrophoneAccess: () => Promise<boolean>

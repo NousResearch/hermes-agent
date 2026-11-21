@@ -66,15 +66,17 @@ def delete_in_transaction(holder, conn, session_id, payload, *, media_root, owne
     from ..conversation._store.core import _delete_unreferenced_system_prompts
     from ..conversation._store.messages import _bump_conversation_generation
     from ..conversation._store.retirement import retire_sessions
+    from ..conversation._store.sql_common import prompt_hashes_of
     targets = delete_targets(conn, session_id, owner)
     require_idle(holder, conn, targets)
+    hashes = prompt_hashes_of(conn, targets)
     retire_sessions(conn, targets, media_root=media_root)
     for sid in targets:
         _bump_conversation_generation(holder, conn, sid, 'session_reset')
         conn.execute('UPDATE sessions SET parent_session_id=NULL, runtime_revision=runtime_revision+1 WHERE parent_session_id=?', (sid,))
         conn.execute('DELETE FROM messages WHERE session_id=?', (sid,))
     conn.executemany('DELETE FROM sessions WHERE id=?', [(sid,) for sid in targets])
-    _delete_unreferenced_system_prompts(conn)
+    _delete_unreferenced_system_prompts(conn, hashes)
     return set(), {'deleted_ids': targets}
 
 

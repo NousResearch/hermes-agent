@@ -18,6 +18,7 @@ from persistence.sqlite.conversation._store.sql_common import (
     _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY, _sql_in_window, _sql_session_last_active,
     _sql_session_last_active_by_id, escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks,
     _placeholders as _session_ids_placeholders, _source_match_clause, launch_stub_filter_sql,
+    prompt_hashes_of,
 )
 from persistence.sqlite.conversation._store.compression import (
     _CHAIN_CAP, _UNSET_CREATED_SQL, get_compression_chain, get_compression_tip,
@@ -641,11 +642,13 @@ def update_session_meta(
 def update_system_prompt(holder: StoreHolder, session_id: str, system_prompt: Optional[str]) -> None:
     """Store the full assembled system prompt snapshot."""
     def _do(conn):
+        held = prompt_hashes_of(conn, [session_id])
+        stored = holder._store_system_prompt(conn, system_prompt)
         conn.execute(
             "UPDATE sessions SET system_prompt_hash = ?, system_prompt = NULL WHERE id = ?",
-            (holder._store_system_prompt(conn, system_prompt), session_id),
+            (stored, session_id),
         )
-        _delete_unreferenced_system_prompts(conn)
+        _delete_unreferenced_system_prompts(conn, held | {stored})
     holder._execute_write(_do)
 
 
@@ -656,9 +659,10 @@ def update_session_tool_names(holder: StoreHolder, session_id: str, pin: Any) ->
     (legacy rows: an inline JSON name list); ``get_session`` resolves either."""
     payload = json.dumps(pin) if pin is not None else None
     def _do(conn):
-        conn.execute("UPDATE sessions SET tool_names = ? WHERE id = ?",
-                     (holder._store_system_prompt(conn, payload), session_id))
-        _delete_unreferenced_system_prompts(conn)
+        held = prompt_hashes_of(conn, [session_id])
+        stored = holder._store_system_prompt(conn, payload)
+        conn.execute("UPDATE sessions SET tool_names = ? WHERE id = ?", (stored, session_id))
+        _delete_unreferenced_system_prompts(conn, held | {stored})
     holder._execute_write(_do)
 
 
@@ -1704,13 +1708,16 @@ def delete_session(
         ):
             return False
         from persistence.sqlite.conversation._store.retirement import retire_sessions
+        # The prompts these rows reference, read before the deletes: the reap then probes those
+        # hashes by key instead of scanning the whole system_prompts table under the write lock.
+        hashes = prompt_hashes_of(conn, [*scope, *_collect_delegate_child_ids(conn, scope)])
         retire_sessions(conn, scope, media_root=media_root)
         delegate_ids = _delete_delegate_children(conn, scope, media_root=media_root)
         for sid in scope:  # orphan remaining children (branches) so FK is satisfied
             conn.execute("UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (sid,))
             conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
         conn.executemany("DELETE FROM sessions WHERE id = ?", [(sid,) for sid in scope])
-        _delete_unreferenced_system_prompts(conn)
+        _delete_unreferenced_system_prompts(conn, hashes)
         removed_ids.extend([session_id, *sorted(set(scope) - {session_id}), *sorted(delegate_ids)])
         return True
     holder._execute_write(_do)
@@ -1767,9 +1774,10 @@ def delete_session_if_empty(holder: StoreHolder, session_id: str, sessions_dir: 
         # (ON DELETE RESTRICT) and delete without re-evaluating eligibility. Housekeeping, not
         # a user delete: its fence ages out at the horizon (an untitled row is never a Bot Chat).
         from persistence.sqlite.conversation._store.retirement import retire_sessions
+        hashes = prompt_hashes_of(conn, [session_id])
         retire_sessions(conn, [session_id], expiring=[session_id], media_root=media_root)
         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-        _delete_unreferenced_system_prompts(conn)
+        _delete_unreferenced_system_prompts(conn, hashes)
         return True
     return (session_id,) if holder._execute_write(_do) else ()
 
@@ -1839,6 +1847,7 @@ def delete_sessions(
                 return 0
             expanded = expand(existing)
         from persistence.sqlite.conversation._store.retirement import retire_sessions
+        hashes = prompt_hashes_of(conn, [*expanded, *_collect_delegate_child_ids(conn, expanded)])
         retire_sessions(conn, expanded, media_root=media_root)
         delegate_ids = _delete_delegate_children(conn, expanded, media_root=media_root)
         for chunk in _id_chunks(expanded):
@@ -1848,7 +1857,7 @@ def delete_sessions(
             )
             conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
             conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
-        _delete_unreferenced_system_prompts(conn)
+        _delete_unreferenced_system_prompts(conn, hashes)
         removed_ids.extend([*expanded, *delegate_ids])
         # Count the ids the CALLER asked for, not the expanded chain links —
         # the dashboard toast should say "3 deleted" when the user selected
@@ -1878,6 +1887,7 @@ def delete_empty_sessions(holder: StoreHolder, sessions_dir: Optional[Path] = No
             f"SELECT id FROM sessions WHERE {_EMPTY_SESSION_WHERE}"
         ).fetchall()}
         from persistence.sqlite.conversation._store.retirement import retire_prunable
+        hashes = prompt_hashes_of(conn, session_ids)
         session_ids = retire_prunable(conn, sorted(session_ids), media_root=media_root)
         if not session_ids:
             return 0
@@ -1889,7 +1899,7 @@ def delete_empty_sessions(holder: StoreHolder, sessions_dir: Optional[Path] = No
             conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
             conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
             removed_ids.extend(chunk)
-        _delete_unreferenced_system_prompts(conn)
+        _delete_unreferenced_system_prompts(conn, hashes)
         return len(session_ids)
     holder._execute_write(_do)
     return tuple(removed_ids)

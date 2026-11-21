@@ -249,6 +249,19 @@ def _id_chunks(ids, size: int = _SQL_IN_CHUNK):
         yield ids[start:start + size]
 
 
+def prompt_hashes_of(conn, session_ids) -> set:
+    """The ``system_prompts`` hashes (prompt and tools pin) these sessions reference NOW: the only
+    rows a change to or a deletion of them can leave unreferenced. Read it before the statement and
+    hand it to ``_delete_unreferenced_system_prompts`` after, so the reap probes those rows by key
+    instead of scanning the whole table under the write lock."""
+    found: set = set()
+    for chunk in _id_chunks(session_ids):
+        for row in conn.execute(
+                f"SELECT system_prompt_hash, tool_names FROM sessions WHERE id IN ({_placeholders(chunk)})", chunk):
+            found.update(value for value in row if value)
+    return found
+
+
 def _in_one_read(holder, read):
     """``read(conn)`` in one read transaction (inside a ``transcript_read_snapshot``: its transaction)."""
     def run(conn):

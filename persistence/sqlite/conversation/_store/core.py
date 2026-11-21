@@ -117,12 +117,24 @@ _IMPORT_MAX_SESSIONS, _IMPORT_MAX_MESSAGES_PER_SESSION, _IMPORT_MAX_TOTAL_MESSAG
 _IMPORT_MAX_SESSION_BYTES, _IMPORT_MAX_TOTAL_BYTES = 5 * 1024 * 1024, 25 * 1024 * 1024
 
 
-def _delete_unreferenced_system_prompts(conn) -> None:
-    conn.execute(
-        "DELETE FROM system_prompts WHERE NOT EXISTS ("
-        "SELECT 1 FROM sessions WHERE sessions.system_prompt_hash = system_prompts.hash) AND NOT EXISTS ("
-        "SELECT 1 FROM sessions WHERE sessions.tool_names = system_prompts.hash)"
-    )
+def _delete_unreferenced_system_prompts(conn, hashes=None) -> None:
+    """Delete the ``system_prompts`` rows no session references.
+
+    With *hashes* (``prompt_hashes_of`` read before the statement, plus any hash the statement
+    stored) only those rows are probed, by key. The whole-table form reads a leaf page per prompt
+    row under the write lock, so it is kept for the maintenance sweep only."""
+    unreferenced = (
+        "NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.system_prompt_hash = system_prompts.hash) AND "
+        "NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.tool_names = system_prompts.hash)")
+    if hashes is None:
+        conn.execute("DELETE FROM system_prompts WHERE " + unreferenced)
+        return
+    keys = sorted({value for value in hashes if value})
+    for start in range(0, len(keys), 500):
+        chunk = keys[start:start + 500]
+        conn.execute(
+            f"DELETE FROM system_prompts WHERE hash IN ({','.join('?' * len(chunk))}) AND {unreferenced}",
+            chunk)
 
 
 def _session_row_dict(row: sqlite3.Row) -> dict[str, Any]:

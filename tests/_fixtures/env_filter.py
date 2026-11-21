@@ -182,6 +182,8 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_HOME_MODE",
     "HERMES_AGENT_USE_LEGACY_SESSION_KEYS",
     "HERMES_NEMO_RELAY_PLUGINS_TOML",
+    "HERMES_PROFILE",
+    "HERMES_PROFILE_NAME",
     # Kanban path/board pins must never leak from a developer shell or
     # dispatched worker into tests; otherwise tests can write fake tasks to
     # the real ~/.hermes/kanban.db instead of the per-test HERMES_HOME.

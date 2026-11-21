@@ -5,6 +5,17 @@ import sqlite3
 import time
 from typing import Any, Optional
 
+def validate_context_isolation(context_isolation: str) -> None:
+    """Refuse a worker-context policy this release does not know."""
+    from hermes_cli.kanban_db import VALID_CONTEXT_ISOLATIONS
+
+    if context_isolation not in VALID_CONTEXT_ISOLATIONS:
+        raise ValueError(
+            "context_isolation must be one of "
+            f"{sorted(VALID_CONTEXT_ISOLATIONS)}, got {context_isolation!r}"
+        )
+
+
 def inherit_creator_origin(
     conn: sqlite3.Connection, task_id: str, creator_task_id: Optional[str], *,
     created_at: int,

@@ -66,8 +66,8 @@ class TodoStore:
                 existing[validated["id"]] = validated
                 self._items.append(validated)
                 continue
-            if t.get("content"):
-                cur["content"] = self._cap_content(str(t["content"]).strip())
+            if content := self._content_text(t.get("content")):  # blank/null keeps the old text
+                cur["content"] = self._cap_content(content)
             if t.get("status") and str(t["status"]).strip().lower() in VALID_STATUSES:
                 cur["status"] = str(t["status"]).strip().lower()
             if "parent" in t:
@@ -131,6 +131,11 @@ class TodoStore:
         return "\n".join(lines) if len(lines) > 1 else None
 
     @staticmethod
+    def _content_text(value: Any) -> str:
+        """Stripped item content; JSON ``null`` reads as missing, never as the text ``"None"``."""
+        return "" if value is None else str(value).strip()
+
+    @staticmethod
     def _cap_content(content: str) -> str:
         """Truncate to MAX_TODO_CONTENT_CHARS keeping the head (the actionable part) + marker."""
         if len(content) > MAX_TODO_CONTENT_CHARS:
@@ -143,7 +148,7 @@ class TodoStore:
         if not isinstance(item, dict):
             return {"id": "?", "content": "(invalid item)", "status": "pending"}
         item_id = str(item.get("id", "")).strip() or "?"
-        content = str(item.get("content", "")).strip()
+        content = TodoStore._content_text(item.get("content"))
         if not content:
             raise ValueError(
                 f"Todo item '{item_id}' has empty or missing content. "

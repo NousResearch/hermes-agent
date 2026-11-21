@@ -53,7 +53,8 @@ export const jaNotifications = {
     unsupported: 'このバックエンドでは、スマートフォン通知はアクティビティの影響を受けません。',
     disconnected: '接続されていません。',
     watchingComputer: (time: string) => `このウィンドウで会話を開いている間、このコンピューターを最後に使った時刻が Hermes に伝えられます。最後の入力は${time}前です。`,
-    watchingWindow: (time: string) => `このウィンドウで会話を開いている間、このウィンドウを最後に使った時刻が Hermes に伝えられます。最後の入力は${time}前です。`
+    watchingWindow: (time: string) => `このウィンドウで会話を開いている間、このウィンドウを最後に使った時刻が Hermes に伝えられます。最後の入力は${time}前です。`,
+    watchingWindowNoInput: 'このウィンドウで会話を開いている間、このウィンドウを最後に使った時刻が Hermes に伝えられます。まだ入力はありません。'
   },
   test: 'テスト通知を送信',
   testTitle: 'Hermes',

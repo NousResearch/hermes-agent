@@ -53,7 +53,8 @@ export const enNotifications = {
     unsupported: 'Phone notifications are not affected by activity on this backend.',
     disconnected: 'Not connected.',
     watchingComputer: (time: string) => `While a conversation is open in this window, Hermes is told when you last used this computer. Last input ${time} ago.`,
-    watchingWindow: (time: string) => `While a conversation is open in this window, Hermes is told when you last used this window. Last input ${time} ago.`
+    watchingWindow: (time: string) => `While a conversation is open in this window, Hermes is told when you last used this window. Last input ${time} ago.`,
+    watchingWindowNoInput: 'While a conversation is open in this window, Hermes is told when you last used this window. No input seen yet.'
   },
   test: 'Send test notification',
   testTitle: 'Hermes',

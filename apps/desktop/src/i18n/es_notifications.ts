@@ -54,7 +54,8 @@ export const esNotifications = {
     unsupported: 'En este backend, las notificaciones del teléfono no dependen de tu actividad.',
     disconnected: 'Sin conexión.',
     watchingComputer: (time: string) => `Mientras haya una conversación abierta en esta ventana, Hermes sabe cuándo usaste este equipo por última vez. Última entrada hace ${time}.`,
-    watchingWindow: (time: string) => `Mientras haya una conversación abierta en esta ventana, Hermes sabe cuándo usaste esta ventana por última vez. Última entrada hace ${time}.`
+    watchingWindow: (time: string) => `Mientras haya una conversación abierta en esta ventana, Hermes sabe cuándo usaste esta ventana por última vez. Última entrada hace ${time}.`,
+    watchingWindowNoInput: 'Mientras haya una conversación abierta en esta ventana, Hermes sabe cuándo usaste esta ventana por última vez. Aún no se ha detectado ninguna entrada.'
   },
   test: 'Enviar notificación de prueba',
   testTitle: 'Hermes',

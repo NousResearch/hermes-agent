@@ -54,7 +54,8 @@ export const frNotifications = {
     unsupported: 'Sur ce backend, les notifications du téléphone ne dépendent pas de votre activité.',
     disconnected: 'Non connecté.',
     watchingComputer: (time: string) => `Tant qu’une conversation est ouverte dans cette fenêtre, Hermes sait quand vous avez utilisé cet ordinateur pour la dernière fois. Dernière saisie il y a ${time}.`,
-    watchingWindow: (time: string) => `Tant qu’une conversation est ouverte dans cette fenêtre, Hermes sait quand vous avez utilisé cette fenêtre pour la dernière fois. Dernière saisie il y a ${time}.`
+    watchingWindow: (time: string) => `Tant qu’une conversation est ouverte dans cette fenêtre, Hermes sait quand vous avez utilisé cette fenêtre pour la dernière fois. Dernière saisie il y a ${time}.`,
+    watchingWindowNoInput: 'Tant qu’une conversation est ouverte dans cette fenêtre, Hermes sait quand vous avez utilisé cette fenêtre pour la dernière fois. Aucune saisie détectée pour l’instant.'
   },
   test: 'Envoyer une notification de test',
   testTitle: 'Hermes',

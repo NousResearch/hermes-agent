@@ -109,11 +109,11 @@ export interface PresenceReporterDeps {
   now?: () => number
 }
 
-/** The evidence the settings readout shows: its basis and how long ago the newest input was, or
- *  how long the reporter has been listening when it has seen none. */
+/** The evidence the settings readout shows: its basis and how long ago the newest input was; null
+ *  when none was seen yet. */
 export interface PresenceInputAge {
   basis: PresenceEvidence['basis']
-  idleSeconds: number
+  idleSeconds: null | number
 }
 
 export interface PresenceReporter {
@@ -352,9 +352,9 @@ export function createPresenceReporter(deps: PresenceReporterDeps): PresenceRepo
   }
 
   const inputAge = (): PresenceInputAge => {
-    const current = evidence()
+    const { basis, idleSeconds } = evidence()
 
-    return { basis: current.basis, idleSeconds: current.idleSeconds ?? (now() - startedAt) / 1000 }
+    return { basis, idleSeconds }
   }
 
   const offSystem = deps.system?.onChange(adopt)

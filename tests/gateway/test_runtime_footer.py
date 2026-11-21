@@ -3,9 +3,15 @@ appended to final gateway replies."""
 
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
+import gateway.run as gateway_run
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.event import MessageEvent
+from gateway.run import GatewayRunner
 from gateway.runtime_footer import (
     _home_relative_cwd,
     _model_short,
@@ -13,6 +19,7 @@ from gateway.runtime_footer import (
     format_runtime_footer,
     resolve_footer_config,
 )
+from gateway.session import SessionSource
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +282,57 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
         model="qwen/qwen3.8-max", context_tokens=0, context_length=None, cwd="/x",
         requested_model="gpt-5.6-sol", served_model="qwen/qwen3.8-max", fields=["served_model"])
     assert line == "gpt-5.6-sol → qwen/qwen3.8-max"
-    # Served == requested (no header, no fallback): field skipped, nothing empty rendered.
+
+
+# ---------------------------------------------------------------------------
+# /footer slash command argument parsing (message-event field regression)
+# ---------------------------------------------------------------------------
+
+def _footer_source() -> SessionSource:
+    return SessionSource(
+        platform=Platform.TELEGRAM, user_id="u1", chat_id="c1",
+        user_name="tester", chat_type="dm",
+    )
+
+
+def _make_footer_runner(tmp_path: Path):
+    """A runner whose _handle_footer_command has enough plumbing to run."""
+    runner = object.__new__(GatewayRunner)
+    runner.config = MagicMock()
+    runner.config.multiplex_profiles = False
+    runner._resolve_profile_home_for_source = lambda _source: tmp_path
+    return runner
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text,expect",
+    [
+        ("/footer status", "📎 Runtime footer: **OFF**"),
+        ("/footer on", "📎 Runtime footer: **ON**"),
+    ],
+)
+async def test_footer_command_reads_event_text(tmp_path, monkeypatch, text, expect):
+    """Regression: the handler used to read ``event.message`` (a field
+    MessageEvent doesn't have), so every argument was silently swallowed and
+    bare ``/footer`` toggled the global setting even for ``/footer status``."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path, raising=False)
+    user_config = {"display": {"runtime_footer": {"enabled": False}}}
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda *_a, **_k: user_config)
+    monkeypatch.setattr(
+        gateway_run, "_write_raw_config_leaf",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not write on a read-only arg")),
+        raising=False,
+    )
+    runner = _make_footer_runner(tmp_path)
+    out = await runner._handle_footer_command(
+        MessageEvent(text=text, source=_footer_source()))
+    assert out.startswith(expect)
+
+
+def test_format_footer_served_equal_requested_renders_nothing():
+    """Served == requested (no header, no fallback): field skipped, nothing rendered."""
     assert format_runtime_footer(
         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
         served_model=None, fields=["served_model"]) == ""

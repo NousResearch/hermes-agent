@@ -65,6 +65,23 @@ class TestKnownPrefixes:
 
 
 
+    def test_supabase_sbp_token_masked(self):
+        """``sbp_`` (Supabase management token) is prefix-masked; a short fragment is not."""
+        from agent.redact import redact_terminal_output
+
+        body = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8"  # 40-char body, concatenated
+        token = "sbp_" + body  # no contiguous literal in this file (push-protection)
+
+        for text in (
+            redact_sensitive_text(token),
+            redact_terminal_output(token, "security find-generic-password -w"),
+        ):
+            assert body not in text, text
+            assert "sbp_" in text  # the vendor prefix survives in the mask
+
+        # A short ``sbp_`` fragment (below the 20-char body floor) is left alone.
+        assert redact_sensitive_text("sbp_short") == "sbp_short"
+
     def test_gitlab_token_prefixes(self):
         """GitLab token families redact via their literal prefixes.
 

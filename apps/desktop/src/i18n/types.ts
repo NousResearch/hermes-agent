@@ -4077,6 +4077,7 @@ export interface Translations extends NoticeTranslations {
       commandDetails: string
       moreOptions: string
       allowSession: string
+      switchToYolo: string
       alwaysAllowMenu: string
       jumpToApproval: string
       reject: string

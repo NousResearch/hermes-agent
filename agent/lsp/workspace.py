@@ -55,8 +55,14 @@ def _walk_up(start: Path) -> Iterator[Path]:
         cur = parent
 
 
+def _is_git_marker(dotgit: Path) -> bool:
+    """A ``.git`` file (linked worktree / submodule) or a ``.git`` dir holding ``HEAD``, as git requires.
+    A stray empty ``~/.git`` otherwise gates every file under $HOME in, rooting servers at $HOME."""
+    return dotgit.is_file() or (dotgit / "HEAD").is_file()
+
+
 def find_git_worktree(start: str) -> Optional[str]:
-    """Return the nearest ancestor dir containing ``.git`` (file or dir — worktrees count), else ``None``."""
+    """Return the nearest ancestor dir with a valid ``.git`` (file or dir — worktrees count), else ``None``."""
     start_path = _start_dir(start)
     if start_path is None:
         return None
@@ -66,7 +72,7 @@ def find_git_worktree(start: str) -> Optional[str]:
     resolved = None
     for cur in _walk_up(start_path):
         try:
-            if (cur / ".git").exists():
+            if _is_git_marker(cur / ".git"):
                 resolved = str(cur)
                 break
         except OSError:

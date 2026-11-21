@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { createPluginContext } from '@/contrib/plugin'
 import { allKeybindActions, contributedKeybindHandler, keybindAction, KEYBINDS_AREA } from '@/lib/keybinds/actions'
-import { bindingsFor } from '@/store/keybinds'
+import { bindingsFor, resetBinding, setBinding } from '@/store/keybinds'
 
 // The plugin-command contract: a plugin ships a hotkey through the `keybinds`
 // area and it behaves like a built-in — it dispatches, it resolves a combo for
@@ -40,6 +40,24 @@ describe('contributed keybind actions', () => {
 
     expect(contributedKeybindHandler('demo.newThing')).toBeUndefined()
     expect(allKeybindActions().some(a => a.id === 'demo.newThing')).toBe(false)
+  })
+
+  it('keeps its default when the user rebinds an unrelated action', () => {
+    const ctx = createPluginContext('demo')
+
+    const dispose = ctx.register({
+      id: 'late',
+      area: KEYBINDS_AREA,
+      data: { id: 'demo.late', category: 'view', defaults: ['mod+alt+j'], label: 'Demo: Late', run: () => undefined }
+    })
+
+    setBinding('session.new', ['mod+alt+k'])
+
+    expect(bindingsFor('demo.late')).toEqual(['mod+alt+j'])
+    expect(JSON.parse(localStorage.getItem('hermes.desktop.keybinds') ?? '{}')).not.toHaveProperty('demo.late')
+
+    resetBinding('session.new')
+    dispose()
   })
 
   it('cannot shadow a built-in action id', () => {

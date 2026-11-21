@@ -70,7 +70,10 @@ function persistBindings(bindings: KeybindBindings, options: WriteOptions): void
   const diff: KeybindBindings = {}
 
   for (const action of allKeybindActions()) {
-    const current = bindings[action.id] ?? []
+    // `bindingsFor`, not `bindings[id] ?? []`: a plugin action registered
+    // after boot has no entry in `bindings`, and reading that as [] would
+    // persist it as unbound on the first unrelated rebind.
+    const current = bindingsFor(action.id, bindings)
 
     if (explicitIds.has(action.id) || !arraysEqual(current, defaults[action.id] ?? [])) {
       diff[action.id] = current

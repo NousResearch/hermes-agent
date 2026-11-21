@@ -2250,10 +2250,8 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     gw_running = _check_gateway_running(old_dir)
     service_removed = live_mux = renamed = False
     old_identity = None
-    with reserve_plugin_manager_for_home(old_dir) as (_unloaded, teardown_error):
+    with contextlib.ExitStack() as reservations:
         try:
-            if teardown_error is not None:
-                raise teardown_error
             service_removed = _cleanup_gateway_service(old_canon, old_dir)
             _maybe_unregister_gateway_service(old_canon)
             if gw_running:
@@ -2264,6 +2262,9 @@ def rename_profile(old_name: str, new_name: str) -> Path:
             if live_mux:
                 mark_named_profile_deleted(old_dir)
                 _notify_multiplexer(old_canon)
+            _unloaded, teardown_error = reservations.enter_context(reserve_plugin_manager_for_home(old_dir))
+            if teardown_error is not None:
+                raise teardown_error
             shutdown_mcp_servers(scope=hermes_home_key(old_dir))
             if live_mux and not wait_profile_unowned(old_dir):
                 raise RuntimeError("a running gateway still owns this profile; retry the rename once it settles")

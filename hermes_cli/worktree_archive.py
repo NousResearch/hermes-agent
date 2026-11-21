@@ -292,20 +292,42 @@ def snapshot_worktree(repo_root: str, wt_path, *, reason: str, max_untracked_mb:
         # Every blob from the exact bytes on disk (add converted them per attributes).
         _rehash_raw(wt, tenv)
         work_tree = _ok(["write-tree"], wt, tenv).strip()
-        index_commit = _ok(["commit-tree", index_tree, "-p", head, "-m", f"index of {wt.name}"], wt, env).strip()
-        meta = {"version": 1, "name": wt.name, "path": str(wt), "repo_root": str(repo_root),
-                "branch": branch, "head": head, "index_commit": index_commit,
-                "created": int(time.time()), "reason": reason, "skipped_untracked": skipped}
-        message = f"{_SUBJECT}{wt.name}\n\n{json.dumps(meta, indent=1, ensure_ascii=False)}\n"
-        sha = _ok(["commit-tree", work_tree, "-p", head, "-p", index_commit], wt, env,
-                  stdin_text=message).strip()
     finally:
         for leftover in (tmp_index, tmp_index.with_name(tmp_index.name + ".lock"), pathspec):
             leftover.unlink(missing_ok=True)
-    ref = _create_ref(repo_root, wt.name, sha, env)
-    logger.info("Archived worktree %s -> %s (%s)", wt, ref, reason)
-    return Archive(ref=ref, name=ref[len(ARCHIVE_PREFIX):], sha=sha, created=meta["created"], meta=meta,
-                   staged=staged)
+    arc = _write_archive(repo_root, wt, env, name=wt.name, head=head, index_tree=index_tree, work_tree=work_tree,
+                         meta={"path": str(wt), "branch": branch, "reason": reason, "skipped_untracked": skipped})
+    arc.staged = staged
+    logger.info("Archived worktree %s -> %s (%s)", wt, arc.ref, reason)
+    return arc
+
+
+def _write_archive(repo_root: str, cwd, env, *, name: str, head: str, index_tree: str, work_tree: str,
+                   meta: dict) -> Archive:
+    """Commit and publish one archive: ``I`` (*index_tree*, parent *head*) and ``W`` (*work_tree*,
+    parents *head* and ``I``) carrying the metadata JSON that restore and listing read."""
+    index_commit = _ok(["commit-tree", index_tree, "-p", head, "-m", f"index of {name}"], cwd, env).strip()
+    meta = {"version": 1, "name": name, "repo_root": str(repo_root), "head": head, "index_commit": index_commit,
+            "created": int(time.time()), **meta}
+    message = f"{_SUBJECT}{name}\n\n{json.dumps(meta, indent=1, ensure_ascii=False)}\n"
+    sha = _ok(["commit-tree", work_tree, "-p", head, "-p", index_commit], cwd, env, stdin_text=message).strip()
+    ref = _create_ref(repo_root, name, sha, env)
+    return Archive(ref=ref, name=ref[len(ARCHIVE_PREFIX):], sha=sha, created=meta["created"], meta=meta)
+
+
+def snapshot_branch(repo_root: str, branch: str, *, reason: str) -> Archive:
+    """Archive a branch that has no worktree (its tip's tree as both index and working state), so
+    ``hermes worktree restore`` recreates the branch in a fresh tree. Raises :class:`ArchiveError`."""
+    env = _env(repo_root)
+    head = _branch_tip(repo_root, branch, env)
+    if head is None:
+        raise ArchiveError(f"branch {branch} has no commit to archive")
+    tree = _ok(["rev-parse", f"{head}^{{tree}}"], repo_root, env).strip()
+    arc = _write_archive(repo_root, repo_root, env, name=ref_safe(branch.rsplit("/", 1)[-1]), head=head,
+                         index_tree=tree, work_tree=tree,
+                         meta={"branch": branch, "reason": reason, "skipped_untracked": []})
+    logger.info("Archived branch %s -> %s (%s)", branch, arc.ref, reason)
+    return arc
 
 
 def _parse_meta(body: str) -> dict:

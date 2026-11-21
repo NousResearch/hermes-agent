@@ -852,6 +852,34 @@ def _path_env_key(run_env: dict) -> str | None:
     return next((k for k in run_env if k.upper() == "PATH"), None) if _IS_WINDOWS else "PATH"
 
 
+def _finalize_execution_env(env: dict, execution_context, *, authoritative_keys=()) -> dict:
+    """Keep explicit routing exact after defaults/sanitization, without restoring secrets.
+
+    PATH is not a credential: an explicitly chosen search path must not acquire
+    host executable directories from the generic terminal convenience defaults.
+    """
+    if execution_context is None:
+        return env
+    execution_context.check()
+    context = execution_context.context
+    for key in context.env_unset - set(authoritative_keys):
+        env.pop(key, None)
+    if "PATH" in context.env_set:
+        env["PATH"] = context.env_set["PATH"]
+    return env
+
+
+def _prepend_execution_routing(command: str, run_env: dict, execution_context) -> str:
+    """Reassert sanitized routing after shell startup, or abort before user code."""
+    context = execution_context.context
+    routing = set(context.env_set) | set(context.env_unset)
+    prelude = [f"builtin export {key}={shlex.quote(run_env[key])} || exit 126" if key in run_env
+               else f"builtin unset {key} || exit 126" for key in sorted(routing)]
+    if context.backend_shell_init is not None:
+        prelude.append(context.backend_shell_init)
+    return "\n".join([*prelude, command])
+
+
 def routed_terminal_base() -> dict:
     """The process env a served profile's terminal children start from. The process env is the
     LAUNCH profile's; under a routed home override its ``.env`` residue is dropped first
@@ -873,15 +901,18 @@ def routed_terminal_base() -> dict:
     return base
 
 
-def _make_run_env(env: dict) -> dict:
+def _make_run_env(env: dict, execution_context=None) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping, from
     :func:`routed_terminal_base` so the backend's own ``env`` and the served profile's own names
     are what the child sees. A local session's client toolchain (PATH, venv, nvm/pyenv/conda:
-    ``agent.session_client_env``) replaces the daemon's beneath the backend's own ``env``."""
+    ``agent.session_client_env``) replaces the daemon's beneath the backend's own ``env``; a session
+    execution context applies on top."""
     from agent.session_client_env import toolchain_environ
-    base = routed_terminal_base()
+    merged = dict(toolchain_environ(routed_terminal_base()) | env)
+    if execution_context is not None:
+        merged = execution_context.apply_env(merged)
     run_env = _scrubbed_env(
-        [(dict(toolchain_environ(base) | env), True)],
+        [(merged, True)],
         frozenset(),
         lambda p: _user_tools_first(_append_missing_sane_path_entries(p)),
     )
@@ -898,9 +929,15 @@ def _make_run_env(env: dict) -> dict:
     except Exception:
         published = {}
     if published:
-        run_env.update(published)
-        run_env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
-    return run_env
+        # An explicit execution context's own routing stays exact: keys it sets or unsets are
+        # not overridden by the Bot Desktop overlay.
+        routed: set = set()
+        if execution_context is not None:
+            routed = set(execution_context.context.env_set) | set(execution_context.context.env_unset)
+        run_env.update((k, v) for k, v in published.items() if k not in routed)
+        if "WAYLAND_DISPLAY" not in routed:
+            run_env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
+    return _finalize_execution_env(run_env, execution_context)
 
 
 # --- Hermes venv / repo-root detection (module-level, computed once) ---
@@ -1147,6 +1184,7 @@ class LocalEnvironment(BaseEnvironment):
     is_local = True
     # A subclass that confines its commands (a sandbox) sets this False: see BaseEnvironment.
     uses_host_filesystem = True
+    execution_context = None
 
     def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:
         """First-party ``BUZZ_*`` names present in the env, excluded from the shared
@@ -1160,13 +1198,21 @@ class LocalEnvironment(BaseEnvironment):
             if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
 
     def _snapshot_excluded_passthrough_names(self) -> tuple[str, ...]:
-        """Plus the plugins' session env names: each command gets its own session's values. Plus the
-        config-declared key holders: a key the snapshot captured before its declaration stays out."""
+        """Plus the plugins' session env names and this execution context's env edits: each command
+        gets its own session's values. Plus the config-declared key holders: a key the snapshot
+        captured before its declaration stays out."""
         from hermes_cli.plugins_session_env import session_env_names
         declared = (n for n in _home_declared_key_env() if _SHELL_ENV_NAME_RE.fullmatch(n))
-        return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names(), *declared}))
+        names = {*super()._snapshot_excluded_passthrough_names(), *session_env_names(), *declared}
+        if self.execution_context is not None:
+            context = self.execution_context.context
+            names.update(context.env_set)
+            names.update(context.env_unset)
+        return tuple(sorted(names))
 
-    def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True):
+    def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None,
+                 persistent: bool = True, *, execution_context=None):
+        self.execution_context = execution_context
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env, persist_env=persistent)
         self._secret_handoff = SecretHandoff()
         self.init_session()
@@ -1189,7 +1235,17 @@ class LocalEnvironment(BaseEnvironment):
         tmpfs system temp dir fills under Hermes load; pruned by ``cleanup_terminal_temp_cache``),
         ``tempfile.gettempdir()``; backend env before process env so terminal.env
         overrides work. Windows: ``%TEMP%`` often has spaces that break unquoted bash,
-        so always the HERMES_HOME cache dir with forward slashes (bash- and Python-valid)."""
+        so always the HERMES_HOME cache dir with forward slashes (bash- and Python-valid).
+
+        A session execution context that routes commands into ANOTHER filesystem
+        declares where state lives on that side; every host candidate below names a
+        directory the routed shell cannot see, so the snapshot would be written
+        where nothing can read it and env vars would stop persisting between
+        commands (silently: the bootstrap's ``mktemp`` failure only warns)."""
+        routed = getattr(getattr(self.execution_context, "context", None),
+                         "backend_temp_dir", None)
+        if routed:
+            return routed.rstrip("/") or "/"
         if _IS_WINDOWS:
             for key in ("TERMINAL_TEMP_DIR", "TMPDIR"):
                 candidate = self.env.get(key) or os.environ.get(key)
@@ -1238,7 +1294,12 @@ class LocalEnvironment(BaseEnvironment):
         because relative paths now resolve somewhere the model did not ask for.
 
         A relative or ``~`` cwd is checked where bash's ``cd`` resolves it (``self.cwd``, the
-        Popen cwd; ``$HOME``), not against this process's cwd, and kept as written when usable."""
+        Popen cwd; ``$HOME``), not against this process's cwd, and kept as written when usable.
+        A routed shell (an execution context's ``command_prefix``) runs on a filesystem only it
+        sees: like a sandbox, its own wrapper walks up instead."""
+        execution = getattr(self, "execution_context", None)
+        if execution is not None and execution.context.command_prefix:
+            return super()._usable_cwd(cwd)
         resolved = os.path.expanduser(cwd)
         if resolved and not os.path.isabs(_msys_to_windows_path(resolved)):
             resolved = os.path.join(self.cwd, resolved)
@@ -1259,7 +1320,7 @@ class LocalEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
-        run_env = _make_run_env(self.env)
+        run_env = _make_run_env(self.env, self.execution_context)
         handoff = getattr(self, "_secret_handoff", None)  # absent on bare test doubles (__new__)
         session_id = getattr(self, "_session_id", "")
         token = _secret_fd_token(session_id)
@@ -1277,6 +1338,11 @@ class LocalEnvironment(BaseEnvironment):
             generation = handoff.new_generation()
             secret_fd, secret_reader = handoff.start_reader(self._snapshot_write_path(login), generation)
             cmd_string = cmd_string.replace(token, str(secret_fd)).replace(_secret_gen_token(session_id), generation)
+        if self.execution_context is not None:
+            # Bash has already sourced BASH_ENV/login profiles when this runs;
+            # custom init is prepended below. Pin sanitized routing before the
+            # wrapper saves passthrough values or creates/restores a snapshot.
+            cmd_string = _prepend_execution_routing(cmd_string, run_env, self.execution_context)
         # Login invocations (init_session's env snapshot) source the user's rc /
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot; then the
         # spawn env's dirs a resetting profile dropped are re-appended (#56634).
@@ -1284,6 +1350,13 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _append_dropped_path_entries(cmd_string, run_env.get("PATH", ""))
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
+        if self.execution_context is not None:
+            args = self.execution_context.wrap_argv(args)
+        spawn_cwd = self._spawn_cwd()
+        if self.execution_context is not None:
+            # The last authority check before the spawn: nothing between here and Popen can wait.
+            from tools.terminal_targets import check_terminal_operation
+            check_terminal_operation(self.execution_context)
         # Not spawn_owned: an awaited command needs no spawn-ledger entry; own_process_groups below hands
         # its group to the owner-death supervisor and _wait_for_process releases it.
         try:
@@ -1292,7 +1365,7 @@ class LocalEnvironment(BaseEnvironment):
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
                 # detached-spawn: ok — owned via own_process_groups right below
-                start_new_session=True, cwd=self._spawn_cwd(),
+                start_new_session=True, cwd=spawn_cwd,
                 pass_fds=tuple(fd for fd in (secret_fd, source_fd, restore_fd) if fd >= 0),
                 creationflags=windows_hide_flags() if _IS_WINDOWS else 0)
         finally:
@@ -1337,9 +1410,15 @@ class LocalEnvironment(BaseEnvironment):
         its group die with Hermes however Hermes dies (``spawn_owned``), stdin/stdout as byte pipes.
         ``_stop_long_lived`` kills the group and releases it."""
         from hermes_cli.process_identity import spawn_owned
+        argv, execution = list(argv), getattr(self, "execution_context", None)
+        if execution is not None:
+            # Routed like every command of this environment: the context's env and argv prefix.
+            argv = execution.wrap_argv(argv)
+            from tools.terminal_targets import check_terminal_operation
+            check_terminal_operation(execution)
         proc = spawn_owned(  # windows-footgun: ok — argv list, no shell; group kill gated on _IS_WINDOWS
-            list(argv), purpose="long-lived environment process",
-            env=_make_run_env({**self.env, **(child_env or {})}), cwd=self.cwd,
+            argv, purpose="long-lived environment process",
+            env=_make_run_env({**self.env, **(child_env or {})}, execution), cwd=self.cwd,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
         if not _IS_WINDOWS:
@@ -1378,6 +1457,9 @@ class LocalEnvironment(BaseEnvironment):
         warn every command. A stale path is not an observation, so ``cwd_observed``
         is dropped and ``self.cwd`` keeps its value."""
         super()._parse_cwd_marker(result)
+        # A routed shell reports paths on its own filesystem, not the host's.
+        if self.execution_context is not None and self.execution_context.context.command_prefix:
+            return
         if result.get("cwd_observed"):
             normalized = _msys_to_windows_path(result["cwd"])
             if normalized and os.path.isdir(normalized):

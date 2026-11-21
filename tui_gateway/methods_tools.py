@@ -563,10 +563,16 @@ def _is_registry_command(base: str) -> bool:
 
 
 def _dispatch_plugin(rid, params, session, name, arg):
-    with contextlib.suppress(Exception):
-        if (output := _dispatch_plugin_in_profile_scope(
-                name, arg, session, params.get("session_id", ""), _str_arg(params, "profile") or None)) is not None:
-            return _ok(rid, {"type": "plugin", "output": output})
+    try:
+        output = _dispatch_plugin_in_profile_scope(
+            name, arg, session, params.get("session_id", ""), _str_arg(params, "profile") or None,
+            session_required=bool(params.get("session_id")))
+    except _PluginCommandSessionMissing:
+        return _err(rid, 4001, "session not found")
+    except Exception:
+        return None
+    if output is not None:
+        return _ok(rid, {"type": "plugin", "output": output})
     return None
 
 
@@ -1066,7 +1072,7 @@ def _(rid, params: dict) -> dict:
             return dispatched
     if base:
         try:
-            plugin_output = _dispatch_plugin_in_profile_scope(base, arg, session, params.get("session_id", ""))
+            plugin_output = _dispatch_plugin_in_profile_scope(base, arg, session, sid)
             if plugin_output is not None:
                 return _ok(rid, {"output": plugin_output or "(no output)"})
         except Exception as e:
@@ -1680,6 +1686,7 @@ def _plugin_rows() -> list[dict]:
         # Bundled backends/platforms/providers and the live memory provider run without an explicit
         # enable: _plugin_status reports the truthful default instead of "not enabled" (reads as OFF).
         status = pc._plugin_status(name, enabled, disabled, key=key, source=source, dir_path=_dir, active=active)
+        default_enabled = pc._default_on(_dir, source)
         # key = canonical registry key (names collide across category dirs); portable = Agent Plugins v1.
         # ``has_desktop_half``: the package also ships a Desktop UI half (``desktop_source``: a root or
         # ``desktop/`` plugin.js). The app pairs its app-level copy of that half with this ONE row.
@@ -1687,7 +1694,8 @@ def _plugin_rows() -> list[dict]:
         portable = pc._is_portable_plugin_dir(_dir)
         out.append({
             "name": name, "key": key, "version": str(version or ""), "description": desc or "",
-            "source": source, "status": status, "portable": portable,
+            "source": source, "status": status, "default_enabled": default_enabled,
+            "portable": portable,
             "install_dir": str(_dir_path) if _dir_path else "",
             "has_desktop_half": bool(_dir_path and _tools_mod("hermes_cli.desktop_plugin_halves").desktop_source(_dir_path)),
             # Manifest ``config_schema`` + current values: the Plugins hub renders these as a form.
@@ -1747,9 +1755,10 @@ def _plugins_toggle(rid, params):
         return _err(rid, 4019, "plugins.toggle requires a 'key' or 'name'")
     _ensure_plugin_activation_listener()
     toggle = _tools_mod("hermes_cli.plugins_cmd").dashboard_set_agent_plugin_enabled
-    result = toggle(ident, enabled=bool(params.get("enable")))
+    result = toggle(ident, enabled=bool(params.get("enable")),
+                    **({"setup_consent": params["setup_consent"]} if "setup_consent" in params else {}))
     if not result.get("ok"):
-        return _err(rid, 5026, result.get("error") or "toggle failed")
+        return _err(rid, 5026, result.get("error") or "toggle failed", data=result)
     # The toggle resolves a bare leaf / manifest name to the canonical key it wrote; report that key.
     key = result.get("name") or ident
     row = next((r for r in _plugin_rows() if key in (r["key"], r["name"])), None)
@@ -1780,9 +1789,12 @@ def _plugins_install(rid, params):
     result = _tools_mod("hermes_cli.plugins_cmd").dashboard_install_plugin(
         ident, force=bool(params.get("force")), enable=params.get("enable", True), catalog_name=catalog_name or None,
         ref=str(params.get("ref") or "").strip() or None,
-        inspected_sha=str(params.get("inspected_sha") or "").strip() or None)
+        inspected_sha=str(params.get("inspected_sha") or "").strip() or None,
+        **({"setup_consent": params["setup_consent"]} if "setup_consent" in params else {}))
     if not result.get("ok"):
-        return _err(rid, 5026, result.get("error") or "install failed", data=_refusal_data(result))
+        # Landed files awaiting native setup carry plugin_name/consent so the client reviews, not reclones.
+        return _err(rid, 5026, result.get("error") or "install failed",
+                    data=_refusal_data(result) or (result if result.get("installed") else None))
     return _ok(rid, _with_activation(result, str(result.get("plugin_name") or "")) if result.get("enabled") else result)
 
 

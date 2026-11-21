@@ -485,6 +485,41 @@ class TestWriteClaudeCodeCredentials:
         assert data["otherField"] == "keep-me"
         assert data["claudeAiOauth"]["accessToken"] == "new-tok"
 
+    def test_preserves_claude_code_subscription_metadata(self, tmp_path, monkeypatch):
+        """Regression for #83338: a Hermes refresh replaced the whole ``claudeAiOauth`` object,
+        dropping ``subscriptionType``/``rateLimitTier``, so Claude Code fell back to API billing
+        (``claude auth status``: ``subscriptionType: null``) until the user ran ``/login`` again."""
+        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir()
+        cred_file.write_text(json.dumps({"claudeAiOauth": {
+            "accessToken": "old-tok", "refreshToken": "old-ref", "expiresAt": 1,
+            "refreshTokenExpiresAt": 2, "scopes": ["user:inference", "user:profile"],
+            "subscriptionType": "pro", "rateLimitTier": "default_claude_ai",
+            "accountUuid": "acct", "organizationUuid": "org", "subscriptionTypeSource": "profile",
+        }}))
+        _write_claude_code_credentials("new-tok", "new-ref", 99999)
+        oauth = json.loads(cred_file.read_text())["claudeAiOauth"]
+        assert oauth == {
+            "accessToken": "new-tok", "refreshToken": "new-ref", "expiresAt": 99999,
+            "scopes": ["user:inference", "user:profile"],
+            "subscriptionType": "pro", "rateLimitTier": "default_claude_ai",
+            "accountUuid": "acct", "organizationUuid": "org", "subscriptionTypeSource": "profile",
+        }  # refreshTokenExpiresAt described the spent refresh token, so it must not survive
+
+    def test_explicit_scopes_replace_stored_scopes_and_keep_metadata(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir()
+        cred_file.write_text(json.dumps({"claudeAiOauth": {
+            "accessToken": "old", "refreshToken": "old", "expiresAt": 1,
+            "scopes": ["user:profile"], "subscriptionType": "max",
+        }}))
+        _write_claude_code_credentials("tok", "ref", 5, scopes=["user:inference"])
+        oauth = json.loads(cred_file.read_text())["claudeAiOauth"]
+        assert oauth["scopes"] == ["user:inference"]
+        assert oauth["subscriptionType"] == "max"
+
     @pytest.mark.platforms("posix")  # POSIX mode bits not enforced on Windows
     def test_credentials_file_created_with_0o600(self, tmp_path, monkeypatch):
         """Refreshed Claude Code credentials must land on disk at 0o600.

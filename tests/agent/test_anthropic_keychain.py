@@ -380,6 +380,17 @@ class TestMergeKeychainCredentialPayload:
             k: v for k, v in existing.items() if k != "claudeAiOauth"}
         assert existing["claudeAiOauth"]["refreshToken"] == "old-refresh"  # input not mutated
 
+    def test_drops_the_spent_refresh_tokens_expiry(self):
+        """``refreshTokenExpiresAt`` describes the refresh token the rotation just spent (#83338)."""
+        existing = {"claudeAiOauth": {
+            "accessToken": "a", "refreshToken": "r", "expiresAt": 1, "refreshTokenExpiresAt": 2,
+            "subscriptionType": "pro",
+        }}
+        oauth = _merge_keychain_credential_payload(existing, "new-access", "new-refresh", 42)["claudeAiOauth"]
+        assert "refreshTokenExpiresAt" not in oauth
+        assert oauth["subscriptionType"] == "pro"
+        assert existing["claudeAiOauth"]["refreshTokenExpiresAt"] == 2  # input not mutated
+
 
 class TestKeychainMirrorCommand:
     """``_keychain_mirror_command`` — host-agnostic: it builds the ``security`` invocation

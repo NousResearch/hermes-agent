@@ -1,7 +1,7 @@
 """Matrix env -> gateway config bridge (``PlatformEntry.env_overrides``)."""
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platform_env import EnvCred, env_extras, getenv, home_step
+from gateway.platform_env import EnvCred, env_extras, getenv, home_step, reply_mode_step
 from utils import is_truthy_value
 
 
@@ -23,6 +23,7 @@ ENV_OVERRIDES = (
         then=_e2ee,
     ),
     home_step(Platform.MATRIX, "MATRIX_HOME_ROOM"),
+    reply_mode_step(Platform.MATRIX, "MATRIX_REPLY_TO_MODE"),
 )
 
 # Authorization env names (``PlatformEntry`` fields). Core reads them from this file when the

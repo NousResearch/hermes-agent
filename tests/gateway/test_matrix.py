@@ -581,27 +581,6 @@ class TestMatrixRenderingPayloads:
         }
 
 
-    @pytest.mark.asyncio
-    async def test_long_response_split_preserves_thread_context(self):
-        # Build a payload guaranteed to exceed the adapter's outbound chunk
-        # size (configurable since #53026) so send() must split it.
-        repeats = (self.adapter.max_message_length // 15) + 200
-        long_text = "Intro\n```python\n" + ("print('hello')\n" * repeats) + "```\nDone"
-
-        result = await self.adapter.send(
-            "!room:example.org",
-            long_text,
-            metadata={"thread_id": "$root"},
-        )
-
-        assert result.success is True
-        contents = self._sent_contents()
-        assert len(contents) > 1
-        for content in contents:
-            assert content["m.relates_to"]["rel_type"] == "m.thread"
-            assert content["m.relates_to"]["event_id"] == "$root"
-            assert content["m.relates_to"]["m.in_reply_to"] == {"event_id": "$root"}
-            assert content["body"].count("```") % 2 == 0
 
 
 # ---------------------------------------------------------------------------

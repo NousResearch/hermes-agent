@@ -129,5 +129,52 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
     assert head == "wt/sibling"
 
 
+def _rev_parse(path: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(path), "rev-parse", *args],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def test_board_project_subfolder_gives_each_task_its_own_worktree(kanban_home, tmp_path):
+    """A board project dir that is a folder inside a checkout (a monorepo
+    service) is inherited as the worktree path of every task; each task must
+    still run in its own linked worktree, never in the user's checkout."""
+    repo = _make_repo(tmp_path)
+    service = repo / "services" / "api"
+    service.mkdir(parents=True)
+    (service / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    kb.create_board("mono", default_workdir=str(service))
+
+    workspaces = []
+    with kbc.connect(board="mono") as conn:
+        for title in ("one", "two"):
+            tid = kb.create_task(conn, title=title, workspace_kind="worktree", board="mono")
+            workspace, branch = kbw._resolve_worktree_workspace(kb.get_task(conn, tid), board="mono")
+            assert _rev_parse(workspace, "--absolute-git-dir") != str((repo / ".git").resolve())
+            assert _rev_parse(workspace, "--abbrev-ref", "HEAD") == branch == f"wt/{tid}"
+            workspaces.append(workspace)
+    assert workspaces[0] != workspaces[1]
+    assert _rev_parse(repo, "--abbrev-ref", "HEAD") == "main"
+
+
+def test_pinned_empty_dir_inside_checkout_becomes_real_worktree(kanban_home, tmp_path):
+    """An empty directory pinned inside the checkout is materialized in place
+    as the task's worktree instead of being "reused" as the main checkout."""
+    repo = _make_repo(tmp_path)
+    pinned = repo / "pinned"
+    pinned.mkdir()
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="pinned worktree", workspace_kind="worktree", workspace_path=str(pinned),
+        )
+        workspace = kbw.resolve_workspace(kb.get_task(conn, tid))
+
+    assert Path(_rev_parse(workspace, "--show-toplevel")).resolve() == pinned.resolve()
+    assert _rev_parse(workspace, "--abbrev-ref", "HEAD") == f"wt/{tid}"
+    assert _rev_parse(repo, "--abbrev-ref", "HEAD") == "main"
+
+
 
 

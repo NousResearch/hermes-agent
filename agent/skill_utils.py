@@ -2,6 +2,7 @@
 Import-light by design: no tool registry, CLI config, or provider resolution."""
 
 import ast
+import datetime
 import hashlib
 import logging
 import os
@@ -68,6 +69,34 @@ def yaml_load(content: str):
     return _yaml_load_fn(content)
 
 
+def _json_safe_frontmatter(value: Any) -> Any:
+    """YAML resolves unquoted dates/times (``updated: 2025-12-01``) to ``datetime`` objects,
+    and skill metadata ends in ``json.dumps`` (skill_view), so they are kept as ISO text;
+    ``!!set`` becomes a list and any other non-JSON scalar (``!!binary``) its ``str()``."""
+    if isinstance(value, dict):
+        return {_json_safe_frontmatter(k): _json_safe_frontmatter(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_safe_frontmatter(v) for v in value]
+    if isinstance(value, (datetime.date, datetime.time)):
+        return value.isoformat()
+    if value is None or isinstance(value, (str, int, float)):
+        return value
+    return str(value)
+
+
+def _coerce_identity_fields(frontmatter: dict[str, Any]) -> None:
+    """Every consumer treats ``name``/``description`` as text (sliced, slugified, compared to
+    the looked-up name), so a bare ``name:``, ``name: 2048`` or ``name: [a, b]`` must not
+    silently drop the skill from listings and slash commands. Blank and non-scalar values fall
+    back to the consumer's default."""
+    for key in ("name", "description"):
+        value = frontmatter.get(key)
+        if isinstance(value, (int, float)):
+            frontmatter[key] = str(value)
+        elif not (isinstance(value, str) and value.strip()):
+            frontmatter.pop(key, None)
+
+
 def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
     """Parse YAML frontmatter from markdown; returns (frontmatter_dict, body).
     Malformed YAML falls back to key:value line splitting. A leading UTF-8 BOM
@@ -82,7 +111,8 @@ def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
     try:
         parsed = yaml_load(yaml_content)
         if isinstance(parsed, dict):
-            frontmatter = parsed
+            frontmatter = _json_safe_frontmatter(parsed)
+            _coerce_identity_fields(frontmatter)
     except Exception:
         for line in yaml_content.strip().split("\n"):
             if ":" in line:

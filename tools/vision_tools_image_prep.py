@@ -297,7 +297,7 @@ def _image_exceeds_dimension(image_path: Path, max_dimension: int) -> bool:
 
 
 def _crop_image_region(
-    image_path: Path, region: Any, offset_out: Optional[dict] = None
+    image_path: Path, region: Any, offset_out: Optional[dict] = None, min_dimension: int = 0
 ) -> tuple[Optional[Path], Optional[str], Optional[str]]:
     """Crop to ``region`` = [x1, y1, x2, y2] (original-image pixels), BEFORE downscaling so the crop
     gets the full resolution budget. Coordinates clamp to the image bounds; a zero-area/inverted
@@ -326,6 +326,13 @@ def _crop_image_region(
                     f"area after clamping to the image bounds. The image is "
                     f"{width}x{height} px — pick x1<x2 and y1<y2 inside "
                     f"[0, 0, {width}, {height}].")
+            cropped_w, cropped_h = cx2 - cx1, cy2 - cy1
+            if min_dimension > 0 and min(cropped_w, cropped_h) < min_dimension:
+                return None, None, (
+                    f"Region [{x1}, {y1}, {x2}, {y2}] crops to {cropped_w}x{cropped_h} px, below the "
+                    f"{min_dimension}px minimum the vision backend accepts (a side this thin can't be "
+                    f"resolved). The image is {width}x{height} px — widen your region so both sides "
+                    f"are at least {min_dimension}px, or omit `region` to view the full image.")
             cropped = img.crop((cx1, cy1, cx2, cy2))
             if offset_out is not None:
                 offset_out.update(x=cx1, y=cy1, width=cx2 - cx1, height=cy2 - cy1)

@@ -28,6 +28,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
+import { WebhookDeliveryTarget, WebhookExecutionProfile } from "./WebhooksPageDelivery";
 
 interface CreatedWebhook {
   url: string;
@@ -56,15 +57,6 @@ function CopyButton({ value }: { value: string }) {
     </Button>
   );
 }
-
-const DELIVER_OPTIONS: ReadonlyArray<readonly [string, string]> = [
-  ["log", "Log"],
-  ["telegram", "Telegram"],
-  ["discord", "Discord"],
-  ["slack", "Slack"],
-  ["email", "Email"],
-  ["github_comment", "GitHub comment"],
-];
 
 const SIGNATURE_OPTIONS: ReadonlyArray<readonly [WebhookSignature, string]> = [
   ["generic", "Generic (timestamped)"],
@@ -446,18 +438,7 @@ export default function WebhooksPage() {
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="grid gap-2">
-                    <Label htmlFor="webhook-deliver">Deliver to</Label>
-                    <Select
-                      id="webhook-deliver"
-                      value={deliver}
-                      onValueChange={(v) => setDeliver(v)}
-                    >
-                      {DELIVER_OPTIONS.map(([value, label]) => (
-                        <SelectOption key={value} value={value}>{label}</SelectOption>
-                      ))}
-                    </Select>
-                  </div>
+                  <WebhookDeliveryTarget value={deliver} onChange={setDeliver} />
 
                   <div className="grid gap-2">
                     <Label htmlFor="webhook-deliver-only">Deliver only</Label>
@@ -468,7 +449,7 @@ export default function WebhooksPage() {
                         checked={deliverOnly}
                         onChange={(e) => setDeliverOnly(e.target.checked)}
                       />
-                      Skip the agent, deliver payload directly
+                      Skip the webhook-side agent, deliver the rendered template
                     </label>
                   </div>
                 </div>
@@ -594,6 +575,7 @@ export default function WebhooksPage() {
                     {sub.name}
                   </span>
                   <Badge tone="outline">{sub.deliver}</Badge>
+                  <WebhookExecutionProfile profile={sub.profile} />
                   {sub.deliver_only && (
                     <Badge tone="secondary">deliver only</Badge>
                   )}

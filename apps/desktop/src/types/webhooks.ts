@@ -4,6 +4,9 @@
 // redacted on read and surfaced exactly once on create.
 
 export interface WebhookRoute {
+  route_profile?: string
+  profile?: string
+  mirror_to_session?: boolean
   created_at: null | string
   deliver: string
   deliver_only: boolean
@@ -27,6 +30,9 @@ export interface WebhooksResponse {
 }
 
 export interface WebhookCreatePayload {
+  route_profile?: string
+  mirror_to_session?: boolean
+  deliver_extra?: Record<string, unknown>
   deliver?: string
   deliver_chat_id?: string
   deliver_only?: boolean

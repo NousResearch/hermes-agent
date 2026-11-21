@@ -58,6 +58,7 @@ CAPABILITY_ATTRIBUTES: tuple[str, ...] = (
     "usage",
     "usage_analytics",
     "admissions",
+    "webhook_deliveries",
     "runtime",
     "bindings",
     "coordination",
@@ -87,6 +88,7 @@ _BASE_CAPABILITIES = PersistenceCapabilities(
     authority_fences=False,
     durable_admissions=False,
     receipted_writes=False,
+    webhook_delivery_fences=False,
     physical_admin=True,
 )
 

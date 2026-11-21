@@ -38,6 +38,7 @@ _BASE_CAPABILITIES = PersistenceCapabilities(
     authority_fences=False,
     durable_admissions=False,
     receipted_writes=False,
+    webhook_delivery_fences=False,
     physical_admin=False,
 )
 

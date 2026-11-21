@@ -2,6 +2,11 @@ import type { Translations } from "./types";
 
 export const en: Translations = {
   common: {
+    webhookTargetProfile: "Target profile",
+    webhookExecutingProfile: "Executing profile",
+    webhookExecutionProfile: "Execution profile",
+    webhookBotChatHint: "I deliver to the canonical local Bot Chat. The receiving Bot Chat may run its model and incur cost, even with deliver only.",
+
     save: "Save",
     saving: "Saving...",
     cancel: "Cancel",

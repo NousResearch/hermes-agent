@@ -27,5 +27,7 @@ class PersistenceCapabilities:
     """The backend persists the fail-closed admission lifecycle (admit/claim/settle/cancel/recover/resolve-unknown with digest dedup, per-session FIFO, and unknown barriers)."""
     receipted_writes: bool
     """Composite mutations commit their retry receipt in the same atomic transition as the domain write (worker sequenced writes, atomic bindings); an exact duplicate replays its stored result instead of re-executing."""
+    webhook_delivery_fences: bool
+    """Transactional webhook publication/claim/retirement/compaction and expected OPEN-writer incarnation guards; unsupported repositories refuse with CapabilityUnsupported."""
     physical_admin: bool
     """The assembly offers this backend's physical admin capability (doctor, journal mode, schema repair, index optimize, VACUUM, physical backup and restore); a backend without it answers the admin doors with an unsupported result."""

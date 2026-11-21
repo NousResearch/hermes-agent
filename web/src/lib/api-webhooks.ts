@@ -1,6 +1,9 @@
 // Dashboard webhook subscription CRUD (/api/webhooks); re-exported from ./api.
 
 export interface WebhookRoute {
+  route_profile?: string
+  profile?: string
+  mirror_to_session?: boolean
   name: string;
   description: string;
   events: string[];
@@ -35,6 +38,9 @@ export interface WebhookEnableResponse {
 }
 
 export interface WebhookCreate {
+  route_profile?: string
+  mirror_to_session?: boolean
+  deliver_extra?: Record<string, unknown>
   name: string;
   description?: string;
   events?: string[];

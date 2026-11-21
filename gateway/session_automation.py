@@ -544,6 +544,8 @@ def snapshot_automation(authority, adapter, event, identity):
         'event': {'message_id': identity}, 'provenance': provenance,
         'automation': {'identity': identity, 'owner': owner}}
     envelope['automation'].update(notification)
+    from gateway.webhooks.completion import inherit_webhook
+    envelope.update(inherit_webhook(authority, entry, identity))
     if getattr(event, '_heartbeat_session_id', None):
         envelope['automation']['heartbeat'] = event._heartbeat_session_id
     identities = event.metadata.get('automation_identities')
@@ -566,6 +568,11 @@ def check_automation_route(runner, payload, session_id, available_source, adapte
             or runner.session_store._generate_session_key(available_source) != entry.session_key
             or adapter is None or runner._adapter_for_source(event.source) is not adapter):
         raise AuthorityRefusal('admission_conflict')
+    if 'webhook_root' in envelope:
+        from gateway.webhooks.completion import verify_root
+        from gateway.webhooks.intents import _authorize
+        verify_root(authority, {'target_session_id': authority.logical_owner(session_id)}, envelope)
+        _authorize(authority, envelope, adapter)
     return event.source, entry.session_key
 
 
@@ -657,7 +664,7 @@ def restore_local_automation(authority, ref, row):
     return event
 
 
-async def admit_automation(authority, adapter, event, identity, replaces=None, fold=None):
+async def admit_automation(authority, adapter, event, identity, replaces=None, fold=None, *, incarnation=None):
     """``replaces``: a queued automation row of the same session this input supersedes (a liveness
     tick carrying the output of the one still waiting). Its cancellation commits in this admission's
     own transaction, so neither lands without the other. ``fold``: ``replaces`` is a completion this
@@ -694,7 +701,7 @@ async def admit_automation(authority, adapter, event, identity, replaces=None, f
             epoch=authority.epoch, principal_id='automation:' + entry.session_key, session_id=ref.session_id,
             request_id=identity, payload=payload, gate=authority.gate_refusal(),
             supersedes=replaces if fold is None else None,
-            fold=None if fold is None else QueuedFold(replaces, frozenset(fold)))
+            fold=None if fold is None else QueuedFold(replaces, frozenset(fold)), incarnation=incarnation)
         replaced[:] = [replaces] if created and replaces is not None else []
         return admission_row(row)
     return await tracked_write(authority, admit, then=admitted, ordered=True,

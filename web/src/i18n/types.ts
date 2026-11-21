@@ -20,6 +20,11 @@ export type Locale =
 export interface Translations {
   // ── Common ──
   common: {
+    webhookTargetProfile?: string;
+    webhookExecutingProfile?: string;
+    webhookExecutionProfile?: string;
+    webhookBotChatHint?: string;
+
     save: string;
     saving: string;
     cancel: string;

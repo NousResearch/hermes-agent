@@ -872,8 +872,22 @@ class TestConfigSupportFloor:
         assert "run `hermes setup` to regenerate" in captured.out
         assert "_config_version: 12" in captured.out
         assert any(expected_fragment in w for w in results["warnings"])
+        assert results["floor_refused"] is True
         # No 'Config version: X → Y' line — nothing was migrated.
         assert "Config version:" not in captured.out
+
+    def test_migrate_command_exits_nonzero_when_floor_refused(self, tmp_path, monkeypatch):
+        from hermes_cli import config as cfg_mod
+
+        self._write_config(tmp_path, {"_config_version": 11})
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            cfg_mod, "migrate_config",
+            lambda **kw: {"env_added": [], "config_added": [], "warnings": ["floor"],
+                          "floor_refused": True})
+        with pytest.raises(SystemExit) as exc:
+            cfg_mod._cmd_config_migrate(None)
+        assert exc.value.code == 1
 
     def test_v11_quiet_still_warns_on_stderr_only(self, tmp_path, capsys):
         config_path, original = self._write_config(

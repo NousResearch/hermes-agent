@@ -226,6 +226,10 @@ _CHAT_SCOPED_THREAD_PLATFORMS = frozenset({"telegram", "slack", "matrix", "matte
 _READ_DISPATCH_ROUTES = object()  # default: read the primary home's table; None means the read failed
 
 
+def _platform_key(platform) -> str:
+    return str(getattr(platform, "value", platform)).lower()
+
+
 class SharedRouteAdapters:
     """Read-only adapter map for a credentialless satellite profile. ``get(platform, target)``
     resolves the PRIMARY adapter iff the inbound route matcher (``ProfileRoute.matches``) accepts
@@ -236,10 +240,18 @@ class SharedRouteAdapters:
     the same profile, as dispatch would pick it. Build cron's view with
     ``shared_route_adapters_for_current_home`` so both tables come from one read.
 
+    A profile with a bot of its own on another platform passes it as ``own_adapters``/``owned``: a
+    platform it owns is served by its own adapter alone (a dropped bot is a miss, never the primary's),
+    every other platform rides the routed primary as above — the per-platform credential boundary of
+    ``GatewayRunner._is_shared_bot_satellite(profile, platform)``.
+
     See #101113.
     """
 
-    def __init__(self, primary_adapters, routes, dispatch_routes=_READ_DISPATCH_ROUTES) -> None:
+    def __init__(self, primary_adapters, routes, dispatch_routes=_READ_DISPATCH_ROUTES,
+                 own_adapters=None, owned=None) -> None:
+        self._own = {p: a for p, a in (own_adapters or {}).items() if _platform_key(p) != "local"}
+        self._owned = {_platform_key(p) for p in (owned or ())} | {_platform_key(p) for p in self._own}
         self._primary = dict(primary_adapters or {})
         self._routes = list(routes or [])
         if dispatch_routes is _READ_DISPATCH_ROUTES:
@@ -249,7 +261,13 @@ class SharedRouteAdapters:
     def __bool__(self) -> bool:
         return bool(self._primary) and bool(self._routes)
 
+    def owns(self, platform) -> bool:
+        """Whether the profile has a bot of its own on *platform* (connected or not)."""
+        return _platform_key(platform) in self._owned
+
     def get(self, platform, target=None, default=None):
+        if self.owns(platform):
+            return self._own.get(platform, default)
         if not target or self._dispatch_routes is None:
             return default
         adapter = self._primary.get(platform)
@@ -302,11 +320,26 @@ class SharedRouteAdapters:
                      if r.matches(str(route.platform), **{**matched, "guild_id": r.guild_id})), route)
 
 
-def shared_route_adapters_for_current_home(primary_adapters) -> SharedRouteAdapters:
+def shared_route_adapters_for_current_home(primary_adapters, own_adapters=None, owned=None) -> SharedRouteAdapters:
     """Cron's view of the primary's bots for the profile being served, with its own routes and the
     dispatch routes taken from one read; falsy when no route maps here (or the read failed)."""
     routes, dispatch_routes = _primary_route_tables_for_current_home()
-    return SharedRouteAdapters(primary_adapters, routes, dispatch_routes=dispatch_routes)
+    return SharedRouteAdapters(primary_adapters, routes, dispatch_routes=dispatch_routes,
+                               own_adapters=own_adapters, owned=owned)
+
+
+def cron_delivery_adapters(own_adapters, owned, primary_adapters):
+    """The adapter map a secondary profile's cron output leaves through (the tick and the restart-safe
+    drain). A credentialless satellite rides the routed primary; a profile with a bot of its own keeps
+    it for that platform and still rides the routed primary on the platforms it has no bot on. With no
+    route mapping here (or no primary), only its own adapters."""
+    if not primary_adapters:
+        return own_adapters
+    if has_credential_platform(own_adapters, owned):
+        shared = shared_route_adapters_for_current_home(primary_adapters, own_adapters=own_adapters, owned=owned)
+    else:
+        shared = shared_route_adapters_for_current_home(primary_adapters)
+    return shared if shared else own_adapters
 
 
 def has_credential_platform(adapters, owned=None) -> bool:

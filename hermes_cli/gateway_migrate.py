@@ -1263,34 +1263,36 @@ def cmd_migrate(args) -> None:
     sys.exit(0 if apply_migration(plan) else 1)
 
 
-def maybe_auto_migrate_after_update() -> None:
+def maybe_auto_migrate_after_update() -> str | None:
     """``hermes update`` hook: with >= 2 profiles, per-profile gateways present and multiplex off,
-    migrate automatically when unblocked (deterministic, never prompts) or print the blocker block.
+    migrate automatically when unblocked (deterministic, never prompts) or print and return the blocker warning.
     ``gateway.auto_multiplex_migration: false`` on the default profile opts out; a secondary behind a
     service-domain / UNIX-user / HERMES_HOME boundary blocks this path only (the explicit command decides)."""
     from hermes_cli.gateway_migrate_guards import auto_migration_blockers, auto_migration_opted_out
     if _host_supports_migration() is not None or auto_migration_opted_out(_default_home()):
-        return
+        return None
     plan = build_migration_plan()
     if plan.already_multiplexed or len(plan.profiles) < 2:
-        return
+        return None
     # A stranded host (manifest on disk, units already removed, nobody serving) has no standalone
     # secondaries left to find, so the "nothing to fold" exit skipped the one host that needs this
     # most. A manifest makes the update hook a RESUME, and a resume is not gated on blockers.
     resuming = plan.manifest is not None
     if not plan.standalone_secondaries and not resuming:
-        return
+        return None
     from hermes_cli.gateway_migrate_guards import masked_default_unit
     masked = None if resuming else masked_default_unit(plan.default_home)
     if masked is not None:
         print(f"\n  ℹ Per-profile gateways kept: the default gateway unit is masked ({masked}).\n"
               f"    Unmask it and run {MIGRATE_COMMAND} to fold them into one gateway.")
-        return
+        return None
     print()
     auto_blockers = auto_migration_blockers(plan)
     if not resuming and (plan.blocked or auto_blockers):
-        _print(format_update_warning(plan, auto_blockers))
-        return
+        warning = format_update_warning(plan, auto_blockers)
+        _print(warning)
+        return "\n".join(warning)
     print("→ Migrating per-profile gateways onto one multiplexed default gateway...")
     _print(format_plan(plan, dry_run=False))
     apply_migration(plan)
+    return None

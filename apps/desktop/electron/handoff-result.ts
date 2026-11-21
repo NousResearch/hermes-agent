@@ -27,6 +27,7 @@ import fs from 'fs'
 import path from 'path'
 
 import { RUN_ID_RE } from './update-marker-judge'
+import { readGatewayMigrationBlocker } from './update-stop-remedy'
 
 export const HANDOFF_RESULT_MAX_AGE_MS = 30 * 60 * 1000
 
@@ -209,7 +210,6 @@ export function readAndConsumeHandoffResult(
 
   const { parsed } = consumed
 
-  const manual = Boolean(parsed?.manual)
   const finishedAt = Number(parsed?.finished_at)
 
   if (!Number.isFinite(finishedAt)) {
@@ -226,12 +226,21 @@ export function readAndConsumeHandoffResult(
     return null
   }
 
+  const result = toHandoffResult(parsed, Boolean(parsed?.manual))
+  const migrationBlocker = result.ok ? readGatewayMigrationBlocker(hermesHome, result.runId) : null
+
+  if (migrationBlocker) {
+    const otherDetail = result.manual ? result.message : result.warnings.join('\n')
+    result.message = [migrationBlocker, otherDetail].filter(Boolean).join('\n\n')
+    result.manual = true
+  }
+
   // Ordinary results expire; a manual (action-required) result never does —
   // it's the last-resort surface for machines with no live channel, so the
   // user must see it whenever they next reopen, not only within the window.
-  if (!manual && now() - finishedAt * 1000 > maxAgeMs) {
+  if (!result.manual && now() - finishedAt * 1000 > maxAgeMs) {
     return null
   }
 
-  return toHandoffResult(parsed, manual)
+  return result
 }

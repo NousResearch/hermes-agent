@@ -9,11 +9,18 @@ from hermes_constants import get_hermes_home
 
 
 @pytest.mark.parametrize(
-    "update_complete,state",
-    [(True, "current"), (False, "current"), (True, "stale"), (True, "down"), (True, None)],
+    "update_complete,state,migration_warning",
+    [
+        (True, "current", None),
+        (True, "current", "Profiles default and example share a Telegram bot token."),
+        (False, "current", None),
+        (True, "stale", None),
+        (True, "down", None),
+        (True, None, None),
+    ],
 )
 def test_fleet_completion_preserves_runtime_verdict_and_restart_obligation(
-    update_complete, state, monkeypatch,
+    update_complete, state, migration_warning, monkeypatch,
 ):
     refreshed, migrated = [], []
     snapshot = [{"profile": "default", "pid": 1234, "state": state}] if state else []
@@ -29,9 +36,11 @@ def test_fleet_completion_preserves_runtime_verdict_and_restart_obligation(
         lambda **kwargs: refreshed.append(kwargs),
     )
     monkeypatch.setattr(update_receipt, "_code_identity", lambda **kwargs: {})
-    monkeypatch.setattr(
-        "hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: migrated.append(True),
-    )
+    def migrate():
+        migrated.append(True)
+        return migration_warning
+
+    monkeypatch.setattr("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", migrate)
 
     def collect(outcome, rows_expected):
         assert outcome is restart
@@ -53,7 +62,11 @@ def test_fleet_completion_preserves_runtime_verdict_and_restart_obligation(
     receipt = json.loads((get_hermes_home() / "logs/update_receipts/latest.json").read_text())
     # Was "partial" when not healthy: the run is a success; an owed fleet restart is a follow-up.
     assert receipt["outcome"] == "success"
-    assert [f["step"] for f in receipt.get("followups", [])] == ([] if state == "current" else ["gateway_restart"])
+    followups = {item["step"]: item["reason"] for item in receipt.get("followups", [])}
+    if migration_warning:
+        assert followups == {"gateway_migration": migration_warning}
+    else:
+        assert list(followups) == ([] if state == "current" else ["gateway_restart"])
     assert receipt["fleet"] == snapshot
     # The two verdicts stay independent: only the fleet keeps the restart obligation armed.
     assert restart.incomplete is (state != "current")

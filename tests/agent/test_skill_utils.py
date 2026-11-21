@@ -1,6 +1,9 @@
 """Tests for agent/skill_utils.py."""
 
 
+import os
+from pathlib import Path
+
 import pytest
 
 from agent.skill_utils import (
@@ -358,6 +361,95 @@ def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
     assert found == [scripts_skill / "SKILL.md", templates_skill / "SKILL.md"]
     assert is_skill_support_path(scripts_skill / "SKILL.md") is False
     assert is_excluded_skill_path(scripts_skill / "SKILL.md") is False
+
+
+# ── directory symlinks: visible, loop-safe, one yield per real directory ──
+
+
+def _write_indexed_skill(parent: Path, name: str) -> Path:
+    """Create *parent*/*name*/SKILL.md and return the skill dir."""
+    skill = parent / name
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+    return skill
+
+
+@pytest.mark.require_symlinks
+def test_iter_skill_index_files_sees_symlinked_skill_dir(tmp_path):
+    """A skill installed as a directory link is a skill: the read side indexes it."""
+    external = _write_indexed_skill(tmp_path / "external", "linked-skill")
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    (skills / "linked-skill").symlink_to(external, target_is_directory=True)
+
+    assert list(iter_skill_index_files(skills, "SKILL.md")) == [skills / "linked-skill" / "SKILL.md"]
+
+
+@pytest.mark.require_symlinks
+def test_iter_skill_index_files_self_link_yields_once(tmp_path):
+    """``skills/self -> skills`` must not re-index the whole tree once per loop level."""
+    skills = tmp_path / "skills"
+    real = _write_indexed_skill(skills, "real-skill")
+    (skills / "self").symlink_to(skills, target_is_directory=True)
+
+    found = list(iter_skill_index_files(skills, "SKILL.md"))
+
+    assert found == [real / "SKILL.md"]
+
+
+@pytest.mark.require_symlinks
+def test_iter_skill_index_files_mutual_links_terminate(tmp_path):
+    """Two skills linking to each other (an ``a -> b -> a`` cycle) terminate with
+    each real skill directory yielded once."""
+    skills = tmp_path / "skills"
+    a = _write_indexed_skill(skills, "a")
+    b = _write_indexed_skill(skills, "b")
+    (a / "to-b").symlink_to(b, target_is_directory=True)
+    (b / "to-a").symlink_to(a, target_is_directory=True)
+
+    found = list(iter_skill_index_files(skills, "SKILL.md"))
+
+    assert len(found) == 2
+    assert {os.path.realpath(p.parent) for p in found} == {os.path.realpath(a), os.path.realpath(b)}
+
+
+@pytest.mark.require_symlinks
+def test_iter_skill_index_files_same_real_dir_yields_once(tmp_path):
+    """Two entries onto one real skill directory are one skill, whichever link wins."""
+    real = _write_indexed_skill(tmp_path / "shared", "pkg")
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    (skills / "alias-a").symlink_to(real, target_is_directory=True)
+    (skills / "alias-b").symlink_to(real, target_is_directory=True)
+
+    found = list(iter_skill_index_files(skills, "SKILL.md"))
+
+    assert len(found) == 1
+    assert os.path.realpath(found[0].parent) == os.path.realpath(real)
+
+
+@pytest.mark.require_symlinks
+def test_iter_skill_index_files_dangling_dir_link_is_silent(tmp_path):
+    """A link whose target is gone matches nothing and raises nothing."""
+    skills = tmp_path / "skills"
+    real = _write_indexed_skill(skills, "real-skill")
+    (skills / "gone").symlink_to(tmp_path / "missing-target", target_is_directory=True)
+
+    assert list(iter_skill_index_files(skills, "SKILL.md")) == [real / "SKILL.md"]
+
+
+def test_iter_skill_index_files_plain_tree_set_and_order_unchanged(tmp_path):
+    """Without directory symlinks every match survives, sorted — dedupe is invisible here."""
+    alpha = _write_indexed_skill(tmp_path, "alpha")
+    beta = _write_indexed_skill(tmp_path / "category", "beta")
+    gamma = _write_indexed_skill(tmp_path / "category" / "nested", "gamma")
+    junk = tmp_path / "node_modules" / "junk"
+    junk.mkdir(parents=True)
+    (junk / "SKILL.md").write_text("---\nname: junk\n---\n", encoding="utf-8")
+
+    found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
+
+    assert found == [alpha / "SKILL.md", beta / "SKILL.md", gamma / "SKILL.md"]
 
 
 def test_skill_support_path_uses_explicit_discovery_root_not_cwd(tmp_path, monkeypatch):

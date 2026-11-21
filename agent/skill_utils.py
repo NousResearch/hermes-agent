@@ -895,9 +895,27 @@ def is_skill_description_truncated_for_prompt(frontmatter: dict[str, Any], limit
 
 def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*; prunes
-    EXCLUDED_SKILL_DIRS and support dirs of skill roots."""
+    EXCLUDED_SKILL_DIRS and support dirs of skill roots.
+
+    Directory symlinks are followed — a skill installed as a link is a skill —
+    but each real directory is entered at most once per call. The key is
+    ``os.path.realpath`` of the directory: a self-referential link
+    (``skills/self -> skills``), two links onto one checkout, and an
+    ``a -> b -> a`` cycle all collapse to the entry met first in walk order
+    instead of re-emitting the same skill once per loop level. Pruning the
+    walk (not only the match) means a cycle is never descended twice at all.
+    A symlink whose target is gone yields nothing, like any missing directory.
+    For a tree without directory symlinks realpaths are unique, so the matched
+    set and its order are exactly what they were before.
+    """
     matches: list[str] = []
+    seen_real_dirs: set[str] = set()
     for root, dirs, files in os.walk(str(skills_dir), followlinks=True):
+        real_root = os.path.realpath(root)
+        if real_root in seen_real_dirs:  # same real directory reached by another entry
+            dirs[:] = []
+            continue
+        seen_real_dirs.add(real_root)
         has_skill_md = "SKILL.md" in files
         dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
         if filename in files:

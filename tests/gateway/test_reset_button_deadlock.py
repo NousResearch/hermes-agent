@@ -89,6 +89,25 @@ def _make_runner_with_cached_agent(close_fn):
 
 
 @pytest.mark.asyncio
+async def test_new_session_reset_hook_has_distinct_transition_ids(monkeypatch):
+    """#156607: removing resume resets must preserve the real /new boundary."""
+    calls = []
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook",
+                        lambda name, **kwargs: calls.append((name, kwargs)) or [])
+    runner = _make_runner_with_cached_agent(lambda: None)
+    try:
+        await runner._handle_reset_command(_make_event("/new"))
+    finally:
+        runner._housekeeping_executor.shutdown(wait=True)
+    resets = [kwargs for name, kwargs in calls if name == "on_session_reset"]
+    assert resets == [{
+        "session_id": "sess-new", "platform": "telegram", "reason": "new_session",
+        "old_session_id": "sess-old", "new_session_id": "sess-new",
+    }]
+    runner.session_store.reset_session.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_reset_does_not_block_event_loop_during_cleanup():
     """#35994: a slow agent.close() must NOT block the event loop. A
     concurrent loop task must keep ticking WHILE close() is still blocking

@@ -387,7 +387,9 @@ method("session.cwd.set", params=SessionCwdSetParams, result=SessionCwdSetResult
 
 
 class SessionCloseParams(SessionParams):
-    pass
+    # Explicit /new: the replacement's LIVE id, never an unverified stored-id string.
+    # Create it first, then close the predecessor with this reference.
+    reset_to_session_id: str | None = None
 
 
 class SessionCloseResult(Result):

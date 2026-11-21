@@ -2052,9 +2052,7 @@ def _(rid, params: dict, session: dict) -> dict:
 
 @method("session.close")
 def _(rid, params: dict) -> dict:
-    with _session_resume_lock:  # lock only the ownership claim; finalization must not block resumes
-        session = _pop_session_by_id(params.get("session_id", ""))
-    return _ok(rid, {"closed": _teardown_popped_session(session, end_reason="tui_close"), "messages": list((session or {}).get("_end_msgs") or [])})
+    return _close_session_rpc(rid, params)
 
 
 @_session_method("session.branch", live=True)

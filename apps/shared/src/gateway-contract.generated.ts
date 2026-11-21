@@ -3557,6 +3557,7 @@ export interface SessionCwdSetResult {
 export interface SessionCloseParams {
   session_id: string
   profile?: string | null
+  reset_to_session_id?: string | null
 }
 export interface SessionCloseResult {
   closed: boolean

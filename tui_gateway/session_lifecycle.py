@@ -46,13 +46,18 @@ def _start_session_work(target, *, name: str, session: dict | None = None):
         raise
 
 
-def _notify_session_boundary(event_type: str, session_id: str | None, platform: str | None = None) -> list[str]:
+def _notify_session_boundary(
+    event_type: str, session_id: str | None, platform: str | None = None, *,
+    old_session_id: str | None = None, new_session_id: str | None = None,
+) -> list[str]:
     """Fire session lifecycle hooks with CLI parity; returns plugin ``on_session_finalize`` user messages."""
     with contextlib.suppress(Exception):
         from hermes_cli.lifecycle import finalize_session, invoke_hook, session_end_messages
         if event_type == "on_session_finalize":
             return session_end_messages(finalize_session(session_id=session_id, platform=_resolve_agent_platform(platform)))
-        invoke_hook(event_type, session_id=session_id, platform=_resolve_agent_platform(platform))
+        transition = ({"old_session_id": old_session_id, "new_session_id": new_session_id}
+                      if event_type == "on_session_reset" else {})
+        invoke_hook(event_type, session_id=session_id, platform=_resolve_agent_platform(platform), **transition)
     return []
 
 
@@ -810,6 +815,34 @@ def _close_session_by_id(
             return False
         session = _pop_session_by_id(sid)
     return _teardown_popped_session(session, end_reason=end_reason)
+
+
+def _close_session_rpc(rid, params: dict) -> dict:
+    """Explicit close, optionally linked to /new's replacement live record.
+
+    Plain creates, resumes and closes carry no transition. Capture actual stored
+    identities before teardown; only the caller that claims the old record emits.
+    """
+    replacement_id = params.get("reset_to_session_id")
+    old_key = new_key = None
+    with _session_resume_lock, _sessions_lock:
+        if replacement_id and (old := _sessions.get(params.get("session_id", ""))) is not None:
+            replacement = _sessions.get(replacement_id)
+            old_key = _session_lookup_key(old)
+            new_key = _session_lookup_key(replacement) if replacement else None
+            if (not replacement or not old_key or not new_key or old_key == new_key
+                    or not _live_profile_matches(replacement, old.get("profile_home"))
+                    or replacement.get("transport") is not old.get("transport")
+                    or replacement.get("auth_user_id") != old.get("auth_user_id")):
+                return _err(rid, 4008, "reset replacement must be a distinct live session owned by the same client and profile")
+        session = _pop_session_by_id(params.get("session_id", ""))
+    # Slow finalization stays outside the ownership locks, before the reset hook.
+    closed = _teardown_popped_session(session, end_reason="tui_close")
+    if closed and replacement_id and old_key and new_key:
+        with _session_profile_runtime_scope(session):
+            _notify_session_boundary("on_session_reset", new_key, _session_source(session),
+                                     old_session_id=old_key, new_session_id=new_key)
+    return _ok(rid, {"closed": closed, "messages": list((session or {}).get("_end_msgs") or [])})
 
 
 def _ws_session_is_detached(session: dict | None) -> bool:

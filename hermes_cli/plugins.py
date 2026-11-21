@@ -1367,12 +1367,16 @@ def get_plugin_toolsets() -> list[tuple]:
         from tools.registry import registry
     except Exception:
         return []
+    from toolsets import TOOLSETS
     # Group plugin tool names by their toolset, then map each toolset back to the plugin that
     # registered it (first owner wins) for the description.
     toolset_tools: dict[str, list[str]] = {}
     for tool_name in manager._plugin_tool_names:
         entry = registry.get_entry(tool_name)
-        if entry:
+        # A toolset that toolsets.py declares stays a core toolset when a plugin adds a tool to it,
+        # the rule toolsets._get_plugin_toolset_names applies. Counted as a plugin toolset it would
+        # be turned on for every platform (tools_config._enabled_plugin_toolsets).
+        if entry and entry.toolset not in TOOLSETS:
             toolset_tools.setdefault(entry.toolset, []).append(entry.name)
     toolset_plugin: dict[str, LoadedPlugin] = {}
     for loaded in manager._plugins.values():

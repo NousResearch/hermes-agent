@@ -1,0 +1,20 @@
+name: file-intelligence
+repo: https://github.com/buttercode101/file-intelligence
+sha: 00f06e7f13f30aa0e29c2ce8432fb0ddac26568a
+description: >-
+  Proactive file scanner that finds duplicates, large files and sensitive items, then proposes ranked safe cleanup actions in Desktop. Dry-run by default; every mutation requires explicit approval via agent tools. No silent tracking, moving or deleting. Distinct from bundled disk-cleanup (silent test-file tracking) and catalog file-tray/filebox (tracking/browser).
+  Disclosure — scans a user-specified directory (stat + SHA-256 hash in 1MB chunks, >1GB skipped with warning; sensitive files never hashed); stores no file content (metadata only in plugin SQLite); file_apply with dry_run=false renames files into <root>/.file-intelligence-archive/ (reversible archive, archive dir symlink-refused, path containment enforced); sensitive files (.env, *.pem, *.key, id_rsa, .netrc, credentials.json) are flagged only and never moved; no network calls; no silent background cleanup. Hidden directories excluded wholesale.
+maintainer: buttercode101
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - file_scan
+    - file_propose
+    - file_apply
+  provides_hooks:
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

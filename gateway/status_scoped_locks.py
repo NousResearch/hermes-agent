@@ -73,6 +73,13 @@ def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optiona
     current_start = _status._get_process_start_time(existing_pid)
     if _status._start_times_conflict(recorded_start, current_start):
         return True
+    if _holder_predates_boot(existing, existing_pid):
+        _status.logger.warning(
+            "Reclaiming %s lock: its holder cannot be identified and its record predates this "
+            "boot (pid=%s, start_time=%s, updated_at=%s)",
+            existing.get("scope") or "scoped", existing_pid, recorded_start,
+            existing.get("updated_at"))
+        return True
     metadata = existing.get("metadata")
     process_owner = isinstance(metadata, dict) and metadata.get("owner_kind") == "process"
     if not process_owner and not _status._looks_like_gateway_process(existing_pid):
@@ -81,6 +88,19 @@ def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optiona
         if None in (recorded_start, current_start) and not _status._record_looks_like_gateway(existing):
             return True
     return _status._process_is_stopped(existing_pid)
+
+
+def _holder_predates_boot(existing: dict[str, Any], existing_pid: int) -> bool:
+    """True when the lock names a PID from a previous boot, so it cannot be held.
+
+    PIDs do not survive a reboot, but the number can be handed to a protected process that the
+    liveness probe calls alive while every identity probe comes back empty. Judging the record by
+    its own timestamps is the only honest reading: otherwise the Telegram token lock stays "in
+    use" by a gateway that no longer exists, and every start exits 78 with no retry.
+    """
+    from gateway.status_boot_epoch import pid_identity_unreadable, record_predates_boot
+
+    return pid_identity_unreadable(existing_pid) and record_predates_boot(existing)
 
 
 def release_scoped_lock(scope: str, identity: str) -> None:

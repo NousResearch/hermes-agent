@@ -26,6 +26,10 @@ INSTALL_COMMIT=""
 # The update channel to install: stable (the latest published release, the default for the
 # official repository's main line) or main (every commit). An explicit choice is persisted.
 CHANNEL="${HERMES_INSTALL_CHANNEL:-}"
+# Opt-in: a fresh install of one commit (a --commit pin or the stable release) fetches only
+# that commit at depth 1 instead of the blobless history (see stage_repository).
+SHALLOW=false
+case "${HERMES_INSTALL_SHALLOW:-}" in 1|true|yes) SHALLOW=true ;; esac
 INSTALL_DIR="${HERMES_INSTALL_DIR:-}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 STAGE=""
@@ -68,12 +72,13 @@ while [ $# -gt 0 ]; do
         --skip-computer-use|-SkipComputerUse) SKIP_COMPUTER_USE=true; shift ;;
         --include-desktop|-IncludeDesktop) INCLUDE_DESKTOP=true; shift ;;
         --verbose|-Verbose) VERBOSE=true; shift ;;
+        --shallow|-Shallow) SHALLOW=true; shift ;;
         -h|--help)
             echo "Usage: install.sh [--channel stable|main] [--branch NAME] [--commit SHA]"
             echo "                  [--dir PATH] [--hermes-home PATH]"
             echo "                  [--manifest] [--stage NAME] [--json]"
             echo "                  [--non-interactive] [--include-desktop] [--verbose]"
-            echo "                  [--skip-browser] [--skip-computer-use]"
+            echo "                  [--skip-browser] [--skip-computer-use] [--shallow]"
             echo
             echo "  --channel       stable (default): the latest published release, then release"
             echo "                  to release. main: every commit. Also HERMES_INSTALL_CHANNEL;"
@@ -84,6 +89,9 @@ while [ $# -gt 0 ]; do
             echo "  --skip-computer-use"
             echo "                  Do not install the computer-use driver (cua-driver). Remembered"
             echo "                  the same way; undo with 'hermes pm install cua-driver'."
+            echo "  --shallow       A fresh install of a release or --commit fetches only that"
+            echo "                  commit (depth 1); 'hermes update' fetches the history later."
+            echo "                  Skips the --commit on --branch check. Also HERMES_INSTALL_SHALLOW=1."
             exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -718,6 +726,26 @@ stable_unreachable() {
     fail "$1$(native_detail). Rerun the installer to retry, or pass --channel main to install main's tip" git_fetch_failed
 }
 
+# --shallow: init $1 and fetch only the commit being installed (--commit, which must be a full
+# SHA, or the release tag) at depth 1, then check it out detached, as the pinned clone leaves it.
+# The fetch refspec stays the clone default so `hermes update` fetches every branch.
+shallow_fetch_target() {
+    local tree="$1" want attempt
+    if [ -n "$INSTALL_COMMIT" ]; then want="$INSTALL_COMMIT"; else want="+refs/tags/$release:refs/tags/$release"; fi
+    git init -q "$tree" || return 1
+    git -C "$tree" remote add origin "$REPO_URL" || return 1
+    for attempt in 1 2 3; do
+        if run_logged --may-fail "Fetching ${INSTALL_COMMIT:-$release} (depth 1, attempt $attempt of 3)" \
+            git -C "$tree" fetch ${progress[@]+"${progress[@]}"} --depth 1 origin "$want"; then
+            run_logged --may-fail "Checking out ${INSTALL_COMMIT:-$release}" \
+                git -C "$tree" checkout --force --detach "${INSTALL_COMMIT:-$release}"
+            return
+        fi
+        [ "$attempt" = 3 ] || sleep "$((attempt * 5))"
+    done
+    return 1
+}
+
 stage_repository() {
     local pinned=false channel="" release="" origin
     drop_git_location_env
@@ -911,7 +939,24 @@ stage_repository() {
         # prints none to a pipe unless asked.
         if quiet_output; then progress=(--progress); fi
         staged="$(mktemp -d "$(dirname "$INSTALL_DIR")/.hermes-clone-XXXXXX")" || fail "cannot stage clone" filesystem_error
+        if [ "$SHALLOW" = true ] && [ -n "$INSTALL_COMMIT$release" ]; then
+            # --shallow: fetch the one commit being installed, with its files, at depth 1 (the
+            # release tag too, so runtime identity stays exact). The blobless clone below
+            # downloads every commit and tree first and then lazy-fetches the files, two
+            # filtered requests GitHub serves far slower than one depth-1 pack. `hermes update`
+            # unshallows the checkout (heal_shallow_history) before it needs the history. The
+            # --commit on --branch check needs that history, so it is the caller's here.
+            # Any failure falls through to the blobless clone.
+            if shallow_fetch_target "$staged/tree"; then
+                cloned=shallow
+                [ -z "$INSTALL_COMMIT" ] || pinned=true
+            else
+                rm -rf "$staged/tree"
+                log_warn "shallow fetch of ${INSTALL_COMMIT:-$release} failed; cloning the history instead"
+            fi
+        fi
         for attempt in 1 2 3; do
+            [ "$cloned" = false ] || break
             # Blobless: every commit, tree and release tag (runtime identity is
             # the nearest reachable release; --commit pins and branch switches
             # still resolve), file contents fetched on demand. Not treeless:
@@ -929,7 +974,9 @@ stage_repository() {
             rm -rf "$staged/tree"
             [ "$attempt" = 3 ] || sleep "$((attempt * 5))"
         done
-        if [ "$cloned" = false ]; then
+        if [ "$cloned" = shallow ]; then
+            :
+        elif [ "$cloned" = false ]; then
             # The checkout step is where throttled downloads die: clone the
             # graph alone, then retry materializing the tree separately.
             log_warn "direct clone failed; trying deferred checkout"
@@ -942,17 +989,21 @@ stage_repository() {
             rm -rf "$staged"
             fail "git clone failed; no checkout published$(native_detail)" git_clone_failed
         fi
-        if [ -n "$INSTALL_COMMIT" ]; then
+        if [ "$cloned" = shallow ]; then
+            :
+        elif [ -n "$INSTALL_COMMIT" ]; then
             # Pin before publishing: a pinned or deferred clone has no files yet,
             # and an unpublished tree never leaves an empty checkout behind.
             git -C "$staged/tree" merge-base --is-ancestor "$INSTALL_COMMIT" "origin/$BRANCH" 2>/dev/null \
                 || { rm -rf "$staged"; fail "commit $INSTALL_COMMIT is not on branch $BRANCH" commit_not_on_branch; }
         fi
-        if [ -n "$release" ]; then
+        if [ "$cloned" = shallow ]; then
+            :
+        elif [ -n "$release" ]; then
             fetch_release "$staged/tree" || { rm -rf "$staged"; stable_unreachable "could not fetch $release"; }
             materialize=(checkout --force --detach "$release")
         fi
-        if [ -n "$INSTALL_COMMIT$release" ] || [ "$cloned" = deferred ]; then
+        if [ "$cloned" != shallow ] && { [ -n "$INSTALL_COMMIT$release" ] || [ "$cloned" = deferred ]; }; then
             # The checkout step is where throttled downloads die: retry it alone.
             # A pin detaches HEAD and leaves the branch at its tip, as the published pin did.
             [ -z "$INSTALL_COMMIT" ] || materialize=(checkout --force --detach "$INSTALL_COMMIT")

@@ -20,6 +20,10 @@
 #                         $env:HERMES_INSTALL_CHANNEL (the only way under
 #                         `irm | iex`); an explicit choice is saved like
 #                         `hermes update --set-channel`
+#   -Shallow              a fresh install of a release or -Commit (a full SHA)
+#                         fetches only that commit (depth 1); `hermes update`
+#                         fetches the history later. Skips the -Commit on
+#                         -Branch check. Also $env:HERMES_INSTALL_SHALLOW=1
 [CmdletBinding(PositionalBinding=$false)]
 param(
     [string]$Branch = "main",
@@ -41,6 +45,7 @@ param(
     # `hermes pm install chromium` opts back in.
     [switch]$SkipBrowser,
     [switch]$SkipComputerUse,
+    [switch]$Shallow,
     # Print the paths this install would use, as JSON on stdout, and exit
     # without touching anything. The first question on any "installer says a
     # path doesn't exist" report is which paths it actually resolved --
@@ -50,6 +55,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($env:HERMES_INSTALL_SHALLOW -in @('1', 'true', 'yes')) { $Shallow = $true }
 
 # -SkipSetup is the pre-rework spelling of -NonInteractive.
 if ($SkipSetup) { $NonInteractive = $true }
@@ -1052,6 +1059,29 @@ function Get-RealDirectoryPath([string]$Path) {
     return $real
 }
 
+# -Shallow: init $Tree and fetch only the commit being installed (-Commit, which must be a full
+# SHA, or the release tag) at depth 1, then check it out detached, as the pinned clone leaves it.
+# The fetch refspec stays the clone default so `hermes update` fetches every branch.
+function Receive-ShallowTarget {
+    param([string]$Tree, [string]$Release, [string[]]$Progress)
+    $want = if ($Commit) { $Commit } else { "+refs/tags/${Release}:refs/tags/${Release}" }
+    $what = if ($Commit) { $Commit } else { $Release }
+    $null = Invoke-Logged -MayFail "Preparing $Tree" { git init -q $Tree }
+    if ($LASTEXITCODE) { return $false }
+    # As the clone's --config core.longpaths=true does: before checkout, kept for `hermes update`.
+    $null = Invoke-Logged -MayFail "Adding origin" { git -C $Tree config core.longpaths true; if (-not $LASTEXITCODE) { git -C $Tree remote add origin $RepoUrl } }
+    if ($LASTEXITCODE) { return $false }
+    foreach ($attempt in 1..3) {
+        $null = Invoke-Logged -MayFail "Fetching $what (depth 1, attempt $attempt of 3)" { git -C $Tree fetch @Progress --depth 1 origin $want }
+        if (-not $LASTEXITCODE) {
+            $null = Invoke-Logged -MayFail "Checking out $what" { git -C $Tree checkout --force --detach $what }
+            return (-not $LASTEXITCODE)
+        }
+        if ($attempt -lt 3) { Start-Sleep -Seconds ($attempt * 5) }
+    }
+    return $false
+}
+
 function Stage-Repository {
     $pinned = $false
     # Not $channel: variables are case-insensitive, and the helpers below read the -Channel
@@ -1278,7 +1308,27 @@ function Stage-Repository {
         try {
             $cloned = $false
             $deferred = $false
+            $shallowDone = $false
+            if ($Shallow -and ($Commit -or $release)) {
+                # -Shallow: fetch the one commit being installed, with its files, at depth 1 (the
+                # release tag too, so runtime identity stays exact). The blobless clone below
+                # downloads every commit and tree first and then lazy-fetches the files, two
+                # filtered requests GitHub serves far slower than one depth-1 pack. `hermes update`
+                # unshallows the checkout (heal_shallow_history) before it needs the history. The
+                # -Commit on -Branch check needs that history, so it is the caller's here.
+                # Any failure falls through to the blobless clone.
+                $shallowDone = [bool](Receive-ShallowTarget $tree $release $progress | Select-Object -Last 1)
+                if ($shallowDone) {
+                    $cloned = $true
+                    $pinned = [bool]$Commit
+                } else {
+                    Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue
+                    $what = if ($Commit) { $Commit } else { $release }
+                    Write-Warn "shallow fetch of $what failed; cloning the history instead"
+                }
+            }
             foreach ($attempt in 1..3) {
+                if ($cloned) { break }
                 # Blobless: every commit, tree and release tag (runtime identity is
                 # the nearest reachable release; -Commit pins and branch switches
                 # still resolve), file contents fetched on demand. Not treeless:
@@ -1291,7 +1341,7 @@ function Stage-Repository {
                 Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue
                 if ($attempt -lt 3) { Start-Sleep -Seconds ($attempt * 5) }
             }
-            if (-not $cloned) {
+            if (-not $cloned -and -not $shallowDone) {
                 # The checkout step is where throttled downloads die: clone the
                 # graph alone, then retry materializing the tree separately.
                 Write-Warn "direct clone failed; trying deferred checkout"
@@ -1299,15 +1349,15 @@ function Stage-Repository {
                 if (-not $LASTEXITCODE) { $cloned = $true; $deferred = $true }
             }
             if (-not $cloned) { Fail "git clone failed; no checkout published$(Get-NativeDetail)" git_clone_failed }
-            if ($Commit) {
+            if ($Commit -and -not $shallowDone) {
                 # Pin before publishing: a pinned or deferred clone has no files yet,
                 # and a failure here leaves only the staging dir, which finally removes.
                 Invoke-Native { git -C $tree merge-base --is-ancestor $Commit "origin/$Branch" 2>$null }
                 if ($LASTEXITCODE) { Fail "commit $Commit is not on branch $Branch" commit_not_on_branch }
             }
             # A failure here leaves only the staging dir, which finally removes.
-            if ($release -and -not (Receive-StableRelease $tree $release)) { Confirm-StableUnreachable "could not fetch $release" }
-            if ($Commit -or $release -or $deferred) {
+            if ($release -and -not $shallowDone -and -not (Receive-StableRelease $tree $release)) { Confirm-StableUnreachable "could not fetch $release" }
+            if (-not $shallowDone -and ($Commit -or $release -or $deferred)) {
                 # The checkout step is where throttled downloads die: retry it alone.
                 # A pin detaches HEAD and leaves the branch at its tip, as the published pin did.
                 $detachAt = if ($Commit) { $Commit } else { $release }

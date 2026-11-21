@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { MarkdownTextContent } from './markdown-text'
+import { MarkdownTextContent, MessageTextContent } from './markdown-text'
 
 // Regression for #82140: a plain filesystem href in assistant markdown
 // (`[report](/home/user/report.md)`) rendered as a bare dead anchor —
@@ -15,14 +15,17 @@ import { MarkdownTextContent } from './markdown-text'
 describe('MarkdownLink filesystem hrefs', () => {
   afterEach(cleanup)
 
-  it('routes an absolute file path link through the preview attachment', async () => {
-    render(<MarkdownTextContent isRunning={false} text="Wrote it: [report](/home/user/report.md)" />)
+  // A file named mid-sentence stays link text inside its paragraph — a block
+  // card there splits the sentence in two. The link is the view-time door:
+  // click resolves against the session's backend and opens the preview pane.
+  it('renders an absolute file path link as an inline link, not a card', async () => {
+    render(<MarkdownTextContent isRunning={false} text="Wrote it: [report](/home/user/report.md) for you." />)
 
-    // PreviewAttachment paints the filename + an Open preview button —
-    // that's the view-time door, not a dead <a>.
-    await screen.findByText('report.md')
-    expect(screen.getByRole('button', { name: 'Open preview' })).toBeTruthy()
-    expect(document.querySelector('a[href="/home/user/report.md"]')).toBeNull()
+    const link = await screen.findByRole('link', { name: 'report' })
+
+    expect(link.getAttribute('title')).toBe('/home/user/report.md')
+    expect(link.closest('p')?.textContent).toBe('Wrote it: report for you.')
+    expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
   })
 
   it('routes file:// and ~/ links the same way', async () => {
@@ -30,9 +33,23 @@ describe('MarkdownLink filesystem hrefs', () => {
       <MarkdownTextContent isRunning={false} text={'See [notes](file:///srv/data/notes.txt) and [todo](~/todo.md)'} />
     )
 
-    await screen.findByText('notes.txt')
-    await screen.findByText('todo.md')
-    expect(screen.getAllByRole('button', { name: 'Open preview' })).toHaveLength(2)
+    expect(await screen.findByRole('link', { name: 'notes' })).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'todo' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
+  })
+
+  it('renders a MEDIA: tag mid-sentence as an inline link, and on its own line as a card', async () => {
+    render(
+      <MessageTextContent
+        text={'Read MEDIA:/repo/README.md and the roadmap.\n\nMEDIA:/repo/roadmap.md\nMEDIA:/repo/notes.txt'}
+      />
+    )
+
+    const inline = await screen.findByRole('link', { name: 'README.md' })
+
+    expect(inline.closest('p')?.textContent).toBe('Read README.md and the roadmap.')
+    // Back-to-back MEDIA: lines each keep their delivery card.
+    expect(await screen.findAllByRole('button', { name: 'Open preview' })).toHaveLength(2)
   })
 
   it('routes angle-bracket file links whose path contains spaces', async () => {
@@ -41,19 +58,21 @@ describe('MarkdownLink filesystem hrefs', () => {
     // fell through to harden and rendered as "label [blocked]".
     render(<MarkdownTextContent isRunning={false} text={'See [notes](<~/My Notes/todo with spaces.md>)'} />)
 
-    await screen.findByText('todo with spaces.md')
-    expect(screen.getByRole('button', { name: 'Open preview' })).toBeTruthy()
+    const link = await screen.findByRole('link', { name: 'notes' })
+
+    expect(link.getAttribute('title')).toBe('~/My Notes/todo with spaces.md')
     expect(screen.queryByText(/blocked/)).toBeNull()
   })
 
   it('routes percent-encoded file links through the same preview pipeline', async () => {
-    // Markdown renderers emit the href percent-encoded; the renderer keeps
-    // the encoded form in the card label, and the electron side retries the
-    // decoded on-disk path when the file is opened.
+    // Markdown renderers emit the href percent-encoded; the inline link keeps
+    // the encoded form, and the electron side retries the decoded on-disk
+    // path when the file is opened.
     render(<MarkdownTextContent isRunning={false} text={'See [notes](~/My%20Notes/todo%20with%20spaces.md)'} />)
 
-    await screen.findByText('todo%20with%20spaces.md')
-    expect(screen.getByRole('button', { name: 'Open preview' })).toBeTruthy()
+    const link = await screen.findByRole('link', { name: 'notes' })
+
+    expect(link.getAttribute('title')).toBe('~/My%20Notes/todo%20with%20spaces.md')
   })
 
   it('renders a media player for a media-extension path link', async () => {
@@ -76,5 +95,44 @@ describe('MarkdownLink filesystem hrefs', () => {
     // preview affordance.
     expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
     expect(document.querySelector('a[href="#section-2"]')).not.toBeNull()
+  })
+
+  // Cases proposed by @hierophantos in #126734.
+  it('routes a file:// link with a #L42 line fragment as an inline link', async () => {
+    // The fragment is part of the href, not a separate markdown construct —
+    // mediaKind() strips it before reading the extension, so a code file with
+    // a line anchor still resolves to 'file' and keeps the inline link.
+    render(
+      <MarkdownTextContent isRunning={false} text="See [geometry.py:42](file:///Users/me/proj/geometry.py#L42)." />
+    )
+
+    const link = await screen.findByRole('link', { name: 'geometry.py:42' })
+
+    expect(link.getAttribute('href')).toBe('file:///Users/me/proj/geometry.py#L42')
+    expect(link.getAttribute('title')).toBe('file:///Users/me/proj/geometry.py#L42')
+    expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
+  })
+
+  it('routes a bracketed file:// target containing spaces as an inline link', async () => {
+    // CommonMark requires `<...>` destinations for paths with spaces (same
+    // reason as the `~/My Notes/...` case above), here combined with an
+    // explicit file:// scheme instead of a bare path.
+    render(<MarkdownTextContent isRunning={false} text={'See [notes](<file:///Users/me/my notes/todo.md>)'} />)
+
+    const link = await screen.findByRole('link', { name: 'notes' })
+
+    expect(link.getAttribute('href')).toBe('file:///Users/me/my notes/todo.md')
+    expect(link.getAttribute('title')).toBe('file:///Users/me/my notes/todo.md')
+  })
+
+  it('renders a file link that is the whole content of a list item as an inline link, not a card', async () => {
+    // A tight list unwraps the item's paragraph, so the link becomes the
+    // li's only child; it must stay the inline link, not escalate to a card.
+    render(<MarkdownTextContent isRunning={false} text={'- [geometry.py](file:///Users/me/proj/geometry.py)'} />)
+
+    const link = await screen.findByRole('link', { name: 'geometry.py' })
+
+    expect(link.closest('li')?.textContent).toBe('geometry.py')
+    expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
   })
 })

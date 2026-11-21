@@ -26,6 +26,9 @@ DEFAULT_INDICATOR_STYLE: str = "kaomoji"
 # attached afterward.
 WEBAPP_ATTACHMENT_MAX_BYTES: int = 16 * 1024 * 1024
 
+# The durable worker receipt can spend this long waiting for the transcript writer.
+TRANSCRIPT_WRITE_PATIENCE_S = 60.0
+
 
 def set_hermes_home_override(path: str | Path | None):
     """Set a context-local Hermes home override (``None``: the process home); returns a token for

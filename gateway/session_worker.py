@@ -52,6 +52,15 @@ def _verify(connection, ref, params, claim):
                          adoption_secret=claim)
 
 
+def verified_worker_claim(connection, ref, params):
+    """Resolve the durable claim and assignment on the request's executor thread."""
+    claim = _claim(connection, ref, params)
+    if 'worker:adopt' not in connection.actor.capabilities:
+        raise AuthorityRefusal('permission_denied')
+    _verify(connection, ref, params, claim)
+    return claim
+
+
 async def worker_request(connection, ref, params, *, operation):
     from gateway.session_authorities import require_serving
     require_serving(connection.authority)  # adopt/persist would write with the released epoch
@@ -64,12 +73,12 @@ async def worker_request(connection, ref, params, *, operation):
     extra = {'register': {'kind'}, 'adopt': set(), 'persist': {'epoch', 'sequence', 'operation', 'payload'}}[operation]
     if set(params) != _SCOPE | extra:
         raise AuthorityRefusal('invalid_params')
-    claim = _claim(connection, ref, params)
     authority = connection.authority
-    if operation == 'register':
-        authority._require_admission_open()
     scope = {key: params[key] for key in ('execution_id', 'session_id', 'generation')}
     if operation == 'register':
+        claim = await asyncio.to_thread(_claim, connection, ref, params)
+        require_serving(authority)
+        authority._require_admission_open()
         # Only a worker-adoption ticket (what a launched worker carries): an interactive client
         # must not park a 'registered' row that nothing reaps (the FIFO would pause until restart).
         authority.authorize(connection.actor, ref, 'worker:adopt')
@@ -77,15 +86,21 @@ async def worker_request(connection, ref, params, *, operation):
             raise AuthorityRefusal('unsupported_producer')
         return asdict(await authority_persistence(authority).aio.worker_executions.register(
             epoch=authority.epoch, **scope, kind='compute', adoption_secret=claim, require_idle=True))
-    if 'worker:adopt' not in connection.actor.capabilities:
-        raise AuthorityRefusal('permission_denied')
-    _verify(connection, ref, params, claim)
     if operation == 'adopt':
+        claim = await asyncio.to_thread(verified_worker_claim, connection, ref, params)
+        require_serving(authority)
         return asdict(await authority_persistence(authority).aio.worker_executions.adopt(
             epoch=authority.epoch, **scope, adoption_secret=claim))
-    result = await asyncio.to_thread(authority_persistence(authority).worker_executions.persist_operation,
-        epoch=params['epoch'], **scope, sequence=params['sequence'], operation=params['operation'],
-        payload=params['payload'])
+
+    def persist():
+        # Process checks and SQLite reads can stall alongside the receipt write.
+        verified_worker_claim(connection, ref, params)
+        require_serving(authority)
+        return authority_persistence(authority).worker_executions.persist_operation(
+            epoch=params['epoch'], **scope, sequence=params['sequence'], operation=params['operation'],
+            payload=params['payload'])
+
+    result = await asyncio.to_thread(persist)
     if params['operation'] == 'execution.finish':
         # Queued input parked behind this worker; nothing else would restart its FIFO.
         authority.wake_after_worker(params['session_id'])

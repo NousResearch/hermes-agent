@@ -70,6 +70,8 @@ def owner(monkeypatch, tmp_path):
                 break
             if request['method'] == 'stall':
                 state.relay.stall(request['params']['seconds'])
+            if request['params'].get('receipt_delay'):
+                state.relay.stall(request['params']['receipt_delay'])
             # Owners broadcast events to every attached transport; they must not satisfy a call.
             ws.send(json.dumps({'jsonrpc': '2.0', 'method': 'event', 'params': {'type': 'sessions.changed'}}))
             if request['method'] == 'fail':
@@ -238,6 +240,23 @@ def test_owner_stall_shorter_than_the_receipt_budget_does_not_fail_on_a_ping_dea
     assert time.monotonic() - started >= 1.4
     assert rpc('worker.persist')['n'] == 3
     assert owner.connections == 1
+
+
+def test_persistence_can_receive_a_late_commit_without_resending(owner, tmp_path, monkeypatch):
+    from agent.runtime_session_store import WorkerRPC, _OwnerLink
+
+    receive = _OwnerLink.receive
+    monkeypatch.setattr(_OwnerLink, 'receive', lambda link, timeout: receive(link, timeout / 40))
+    rpc = WorkerRPC(tmp_path)
+    try:
+        # An owner response that takes 30s at production scale fits the owner's 60s write budget.
+        assert rpc('worker.persist', sequence=1, receipt_delay=0.75)['sequence'] == 1
+        assert owner.requests == ['worker.persist']
+        with pytest.raises(TimeoutError, match='worker_receipt_timeout'):
+            rpc('worker.adopt', receipt_delay=0.75)
+        assert owner.requests == ['worker.persist', 'worker.adopt']
+    finally:
+        rpc.close()
 
 
 def test_concurrent_callers_are_serialized_and_each_gets_its_own_reply(owner, tmp_path):

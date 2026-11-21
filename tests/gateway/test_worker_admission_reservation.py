@@ -57,7 +57,11 @@ def test_started_admission_binds_only_exact_owned_process_and_principal(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_reserved_process_uses_existing_authenticated_adoption_and_persistence(tmp_path):
+async def test_reserved_process_uses_existing_authenticated_adoption_and_persistence(tmp_path, monkeypatch):
+    import asyncio
+    import threading
+
+    from gateway import session_worker
     from gateway.session_worker import worker_request
     from gateway.session_worker_reservation import reserve_admission_worker
     db = storage_handle(tmp_path)
@@ -79,7 +83,31 @@ async def test_reserved_process_uses_existing_authenticated_adoption_and_persist
         receipt = await worker_request(connection, None, identity, operation='adopt')
         assert receipt['execution_id'] == scope['execution_id']
         params = scope | {'sequence': 1, 'operation': 'execution.finish', 'payload': {}}
-        result = await worker_request(connection, None, params, operation='persist')
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        claim_started = asyncio.Event()
+        release_claim = threading.Event()
+        repository = type(db.worker_executions)
+        claim_origin = repository.claim_origin
+        verify = session_worker._verify
+
+        def slow_claim(repo, **kwargs):
+            loop.call_soon_threadsafe(claim_started.set)
+            assert release_claim.wait(2), 'The persistence claim blocked the gateway event loop'
+            return claim_origin(repo, **kwargs)
+
+        def verify_off_loop(*args):
+            assert threading.get_ident() != loop_thread
+            return verify(*args)
+
+        monkeypatch.setattr(repository, 'claim_origin', slow_claim)
+        monkeypatch.setattr(session_worker, '_verify', verify_off_loop)
+        pending = asyncio.create_task(worker_request(connection, None, params, operation='persist'))
+        try:
+            await asyncio.wait_for(claim_started.wait(), 5)
+        finally:
+            release_claim.set()
+            result = await pending
         assert result['status'] == 'terminal'
         with pytest.raises(Exception, match='stale_generation'):
             await worker_request(connection, None, params | {'sequence': 2}, operation='persist')

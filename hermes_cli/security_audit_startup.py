@@ -6,9 +6,12 @@ and nothing here ever raises or blocks startup.
 """
 from __future__ import annotations
 
+import glob
 import logging
 import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -34,35 +37,79 @@ def _running_as_root() -> Optional[str]:
         "(or in a sandboxed terminal backend / container with a non-root user).")
 
 
-def _iter_sshd_config_lines() -> list[str]:
-    """Non-comment lines from sshd_config + its drop-in directory."""
-    lines: list[str] = []
-    paths: list[Path] = [Path("/etc/ssh/sshd_config")]
+_SSHD_CONFIG = Path("/etc/ssh/sshd_config")
+
+
+def _sshd_effective_password_auth() -> Optional[str]:
+    """``sshd -T``'s passwordauthentication value, or None when sshd can't say (not root, no sshd)."""
+    sshd = shutil.which("sshd") or ("/usr/sbin/sshd" if os.path.exists("/usr/sbin/sshd") else None)
+    if not sshd:
+        return None
     try:
-        paths.extend(sorted(Path("/etc/ssh/sshd_config.d").glob("*.conf")))
+        out = subprocess.run([sshd, "-T"], capture_output=True, text=True, timeout=5)
     except Exception:
-        pass
-    for p in paths:
-        try:
-            raw_lines = p.read_text(encoding="utf-8-sig", errors="replace").splitlines()
-        except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    for line in out.stdout.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "passwordauthentication":
+            return value.strip().lower()
+    return None
+
+
+def _iter_sshd_config_lines(path: Optional[Path] = None, _depth: int = 0) -> Optional[list[str]]:
+    """Non-comment global lines in the order sshd reads them: ``Include`` expanded where it stands, and
+    nothing from the first ``Match`` on (those lines are conditional). None when a file that sshd would
+    read can't be read here (e.g. a 0600 cloud-init drop-in and a non-root process): the answer is unknown.
+    """
+    path = path or _SSHD_CONFIG
+    if _depth > 8:
+        return None
+    try:
+        raw_lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return None
+    lines: list[str] = []
+    for raw in raw_lines:
+        s = raw.split("#", 1)[0].strip()
+        if not s:
             continue
-        lines.extend(s for s in map(str.strip, raw_lines) if s and not s.startswith("#"))
+        key, _, rest = s.replace("=", " ", 1).partition(" ")
+        if key.lower() == "match":
+            break
+        if key.lower() == "include":
+            for pattern in rest.split():
+                if not os.path.isabs(pattern):
+                    pattern = os.path.join(str(_SSHD_CONFIG.parent), pattern)  # relative to /etc/ssh, as sshd does
+                for inc in sorted(glob.glob(pattern)):
+                    sub = _iter_sshd_config_lines(Path(inc), _depth + 1)
+                    if sub is None:
+                        return None
+                    lines.extend(sub)
+            continue
+        lines.append(s)
     return lines
 
 
 def _ssh_password_auth_enabled() -> Optional[str]:
     """Warn when sshd has password auth enabled — the classic brute-force surface, which pairs
-    badly with a root-capable agent box. None when there is no sshd config to read.
+    badly with a root-capable agent box. None when there is no sshd config, or it can't all be read.
     """
-    lines = _iter_sshd_config_lines()
-    if not lines:
+    value = _sshd_effective_password_auth()
+    if value is None:
+        lines = _iter_sshd_config_lines()
+        if not lines:
+            return None
+        # sshd keeps the FIRST value it reads for a keyword (sshd_config(5)), and the stock config
+        # Includes sshd_config.d/*.conf at its top, so the drop-ins come first. Default is "yes".
+        directives = [m.group(1).lower() for m in map(re.compile(r"(?i)^PasswordAuthentication[\s=]+(\w+)").match, lines) if m]
+        value = directives[0] if directives else None
+    if value == "no":
         return None
-    # Last directive wins in sshd_config. Default (no directive) is "yes".
-    directives = [m.group(1).lower() for m in map(re.compile(r"(?i)^PasswordAuthentication\s+(\w+)").match, lines) if m]
-    if directives and directives[-1] == "no":
-        return None
-    qualifier = "" if directives else " (default — no explicit directive)"
+    qualifier = "" if value else " (default — no explicit directive)"
     return (f"SSH password authentication is ENABLED{qualifier}. Password auth is brute-forceable and dangerous "
             "on an internet-facing box. Set 'PasswordAuthentication no' in sshd_config and use key-based auth.")
 

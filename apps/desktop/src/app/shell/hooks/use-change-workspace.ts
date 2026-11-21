@@ -1,5 +1,7 @@
 import { useCallback, useMemo } from 'react'
 
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
+
 import { useI18n } from '@/i18n'
 import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { displayPath } from '@/lib/display-path'
@@ -38,15 +40,17 @@ export function useChangeWorkspaceItem(
     }
   }, [changeSessionCwd, currentCwd, targetId, title])
 
-  return useMemo(
-    () => ({
+  return useMemo(() => {
+    const taggedConnectionId = String(focusedRowConnectionId || '').trim()
+    const isRemoteConnection = taggedConnectionId !== '' && taggedConnectionId !== LOCAL_CONNECTION_ID
+
+    return {
       disabled: busy,
-      hidden: targetId === null || Boolean(focusedRowConnectionId),
+      hidden: targetId === null || isRemoteConnection,
       id: 'change-workspace-path',
       label: title,
       onSelect: () => void changeWorkspace(),
       title: displayPath(currentCwd)
-    }),
-    [busy, changeWorkspace, currentCwd, focusedRowConnectionId, targetId, title]
-  )
+    }
+  }, [busy, changeWorkspace, currentCwd, focusedRowConnectionId, targetId, title])
 }

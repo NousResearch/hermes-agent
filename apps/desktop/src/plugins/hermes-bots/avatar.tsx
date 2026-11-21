@@ -800,6 +800,14 @@ export function startFaceClock() {
   }
 
   const t0 = performance.now()
+
+  // Under reduced motion the static face BotFace renders is the whole face.
+  // Painting would also be worse than wasted there: the blanket reduced-motion
+  // rule gives every element a transition, so each attribute write fires three
+  // transition events.
+  const reducedMotion =
+    typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-reduced-motion: reduce)') : null
+
   // A large roster can mount hundreds of faces. Observe the cached nodes so
   // off-screen cards do not consume a full animation frame by themselves.
   let faces: SVGSVGElement[] = []
@@ -857,6 +865,10 @@ export function startFaceClock() {
   // Shared painting body for both scheduling paths: 1Hz document rescans,
   // paint only visible faces (all cached faces when IO is unavailable).
   const paint = (now: number) => {
+    if (reducedMotion?.matches) {
+      return
+    }
+
     if (now - lastScan > 1000) {
       scanFaces()
       lastScan = now
@@ -880,9 +892,16 @@ export function startFaceClock() {
   // short-circuits to the observer itself. createBudgetedLoop declares
   // idleWhen as `() => boolean`; null is falsy so the loop keeps running as
   // intended today. Hence the assertion at the idleWhen call below.
-  const idle = () => faces.length === 0 || (observer && visibleFaces.size === 0)
+  const idle = () => reducedMotion?.matches || faces.length === 0 || (observer && visibleFaces.size === 0)
+
+  // Turning reduced motion off resumes a parked clock.
+  const onMotionChange = () => window.__hbFaceClock?.wake()
+
+  reducedMotion?.addEventListener('change', onMotionChange)
 
   const teardownCaches = () => {
+    reducedMotion?.removeEventListener('change', onMotionChange)
+
     if (observer) {
       observer.disconnect()
     }

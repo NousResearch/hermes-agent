@@ -109,6 +109,7 @@ export const arChrome = {
       'view.reopenTab': 'إعادة فتح علامة التبويب المغلقة',
       'view.selectionToComposer': 'إرسال التحديد إلى المحرّر',
       'view.terminalCopy': 'نسخ تحديد الطرفية',
+      'view.copySelection': 'نسخ التحديد',
       'view.terminalPaste': 'لصق في الطرفية',
       'view.flipPanes': 'تبديل جانبي الشريط الجانبي',
       'appearance.toggleMode': 'تبديل الفاتح / الداكن',

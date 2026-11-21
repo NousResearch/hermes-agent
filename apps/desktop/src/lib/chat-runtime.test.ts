@@ -213,6 +213,43 @@ describe('toRuntimeMessage timeline metadata', () => {
   })
 })
 
+describe('toRuntimeMessage silent response projection', () => {
+  it('hides only an exact control response while retaining evidence and raw history', () => {
+    const reasoning = { text: 'Internal checks completed', type: 'reasoning' as const }
+
+    const split: ChatMessage = {
+      id: 'split',
+      role: 'assistant',
+      parts: [{ text: '[[SI', type: 'text' }, reasoning, { text: 'LENT]]', type: 'text' }]
+    }
+
+    const pending: ChatMessage = {
+      id: 'pending',
+      role: 'assistant',
+      parts: [{ text: '[[SIL', type: 'text' }],
+      pending: true
+    }
+
+    const visible: ChatMessage[] = [
+      { ...pending, error: 'Important failure', id: 'error', pending: false },
+      { ...pending, id: 'useful', parts: [{ text: '[[SILENT]] is a control token', type: 'text' }], pending: false },
+      { ...pending, id: 'human', parts: [{ text: '[[SILENT]]', type: 'text' }], pending: false, role: 'user' }
+    ]
+
+    expect(toRuntimeMessage(split).content).toEqual([reasoning])
+    expect(split.parts).toHaveLength(3)
+    expect(toRuntimeMessage(pending)).toMatchObject({ content: [], metadata: { custom: { silent: true } } })
+    expect(
+      toRuntimeMessage({ ...pending, id: 'settled', parts: [{ text: ' \n[[SILENT]]\n', type: 'text' }] })
+    ).toMatchObject({ content: [], metadata: { custom: { silent: true } } })
+
+    for (const message of visible) {
+      expect(toRuntimeMessage(message).content).toEqual(message.parts)
+      expect(toRuntimeMessage(message).metadata?.custom?.silent).not.toBe(true)
+    }
+  })
+})
+
 describe('coalesceToolOnlyAssistants toolCallId uniqueness', () => {
   // Regression contract for #87857: two individually-clean assistant rows can
   // share a toolCallId (structural carry-over re-attaching a cached row's tool

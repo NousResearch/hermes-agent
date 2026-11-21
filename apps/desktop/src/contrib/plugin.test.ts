@@ -91,6 +91,102 @@ describe('createPluginContext.os', () => {
     }
   })
 
+  it('pickBrowserFile resolves the staged copy and the name the file had', async () => {
+    // The honest null above leaves a browser plugin with no way to reach a
+    // picked file at all. This door answers what a browser pick actually is:
+    // a copy the gateway staged in the Hermes home, named as the user's file
+    // was. A plugin opts into it deliberately instead of pattern-matching
+    // <home>/uploads/web-<hex>-* (#156470).
+    const bridge = {
+      getStagedFileDisplayName: vi.fn().mockReturnValue('hk_tasks.csv'),
+      selectPaths: vi.fn().mockResolvedValue(['/home/u/.hermes/uploads/web-fcd110fdaff0a5df-hk_tasks.csv'])
+    }
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = bridge
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    try {
+      const ctx = createPluginContext('demo')
+
+      await expect(ctx.os.pickBrowserFile?.({ filters: [{ extensions: ['csv'], name: 'CSV' }] })).resolves.toEqual({
+        name: 'hk_tasks.csv',
+        path: '/home/u/.hermes/uploads/web-fcd110fdaff0a5df-hk_tasks.csv'
+      })
+      expect(bridge.selectPaths).toHaveBeenCalledWith({ filters: [{ extensions: ['csv'], name: 'CSV' }], multiple: false })
+    } finally {
+      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+      delete document.documentElement.dataset.hermesDesktopHost
+    }
+  })
+
+  it('pickBrowserFile answers null in the native app, where pickOpenPath is the door', async () => {
+    const bridge = {
+      selectPaths: vi.fn().mockResolvedValue(['/Users/u/Downloads/hk_tasks.csv'])
+    }
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = bridge
+
+    try {
+      const ctx = createPluginContext('demo')
+
+      // No staging happens in the native shell, so there is nothing for this
+      // door to describe: the two doors each answer only where they apply.
+      await expect(ctx.os.pickBrowserFile?.()).resolves.toBeNull()
+      expect(bridge.selectPaths).not.toHaveBeenCalled()
+    } finally {
+      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    }
+  })
+
+  it('pickBrowserFile answers null on cancel, and falls back to the staged name', async () => {
+    const bridge = {
+      selectPaths: vi.fn().mockResolvedValue([])
+    }
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = bridge
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    try {
+      const ctx = createPluginContext('demo')
+
+      await expect(ctx.os.pickBrowserFile?.()).resolves.toBeNull()
+
+      // An older browser bridge has no display-name lookup, so the staging
+      // prefix is stripped here: the user is shown the name their file had,
+      // never the `web-<hex>-` one the gateway wrote.
+      bridge.selectPaths.mockResolvedValue(['/home/u/.hermes/uploads/web-fcd110fdaff0a5df-hk_tasks.csv'])
+      await expect(ctx.os.pickBrowserFile?.()).resolves.toEqual({
+        name: 'hk_tasks.csv',
+        path: '/home/u/.hermes/uploads/web-fcd110fdaff0a5df-hk_tasks.csv'
+      })
+    } finally {
+      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+      delete document.documentElement.dataset.hermesDesktopHost
+    }
+  })
+
+  it('pickBrowserFile rejects when the upload fails, so a failure is not a cancel', async () => {
+    // The bridge rejects for reasons the user did not choose: over the 16 MiB
+    // browser cap, a 413 from the gateway, a dropped connection. Flattening
+    // those to null would make them read as "no file chosen", which is how a
+    // failed import becomes a button that does nothing.
+    const bridge = {
+      selectPaths: vi.fn().mockRejectedValue(new Error('The file is larger than 16 MiB, the largest file the browser can attach.'))
+    }
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = bridge
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    try {
+      const ctx = createPluginContext('demo')
+
+      await expect(ctx.os.pickBrowserFile?.()).rejects.toThrow('larger than 16 MiB')
+    } finally {
+      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+      delete document.documentElement.dataset.hermesDesktopHost
+    }
+  })
+
   it('file pickers degrade to null on an older shell that lacks them', async () => {
     ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {}
 

@@ -47,6 +47,8 @@ export const HOST_CAPABILITIES = Object.freeze({
   osWindowEnumeration: 'native',
   /** Preferences are stored per serving origin (and per profile) in this tab. */
   originScopedPrefs: 'browser',
+  /** The plugin file picker uploads from the page, so a picked file is the copy the gateway staged. */
+  pluginBrowserFilePicker: 'browser',
   /** The profile rail shows its squares (drag, hold-to-recolor) instead of always condensing. */
   profileRailSquares: 'native',
   /** A failed terminal spawn arms a retry (the shell runs on the server). */

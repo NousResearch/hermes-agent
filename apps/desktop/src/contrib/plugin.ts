@@ -16,6 +16,7 @@ import type { ReadableAtom } from 'nanostores'
 
 import { pluginRest, type PluginRestOptions, pluginSocket } from '@/hermes'
 import { createPluginI18n, type PluginI18n } from '@/i18n'
+import { hostHas } from '@/lib/host-capabilities'
 import {
   listPluginAppActions,
   type PluginAppActionId,
@@ -82,8 +83,23 @@ export interface PluginOs {
    *  to a `rest` call rather than trying to write it from the renderer. */
   pickSavePath: (options?: PluginFileDialogOptions) => Promise<null | string>
   /** Native open dialog, single file. Resolves the chosen path, or null on
-   *  cancel / when unavailable. */
+   *  cancel / when unavailable.
+   *
+   *  A browser-hosted Desktop has no OS dialog: its picker uploads the file
+   *  and resolves the copy the app staged inside the Hermes home, which is
+   *  not the path the user picked (#156470). Prefer `pickBrowserFile` there,
+   *  which says that outright — this door keeps its current answer until the
+   *  gate that fixes it can land without stranding plugins that already read
+   *  the staged copy. */
   pickOpenPath: (options?: PluginFileDialogOptions) => Promise<null | string>
+  /** Pick a file in a browser-hosted Desktop: the page opens its picker, the
+   *  app uploads what it chose, and this answers the copy it staged plus the
+   *  name the file had. Resolves null in the native app (there is no upload to
+   *  describe, and `pickOpenPath` is the door) and null on cancel. Rejects when
+   *  the upload itself fails — over the browser's size cap, or refused by the
+   *  gateway — so a plugin can tell that from a cancel. Feature-detect on older
+   *  hosts: `ctx.os.pickBrowserFile?.(…)`. */
+  pickBrowserFile?: (options?: PluginFileDialogOptions) => Promise<null | PluginPickedUpload>
   /** Write text to the system clipboard. Resolves false when unavailable. */
   writeClipboard: (text: string) => Promise<boolean>
 }
@@ -110,6 +126,19 @@ export interface PluginFileDialogOptions {
   defaultPath?: string
   filters?: Array<{ extensions: string[]; name: string }>
   title?: string
+}
+
+/** A file the browser uploaded on this plugin's behalf. There is no user path
+ *  to give: a browser file input cannot reveal where the file came from, so
+ *  the app uploaded it and the backend holds the copy. */
+export interface PluginPickedUpload {
+  /** The name the file had where the user picked it, e.g. `hk_tasks.csv`. */
+  name: string
+  /** The copy, on the BACKEND's filesystem and inside the Hermes home
+   *  (`<profile home>/uploads/`). Read it through your own backend (`rest`) —
+   *  never treat it as the user's original path, and expect any guard that
+   *  refuses the home to refuse it. */
+  path: string
 }
 
 export interface PluginContext {
@@ -280,6 +309,35 @@ function createPluginOs(pluginId: string): PluginOs {
 
         return picked?.[0] ?? null
       }),
+    pickBrowserFile: async options => {
+      const bridge = typeof window === 'undefined' ? undefined : window.hermesDesktop
+
+      // The other half of the ladder: this door only means anything where the
+      // page did the picking. In the native shell there is no upload to
+      // describe, so it answers null and pickOpenPath is the door.
+      if (!bridge || !hostHas('pluginBrowserFilePicker')) {
+        return null
+      }
+
+      // A cancel resolves an empty list, and the upload it triggers rejects for
+      // its own reasons: over the browser's size cap, or refused by the gateway.
+      // Those are not the user changing their mind, so they surface to the
+      // plugin — flattening them to null here would make a failed import
+      // indistinguishable from a cancelled one.
+      const picked = await bridge.selectPaths?.({ ...options, multiple: false })
+      const path = picked?.[0]
+
+      if (!path) {
+        return null
+      }
+
+      // The name the user's file had, from the bridge that staged it. An older
+      // browser bridge has no lookup, so strip the `web-<hex>-` prefix staging
+      // adds rather than showing the user a name they never typed.
+      const staged = path.split(/[\\/]/).pop() || path
+
+      return { name: bridge.getStagedFileDisplayName?.(path) || staged.replace(/^web-[0-9a-f]{16}-/, ''), path }
+    },
     pickSavePath: options => attemptPath(async bridge => (await bridge.selectSavePath?.(options)) ?? null),
     revealPath: path => attempt(async bridge => (bridge.revealPath ? bridge.revealPath(path) : false)),
     writeClipboard: text => attempt(bridge => bridge.writeClipboard(text))

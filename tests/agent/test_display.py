@@ -1,5 +1,7 @@
 """Tests for agent/display.py — build_tool_preview() and inline diff previews."""
 
+import re
+
 import pytest
 from unittest.mock import MagicMock
 
@@ -331,6 +333,16 @@ class TestEditDiffPreview:
         assert any("a/file2.py" in line for line in rendered)
         assert not any("a/file7.py" in line for line in rendered)
         assert "additional file" in rendered[-1]
+
+    def test_file_control_bytes_reach_the_terminal_only_as_visible_symbols(self):
+        """File text in a preview never drives the terminal (title, clear, bell, C1 CSI)."""
+        diff = ("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-t \x1b]0;PWNED\x07\n"
+                "+t\there \x1b[2J\x08\x9b31m\x7f\n")
+        rendered = _summarize_rendered_diff_sections(diff)
+        # Strip only the renderer's own colour codes; anything left must be printable or tab.
+        body = [re.sub(r"\x1b\[[0-9;]*m", "", line) for line in rendered]
+        assert all(ch == "\t" or ch.isprintable() for line in body for ch in line), body
+        assert "-t ␛]0;PWNED␇" in body and "+t\there ␛[2J␈\\x9b31m␡" in body
 
 
 class TestBuildToolLabel:

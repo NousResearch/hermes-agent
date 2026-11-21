@@ -298,6 +298,25 @@ def test_first_profile_rotation_does_not_strand_root_or_siblings(fleet):
     assert fleet["rows"](atlas) is None and fleet["rows"](forge) is None
 
 
+def test_borrower_write_through_drops_root_non_object_rows(fleet):
+    """The borrowed-root save keeps the "dropped the next time the pool is saved" promise."""
+    from agent.credential_pool import load_pool
+
+    root = fleet["root"]
+    store = json.loads((root / "auth.json").read_text())
+    store["credential_pool"]["anthropic"].insert(0, "junk-root-row")
+    (root / "auth.json").write_text(json.dumps(store))
+    forge = _profile(fleet, "forge")
+
+    fleet["use"](forge)
+    sel = load_pool("anthropic").select()
+    assert sel is not None and sel.access_token == "sk-ant-oat01-AT1"
+    rows = fleet["rows"](root)
+    assert all(isinstance(r, dict) for r in rows), rows
+    assert [r["refresh_token"] for r in rows] == ["sk-ant-ort-RT1"]
+    assert fleet["rows"](forge) is None
+
+
 def test_agent_init_resolver_sees_sibling_rotation(fleet):
     from agent.anthropic_credentials import resolve_anthropic_token
     from agent.credential_pool import load_pool

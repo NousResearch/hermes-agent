@@ -2,10 +2,18 @@ import { existsSync } from 'node:fs'
 import path from 'node:path'
 
 import { buildDesktopBackendEnv } from './backend-env'
-import { execProbe, PROBE_TIMEOUT_MS } from './backend-probes'
+import { execProbe, isTimeoutError, PROBE_TIMEOUT_MS } from './backend-probes'
 import { resolveInstallationLauncher } from './updater-process'
 
 export interface SourceBackend {
+  /**
+   * The launcher and checkout resolved, but the `--version` liveness probe
+   * timed out (cold AV scan, slow disk) after its one retry. A timeout says
+   * nothing about the runtime, only about this machine right now: keep the
+   * backend so the caller can launch it instead of mistaking a healthy
+   * install for a missing one (#79087).
+   */
+  probeTimedOut?: true
   kind: 'command' | 'python'
   label: string
   command: string
@@ -43,6 +51,8 @@ export async function resolveSourceInstallationBackend(
   const command: string = shell ? `"${launcher}"` : launcher
   const env: NodeJS.ProcessEnv = buildDesktopBackendEnv({ currentEnv: options.env ?? process.env })
 
+  let probeTimedOut = false
+
   try {
     await execProbe(command, ['--version'], {
       cwd: root,
@@ -52,11 +62,20 @@ export async function resolveSourceInstallationBackend(
       timeout: PROBE_TIMEOUT_MS,
       windowsHide: true
     })
-  } catch {
-    return null
+  } catch (err) {
+    // Timeout is the one failure that says nothing about the runtime: the
+    // structural checks above (hermes_cli/main.py + published launcher) all
+    // passed, and only this machine is slow right now. Collapsing it into
+    // null made a healthy Windows install route to first-run onboarding
+    // (#79087). ENOENT and non-zero exit stay "unusable" — those are real.
+    if (!isTimeoutError(err)) {
+      return null
+    }
+
+    probeTimedOut = true
   }
 
-  return {
+  const backend: SourceBackend = {
     kind: 'command',
     label: `Hermes at ${root}`,
     command,
@@ -67,6 +86,8 @@ export async function resolveSourceInstallationBackend(
     shell,
     local: 'installed'
   }
+
+  return probeTimedOut ? { ...backend, probeTimedOut: true } : backend
 }
 
 /** Developer overrides retain their interpreter, even outside the checkout. */

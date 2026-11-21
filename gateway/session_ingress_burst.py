@@ -19,6 +19,7 @@ import logging
 import time
 
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.session_alias_prefix import is_alias_turn
 from hermes_cli.observability.shared_metrics_busy import note_busy_merged, settle_busy_arrival, stamp_busy_arrival
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,8 @@ class _Burst:
 def _kind(adapter, event):
     if event.message_type == MessageType.PHOTO and not event.internal:
         return 'photo'
+    if is_alias_turn(getattr(adapter._message_handler, '__self__', None), event):
+        return None  # a `+<alias>` message is its own turn, on its own model
     return 'text' if adapter._is_queue_text_debounce_candidate(event) else None
 
 

@@ -1431,10 +1431,10 @@ class CLITuiMixin:
         self._attached_images.clear()
         event.app.invalidate()
         payload = (text, images) if images else text
-        # A bang command is treated like a slash command while the agent is busy: it must never
-        # be routed into steer/redirect (injecting `!git status` into the model's context as a
-        # prompt). It queues and runs locally once the loop drains.
-        _is_local_dispatch = bool(text) and (_looks_like_slash_command(text) or text.strip().startswith("!"))
+        # A bang command (or a `+<alias>` message) is treated like a slash command while the agent is
+        # busy: never routed into steer/redirect; it queues and runs locally once the loop drains.
+        _is_local_dispatch = bool(text) and (_looks_like_slash_command(text) or text.strip().startswith("!")
+                                             or self._alias_prefix_for(text) is not None)  # its own turn
         if self._agent_running and not _is_local_dispatch:
             self._tui_enter_while_busy(text, images, payload)
         else:

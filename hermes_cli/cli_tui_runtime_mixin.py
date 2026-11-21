@@ -141,8 +141,10 @@ class CLITuiRuntimeMixin:
                     return
                 if _looks_like_slash_command(user_input):
                     user_input = self._tui_run_slash_input(user_input)
-                    if user_input is None:
-                        return
+                elif user_input.lstrip().startswith("+"):  # `+<alias> rest` (display.model_alias_prefix)
+                    user_input = self._take_alias_prefix(user_input)
+                if user_input is None:
+                    return
 
         if isinstance(user_input, str) and _PASTE_REF_RE.search(user_input):
             user_input = self._expand_paste_references(user_input)

@@ -36,6 +36,7 @@ from gateway.run_inbound_unauthorized import (
     unauthorized_owner_hint,
 )
 from gateway.session import SessionSource, build_session_context, label_shared_sender
+from gateway.session_alias_prefix import alias_prefix_for, prepare_admitted_turn
 from gateway.turn_lease import TurnLeaseTimeoutError
 from hermes_cli.observability.shared_metrics_busy import (
     note_busy_admitting, note_busy_outcome, settle_busy_arrival, stamp_busy_arrival)
@@ -402,7 +403,8 @@ class GatewayInboundMixin(
             return _retain("voice transcription produced no usable text")
         # Slash commands: the user wanted a command, not to answer the clarify. Leave it pending so
         # they can retry; on timeout the agent unblocks with an empty response.
-        if not _raw_clarify_reply or _raw_clarify_reply.startswith("/"):
+        if (not _raw_clarify_reply or _raw_clarify_reply.startswith("/")
+                or await alias_prefix_for(self, event) is not None):  # `+<alias>`: a new turn, like a command
             return None
         # Settle only the clarify the sender was checked against: transcription awaits, and the
         # session may hold another member's question by now. If ours is gone, this is a message.
@@ -828,6 +830,8 @@ class GatewayInboundMixin(
         must NOT also be admitted as its own turn; False when the caller should admit it (queue mode,
         a demotion, or an interrupt — the ended turn lets the FIFO run the follow-up next)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        if await alias_prefix_for(self, event) is not None:
+            return False  # `+<alias>` is its own turn on its own model, admitted behind the running one
         superseded = self._clarify_takeover(event, _quick_key)
         mode = "interrupt" if superseded else self._effective_busy_input_mode(source)
         if (mode == "interrupt" and not superseded and not getattr(event, "internal", False)
@@ -1430,13 +1434,10 @@ class GatewayInboundMixin(
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
-            from gateway.session_moa_turn import arm_admitted_moa
-            arm_admitted_moa(self, _quick_key, event)  # restored by the finally below
-            # Fail-open plugin consume inside the claimed slot (#129958); once per message.
-            if not is_internal:
-                _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
-                if _consumed:
-                    return _consumer_reply
+            # /moa, `+<alias>` one-turn models (restored by the finally below) and the plugin consume.
+            _consumed, _consumer_reply = await prepare_admitted_turn(self, event, source, _quick_key, is_internal)
+            if _consumed:
+                return _consumer_reply
             try:
                 _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             except TurnLeaseTimeoutError as exc:

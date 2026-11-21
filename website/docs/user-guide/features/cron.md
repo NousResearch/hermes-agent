@@ -478,6 +478,15 @@ On each tick Hermes:
 
 A file lock at `~/.hermes/cron/.tick.lock` prevents overlapping scheduler ticks from double-running the same job batch.
 
+A scheduler that reaches the gateway over its local socket keeps watching a run after the gateway admits it. If that connection drops mid-run (a brief gateway blip or a socket reset), the scheduler reconnects and re-attaches to the **same** admission through `cron.recover`; it never submits the run a second time. It keeps trying for a bounded grace and only then books the run as unverified:
+
+```yaml
+cron:
+  observer_reconnect_grace_seconds: 600   # 0 = fail closed on the first drop
+```
+
+A drop before the gateway acknowledged the submit, a definite refusal from the gateway, and a `recover` answer other than queued/started/terminal all keep the fail-closed verdict.
+
 ### Restart-safe workers under systemd
 
 When the gateway runs as a systemd service, each due job is handed to an external worker process launched in a transient user scope (`systemd-run --user --scope`), so restarting the gateway mid-job does not kill the job. Creating that scope needs a user systemd session; hosts without one (containers, minimal LXCs, a service user without linger) cannot provide it.

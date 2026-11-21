@@ -110,6 +110,21 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                 raise
         record['receipt'] = receipt
         await save()
+        return await poll(call, receipt)
+
+    async def resume(call):
+        # After a transport drop, re-attach through ``recover`` (never a second ``submit``) and
+        # keep observing the SAME admission. Anything but a live/terminal admission keeps the
+        # fail-closed verdict.
+        state = await call('recover', params)
+        if state.get('status') not in {'queued', 'started', 'terminal'}:
+            raise CronExecutionUnknown(f"unknown_execution: recover returned {state.get('status')}")
+        receipt = {'session_id': state['session_id'], 'admission_id': state['admission_id']}
+        record['receipt'] = receipt
+        await save()
+        return await poll(call, receipt)
+
+    async def poll(call, receipt):
         delay, progress = .1, None
         while True:
             if cancel_event is not None and cancel_event.is_set():
@@ -131,8 +146,37 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
             delay = min(delay * 2, 2.0)
 
     async def remote():
-        async with connect_gateway() as client:
-            return await observe(lambda op, data: client.rpc('cron.' + op, **data))
+        # A brief loopback/gateway blip after admission used to turn a healthy run into "Cron
+        # execution unverified" plus a failure alert. Reconnect within a bounded grace
+        # (``cron.observer_reconnect_grace_seconds``, default 600; 0 disables) before giving up.
+        import logging
+        import time
+        from hermes_cli.gateway_client import GatewayRPCError
+        from cron.jobs import _cron_config_number
+        grace = max(0.0, _cron_config_number('observer_reconnect_grace_seconds', 600, float))
+        deadline, pause, first = None, 2.0, True
+        while True:
+            try:
+                async with connect_gateway() as client:
+                    call = lambda op, data: client.rpc('cron.' + op, **data)
+                    return await (observe(call) if first else resume(call))
+            except (GatewayRPCError, CronExecutionUnknown):
+                raise
+            except Exception as exc:
+                # Only an admission the owner acknowledged (a durable receipt) is re-attached; a
+                # lost submit answer keeps upstream's fail-closed path unchanged.
+                if (not record.get('receipt')
+                        or (cancel_event is not None and cancel_event.is_set())):
+                    raise
+                now = time.monotonic()
+                deadline = now + grace if deadline is None else deadline
+                if now + pause > deadline:
+                    raise
+                logging.getLogger(__name__).warning(
+                    "Cron %s: gateway observer lost (%s); reconnecting in %.0fs", job['id'], exc, pause)
+                first = False
+                await asyncio.sleep(pause)
+                pause = min(pause * 2, 30.0)
 
     try:
         if owner is not None:

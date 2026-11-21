@@ -32,6 +32,7 @@ import { ensureGatewayProfile, newSessionInProfile } from './profile'
 import { $connection, $gatewayState, $selectedStoredSessionId } from './session'
 import { requestForOwnedSession } from './session-states'
 import { dropSetupBeat } from './setup-beat'
+import { $setupGuideOnboarding } from './shell-policy'
 
 export type OnboardingRequest = <T = unknown>(
   method: string,
@@ -65,14 +66,19 @@ export const $onboardingSettleFrom = atom<null | number>(null)
 // The backend runs onboarding in its root profile whichever profile the app was on; every ending
 // stays there, because the chats the run leaves behind live there.
 const ONBOARDING_PROFILE = 'default'
+let modeGeneration = 0
+$setupGuideOnboarding.listen(() => {
+  modeGeneration += 1
+})
 
 /** The run's chat has been on screen at least once; until then a route still opening is not a leave. */
 const $onboardingChatSeen = atom(false)
 
 /** A run is starting (its chat not on screen yet), or its chat is the one on screen. */
 const $onboardingOnScreen = computed(
-  [$onboardingPhase, $onboardingSession, $selectedStoredSessionId, $onboardingChatSeen],
-  (phase, session, selected, seen) => phase === 'shown' && (!session || !seen || session.storedId === selected)
+  [$onboardingPhase, $onboardingSession, $selectedStoredSessionId, $onboardingChatSeen, $setupGuideOnboarding],
+  (phase, session, selected, seen, redesign) =>
+    !redesign && phase === 'shown' && (!session || !seen || session.storedId === selected)
 )
 
 computed([$onboardingSession, $selectedStoredSessionId], (session, selected) =>
@@ -128,6 +134,11 @@ export async function startOnboarding(
   resume: OnboardingResume,
   { ensureProfile = ensureGatewayProfile, freshLaunch = false, intro, rerun = false }: StartOptions = {}
 ): Promise<boolean> {
+  const currentMode = modeGeneration
+
+  if ($setupGuideOnboarding.get()) {
+    return false
+  }
   // A rerun withdraws the old run's card; its skipped_all must not match this window's session.
   $onboardingSession.set(null)
   $onboardingPhase.set('shown')
@@ -137,6 +148,9 @@ export async function startOnboarding(
   let skipped = false
 
   intro?.starting(() => {
+    if (currentMode !== modeGeneration || $setupGuideOnboarding.get()) {
+      return
+    }
     skipped = true
     intro?.failed()
     leaveSkipped()
@@ -146,6 +160,10 @@ export async function startOnboarding(
 
   try {
     await ensureProfile(ONBOARDING_PROFILE)
+
+    if (currentMode !== modeGeneration || $setupGuideOnboarding.get()) {
+      return false
+    }
     const connectionId = activeGatewayConnectionId()
 
     const params: OnboardingStartParams & RequestParams = {
@@ -162,6 +180,10 @@ export async function startOnboarding(
     // The request stays alive past the way out: its answer names the run the skip ends.
     const started = await request<OnboardingStartResult>('onboarding.start', params, intro ? NO_DEADLINE : undefined)
 
+    if (currentMode !== modeGeneration || $setupGuideOnboarding.get()) {
+      return false
+    }
+
     if (skipped) {
       await request('onboarding.skip', { session_id: started.session_id })
 
@@ -172,6 +194,10 @@ export async function startOnboarding(
 
     // The chat is on screen before the run names it, so the presence never sees a gap.
     await resume(started.stored_session_id, true)
+
+    if (currentMode !== modeGeneration || $setupGuideOnboarding.get()) {
+      return false
+    }
     $onboardingSession.set({
       connectionId,
       runId: started.run_id,
@@ -187,6 +213,9 @@ export async function startOnboarding(
 
     return true
   } catch (error) {
+    if (currentMode !== modeGeneration || $setupGuideOnboarding.get()) {
+      return false
+    }
     console.warn('[onboarding] could not start', error)
 
     if (!skipped) {
@@ -226,8 +255,12 @@ let decision: null | Promise<void> = null
 export function decideOnboarding(
   request: OnboardingRequest,
   resume: OnboardingResume,
-  options?: StartOptions
+  options?: StartOptions,
+  revisit = false
 ): Promise<void> {
+  if (revisit) {
+    decision = null
+  }
   decision ??= readAndStart(request, resume, options)
 
   return decision
@@ -238,6 +271,7 @@ async function readAndStart(
   resume: OnboardingResume,
   options?: StartOptions
 ): Promise<void> {
+  const currentMode = modeGeneration
   // Continue on the boot overlay released this launch: a late answer opens nothing, and onboarding
   // stays due on the backend for the next launch or Settings' Run onboarding again.
   let released = false
@@ -257,8 +291,12 @@ async function readAndStart(
     const state = await request<OnboardingRunStateResult>('onboarding.state', params, NO_DEADLINE)
     disarm()
 
-    if (!released && state.run && state.eligible) {
-      await startOnboarding(request, resume, { ...options, freshLaunch: true })
+    if (!released && currentMode === modeGeneration && !$setupGuideOnboarding.get() && state.run && state.eligible) {
+      await startOnboarding(request, resume, { ...options, freshLaunch: options?.freshLaunch ?? true })
+    }
+
+    if (currentMode === modeGeneration && !$setupGuideOnboarding.get() && !state.run) {
+      endOnboarding('done')
     }
   } catch (error) {
     console.warn('[onboarding] state could not be read', error)

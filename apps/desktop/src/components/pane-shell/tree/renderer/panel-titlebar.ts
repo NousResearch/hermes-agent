@@ -14,6 +14,12 @@ function chromeKey(): string {
   return `${connection?.isFullscreen ? 1 : 0}:${position?.x ?? ''}:${position?.y ?? ''}`
 }
 
+function setReservation(element: HTMLElement, name: string, value: string) {
+  if (element.style.getPropertyValue(name) !== value) {
+    element.style.setProperty(name, value)
+  }
+}
+
 /** Reserve actual chrome intersections, including after a neighbor becomes a rail. */
 export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: boolean, minimized: boolean) {
   const [belowControls, setBelowControls] = useState(true)
@@ -25,31 +31,33 @@ export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: bo
       return
     }
 
+    // Clusters first: during a route overlay there are none, and reading the panel would force a
+    // layout of whatever the route just mounted for nothing. Empty chrome keeps the last reservation.
+    const leftControls = document.querySelector<HTMLElement>('[data-titlebar-cluster="left"]')
+    const rightControls = document.querySelector<HTMLElement>('[data-titlebar-cluster="right"]')
+
+    if (!leftControls || !rightControls) {
+      return
+    }
+
     const rect = element.getBoundingClientRect()
 
     if (!rect.width) {
       return
     }
 
-    const leftControls = document.querySelector<HTMLElement>('[data-titlebar-cluster="left"]')?.getBoundingClientRect()
-
-    const rightControls = document
-      .querySelector<HTMLElement>('[data-titlebar-cluster="right"]')
-      ?.getBoundingClientRect()
-
-    // Empty chrome during a route overlay retains the last safe reservation.
-    if (!leftControls || !rightControls) {
-      return
-    }
-
-    const left = Math.min(rect.width, Math.max(0, leftControls.right + 12 - rect.left))
+    const leftRect = leftControls.getBoundingClientRect()
+    const rightRect = rightControls.getBoundingClientRect()
+    const left = Math.min(rect.width, Math.max(0, leftRect.right + 12 - rect.left))
     // No extra pad on the right: a +N here is a dead strip (the spacer has no
     // app-region) flush against Settings. The 48px data-window-drag-handle is
     // already the gutter (#131729). Do not mark this spacer drag — it sits
     // under the z-70 cluster, and Electron app-region ignores stacking.
-    const right = Math.min(rect.width - left, Math.max(0, rect.right - rightControls.left))
-    element.style.setProperty('--panel-titlebar-left', `${left}px`)
-    element.style.setProperty('--panel-titlebar-right', `${right}px`)
+    const right = Math.min(rect.width - left, Math.max(0, rect.right - rightRect.left))
+    // Write only a change: the properties inherit through the whole pane, so an identical write
+    // still restyles every descendant and makes the next panel's read lay the page out again.
+    setReservation(element, '--panel-titlebar-left', `${left}px`)
+    setReservation(element, '--panel-titlebar-right', `${right}px`)
     setBelowControls(minimized || rect.width - left - right < 120)
   }, [enabled, minimized, ref])
 
@@ -72,10 +80,10 @@ export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: bo
       }
     }
 
-    const onChromeChanged = () => {
-      observe()
-      measure()
-    }
+    // A route switch mounts a different cluster set. Observing it is enough: the observer's first
+    // delivery for each new element measures after the frame's layout, where the reads are free,
+    // instead of forcing a layout of the page the route just mounted (that cost 20-190ms a click).
+    const onChromeChanged = observe
 
     observe()
     measure()

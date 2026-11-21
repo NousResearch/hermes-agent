@@ -87,6 +87,7 @@ function view(sessionId: string, storedId: string): SessionView {
     $reasoningEffortWire: atom(''),
     $runtimeId: atom(sessionId),
     $storedId: atom(storedId),
+    $transcriptStoredId: atom(storedId),
     $turnStartedAt: atom(null),
     kind: 'primary'
   }

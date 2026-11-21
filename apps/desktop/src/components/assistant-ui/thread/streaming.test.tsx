@@ -9,10 +9,12 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { en } from '@/i18n/en'
 import { $onboardingPhase } from '@/store/onboarding-phase'
 import { $onboardingSession } from '@/store/onboarding-session'
 import { $reasoningCollapsedByDefault, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 import { $activeSessionId } from '@/store/session'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '../test-utils'
 
@@ -441,6 +443,7 @@ describe('assistant-ui streaming renderer', () => {
     $activeSessionId.set(null)
     $onboardingSession.set(null)
     $onboardingPhase.set('idle')
+    $shellChoice.set(null)
   })
 
   it.each([true, false])('honors reasoning visibility %j for grouped and standalone parts', async enabled => {
@@ -487,13 +490,13 @@ describe('assistant-ui streaming renderer', () => {
 
     const { container } = render(<StreamingHarness onControls={registerControls} />)
 
-    expect(screen.getByRole('status', { name: 'Hermes is loading a response' })).toBeTruthy()
+    expect(screen.getByRole('status', { name: en.assistant.thread.loadingResponse })).toBeTruthy()
 
     await waitFor(() => {
       expect(container.textContent).toContain('first chunk')
     })
     expect(container.textContent).not.toContain('second chunk')
-    expect(screen.queryByRole('status', { name: 'Hermes is loading a response' })).toBeNull()
+    expect(screen.queryByRole('status', { name: en.assistant.thread.loadingResponse })).toBeNull()
 
     // Producer-gated, not wall-clock-gated: the old test slept 80ms and
     // assumed a 500ms timer could not fire before the assertion. On a loaded
@@ -704,7 +707,8 @@ describe('assistant-ui streaming renderer', () => {
     expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
   })
 
-  it('keeps streaming reasoning collapsed in the onboarding chat', () => {
+  it.each([false, true])('scopes onboarding reasoning collapse to classic mode (redesign: %j)', redesign => {
+    $shellChoice.set(redesign)
     $activeSessionId.set('onboarding-chat')
     $onboardingSession.set({
       connectionId: null,
@@ -720,8 +724,8 @@ describe('assistant-ui streaming renderer', () => {
       within(container)
         .getByRole('button', { name: /thinking/i })
         .getAttribute('aria-expanded')
-    ).toBe('false')
-    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
+    ).toBe(String(redesign))
+    expect(Boolean(container.querySelector('[data-slot="aui_reasoning-text"]'))).toBe(redesign)
   })
 
   it('renders reasoning text without a leading token space', () => {

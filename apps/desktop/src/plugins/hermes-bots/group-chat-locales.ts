@@ -18,6 +18,14 @@ export interface GroupChatMessages extends GroupChatChromeMessages, GroupChatErr
   noBots: string
   noBotsMatch: (query: string) => string
   createBotFirst: string
+  /** Lead-in when bots exist but none can be seated; each is listed with its reason. */
+  noSeatableBots: string
+  /** Lead-in for the bots listed under the seatable ones that cannot join here, each with its reason. */
+  cannotJoinHere: string
+  /** The picked-bots row before anything is picked (redesign). */
+  nonePicked: string
+  /** Why a bot on this connection is missing from the picker: the gateway's `seatable_profiles` excludes it. */
+  unseatableHere: string
   startInComposer: () => string
   memberAdded: (bot: string, group: string) => string
   memberRemoved: (bot: string, group: string) => string
@@ -38,7 +46,7 @@ export interface GroupChatMessages extends GroupChatChromeMessages, GroupChatErr
   groupUnpinned: (group: string) => string
 }
 
-function russianNoun(count: number, one: string, few: string, many: string): string {
+export function russianNoun(count: number, one: string, few: string, many: string): string {
   return count % 10 === 1 && count % 100 !== 11
     ? one
     : count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 12 || count % 100 > 14) ? few : many
@@ -67,6 +75,10 @@ export const GROUP_CHAT_LOCALES = {
     noBots: 'No bots in this group chat',
     noBotsMatch: query => `No bots match “${query}”`,
     createBotFirst: 'No bots yet — create one first.',
+    noSeatableBots: 'None of your bots can join a group chat here yet:',
+    cannotJoinHere: 'These bots can’t join a group chat here:',
+    nonePicked: 'No bots picked yet',
+    unseatableHere: 'this gateway doesn’t seat it in group chats — it isn’t served here, or it’s being retired',
     startInComposer: () => 'New group chats start in the group composer.',
     memberAdded: (bot, group) => `${bot} added to “${group}”`,
     memberRemoved: (bot, group) => `${bot} removed from “${group}”`,
@@ -103,6 +115,10 @@ export const GROUP_CHAT_LOCALES = {
     noBots: 'このグループチャットにはボットがいません',
     noBotsMatch: query => `「${query}」に一致するボットはありません`,
     createBotFirst: 'まだボットがいません。まず作成してください。',
+    noSeatableBots: 'ここではまだどのボットもグループチャットに参加できません：',
+    cannotJoinHere: 'これらのボットはここではグループチャットに参加できません：',
+    nonePicked: 'まだボットが選ばれていません',
+    unseatableHere: 'このゲートウェイはこのボットをグループチャットに参加させません — ここで提供されていないか、廃止中です',
     startInComposer: () => '新しいグループチャットはグループの入力欄から始めます。',
     memberAdded: (bot, group) => `${bot}を「${group}」に追加しました`,
     memberRemoved: (bot, group) => `${bot}を「${group}」から外しました`,
@@ -139,6 +155,10 @@ export const GROUP_CHAT_LOCALES = {
     noBots: '此群聊中没有机器人',
     noBotsMatch: query => `没有匹配“${query}”的机器人`,
     createBotFirst: '还没有机器人，请先创建一个。',
+    noSeatableBots: '这里还没有可加入群聊的机器人：',
+    cannotJoinHere: '这些机器人无法在此加入群聊：',
+    nonePicked: '尚未选择机器人',
+    unseatableHere: '此网关不会让它加入群聊——它不在此处提供，或正在停用',
     startInComposer: () => '请在群组消息输入框中开始新群聊。',
     memberAdded: (bot, group) => `已将 ${bot} 加入“${group}”`,
     memberRemoved: (bot, group) => `已将 ${bot} 移出“${group}”`,
@@ -176,6 +196,10 @@ export const GROUP_CHAT_LOCALES = {
     noBots: '此群組聊天中沒有機器人',
     noBotsMatch: query => `沒有符合「${query}」的機器人`,
     createBotFirst: '還沒有機器人，請先建立一個。',
+    noSeatableBots: '這裡還沒有可加入群組聊天的機器人：',
+    cannotJoinHere: '這些機器人無法在此加入群組聊天：',
+    nonePicked: '尚未選擇機器人',
+    unseatableHere: '此閘道不會讓它加入群組聊天——它不在此處提供，或正在停用',
     startInComposer: () => '請在群組訊息輸入框中開始新的群組聊天。',
     memberAdded: (bot, group) => `已將 ${bot} 加入「${group}」`,
     memberRemoved: (bot, group) => `已將 ${bot} 移出「${group}」`,
@@ -213,6 +237,10 @@ export const GROUP_CHAT_LOCALES = {
     noBots: 'لا توجد روبوتات في محادثة المجموعة هذه',
     noBotsMatch: query => `لا توجد روبوتات تطابق «${query}»`,
     createBotFirst: 'لا توجد روبوتات بعد — أنشئ واحدًا أولًا.',
+    noSeatableBots: 'لا يمكن لأي من روبوتاتك الانضمام إلى محادثة مجموعة هنا بعد:',
+    cannotJoinHere: 'لا يمكن لهذه الروبوتات الانضمام إلى محادثة مجموعة هنا:',
+    nonePicked: 'لم يتم اختيار أي روبوت بعد',
+    unseatableHere: 'لا تضمّه هذه البوابة إلى محادثات المجموعات — فهو غير مُقدَّم هنا أو قيد الإيقاف',
     startInComposer: () => 'ابدأ محادثات المجموعات الجديدة من مربع كتابة رسائل المجموعة.',
     memberAdded: (bot, group) => `أُضيف ${bot} إلى «${group}»`,
     memberRemoved: (bot, group) => `أُزيل ${bot} من «${group}»`,
@@ -249,6 +277,10 @@ export const GROUP_CHAT_LOCALES = {
     noBots: 'В этом групповом чате нет ботов',
     noBotsMatch: query => `Нет ботов по запросу «${query}»`,
     createBotFirst: 'Ботов пока нет — сначала создайте бота.',
+    noSeatableBots: 'Пока ни один ваш бот не может присоединиться к групповому чату здесь:',
+    cannotJoinHere: 'Эти боты не могут присоединиться к групповому чату здесь:',
+    nonePicked: 'Боты ещё не выбраны',
+    unseatableHere: 'этот шлюз не добавляет его в групповые чаты — он здесь не обслуживается или выводится из работы',
     startInComposer: () => 'Начинайте новые групповые чаты в поле ввода сообщений группы.',
     memberAdded: (bot, group) => `${bot} добавлен в «${group}»`,
     memberRemoved: (bot, group) => `${bot} удалён из «${group}»`,
@@ -285,6 +317,10 @@ export const GROUP_CHAT_LOCALES = {
     noBots: 'Aucun bot dans cette discussion de groupe',
     noBotsMatch: query => `Aucun bot ne correspond à « ${query} »`,
     createBotFirst: 'Aucun bot pour le moment — créez-en un d’abord.',
+    noSeatableBots: 'Aucun de vos bots ne peut encore rejoindre une discussion de groupe ici :',
+    cannotJoinHere: 'Ces bots ne peuvent pas rejoindre une discussion de groupe ici :',
+    nonePicked: 'Aucun bot choisi pour l’instant',
+    unseatableHere: 'cette passerelle ne l’accepte pas dans les discussions de groupe — il n’est pas servi ici ou il est en cours de retrait',
     startInComposer: () => 'Les nouvelles discussions de groupe commencent dans le champ de saisie du groupe.',
     memberAdded: (bot, group) => `${bot} ajouté à « ${group} »`,
     memberRemoved: (bot, group) => `${bot} retiré de « ${group} »`,
@@ -321,6 +357,10 @@ export const GROUP_CHAT_LOCALES = {
     noBots: 'Keine Bots in diesem Gruppenchat',
     noBotsMatch: query => `Keine Bots für „${query}“ gefunden`,
     createBotFirst: 'Noch keine Bots — erstellen Sie zuerst einen.',
+    noSeatableBots: 'Noch keiner Ihrer Bots kann hier einem Gruppenchat beitreten:',
+    cannotJoinHere: 'Diese Bots können hier keinem Gruppenchat beitreten:',
+    nonePicked: 'Noch keine Bots ausgewählt',
+    unseatableHere: 'dieses Gateway nimmt ihn nicht in Gruppenchats auf – er wird hier nicht bereitgestellt oder wird gerade stillgelegt',
     startInComposer: () => 'Neue Gruppenchats beginnen im Eingabefeld der Gruppe.',
     memberAdded: (bot, group) => `${bot} zu „${group}“ hinzugefügt`,
     memberRemoved: (bot, group) => `${bot} aus „${group}“ entfernt`,
@@ -357,6 +397,10 @@ export const GROUP_CHAT_LOCALES = {
     noBots: 'No hay bots en este chat de grupo',
     noBotsMatch: query => `Ningún bot coincide con «${query}»`,
     createBotFirst: 'Aún no hay bots; crea uno primero.',
+    noSeatableBots: 'Ninguno de tus bots puede unirse todavía a un chat de grupo aquí:',
+    cannotJoinHere: 'Estos bots no pueden unirse a un chat de grupo aquí:',
+    nonePicked: 'Aún no has elegido bots',
+    unseatableHere: 'esta pasarela no lo admite en chats de grupo: no se sirve aquí o se está retirando',
     startInComposer: () => 'Los nuevos chats de grupo se inician en el cuadro de mensajes del grupo.',
     memberAdded: (bot, group) => `${bot} añadido a «${group}»`,
     memberRemoved: (bot, group) => `${bot} quitado de «${group}»`,

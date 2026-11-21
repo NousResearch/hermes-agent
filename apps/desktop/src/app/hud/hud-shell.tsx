@@ -1,3 +1,5 @@
+import '../redesign/portal-hud.css'
+
 import { useStore } from '@nanostores/react'
 import { type CSSProperties, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'

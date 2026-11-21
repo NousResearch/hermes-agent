@@ -138,6 +138,23 @@ export function displayPath(raw: null | string | undefined, options: DisplayPath
   return `~${path.slice(home.length)}`
 }
 
+/**
+ * The home directory a Hermes profile folder lives under, when its layout says so: the default
+ * profile is `<home>/.hermes`, a named one `<home>/.hermes/profiles/<name>`. The backend may be
+ * another machine, so its home is read from its own paths rather than this machine's. A custom
+ * `HERMES_HOME` elsewhere gives null and `displayPath` falls back to its heuristic.
+ */
+export function homeOfHermesProfile(raw: null | string | undefined): null | string {
+  const match = normalizeDisplayPath(raw || '').match(/^(.+)\/\.hermes(?:\/profiles\/[^/]+)?$/)
+
+  return match ? match[1]! : null
+}
+
+/** A profile folder for display: `~/.hermes`, `~/.hermes/profiles/ops` on the machine that owns it. */
+export function displayProfilePath(raw: null | string | undefined): string {
+  return displayPath(raw, { home: homeOfHermesProfile(raw) })
+}
+
 /** Last path segment for compact labels (statusbar leaf, settings rows). */
 export function pathLeaf(raw: null | string | undefined): string {
   const path = normalizeDisplayPath(raw || '')

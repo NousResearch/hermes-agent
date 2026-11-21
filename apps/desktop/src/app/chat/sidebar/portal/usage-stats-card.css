@@ -1,0 +1,115 @@
+/* The usage-stats offer at the foot of the chat sidebar (Figma 1370:34567). Its own slot under the
+   list, never over it: the list ends (and fades, as it does at any foot) above the card, so no row
+   hides under it. Its fill is the sidebar's opaque colour under the card ink, so neither the art nor a
+   row ever shows through. */
+.portal-sidebar .portal-usage-offer {
+  /* The card clips its art, so its controls' rings may sit outside them. */
+  --portal-focus-ring-offset: var(--portal-focus-ring-outset);
+
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  gap: var(--portal-sidebar-offer-gap);
+  overflow: hidden;
+  margin: 0 var(--portal-sidebar-gutter) var(--portal-sidebar-gutter);
+  padding: var(--portal-sidebar-offer-pad) var(--portal-sidebar-offer-pad) var(--portal-sidebar-offer-pad)
+    var(--portal-sidebar-inset);
+  border-radius: var(--portal-sidebar-offer-radius);
+  background:
+    linear-gradient(var(--portal-sidebar-offer-fill), var(--portal-sidebar-offer-fill)),
+    var(--portal-sidebar-offer-ground);
+  box-shadow: var(--portal-sidebar-offer-shadow);
+}
+
+/* The lattice art (the Agent settings card's, 16292:16428), faded into the fill from the leading edge. */
+.portal-sidebar .portal-usage-offer::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  /* token-exempt: Figma's art placement, the same as the settings card's */
+  background: url('../../../../assets/settings-agent-lattice.avif') -9.55rem 50% / 18.175rem no-repeat;
+  filter: var(--portal-sidebar-offer-art-filter);
+  mix-blend-mode: var(--portal-sidebar-offer-art-blend);
+  opacity: var(--portal-sidebar-offer-art-opacity);
+  mask-image: linear-gradient(to right, var(--portal-raw-black) 4%, transparent 22%);
+  pointer-events: none;
+}
+
+.portal-sidebar .portal-usage-offer:dir(rtl)::before {
+  transform: scaleX(-1);
+}
+
+.portal-usage-offer-title {
+  margin: 0;
+  /* Room for the × at the end. */
+  padding-inline-end: 1.5rem;
+  color: var(--portal-sidebar-offer-title-ink);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 500;
+  line-height: var(--portal-sidebar-row-line);
+}
+
+.portal-usage-offer-body {
+  margin: calc(var(--portal-sidebar-offer-text-gap) - var(--portal-sidebar-offer-gap)) 0 0;
+  color: var(--portal-sidebar-offer-body-ink);
+  font-family: var(--portal-sidebar-meta-font);
+  font-size: var(--portal-sidebar-label-size);
+  line-height: var(--portal-sidebar-row-line);
+  text-wrap: pretty;
+}
+
+.portal-usage-offer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: var(--portal-sidebar-offer-gap);
+  row-gap: var(--portal-sidebar-offer-text-gap);
+}
+
+/* Text actions in the body's voice: Details and the share answer underlined, No thanks quiet until
+   the pointer or focus reaches it. */
+.portal-sidebar :is(.portal-usage-offer-link, .portal-usage-offer-action) {
+  padding: 0;
+  border-radius: var(--portal-radius-chip);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration-line: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 0.2em;
+  cursor: pointer;
+}
+
+.portal-sidebar .portal-usage-offer-link,
+.portal-sidebar .portal-usage-offer-action[data-tone='primary'] {
+  text-decoration-color: currentColor;
+}
+
+.portal-sidebar .portal-usage-offer-action {
+  color: var(--portal-sidebar-offer-decline-ink);
+  font-family: var(--portal-sidebar-meta-font);
+  font-size: var(--portal-sidebar-label-size);
+  line-height: var(--portal-sidebar-row-line);
+}
+
+.portal-sidebar .portal-usage-offer-action[data-tone='primary'] {
+  color: var(--portal-sidebar-offer-share-ink);
+}
+
+.portal-sidebar :is(.portal-usage-offer-link, .portal-usage-offer-action):hover {
+  color: var(--portal-sidebar-offer-share-ink);
+  text-decoration-color: currentColor;
+}
+
+.portal-sidebar .portal-usage-offer-action:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.portal-sidebar .portal-usage-offer-close {
+  position: absolute;
+  inset-block-start: 0.5rem;
+  inset-inline-end: 0.5rem;
+}

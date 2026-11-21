@@ -1,5 +1,6 @@
 import { paletteToggle } from '@/app/command-palette/contrib'
-import { isPaneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
+import { hideDeveloperToolPanel, prepareDeveloperToolPanel } from '@/app/redesign/developer-tool-panel'
+import { isPaneVisible, restoreTreePane, togglePaneVisible } from '@/components/pane-shell/tree/store'
 import { Terminal } from '@/lib/icons'
 import { isFocusWithin } from '@/lib/keybinds/combo'
 import { trackArea } from '@/store/desktop-metrics'
@@ -53,7 +54,13 @@ function scheduleFocusAttempt(attempts: number): void {
 export function toggleTerminalPane(): void {
   const revealed = !isPaneVisible('terminal')
 
-  togglePaneVisible('terminal')
+  if (revealed) {
+    prepareDeveloperToolPanel('terminal')
+    restoreTreePane('terminal')
+  } else if (!hideDeveloperToolPanel('terminal')) {
+    togglePaneVisible('terminal')
+  }
+
   trackArea('terminal_pane', revealed)
 
   if (revealed) {

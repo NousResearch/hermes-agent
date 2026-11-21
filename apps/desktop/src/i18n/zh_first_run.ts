@@ -1,6 +1,26 @@
 import type { FirstRunCopy } from './types_first_run'
 
 export const zhFirstRun: FirstRunCopy = {
+  guide: {
+    title: '设置 Hermes',
+    resume: '继续设置',
+    upgradeRequired:
+      '此机器上的 Hermes 需要更新才能进行无会话设置。请在该机器上运行 hermes update，重启 Hermes，然后重试。你的聊天保持不变。',
+    intro: '完成几项可选偏好设置后，即可正常聊天。设置过程不会创建对话。',
+    appearance: '外观',
+    model: '选择模型',
+    ready: '模型已就绪。',
+    providerNeeded: '发送消息前，请连接提供商或使用免费模型。',
+    freeModel: '使用免费模型',
+    freeUnavailable: '此处无法使用免费模型。请连接提供商，或稍后再选择。',
+    providers: '连接提供商',
+    finish: '完成设置',
+    skip: '跳过设置',
+    back: '返回',
+    check: '检查就绪状态',
+    checking: '正在检查…',
+    privacy: '是否分享使用指标由你决定。'
+  },
   beats: {
     name: '名字',
     theme: '强调色',

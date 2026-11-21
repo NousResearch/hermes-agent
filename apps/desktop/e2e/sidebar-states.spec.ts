@@ -26,7 +26,7 @@ import {
 /** Background-running dot aria-label (from i18n en.ts). */
 const BG_DOT_LABEL = 'Background task running'
 /** Foreground turn-running dot aria-label. */
-const SESSION_RUNNING_DOT_LABEL = 'Session running'
+const SESSION_RUNNING_DOT_LABEL = 'Chat running'
 /** Finished-unread dot aria-label. */
 const UNREAD_DOT_LABEL = 'Finished — unread'
 

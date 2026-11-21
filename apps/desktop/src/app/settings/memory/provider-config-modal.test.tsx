@@ -1,6 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { providePortalPresentation } from '@/store/shell-presentation'
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 
 const saveMemoryProviderConfig = vi.fn()
@@ -109,5 +111,27 @@ describe('ProviderConfigModal', () => {
     await waitFor(() => expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { saveMessages: 'false' }))
     await waitFor(() => expect(onSaved).toHaveBeenCalled())
     expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it.each([
+    [false, 'profile'],
+    [true, 'agent']
+  ])('names the scope in each shell’s vocabulary (redesign=%s)', (redesign, noun) => {
+    providePortalPresentation(atom(redesign))
+    render(
+      <ProviderConfigModal
+        config={schema()}
+        onOpenChange={vi.fn()}
+        onSaved={vi.fn()}
+        open
+        profile="work"
+        provider="honcho"
+      />
+    )
+
+    expect(screen.getByText(/^Every Honcho option for the/).textContent).toBe(
+      `Every Honcho option for the work ${noun}. Blank fields fall back to the resolved host or built-in default.`
+    )
+    providePortalPresentation(atom(false))
   })
 })

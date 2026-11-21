@@ -33,10 +33,12 @@ import { $gatewayBootGeneration } from '@/store/live-sync'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
+import { $setupGuidePhase } from '@/store/onboarding-phase'
 import { afterOnboardingSurfaceClear, onboardingSurfaceOpen } from '@/store/onboarding-presence'
 import { captureOnboardingScope, type OnboardingScope } from '@/store/onboarding-scope'
 import { requestRoute } from '@/store/recovery-requests'
 import { setModelPickerOpen } from '@/store/session'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 import type { AppHandoffStatus, OAuthPollResponse, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
@@ -948,11 +950,12 @@ async function applyFreeTierIntro(ctx: OnboardingContext, runtime: RuntimeReadin
   setFreeTierRoute(runtime.freeTier)
   await refreshFreeTierStatus(ctx.requestGateway)
 
-  // The onboarding intro is the introduction: opening it acks the notice
-  // (store/onboarding-run.ts). Read the status when the overlay is free, not
-  // now, so that ack is honoured.
+  // Setup itself introduces the model. Completed/skipped guides must not reopen a second welcome overlay.
   afterOnboardingSurfaceClear(() => {
-    if (freeTierReadyPending($freeTierStatus.get(), runtime.freeTier ?? null)) {
+    if (
+      (!$setupGuideOnboarding.get() || !['done', 'skipped'].includes($setupGuidePhase.get())) &&
+      freeTierReadyPending($freeTierStatus.get(), runtime.freeTier ?? null)
+    ) {
       patch({ freeTierReady: true })
     }
   })

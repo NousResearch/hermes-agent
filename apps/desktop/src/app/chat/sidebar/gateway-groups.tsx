@@ -395,8 +395,18 @@ function GatewayProfileGroup({
 
 /** Plugin-contributed chrome at the top of one expanded gateway/profile group
  *  (`sidebar.profileGroup.header`): the Bots plugin mounts its Screen portal
- *  here so the profile's computer is one click away from its sessions. */
-function ProfileGroupHeaderSlot({ connectionId, profile }: { connectionId: null | string; profile: string }) {
+ *  here so the profile's computer is one click away from its sessions. The
+ *  redesign's agent cards mount the same slot under their heading, with their
+ *  own inset (`className`). */
+export function ProfileGroupHeaderSlot({
+  className = 'flex flex-col gap-1 px-2 pb-1',
+  connectionId,
+  profile
+}: {
+  className?: string
+  connectionId: null | string
+  profile: string
+}) {
   const items = useContributions(SIDEBAR_PROFILE_GROUP_HEADER_AREA)
 
   if (!items.length) {
@@ -404,7 +414,7 @@ function ProfileGroupHeaderSlot({ connectionId, profile }: { connectionId: null 
   }
 
   return (
-    <div className="flex flex-col gap-1 px-2 pb-1">
+    <div className={className} data-slot="profile-group-header">
       {items.map(item => {
         const data = item.data as Partial<ProfileGroupHeaderContribution> | undefined
 

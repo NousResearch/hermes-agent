@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { setSessionArchived } from '@/hermes'
@@ -8,8 +9,12 @@ import { $messagingSessions, $sessions, setMessagingSessions, setSessions } from
 import type { SessionInfo } from '@/types/hermes'
 
 import { SessionsSettings } from './sessions-settings'
+import { settingsPagesCopy } from './settings-pages-copy'
 
-vi.mock('@/i18n', () => ({ useI18n: () => ({ t: en }) }))
+vi.mock('@/i18n', () => ({
+  isBundledLocale: (locale: string) => locale === 'en',
+  useI18n: () => ({ locale: 'en', t: en })
+}))
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -63,6 +68,7 @@ afterEach(() => {
 describe('SessionsSettings unarchive', () => {
   it('restores a messaging-source session into $messagingSessions, not $sessions', async () => {
     render(<SessionsSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: settingsPagesCopy('en').archiveChats.view }))
     const button = await screen.findByRole('button', { name: en.settings.sessions.unarchive })
 
     await act(async () => fireEvent.click(button))
@@ -71,6 +77,22 @@ describe('SessionsSettings unarchive', () => {
     expect($messagingSessions.get().map(session => session.id)).toEqual(['matrix-1'])
     expect($messagingSessions.get()[0]?.archived).toBe(false)
     expect($sessions.get()).toEqual([])
+  })
+})
+
+describe('SessionsSettings archive deep link', () => {
+  it('opens the archive once for a link to a chat it does not list, then lets Hide close it', async () => {
+    render(
+      <MemoryRouter initialEntries={['/settings?tab=sessions&session=not-archived']}>
+        <SessionsSettings />
+      </MemoryRouter>
+    )
+    const copy = settingsPagesCopy('en').archiveChats
+
+    fireEvent.click(await screen.findByRole('button', { name: copy.hide }))
+
+    expect(await screen.findByRole('button', { name: copy.view })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: en.settings.sessions.unarchive })).toBeNull()
   })
 })
 

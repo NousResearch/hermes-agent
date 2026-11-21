@@ -2,6 +2,7 @@ import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { $activeGatewayProfile } from '@/store/profile'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { $accentOverride, setAccentOverride } from './accent-override'
 import { skinPref, ThemeProvider, useTheme } from './context'
@@ -9,6 +10,11 @@ import { persistAccent } from './persist-accent'
 import { nousTheme } from './presets'
 import type { DesktopTheme } from './types'
 import { $userThemes, installUserTheme, resolveTheme } from './user-themes'
+
+// These cases pin the CLASSIC shell's default skin (Nous); the redesign's own
+// default (Portal) is covered in shell-default-skin.test.tsx.
+beforeEach(() => $shellChoice.set(false))
+afterEach(() => $shellChoice.set(null))
 
 let theme: ReturnType<typeof useTheme>
 

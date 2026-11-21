@@ -2,6 +2,8 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useEffect, useRef, useState } from 'react'
 
+import { $apiRequestScope, ambientOwnerConnectionId } from '@/api/client'
+import { mutateSessionHttp } from '@/api/sessions'
 import { openSession } from '@/app/open-session'
 import {
   closeAllTreeTabs,
@@ -55,13 +57,11 @@ import {
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
 import { ambientRequestFor } from '@/store/session-gone-latch'
-import {
-  $sessionStates,
-  $sessionTiles,
-  closeAllOpenSessionTiles,
-  requestForOwnedSession
-} from '@/store/session-states'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
+import { $sessionStates, $sessionTiles, closeAllOpenSessionTiles, requestForOwnedSession } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
+import { $sessionListSpansProfiles } from '@/store/shell-policy'
+import { usePortalShell } from '@/store/shell-variant'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
@@ -120,7 +120,8 @@ function resolveRuntimeIdForStored(storedSessionId: string): null | string {
 export async function renameSessionPreferringRpc(
   storedSessionId: string,
   title: string,
-  profile?: string
+  profile?: string,
+  ownerRoute?: SessionOwnerRoute
 ): Promise<{ title?: string }> {
   // Messaging-platform rows (telegram, discord, …) live in the messaging
   // slice, not recents — a recents-only lookup misses them and the rename
@@ -131,7 +132,20 @@ export async function renameSessionPreferringRpc(
     ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, storedSessionId))?.profile ||
     undefined
 
-  const runtimeId = resolveRuntimeIdForStored(storedSessionId)
+  const scope = $apiRequestScope.get()
+  const ambientOwner = matchesAmbientSessionOwner(ownerRoute, scope.profile)
+
+  const runtimeId = ambientOwner
+    ? resolveRuntimeIdForStored(storedSessionId)
+    : $sessionTiles
+        .get()
+        .find(
+          tile =>
+            tile.storedSessionId === storedSessionId &&
+            tile.ownerRoute?.connectionId === ownerRoute?.connectionId &&
+            tile.ownerRoute?.profile === ownerRoute?.profile
+        )?.runtimeId
+
   const gateway = activeGateway()
 
   if (title && runtimeId && gateway) {
@@ -155,7 +169,9 @@ export async function renameSessionPreferringRpc(
     }
   }
 
-  return renameSession(storedSessionId, title, resolvedProfile)
+  return ownerRoute
+    ? mutateSessionHttp(storedSessionId, 'PATCH', { title }, ownerRoute)
+    : renameSession(storedSessionId, title, resolvedProfile)
 }
 
 interface SessionActions {
@@ -168,6 +184,7 @@ interface SessionActions {
    *  archive verb becomes Unarchive and restores the session (#98813). */
   archived?: boolean
   profile?: string
+  ownerRoute?: SessionOwnerRoute
   onPin?: () => void
   /** Toggle the persisted read-state watermark for this row. */
   onToggleUnread?: () => void
@@ -263,6 +280,32 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   )
 }
 
+function matchesAmbientSessionOwner(ownerRoute: SessionOwnerRoute | undefined, profile: string | null): boolean {
+  return (
+    !ownerRoute ||
+    (ownerRoute.connectionId === ambientOwnerConnectionId() && ownerRoute.profile === (profile || 'default'))
+  )
+}
+
+/** The redesign's list spans every profile and machine, so a row's terminal and project moves are
+ *  offered only for the ambient owner (both act through this window's profile). Classic lists one
+ *  connection and offers them on every row, as main does. */
+function sessionActionScope(
+  ownerRoute: SessionOwnerRoute | undefined,
+  profile: string | undefined,
+  ambientOnly: boolean,
+  scopeProfile: string | null
+) {
+  const ambient = !ambientOnly || matchesAmbientSessionOwner(ownerRoute, scopeProfile)
+
+  return {
+    profile: ownerRoute ?? profile,
+    ambient,
+    canOpenTerminal: canOpenSessionInTerminal() && ambient,
+    workspace: ownerRoute ? { workspaceMode: 'sessions' as const, ownerRoute } : undefined
+  }
+}
+
 function useSessionActions({
   sessionId,
   title,
@@ -270,6 +313,7 @@ function useSessionActions({
   unread = false,
   archived = false,
   profile,
+  ownerRoute,
   onPin,
   onToggleUnread,
   onBranch,
@@ -283,6 +327,11 @@ function useSessionActions({
 }: SessionActions) {
   const { t } = useI18n()
   const r = t.sidebar.row
+  const scope = useStore($apiRequestScope)
+  const ambientOnly = useStore($sessionListSpansProfiles)
+
+  const actionScope = sessionActionScope(ownerRoute, profile, ambientOnly, scope.profile)
+
   const [renameOpen, setRenameOpen] = useState(false)
   // The rename item opens a Dialog. When a menu closes, Radix restores focus to
   // its trigger — for a sidebar row that trigger is the row's own <button>, so
@@ -320,7 +369,7 @@ function useSessionActions({
               // Stack into the MAIN zone as a tab (center dock; the strip
               // sticky-shows on gain) — the door to the tab bar. Focuses first
               // if the session is already on screen.
-              openSession(sessionId, () => undefined, 'tab')
+              openSession(sessionId, () => undefined, 'tab', actionScope.workspace)
             }
           })
         ]
@@ -333,7 +382,7 @@ function useSessionActions({
             label: r.newWindow,
             onSelect: () => {
               triggerHaptic('selection')
-              openSession(sessionId, () => undefined, 'window')
+              openSession(sessionId, () => undefined, 'window', actionScope.workspace)
             }
           })
         ]
@@ -341,7 +390,7 @@ function useSessionActions({
     // The user's OWN terminal, not the in-app pane: resumes the session in the
     // TUI. Hidden on a remote connection — the emulator we'd open runs on this
     // machine while the session (and its runtime) lives on the remote host.
-    ...(canOpenSessionInTerminal() && !isRemote
+    ...(actionScope.canOpenTerminal && !isRemote
       ? [
           spec({
             disabled: !sessionId,
@@ -443,7 +492,7 @@ function useSessionActions({
       label: r.export,
       onSelect: () => {
         triggerHaptic('selection')
-        void exportSession(sessionId, { profile, title })
+        void exportSession(sessionId, { profile: actionScope.profile, title })
       }
     })
   ]
@@ -582,7 +631,7 @@ function useSessionActions({
       <kit.Separator />
       {workItems.map(item => renderActionItem(kit, item))}
       <kit.Sub>
-        <kit.SubTrigger disabled={!sessionId}>
+        <kit.SubTrigger disabled={!sessionId || !actionScope.ambient}>
           <Codicon name="folder" size="0.875rem" />
           <span>{t.sidebar.projects.moveToProject}</span>
         </kit.SubTrigger>
@@ -620,6 +669,7 @@ function useSessionActions({
       currentTitle={title}
       onOpenChange={setRenameOpen}
       open={renameOpen}
+      ownerRoute={ownerRoute}
       profile={profile}
       sessionId={sessionId}
     />
@@ -686,6 +736,9 @@ interface SessionActionsMenuProps
   children: React.ReactNode
 }
 
+/** The redesign's longer rows ("Move to project") keep one line: the menu grows past 160px. */
+const SESSION_MENU_WIDTH = { classic: 'w-40', portal: 'w-max min-w-40' } as const
+
 export function SessionActionsMenu({
   children,
   align = 'end',
@@ -696,13 +749,14 @@ export function SessionActionsMenu({
 }: SessionActionsMenuProps) {
   const { t } = useI18n()
   const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
+  const menuWidth = SESSION_MENU_WIDTH[usePortalShell() ? 'portal' : 'classic']
 
   return (
     <>
       <ActionsMenu
         align={align}
         ariaLabel={t.sidebar.row.sessionActions}
-        contentClassName="w-40"
+        contentClassName={menuWidth}
         items={renderItems}
         onCloseAutoFocus={onCloseAutoFocus}
         onOpenChange={onOpenChange}
@@ -724,12 +778,13 @@ interface SessionContextMenuProps extends SessionActions {
 export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
   const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
+  const menuWidth = SESSION_MENU_WIDTH[usePortalShell() ? 'portal' : 'classic']
 
   return (
     <>
       <ActionsContextMenu
         ariaLabel={t.sidebar.row.sessionActions}
-        contentClassName="w-40"
+        contentClassName={menuWidth}
         items={renderItems}
         onCloseAutoFocus={onCloseAutoFocus}
       >
@@ -747,11 +802,21 @@ interface RenameSessionDialogProps {
   sessionId: string
   currentTitle: string
   profile?: string
+  ownerRoute?: SessionOwnerRoute
 }
 
-function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, profile }: RenameSessionDialogProps) {
+function RenameSessionDialog({
+  open,
+  onOpenChange,
+  sessionId,
+  currentTitle,
+  profile,
+  ownerRoute
+}: RenameSessionDialogProps) {
   const { t } = useI18n()
   const r = t.sidebar.row
+  // The redesign names the field by its dialog: its placeholder ("Untitled chat") is not a name.
+  const portal = usePortalShell()
   const [value, setValue] = useState(currentTitle)
   const [submitting, setSubmitting] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -784,7 +849,7 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
       const targetProfile =
         (profile ?? '').trim() || ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, sessionId))?.profile || undefined
 
-      const result = await renameSessionPreferringRpc(sessionId, next, targetProfile)
+      const result = await renameSessionPreferringRpc(sessionId, next, targetProfile, ownerRoute)
       const finalTitle = result.title || next || ''
       // One write, every list: patch the main store AND the project surfaces.
       // Bare-id patching only the recents slice left project-scoped rows
@@ -808,6 +873,7 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
           <DialogTitle>{r.renameTitle}</DialogTitle>
         </DialogHeader>
         <Input
+          aria-label={portal ? r.renameTitle : undefined}
           autoFocus
           disabled={submitting}
           onChange={event => setValue(event.target.value)}

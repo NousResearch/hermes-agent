@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { CatalogInstallTool } from '@/components/assistant-ui/catalog-install-tool'
-import { I18nProvider } from '@/i18n'
+import { I18nProvider, resolveTranslations } from '@/i18n'
 import {
   $connectionRequests,
   applyOperationStatus,
@@ -16,6 +16,9 @@ import {
 import { $gateway, setPrimaryGateway, setPrimaryGatewayConnectionId } from '@/store/gateway'
 import { $profiles } from '@/store/profile'
 import { setSessionOwnerHint } from '@/store/session'
+
+// The wording the active shell renders (the redesign by default).
+const en = resolveTranslations('en')
 
 const SESSION_ID = 'session-1'
 const SHA = '5023f3a4ea5023f3a4ea5023f3a4ea5023f3a4ea'
@@ -93,6 +96,7 @@ function view(sessionId: string): SessionView {
     $reasoningEffortWire: atom(''),
     $runtimeId: atom(sessionId),
     $storedId: atom(sessionId),
+    $transcriptStoredId: atom(sessionId),
     $turnStartedAt: atom(null),
     kind: 'primary'
   }
@@ -201,7 +205,7 @@ describe('the catalog install card', () => {
 
     fireEvent.click(row('nvidia-app').getByRole('button', { name: 'Advanced' }))
     const dialog = within(screen.getByRole('dialog'))
-    fireEvent.click(dialog.getByRole('combobox', { name: 'Install for profile' }))
+    fireEvent.click(dialog.getByRole('combobox', { name: en.settings.plugins.installModal.profileLabel }))
     fireEvent.click(await screen.findByRole('option', { name: 'work' }))
     fireEvent.click(dialog.getByRole('switch', { name: /Force reinstall/ }))
     fireEvent.click(dialog.getByRole('button', { name: 'Install' }))

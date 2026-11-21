@@ -38,17 +38,43 @@ export function AttachmentList({
   )
 }
 
+const KIND_ICONS = {
+  file: FileText,
+  folder: FolderOpen,
+  image: ImageIcon,
+  terminal: Terminal,
+  url: Link
+} as const
+
+/** The pill's square: the image itself when one is cached, else the kind's icon, under the upload state. */
+function AttachmentThumb({ attachment }: { attachment: ComposerAttachment }) {
+  const Icon = KIND_ICONS[attachment.kind]
+  const image = attachment.kind === 'image' ? attachment.thumbnailUrl || attachment.previewUrl : undefined
+
+  return (
+    <span className="relative grid size-8 shrink-0 place-items-center overflow-hidden rounded-lg border border-border/55 bg-muted/35 text-muted-foreground">
+      {image ? (
+        <img alt={attachment.label} className="size-full object-cover" draggable={false} src={image} />
+      ) : (
+        <Icon className="size-3.5" />
+      )}
+      {attachment.uploadState === 'uploading' && (
+        <span className="absolute inset-0 grid place-items-center bg-background/60 backdrop-blur-[1px]">
+          <Loader2 className="size-3.5 animate-spin text-foreground/75" />
+        </span>
+      )}
+      {attachment.uploadState === 'error' && (
+        <span className="absolute inset-0 grid place-items-center bg-destructive/15">
+          <AlertCircle className="size-3.5 text-destructive" />
+        </span>
+      )}
+    </span>
+  )
+}
+
 function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachment; onRemove?: (id: string) => void }) {
   const { t } = useI18n()
   const c = t.composer
-
-  const Icon = {
-    file: FileText,
-    folder: FolderOpen,
-    image: ImageIcon,
-    terminal: Terminal,
-    url: Link
-  }[attachment.kind]
 
   // The tile's cwd when this pill lives in a tile composer, not the primary's:
   // a relative attachment path has to resolve against its own session's root.
@@ -155,32 +181,14 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
                 ? 'border-destructive/45 hover:border-destructive/60'
                 : 'border-border/60 hover:border-primary/35 hover:bg-accent/45'
             )}
+            data-kind={attachment.kind}
+            data-slot="composer-attachment"
+            data-upload-error={hasUploadError ? '' : undefined}
             disabled={!canPreview}
             onClick={() => void openAttachment()}
             type="button"
           >
-            <span className="relative grid size-8 shrink-0 place-items-center overflow-hidden rounded-lg border border-border/55 bg-muted/35 text-muted-foreground">
-              {(attachment.thumbnailUrl || attachment.previewUrl) && attachment.kind === 'image' ? (
-                <img
-                  alt={attachment.label}
-                  className="size-full object-cover"
-                  draggable={false}
-                  src={attachment.thumbnailUrl ?? attachment.previewUrl}
-                />
-              ) : (
-                <Icon className="size-3.5" />
-              )}
-              {isUploading && (
-                <span className="absolute inset-0 grid place-items-center bg-background/60 backdrop-blur-[1px]">
-                  <Loader2 className="size-3.5 animate-spin text-foreground/75" />
-                </span>
-              )}
-              {hasUploadError && (
-                <span className="absolute inset-0 grid place-items-center bg-destructive/15">
-                  <AlertCircle className="size-3.5 text-destructive" />
-                </span>
-              )}
-            </span>
+            <AttachmentThumb attachment={attachment} />
             <span className="min-w-0">
               <span className="block truncate text-[0.72rem] font-medium leading-4 text-foreground/90">
                 {attachment.label}

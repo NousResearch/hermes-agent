@@ -20,6 +20,7 @@ export function ActivityTimerText({ 'aria-hidden': ariaHidden, seconds, classNam
         'shrink-0 text-[0.56rem] leading-none tracking-[0.02em] text-midground/55',
         className
       )}
+      data-slot="activity-timer"
     >
       {formatElapsed(seconds)}
     </StableText>

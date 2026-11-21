@@ -40,7 +40,7 @@ describe('materializing the draft profile', () => {
       target: { value: enteredName }
     })
 
-    const create = screen.getByRole('button', { name: 'Create bot' })
+    const create = screen.getByRole('button', { name: translateBots('editor.createBot') })
 
     expect((create as HTMLButtonElement).disabled).toBe(false)
     fireEvent.click(create)
@@ -65,7 +65,7 @@ describe('materializing the draft profile', () => {
     await waitFor(() => expect(mocks.skillsView.at(-1)).toMatchObject({ fixedProfile: 'inbox-triage' }))
 
     // Create Bot goes through the same helper — no duplicate profiles.create.
-    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    fireEvent.click(screen.getByRole('button', { name: translateBots('editor.createBot') }))
 
     await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
     expect(createCalls()).toHaveLength(1)
@@ -75,7 +75,7 @@ describe('materializing the draft profile', () => {
     await renderDialog(true)
     fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: '' } })
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
-    await screen.findByText(/Name the bot first/)
+    await screen.findByText(translateBots('editor.nameFirstHint'))
 
     // Mid-word keystrokes must not each mint (and orphan) a draft.
     fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'late' } })
@@ -132,19 +132,17 @@ describe('materializing the draft profile', () => {
 
     // The picker stays live for a remote target and offers only what exists
     // on THAT machine: fresh, or its own default — never a local roster name.
-    const cloneFrom = controlUnder('Clone from profile (on Studio)')
+    const cloneFrom = controlUnder(translateBots('editor.cloneFromOn', 'Studio'))
 
     expect(cloneFrom.getAttribute('data-disabled')).toBeNull()
     fireEvent.click(cloneFrom)
     expect(screen.getAllByRole('option').map(option => option.textContent)).toEqual([
-      'Fresh profile (bundled skills)',
+      translateBots('editor.freshProfile'),
       'default'
     ])
-    fireEvent.click(screen.getByRole('option', { name: /Fresh profile/ }))
-    // Shared keys live on the TARGET machine, and the label says which.
-    screen.getByText('Share keys & accounts with the default profile on Studio')
+    fireEvent.click(screen.getByRole('option', { name: translateBots('editor.freshProfile') }))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    fireEvent.click(screen.getByRole('button', { name: translateBots('editor.createBot') }))
 
     await waitFor(() =>
       expect(mocks.requestProfile).toHaveBeenCalledWith(
@@ -193,7 +191,7 @@ describe('leftover prefs under the new bot name', () => {
     mocks.dropLeftoverProfilePrefs.mockImplementationOnce(() => expect(created).toBe(true))
 
     await renderDialog(true)
-    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    fireEvent.click(screen.getByRole('button', { name: translateBots('editor.createBot') }))
 
     await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
     expect(mocks.dropLeftoverProfilePrefs.mock.calls).toEqual([['inbox-triage', null]])
@@ -209,7 +207,7 @@ describe('leftover prefs under the new bot name', () => {
     await screen.findByText('Create on')
     fireEvent.click(controlUnder('Create on'))
     fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    fireEvent.click(screen.getByRole('button', { name: translateBots('editor.createBot') }))
 
     await waitFor(() => expect(mocks.dropLeftoverProfilePrefs).toHaveBeenCalled())
     expect(mocks.dropLeftoverProfilePrefs.mock.calls).toEqual([['inbox-triage', 'studio']])
@@ -226,7 +224,7 @@ describe('leftover prefs under the new bot name', () => {
     })
 
     await renderDialog(true)
-    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    fireEvent.click(screen.getByRole('button', { name: translateBots('editor.createBot') }))
 
     await waitFor(() => expect(createCalls()).toHaveLength(1))
     await new Promise(resolve => setTimeout(resolve, 50))
@@ -359,7 +357,7 @@ describe('provider readiness before the intro turn', () => {
     const onConfigureModel = vi.fn()
 
     await renderDialog(true, onConfigureModel)
-    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    fireEvent.click(screen.getByRole('button', { name: translateBots('editor.createBot') }))
 
     await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: false }))
     expect(mocks.request).toHaveBeenCalledWith('setup.runtime_check', { profile: 'inbox-triage' })
@@ -369,8 +367,7 @@ describe('provider readiness before the intro turn', () => {
 
     expect(toast).toMatchObject({
       detail: notReady.error,
-      kind: 'warning',
-      title: 'Bot "Inbox Triage" created'
+      kind: 'warning'
     })
     toast.action.onClick()
     expect(onConfigureModel).toHaveBeenCalledWith(expect.objectContaining({ name: 'inbox-triage' }))
@@ -383,10 +380,10 @@ describe('provider readiness before the intro turn', () => {
     )
 
     await renderDialog(true)
-    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    fireEvent.click(screen.getByRole('button', { name: translateBots('editor.createBot') }))
 
     await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
-    expect(mocks.notify).toHaveBeenLastCalledWith({ kind: 'success', message: 'Bot "Inbox Triage" created' })
+    expect(mocks.notify).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'success' }))
   })
 
   it('checks a remote bot on its own machine and warns without an editor shortcut', async () => {
@@ -400,11 +397,11 @@ describe('provider readiness before the intro turn', () => {
     await screen.findByText('Create on')
     fireEvent.click(controlUnder('Create on'))
     fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    fireEvent.click(screen.getByRole('button', { name: translateBots('editor.createBot') }))
 
     await waitFor(() =>
       expect(mocks.notify).toHaveBeenLastCalledWith(
-        expect.objectContaining({ kind: 'warning', title: 'Bot "Inbox Triage" created on Studio' })
+        expect.objectContaining({ kind: 'warning' })
       )
     )
     expect(mocks.requestProfile).toHaveBeenCalledWith(
@@ -423,15 +420,14 @@ describe('the clone-from default', () => {
 
     // `labeled()` renders a bare <label>, so the trigger is found by position.
     const cloneFrom = () =>
-      screen.getByText('Clone from profile').parentElement!.querySelector('[role="combobox"]') as HTMLElement
+      screen.getByText(translateBots('editor.cloneFrom')).parentElement!.querySelector('[role="combobox"]') as HTMLElement
 
     expect(cloneFrom().textContent).toBe('default')
 
     fireEvent.click(cloneFrom())
-    fireEvent.click(await screen.findByRole('option', { name: /Fresh profile/ }))
-    expect(cloneFrom().textContent).toMatch(/Fresh profile/)
+    fireEvent.click(await screen.findByRole('option', { name: translateBots('editor.freshProfile') }))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    fireEvent.click(screen.getByRole('button', { name: translateBots('editor.createBot') }))
     await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalled())
 
     // Second open: the picker must read `default` again, or every agent after

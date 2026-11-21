@@ -2,6 +2,8 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import { OauthLoginFlights } from './oauth-login-flights'
 import { type OauthLoginWindowLike, startOauthLoginWindow } from './oauth-login-window'
+import { adoptShellPreference } from './shell-wording'
+import { SHELL_CHOICE_KEY } from './window-chrome'
 
 const GATEWAY = 'https://fedora.example.ts.net'
 
@@ -78,6 +80,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+  adoptShellPreference(null)
 })
 
 test('an unattended sign-in never shows its window and gives up after the deadline', async () => {
@@ -159,11 +162,20 @@ test('a foreground silent sign-in reveals itself when auto-SSO does not finish',
 })
 
 test('an interactive sign-in opens visible on the provider chooser', () => {
+  adoptShellPreference({ [SHELL_CHOICE_KEY]: 'false' })
   const h = harness()
 
   h.start({ silent: false, background: false })
   expect(h.created).toEqual([{ show: true, title: 'Sign in to Hermes gateway' }])
   expect(h.windows[0].state.loaded).toBe(`${GATEWAY}/login`)
+})
+
+test('the redesign titles the sign-in window without the gateway term', () => {
+  adoptShellPreference({ [SHELL_CHOICE_KEY]: 'true' })
+  const h = harness()
+
+  h.start({ silent: false, background: false })
+  expect(h.created).toEqual([{ show: true, title: 'Sign in to Hermes' }])
 })
 
 test('reveal promotes a hidden attempt and lifts its unattended deadline', async () => {

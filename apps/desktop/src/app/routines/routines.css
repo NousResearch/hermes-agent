@@ -1,0 +1,931 @@
+/* Routines (the redesign's rail page, Figma "Routines final rev" 1081:29252). Only the redesign renders
+   these classes (RoutinesPage, its sheet, an agent's read-only Routines), so no root gate; every value
+   reads a token (scripts/check_desktop_design_tokens.py lists this file as redesign-only). */
+
+/* ── Page frame: the panel at the stage's leading edge, the column at the frame inset past it ── */
+
+/* The stage owns the top padding: it scrolls at its own edge, so its first row clears that edge. */
+[data-page-surface] .management-panel.routines-page {
+  max-width: none;
+  padding: 0;
+}
+
+@media (min-width: 1024px) {
+  /* Wide (breakpoints.ts): below it the panel is the band menu's sheet, not a column. */
+  [data-page-surface] .management-panel.routines-page:has(> .page-sidebar-panel) {
+    position: relative;
+    padding-inline-start: var(--page-nav-width);
+  }
+}
+
+/* The stage scrolls at its own edge; its column is the page stage contract's (portal-pages.css). The
+   first row (the deleted banner, else the breadcrumb) starts at the page top; the scroller ends in the
+   page end space. */
+.routines-stage {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  padding-block: var(--portal-page-top) var(--portal-page-end-space);
+}
+
+.routines-detail {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+/* ── Panel rows: status dot, name, agent tag ── */
+
+.routines-dot {
+  display: inline-block;
+  width: 0.4375rem;
+  height: 0.4375rem;
+  flex-shrink: 0;
+  border-radius: var(--portal-radius-round);
+  background: var(--portal-text-quaternary);
+}
+
+.routines-dot[data-tone='good'] {
+  background: var(--portal-status-online);
+}
+
+.routines-dot[data-tone='bad'] {
+  background: var(--portal-status-error-ink);
+}
+
+.routines-dot[data-tone='warn'] {
+  background: var(--portal-status-pending);
+}
+
+.routines-dot[data-tone='running'] {
+  background: var(--portal-text-brand);
+}
+
+.routines-panel-skeleton {
+  display: grid;
+  gap: 1.25rem;
+  padding: 0.75rem 0.625rem;
+}
+
+.routines-panel-empty {
+  padding: 0.5rem 0.625rem;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.4;
+}
+
+/* The agent a routine belongs to (1081:29517): a quiet tag, the agent's own name. */
+.routines-agent-tag {
+  display: inline-flex;
+  max-width: 9rem;
+  height: 1rem;
+  flex-shrink: 0;
+  align-items: center;
+  overflow: hidden;
+  padding-inline: 0.3125rem;
+  border: 1px solid var(--portal-stroke-control);
+  border-radius: var(--portal-radius-chip);
+  background: var(--portal-surface-control);
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-caption-size);
+  font-weight: 400;
+  letter-spacing: var(--portal-tracking-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Status chip (1098:8480): 9px uppercase, each status ink on its own tint ── */
+
+.routines-chip {
+  display: inline-flex;
+  height: 0.875rem;
+  flex-shrink: 0;
+  align-items: center;
+  padding-inline: 0.25rem;
+  border-radius: var(--portal-radius-chip);
+  background: var(--portal-raw-ink-8);
+  color: var(--ui-text-secondary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-chip-size);
+  font-weight: 500;
+  letter-spacing: var(--portal-tracking-chip);
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.routines-chip[data-tone='good'] {
+  background: color-mix(in srgb, var(--portal-status-online) 14%, transparent);
+  color: var(--portal-status-online);
+}
+
+.routines-chip[data-tone='warn'] {
+  color: var(--portal-status-pending);
+}
+
+.routines-chip[data-tone='bad'] {
+  background: var(--portal-surface-danger-hover);
+  color: var(--portal-text-danger);
+}
+
+/* RUNNING wears the DEFAULT chip's brand treatment (877:4260), as on History. */
+.routines-chip[data-tone='running'] {
+  background: var(--portal-surface-brand-selected);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+  color: var(--ui-text-primary);
+}
+
+/* ── "<name> deleted." with Undo (1406:24625): the stage's first row, above the breadcrumb ── */
+
+.routines-deleted {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  padding: 0.25rem 0.25rem 0.25rem 0.75rem;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+  background: color-mix(in srgb, var(--portal-status-online) 14%, transparent);
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+
+.routines-deleted > p {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.routines-deleted-icon {
+  flex-shrink: 0;
+  color: var(--portal-status-online);
+}
+
+/* ── Detail ── */
+
+/* The breadcrumb is the column's first row: it starts at the page top every page's first row does
+   (the stage's padding), never in the inset above it, and the heading follows it. */
+.routines-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-bottom: 0.75rem;
+  color: var(--ui-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-micro-size);
+  letter-spacing: var(--portal-tracking-caption);
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.routines-breadcrumb > button {
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+
+.routines-breadcrumb > button:hover {
+  color: var(--ui-text-primary);
+}
+
+.routines-breadcrumb > button:focus-visible {
+  border-radius: var(--portal-radius-chip);
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+}
+
+.routines-breadcrumb > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The name and its status chip on the H1 line: a long name wraps, the chip rides its last line. */
+.routines-detail-header h1 {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 0.75rem;
+}
+
+.routines-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.routines-detail .portal-page-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.routines-detail-body {
+  display: grid;
+  min-width: 0;
+  gap: 1.5rem;
+}
+
+/* A routine whose last run went wrong (1383:21029): the danger tint card, which run, its chip, the
+   reason in one plain sentence, and Retry. */
+.routines-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0.75rem 0.75rem 1.25rem;
+  border: 1px solid var(--portal-stroke-danger);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-danger);
+}
+
+.routines-banner-text {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 0.25rem;
+}
+
+.routines-banner-title {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.routines-banner-detail {
+  color: var(--ui-text-secondary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* The backend's own text, behind the plain sentence: one click away, never the first thing read. */
+.routines-banner-raw {
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.4;
+}
+
+.routines-banner-raw > summary {
+  inline-size: fit-content;
+  cursor: pointer;
+}
+
+.routines-banner-raw > summary:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+.routines-banner-raw > p {
+  margin-top: 0.25rem;
+  font-family: var(--portal-font-mono);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+/* One card (1383:21029): the routine's own words on the left, its facts on the right. */
+.routines-summary {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) minmax(12rem, 17rem);
+  gap: 1.5rem 2.5rem;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-card);
+}
+
+.routines-summary-instruction {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  justify-items: start;
+  gap: 0.75rem;
+}
+
+.routines-summary h2,
+.routines-summary dt {
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+/* An agent's own words are mono (type.css). A long one folds at eight lines with Expand. */
+.routines-summary-instruction > p {
+  color: var(--ui-text-secondary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.routines-summary-instruction > p[data-folded] {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 8;
+}
+
+.routines-summary-facts {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 1.25rem;
+  margin: 0;
+}
+
+.routines-summary-facts dd {
+  margin: 0.25rem 0 0;
+  color: var(--ui-text-secondary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* ── Run history: When · Duration · Outcome, the row's action on hover, focus and touch ── */
+
+.routines-section-title {
+  margin-bottom: 0.75rem;
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-section-size);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.routines-runs-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-card);
+}
+
+.routines-runs-table th {
+  padding: 0.75rem 1rem 0.5rem;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-caption-size);
+  font-weight: 400;
+  letter-spacing: var(--portal-tracking-caption);
+  line-height: 1.4;
+  text-align: start;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.routines-runs-table td {
+  height: 3rem;
+  padding: 0.375rem 1rem;
+  border-top: 1px solid var(--portal-stroke-divider);
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+  vertical-align: middle;
+}
+
+.routines-runs-table thead td {
+  border-top: 0;
+}
+
+.routines-runs-row:hover td {
+  background: var(--portal-surface-row-hover);
+}
+
+.routines-runs-muted {
+  color: var(--ui-text-tertiary);
+}
+
+.routines-runs-action {
+  width: 1%;
+  text-align: end;
+  white-space: nowrap;
+}
+
+/* The row's View / View error shows while the row is hovered or holds focus (Tab reaches it, and
+   reveals it); a touch screen has no hover, so it always shows there. */
+.routines-runs-action > * {
+  opacity: 0;
+  transition: opacity var(--portal-motion-fast) var(--portal-ease);
+}
+
+.routines-runs-row:is(:hover, :focus-within, :has(+ .routines-runs-reason)) .routines-runs-action > * {
+  opacity: 1;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .routines-runs-action > * {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .routines-runs-action > * {
+    transition: none;
+  }
+}
+
+.routines-runs-reason td {
+  border-top: 0;
+  color: var(--ui-text-secondary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-meta-size);
+  overflow-wrap: anywhere;
+}
+
+.routines-runs-empty,
+.routines-runs-note {
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.4;
+}
+
+.routines-runs-note {
+  padding-top: 0.75rem;
+  text-align: center;
+}
+
+.routines-runs-skeleton {
+  display: grid;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-card);
+}
+
+.routines-runs-skeleton-row {
+  display: grid;
+  height: 3rem;
+  grid-template-columns: 2fr 1fr 1fr;
+  align-items: center;
+  padding-inline: 1rem;
+  border-top: 1px solid var(--portal-stroke-divider);
+}
+
+.routines-runs-skeleton-row:first-child {
+  border-top: 0;
+}
+
+/* ── The sheet (1394:21355): from the stage's end, full width on compact ── */
+
+.routines-sheet[data-slot='sheet-content'] {
+  width: min(40rem, 100vw);
+  max-width: none;
+  gap: 0;
+  border-color: var(--portal-floating-stroke);
+  background: var(--portal-floating-surface);
+  box-shadow: var(--portal-floating-shadow);
+  font-size: var(--portal-type-body-size);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .routines-sheet[data-slot='sheet-content'] {
+    animation: none;
+  }
+}
+
+.routines-sheet-scroll {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 3.5rem 2.5rem 2rem;
+}
+
+.routines-sheet-header {
+  padding: 0;
+  margin-bottom: 1.5rem;
+}
+
+.routines-sheet-header [data-slot='sheet-title'] {
+  color: var(--ui-text-primary);
+  font-family: var(--portal-font-display);
+  font-size: var(--portal-type-display-lg-size);
+  font-weight: 300;
+  letter-spacing: var(--portal-tracking-display);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.routines-sheet [data-slot='field-label'] {
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-body-size);
+  line-height: 1.4;
+}
+
+.routines-sheet :is([data-slot='field-optional'], [data-slot='field-hint']) {
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.4;
+}
+
+/* The footer starts on the sheet's own opaque fill, so scrolled fields never show through it. */
+.routines-sheet-footer {
+  display: grid;
+  flex-shrink: 0;
+  gap: 0.75rem;
+  padding: 1rem 2.5rem calc(1rem + var(--portal-safe-bottom));
+  border-top: 1px solid var(--portal-stroke-hairline);
+  background: var(--portal-floating-surface);
+}
+
+.routines-sheet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.routines-sheet-actions-end {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-inline-start: auto;
+}
+
+.routines-first-run {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.375rem;
+  color: var(--ui-text-secondary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.4;
+}
+
+.routines-delete-text {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 0.125rem;
+}
+
+.routines-delete-title {
+  color: var(--portal-text-danger);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.routines-form {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.routines-field {
+  display: grid;
+  min-width: 0;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.routines-field > legend {
+  float: left;
+  width: 100%;
+  margin-bottom: 0.375rem;
+  padding: 0;
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.routines-field-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.25rem 0.75rem;
+}
+
+.routines-field-note {
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.routines-instruction-input {
+  min-height: 6rem;
+}
+
+/* Start from: two choice tiles (radius by role: a choice tile is floating's 8), the picked one in the
+   brand selection with its brand edge. */
+.routines-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.routines-tile {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--portal-stroke-control);
+  border-radius: var(--portal-radius-floating);
+  background: var(--portal-surface-control);
+  cursor: pointer;
+}
+
+.routines-tile:hover {
+  background: var(--portal-surface-control-hover);
+}
+
+.routines-tile[data-checked] {
+  border-color: var(--portal-text-brand);
+  background: var(--portal-surface-brand-selected);
+}
+
+.routines-tile:has(:focus-visible) {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+.routines-tile-icon {
+  flex-shrink: 0;
+  color: var(--ui-text-secondary);
+}
+
+.routines-tile-text {
+  display: grid;
+  min-width: 0;
+}
+
+.routines-tile-title {
+  color: var(--ui-text-primary);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.routines-tile-hint {
+  overflow: hidden;
+  color: var(--ui-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Template: a search over the catalog's categories (1399:23104). */
+.routines-templates {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.routines-templates-list {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.5rem;
+  border: 1px solid var(--portal-stroke-field);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-field);
+}
+
+.routines-templates-group {
+  display: grid;
+}
+
+.routines-templates-group > h3 {
+  padding: 0.5rem 0.5rem 0.25rem;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.routines-template {
+  display: grid;
+  min-width: 0;
+  padding: 0.375rem 0.5rem;
+  border-radius: var(--portal-radius-control);
+  text-align: start;
+}
+
+button.routines-template:hover {
+  background: var(--portal-surface-row-hover);
+}
+
+button.routines-template:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+
+.routines-template-title {
+  color: var(--ui-text-primary);
+  line-height: 1.4;
+}
+
+.routines-template-description {
+  overflow: hidden;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.routines-templates-note {
+  padding: 0.5rem;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.4;
+}
+
+/* Frequency: a frequency "at" a time, the schedule in words under it once it is set. */
+.routines-when {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.routines-when-frequency {
+  width: 11rem;
+}
+
+.routines-when-day {
+  width: 9rem;
+}
+
+.routines-when-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+
+.routines-when-time {
+  width: 8.5rem;
+}
+
+.routines-when-number {
+  width: 4.5rem;
+}
+
+.routines-when-date {
+  width: 10rem;
+}
+
+.routines-readback {
+  color: var(--ui-text-secondary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.4;
+}
+
+.routines-checks {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.375rem;
+  border: 1px solid var(--portal-stroke-field);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-field);
+}
+
+.routines-checks > .routines-field-note {
+  padding: 0.25rem 0.625rem;
+}
+
+.routines-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.5rem 0.625rem;
+  border-radius: var(--portal-radius-card);
+  cursor: pointer;
+}
+
+.routines-check:hover {
+  background: var(--portal-surface-row-hover);
+}
+
+.routines-check[data-disabled] {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.routines-check-text {
+  display: grid;
+  min-width: 0;
+  gap: 0.0625rem;
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+
+.routines-advanced {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.routines-advanced .routines-check {
+  align-items: center;
+  padding-inline: 0;
+}
+
+.routines-advanced .routines-check:hover {
+  background: none;
+}
+
+.routines-label-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+/* A field's description, moved into its tooltip. */
+.routines-info {
+  display: inline-grid;
+  width: 1.25rem;
+  height: 1.25rem;
+  place-items: center;
+  border-radius: var(--portal-radius-round);
+  color: var(--ui-text-tertiary);
+}
+
+.routines-info:hover {
+  color: var(--ui-text-primary);
+}
+
+.routines-info:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+/* An edit's agent: read only, drawn disabled (40%, the one disabled rule), its tooltip still reachable. */
+.routines-locked {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+/* ── An agent's Settings › Routines: its list, read only, linking to the Routines page ── */
+
+.routines-agent-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.routines-agent-list-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+/* ── Compact (breakpoints.ts: max-width 639.98px) ── */
+@media (max-width: 639.98px) {
+  .routines-summary {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 1rem;
+  }
+
+  .routines-banner {
+    flex-wrap: wrap;
+    padding-inline-start: 1rem;
+  }
+
+  .routines-banner-text {
+    flex-basis: 100%;
+  }
+
+  .routines-runs-table :is(th, td) {
+    padding-inline: 0.75rem;
+  }
+
+  .routines-sheet-scroll {
+    padding: 3.5rem 1rem 1.5rem;
+  }
+
+  .routines-sheet-footer {
+    padding-inline: 1rem;
+  }
+
+  .routines-tiles {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* A coarse pointer on the browser host: checkbox rows take the 44px target. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'] .routines-check {
+    min-height: var(--portal-touch-target);
+  }
+}

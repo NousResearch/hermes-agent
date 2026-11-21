@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { renderCommandsCatalog } from '@/app/session/hooks/use-prompt-actions/utils'
 import type { HermesGateway } from '@/hermes'
-import { I18nProvider, useI18n } from '@/i18n'
+import { I18nProvider, resolveTranslations, useI18n } from '@/i18n'
 import { TRANSLATIONS } from '@/i18n/catalog'
 import { setRuntimeI18nLocale } from '@/i18n/runtime'
 import type { Locale } from '@/i18n/types'
@@ -44,7 +44,9 @@ afterEach(() => {
 
 describe('desktop slash description localization', () => {
   it('uses the active catalog across aliases and help while preserving unknown descriptions and usage syntax', () => {
-    for (const [locale, copy] of Object.entries(TRANSLATIONS)) {
+    for (const locale of Object.keys(TRANSLATIONS) as Locale[]) {
+      const copy = resolveTranslations(locale)
+
       setRuntimeI18nLocale(locale as Locale)
 
       for (const command of [
@@ -63,12 +65,12 @@ describe('desktop slash description localization', () => {
         expect(desktopSlashDescription(command, 'backend')).toBe(expected)
       }
 
-      for (const command of Object.keys(TRANSLATIONS.en.composer.commandDescs)) {
+      for (const command of Object.keys(resolveTranslations('en').composer.commandDescs)) {
         expect(copy.composer.commandDescs[command], `${locale}: ${command}`).toBeTruthy()
 
         if (locale !== 'en') {
           expect(copy.composer.commandDescs[command], `${locale}: ${command}`).not.toBe(
-            TRANSLATIONS.en.composer.commandDescs[command]
+            resolveTranslations('en').composer.commandDescs[command]
           )
         }
       }
@@ -123,7 +125,7 @@ describe('desktop slash description localization', () => {
             const items = api.search!(query)
 
             expect(items.find(item => item.metadata?.command === '/new')?.description).toBe(
-              TRANSLATIONS[locale].composer.commandDescs['/new']
+              resolveTranslations(locale).composer.commandDescs['/new']
             )
             expect(items.find(item => item.metadata?.command === '/my-skill')?.description).toBe(
               'Author-owned description'

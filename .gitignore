@@ -117,6 +117,8 @@ apps/desktop/electron/**/*.d.ts
 # e.g. hermes-bots): plugin.js IS the source, not tsc output. No .tsx
 # sibling exists, so the stale-shadow hazard above cannot apply.
 !apps/desktop/src/plugins/*/plugin.js
+# ...and plain-ESM plugin fixtures (the contract probe), source for the same reason.
+!apps/desktop/src/contrib/__fixtures__/*/plugin.js
 !apps/desktop/src/global.d.ts
 !apps/desktop/src/vite-env.d.ts
 

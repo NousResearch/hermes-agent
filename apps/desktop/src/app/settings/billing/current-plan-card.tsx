@@ -3,7 +3,7 @@ import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
-import { LIST_ROW_COLUMNS } from '../primitives'
+import { LIST_ROW_COLUMNS, ListRow } from '../primitives'
 
 import { BillingRefusalInline } from './inline-feedback'
 import { openExternal } from './open-external'
@@ -59,5 +59,42 @@ export function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void
       </div>
       <BillingRefusalInline refusal={resumeFlow.refusal} />
     </div>
+  )
+}
+
+/** The redesign's Plan row (856:1835 "Plan · [Plan name] · renews [date] [Change plan]"): the same
+ *  plan facts and actions as the card above, laid out as one settings row without the tier art. */
+export function CurrentPlanRow({ onViewPlans, plan }: { onViewPlans: () => void; plan: BillingPlanCardView }) {
+  const { t } = useI18n()
+  const b = t.settings.billing
+  const resumeFlow = useResumeFlow()
+  const name = plan.price ? `${plan.tierName} · ${b.perMonth(plan.price)}` : plan.tierName
+
+  return (
+    <ListRow
+      action={
+        <>
+          {plan.action && (
+            <Button onClick={plan.action.onSelect ?? onViewPlans} size="sm" type="button" variant="outline">
+              {plan.action.label}
+            </Button>
+          )}
+          {plan.pending && (
+            <Button disabled={resumeFlow.busy} onClick={() => void resumeFlow.resume()} size="sm" type="button">
+              {resumeFlow.busy ? b.plan.undoing : b.plan.undo}
+            </Button>
+          )}
+          {plan.link && (
+            <Button onClick={() => plan.link && openExternal(plan.link.url)} size="sm" type="button" variant="outline">
+              {plan.link.label}
+              <ExternalLink className="size-3.5" />
+            </Button>
+          )}
+        </>
+      }
+      below={<BillingRefusalInline refusal={resumeFlow.refusal} />}
+      description={[name, plan.caption].filter(Boolean).join(' · ')}
+      title={b.summary.plan}
+    />
   )
 }

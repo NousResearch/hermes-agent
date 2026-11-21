@@ -2,20 +2,22 @@
 
 import { atom } from 'nanostores'
 
-import { $narrowViewport } from '@/components/pane-shell/tree/store'
+import { $widthClass } from '@/app/redesign/breakpoints'
 
 /** Window geometry + the app's responsive posture, one readonly rect. */
 export interface ViewportRect {
   width: number
   height: number
-  /** Below the app's sidebar-collapse breakpoint (rails become overlays). */
+  /** Below the sidebar dock point (640px), in both shells. The redesign's own "below wide" layout
+   *  (sheets from 640 to 1023px, the pane tree's `$narrowViewport`) is shell chrome, not this
+   *  contract: a plugin that adapts its layout reads the same breakpoint whichever shell hosts it. */
   narrow: boolean
 }
 
 const readViewport = (): ViewportRect => ({
   width: typeof window === 'undefined' ? 0 : window.innerWidth,
   height: typeof window === 'undefined' ? 0 : window.innerHeight,
-  narrow: $narrowViewport.get()
+  narrow: $widthClass.get() === 'compact'
 })
 
 export const $viewport = atom<ViewportRect>(readViewport())
@@ -23,5 +25,5 @@ export const $viewport = atom<ViewportRect>(readViewport())
 if (typeof window !== 'undefined') {
   const refresh = () => $viewport.set(readViewport())
   window.addEventListener('resize', refresh)
-  $narrowViewport.listen(refresh)
+  $widthClass.listen(refresh)
 }

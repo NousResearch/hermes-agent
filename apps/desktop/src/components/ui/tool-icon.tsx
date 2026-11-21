@@ -1,7 +1,9 @@
 import type * as React from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
+import { pixelForCodicon } from '@/lib/pixel-icons'
 import { cn } from '@/lib/utils'
+import { usePortalPresentation } from '@/store/shell-presentation'
 
 // Solid (filled) glyphs for in-thread tool rows. Codicons are an outline icon
 // *font*, so an outline glyph has no separate fillable region — a filled look
@@ -43,11 +45,13 @@ export interface ToolIconProps {
 }
 
 /** Filled tool glyph. Falls back to the outline codicon font for any name not
- *  covered by the solid set so new tools still render an icon. */
+ *  covered by the solid set so new tools still render an icon. The portal shell draws the
+ *  brand pixel glyph instead, so tool rows match the rest of its iconography. */
 export function ToolIcon({ className, name, size = '0.875rem' }: ToolIconProps) {
   const path = TOOL_ICON_PATHS[name]
+  const portal = usePortalPresentation()
 
-  if (!path) {
+  if (!path || (portal && pixelForCodicon(name))) {
     return <Codicon className={className} name={name} size={size} />
   }
 

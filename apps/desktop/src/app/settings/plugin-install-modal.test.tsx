@@ -19,6 +19,7 @@ vi.mock('@/hermes', async importOriginal => ({
 }))
 
 import { $pluginDecisions, $pluginRecords, dropPlugin, patchPlugin, publishPlugin } from '@/contrib/plugins-store'
+import { en } from '@/i18n/en'
 import { queryClient } from '@/lib/query-client'
 import { $notifications } from '@/store/notifications'
 import {
@@ -124,7 +125,7 @@ describe('A reviewed catalog pick', () => {
     expect(within(dialog).getByText(BLENDER.repo)).toBeTruthy()
     expect(within(dialog).getByText('Reviewed pin abec9e82')).toBeTruthy()
     expect(await within(dialog).findByText('Agent plugin · blender')).toBeTruthy()
-    expect(within(dialog).getByRole('combobox', { name: 'Install for profile' })).toBeTruthy()
+    expect(within(dialog).getByRole('combobox', { name: en.settings.plugins.installModal.profileLabel })).toBeTruthy()
     // Contents are read-only: the package decides its halves, not a checklist.
     expect(within(dialog).queryByRole('checkbox')).toBeNull()
   })
@@ -189,7 +190,7 @@ describe('A reviewed catalog pick', () => {
     renderFlow()
     act(() => openPluginInstallRequest(BLENDER))
     fireEvent.click(await screen.findByRole('button', { name: 'Advanced' }))
-    fireEvent.click(screen.getByRole('combobox', { name: 'Install for profile' }))
+    fireEvent.click(screen.getByRole('combobox', { name: en.settings.plugins.installModal.profileLabel }))
     fireEvent.click(await screen.findByRole('option', { name: 'Research Bot' }))
 
     expect(screen.getByText('Reviewed by Nous. Installs for Research Bot and turns on right away.')).toBeTruthy()

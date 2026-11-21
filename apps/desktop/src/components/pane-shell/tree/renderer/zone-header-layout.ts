@@ -1,5 +1,6 @@
-import { TITLEBAR_HEIGHT, TOUCH_TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
-import { useTouchTitlebar } from '@/app/shell/use-touch-titlebar'
+import { TOUCH_TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { useTitlebarHeight, useTouchTitlebar } from '@/app/shell/use-touch-titlebar'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { isSessionStripPane } from '../store'
 
@@ -38,10 +39,15 @@ export function useZoneHeaderLayout({
   topEdge
 }: ZoneHeaderLayoutInput): ZoneHeaderLayout {
   const touchTitlebar = useTouchTitlebar()
+  const titlebarHeight = useTitlebarHeight()
   const compactTabs = touchTitlebar && narrow && shown.some(isSessionStripPane)
   // The compact picker needs a full touch row: the titlebar's fit threshold
   // also has to accommodate the drag handle and the separate new-tab target.
-  const tabsBelowControls = topEdge && (compactTabs || sidebarGroup || measuredBelowControls)
+  // Classic's 34px band belongs to the side columns' own chrome, so their tabs drop under it. The
+  // redesign's 60px band carries every top zone's tabs (Figma's header pills), so a side group's
+  // strip rides it too, giving way only where the measured clusters leave no room.
+  const portal = usePortalShell()
+  const tabsBelowControls = topEdge && (compactTabs || (sidebarGroup && !portal) || measuredBelowControls)
 
   return {
     compactTabs,
@@ -49,6 +55,6 @@ export function useZoneHeaderLayout({
     tabStripHeight: compactTabs ? TOUCH_TITLEBAR_HEIGHT : TAB_STRIP_HEIGHT,
     tabsBelowControls,
     tabsInTitlebar: topEdge && !tabsBelowControls,
-    titlebarHeight: touchTitlebar ? TOUCH_TITLEBAR_HEIGHT : TITLEBAR_HEIGHT
+    titlebarHeight
   }
 }

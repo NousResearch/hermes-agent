@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 import { type RepoChangeKind, repoChangeKindForPath } from '@/store/coding-status'
 import { $renamingPath, beginInlineRename } from '@/store/file-actions'
 import { $revealInTreeRequest } from '@/store/layout'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { FileEntryContextMenu, InlineRenameInput, isRenameShortcut } from '../file-actions'
 
@@ -18,6 +19,8 @@ import { getFileTreeDndManager } from './dnd-manager'
 import type { TreeNode } from './use-project-tree'
 
 const ROW_HEIGHT = 22
+/** The redesign's list rhythm: 13px rows on a 28px pitch. */
+const PORTAL_ROW_HEIGHT = 28
 const INDENT = 10
 /** Fixed base inset (`px-6.5`) layered on top of arborist's depth indent. */
 const TREE_ROW_INSET = '17px'
@@ -59,6 +62,7 @@ export function ProjectTree({
 }: ProjectTreeProps) {
   markRightPanePerf('project-tree-render')
 
+  const portal = usePortalShell()
   const containerRef = useRef<HTMLDivElement | null>(null)
   const treeRef = useRef<TreeApi<TreeNode> | null>(null)
   const [size, setSize] = useState({ height: 0, width: 0 })
@@ -202,7 +206,7 @@ export function ProjectTree({
           padding={0}
           ref={treeRef}
           renderRow={ProjectTreeRowContainer}
-          rowHeight={ROW_HEIGHT}
+          rowHeight={portal ? PORTAL_ROW_HEIGHT : ROW_HEIGHT}
           width={size.width}
         >
           {props => (
@@ -312,6 +316,7 @@ function ProjectTreeRow({
         node.isSelected && 'bg-(--ui-row-active-background) text-foreground',
         isPlaceholder && 'pointer-events-none italic text-muted-foreground/70'
       )}
+      data-slot="tree-row"
       draggable={!isPlaceholder && !editing}
       onClick={event => {
         event.stopPropagation()

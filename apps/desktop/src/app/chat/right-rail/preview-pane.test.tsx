@@ -7,6 +7,7 @@ import { setTreePaneParked } from '@/components/pane-shell/tree/parked-panes'
 import { $rightRailActiveTabId } from '@/store/layout'
 import { $previewTabs, closeRightRail, openPreview, previewTabId } from '@/store/preview'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { PreviewTilePane } from './preview'
 import { forgetPreviewConsole, previewConsoleState } from './preview-console-store'
@@ -55,6 +56,7 @@ describe('PreviewPane console state', () => {
     $rightRailActiveTabId.set(null)
     $connection.set(null)
     $selectedStoredSessionId.set(null)
+    $shellChoice.set(false)
     vi.unstubAllGlobals()
   })
 
@@ -131,8 +133,9 @@ describe('PreviewPane console state', () => {
     forgetPreviewConsole(tabId)
   })
 
-  it('uses a capability-minimal sandboxed iframe in browser-hosted Desktop', async () => {
+  it.each([false, true])('keeps the browser iframe sandbox with V2=%s and gates its address bar', async simplified => {
     globalThis.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    $shellChoice.set(simplified)
 
     const target = {
       kind: 'url' as const,
@@ -162,7 +165,19 @@ describe('PreviewPane console state', () => {
     expect(frame?.getAttribute('allow')).toBe('fullscreen')
     expect(frame?.getAttribute('allow')).not.toMatch(/camera|clipboard|microphone/)
     expect(rendered.container.querySelector('[data-preview-browser]')).toBeNull()
-    expect(rendered.queryByRole('textbox', { name: 'Address' })).toBeNull()
+    const address = rendered.queryByRole('textbox', { name: 'Address' })
+    if (simplified) {
+      expect(address).toBeTruthy()
+      fireEvent.change(address!, { target: { value: 'javascript:alert(1)' } })
+      fireEvent.keyDown(address!, { key: 'Enter' })
+      expect(frame!.getAttribute('src')).toBe('https://example.com')
+      fireEvent.change(address!, { target: { value: 'https://example.com/next' } })
+      fireEvent.keyDown(address!, { key: 'Enter' })
+      await waitFor(() => expect(frame!.getAttribute('src')).toBe('https://example.com/next'))
+      expect(rendered.container.querySelector('iframe')).toBe(frame)
+    } else {
+      expect(address).toBeNull()
+    }
     expect(rendered.queryByRole('button', { name: 'Back' })).toBeNull()
     expect(rendered.queryByRole('button', { name: /DevTools/i })).toBeNull()
     expect(rendered.queryByRole('button', { name: /console/i })).toBeNull()

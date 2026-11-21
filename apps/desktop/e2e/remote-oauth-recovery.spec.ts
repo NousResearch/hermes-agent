@@ -68,13 +68,13 @@ for (const status of [401, 403]) {
       }))
       app = launched.app
       const page = launched.page
-      await expect(page.getByRole('button', { name: /gateway settings/i })).toBeVisible({ timeout: 60_000 })
+      await expect(page.getByRole('button', { name: 'Machine settings' })).toBeVisible({ timeout: 60_000 })
       const snapshot = await page.evaluate(() => (window as unknown as DesktopWindow).hermesDesktop.getBootProgress())
       expect(snapshot).toMatchObject({ running: false, retryable: false, statusCode: status })
       expect(snapshot.error).toMatch(/not signed in/)
       expect(mints).toBeGreaterThan(0)
       const settledMints = mints
-      await page.getByRole('button', { name: /gateway settings/i }).click()
+      await page.getByRole('button', { name: 'Machine settings' }).click()
       const back = page.getByRole('button', { name: /^back$/i })
       await expect(back).toBeVisible()
       const gatewayUrl = page.getByPlaceholder('https://gateway.example.com/hermes')

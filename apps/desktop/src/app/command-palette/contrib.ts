@@ -4,8 +4,11 @@
  * with an `action` id render that action's live keybind as their hotkey hint.
  */
 
+import { useStore } from '@nanostores/react'
+
 import { useContributions } from '@/contrib/react/use-contributions'
 import type { IconComponent } from '@/lib/icons'
+import { $offeredKeybindActions, keybindAction, type KeybindActionMeta } from '@/lib/keybinds/actions'
 
 export const PALETTE_AREA = 'palette'
 
@@ -30,11 +33,18 @@ export interface PaletteContribution {
   keepOpen?: boolean
 }
 
+/** A row bound to a keybind action this window does not offer (the statusbar toggle in a shell
+ *  without a strip) is not offered either; an action outside the keybind catalog always is. */
+const actionOffered = (action: string | undefined, offered: readonly KeybindActionMeta[]): boolean =>
+  !action || !keybindAction(action) || offered.some(meta => meta.id === action)
+
 /** Contributed palette rows, with stable render keys. */
 export function usePaletteContributions(): Array<PaletteContribution & { key: string }> {
+  const offered = useStore($offeredKeybindActions)
+
   return useContributions(PALETTE_AREA)
     .map(c => ({ key: `${c.source ?? 'core'}:${c.id}`, ...(c.data as PaletteContribution) }))
-    .filter(item => Boolean(item.label && item.run))
+    .filter(item => Boolean(item.label && item.run) && actionOffered(item.action, offered))
 }
 
 /**

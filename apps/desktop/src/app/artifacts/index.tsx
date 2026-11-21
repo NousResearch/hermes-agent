@@ -30,14 +30,15 @@ import {
   useLinkTitle
 } from '@/lib/external-link'
 import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
-import { downloadGatewayMediaFile, isArtifactFilePath, isRemoteGateway } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
+import { LibraryPage } from '../library/library-page'
 import { openSessionFromPicker } from '../open-session'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -47,7 +48,9 @@ import {
   type ArtifactFilter,
   artifactImageSrc,
   type ArtifactRecord,
-  loadArtifactsForSessions
+  loadArtifactsForSessions,
+  openArtifactRecord,
+  paginationItems
 } from './artifact-utils'
 
 function formatArtifactTime(timestamp: number): string {
@@ -63,32 +66,6 @@ function pageRangeLabel(total: number, page: number, pageSize: number, a: Transl
   const end = Math.min(total, page * pageSize)
 
   return a.rangeOf(start, end, total)
-}
-
-function paginationItems(page: number, pageCount: number): Array<number | 'ellipsis'> {
-  if (pageCount <= 7) {
-    return Array.from({ length: pageCount }, (_, index) => index + 1)
-  }
-
-  const pages: Array<number | 'ellipsis'> = [1]
-  const start = Math.max(2, page - 1)
-  const end = Math.min(pageCount - 1, page + 1)
-
-  if (start > 2) {
-    pages.push('ellipsis')
-  }
-
-  for (let nextPage = start; nextPage <= end; nextPage += 1) {
-    pages.push(nextPage)
-  }
-
-  if (end < pageCount - 1) {
-    pages.push('ellipsis')
-  }
-
-  pages.push(pageCount)
-
-  return pages
 }
 
 type CellCtx = {
@@ -111,7 +88,12 @@ interface ArtifactsViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
 
+/** The Library route: the redesign's page (app/library), or classic's Artifacts page as on main. */
 export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: ArtifactsViewProps) {
+  return usePortalShell() ? <LibraryPage {...props} /> : <ClassicArtifactsView {...props} />
+}
+
+function ClassicArtifactsView(props: React.ComponentProps<'section'>) {
   const { t } = useI18n()
   const a = t.artifacts
   const navigate = useNavigate()
@@ -273,31 +255,8 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   }, [artifacts])
 
   const openArtifact = useCallback(
-    async (artifact: ArtifactRecord) => {
-      const { href } = artifact
-
-      try {
-        // A gateway-local file resolves to file:// in remote mode (the file
-        // lives on the gateway, not this disk). Opening that locally fails —
-        // and an OAuth remote connection has no query token to build a download
-        // URL. Fetch the bytes over the authenticated fs bridge instead.
-        // Tilde/relative hrefs have no file URL form. Keep them gateway-owned:
-        // expanding them on the client would target the wrong home or cwd.
-        if (isRemoteGateway() && isArtifactFilePath(artifact.value)) {
-          await downloadGatewayMediaFile(artifact.value, { sessionId: artifact.sessionId, profile: artifact.profile })
-
-          return
-        }
-
-        if (window.hermesDesktop?.openExternal) {
-          await window.hermesDesktop.openExternal(href)
-        } else {
-          window.open(href, '_blank', 'noopener,noreferrer')
-        }
-      } catch (err) {
-        notifyError(err, a.openFailed)
-      }
-    },
+    (artifact: ArtifactRecord) =>
+      openArtifactRecord(artifact, { sessionId: artifact.sessionId, profile: artifact.profile }, a.openFailed),
     [a]
   )
 

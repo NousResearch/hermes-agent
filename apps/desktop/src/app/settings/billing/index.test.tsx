@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { type I18nContextValue, I18nProvider, useI18n } from '@/i18n'
 import { $freeTierSignIn } from '@/store/free-tier-sign-in'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { formatMoney } from './billing-amounts'
 import {
@@ -68,6 +69,8 @@ function renderBilling(initialEntries: string[] = ['/settings?tab=billing']) {
 }
 
 beforeEach(() => {
+  // The classic page; the redesign's Plan & credits card is covered in its own test.
+  $shellChoice.set(false)
   apiMocks.fetchBillingState.mockResolvedValue(okBilling(todayBillingState))
   apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(todaySubscriptionState))
   Object.defineProperty(window, 'hermesDesktop', {
@@ -80,6 +83,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $shellChoice.set(null)
   vi.clearAllMocks()
 })
 
@@ -412,6 +416,23 @@ describe('BillingSettings', () => {
 
     await waitFor(() => expect(apiMocks.resumeSubscription).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['billing', 'subscription'] }))
+  })
+
+  it('folds the plan into a Plan row in the redesign and still undoes a scheduled downgrade', async () => {
+    $shellChoice.set(true)
+    const fixture = billingDevFixtures['pending-downgrade']
+
+    apiMocks.fetchBillingState.mockResolvedValue(fixture.billing)
+    apiMocks.fetchSubscriptionState.mockResolvedValue(fixture.subscription)
+    apiMocks.resumeSubscription.mockResolvedValue({ data: { ok: true }, ok: true })
+
+    renderBilling()
+
+    expect(await screen.findByRole('heading', { name: 'Plan & credits' })).toBeTruthy()
+    expect(screen.getByText(/Changes to Free on Aug 15\./)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    await waitFor(() => expect(apiMocks.resumeSubscription).toHaveBeenCalledTimes(1))
   })
 
   it('locks out the other downgrade tiles and Back while a schedule is in flight', async () => {

@@ -29,15 +29,21 @@ function quoteSingleFamily(value: string): string {
  * theme's own stack stays behind it so missing glyphs (CJK, emoji) still resolve.
  */
 export function resolveChatFontFamily(value: unknown, themeFontSans: string): string {
+  const chosen = chosenChatFontFamily(value)
+
+  return chosen ? `${chosen}, ${themeFontSans}` : themeFontSans
+}
+
+/** The person's own choice as a CSS family list, or null while they use the theme's face. For a
+ *  shell that names its own faces ahead of the theme's (the redesign): the choice leads those too. */
+export function chosenChatFontFamily(value: unknown): null | string {
   const configured = normalizeChatFontFamily(value)
 
   if (!configured) {
-    return themeFontSans
+    return null
   }
 
-  const preferred = configured.includes(',') || /['"]/.test(configured) ? configured : quoteSingleFamily(configured)
-
-  return `${preferred}, ${themeFontSans}`
+  return configured.includes(',') || /['"]/.test(configured) ? configured : quoteSingleFamily(configured)
 }
 
 export function setChatFontFamilyFromConfig(value: unknown): void {

@@ -4,9 +4,12 @@ import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 import { Check, Loader2 } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { ConnectionsRegistrySection } from './connections-registry'
 import { ListRow, Pill, SettingsContent } from './primitives'
+import { SettingsCard, SettingsGroup, SettingsOverview, SettingsPageDescription } from './settings-card'
+import { useSettingsPagesCopy } from './settings-pages-copy'
 
 interface ServingHost {
   signedIn: boolean
@@ -24,6 +27,8 @@ const SAVED_CONNECTIONS_POLL_MS = 5_000
 export function WebappGatewaySettings({ embedded }: { embedded: boolean }) {
   const { t } = useI18n()
   const g = t.settings.gateway
+  const pages = useSettingsPagesCopy()
+  const redesign = usePortalShell()
   const [host, setHost] = useState<null | ServingHost>(null)
   const [signingOut, setSigningOut] = useState(false)
 
@@ -71,28 +76,44 @@ export function WebappGatewaySettings({ embedded }: { embedded: boolean }) {
     }
   }
 
+  const hostRow = host ? (
+    <ListRow
+      action={
+        host.signedIn ? (
+          <div className="flex items-center gap-2">
+            <Pill tone="primary">
+              <Check className="size-3" />
+              {g.signedIn}
+            </Pill>
+            <Button disabled={signingOut} onClick={() => void signOut(host.url)} variant="outline">
+              {signingOut ? <Loader2 className="animate-spin" /> : null}
+              {g.signOut}
+            </Button>
+          </div>
+        ) : null
+      }
+      description={host.url}
+      title={g.webappHostTitle}
+    />
+  ) : null
+
+  if (redesign) {
+    return (
+      <SettingsContent bare={embedded}>
+        <SettingsPageDescription>{pages.intro.gateways}</SettingsPageDescription>
+        <SettingsOverview>
+          <SettingsGroup description={g.webappHostDesc} title={pages.gateway.thisHost}>
+            {hostRow && <SettingsCard>{hostRow}</SettingsCard>}
+          </SettingsGroup>
+          <ConnectionsRegistrySection />
+        </SettingsOverview>
+      </SettingsContent>
+    )
+  }
+
   return (
     <SettingsContent bare={embedded}>
-      {host ? (
-        <ListRow
-          action={
-            host.signedIn ? (
-              <div className="flex items-center gap-2">
-                <Pill tone="primary">
-                  <Check className="size-3" />
-                  {g.signedIn}
-                </Pill>
-                <Button disabled={signingOut} onClick={() => void signOut(host.url)} variant="outline">
-                  {signingOut ? <Loader2 className="animate-spin" /> : null}
-                  {g.signOut}
-                </Button>
-              </div>
-            ) : null
-          }
-          description={host.url}
-          title={g.webappHostTitle}
-        />
-      ) : null}
+      {hostRow}
       <p className="mt-2 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
         {g.webappHostDesc}
       </p>

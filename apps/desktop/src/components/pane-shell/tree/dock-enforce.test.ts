@@ -44,6 +44,8 @@ describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', 
 
   beforeEach(() => {
     window.localStorage.clear()
+    // Pins the classic shell, whose layout keeps the keys asserted here.
+    window.localStorage.setItem('hermes.desktop.agentShell.v1', 'false')
     vi.resetModules()
   })
 

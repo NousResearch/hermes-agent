@@ -15,7 +15,7 @@ const translucencySupport = ipcRenderer.sendSync('hermes:translucency:support')
 const hudWindowing = ipcRenderer.sendSync('hermes:hud:windowing')
 const hudNativeDrag = hudWindowing?.nativeDrag === true
 
-const launchFlags: { localModels?: boolean; assumeFreshInstall?: boolean } | undefined =
+const launchFlags: { localModels?: boolean; assumeFreshInstall?: boolean; launchId?: string } | undefined =
   ipcRenderer.sendSync('hermes:feature-flags')
 
 // Local, sanitized skin payload for the first renderer theme paint. This does
@@ -38,6 +38,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // Dev-only launch fact: an unpackaged app started with --fresh-install, so
   // onboarding treats this launch as a fresh install. Always false when packaged.
   assumeFreshInstall: launchFlags?.assumeFreshInstall === true,
+  // This app launch's id: the same in every window until the app quits.
+  launchId: typeof launchFlags?.launchId === 'string' ? launchFlags.launchId : undefined,
   localSkin: localSkin && typeof localSkin === 'object' ? localSkin : null,
   uiPreferences: {
     snapshot: uiPreferencesSnapshot && typeof uiPreferencesSnapshot === 'object' ? uiPreferencesSnapshot : null,

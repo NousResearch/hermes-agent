@@ -9,6 +9,8 @@ export const deSessionCommands = {
   retryUnsupported: '/retry: Medien oder unbekannte Inhaltsteile können nicht wiederholt werden',
   busy: (command: string) =>
     `Sitzung beschäftigt — Hermes antwortet noch. Beende zuerst die aktuelle Antwort (Stopp-Taste oder Strg+C im Terminal), dann führe /${command} aus.`,
+  titleSet: (title: string, queued: boolean) => `Session-Titel gesetzt: ${title}${queued ? ' (wartet auf den Start der Session)' : ''}`,
+  titleCleared: 'Session-Titel entfernt.',
   busyCompressing: (command: string) =>
     `Sitzung beschäftigt — ein /compress läuft; führe /${command} aus, wenn es fertig ist.`,
   steerUsage: 'Verwendung: /steer <Prompt>',

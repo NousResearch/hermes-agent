@@ -421,7 +421,7 @@ class SharedMetricsDesktopModeDay(Params):
 
 class SharedMetricsDesktopActionDay(Params):
     action: str
-    via: Literal["click", "menu", "palette", "shortcut"]
+    via: Literal["click", "menu", "palette", "shortcut", "state"]
     count: int
 
 

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vite
 import { createSessionRpcDispatcher } from '@/app/contrib/session-rpc-dispatcher'
 import { prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { getSession } from '@/hermes'
+import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
 import { $defaultProfileRoute } from '@/store/default-profile'
 import {
   activeGateway,
@@ -352,6 +353,7 @@ function Harness({
   })
 
   const { submitText } = promptActions
+  const { createBackendSessionForSend } = sessionActions
 
   useEffect(() => {
     onReady({
@@ -360,7 +362,7 @@ function Harness({
         runtimeForStored: cache.runtimeIdByStoredSessionIdRef.current.get(mintedStoredId) ?? null,
         storedForRuntime: cache.sessionStateByRuntimeIdRef.current.get(mintedRuntimeId)?.storedSessionId ?? null
       }),
-      createSession: () => act(async () => sessionActions.createBackendSessionForSend()) as Promise<string | null>,
+      createSession: () => act(async () => createBackendSessionForSend()) as Promise<string | null>,
       submitText: (...args) => act(async () => submitText(...args)) as Promise<boolean>,
       updateSessionState: cache.updateSessionState as HarnessHandle['updateSessionState']
     })
@@ -369,7 +371,7 @@ function Harness({
     cache.sessionStateByRuntimeIdRef,
     cache.updateSessionState,
     onReady,
-    sessionActions.createBackendSessionForSend,
+    createBackendSessionForSend,
     submitText
   ])
 
@@ -730,18 +732,18 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
     expect($newChatConnectionId.get()).toBe(SOURCE_ID)
   })
 
-  it('turn two still rides conn:homelab::omar after the transient hint is evicted AND a refresh returned the row untagged', async () => {
+  it('turn two still rides conn:homelab::omar after hint eviction and an untagged backend refresh is stamped by its request owner', async () => {
     const { ambientRequest, handle, omarSocket, primary } = await bootProfileRailOmar('newSessionInProfile')
 
     await expect(handle.submitText('first prompt')).resolves.toBe(true)
     await waitFor(() => expect($activeSessionId.get()).toBe(RUNTIME_ID))
     await settleTurn(handle)
 
-    // The two things that used to leave only a bare "omar" behind:
-    //  1. the bounded owner-hint map evicts (or the app relaunched);
-    //  2. the sidebar refresh comes back with the row untagged (the primary
-    //     aggregate serves a source's rows as plain profile rows whenever the
-    //     unified-list splice did not tag them).
+    // Evict the transient hint, then model the list API boundary: backend rows
+    // omit Desktop registry ids, so the response is stamped with the source
+    // captured when its request started before the owner-isolated merge.
+    const refreshOwner = activeGatewayConnectionId()
+
     _resetSessionOwnerHintsForTests()
     expect(getSessionOwnerHint(STORED_ID)).toBeUndefined()
 
@@ -751,9 +753,9 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
     }
 
     delete untagged.connection_id
-    setSessions(prev => mergeSessionPage(prev, [untagged], []))
+    setSessions(prev => mergeSessionPage(prev, stampRowsWithOwningConnection([untagged], refreshOwner, true), []))
 
-    // The row still names the exact owner: the refresh carried the tag.
+    // The durable row retains the exact owner without the transient hint.
     expect($sessions.get().find(session => sessionMatchesStoredId(session, STORED_ID))).toMatchObject({
       connection_id: SOURCE_ID,
       profile: 'omar'

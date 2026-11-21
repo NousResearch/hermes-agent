@@ -44,6 +44,8 @@ const BILLING_QUERY_OPTIONS = {
 } as const
 
 export interface BillingSummaryItemView {
+  /** Stable identity: a layout that drops a tile its own row already shows matches on this, never the label. */
+  id: 'autoRefill' | 'balance' | 'connectors' | 'model' | 'plan'
   label: string
   tone?: 'muted' | 'primary'
   value: string
@@ -270,9 +272,10 @@ export function deriveBillingView(
     refillRow: autoReloadRow(billing, b),
     status: 'normal',
     summary: [
-      { label: b.summary.balance, value: displayBalance(billing) },
-      { label: b.summary.plan, value: displayPlan(subscription, billing.usage, b) },
+      { id: 'balance', label: b.summary.balance, value: displayBalance(billing) },
+      { id: 'plan', label: b.summary.plan, value: displayPlan(subscription, billing.usage, b) },
       {
+        id: 'autoRefill',
         label: b.summary.autoRefill,
         tone: billing.auto_reload?.enabled ? 'primary' : billing.auto_reload ? 'muted' : undefined,
         value: billing.auto_reload
@@ -353,9 +356,9 @@ export function formatBillingDate(value?: null | string): string {
 
 function emptySummary(b: Translations['settings']['billing']): BillingSummaryItemView[] {
   return [
-    { label: b.summary.balance, value: EMPTY_BILLING_VALUE },
-    { label: b.summary.plan, value: EMPTY_BILLING_VALUE },
-    { label: b.summary.autoRefill, value: EMPTY_BILLING_VALUE }
+    { id: 'balance', label: b.summary.balance, value: EMPTY_BILLING_VALUE },
+    { id: 'plan', label: b.summary.plan, value: EMPTY_BILLING_VALUE },
+    { id: 'autoRefill', label: b.summary.autoRefill, value: EMPTY_BILLING_VALUE }
   ]
 }
 
@@ -380,9 +383,9 @@ function freeTierView(billing: BillingStateResponse, b: Translations['settings']
     planFootnote: b.freeTier.footnote,
     status: 'free_tier',
     summary: [
-      { label: b.summary.plan, value: b.freeTier.plan },
-      { label: b.freeTier.model, value: billing.free_tier_model ?? FREE_TIER_MODEL },
-      { label: b.freeTier.connectors, tone: 'primary', value: b.freeTier.included }
+      { id: 'plan', label: b.summary.plan, value: b.freeTier.plan },
+      { id: 'model', label: b.freeTier.model, value: billing.free_tier_model ?? FREE_TIER_MODEL },
+      { id: 'connectors', label: b.freeTier.connectors, tone: 'primary', value: b.freeTier.included }
     ],
     tiers: [],
     usageRows: []

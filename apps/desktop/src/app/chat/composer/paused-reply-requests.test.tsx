@@ -11,6 +11,7 @@ import { $parkedQueueSessions, $queuedPromptsBySession, getQueuedPrompts } from 
 import { continueReplyPause, endContinuedReplyPause, endReplyPause, markReplyPaused } from '@/store/paused-replies'
 import { $reviewFiles, $reviewScope, $reviewScopeTarget, $reviewShipInfo } from '@/store/review'
 import { setSessionsLoading } from '@/store/session'
+import { $shellChoice } from '@/store/shell-variant'
 
 import type { QueueEditState } from './composer-utils'
 import { useComposerQueue } from './hooks/use-composer-queue'
@@ -134,6 +135,8 @@ describe("the review pane's ship request while the chat's reply is paused for it
     $reviewScope.set('uncommitted')
     $reviewScopeTarget.set('main')
     setSessionsLoading(false)
+    // Classic's wording; the redesign names the agent instead of Hermes.
+    $shellChoice.set(false)
   })
 
   afterEach(() => {
@@ -143,6 +146,7 @@ describe("the review pane's ship request while the chat's reply is paused for it
     $parkedQueueSessions.set({})
     $reviewFiles.set([])
     setSessionsLoading(true)
+    $shellChoice.set(null)
     vi.restoreAllMocks()
   })
 

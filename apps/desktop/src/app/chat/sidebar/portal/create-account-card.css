@@ -1,0 +1,81 @@
+/* "Create an Account" (Figma 18695:18439) at the foot of the chat sidebar, in the usage-stats card's
+   slot: under the list on the sidebar's opaque fill, the brand fill in the accent with the on-brand
+   ink, Figma's portrait (anime-hermes, the hand holding the orb) screened onto it at the leading
+   corner. 84 tall, 9 corners, 16 padding; the words clear the portrait by 62. */
+.portal-sidebar .portal-account-offer {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.75rem;
+  overflow: hidden;
+  min-block-size: 5.25rem;
+  margin: 0 var(--portal-sidebar-gutter) var(--portal-sidebar-gutter);
+  /* token-exempt: Figma's 62px clear of the portrait */
+  padding: 1rem 1rem 1rem 3.875rem;
+  border: 0;
+  border-radius: var(--portal-radius-panel);
+  background-color: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
+  cursor: pointer;
+  font: inherit;
+  text-align: start;
+}
+
+.portal-sidebar .portal-account-offer::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  /* token-exempt: Figma's image slot, 153.8 x 85.8 from 45.3px before the card's start to 2px under it */
+  inset-block-end: -0.125rem;
+  inset-inline-start: -2.83rem;
+  inline-size: 9.6125rem;
+  block-size: 5.365rem;
+  background: url('../../../../assets/account-portrait.avif') center / cover no-repeat;
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+
+.portal-sidebar .portal-account-offer:dir(rtl)::before {
+  transform: scaleX(-1);
+}
+
+.portal-sidebar .portal-account-offer:hover {
+  background-color: var(--portal-surface-brand-hover);
+}
+
+.portal-sidebar .portal-account-offer:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-outset);
+}
+
+.portal-account-offer-words {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.375rem;
+  min-inline-size: 0;
+}
+
+/* Nous/Compact Medium 14, then Nous/Metadata at .8 of the on-brand ink (the redesign's 14px body). */
+.portal-account-offer-title {
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  line-height: 1.43;
+}
+
+.portal-account-offer-body {
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.2;
+  opacity: 0.8;
+}
+
+.portal-account-offer-chevron {
+  flex: none;
+}
+
+.portal-account-offer-chevron:dir(rtl) {
+  transform: scaleX(-1);
+}

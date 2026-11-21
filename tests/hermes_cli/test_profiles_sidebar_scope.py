@@ -185,6 +185,8 @@ class TestCrossProfileProjectTree:
         assert payload["recents"]["profiles_usage"]["worker"] == {
             "cost_usd": pytest.approx(4.5),
             "tokens": 45,
+            # The profile's chats, not the one row the window asked for.
+            "sessions": 3,
         }
 
     def test_home_is_one_bucket_across_profiles(self, client, profiles_on_disk):

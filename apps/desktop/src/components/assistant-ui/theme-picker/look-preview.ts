@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
-import { type PreviewUndo, snapshotChatLayout } from '@/components/onboarding/first-run/assembly'
+import { type PreviewUndo, snapshotChatLayout } from '@/components/pane-shell/tree/presets'
 import { $fileBrowserOpen, setFileBrowserOpen } from '@/store/layout'
 import { applyDesktopLayoutPreset, openLayoutPickPanes } from '@/store/pane-focus'
 import { $accentOverride, setAccentOverride } from '@/themes/accent-override'
@@ -73,7 +73,7 @@ interface Held {
 // card instance, so the remounted card shows the pick, and only a card that stays gone puts the old look back.
 const held = new Map<'accent' | 'layout', Held>()
 
-/** Click previews a look live; a card that unmounts without Continue (cancel, timeout, Skip setup,
+/** Click previews a look live; a card that unmounts without Continue (cancel, timeout,
  *  words in the composer) puts back the value from before the preview. */
 export function useLookPreview(kind: 'accent' | 'layout', dark: boolean): LookPreview {
   const live = kind === 'accent' ? ACCENT : LAYOUT

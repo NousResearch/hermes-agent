@@ -1,3 +1,4 @@
+import type * as HermesSdk from '@hermes/plugin-sdk'
 /**
  * Bot Mode's pane layout contract, asserted by running the real `register()`
  * against a recording plugin context:
@@ -15,17 +16,20 @@
  *    always-registered fallback kept for older desktops. Cron jobs are
  *    bot-scoped, so the tile must not sit beside a group chat.
  */
-
-import type * as HermesSdk from '@hermes/plugin-sdk'
 import type { PluginContext } from '@hermes/plugin-sdk'
 import { atom } from 'nanostores'
 import type { ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// The app-side binding that decides whether the shell hosts the Bots pane.
+// eslint-disable-next-line no-restricted-imports
+import { bindBotsPaneToShell } from '@/app/contrib/bots-pane-shell'
 // The app provider the plugin's tab label renders under; a plugin test may reach it.
 // eslint-disable-next-line no-restricted-imports
 import { I18nProvider } from '@/i18n'
+// eslint-disable-next-line no-restricted-imports
+import { $shellChoice, setPortalPreferred } from '@/store/shell-variant'
 
 import type * as DataModule from './data'
 import type * as RoutingModule from './routing'
@@ -171,6 +175,7 @@ afterEach(() => {
 describe('the Bots pane dock', () => {
   it('renders its tab label from the live locale, not the register-time string', () => {
     paneStores()
+    setPortalPreferred(false)
 
     const harness = recordingContext()
 
@@ -191,6 +196,7 @@ describe('the Bots pane dock', () => {
     expect(inLocale('ru')).not.toBe(inLocale('en'))
 
     harness.dispose()
+    $shellChoice.set(null)
   })
 })
 
@@ -342,4 +348,21 @@ describe('a desktop without host.paneVisibility', () => {
     harness.dispose()
     host.paneVisibility = restore
   })
+})
+
+
+it('removes only the Bots sidebar tab while the redesign is on and restores it when rolled back', () => {
+  const unbind = bindBotsPaneToShell()
+  setPortalPreferred(false)
+  paneStores()
+  const harness = recordingContext()
+  plugin.register(harness.ctx)
+  expect(harness.find('pane')).toBeDefined()
+  setPortalPreferred(true)
+  expect(harness.find('pane')).toBeUndefined()
+  setPortalPreferred(false)
+  expect(harness.find('pane')).toMatchObject({ data: { dock: { pane: 'sessions', pos: 'center', enforce: true } } })
+  harness.dispose()
+  unbind()
+  $shellChoice.set(null)
 })

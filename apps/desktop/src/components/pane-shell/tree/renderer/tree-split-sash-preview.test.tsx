@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
@@ -118,7 +119,11 @@ describe('TreeSplit nested section sash preview', () => {
     const tree = nestedRail()
 
     $layoutTree.set(tree)
-    render(<TreeSplit node={tree} root rootRow />)
+    render(
+      <MemoryRouter>
+        <TreeSplit node={tree} root rootRow />
+      </MemoryRouter>
+    )
 
     const container = document.querySelector<HTMLElement>('[data-tree-split="spl-root"]')!
     const [workspace, section] = [...container.children] as HTMLElement[]
@@ -185,7 +190,11 @@ describe('TreeSplit nested section sash preview', () => {
     )
 
     $layoutTree.set(tree)
-    render(<TreeSplit node={tree} root rootRow />)
+    render(
+      <MemoryRouter>
+        <TreeSplit node={tree} root rootRow />
+      </MemoryRouter>
+    )
 
     const container = document.querySelector<HTMLElement>('[data-tree-split="spl-root"]')!
     const [workspace, cron, section] = [...container.children] as HTMLElement[]

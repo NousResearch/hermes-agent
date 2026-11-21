@@ -1,6 +1,7 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import { setOnboardingSurfaceActive } from './onboarding-presence'
+import { $setupGuideOnboarding } from './shell-policy'
 
 /**
  * The first-run intro as this window shows it, in memory only: whether it runs at all is the
@@ -25,4 +26,7 @@ export const $decideExit = atom<(() => void) | null>(null)
 export const $chatOnboardingSolo = atom(false)
 
 // While the intro runs, the provider picker, the free-tier ready screen and the tips wait for it.
-$introView.subscribe(view => setOnboardingSurfaceActive('intro', view === 'starting' || view === 'intro'))
+computed(
+  [$introView, $setupGuideOnboarding],
+  (view, redesign) => !redesign && (view === 'starting' || view === 'intro')
+).subscribe(active => setOnboardingSurfaceActive('intro', active))

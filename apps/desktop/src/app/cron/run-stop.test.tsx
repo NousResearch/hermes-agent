@@ -10,7 +10,8 @@ import { queryClient } from '@/lib/query-client'
 import { $cronJobs, invalidateCronJobsRequests, setCronFocusJobId, setCronJobs } from '@/store/cron'
 import { setChangeEventsAvailable } from '@/store/live-sync'
 import { notify } from '@/store/notifications'
-import type { CronCancelResult } from '@/types/hermes'
+import { $shellChoice } from '@/store/shell-variant'
+import type { CronCancelResult } from '@/types/cron'
 
 import { useCronRunStop } from './use-cron-run-stop'
 
@@ -52,12 +53,14 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  $shellChoice.set(false)
   setCronFocusJobId(null)
   setChangeEventsAvailable(false)
   getCronJobRuns.mockResolvedValue([])
 })
 
 afterEach(() => {
+  $shellChoice.set(null)
   vi.useRealTimers()
   cleanup()
   queryClient.clear()

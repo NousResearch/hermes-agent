@@ -1,11 +1,11 @@
-import type { SessionInfo } from '@/hermes'
+import type { ProfileScope, SessionInfo } from '@/hermes'
 import { getAllSessionMessages } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { notify, notifyError } from '@/store/notifications'
 
 interface ExportSessionParams {
   sessionId: string
-  profile?: string | null
+  profile?: ProfileScope
   title?: string | null
   session?: SessionInfo
 }

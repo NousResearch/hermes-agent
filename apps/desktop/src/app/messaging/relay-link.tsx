@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ErrorBanner } from '@/components/ui/error-state'
+import type { ProfileScope } from '@/hermes'
 import {
   getRelayLinks,
   getRelayLinkState,
@@ -71,7 +72,7 @@ export function RelayLinkSetup({
   scopeProfile
 }: {
   platform: MessagingPlatformInfo
-  scopeProfile?: null | string
+  scopeProfile?: ProfileScope
 }) {
   const { t } = useI18n()
   const r = t.messaging.relayLink

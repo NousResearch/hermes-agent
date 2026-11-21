@@ -186,6 +186,31 @@ describe('preview tiles mirror the visible session tabs', () => {
     return { model, preview, session, tree }
   }
 
+  it('docks a redesigned browser into the prepared tool panel, including after a session switch', async () => {
+    const { preview, session, tree, model } = await setup()
+    const { registry } = await import('@/contrib/registry')
+    const { $shellChoice } = await import('@/store/shell-variant')
+    const { prepareDeveloperToolPanel } = await import('../redesign/developer-tool-panel')
+    $shellChoice.set(true)
+
+    for (const id of ['files', 'review', 'terminal']) {
+      registry.register({ area: 'panes', id, data: { placement: 'right' }, render: () => null })
+    }
+
+    tree.$layoutTree.set(model.split('row', [model.group(['workspace']), model.group(['files', 'review', 'terminal'])]))
+    prepareDeveloperToolPanel('terminal')
+    session.$selectedStoredSessionId.set('sess-1')
+    preview.openBrowserTab()
+    const browser = tree.treePanesWithPrefix('preview-tile:')[0]
+    expect(browser).toBeTruthy()
+    expect(model.findGroupOfPane(tree.$layoutTree.get()!, browser)?.id)
+      .toBe(model.findGroupOfPane(tree.$layoutTree.get()!, 'files')?.id)
+    session.$selectedStoredSessionId.set('sess-2')
+    session.$selectedStoredSessionId.set('sess-1')
+    expect(model.findGroupOfPane(tree.$layoutTree.get()!, browser)?.id)
+      .toBe(model.findGroupOfPane(tree.$layoutTree.get()!, 'files')?.id)
+  })
+
   const htmlTarget = (path: string) =>
     ({
       kind: 'file',

@@ -1,10 +1,12 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type * as Nanostores from 'nanostores'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { deleteProfile, getProfileSoul, updateProfileSoul } from '@/hermes'
+import { en } from '@/i18n/en'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { refreshProfiles, selectProfile, setActiveProfile } from '@/store/profile'
+import { $shellChoice } from '@/store/shell-variant'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { ProfilesView } from './index'
@@ -16,7 +18,12 @@ import { ProfilesView } from './index'
 // stranding it on a dead backend. The drift that motivated the fix got in
 // precisely because nothing rendered this view.
 
-afterEach(cleanup)
+// The classic shell's Profiles page; the redesign's Agents destination is agent-settings/directory.
+beforeEach(() => $shellChoice.set(false))
+afterEach(() => {
+  cleanup()
+  $shellChoice.set(null)
+})
 
 // Real i18n (useI18n falls back to English with no provider), so labels are the
 // actual strings — no brittle key snapshot to maintain here.
@@ -42,6 +49,7 @@ vi.mock('@/store/notifications', () => ({
 }))
 
 vi.mock('@/store/gateway', () => ({
+  activeGatewayConnectionId: () => 'local',
   retireLocalProfileGateways: vi.fn()
 }))
 
@@ -135,7 +143,7 @@ describe('ProfilesView', () => {
 
     await renderProfilesView()
 
-    const missing = /No SOUL\.md file exists for this profile/
+    const missing = en.profiles.soulMissing
     expect(screen.getByText(missing)).toBeTruthy()
     fireEvent.change(screen.getByLabelText('SOUL.md'), { target: { value: '# My instructions' } })
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save SOUL.md' })))
@@ -166,7 +174,7 @@ describe('ProfilesView', () => {
 
     await renderProfilesView()
 
-    realClick(await screen.findByRole('button', { name: 'New profile' }))
+    realClick(await screen.findByRole('button', { name: en.profiles.newProfile }))
 
     const soul = await screen.findByLabelText(/SOUL\.md/i)
 

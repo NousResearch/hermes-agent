@@ -11,8 +11,9 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { atom } from 'nanostores'
-import { useEffect, useMemo, useRef } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef } from 'react'
 
+import { useChatItemsCopy } from '@/app/chat/items/chat-items-copy'
 import { RightSidebarPane } from '@/app/right-sidebar'
 import { ReviewPane } from '@/app/right-sidebar/review'
 import type { GroupSetter } from '@/app/shell/group-setter'
@@ -127,6 +128,28 @@ export function FilesPane() {
       <RightSidebarPane onActivateFile={previewFile} onActivateFolder={previewFile} />
     </div>
   )
+}
+
+// ---------------------------------------------------------------------------
+// Chat items — the focused chat's artifacts, files and links (redesign)
+// ---------------------------------------------------------------------------
+
+const ChatItemsPaneBody = lazy(async () => ({
+  default: (await import('@/app/chat/items/chat-items-pane')).ChatItemsPane
+}))
+
+export function ChatItemsPane() {
+  return (
+    <div className={ZONE_CONTENT}>
+      <Suspense fallback={null}>
+        <ChatItemsPaneBody />
+      </Suspense>
+    </div>
+  )
+}
+
+export function ChatItemsTabTitle() {
+  return <>{useChatItemsCopy().pane}</>
 }
 
 // ---------------------------------------------------------------------------

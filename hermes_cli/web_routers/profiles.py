@@ -515,7 +515,15 @@ def get_profiles_sessions_sidebar(
         # page, and a total that shrank when you scrolled would be worse than no total at all.
         recents = _slice(store, "recents", recents_subagents)
         usage = store.usage.usage_totals()
-        slices = {"recents": recents, "usage": {"tokens": usage.tokens, "cost_usd": usage.cost_usd},
+        # How many rows the recents slice would hold unpaged, so a header can state the profile's
+        # real size. Counted here, inside the per-store cache, so it costs one COUNT per change
+        # of the store and nothing per refresh.
+        include_subagents, exclude = recents_subagents
+        sessions = store.sessions.count_sessions(SessionCountQuery(
+            exclude_sources=tuple(exclude or ()), min_message_count=1, exclude_children=True,
+            include_subagents=include_subagents))
+        slices = {"recents": recents,
+                  "usage": {"tokens": usage.tokens, "cost_usd": usage.cost_usd, "sessions": sessions},
                   "cron": _slice(store, "cron"), "messaging": _slice(store, "messaging")}
         _sidebar_profile_cache_put(cache_key, slices)
         return slices

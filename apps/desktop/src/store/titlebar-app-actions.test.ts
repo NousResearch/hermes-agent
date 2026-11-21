@@ -34,3 +34,14 @@ describe('$titlebarAppActionsSide', () => {
     expect(window.localStorage.getItem('hermes.desktop.titlebarAppActions')).toBe('left')
   })
 })
+
+it('counts only the redesigned band tools that are not hidden', () => {
+  const hidden = new Set(['settings', 'hud', 'flip-panes'] as const)
+
+  // Back, Forward, sidebar | layout, right sidebar, Agent settings.
+  expect(titlebarAppActionsClusterCounts('right', 0, 0, 'advanced', hidden)).toEqual({ left: 3, right: 3 })
+  expect(titlebarAppActionsClusterCounts('left', 0, 0, 'advanced', hidden)).toEqual({ left: 4, right: 2 })
+  expect(
+    titlebarAppActionsClusterCounts('right', 0, 0, 'advanced', new Set([...hidden, 'history-back', 'history-forward', 'sidebar']))
+  ).toEqual({ left: 0, right: 3 })
+})

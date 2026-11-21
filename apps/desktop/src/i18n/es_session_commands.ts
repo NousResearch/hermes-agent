@@ -8,6 +8,8 @@ export const esSessionCommands = {
   retryUnsupported: '/retry: no se pueden reintentar contenidos multimedia o partes desconocidas',
   busy: (command: string) =>
     `sesión ocupada — Hermes sigue respondiendo. Detén primero la respuesta actual (botón Detener o Ctrl+C en una terminal) y luego ejecuta /${command}.`,
+  titleSet: (title: string, queued: boolean) => `Título de la sesión establecido: ${title}${queued ? ' (en cola mientras se inicia la sesión)' : ''}`,
+  titleCleared: 'Título de la sesión borrado.',
   busyCompressing: (command: string) =>
     `sesión ocupada — se está ejecutando un /compress; ejecuta /${command} cuando termine.`,
   steerUsage: 'uso: /steer <prompt>',

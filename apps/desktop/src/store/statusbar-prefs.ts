@@ -1,6 +1,9 @@
+import { computed } from 'nanostores'
+
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { readKey } from '@/lib/storage'
 import { modeBound } from '@/store/interface-mode'
+import { $statusbarStripAvailable } from '@/store/statusbar-strip'
 
 // v1 (`hermes.desktop.statusbarHidden`) was seeded with the approval pill
 // hidden, so every existing store carries an `approval-mode` the user never
@@ -24,8 +27,16 @@ export const $statusbarVisible = modeBound('statusbarVisible', $statusbarVisible
   $statusbarVisiblePref.set(value)
 )
 
+/** The strip is on screen: the shell has one and the (mode-resolved) preference shows it. */
+export const $statusbarShown = computed(
+  [$statusbarStripAvailable, $statusbarVisible],
+  (available, visible) => available && visible
+)
+
 export function toggleStatusbarVisible() {
-  $statusbarVisible.set(!$statusbarVisible.get())
+  if ($statusbarStripAvailable.get()) {
+    $statusbarVisible.set(!$statusbarVisible.get())
+  }
 }
 
 // Items the bar hides until the user turns them on from its context menu. The

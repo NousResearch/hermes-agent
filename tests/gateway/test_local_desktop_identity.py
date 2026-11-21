@@ -58,7 +58,7 @@ async def _connect(tmp_path, monkeypatch, *, native=True, config=None):
     if native:
         identity["native_bootstrap"] = True
     transport = _Transport(identity)
-    connection = AuthorityConnection(authority, transport, identity)
+    connection = AuthorityConnection(authority, transport, identity, operator=True)
     from gateway.session_local_migration import bind_native_transport
     bind_native_transport(authority, connection.actor, identity)
     return SimpleNamespace(authority=authority, connection=connection, transport=transport, runner=runner, home=home)
@@ -185,6 +185,26 @@ async def test_a_fresh_launch_claims_the_trial_and_opens_onboarding_on_it(tmp_pa
         assert "result" in started, started
         resumed = await _request(conn, 3, "session.resume", {"session_id": started["result"]["stored_session_id"]})
         assert "error" not in resumed, resumed
+    finally:
+        await conn.connection.close()
+
+
+@pytest.mark.asyncio
+async def test_a_trial_users_desktop_chat_can_be_created_and_resumed(tmp_path, monkeypatch):
+    """An explicitly claimed trial supplies the model for a normal resumable Desktop chat."""
+    from hermes_cli import anon_auth
+    guest = {"auth_method": anon_auth.ANON_AUTH_METHOD, anon_auth.WELCOME_CLAIM_FLAG: True}
+    monkeypatch.setattr(anon_auth, "current_nous_state", lambda *a, **k: guest)
+    conn = await _connect(tmp_path, monkeypatch)
+    try:
+        await _request(conn, 1, "client.capabilities", {"desktop_local": True})
+        created = await _request(conn, 2, "session.create", {"source": "gui", "request_id": "trial-chat"})
+        assert "result" in created, created
+        stored = created["result"]["stored_session_id"]
+        resumed = await _request(conn, 3, "session.resume", {"session_id": stored})
+        assert "result" in resumed, resumed
+        assert resumed["result"]["session_id"] == stored
+        assert conn.authority.persistence.bindings.receipt(stored).policy["model"] == anon_auth.GUEST_MODEL
     finally:
         await conn.connection.close()
 

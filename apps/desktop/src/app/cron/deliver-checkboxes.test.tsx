@@ -29,3 +29,17 @@ describe('DeliverCheckboxes accessible name', () => {
     expect(screen.getByRole('group', { name: en.cron.deliverLabel })).toBeTruthy()
   })
 })
+
+it('names a bot-chat target as the scheduler reports it', () => {
+  render(
+    <DeliverCheckboxes
+      c={en.cron}
+      id="cron-deliver"
+      onChange={() => {}}
+      targets={[{ home_env_var: null, home_target_set: true, id: 'bot-chat:ops', name: 'Bot Chat (ops)' }]}
+      value="bot-chat:ops"
+    />
+  )
+
+  expect(screen.getByText('Bot Chat (ops)')).toBeTruthy()
+})

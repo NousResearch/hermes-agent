@@ -89,7 +89,7 @@ async function openSeededSession(page: Page): Promise<void> {
 }
 
 async function openNewSession(page: Page): Promise<void> {
-  const button = page.locator('[data-slot="sidebar"] button').filter({ hasText: 'New session' }).first()
+  const button = page.locator('[data-slot="sidebar"] button').filter({ hasText: 'New chat' }).first()
   await button.waitFor({ state: 'visible', timeout: 10_000 })
   await button.click()
   await page.waitForFunction(

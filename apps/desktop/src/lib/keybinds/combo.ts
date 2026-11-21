@@ -1,4 +1,4 @@
-import { keybindActionAllowedInEditableTarget } from './actions'
+import { keybindActionAllowedInEditableTarget, keybindActionYieldsToEditableTarget } from './actions'
 
 // Keybind combo normalization + display.
 //
@@ -309,6 +309,10 @@ export function actionAllowedInInput(actionId: string, combo: string): boolean {
   // yields one, but reject it here so a malformed stored binding can't pass
   // the shape-only mod/ctrl check below.
   if (!base || base === 'mod' || base === 'ctrl') {
+    return false
+  }
+
+  if (keybindActionYieldsToEditableTarget(actionId)) {
     return false
   }
 

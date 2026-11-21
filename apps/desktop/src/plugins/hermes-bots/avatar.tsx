@@ -17,6 +17,8 @@ export const blobatarSvg = typeof sdk === 'undefined' ? undefined : sdk.blobatar
 // Budgeted render loop (fps cap + observability pause + dormancy + teardown).
 // Feature-detected: older desktops fall back to the hand-rolled clock below.
 const createBudgetedLoop = typeof sdk === 'undefined' ? undefined : sdk.createBudgetedLoop
+// The redesign's agent tile. Feature-detected: older desktops keep the faces everywhere.
+const AgentMark = typeof sdk !== 'undefined' && 'AgentMark' in sdk ? sdk.AgentMark : undefined
 
 // ── avatars (shape + color + eyes) ──────────────────────────────────────────
 
@@ -1160,4 +1162,21 @@ export function botAppearance(name: string, meta: BotMeta | null | undefined): A
     color: meta?.color || profileColor(name),
     image: meta?.image || null
   }
+}
+
+/** A bot where it is shown rather than edited (rows, rooms, a chat's empty state). The redesign draws
+ *  agents as their tile there, matching the sidebar; classic and the avatar editors keep the face. */
+export function BotBadge(props: BotFaceProps) {
+  const face = <BotFace {...props} />
+  const name = props.name ?? 'default'
+
+  if (!AgentMark) {
+    return face
+  }
+
+  // The tile carries the bot's marker as the faces do, so a row is still found by its bot. Only the
+  // tile gets it: the face already has its own, and a second one in classic matched every row twice.
+  return (
+    <AgentMark fallback={face} profile={name} size={props.size ?? 36} tileAttributes={{ 'data-bot-face': name }} />
+  )
 }

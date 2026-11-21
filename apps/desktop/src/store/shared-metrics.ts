@@ -78,6 +78,11 @@ export const $sharedMetricsConsent = atom<SharedMetricsConsent | null>(null)
 /** The "What is collected" details dialog, opened only by the user from the strip. */
 export const $sharedMetricsDetailsOpen = atom(false)
 
+/** Close the details without answering: the offer stays where it was. */
+export function closeSharedMetricsDetails(): void {
+  $sharedMetricsDetailsOpen.set(false)
+}
+
 /** The first-run offer is still unanswered for the focused profile. */
 export function sharedMetricsOfferPending(consent: SharedMetricsConsent | null): boolean {
   return consent?.decided === false

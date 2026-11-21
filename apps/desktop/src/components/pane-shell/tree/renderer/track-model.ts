@@ -58,6 +58,14 @@ export interface PaneSizing {
 interface PaneChrome extends PaneSizing {
   /** Leaves the grid on narrow viewports; revealed as an edge overlay. */
   collapsible?: boolean
+  /** A sash drag that would size this pane's zone under this length folds the pane away instead
+   *  (`onDragCollapse`), live as the pointer crosses it; a drag that stops short rests at the
+   *  minimum. The zone's size from before the drag is kept for when it returns. Resolved per gesture
+   *  like `width` (`var()` included); a length that resolves to nothing disables it. */
+  dragCollapseBelow?: string
+  /** How a drag past `dragCollapseBelow` folds the pane: its own hide, so every surface that
+   *  shows or restores it (⌘B, the rail) agrees. */
+  onDragCollapse?: () => void
   /** Arrive minimized — a rail tab rather than an open zone. For a pane that
    *  docks to an edge this is the vertical strip; the user's first expand is
    *  persisted on the zone and wins from then on. Applied when the pane ENTERS

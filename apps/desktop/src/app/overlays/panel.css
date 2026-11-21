@@ -1,0 +1,68 @@
+/* V2 page density. Classic cards retain their existing utility styles. */
+/* Management pages (Schedules, Spawn tree, Agents, Webhooks) share the page column the searchable
+   pages use, so their H1 and content line up with Library and Capabilities. */
+[data-page-surface] .management-panel {
+  width: 100%;
+  max-width: var(--page-content-max-width);
+  margin-inline: auto;
+  padding: var(--portal-page-top) var(--page-content-inset) 1.5rem;
+}
+
+/* A quiet count at the heading row's end ("3 schedules"). */
+[data-page-surface] .panel-header-meta {
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-page-surface] .panel-row {
+  height: 2.75rem;
+  flex-shrink: 0;
+  font-size: var(--portal-type-body-size);
+}
+
+[data-page-surface] .panel-row-meta {
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+}
+
+/* Group labels take the page's one 10px label style (895:9593 "AGENT", "BEHAVIOR"). */
+[data-page-surface] .panel-section-label {
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-caption-size);
+  font-weight: 400;
+  letter-spacing: var(--portal-tracking-caption);
+  line-height: 1.4;
+}
+
+/* An empty panel's card sits at the top of its column and spans it. */
+[data-page-surface] .panel-empty {
+  min-width: 0;
+  flex: 1;
+}
+
+[data-page-surface] .panel-meta {
+  grid-template-columns: minmax(5rem, 8rem) minmax(0, 1fr);
+  gap: 0.5rem 1rem;
+  font-size: var(--portal-type-ui-size);
+}
+
+[data-page-surface] .panel-meta dt {
+  color: var(--ui-text-tertiary);
+}
+
+[data-page-surface] .panel-block {
+  padding: 1rem;
+  font-size: var(--portal-type-ui-size);
+}
+
+@media (min-width: 47.5rem) {
+  [data-page-surface] .panel-list {
+    width: clamp(15rem, 24vw, 20rem);
+  }
+
+  [data-page-surface] .panel-detail > div {
+    padding-left: 1rem;
+  }
+}

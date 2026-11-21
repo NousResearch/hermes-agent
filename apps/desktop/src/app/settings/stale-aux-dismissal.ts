@@ -1,4 +1,4 @@
-import type { StaleAuxAssignment } from '@/hermes'
+import type { ProfileScope, StaleAuxAssignment } from '@/hermes'
 import { getApiRequestProfile, profileScopeKey } from '@/hermes'
 import { readKey, writeKey } from '@/lib/storage'
 
@@ -13,7 +13,7 @@ import { readKey, writeKey } from '@/lib/storage'
 // never lost.
 const DISMISSED_STALE_AUX_KEY_BASE = 'hermes.desktop.staleAuxDismissal.v1'
 
-function dismissalKey(profile: null | string | undefined): string {
+function dismissalKey(profile: ProfileScope | undefined): string {
   const scope = profile ?? getApiRequestProfile() ?? undefined
 
   return `${DISMISSED_STALE_AUX_KEY_BASE}.profile.${encodeURIComponent(profileScopeKey(scope))}`
@@ -36,12 +36,12 @@ export function staleAuxFingerprint(mainProvider: string, slots: readonly StaleA
   return `${mainProvider.trim().toLowerCase()}#${pins}`
 }
 
-export function readStaleAuxDismissal(profile: null | string | undefined): null | string {
+export function readStaleAuxDismissal(profile: ProfileScope | undefined): null | string {
   return readKey(dismissalKey(profile))
 }
 
 export function dismissStaleAux(
-  profile: null | string | undefined,
+  profile: ProfileScope | undefined,
   mainProvider: string,
   slots: readonly StaleAuxAssignment[]
 ) {

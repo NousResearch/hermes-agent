@@ -3,10 +3,14 @@ import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { refreshProjectTree } from '@/store/projects'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  $shellChoice.set(null)
+})
 
 // Exercises the real SessionActionsMenu end-to-end (no DropdownMenu mock) so
 // a broken asChild composition on the kebab trigger fails here — the menu
@@ -112,6 +116,7 @@ vi.mock('@/store/windows', () => ({
   canOpenSessionInTerminal: () => false,
   canOpenSessionWindow: () => false,
   isBrowserWindow: () => false,
+  isHudWindow: () => false,
   isSecondaryWindow: () => false,
   openSessionInNewWindow: vi.fn(),
   openSessionInTerminal: vi.fn()
@@ -167,6 +172,27 @@ describe('SessionActionsMenu', () => {
     await waitFor(() => expect(document.activeElement).toBe(input))
     // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
     expect(document.activeElement).not.toBe(trigger)
+  })
+
+  it('names the rename field by its dialog in the redesign, and leaves classic as it was', async () => {
+    const openRename = async () => {
+      const trigger = screen.getByRole('button', { name: 'Session actions' })
+      fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.click(trigger)
+      fireEvent.click(await screen.findByRole('menuitem', { name: /rename/i }))
+
+      return within(await screen.findByRole('dialog')).getByRole('textbox')
+    }
+
+    const { unmount } = renderMenu()
+    // Its placeholder ("Untitled chat") is not a name for a field holding the title.
+    expect((await openRename()).getAttribute('aria-label')).toBe('Rename session')
+    unmount()
+
+    $shellChoice.set(false)
+    renderMenu()
+    expect((await openRename()).hasAttribute('aria-label')).toBe(false)
   })
 
   it('passes profile to renameSession when submitting from RenameSessionDialog', async () => {
@@ -287,6 +313,8 @@ describe('SessionActionsMenu', () => {
   })
 
   it('confirms with the Enter key and cancels with Escape', async () => {
+    // Classic opens a confirm on its action; the redesign opens a destructive one on Cancel (below).
+    $shellChoice.set(false)
     const onDelete = vi.fn()
     render(
       <SessionActionsMenu onDelete={onDelete} sessionId="s1" title="My session">
@@ -326,6 +354,30 @@ describe('SessionActionsMenu', () => {
 
     expect(await screen.findByText('Session deleted')).toBeTruthy()
     expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens the redesign delete confirm on Cancel, so Enter keeps the session', async () => {
+    const onDelete = vi.fn()
+    render(
+      <SessionActionsMenu onDelete={onDelete} sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: /delete/i }))
+
+    const cancel = await screen.findByRole('button', { name: 'Cancel' })
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    await waitFor(() => expect(document.activeElement).toBe(cancel))
+    fireEvent.keyDown(cancel, { key: 'Enter' })
+
+    expect(onDelete).not.toHaveBeenCalled()
   })
 
   it('routes the same confirm guard through the context menu', async () => {
@@ -396,4 +448,36 @@ describe('SessionActionsMenu', () => {
 
     await waitFor(() => expect(refreshProjectTree).toHaveBeenCalledTimes(1))
   })
+})
+
+it('exports a remote search result using the exact owner from its row', async () => {
+  const { exportSession } = await import('@/lib/session-export')
+  const owner = { connectionId: 'remote-b', profile: 'research' }
+  render(
+    <SessionActionsMenu ownerRoute={owner} profile="research" sessionId="remote-only" title="Remote">
+      <button>Actions</button>
+    </SessionActionsMenu>
+  )
+  fireEvent.keyDown(screen.getByRole('button', { name: 'Actions' }), { key: 'Enter' })
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Export' }))
+  expect(exportSession).toHaveBeenCalledWith('remote-only', { profile: owner, title: 'Remote' })
+})
+
+// Main offers "Move to project" on every row of its one-connection list; only the redesign's
+// cross-machine list holds it back for a row another machine or profile owns.
+it.each([
+  [false, null],
+  [true, 'true']
+])('offers Move to project on another owner’s row as main does in classic (redesign=%s)', async (redesign, disabled) => {
+  $shellChoice.set(redesign)
+  render(
+    <SessionActionsMenu ownerRoute={{ connectionId: 'remote-b', profile: 'research' }} sessionId="remote" title="Remote">
+      <button>Actions</button>
+    </SessionActionsMenu>
+  )
+  fireEvent.keyDown(screen.getByRole('button', { name: 'Actions' }), { key: 'Enter' })
+
+  const move = await screen.findByRole('menuitem', { name: 'Move to project' })
+
+  expect(move.getAttribute('aria-disabled')).toBe(disabled)
 })

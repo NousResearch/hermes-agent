@@ -110,9 +110,12 @@ class Skipped:
 @dataclass(frozen=True)
 class End:
     """The run ended outside the model: ``skipped`` (Skip setup), ``replaced`` (a rerun opened a new
-    run) or ``deleted`` (its chat is being deleted)."""
+    run) or ``deleted`` (its chat is being deleted). ``sessionless`` also marks the record, ended
+    already or not, as retired by sessionless setup, in the same write that ends it, so a card the
+    old chat is still waiting on is told setup moved instead of reading a plain skip."""
 
     outcome: str = "skipped"
+    sessionless: bool = False
 
 
 @dataclass(frozen=True)
@@ -343,6 +346,8 @@ def _skipped(record: dict, event: Skipped, facts: Facts, now: float) -> Step:
 
 def _end(record: dict, event: End, facts: Facts, now: float) -> Step:
     record.update(phase=PHASE_SKIPPED, ended_by=event.outcome, waiting=None)
+    if event.sessionless:
+        record["sessionless"] = True
     for beat in BEAT_IDS:
         if record["beats"][beat] != DONE:
             record["beats"][beat] = SKIPPED
@@ -405,6 +410,8 @@ def _ended(record: dict, event: Event) -> Step:
     if isinstance(event, Done) and record.get("phase") == COMPLETE:
         return Step(record, {"completed": True}, "complete")
     if isinstance(event, End):
+        if event.sessionless:
+            record["sessionless"] = True
         return Step(record, {"skipped_all": True})
     return Step(record, {"error": _ENDED})
 

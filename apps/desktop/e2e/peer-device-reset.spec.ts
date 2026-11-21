@@ -123,11 +123,11 @@ async function stopRemote(child: ChildProcess | undefined): Promise<void> {
   }
 }
 
-const gateway = (page: Page) => page.getByRole('button', { name: /^Registered gateways: / })
+const gateway = (page: Page) => page.getByRole('button', { name: /^Machines: / })
 const composer = (page: Page) => page.locator('[data-slot="composer-root"] [contenteditable="true"]').filter({ visible: true }).first()
 
 async function expectReady(page: Page, label: string): Promise<void> {
-  await expect(gateway(page)).toHaveAttribute('aria-label', `Registered gateways: ${label}`, { timeout: 90_000 })
+  await expect(gateway(page)).toHaveAttribute('aria-label', `Machines: ${label}`, { timeout: 90_000 })
   await expect(page.locator('[data-slot="statusbar"]').getByText('ready', { exact: true })).toBeVisible({ timeout: 90_000 })
   await expect(composer(page)).toBeEditable()
 }

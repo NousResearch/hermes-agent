@@ -2,6 +2,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as Hermes from '@/hermes'
+
 // Radix Select calls scrollIntoView / pointer-capture APIs jsdom lacks.
 beforeAll(() => {
   Element.prototype.scrollIntoView = vi.fn()
@@ -11,7 +13,8 @@ beforeAll(() => {
 
 const getGlobalModelOptions = vi.fn()
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/hermes', async importOriginal => ({
+  ...(await importOriginal<typeof Hermes>()),
   getGlobalModelOptions: () => getGlobalModelOptions()
 }))
 

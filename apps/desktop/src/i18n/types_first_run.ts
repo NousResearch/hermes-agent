@@ -1,6 +1,25 @@
 /** First-run onboarding: the setup_beat cards and their receipts, Skip setup, the local-model offer
  *  at the end, and the Settings row that runs it again. */
 export interface FirstRunCopy {
+  guide: {
+    title: string
+    resume: string
+    upgradeRequired: string
+    intro: string
+    appearance: string
+    model: string
+    ready: string
+    providerNeeded: string
+    freeModel: string
+    freeUnavailable: string
+    providers: string
+    finish: string
+    skip: string
+    back: string
+    check: string
+    checking: string
+    privacy: string
+  }
   /** Receipt labels, one per beat. */
   beats: {
     name: string

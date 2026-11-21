@@ -11,6 +11,10 @@ import {
   setPaneWidthOverride,
   togglePane
 } from './panes'
+import { $shellChoice } from './shell-variant'
+
+// These contracts pin the classic shell's layout keys; the redesign keeps its own (`.portal`).
+$shellChoice.set(false)
 
 const STORAGE_KEY = 'hermes.desktop.paneStates.v1'
 

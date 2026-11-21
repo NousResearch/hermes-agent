@@ -11,14 +11,18 @@ import { act, render } from '@testing-library/react'
 import type { ButtonHTMLAttributes, ReactNode } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { translateBotsIn } from './i18n-test-helper'
 import type { DisplayStatus } from './screen-connection'
 import type { RosterRow } from './types'
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { useStore } = await import('@nanostores/react')
+  // The SDK mock is hoisted before static imports initialize.
+  const { atom } = await import('nanostores')
   const { onGatewayEvent } = await import('../../contrib/events')
 
   return {
+    atom,
     Button: (props: ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props} />,
     Codicon: () => null,
     GlyphSpinner: () => null,
@@ -30,6 +34,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
       </div>
     ),
     useValue: useStore,
+    usePluginI18n: () => translateBotsIn('en'),
     host: { onEvent: onGatewayEvent, requestProfile: vi.fn() }
   }
 })
@@ -39,25 +44,13 @@ vi.mock('./routing', () => {
   return { botConnectionRoute: () => route, resolveBotConnectionRoute: () => ({ status: 'resolved', route }) }
 })
 vi.mock('./data', () => ({ botSelectionKey: (bot: RosterRow) => bot.name }))
-vi.mock('./i18n', () => ({
-  useBots: () => ({
-    screen: {
-      title: 'Screen',
-      portalUnavailable: 'Update the bot’s Hermes to use Screen',
-      portalUnavailableManaged: 'Screen is not available on this managed Hermes release yet',
-      unavailableTitle: 'Screen needs a newer Hermes',
-      managedNotIncludedTitle: 'Screen isn’t included on this bot',
-      managedNotIncludedBody: 'Hermes Cloud includes Screen on bots with 8 GB of memory or more.',
-      notInstalledTitle: 'Screen packages missing',
-      install: 'Install on host'
-    }
-  })
-}))
 
 import { host } from '@hermes/plugin-sdk'
 
 import { BotScreenPane } from './screen-pane'
 import { $screenState } from './screen-state'
+
+const text = translateBotsIn('en')
 
 const cloudBot: RosterRow = { name: 'default', connectionId: 'cloud-a', connectionKind: 'cloud' }
 const gitBot: RosterRow = { name: 'default', connectionId: 'host-a', connectionKind: 'remote' }
@@ -79,8 +72,8 @@ it('a managed Cloud backend gets the managed-release copy, not a self-update ins
   const view = render(<BotScreenPane bot={cloudBot} />)
   await act(async () => {})
 
-  expect(view.getByText('Screen is not available on this managed Hermes release yet')).toBeTruthy()
-  expect(view.queryByText('Update the bot’s Hermes to use Screen')).toBeNull()
+  expect(view.getByText(text('screen.portalUnavailableManaged'))).toBeTruthy()
+  expect(view.queryByText(text('screen.portalUnavailable'))).toBeNull()
   view.unmount()
 })
 
@@ -89,8 +82,8 @@ it('a self-upgradable backend keeps the update instruction', async () => {
   const view = render(<BotScreenPane bot={gitBot} />)
   await act(async () => {})
 
-  expect(view.getByText('Update the bot’s Hermes to use Screen')).toBeTruthy()
-  expect(view.queryByText('Screen is not available on this managed Hermes release yet')).toBeNull()
+  expect(view.getByText(text('screen.portalUnavailable'))).toBeTruthy()
+  expect(view.queryByText(text('screen.portalUnavailableManaged'))).toBeNull()
   view.unmount()
 })
 
@@ -114,8 +107,8 @@ it('a managed Cloud backend without screen packages says Screen is not included,
   const view = render(<BotScreenPane bot={cloudBot} />)
   await act(async () => {})
 
-  expect(view.getByText('Screen isn’t included on this bot')).toBeTruthy()
-  expect(view.queryByText('Install on host')).toBeNull()
+  expect(view.getByText(text('screen.managedNotIncludedTitle'))).toBeTruthy()
+  expect(view.queryByRole('button', { name: text('screen.install') })).toBeNull()
   view.unmount()
 })
 
@@ -124,7 +117,7 @@ it('a self-managed host without screen packages keeps the install card', async (
   const view = render(<BotScreenPane bot={gitBot} />)
   await act(async () => {})
 
-  expect(view.getByText('Install on host')).toBeTruthy()
-  expect(view.queryByText('Screen isn’t included on this bot')).toBeNull()
+  expect(view.getByRole('button', { name: text('screen.install') })).toBeTruthy()
+  expect(view.queryByText(text('screen.managedNotIncludedTitle'))).toBeNull()
   view.unmount()
 })

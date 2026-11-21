@@ -46,3 +46,14 @@ it('falls back to the default for invalid storage and keeps an explicit 100% sel
   restored.setChatTextScale(fallback)
   expect(localStorage.getItem(KEY)).toBeNull()
 })
+
+it('publishes the scale relative to the Default preset for the redesign', async () => {
+  const { $chatTextScale, setChatTextScale } = await import('./chat-text-scale')
+  const root = document.documentElement
+  const fallback = $chatTextScale.get()
+
+  expect(root.style.getPropertyValue('--chat-text-scale-relative')).toBe('1')
+  setChatTextScale(fallback === 150 ? 175 : 150)
+  expect(Number(root.style.getPropertyValue('--chat-text-scale-relative'))).toBeCloseTo($chatTextScale.get() / fallback)
+  setChatTextScale(fallback)
+})

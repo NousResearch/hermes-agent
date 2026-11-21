@@ -1,6 +1,8 @@
+import { useI18n } from '@/i18n'
 import { NEW_SESSION_TITLE } from '@/lib/chat-runtime'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $draftTitles, draftTitleIn } from '@/store/composer'
+import { usePortalShell } from '@/store/shell-variant'
 
 export interface SessionDraftTitleProps {
   /** The draft's composer key — a tile's stored session id, or null for the
@@ -21,5 +23,10 @@ export interface SessionDraftTitleProps {
  * reads the same as one never typed into.
  */
 export function SessionDraftTitle({ scope }: SessionDraftTitleProps) {
-  return useStoreSelector($draftTitles, titles => draftTitleIn(titles, scope)) || NEW_SESSION_TITLE
+  const { t } = useI18n()
+  const portal = usePortalShell()
+  const draft = useStoreSelector($draftTitles, titles => draftTitleIn(titles, scope))
+
+  // Classic keeps main's fixed English placeholder; the redesign names it in its own wording.
+  return draft || (portal ? t.sidebar.nav['new-session'] : NEW_SESSION_TITLE)
 }

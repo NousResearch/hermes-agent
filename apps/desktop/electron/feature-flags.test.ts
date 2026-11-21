@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { isCanaryTag, resolveFeatureFlags } from './feature-flags'
+import { isCanaryTag, resolveFeatureFlags, resolveLaunchFacts } from './feature-flags'
 
 const shipsLocalModels: boolean =
   process.platform === 'win32' ||
@@ -33,4 +33,24 @@ test('isCanaryTag recognizes canary stamps and rejects stable/dev tags', () => {
   assert.equal(isCanaryTag(''), false)
   assert.equal(isCanaryTag(null), false)
   assert.equal(isCanaryTag(undefined), false)
+})
+
+test('every window of one launch reads the same launch id', () => {
+  const first = resolveLaunchFacts({ argv: [], canary: false, packaged: true })
+  const second = resolveLaunchFacts({ argv: ['--local'], canary: true, packaged: true })
+
+  assert.equal(typeof first.launchId, 'string')
+  assert.ok(first.launchId.length > 0)
+  assert.equal(second.launchId, first.launchId)
+})
+
+test('--fresh-install is honoured only by an unpackaged app', () => {
+  assert.equal(
+    resolveLaunchFacts({ argv: ['--fresh-install'], canary: false, packaged: false }).assumeFreshInstall,
+    true
+  )
+  assert.equal(
+    resolveLaunchFacts({ argv: ['--fresh-install'], canary: false, packaged: true }).assumeFreshInstall,
+    false
+  )
 })

@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { en } from '@/i18n/en'
-import { $interfaceMode } from '@/store/interface-mode'
+import { setInterfaceMode } from '@/store/interface-mode'
 import { $fileBrowserOpen, FILE_BROWSER_PANE_ID, setFileBrowserOpen, toggleFileBrowserOpen } from '@/store/layout'
 import { $paneStates } from '@/store/panes'
 
@@ -17,7 +17,7 @@ import { AppearanceSettings } from './appearance-settings'
 afterEach(() => {
   cleanup()
   act(() => {
-    $interfaceMode.set('advanced')
+    setInterfaceMode('advanced')
     setFileBrowserOpen(false)
   })
 })
@@ -60,7 +60,7 @@ describe('File Browser setting', () => {
   it('says a flip is session-only while Simple mode decides the value', () => {
     const note = en.interfaceMode.sessionNote
 
-    act(() => $interfaceMode.set('simple'))
+    act(() => setInterfaceMode('simple'))
     const toggle = fileBrowserSwitch()
 
     expect(screen.getByText(content => content.includes(note))).toBeTruthy()
@@ -69,7 +69,7 @@ describe('File Browser setting', () => {
     fireEvent.click(toggle)
     expect(toggle.getAttribute('aria-checked')).toBe('true')
 
-    act(() => $interfaceMode.set('advanced'))
+    act(() => setInterfaceMode('advanced'))
     expect(screen.queryByText(content => content.includes(note))).toBeNull()
     expect(toggle.getAttribute('aria-checked')).toBe('false')
   })

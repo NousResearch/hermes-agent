@@ -1,7 +1,7 @@
 import type { PluginsManageResult, PluginUpdateAllRow } from '@hermes/shared'
 import { atom } from 'nanostores'
 
-import { type GatewayRequest, loadAgentPlugins } from '@/store/agent-plugins'
+import { type GatewayRequest, isCurrentAgentPluginRequest, loadAgentPlugins } from '@/store/agent-plugins'
 
 /**
  * "Update all" and the auto-update switch of the Plugins tab, over `plugins.manage update_all` /
@@ -15,6 +15,7 @@ export interface PluginAutoUpdateState {
   checkHours: number
   /** The profile this state was read for; a scope switch must not show another profile's switch. */
   profile: null | string
+  ownerKey?: string
 }
 
 export interface PluginUpdateAllSummary {
@@ -28,24 +29,26 @@ export interface PluginUpdateAllSummary {
  *  another profile's button enabled. */
 export const $pluginUpdateAllRunning = atom<ReadonlySet<string>>(new Set())
 
-const profileKey = (profile: null | string) => profile ?? ''
+const profileKey = (profile: null | string, ownerKey?: string) =>
+  ownerKey ? JSON.stringify([ownerKey, profile]) : (profile ?? '')
 
-export const isPluginUpdateAllRunning = (running: ReadonlySet<string>, profile: null | string) =>
-  running.has(profileKey(profile))
+export const isPluginUpdateAllRunning = (running: ReadonlySet<string>, profile: null | string, ownerKey?: string) =>
+  running.has(profileKey(profile, ownerKey))
 
-function markRunning(profile: null | string, on: boolean) {
+function markRunning(profile: null | string, on: boolean, ownerKey?: string) {
   const next = new Set($pluginUpdateAllRunning.get())
 
   if (on) {
-    next.add(profileKey(profile))
+    next.add(profileKey(profile, ownerKey))
   } else {
-    next.delete(profileKey(profile))
+    next.delete(profileKey(profile, ownerKey))
   }
 
   $pluginUpdateAllRunning.set(next)
 }
 
 export const $pluginAutoUpdate = atom<PluginAutoUpdateState | null>(null)
+let autoUpdateGeneration = 0
 
 // One minute per plugin is the single-update budget; a whole sweep gets ten.
 const UPDATE_ALL_TIMEOUT_MS = 600_000
@@ -59,7 +62,7 @@ export async function updateAllAgentPlugins(
   request: GatewayRequest,
   profile: null | string
 ): Promise<PluginUpdateAllSummary> {
-  markRunning(profile, true)
+  markRunning(profile, true, request.ownerKey)
 
   try {
     const result = await request<PluginsManageResult>(
@@ -70,7 +73,7 @@ export async function updateAllAgentPlugins(
 
     const rows = result?.results ?? []
 
-    if (countOf(rows, 'updated')) {
+    if (countOf(rows, 'updated') && isCurrentAgentPluginRequest(request)) {
       await loadAgentPlugins(request, profile)
     }
 
@@ -81,7 +84,7 @@ export async function updateAllAgentPlugins(
       failed: countOf(rows, 'failed')
     }
   } finally {
-    markRunning(profile, false)
+    markRunning(profile, false, request.ownerKey)
   }
 }
 
@@ -92,8 +95,24 @@ const toState = (result: PluginsManageResult | undefined, profile: null | string
 })
 
 export async function loadPluginAutoUpdate(request: GatewayRequest, profile: null | string): Promise<void> {
-  const result = await request<PluginsManageResult>('plugins.manage', scoped({ action: 'auto_update' }, profile))
-  $pluginAutoUpdate.set(toState(result, profile))
+  const generation = ++autoUpdateGeneration
+
+  try {
+    const result = await request<PluginsManageResult>('plugins.manage', scoped({ action: 'auto_update' }, profile))
+
+    if (generation === autoUpdateGeneration) {
+      $pluginAutoUpdate.set({
+        ...toState(result, profile),
+        ...(request.ownerKey ? { ownerKey: request.ownerKey } : {})
+      })
+    }
+  } catch (error) {
+    if (generation === autoUpdateGeneration) {
+      $pluginAutoUpdate.set(null)
+    }
+
+    throw error
+  }
 }
 
 export async function setPluginAutoUpdate(
@@ -101,10 +120,14 @@ export async function setPluginAutoUpdate(
   profile: null | string,
   enable: boolean
 ): Promise<void> {
+  const generation = ++autoUpdateGeneration
+
   const result = await request<PluginsManageResult>(
     'plugins.manage',
     scoped({ action: 'auto_update', enable }, profile)
   )
 
-  $pluginAutoUpdate.set(toState(result, profile))
+  if (generation === autoUpdateGeneration) {
+    $pluginAutoUpdate.set({ ...toState(result, profile), ...(request.ownerKey ? { ownerKey: request.ownerKey } : {}) })
+  }
 }

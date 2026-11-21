@@ -45,7 +45,7 @@ function openOn(choice: GatewayChoice) {
 /** The rail's new-terminal control. Click opens on the gateway picked in
  *  Sessions; with an SSH gateway registered, the chevron (or a right-click on
  *  +) opens one on any shell-capable gateway, so hosts sit side by side. */
-export function NewTerminalButton({ className }: { className: string }) {
+export function NewTerminalButton({ className, horizontal = false }: { className: string; horizontal?: boolean }) {
   const { t } = useI18n()
   const bindings = useStore($bindings)
   const local = useStore($localGateway)
@@ -70,14 +70,14 @@ export function NewTerminalButton({ className }: { className: string }) {
   const tipped = (trigger: ReactNode) => (
     <Tip
       label={<TipHintLabel hint={newHint && formatCombo(newHint)} text={t.rightSidebar.terminalNew} />}
-      placement="right-rail"
+      placement={horizontal ? "toolbar" : "right-rail"}
     >
       {trigger}
     </Tip>
   )
 
   if (!choices.length) {
-    return <li className="flex w-full justify-center">{tipped(button)}</li>
+    return <li className={cn("flex justify-center", horizontal ? "shrink-0" : "w-full")}>{tipped(button)}</li>
   }
 
   const items = (Item: typeof ContextMenuItem | typeof DropdownMenuItem): ReactNode =>
@@ -89,7 +89,7 @@ export function NewTerminalButton({ className }: { className: string }) {
     ))
 
   return (
-    <li className="flex w-full flex-col items-center">
+    <li className={cn("flex items-center", horizontal ? "shrink-0" : "w-full flex-col")}>
       <ContextMenu>
         {tipped(<ContextMenuTrigger asChild>{button}</ContextMenuTrigger>)}
         <ContextMenuContent>
@@ -98,11 +98,11 @@ export function NewTerminalButton({ className }: { className: string }) {
         </ContextMenuContent>
       </ContextMenu>
       <DropdownMenu>
-        <Tip label={t.rightSidebar.terminalNewOn} placement="right-rail">
+        <Tip label={t.rightSidebar.terminalNewOn} placement={horizontal ? "toolbar" : "right-rail"}>
           <DropdownMenuTrigger asChild>
             <button
               aria-label={t.rightSidebar.terminalNewOn}
-              className={cn(className, 'h-3.5 w-7 text-(--ui-text-quaternary)')}
+              className={cn(className, 'text-(--ui-text-quaternary)', horizontal ? 'h-7 w-4' : 'h-3.5 w-7')}
               data-slot="terminal-new-on"
               type="button"
             >
@@ -110,7 +110,7 @@ export function NewTerminalButton({ className }: { className: string }) {
             </button>
           </DropdownMenuTrigger>
         </Tip>
-        <DropdownMenuContent align="start" side="left">
+        <DropdownMenuContent align="start" side={horizontal ? "bottom" : "left"}>
           <DropdownMenuLabel>{t.rightSidebar.terminalNewOn}</DropdownMenuLabel>
           {items(DropdownMenuItem)}
         </DropdownMenuContent>

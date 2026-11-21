@@ -16,7 +16,8 @@
 .catalog-filtered-results,
 .catalog-discovery {
   width: 100%;
-  max-width: 1228px;
+  /* The redesigned page frame narrows the column (page-search-shell.css); classic keeps 1228px. */
+  max-width: var(--page-content-max-width, 1228px);
   margin-inline: auto;
   padding-inline: 24px;
 }
@@ -39,4 +40,382 @@
   .catalog-discovery {
     padding-inline: 12px;
   }
+}
+
+/* ── Agent › Settings capability pages (Figma 895:13886, 895:14967, 895:15892, 895:16810) ──────
+   Rendered only by the redesign's agent layout, so these classes need no shell gate. */
+.agent-capability-list {
+  display: grid;
+  align-content: start;
+  gap: 32px;
+  min-width: 0;
+  container-type: inline-size;
+}
+
+.agent-capability-list.capabilities-scroll {
+  overflow: visible;
+  scrollbar-gutter: auto;
+}
+
+/* Banner (895:14660): brand tint, 36px sparkle tile, text, one action. Figma's stroke is a 0.5px
+   brand line, which reads as a dim navy edge, not a bright ring: one device-independent hairline of
+   the brand at 60%. */
+.agent-capability-banner {
+  --agent-capability-banner-stroke: var(--portal-raw-brand-60);
+
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--agent-capability-banner-stroke);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--portal-brand-fill) 10%, transparent);
+}
+
+.agent-capability-banner-icon {
+  display: grid;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid var(--agent-capability-banner-stroke);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--portal-brand-fill) 35%, transparent);
+  color: var(--ui-text-primary);
+}
+
+.agent-capability-banner-text {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+  line-height: 1.4;
+}
+
+.agent-capability-banner-text > p:first-child {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.agent-capability-banner-note {
+  color: var(--ui-text-secondary);
+  font-size: 13px;
+}
+
+/* Narrow panes stack the action under the text instead of squeezing it. */
+@container (max-width: 520px) {
+  .agent-capability-banner {
+    flex-wrap: wrap;
+  }
+
+  .agent-capability-banner-text {
+    flex-basis: calc(100% - 50px);
+  }
+}
+
+/* Section head (895:14671): 15px title, 13px note, 12px to the card. */
+.agent-capability-section > header {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 12px;
+}
+
+.agent-capability-section > header > h3 {
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 17px;
+}
+
+.agent-capability-section > header > p {
+  color: var(--ui-text-tertiary);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.agent-capability-rows {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--ui-base) 10%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
+}
+
+.agent-capability-rows > * + * {
+  border-top: 1px solid var(--ui-stroke-tertiary);
+}
+
+/* The redesign's card role (1036:7576) and its row divider. */
+:root[data-shell='portal'] .agent-capability-rows {
+  border-color: var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-card);
+}
+
+:root[data-shell='portal'] .agent-capability-rows > * + * {
+  border-top-color: var(--portal-stroke-divider);
+}
+
+/* Row (895:14754): 64px, 12/16 padding, text column then controls. */
+.agent-capability-row {
+  display: flex;
+  min-height: 64px;
+  align-items: center;
+  gap: 20px;
+  padding: 12px 16px;
+}
+
+.agent-capability-row[data-expanded] {
+  background: color-mix(in srgb, var(--portal-brand-fill) 8%, transparent);
+}
+
+.agent-capability-row-text {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.agent-capability-entry {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  border-radius: 2px;
+  text-align: start;
+}
+
+.agent-capability-entry:hover .agent-capability-row-name {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.agent-capability-entry:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: 3px;
+}
+
+.agent-capability-row-name {
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  letter-spacing: 0.01em;
+}
+
+.agent-capability-row-description {
+  overflow: hidden;
+  color: var(--ui-text-tertiary);
+  font-size: 13px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-capability-row[data-expanded] .agent-capability-row-description {
+  white-space: normal;
+}
+
+.agent-capability-row-controls {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Tags (895:14777): 11px, 1px hairline, r2. A skill's category, a plugin's provenance, a tool key. */
+.agent-capability-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.agent-capability-tags > * {
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--ui-base) 14%, transparent);
+  border-radius: 2px;
+  color: var(--ui-text-secondary);
+  font-size: 11px;
+  line-height: 15px;
+  letter-spacing: 0.01em;
+}
+
+.agent-capability-row-text > .agent-capability-tags {
+  padding-top: 4px;
+}
+
+/* A loading section (AgentCapabilitySkeleton): its text lines at their type's height. */
+.agent-capability-skeleton-title {
+  width: 8rem;
+  height: 17px;
+}
+
+.agent-capability-skeleton-name {
+  width: 10rem;
+  height: 20px;
+}
+
+.agent-capability-skeleton-line {
+  width: min(18rem, 80%);
+  height: 18px;
+}
+
+.agent-capability-skeleton-note {
+  width: min(22rem, 70%);
+  height: 18px;
+}
+
+/* "2 tools ⌄" / "Less ⌃" (895:14675): 11px secondary label with a 12px chevron. */
+.agent-capability-expander {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 2px;
+  color: var(--ui-text-secondary);
+  font-size: 11px;
+  line-height: 15px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.agent-capability-expander:hover {
+  color: var(--ui-text-primary);
+}
+
+.agent-capability-expander:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-outset);
+}
+
+/* A full-width row inside the card's clipped edge: the ring sits inside it. */
+.agent-capability-show-all:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+
+.agent-capability-meta {
+  color: var(--ui-text-tertiary);
+  font-size: 11px;
+  line-height: 15px;
+}
+
+/* "Show all 23" (895:14956): the card's last row, an underlined 13px Medium label. */
+.agent-capability-show-all {
+  display: block;
+  width: 100%;
+  padding: 12px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+  text-align: start;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.agent-capability-show-all:hover {
+  background: var(--chrome-action-hover);
+}
+
+/* A toolset's settings (keys, provider choice) under its expanded row. */
+.agent-capability-detail {
+  display: grid;
+  gap: 12px;
+  padding-top: 12px;
+}
+
+/* Connector cards keep their content (logo, state, verb, switch) but sit as rows of the card. */
+.agent-capability-rows > [data-slot='connector-row-card'] {
+  min-height: 64px;
+  padding: 12px 16px;
+  border-width: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.agent-capability-rows > [data-slot='connector-row-card']:hover {
+  background: var(--chrome-action-hover);
+}
+
+.agent-capability-rows > .global-settings-add-row {
+  width: 100%;
+}
+
+/* ── Capabilities inventory header (919:9095) ──
+   The owner sits in the header's trailing slot, where Figma draws its one quiet link: a borderless
+   scope select and an underlined 13px Medium "Agent settings →" at .7 ink. Redesign-only classes. */
+.capability-header-scope {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 16px;
+}
+
+.capability-header-scope [data-slot='select-trigger'] {
+  height: var(--portal-chrome-button-size, 30px);
+  max-width: 16rem;
+  gap: 6px;
+  padding-inline: 10px;
+  border: 0;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  box-shadow: none;
+  color: var(--ui-text-secondary);
+  font-size: 13px;
+}
+
+.capability-header-scope [data-slot='select-trigger']:hover {
+  background: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  color: var(--ui-text-primary);
+}
+
+.capability-header-link {
+  gap: 4px;
+  color: color-mix(in srgb, var(--ui-text-primary) 70%, transparent);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+}
+
+.capability-header-link:hover {
+  color: var(--ui-text-primary);
+}
+
+/* A skill's SKILL.md and a feed overview in the detail dialog (redesign): the dialog's type scale —
+   13px secondary body, 15/14/13 Medium headings, mono only for code. Overrides CompactMarkdown's
+   tool-detail sizes. */
+.capability-markdown {
+  color: var(--ui-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.capability-markdown :is(h1, h2, h3, h4) {
+  margin: 20px 0 8px;
+  color: var(--ui-text-primary);
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.4;
+}
+
+.capability-markdown :is(h1, h2, h3, h4):first-child {
+  margin-top: 0;
+}
+
+.capability-markdown h1 {
+  font-size: 15px;
+}
+
+.capability-markdown h2 {
+  font-size: 14px;
+}
+
+.capability-markdown :is(h3, h4) {
+  font-size: 13px;
+}
+
+.capability-markdown :is(p, ul, ol) {
+  margin-bottom: 10px;
+}
+
+.capability-markdown :is(pre, code) {
+  font-size: 12px;
 }

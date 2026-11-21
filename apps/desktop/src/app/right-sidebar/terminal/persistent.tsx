@@ -260,7 +260,7 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
     }
   }, [slot])
 
-  const visible = Boolean(rect && !rect.hidden && rect.width > 0 && rect.height > 0)
+  const visible = Boolean(terminalTakeover && rect && !rect.hidden && rect.width > 0 && rect.height > 0)
 
   const style: CSSProperties = {
     position: 'fixed',
@@ -287,7 +287,7 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
   // booting xterm/node-pty at 0×0 starts the shell at 80×24 and spawns a visible
   // conhost on Windows. After that `mounted` latches: shells persist while hidden.
   return (
-    <div aria-hidden={!visible} data-persistent-terminal="" style={style}>
+    <div aria-hidden={!visible} data-persistent-terminal="" inert={!visible} style={style}>
       {mounted && <TerminalWorkspace onAddSelectionToChat={onAddSelectionToChat} />}
     </div>
   )

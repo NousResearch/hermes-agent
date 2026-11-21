@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { createElement, useEffect } from 'react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
@@ -19,6 +20,7 @@ import {
   $treePaneEpochs,
   reloadTreePane
 } from '../store'
+import { $routeCollapsedPanes } from '../store-route-collapse'
 
 import { snapshotZones } from './drag-session'
 
@@ -130,6 +132,7 @@ beforeEach(() => {
   $hiddenTreePanes.set(new Set())
   $dismissedPanes.set(new Set())
   $collapsedTreeSides.set(new Set())
+  $routeCollapsedPanes.set(new Set())
   $treePaneEpochs.set({})
   $narrowViewport.set(false)
   disconnected.length = 0
@@ -252,7 +255,7 @@ it('gates hidden side guests without mounting never-activated tabs or disconnect
   )
   setTree(split('row', [group(['workspace']), group(['live', 'background'], { id: 'side' })]))
   $collapsedTreeSides.set(new Set(['right']))
-  render(<LayoutTreeRoot />)
+  render(<LayoutTreeRoot />, { wrapper: MemoryRouter })
   expect(guest()).toBeNull()
   act(() => $collapsedTreeSides.set(new Set()))
   const page = guest()!
@@ -266,6 +269,34 @@ it('gates hidden side guests without mounting never-activated tabs or disconnect
   expect(guest()).toBe(page)
   expect(page.dataset.visible).toBe('true')
   expect(disconnected).not.toContain(page)
+})
+
+it('hides a live guest whose zone the route collapses, keeping it connected for the way back', () => {
+  registerPane('live')
+  disposers.push(
+    registry.register({
+      area: 'panes',
+      id: 'workspace',
+      data: { placement: 'main' },
+      render: () => <div />
+    })
+  )
+  setTree(split('row', [group(['workspace']), group(['live'], { id: 'side' })]))
+  render(<LayoutTreeRoot />, { wrapper: MemoryRouter })
+  const page = guest()!
+  expect(page.dataset.visible).toBe('true')
+
+  // A page: the zone is display:none but its slot stays mounted, so the host must hide itself.
+  act(() => $routeCollapsedPanes.set(new Set(['live'])))
+  expect(guest()).toBe(page)
+  expect(page.dataset.visible).toBe('false')
+  expect(page.closest('[data-pane-hidden]')?.hasAttribute('inert')).toBe(true)
+
+  act(() => $routeCollapsedPanes.set(new Set()))
+  expect(guest()).toBe(page)
+  expect(page.dataset.visible).toBe('true')
+  expect(disconnected).not.toContain(page)
+  expect(unmounts.get('live') ?? 0).toBe(0)
 })
 
 it('routes DOM group targeting to the new zone without adding duplicate drop zones', () => {
@@ -359,7 +390,7 @@ it('uses the same live guest when a collapsible pane moves into the narrow overl
   registerPane('live', true, { collapsible: true, placement: 'right' })
   registerPane('workspace', false, { placement: 'main' })
   setTree(split('row', [group(['workspace']), group(['live'], { id: 'side' })]))
-  render(<LayoutTreeRoot />)
+  render(<LayoutTreeRoot />, { wrapper: MemoryRouter })
   const page = guest()!
   act(() => $narrowViewport.set(true))
   expect(guest()).toBe(page)

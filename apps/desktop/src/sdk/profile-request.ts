@@ -1,3 +1,4 @@
+import { shellCopy } from '@/lib/shell-copy'
 import { requestGatewayForAgent, requestGatewayForProfile, type SpawnPriority } from '@/store/gateway'
 import { $profiles } from '@/store/profile'
 
@@ -79,6 +80,13 @@ export async function requestPluginProfile<T>(
     `Profile "${profile}" requires a route descriptor from host.profileRoutes(); profile-only routing is limited to legacy/local profiles.`
   )
 }
+
+/** Why a retry stopped: the route `pluginRouteStillRegistered` re-read is gone. */
+export const pluginRouteGoneMessage = (profile: string) =>
+  shellCopy({
+    classic: `The ${profile} gateway is no longer available.`,
+    redesign: `The machine running ${profile} is no longer available.`
+  })
 
 /** Re-read Electron's current registry before retrying an exact-owner wake.
  *  A route that was removed or replaced while the first hydration wait ran is

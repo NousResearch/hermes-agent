@@ -6,6 +6,7 @@ import {
   connectionEndpoint,
   connectionMatchesQuery,
   connectionTooltip,
+  sameBackendPeerLabel,
   sortConnectionsForDisplay
 } from './connection-display'
 
@@ -79,5 +80,22 @@ describe('connection display helpers', () => {
     expect(connectionEndpoint(ssh)).toBe('hermes@studio.example.test:2222')
     expect(connectionTooltip(ssh)).not.toContain('/secret/key')
     expect(connectionTooltip(connection('local', 'This device', 'local'))).toBe('This device')
+  })
+})
+
+describe('sameBackendPeerLabel', () => {
+  it('hints "Same backend as" only on later rows sharing an install_id', () => {
+    const spark = { id: 'spark', installId: 'aaa', label: 'Spark' }
+    const sparkTs = { id: 'spark-ts', installId: 'aaa', label: 'Spark TS' }
+    const mini = { id: 'mini', installId: 'bbb', label: 'Mini' }
+    const legacy = { id: 'old', label: 'Old box' }
+    const connections = [spark, sparkTs, mini, legacy]
+
+    // The first occurrence carries no hint; the later duplicate points back.
+    expect(sameBackendPeerLabel(spark, connections)).toBeNull()
+    expect(sameBackendPeerLabel(sparkTs, connections)).toBe('Spark')
+    // Unique ids and id-less (older backend) rows never hint.
+    expect(sameBackendPeerLabel(mini, connections)).toBeNull()
+    expect(sameBackendPeerLabel(legacy, connections)).toBeNull()
   })
 })

@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
+import type { ProfileScope } from '@/hermes'
 import {
   applyTelegramOnboarding,
   cancelTelegramOnboarding,
@@ -56,7 +57,7 @@ export interface TelegramQrSetupProps {
   onApplied: (result: TelegramOnboardingApplyResponse) => void
   platform: MessagingPlatformInfo
   /** Request-shaped profile scope (undefined → active profile). */
-  scopeProfile: string | undefined
+  scopeProfile: ProfileScope | undefined
 }
 
 /**

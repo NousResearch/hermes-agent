@@ -289,8 +289,8 @@ describe('deriveBillingView', () => {
     const view = deriveBillingView(okBilling(todayBillingState), okSubscription(todaySubscriptionState))
 
     expect(view.status).toBe('normal')
-    expect(view.summary).toContainEqual({ label: 'Balance', value: '$996.47' })
-    expect(view.summary).toContainEqual({ label: 'Plan', value: 'Ultra · $200/mo' })
+    expect(view.summary).toContainEqual({ id: 'balance', label: 'Balance', value: '$996.47' })
+    expect(view.summary).toContainEqual({ id: 'plan', label: 'Plan', value: 'Ultra · $200/mo' })
     expect(view.topupRow?.chips).toBeUndefined()
     expect(view.refillRow).toMatchObject({
       action: { label: 'Manage' },
@@ -404,9 +404,9 @@ describe('deriveBillingView', () => {
     expect(view.notice).toMatchObject({ title: "You're on the Nous free tier", tone: 'info' })
     expect(view.notice?.action?.label).toBe('Sign in')
     expect(view.summary).toEqual([
-      { label: 'Plan', value: 'Free tier' },
-      { label: 'Model', value: 'nous/welcome' },
-      { label: 'Connectors', tone: 'primary', value: 'Included' }
+      { id: 'plan', label: 'Plan', value: 'Free tier' },
+      { id: 'model', label: 'Model', value: 'nous/welcome' },
+      { id: 'connectors', label: 'Connectors', tone: 'primary', value: 'Included' }
     ])
     expect(view.plan).toMatchObject({ tierName: 'Nous · free tier' })
     expect(view.plan?.action).toBeUndefined()

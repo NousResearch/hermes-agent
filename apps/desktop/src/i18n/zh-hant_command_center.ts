@@ -197,7 +197,8 @@ export const zhHantCommandCenter = {
       managedNote: (platform: string) => `此執行個體的訊息由 Team Gateway 承載，因此閘道每次啟動都會關閉 ${platform} 的直接連線。若要與中繼同時使用，請在閘道環境中設定 GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true（直接連線會使執行個體無法縮減到零，並可能重複傳遞訊息）。`,
       managedIntro: '此代理的帳號在 Nous Portal 中連結。',
       openPortal: '在 Nous Portal 中連結帳號',
-      noNewAccount: (platform: string) => `此代碼已失效，且沒有出現新帳號。如果你的 ${platform} 帳號不在清單中，請取得新代碼後再試一次。`
+      noNewAccount: (platform: string) =>
+        `此代碼已失效，且沒有出現新帳號。如果你的 ${platform} 帳號不在清單中，請取得新代碼後再試一次。`
     },
     telegramQr: {
       title: '選擇連接 Telegram 機器人的方式',

@@ -1,6 +1,7 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { isOnboardingChat, onboardingChatStore } from './onboarding-session'
+import { $setupGuideOnboarding } from './shell-policy'
 
 /** Answers a card parked on `sessionId` with composer text: null when no card of this kind takes it,
  *  else a promise of whether the answer reached the backend. */
@@ -24,7 +25,7 @@ export interface ParkedCardKind {
 const kinds = new Map<string, ParkedCardKind>()
 
 const kindsFor = (sessionId: string) => {
-  const onboarding = isOnboardingChat(sessionId)
+  const onboarding = !$setupGuideOnboarding.get() && isOnboardingChat(sessionId)
 
   return [...kinds.values()].filter(kind => onboarding || !kind.onboardingOnly)
 }
@@ -105,4 +106,7 @@ export function parkedCardWaiting(sessionId: string): boolean {
 /** Whether a card waits in the onboarding chat, as a store: the composer offers Send for typed
  *  answers only there; every other chat keeps its normal controls. */
 export const sessionOnboardingCardWaiting = (sessionId: null | string) =>
-  computed([$revision, onboardingChatStore(sessionId)], (_, onChat) => onChat && parkedCardWaiting(sessionId ?? ''))
+  computed(
+    [$revision, onboardingChatStore(sessionId), $setupGuideOnboarding],
+    (_, onChat, redesign) => !redesign && onChat && parkedCardWaiting(sessionId ?? '')
+  )

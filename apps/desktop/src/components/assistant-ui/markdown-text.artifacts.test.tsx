@@ -1,9 +1,11 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { artifactsForSession, clearArtifactRegistry } from '@/store/artifacts'
 import { $previewTabs } from '@/store/preview'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
+import { $sessionStates } from '@/store/session-states'
 
 import { MarkdownTextContent } from './markdown-text'
 
@@ -39,8 +41,21 @@ describe('MarkdownTextContent artifacts', () => {
     cleanup()
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
+    $sessionStates.set({})
     clearArtifactRegistry()
     window.localStorage.clear()
+  })
+
+  it('files an artifact with the chat that wrote it while another chat is being opened', async () => {
+    $sessionStates.set({ 'session-artifacts': createClientSessionState('chat-a') })
+    // The selection has moved on; this transcript is still chat-a's.
+    $selectedStoredSessionId.set('chat-b')
+
+    render(<MarkdownTextContent isRunning={false} text={fenced('html', HTML_DOC)} />)
+    await screen.findByText('Pomodoro Timer')
+
+    expect(artifactsForSession('chat-a')).toHaveLength(1)
+    expect(artifactsForSession('chat-b')).toHaveLength(0)
   })
 
   it('renders a substantial html fence as an artifact card and registers it', async () => {

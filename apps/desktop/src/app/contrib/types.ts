@@ -74,9 +74,10 @@ export interface WiringActions extends SidebarActions, ChatActions {
   toggleCommandCenter: () => void
 }
 
-/** The four wired surfaces the controller publishes; `WiredPane` renders one by
+/** The wired surfaces the controller publishes; `WiredPane` renders one by
  *  key inside a registered pane / chrome slot. */
 export interface WiringApi {
+  globalNav: ReactNode
   sidebar: ReactNode
   chatRoutes: ReactNode
   terminal: ReactNode

@@ -23,6 +23,17 @@ function useOptionalSearchParams(): ReturnType<typeof useSearchParams> {
   }
 }
 
+/** Native disclosures keep their children mounted while closed: reveal every
+ *  `<details>` enclosing a deep-link target before focusing it. */
+export function openEnclosingDisclosures(element: HTMLElement): void {
+  let disclosure = element.parentElement?.closest('details')
+
+  while (disclosure) {
+    disclosure.open = true
+    disclosure = disclosure.parentElement?.closest('details')
+  }
+}
+
 // Deep-link from the command palette (?<param>=<id>): once the target row is
 // renderable, scroll it into view and flash it, then drop the param so it
 // doesn't re-fire. Returns the pending target (null once consumed) so callers
@@ -60,6 +71,7 @@ export function useDeepLinkHighlight({
       const element = document.getElementById(elementId(target))
 
       if (element) {
+        openEnclosingDisclosures(element)
         element.scrollIntoView({ behavior: 'smooth', block })
 
         if (!element.hasAttribute('tabindex')) {

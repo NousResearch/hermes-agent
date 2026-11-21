@@ -300,7 +300,7 @@ async function waitForActiveTranscriptWithoutText(
 
 /** Stack an empty tab while leaving the current transcript mounted and warm. */
 async function openNewSessionTab(page: import('@playwright/test').Page, priorText: string): Promise<void> {
-  await page.locator('[data-slot="sidebar"] button[aria-label="New session"]').first().click()
+  await page.locator('[data-slot="sidebar"] button[aria-label="New chat"]').first().click()
   await waitForActiveTranscriptWithoutText(page, priorText)
 }
 

@@ -1,6 +1,81 @@
 import shared from '../../eslint.config.shared.mjs'
 import globals from 'globals'
 
+// Drift guard G2 (DESIGN.md "Portal design language"): redesign-only TSX takes its look from the
+// tokens in src/app/redesign/tokens/, not from arbitrary Tailwind values. Flags, inside className /
+// cn() strings: an arbitrary text, leading, tracking, radius, colour, ring, shadow, fill or stroke value
+// unless it is a bare token read (a var() of a token), Tailwind's own text sizes and scaled radii (the
+// redesign's --radius-scalar makes those land between Figma's steps), and hex colours. Arbitrary layout
+// values (grid templates, min() widths) are fine.
+const VISUAL_ARBITRARY =
+  /^-?(text|leading|tracking|rounded(-[a-z]{1,2})?|bg|border(-[a-z]{1,2})?|ring|shadow|fill|stroke|outline|decoration)-\[(.+)\]$/
+const TOKEN_READ = /^(?:[a-z-]+:)?var\(--[\w-]+(?:,[^\]]*)?\)$/
+const SCALED = /^(rounded(-[a-z]{1,2})?-(xs|sm|md|lg|xl|2xl|3xl)|text-(xs|sm|base|lg))$/
+const CLASS_CALLS = new Set(['cn', 'clsx', 'cva', 'twMerge'])
+
+const utilityOf = token => {
+  let depth = 0
+  let cut = 0
+
+  for (let i = 0; i < token.length; i++) {
+    const ch = token[i]
+    depth += ch === '[' ? 1 : ch === ']' ? -1 : 0
+
+    if (ch === ':' && depth === 0) {
+      cut = i + 1
+    }
+  }
+
+  return token.slice(cut).replace(/^!/, '')
+}
+
+const offendingClass = token => {
+  const utility = utilityOf(token)
+  const arbitrary = VISUAL_ARBITRARY.exec(utility)
+
+  if (arbitrary) {
+    return !TOKEN_READ.test(arbitrary[4])
+  }
+
+  return SCALED.test(utility) || /#[0-9a-f]{3,8}\b/i.test(utility)
+}
+
+const inClassContext = ancestors =>
+  ancestors.some(
+    node =>
+      (node.type === 'JSXAttribute' && ['className', 'class'].includes(node.name.name)) ||
+      (node.type === 'CallExpression' && CLASS_CALLS.has(node.callee.name))
+  )
+
+const noPortalArbitrary = {
+  meta: {
+    type: 'suggestion',
+    messages: {
+      arbitrary:
+        '`{{cls}}` restates a design value in redesign-only markup. Use a token-backed class or a CSS rule that reads src/app/redesign/tokens/ (DESIGN.md "Portal design language").'
+    },
+    schema: []
+  },
+  create(context) {
+    const check = (node, text) => {
+      if (!inClassContext(context.sourceCode.getAncestors(node))) {
+        return
+      }
+
+      for (const cls of text.split(/\s+/).filter(Boolean)) {
+        if (offendingClass(cls)) {
+          context.report({ node, messageId: 'arbitrary', data: { cls } })
+        }
+      }
+    }
+
+    return {
+      Literal: node => typeof node.value === 'string' && check(node, node.value),
+      TemplateElement: node => check(node, node.value.cooked ?? '')
+    }
+  }
+}
+
 export default [
   ...shared,
   {
@@ -33,6 +108,21 @@ export default [
         }
       ]
     }
+  },
+  {
+    // Redesign-only markup (mixed files with a classic branch are not judged yet). Warn while the
+    // existing sites burn down (DESIGN.md "To unify in Phase B"); then it becomes an error.
+    files: [
+      'src/app/redesign/**/*.tsx',
+      'src/app/chat/sidebar/portal/**/*.tsx',
+      'src/app/agent-settings/**/*.tsx',
+      'src/components/portal/**/*.tsx',
+      'src/app/settings/settings-card.tsx',
+      'src/app/settings/appearance-overview.tsx'
+    ],
+    ignores: ['src/**/*.test.tsx', 'src/app/agent-settings/classic-settings.tsx'],
+    plugins: { 'hermes-desktop': { rules: { 'no-portal-arbitrary': noPortalArbitrary } } },
+    rules: { 'hermes-desktop/no-portal-arbitrary': 'warn' }
   },
   {
     files: ['**/*.test.tsx'],

@@ -102,6 +102,8 @@ function DialogContent({
   chrome,
   overlayClassName,
   onOpenAutoFocus,
+  onCloseAutoFocus,
+  onFocusCapture,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
@@ -136,6 +138,38 @@ function DialogContent({
   // dialog-portal-context.ts. State (not just a ref) so consumers re-render once
   // the node mounts.
   const [contentNode, setContentNode] = React.useState<HTMLElement | null>(null)
+  const pageOpener = React.useRef<HTMLElement | null>(null)
+
+  function handleFocusCapture(event: React.FocusEvent<HTMLDivElement>) {
+    // React autoFocus runs before Radix's open autofocus event.
+    const previous = event.relatedTarget
+    if (
+      previous instanceof HTMLElement &&
+      !event.currentTarget.contains(previous) &&
+      previous.closest('[data-page-surface]')
+    ) {
+      pageOpener.current = previous
+    }
+    onFocusCapture?.(event)
+  }
+
+  function handleOpenAutoFocus(event: Event) {
+    const active = document.activeElement
+    // Programmatic page dialogs have no Radix Trigger to restore on close.
+    if (active instanceof HTMLElement && active.closest('[data-page-surface]')) {
+      pageOpener.current = active
+    }
+    onOpenAutoFocus?.(event)
+  }
+
+  function handleCloseAutoFocus(event: Event) {
+    onCloseAutoFocus?.(event)
+    if (!event.defaultPrevented && pageOpener.current?.isConnected) {
+      pageOpener.current.focus({ preventScroll: true })
+      event.preventDefault()
+    }
+    pageOpener.current = null
+  }
 
   // Opened from inside another dialog (e.g. an image lightbox over a detail
   // modal): both layers step above the parent so its scrim dims the parent too.
@@ -177,7 +211,9 @@ function DialogContent({
             'gap-0'
           )}
           data-slot="dialog-content"
-          onOpenAutoFocus={onOpenAutoFocus}
+          onCloseAutoFocus={handleCloseAutoFocus}
+          onFocusCapture={handleFocusCapture}
+          onOpenAutoFocus={handleOpenAutoFocus}
           ref={setContentNode}
           {...props}
         >
@@ -186,7 +222,7 @@ function DialogContent({
             <div className="relative z-10 overflow-hidden rounded-xl border border-b-0 border-(--stroke-nous) bg-(--ui-chat-bubble-background)">
               <div
                 className={cn(
-                  'grid max-h-[calc(85vh-5rem)] min-h-0 grid-cols-[minmax(0,1fr)] gap-3 overflow-y-auto p-4',
+                  'grid max-h-[calc(85vh-5rem)] min-h-0 grid-cols-[minmax(0,1fr)] gap-[var(--dialog-body-gap,0.75rem)] overflow-y-auto p-[var(--dialog-body-padding,1rem)]',
                   bodyClassName
                 )}
               >
@@ -230,7 +266,9 @@ function DialogContent({
           className
         )}
         data-slot="dialog-content"
-        onOpenAutoFocus={onOpenAutoFocus}
+        onCloseAutoFocus={handleCloseAutoFocus}
+        onFocusCapture={handleFocusCapture}
+        onOpenAutoFocus={handleOpenAutoFocus}
         ref={setContentNode}
         {...props}
       >
@@ -244,7 +282,7 @@ function DialogContent({
               scrollbar that clips the content instead of truncating it. */}
           <div
             className={cn(
-              'grid min-h-0 grid-cols-[minmax(0,1fr)] gap-3 overflow-y-auto rounded-[inherit] p-4',
+              'grid min-h-0 grid-cols-[minmax(0,1fr)] gap-[var(--dialog-body-gap,0.75rem)] overflow-y-auto rounded-[inherit] p-[var(--dialog-body-padding,1rem)]',
               bodyClassName
             )}
           >

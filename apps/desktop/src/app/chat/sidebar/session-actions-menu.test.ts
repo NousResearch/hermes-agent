@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import * as sessionApi from '@/api/sessions'
 import { $activeSessionId, $selectedStoredSessionId, $sessions } from '@/store/session'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
 
@@ -160,4 +161,17 @@ describe('renameSessionPreferringRpc', () => {
     expect(request).not.toHaveBeenCalled()
     expect(renameSession).toHaveBeenCalledWith(STORED_ID, 'My branch', undefined)
   })
+})
+
+it('renames an uncached remote result on its exact owner instead of the active gateway', async () => {
+  const mutate = vi.spyOn(sessionApi, 'mutateSessionHttp').mockResolvedValue({ title: 'Remote name' })
+
+  try {
+    const owner = { connectionId: 'remote-b', profile: 'research' }
+    await renameSessionPreferringRpc('remote-only', 'Remote name', 'research', owner)
+    expect(mutate).toHaveBeenCalledWith('remote-only', 'PATCH', { title: 'Remote name' }, owner)
+    expect(request).not.toHaveBeenCalled()
+  } finally {
+    mutate.mockRestore()
+  }
 })

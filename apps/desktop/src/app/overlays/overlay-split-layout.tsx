@@ -6,10 +6,12 @@ import { TabDropdown } from '@/components/ui/tab-dropdown'
 import { useI18n } from '@/i18n'
 import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { PAGE_MAX_W } from '../layout-constants'
 
 import { OVERLAY_TOP_CLEARANCE } from './overlay-view'
+import { PageSidebarHead, usePageSidebarOpen } from './page-sidebar'
 
 // The wide rail and the narrow dropdown swap at exactly the width where
 // OverlaySplitLayout drops to a single column, so the rail never stacks.
@@ -24,6 +26,8 @@ interface OverlaySplitLayoutProps {
 interface OverlaySidebarProps {
   children: ReactNode
   className?: string
+  /** A redesigned page's docked panel: the artwork shifts past it, as beside the chat sidebar (portal-artwork.css). */
+  docked?: boolean
 }
 
 interface OverlayMainProps {
@@ -57,16 +61,17 @@ export function OverlaySplitLayout({ children, className }: OverlaySplitLayoutPr
         // Narrow: one column, and pin rows to [nav-bar auto | main 1fr] — without
         // an explicit template the grid's default align-content:stretch splits the
         // height evenly across the two rows, shoving the content to mid-screen.
-        'grid h-full min-h-0 flex-1 grid-cols-[13rem_minmax(0,1fr)] overflow-hidden bg-transparent max-[47.5rem]:grid-cols-1 max-[47.5rem]:grid-rows-[auto_minmax(0,1fr)]',
+        'grid h-full min-h-0 flex-1 grid-cols-[var(--page-nav-width,13rem)_minmax(0,1fr)] overflow-hidden bg-transparent max-[47.5rem]:grid-cols-1 max-[47.5rem]:grid-rows-[auto_minmax(0,1fr)]',
         className
       )}
+      data-slot="overlay-split"
     >
       {children}
     </div>
   )
 }
 
-export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
+export function OverlaySidebar({ children, className, docked }: OverlaySidebarProps) {
   return (
     <aside
       className={cn(
@@ -81,6 +86,7 @@ export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
       // Every overlay's left nav (settings, cron, profiles, agents) answers to
       // one name, so a tour can point at "the nav" without knowing which
       // overlay is open. See lib/tour.
+      data-page-panel={docked ? '' : undefined}
       data-tour="overlay-nav"
     >
       {children}
@@ -103,6 +109,7 @@ export function OverlayMain({ children, className }: OverlayMainProps) {
         PAGE_MAX_W,
         className
       )}
+      data-slot="overlay-main"
     >
       {children}
     </main>
@@ -121,12 +128,16 @@ export const OverlayNavItem = memo(function OverlayNavItem({
   onClick,
   trailing
 }: OverlayNavItemProps) {
+  const redesign = usePortalShell()
+
   return (
     <button
       aria-current={current ? 'page' : undefined}
       aria-pressed={pressed}
       className={cn(
-        'row-hover flex h-7 w-full shrink-0 items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
+        'row-hover flex w-full shrink-0 items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
+        // Classic rows are main's fixed 28px; the redesign's grow with its row token and text size.
+        !redesign ? 'h-7' : nested ? 'min-h-7' : 'min-h-(--page-nav-row-height,1.75rem)',
         nested
           ? active
             ? current
@@ -186,7 +197,17 @@ export interface OverlayNavGroup extends OverlayNavLink {
 // dropdown in PageSearchShell), so every OverlaySplitLayout pane degrades the
 // same way instead of stacking its whole sidebar. Drop it in as the first
 // child of an OverlaySplitLayout, before OverlayMain.
-export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: OverlayNavGroup[] }) {
+interface OverlayNavProps {
+  footer?: ReactNode
+  groups: OverlayNavGroup[]
+  title?: string
+  /** A related destination outside this rail (Settings → Agent settings), set off by a divider. */
+  related?: ReactNode
+  /** A control at the title's end (the redesign's settings search, 16292:16369). */
+  titleAction?: ReactNode
+}
+
+export function OverlayNav({ footer, groups, related, title, titleAction }: OverlayNavProps) {
   const { t } = useI18n()
   const navId = useId()
   const [disclosures, setDisclosures] = useState<Record<string, boolean>>({})
@@ -213,99 +234,115 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
     })
   }, [activeGroupId, activeChildId])
 
+  const rows = (
+    <>
+      {groups.map(group => {
+        const hasChildren = Boolean(group.children?.length)
+        const expanded = disclosures[group.id] ?? group.active
+        const childrenId = `${navId}-${group.id}`
+
+        return (
+          <Fragment key={group.id}>
+            {group.gapBefore && <div aria-hidden className="h-2" />}
+            <div className="relative">
+              <OverlayNavItem
+                active={group.active}
+                current={group.active && !group.children?.some(child => child.active)}
+                icon={group.icon}
+                id={group.id}
+                label={group.label}
+                onClick={() => {
+                  if (hasChildren) {
+                    setDisclosures(previous => {
+                      if (previous[group.id] !== false) {
+                        return previous
+                      }
+
+                      const next = { ...previous }
+                      delete next[group.id]
+
+                      return next
+                    })
+                  }
+
+                  group.onSelect()
+                }}
+                trailing={hasChildren ? <span aria-hidden className="w-4 shrink-0" /> : undefined}
+              />
+              {hasChildren && (
+                <Button
+                  aria-controls={childrenId}
+                  aria-expanded={expanded}
+                  aria-label={`${expanded ? t.common.collapse : t.common.expand}: ${group.label}`}
+                  className="absolute right-0.5 top-1/2 -translate-y-1/2"
+                  data-tour={`nav-toggle-${group.id}`}
+                  onClick={() => setDisclosures(previous => ({ ...previous, [group.id]: !expanded }))}
+                  size="icon-xs"
+                  type="button"
+                  variant="ghost"
+                >
+                  <DisclosureCaret open={expanded} />
+                </Button>
+              )}
+            </div>
+            {hasChildren && (
+              <div
+                className={cn('ml-3.5 flex flex-col gap-0.5 pl-1.5', !expanded && 'hidden')}
+                hidden={!expanded}
+                id={childrenId}
+              >
+                {group.children?.map(child => (
+                  <Fragment key={child.id}>
+                    <OverlayNavItem
+                      active={child.active}
+                      current={child.active && !child.children?.some(grandchild => grandchild.active)}
+                      icon={child.icon}
+                      id={child.id}
+                      label={child.label}
+                      nested
+                      onClick={child.onSelect}
+                    />
+                    {child.active && Boolean(child.children?.length) && (
+                      <div className="ml-3 flex flex-col gap-0.5 pl-1.5">
+                        {child.children?.map(grandchild => (
+                          <OverlayNavItem
+                            active={grandchild.active}
+                            icon={grandchild.icon}
+                            id={grandchild.id}
+                            key={grandchild.id}
+                            label={grandchild.label}
+                            nested
+                            onClick={grandchild.onSelect}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </Fragment>
+                ))}
+              </div>
+            )}
+          </Fragment>
+        )
+      })}
+      {related && (
+        <div className="mt-3 border-t border-(--ui-stroke-tertiary) pt-3" data-slot="overlay-nav-related">
+          {related}
+        </div>
+      )}
+      {footer && <div className="mt-auto flex items-center gap-1 pt-2">{footer}</div>}
+    </>
+  )
+
   return (
     <>
-      <OverlaySidebar className={RAIL_HIDDEN}>
-        {groups.map(group => {
-          const hasChildren = Boolean(group.children?.length)
-          const expanded = disclosures[group.id] ?? group.active
-          const childrenId = `${navId}-${group.id}`
-
-          return (
-            <Fragment key={group.id}>
-              {group.gapBefore && <div aria-hidden className="h-2" />}
-              <div className="relative">
-                <OverlayNavItem
-                  active={group.active}
-                  current={group.active && !group.children?.some(child => child.active)}
-                  icon={group.icon}
-                  id={group.id}
-                  label={group.label}
-                  onClick={() => {
-                    if (hasChildren) {
-                      setDisclosures(previous => {
-                        if (previous[group.id] !== false) {
-                          return previous
-                        }
-
-                        const next = { ...previous }
-                        delete next[group.id]
-
-                        return next
-                      })
-                    }
-
-                    group.onSelect()
-                  }}
-                  trailing={hasChildren ? <span aria-hidden className="w-4 shrink-0" /> : undefined}
-                />
-                {hasChildren && (
-                  <Button
-                    aria-controls={childrenId}
-                    aria-expanded={expanded}
-                    aria-label={`${expanded ? t.common.collapse : t.common.expand}: ${group.label}`}
-                    className="absolute right-0.5 top-1/2 -translate-y-1/2"
-                    data-tour={`nav-toggle-${group.id}`}
-                    onClick={() => setDisclosures(previous => ({ ...previous, [group.id]: !expanded }))}
-                    size="icon-xs"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <DisclosureCaret open={expanded} />
-                  </Button>
-                )}
-              </div>
-              {hasChildren && (
-                <div
-                  className={cn('ml-3.5 flex flex-col gap-0.5 pl-1.5', !expanded && 'hidden')}
-                  hidden={!expanded}
-                  id={childrenId}
-                >
-                  {group.children?.map(child => (
-                    <Fragment key={child.id}>
-                      <OverlayNavItem
-                        active={child.active}
-                        current={child.active && !child.children?.some(grandchild => grandchild.active)}
-                        icon={child.icon}
-                        id={child.id}
-                        label={child.label}
-                        nested
-                        onClick={child.onSelect}
-                      />
-                      {child.active && Boolean(child.children?.length) && (
-                        <div className="ml-3 flex flex-col gap-0.5 pl-1.5">
-                          {child.children?.map(grandchild => (
-                            <OverlayNavItem
-                              active={grandchild.active}
-                              icon={grandchild.icon}
-                              id={grandchild.id}
-                              key={grandchild.id}
-                              label={grandchild.label}
-                              nested
-                              onClick={grandchild.onSelect}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </Fragment>
-                  ))}
-                </div>
-              )}
-            </Fragment>
-          )
-        })}
-        {footer && <div className="mt-auto flex items-center gap-1 pt-2">{footer}</div>}
-      </OverlaySidebar>
+      {/* Only the redesign titles its column, and only there is the column the page's sidebar panel. */}
+      {title ? (
+        <OverlayPanelRail action={titleAction} title={title}>
+          {rows}
+        </OverlayPanelRail>
+      ) : (
+        <OverlaySidebar className={RAIL_HIDDEN}>{rows}</OverlaySidebar>
+      )}
 
       {/* Narrow: ride the OverlayView titlebar strip so the dropdown shares the
           close button's row instead of taking its own. The bar is
@@ -317,6 +354,7 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
           'pointer-events-none relative z-20 h-[calc(var(--titlebar-height)+0.1875rem)] items-center justify-between gap-2 pl-3 pr-[calc(var(--titlebar-tools-right,0.75rem)+2.25rem)]',
           BAR_HIDDEN
         )}
+        data-slot="overlay-nav-bar"
       >
         <div className="pointer-events-auto min-w-0 [-webkit-app-region:no-drag]">
           <TabDropdown
@@ -358,5 +396,18 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
         )}
       </div>
     </>
+  )
+}
+
+/** The nav as the page's sidebar panel: it registers as one, so the band offers "Show sidebar" while
+ *  it is folded away, and folds with it. */
+function OverlayPanelRail({ action, children, title }: { action?: ReactNode; children: ReactNode; title: string }) {
+  const open = usePageSidebarOpen()
+
+  return (
+    <OverlaySidebar className={cn(RAIL_HIDDEN, !open && 'hidden')} docked={open}>
+      <PageSidebarHead action={action} title={title} />
+      {children}
+    </OverlaySidebar>
   )
 }

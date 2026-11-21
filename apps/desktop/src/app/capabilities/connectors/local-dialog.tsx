@@ -28,6 +28,7 @@ export interface LocalConnectorDialogProps {
   onReconnect: () => void
   onRemoveServer: () => void
   profile: ProfileScope
+  agentControls?: boolean
 }
 
 export function LocalConnectorDialog({
@@ -40,7 +41,8 @@ export function LocalConnectorDialog({
   onInstall,
   onReconnect,
   onRemoveServer,
-  profile
+  profile,
+  agentControls = true
 }: LocalConnectorDialogProps) {
   const { t } = useI18n()
   const name = localServerName(card)
@@ -74,13 +76,13 @@ export function LocalConnectorDialog({
         }
       }}
       onReconnect={onReconnect}
-      onServerToggle={next => void controller.setServerEnabled(name, next)}
+      onServerToggle={agentControls ? next => void controller.setServerEnabled(name, next) : undefined}
       open
       tools={
         plugin !== undefined ? (
           <PluginToolsPanel card={card} onOpenPlugins={openPlugins} plugin={plugin} scope={profile} />
         ) : installed ? (
-          <LocalToolsPanel card={card} controller={controller} onRemove={onRemoveServer} />
+          <LocalToolsPanel card={card} controller={controller} onRemove={onRemoveServer} readOnly={!agentControls} />
         ) : (
           <PanelEmpty
             description={t.connectorsPage.tools.notInstalledBody}

@@ -3,13 +3,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $agentPlugins,
+  $agentPluginsOwnerKey,
   $agentPluginsProfile,
   type AgentPluginRow,
+  type GatewayRequest,
   inspectAgentPlugin,
   installAgentPlugin,
   isDesktopRelevantPlugin,
+  loadAgentPlugins,
   normalizeAgentPluginRow,
-  saveAgentPluginSettings
+  saveAgentPluginSettings,
+  toggleAgentPlugin
 } from './agent-plugins'
 
 const row = (partial: Partial<AgentPluginRow>): AgentPluginRow =>
@@ -18,6 +22,7 @@ const row = (partial: Partial<AgentPluginRow>): AgentPluginRow =>
 afterEach(() => {
   vi.useRealTimers()
   $agentPluginsProfile.set(undefined)
+  $agentPluginsOwnerKey.set(undefined)
 })
 
 describe('installAgentPlugin', () => {
@@ -310,5 +315,50 @@ describe('saveAgentPluginSettings (#46600, #87934)', () => {
     expect(request).toHaveBeenCalledTimes(1)
     expect($agentPlugins.get()).toEqual([other])
     expect($agentPluginsProfile.get()).toBe('other')
+  })
+})
+
+describe('explicit plugin gateway owners', () => {
+  it('does not coalesce same-profile reads across gateways or publish a late result over the new owner', async () => {
+    const a = Promise.withResolvers<{ plugins: AgentPluginRow[] }>()
+    const first = Object.assign(vi.fn().mockReturnValue(a.promise), { ownerKey: 'gateway-a/research' })
+
+    const second = Object.assign(
+      vi.fn().mockResolvedValue({ plugins: [row({ key: 'demo', description: 'gateway-b' })] }),
+      { ownerKey: 'gateway-b/research' }
+    )
+
+    const pending = loadAgentPlugins(first as GatewayRequest, 'research')
+    await loadAgentPlugins(second as GatewayRequest, 'research')
+    expect(second).toHaveBeenCalledTimes(1)
+    a.resolve({ plugins: [row({ key: 'demo', description: 'gateway-a' })] })
+    await pending
+    expect($agentPlugins.get()[0].description).toBe('gateway-b')
+    expect($agentPluginsOwnerKey.get()).toBe('gateway-b/research')
+  })
+
+  it('keeps a late toggle from patching the same plugin key on another gateway', async () => {
+    const a = Promise.withResolvers<{ ok: boolean; plugin: AgentPluginRow }>()
+
+    const first = Object.assign(
+      vi
+        .fn()
+        .mockResolvedValueOnce({ plugins: [row({ key: 'demo', status: 'enabled' })] })
+        .mockReturnValueOnce(a.promise),
+      { ownerKey: 'gateway-a/research' }
+    )
+
+    const second = Object.assign(
+      vi.fn().mockResolvedValue({ plugins: [row({ key: 'demo', status: 'enabled', description: 'gateway-b' })] }),
+      { ownerKey: 'gateway-b/research' }
+    )
+
+    await loadAgentPlugins(first as GatewayRequest, 'research')
+    const pending = toggleAgentPlugin(first as GatewayRequest, 'demo', false, 'Failed', 'research')
+    await loadAgentPlugins(second as GatewayRequest, 'research')
+    a.resolve({ ok: true, plugin: row({ key: 'demo', status: 'disabled', description: 'gateway-a' }) })
+    expect(await pending).toBe(true)
+    expect($agentPlugins.get()[0]).toMatchObject({ status: 'enabled', description: 'gateway-b' })
+    expect(first).toHaveBeenCalledTimes(2)
   })
 })

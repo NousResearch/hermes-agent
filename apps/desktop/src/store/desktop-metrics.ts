@@ -35,11 +35,14 @@
 import { randomUuid } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { $apiRequestScope } from '@/api/client'
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { KEYBIND_ACTION_IDS, KEYBIND_READONLY } from '@/lib/keybinds/actions'
 import { readJson, writeJson } from '@/lib/storage'
 
+import { sendDesktopDaily } from './desktop-metrics-daily'
 import { type DesktopFrameConsent, DesktopFrameMetrics } from './desktop-metrics-frames'
+import { IA_ACTION_IDS } from './ia-metrics-contract'
 import type { SharedMetricsRequester } from './shared-metrics'
 
 // ── closed vocabularies ───────────────────────────────────────────────────────
@@ -74,6 +77,7 @@ export type DesktopFeatureArea =
   | 'bot_mode'
   | 'browser_pane'
   | 'capabilities'
+  | 'classic_sidebar'
   | 'command_center'
   | 'command_palette'
   | 'cron'
@@ -110,6 +114,7 @@ export type DesktopFeatureArea =
   | 'settings_providers'
   | 'settings_sessions'
   | 'settings_vault'
+  | 'simplified_sidebar'
   | 'skins'
   | 'starmap'
   | 'terminal_pane'
@@ -280,23 +285,32 @@ export type DesktopOnboardingEvent = 'abandoned' | 'completed' | 'reached'
 export const DESKTOP_BUTTON_ACTIONS = {
   composerAttach: 'composer.attach',
   messageCopy: 'message.copy',
-  messageRetry: 'message.retry'
+  messageRetry: 'message.retry',
+  sidebarEnableSettings: 'sidebar.simplified.enable_settings',
+  sidebarDisable: 'sidebar.simplified.disable'
 } as const
 
-export type DesktopActionVia = 'click' | 'menu' | 'palette' | 'shortcut'
+export type DesktopActionVia = 'click' | 'menu' | 'palette' | 'shortcut' | 'state'
 
 /** Built-in action ids (DESKTOP_ACTION_IDS on the backend); anything else — a plugin's palette
  *  command or keybinding, a numbered slot (`profile.switch.3`) — is `other`. */
 const ACTION_IDS: ReadonlySet<string> = new Set(
   [
     ...KEYBIND_ACTION_IDS,
+    ...IA_ACTION_IDS,
     ...KEYBIND_READONLY.map(action => action.id),
     ...Object.values(DESKTOP_BUTTON_ACTIONS)
   ].filter(id => !/\.\d+$/.test(id))
 )
 
 export type DesktopDislikeSignal =
-  'cancelled' | 'feature_disabled' | 'quick_close' | 'rage_click' | 'setting_off_default' | 'undo'
+  | 'cancelled'
+  | 'feature_disabled'
+  | 'quick_close'
+  | 'rage_click'
+  | 'setting_off_default'
+  | 'sidebar_disabled_reason'
+  | 'undo'
 
 export type DesktopFlowId =
   | 'command_palette'
@@ -316,6 +330,7 @@ export type DesktopFeatureToggle =
   | 'native_notifications'
   | 'notification_kind'
   | 'reactions'
+  | 'simplified_sidebar'
   | 'thread_timeline'
   | 'tips'
   | 'tours'
@@ -386,7 +401,8 @@ export const $desktopMetricsGate = atom<DesktopMetricsGate>(null)
 const LAUNCH_ID = randomUuid()
 
 /** Hash of the bound `connection|profile`: names the local record and main's crash consent. */
-let scope = scopeKey('|default')
+let boundOwner: string | null = requestScopeOwner()
+let scope = scopeKey(boundOwner)
 let request: SharedMetricsRequester | null = null
 let queue: [string, Record<string, unknown>][] = []
 let flushingDays = false
@@ -402,6 +418,33 @@ const recentClicks = new Map<string, number[]>()
 let visibleMaxSpanMs = 0
 let frameMetrics: DesktopFrameMetrics | null = null
 let gateOwner = 0
+
+function requestScopeOwner(): string {
+  const { connectionId, profile } = $apiRequestScope.get()
+
+  return `${connectionId ?? ''}|${profile?.trim() || 'default'}`
+}
+
+/** `connection|profile` is the published request scope. An unset half has not been published
+ *  (the launch profile / the local pool): the binder names it from its own fallback
+ *  (use-desktop-metrics), so any value matches it. A published half must match exactly. */
+function ownsRequestScope(candidate: string | null): boolean {
+  if (candidate === null) {
+    return false
+  }
+
+  const { connectionId, profile } = $apiRequestScope.get()
+  const at = candidate.lastIndexOf('|')
+
+  return (
+    (connectionId === null || candidate.slice(0, at) === connectionId) &&
+    (profile === null || candidate.slice(at + 1) === (profile.trim() || 'default'))
+  )
+}
+
+export function desktopMetricsEnabled(): boolean {
+  return ownsRequestScope(boundOwner) && $desktopMetricsGate.get() === 'on'
+}
 
 /** FNV-1a: the local key never carries a profile name. */
 function scopeKey(value: string): string {
@@ -532,7 +575,7 @@ function withState<T = void>(
   after?: (result: T) => void,
   collector = frameMetrics
 ): Promise<T | undefined> | undefined {
-  if ($desktopMetricsGate.get() !== 'on' || !collector?.isCurrent() || frameMetrics !== collector) {
+  if (!desktopMetricsEnabled() || !collector?.isCurrent() || frameMetrics !== collector) {
     return undefined
   }
 
@@ -566,7 +609,7 @@ function withState<T = void>(
 }
 
 function send(method: string, params: Record<string, unknown>): void {
-  if ($desktopMetricsGate.get() !== 'on') {
+  if (!desktopMetricsEnabled()) {
     return
   }
 
@@ -596,7 +639,7 @@ function takeCap(current: MetricsState, key: string, cap: number): boolean {
 
 /** An area opened. Reported once per UTC day; the open time also arms quick_close. */
 export function recordFeatureUse(area: DesktopFeatureArea, now = Date.now()): void {
-  if ($desktopMetricsGate.get() !== 'on' || !frameMetrics?.isCurrent()) {
+  if (!desktopMetricsEnabled() || !frameMetrics?.isCurrent()) {
     return
   }
 
@@ -639,6 +682,10 @@ export function trackArea(area: DesktopFeatureArea, open: boolean, now = Date.no
 /** A flow/dialog opened (true) or closed (false). Closing one that never
  *  reached `completeFlow` is a `cancelled` dislike. */
 export function trackFlow(flow: DesktopFlowId, open: boolean): void {
+  if (!desktopMetricsEnabled()) {
+    return
+  }
+
   if (open) {
     openFlows.set(flow, false)
 
@@ -666,7 +713,7 @@ export function completeFlow(flow: DesktopFlowId): void {
  *  gateway switch starting in the window (Restart Hermes recycles the backend
  *  before the switch flag rises) cancels it. */
 export function noteBackendDrop(reason: 'timeout' | null, now = Date.now()): void {
-  if (pendingDrop || $desktopMetricsGate.get() !== 'on') {
+  if (pendingDrop || !desktopMetricsEnabled()) {
     return
   }
 
@@ -776,7 +823,7 @@ export function recordAction(rawAction: string, via: DesktopActionVia, now = Dat
     current.today.actions[key] = (current.today.actions[key] ?? 0) + 1
   })
 
-  if (via !== 'click' || $desktopMetricsGate.get() !== 'on') {
+  if (via !== 'click' || !desktopMetricsEnabled()) {
     return
   }
 
@@ -793,6 +840,10 @@ export function recordAction(rawAction: string, via: DesktopActionVia, now = Dat
 /** A user interaction (pointer/key/wheel): active time accrues to the current
  *  Desktop mode for every gap up to ACTIVE_IDLE_GAP_MS; a longer gap was idle. */
 export function noteInteraction(now = Date.now(), mode: DesktopMode = $workspaceMode.get()): void {
+  if (!desktopMetricsEnabled()) {
+    return
+  }
+
   const gap = lastInteractionAt ? now - lastInteractionAt : 0
 
   lastInteractionAt = now
@@ -851,6 +902,10 @@ export function setDesktopBotCount(count: number): void {
 
 /** Hold a first-run transition until the consent answer: true when held (or dropped: no is known). */
 function heldForConsent(replay: () => void): boolean {
+  if (!ownsRequestScope(boundOwner)) {
+    return true
+  }
+
   if ($desktopMetricsGate.get() === 'on') {
     return false
   }
@@ -970,14 +1025,14 @@ async function flushPendingDays(): Promise<void> {
       const reported = day.day
 
       const settled = () => scope === owner && request === requester && frameMetrics === collector &&
-        $desktopMetricsGate.get() === 'on' && collector?.isCurrent() === true
+        desktopMetricsEnabled() && collector?.isCurrent() === true
 
       if (!settled()) {
         return
       }
 
       if (dayHasDailyUse(day)) {
-        const recorded = await sendDaily(requester, day).catch(() => false)
+        const recorded = await sendDaily(requester, day, settled).catch(() => false)
 
         if (!settled()) {
           return
@@ -1027,21 +1082,29 @@ async function flushPendingDays(): Promise<void> {
   }
 }
 
-async function sendDaily(requester: SharedMetricsRequester, day: DayAggregate): Promise<boolean> {
-  const result = await requester<{ recorded?: boolean }>('shared_metrics.desktop_daily', {
-    actions: Object.entries(day.actions)
-      .filter(([, count]) => count > 0)
-      .map(([key, count]) => {
-        const at = key.lastIndexOf('|')
+async function sendDaily(
+  requester: SharedMetricsRequester,
+  day: DayAggregate,
+  canRetry: () => boolean
+): Promise<boolean> {
+  const result = await sendDesktopDaily(
+    requester,
+    {
+      actions: Object.entries(day.actions)
+        .filter(([, count]) => count > 0)
+        .map(([key, count]) => {
+          const at = key.lastIndexOf('|')
 
-        return { action: key.slice(0, at), count, via: key.slice(at + 1) }
-      }),
-    bot_count: day.botCount,
-    day: day.day,
-    modes: (['bots', 'sessions'] as const)
-      .filter(mode => day.modes[mode])
-      .map(mode => ({ active_ms: day.modes[mode]!.activeMs, messages_sent: day.modes[mode]!.messages, mode }))
-  })
+          return { action: key.slice(0, at), count, via: key.slice(at + 1) as DesktopActionVia }
+        }),
+      bot_count: day.botCount,
+      day: day.day,
+      modes: (['bots', 'sessions'] as const)
+        .filter(mode => day.modes[mode])
+        .map(mode => ({ active_ms: day.modes[mode]!.activeMs, messages_sent: day.modes[mode]!.messages, mode }))
+    },
+    canRetry
+  )
 
   return result?.recorded === true
 }
@@ -1049,11 +1112,18 @@ async function sendDaily(requester: SharedMetricsRequester, day: DayAggregate): 
 /** Renderer crashes main persisted while this renderer (or its predecessor) was gone. */
 async function drainRendererCrashes(): Promise<void> {
   const bridge = window.hermesDesktop?.desktopMetrics
+  const generation = gateOwner
 
   try {
     const pending = await bridge?.takeRendererCrashes?.()
 
     if (!pending) {
+      return
+    }
+
+    if (generation !== gateOwner || !desktopMetricsEnabled()) {
+      await bridge?.ackRendererCrashes?.(false)
+
       return
     }
 
@@ -1064,7 +1134,7 @@ async function drainRendererCrashes(): Promise<void> {
         recordFriction('renderer_crash', reason)
       }
 
-      sent = $desktopMetricsGate.get() === 'on'
+      sent = desktopMetricsEnabled()
     } finally {
       await bridge?.ackRendererCrashes?.(sent)
     }
@@ -1075,7 +1145,7 @@ async function drainRendererCrashes(): Promise<void> {
 
 /** Send everything waiting: queued events, finished days, abandoned steps, crashes. */
 export function flushDesktopMetrics(): void {
-  if ($desktopMetricsGate.get() !== 'on' || !request || !frameMetrics?.isCurrent()) {
+  if (!desktopMetricsEnabled() || !request || !frameMetrics?.isCurrent()) {
     return
   }
 
@@ -1107,6 +1177,7 @@ function forgetInMemory(): void {
   areaOpenedAt.clear()
   openFlows.clear()
   recentClicks.clear()
+  lastInteractionAt = 0
   cancelPendingBackendDrop()
 
   frameMetrics?.stop()
@@ -1166,7 +1237,8 @@ export async function captureDesktopMetricsGate(profileScope?: string): Promise<
     // Validation must not mint a replacement cohort for an old asynchronous result.
     const current = await DesktopFrameMetrics.captureCoordinated(key, false)
 
-    if (!ownsView() || current.epoch !== captured.epoch || current.consent !== captured.consent ||
+    if (!ownsView() || !ownsRequestScope(boundOwner) || current.epoch !== captured.epoch ||
+      current.consent !== captured.consent ||
       (captured.active && !current.active)) {
       return false
     }
@@ -1228,10 +1300,17 @@ function setDesktopMetricsGate(next: Exclude<DesktopMetricsGate, 'off'>, capture
  *  `profileScope` (`connection|profile`) other than the bound one forgets the gate until that
  *  profile's switch is read. */
 export function bindDesktopMetrics(next: SharedMetricsRequester | null, profileScope?: string): void {
-  const nextScope = profileScope === undefined ? scope : scopeKey(profileScope)
+  const nextOwner = profileScope ?? requestScopeOwner()
 
-  if (nextScope !== scope) {
+  if (!ownsRequestScope(nextOwner)) {
+    return
+  }
+
+  const nextScope = scopeKey(nextOwner)
+
+  if (nextOwner !== boundOwner) {
     forgetInMemory()
+    boundOwner = nextOwner
     scope = nextScope
     preConsent = []
     $desktopMetricsGate.set(null)
@@ -1240,6 +1319,21 @@ export function bindDesktopMetrics(next: SharedMetricsRequester | null, profileS
   request = next
   flushDesktopMetrics()
 }
+
+// React effects rebind later. Revoke the previous owner's authority at publication,
+// before any newly rendered recorder can borrow its consent or transport.
+$apiRequestScope.listen((next, previous) => {
+  if (next.connectionId === previous.connectionId && next.profile === previous.profile) {
+    return
+  }
+
+  boundOwner = null
+  request = null
+  preConsent = null
+  forgetInMemory()
+  $desktopMetricsGate.set(null)
+  tellMain(false)
+})
 
 /** Profile deletion also revokes sleeping windows before their next frame checkpoint. */
 export function dropDesktopMetricsForProfile(profile: string, connectionId = 'local'): void {
@@ -1282,7 +1376,8 @@ export function tickDesktopMetrics(): void {
 
 /** Test-only: forget in-memory state (localStorage is the test's to clear). */
 export function resetDesktopMetricsForTests(): void {
-  scope = scopeKey('|default')
+  boundOwner = requestScopeOwner()
+  scope = scopeKey(boundOwner)
   preConsent = []
   request = null
   queue = []

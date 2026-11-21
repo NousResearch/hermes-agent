@@ -22,7 +22,7 @@ import {
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 
 const BG_DOT_LABEL = 'Background task running'
-const SESSION_RUNNING_DOT_LABEL = 'Session running'
+const SESSION_RUNNING_DOT_LABEL = 'Chat running'
 // Script indices must line up with real chat turns (see sidebar-states.spec.ts).
 const DISABLE_AUTO_TITLE = 'auxiliary:\n  title_generation:\n    enabled: false'
 

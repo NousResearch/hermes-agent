@@ -34,6 +34,7 @@ import { AlertCircle, Check, Copy, ExternalLink, Terminal } from '@/lib/icons'
 import { resolveUpdateCopy, rollbackRelease, type UpdateTarget } from '@/lib/update-copy'
 import { fetchUpdateNoteItems, updateNotesSource, updateNotesUrl, updateReleaseTag } from '@/lib/update-notes'
 import { cn } from '@/lib/utils'
+import { usePortalShell } from '@/store/shell-variant'
 import {
   $backendUpdateApply,
   $backendUpdateChecking,
@@ -57,6 +58,7 @@ import {
 
 import { DiscontinuedNotice } from './retirement-view'
 import { UpdateErrorReport } from './update-error-report'
+import { PortalUpdateApplying, PortalUpdatePitch, updatesDialogClass } from './updates-portal-views'
 
 function totalItems(groups: readonly CommitGroup[]) {
   return groups.reduce((sum, g) => sum + g.items.length, 0)
@@ -209,6 +211,9 @@ export function UpdatesOverlay() {
   const updateAvailable = status?.updateAvailable || behind > 0
 
   const phase = overlayPhase(apply)
+  const portal = usePortalShell()
+
+  const dialogClassName = updatesDialogClass(portal, phase, status, updateAvailable, isBackend)
 
   const handleClose = (next: boolean) => {
     if (phase === 'applying') {
@@ -237,7 +242,7 @@ export function UpdatesOverlay() {
         // The error box grows (output, inline report notice): let the body
         // scroll there so short windows still reach Upload.
         bodyClassName={cn('p-0 gap-0', phase !== 'error' && 'overflow-hidden')}
-        className="max-w-sm"
+        className={dialogClassName}
         onOpenAutoFocus={preventCloseButtonAutoFocus}
         showCloseButton={phase !== 'applying'}
       >
@@ -321,6 +326,7 @@ function IdleView({
   const { t } = useI18n()
   const u = t.updates
   const notes = useUpdateNotes(status, updateAvailable)
+  const portal = usePortalShell()
 
   if (!status && checking) {
     return (
@@ -446,6 +452,20 @@ function IdleView({
       })
 
   const handleCopyFullLog = () => formatFullChangelogText(commits, behind, status.branch)
+
+  if (portal) {
+    return (
+      <PortalUpdatePitch
+        body={body}
+        changelog={groups.flatMap(group => group.items)}
+        notes={notes}
+        onInstall={onInstall}
+        onLater={onLater}
+        rollbackTag={rollbackTag}
+        title={title}
+      />
+    )
+  }
 
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
@@ -611,6 +631,7 @@ function ApplyingView({
 }) {
   const { t } = useI18n()
   const u = t.updates
+  const portal = usePortalShell()
   const label = u.stages[apply.stage as DesktopUpdateStage] ?? u.stages.idle
   const isWindowsPackage = statusMechanism === 'app-installer' || statusMechanism === 'microsoft-store'
 
@@ -623,6 +644,10 @@ function ApplyingView({
     typeof apply.percent === 'number' && Number.isFinite(apply.percent)
       ? Math.max(2, Math.min(100, Math.round(apply.percent)))
       : null
+
+  if (portal) {
+    return <PortalUpdateApplying apply={apply} body={body} closeNote={u.applyingClose} label={u.stages.update} />
+  }
 
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7">

@@ -3,15 +3,28 @@
   "name": "read_file",
   "parameters": {
     "properties": {
+      "cursor": {
+        "description": "Outline continuation from next_cursor, for the same path and task. Expires in 10 minutes; restart if file changed.",
+        "type": "string"
+      },
       "limit": {
         "default": 2000,
-        "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.",
+        "description": "Maximum lines (default/max 2000); in outline mode, maximum headings (capped at 500). Output is also character-budgeted.",
         "maximum": 2000,
         "type": "integer"
       },
+      "mode": {
+        "default": "read",
+        "description": "outline: Markdown headings/levels/source lines, not body content; scans up to 2 MiB per call. Stop when a useful heading is found and read its body. Follow next_cursor only for more headings; scan_complete marks a complete outline. Default read is unchanged.",
+        "enum": [
+          "read",
+          "outline"
+        ],
+        "type": "string"
+      },
       "offset": {
         "default": 1,
-        "description": "Line number to start reading from (1-indexed, default: 1)",
+        "description": "Starting line (1-based); in outline mode, initial heading ordinal. Ignored with cursor.",
         "minimum": 1,
         "type": "integer"
       },

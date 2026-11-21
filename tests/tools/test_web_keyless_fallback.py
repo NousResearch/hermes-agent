@@ -410,6 +410,22 @@ class TestResolutionOrder:
         provider = registry.get_active_search_provider()
         assert provider is not None and provider.name == "exa"
 
+    def test_keenable_key_beats_free_backends_in_both_walks(self, fresh_registry, monkeypatch):
+        # A Keenable key next to a self-hosted SearXNG: _autodetect_backend dispatches to
+        # keenable, so the registry walk behind `hermes doctor` must name keenable too.
+        from plugins.web.keenable.provider import KeenableWebSearchProvider
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        registry.register_provider(KeenableWebSearchProvider())
+        registry.register_provider(SearXNGWebSearchProvider())
+        env = {"KEENABLE_API_KEY": "keen_test", "SEARXNG_URL": "http://localhost:8888"}
+        monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
+        monkeypatch.setattr("agent.web_search_provider.get_provider_env", lambda name: env.get(name, ""))
+        monkeypatch.setattr(web_tools, "_env_value", lambda name: env.get(name, ""))
+        assert web_tools._autodetect_backend() == "keenable"
+        for provider in (registry.get_active_search_provider(), registry.get_active_extract_provider()):
+            assert provider is not None and provider.name == "keenable"
+
     def test_get_backend_keyless_last(self, monkeypatch):
         # No creds at all -> a keyless vendor per the process-stable split.
         monkeypatch.setattr(

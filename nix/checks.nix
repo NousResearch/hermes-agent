@@ -351,6 +351,64 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               ''
           );
 
+        # ── An unmanaged Home Manager install ────────────────────────────
+        # `managed = false` leaves the configuration runtime-owned. The
+        # activation must remove a stale marker instead of writing one, and
+        # the processes must report the opt-out, so `hermes config set`
+        # works in a shell and in the services.
+        home-manager-module-unmanaged =
+          let
+            cfg = (evalHomeModule {
+              enable = true;
+              managed = false;
+              gateway.enable = true;
+              backend.mode = "serve";
+            }).config;
+
+            processes =
+              if pkgs.stdenv.hostPlatform.isDarwin then
+                lib.mapAttrs (_: agent: {
+                  env = agent.config.EnvironmentVariables;
+                }) (lib.filterAttrs (n: _: lib.hasPrefix "hermes" n) cfg.launchd.agents)
+              else
+                lib.mapAttrs (_: unit: {
+                  env = unit.Service.Environment;
+                }) (lib.filterAttrs (n: _: lib.hasPrefix "hermes" n) cfg.systemd.user.services);
+
+            names = lib.attrNames processes;
+            envOf = name: lib.concatStringsSep " " (
+              let env = processes.${name}.env;
+              in if lib.isAttrs env then lib.mapAttrsToList (k: v: "${k}=${toString v}") env else env
+            );
+
+            activation = cfg.home.activation.hermesAgentSetup.data;
+
+            failures =
+              lib.optional (names != [
+                "hermes-agent"
+                "hermes-backend"
+              ]) "expected hermes-agent + hermes-backend processes, got: ${toString names}"
+              ++ lib.optional (
+                lib.hasInfix "hermes-managed" activation
+              ) "an unmanaged install must write no .managed marker"
+              ++ lib.optional (
+                !lib.hasInfix "rm -f /home/hermes-check/.hermes/.managed" activation
+              ) "an unmanaged install must remove a stale .managed marker"
+              ++ lib.optional (
+                lib.any (n: !lib.hasInfix "HERMES_MANAGED=false" (envOf n)) names
+              ) "processes must report HERMES_MANAGED=false so the CLI lets a config change through";
+          in
+          pkgs.runCommand "hermes-home-manager-module-unmanaged" { } (
+            if failures != [ ] then
+              throw "Home Manager unmanaged check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
+            else
+              ''
+                echo "PASS: managed = false removes the marker and reports HERMES_MANAGED=false"
+                mkdir -p $out
+                echo "ok" > $out/result
+              ''
+          );
+
         # ── Workspace files need a chosen directory ──────────────────────
         # `documents` goes into workingDirectory. The default of that option
         # is bad, and it is different on each module, so the modules refuse
@@ -806,6 +864,47 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             else
               ''
                 echo "PASS: nixos module evaluates (${toString (lib.length names)} units)"
+                mkdir -p $out
+                echo "ok" > $out/result
+              ''
+          );
+
+        # ── An unmanaged NixOS install ───────────────────────────────────
+        # The same opt-out on the NixOS module: no marker in the activation,
+        # a stale one removed, and HERMES_MANAGED=false on both units.
+        nixos-module-unmanaged =
+          let
+            cfg = (evalNixosModule {
+              enable = true;
+              managed = false;
+              backend.mode = "dashboard";
+            }).config;
+
+            units = lib.filterAttrs (n: _: lib.hasPrefix "hermes" n) cfg.systemd.services;
+            names = lib.attrNames units;
+            activation = cfg.system.activationScripts."hermes-agent-setup".text;
+
+            failures =
+              lib.optional (names != [
+                "hermes-agent"
+                "hermes-backend"
+              ]) "expected hermes-agent + hermes-backend units, got: ${toString names}"
+              ++ lib.optional (
+                lib.hasInfix "hermes-managed" activation
+              ) "an unmanaged install must write no .managed marker"
+              ++ lib.optional (
+                !lib.hasInfix "rm -f /var/lib/hermes/.hermes/.managed" activation
+              ) "an unmanaged install must remove a stale .managed marker"
+              ++ lib.optional (
+                lib.any (n: units.${n}.environment.HERMES_MANAGED or null != "false") names
+              ) "the units must run with HERMES_MANAGED=false so the CLI lets a config change through";
+          in
+          pkgs.runCommand "hermes-nixos-module-unmanaged" { } (
+            if failures != [ ] then
+              throw "NixOS unmanaged check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
+            else
+              ''
+                echo "PASS: managed = false removes the marker and reports HERMES_MANAGED=false"
                 mkdir -p $out
                 echo "ok" > $out/result
               ''

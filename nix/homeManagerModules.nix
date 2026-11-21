@@ -67,7 +67,7 @@
         inherit (cfg) hermesHome;
         # The CLI reads this value and names it when it refuses a
         # configuration change.
-        managedSystem = "home-manager";
+        managedSystem = if cfg.managed then "home-manager" else "false";
       };
       unitPath = lib.makeBinPath (common.processPath { inherit pkgs cfg; });
 
@@ -397,7 +397,7 @@
                       inherit (cfg) hermesHome workingDirectory;
                       run = "$DRY_RUN_CMD ";
                       stateDirs = common.stateSubdirs;
-                      managedSystem = "home-manager";
+                      managedSystem = if cfg.managed then "home-manager" else null;
                       # This state has one user. No group needs access to it.
                       modes = {
                         config = "0600";

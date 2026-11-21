@@ -236,7 +236,10 @@
       commonUnitEnvironment = {
         HOME = cfg.stateDir;
       }
-      // common.processEnvironment { inherit hermesHome; }
+      // common.processEnvironment {
+        inherit hermesHome;
+        managedSystem = if cfg.managed then "true" else "false";
+      }
       // common.backendSessionEnvironment { inherit cfg; };
 
       unitPath = common.processPath { inherit pkgs cfg; };
@@ -487,6 +490,7 @@
                     configWorkingDirectory = effectiveWorkDir;
                     owner = "${cfg.user}:${cfg.group}";
                     stateDirs = common.stateSubdirs;
+                    managedSystem = if cfg.managed then "nixos" else null;
                     modes = {
                       config = configYamlMode;
                       env = "0640";

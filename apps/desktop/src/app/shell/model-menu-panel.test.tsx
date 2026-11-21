@@ -576,10 +576,10 @@ describe('ModelMenuPanel provider collapse', () => {
   })
 })
 
-describe('ModelMenuPanel pinned draft', () => {
+describe('ModelMenuPanel manual composer selection', () => {
   afterEach(() => setCurrentModelSource(''))
 
-  it('offers the way back to the Settings default only while a draft carries a manual pick (#107410)', async () => {
+  it('offers the way back to the Settings default whenever a manual pick can affect the next chat (#138262)', async () => {
     $activeSessionId.set(null)
     setCurrentModelSource('manual')
     const onFollowDefaultModel = vi.fn()
@@ -595,11 +595,13 @@ describe('ModelMenuPanel pinned draft', () => {
     expect(unpinned.content.queryByText('Use Settings default')).toBeNull()
     cleanup()
 
-    // A live session runs its own model; the pin only decides the NEXT new chat.
+    // A live session runs its own model, but the manual source still decides
+    // the NEXT new chat. The escape hatch must remain reachable here.
     $activeSessionId.set('runtime-1')
     setCurrentModelSource('manual')
-    const live = renderPanel(vi.fn(), vi.fn())
-    await live.content.findByText('Refresh models')
-    expect(live.content.queryByText('Use Settings default')).toBeNull()
+    const onFollowLiveDefault = vi.fn()
+    const live = renderPanel(vi.fn(), onFollowLiveDefault)
+    fireEvent.click(await live.content.findByText('Use Settings default'))
+    expect(onFollowLiveDefault).toHaveBeenCalledTimes(1)
   })
 })

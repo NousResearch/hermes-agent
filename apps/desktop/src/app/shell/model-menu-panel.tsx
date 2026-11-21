@@ -36,9 +36,9 @@ export function ModelMenuPanel({ onFollowDefaultModel, ...props }: ModelMenuPane
   const view = useSessionView()
   const modelSource = useStore($currentModelSource)
   const { activeSessionId, controller } = useModelMenuController(props)
-  // Same condition as the pill's pin dot: a draft whose next session.create
-  // ships the manual pick instead of the Settings default (#107410).
-  const pinnedDraft = view.kind === 'primary' && !activeSessionId && modelSource === 'manual'
+  // A live session keeps its own model, but this source still controls the
+  // next session.create. Keep the escape hatch available until it is cleared.
+  const pinnedComposerSelection = view.kind === 'primary' && modelSource === 'manual'
 
   // Explicit "Refresh Models": re-fetch the catalog with refresh:true so the
   // backend busts its 1h provider-model disk cache and re-pulls each provider's
@@ -79,7 +79,7 @@ export function ModelMenuPanel({ onFollowDefaultModel, ...props }: ModelMenuPane
       controller={controller}
       footer={
         <>
-          {pinnedDraft && onFollowDefaultModel && (
+          {pinnedComposerSelection && onFollowDefaultModel && (
             <DropdownMenuItem
               className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
               onSelect={onFollowDefaultModel}

@@ -1,6 +1,6 @@
 ---
 name: simplify-code
-description: "Parallel 4-agent cleanup of recent code changes."
+description: "Four-angle review and cleanup of recent code changes."
 version: 1.1.0
 author: Hermes Agent (inspired by Claude Code /simplify)
 license: MIT
@@ -11,20 +11,21 @@ metadata:
     related_skills: [requesting-code-review, test-driven-development]
 ---
 
-# Simplify Code — Parallel Review & Cleanup
+# Simplify Code — Four-Angle Review & Cleanup
 
-Review your recent code changes with four focused reviewers running in
-parallel, aggregate their findings, and apply the fixes worth applying.
+Review your recent code changes from four focused angles. Use parallel
+reviewers when delegation permits, otherwise cover the same angles inline;
+aggregate the findings and apply the fixes worth applying.
 
 **This is a cleanup pass, not a bug hunt.** You are improving the quality of
 code that already works — removing duplication, flattening needless
 complexity, cutting waste, and deepening band-aid fixes. Do not go hunting
 for correctness bugs here; that's what `requesting-code-review` is for.
 
-**Core principle:** Four narrow reviewers beat one broad reviewer. Each one
-deeply searches the codebase for a single class of problem — reuse, quality,
-efficiency, altitude — without diluting its attention across all four. They
-run concurrently, so you pay the latency of one review, not four.
+**Core principle:** Keep the review angles distinct — reuse, quality,
+efficiency, altitude — and search deeply for each class of problem. Parallel
+reviewers can reduce elapsed time when the session's limits permit them;
+delegation is not a prerequisite for covering all four angles.
 
 ## When to Use
 
@@ -39,14 +40,14 @@ Optional modifiers the user may add — honor them:
 - **Focus:** "simplify focus on efficiency" → run only the efficiency reviewer
   (or weight the aggregation toward it). Recognized focuses: `reuse`,
   `quality` (also accepts `simplification`), `efficiency`, `altitude`.
-- **Dry run:** "simplify but don't change anything" / "just report" → run the
-  four reviewers, present findings, apply NOTHING. Ask before applying.
+- **Dry run:** "simplify but don't change anything" / "just report" → cover the
+  requested review angles, present findings, apply NOTHING. Ask before applying.
 - **Scope:** "simplify the last commit" / "simplify staged" / "simplify
   src/foo.py" → narrow the diff source accordingly (see Phase 1).
 
 Do NOT auto-run this after every edit or tack it onto the end of unrelated
-tasks. It costs four subagents' worth of tokens — invoke it only when the
-user explicitly asks.
+tasks. A full delegated pass uses four subagents; an inline pass still costs
+review time and context. Invoke it only when the user explicitly asks.
 
 ## The Process
 
@@ -79,12 +80,21 @@ changed lines), warn the user that four subagents each carrying the full diff
 will be token-heavy, and offer to scope it down (per-directory, per-commit)
 before proceeding.
 
-### Phase 2 — Launch four reviewers in parallel
+### Phase 2 — Choose the review execution mode
 
-Use `delegate_task` **batch mode** — pass all four tasks in one `tasks`
-array so they run concurrently. Four is the right fan-out for this pattern;
-it's within the `delegation.max_concurrent_children` budget on any default
-install.
+Check the current `delegate_task` contract and remaining budget first.
+`delegation.max_concurrent_children` limits concurrent children; it is not
+a total-session allowance. Finite one-shot sessions also have a cumulative
+`delegation.oneshot_max_children` limit (default **2**), including children
+already used in that session. A four-child batch does not fit that default.
+
+If delegation is available and all requested reviewers fit both limits,
+pass their tasks in one `tasks` array. Otherwise use the inline fallback
+below. Do not raise limits or split batches to evade a cumulative cap.
+
+When the active schema exposes `group`, give all requested reviewers the
+same `group`: this cleanup aggregates their findings before acting. Omit it
+when the schema does not expose it, including joined delivery.
 
 **No delegation available?** If you can't call `delegate_task` in this
 context (you're a leaf subagent, delegation is disabled, or the budget is
@@ -96,8 +106,10 @@ knows what actually ran.
 
 Give **every** reviewer the **complete diff** (not fragments — cross-file
 issues hide in the gaps) plus the absolute repo path so they can search the
-wider codebase. Each reviewer gets `terminal`, `file`, and `search`
-toolsets (so they can `git`, `read_file`, and `search_files`).
+wider codebase. Children inherit the parent's toolsets subject to child
+restrictions; do not assume a per-task toolset override. Check that the
+available tools support the review (`terminal`, `read_file`, `search_files`),
+and describe scope and constraints in `goal`/`context`, not as a sandbox.
 
 Tell each reviewer to:
 - Search the existing codebase for evidence (don't reason from the diff alone).
@@ -186,7 +198,13 @@ Pass these four goals (drop any the user's focus excludes):
 
 ### Phase 3 — Aggregate and apply
 
-Wait for all four to return (batch mode returns them together).
+Follow the delivery mode returned by `delegate_task`. Sessions without a
+later-result consumer join children and return results in the tool call.
+For background dispatch, finish independent work, give a brief status and
+**end the turn** so completion messages can arrive. Do not poll transcripts,
+artifact files or CI, or wait inside the active turn. Aggregate only after
+the requested reviewers have returned; keep failed or missing reviews
+explicit. For the inline fallback, finish all requested angles first.
 
 1. **Merge** the findings into one list, deduping where reviewers overlap —
    when two findings target the same line or the same underlying mechanism,

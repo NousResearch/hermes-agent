@@ -23,6 +23,7 @@ SOCIAL = "optional-skills/creative/social-media-content-calendar"
 MCP = "optional-skills/mcp/mcp-oauth-remote-gateway"
 OSS_FORENSICS = "optional-skills/security/oss-forensics"
 CLAUDE_CODE = "skills/autonomous-ai-agents/claude-code"
+SIMPLIFY = "skills/software-development/simplify-code"
 
 
 def _document(skill):
@@ -68,6 +69,11 @@ def test_required_references_are_present_and_routed(skill, references):
              "sent replies", "fall back to matching the incoming thread's register",
              "generic-professional"), ()),
     (SOCIAL, (), ("image-generation-workflow",)),
+    # Regression for #156425: required document guidance, not proof of agent compliance.
+    (SIMPLIFY, ("delegation.oneshot_max_children", "inline fallback", "end the turn",
+                "same `group`", "not as a sandbox"),
+     ("batch mode returns them together", "within the.*budget on any default",
+      "It costs four subagents")),
     # A git worktree isolates file edits, not the filesystem, network or credentials.
     (CLAUDE_CODE, ("it is not a filesystem, network or credential sandbox", "sandbox runtime",
                    "`bypassPermissions` is the same bypass as `--dangerously-skip-permissions`"),

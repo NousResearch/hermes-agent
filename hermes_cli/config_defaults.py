@@ -1262,6 +1262,10 @@ DEFAULT_CONFIG = {
         "memory_enabled": True,
         "user_profile_enabled": True,
         "prefetch_spill_enabled": False,  # External recall opt-in to hooks.output_spill.
+        # History rows replay without the recall block / pre_llm_call context their turn carried
+        # (the current turn always has it; the DB sidecar keeps the exact bytes sent).
+        "ephemeral_recall": False,
+        "ephemeral_plugin_context": False,
         # Approval gate for memory writes on BOTH foreground turns and the background review fork.
         # true = foreground writes prompt inline; background writes are staged (/memory
         # pending|approve <id>|reject <id>). To disable memory: memory_enabled.

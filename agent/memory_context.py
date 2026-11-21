@@ -120,6 +120,15 @@ class StreamingContextScrubber:
 # ``**Preferences**`` (a bold heading) and ``*emphasis*`` out of the rule.
 _RECALL_BULLET_RE = re.compile(r"[-*+]\s+\S")
 
+# A stamped block always follows a "\n\n" separator (user text, or the previous injection part).
+_STAMPED_BLOCK_RE = re.compile(r'(?:\n\n)?<memory-context>\n[\s\S]*?\n</memory-context>')
+
+
+def strip_stamped_recall(text: str) -> str:
+    """``text`` without the recall blocks ``build_memory_context_block`` stamped into it (and their
+    separator). Deterministic, so a history row strips to the same bytes on every request."""
+    return _STAMPED_BLOCK_RE.sub("", text) if "<memory-context>" in text else text
+
 
 def _drop_repeated_recall_lines(text: str) -> str:
     """Drop a recalled bullet that an EARLIER line of this same block already states.

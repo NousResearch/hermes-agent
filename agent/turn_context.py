@@ -152,6 +152,55 @@ def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[str]:
     return v if isinstance(v, str) else None
 
 
+def ephemeral_injection_policy(agent: Any) -> tuple[bool, bool]:
+    """``(recall, plugin_context)``: whether history rows replay WITHOUT the turn's injected
+    recall block / ``pre_llm_call`` context (``memory.ephemeral_recall`` /
+    ``memory.ephemeral_plugin_context``). The current turn always carries both; the persisted
+    sidecar keeps the exact bytes sent. Snapshot once per agent so a turn never flips mid-way."""
+    cached = getattr(agent, "_ephemeral_injection", None)
+    if isinstance(cached, tuple):
+        return cached
+    memory: Any = {}
+    with suppress(Exception):
+        from hermes_cli.config import load_config
+        memory = load_config().get("memory", {})
+    if not isinstance(memory, dict):
+        memory = {}
+    policy = (memory.get("ephemeral_recall") is True, memory.get("ephemeral_plugin_context") is True)
+    with suppress(Exception):
+        agent._ephemeral_injection = policy
+    return policy
+
+
+def ephemeral_history_user_content(msg: Mapping[str, Any], sidecar: Any, policy: tuple[bool, bool]) -> Any:
+    """What a HISTORY user row replays under ``policy``: its sidecar minus the injections the
+    policy makes ephemeral, ``None`` when that leaves plain ``content`` (replay content as is).
+    Pure function of the stored row, so every later request sends the same bytes."""
+    recall, plugin = policy
+    content = msg.get("content")
+    if not isinstance(sidecar, str) or not sidecar:
+        if recall and isinstance(content, list):
+            # Multimodal turns carry their context as a durable text part (#71998).
+            from agent.memory_context import strip_stamped_recall
+            parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+                    text = strip_stamped_recall(part["text"]).strip("\n")
+                    if not text:
+                        continue
+                    part = {**part, "text": text}
+                parts.append(part)
+            return parts if parts != content else None
+        return None
+    if plugin and isinstance(content, str) and sidecar.startswith(content + "\n\n"):
+        # Everything after the user's own text was injected this turn (recall + plugin + notes).
+        return content
+    if recall:
+        from agent.memory_context import strip_stamped_recall
+        sidecar = strip_stamped_recall(sidecar)
+    return sidecar
+
+
 def _pop_turn_note(agent: Any, attr: str) -> str:
     """One-shot per-turn note: read and clear, so the system prompt stays byte-stable and a
     cached agent never replays a stale note."""
@@ -1507,6 +1556,15 @@ def build_api_messages(
                 )
                 if _composed is not None:
                     api_msg["content"] = _composed
+        elif (
+            msg.get("role") == "user" and idx < split and any(_ephemeral := ephemeral_injection_policy(agent))
+        ):
+            # Ephemeral injection: the recall / plugin context a past turn carried was for that
+            # turn only (working memory, not a transcript). The prefix up to the previous user
+            # row stays byte-stable; only the last turn's rows leave the cache, once.
+            _replay = ephemeral_history_user_content(msg, _api_content, _ephemeral)
+            if _replay is not None:
+                api_msg["content"] = _replay
         elif (
             isinstance(_api_content, str) and _api_content
             and msg.get("role") in ("user", "assistant")

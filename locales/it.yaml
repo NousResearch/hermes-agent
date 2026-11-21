@@ -1009,6 +1009,17 @@ platform:
       ended: "Questa richiesta di codice è terminata; non è stato inserito nulla."
       not_author: "Solo chi ha avviato questa richiesta può inserire il codice."
       submitted_footer: "✓ Codice inviato"
+    # skill secret card (Slack): button / modal title ≤ 24 chars.
+    secret_entry:
+      title: "🔑 Questa sessione richiede {name}"
+      body: "Una skill richiede `{name}`. Premi il pulsante e incolla il valore nel modulo che si apre: viene salvato nel .env di questo profilo e non viene mai pubblicato qui né mostrato al modello."
+      skill: "Richiesto dalla skill {skill}."
+      button: "Inserisci valore"
+      input_label: "Valore segreto"
+      ended: "Questa richiesta è terminata; non è stato salvato nulla."
+      not_author: "Solo chi ha avviato questa richiesta può inserire il valore."
+      submitted_footer: "✓ Salvato in .env"
+      not_saved: "⚠️ Non salvato: la chiave manca ancora. Aggiungila a mano nel .env o richiedila."
     response_as_file: "📎 Risposta lunga: il testo completo è in allegato."
     truncated_suffix: "\n...(troncato)"
     unknown: "sconosciuto"

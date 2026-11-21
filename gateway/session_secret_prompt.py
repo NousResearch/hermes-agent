@@ -29,7 +29,9 @@ def secret_prompt_scope(turn, agent):
     """Bind this turn's secret-capture callback (a ContextVar, so parallel tool workers inherit it)."""
     from gateway.run_turn_progress import local_viewer_turn
     if not local_viewer_turn(turn):
-        yield
+        from gateway.session_secret_card import secret_card_scope
+        with secret_card_scope(turn, agent):
+            yield
         return
     from tools.skills_tool import bind_turn_secret_capture
     authority, session_id, _generation = turn._approval_owner

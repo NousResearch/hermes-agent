@@ -1665,7 +1665,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         # (provider/model static_select + Back/Cancel buttons).
         for _action_id in _MODEL_PICKER_ACTION_IDS:
             self._app.action(_action_id)(self._handle_model_picker_action)
-        self._register_vault_code_handlers(self._app)
+        self._register_private_entry_handlers(self._app)
         self._register_plugin_action_handlers()
         # ctx.register_platform_handler("slack", ...) factories get the full
         # AsyncApp surface (event/action/command), wired before Socket Mode starts.

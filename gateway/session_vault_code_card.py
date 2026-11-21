@@ -68,6 +68,50 @@ class _CodeRequest:
             return "" if cancelled() else self._value
 
 
+class CardAsker:
+    """One turn's private-entry cards (vault code, skill secret): post a card, wait for the author's
+    answer, and release every request still waiting when the turn's scope closes."""
+
+    def __init__(self, turn, agent):
+        self._turn, self._agent = turn, agent
+        self._lock = threading.Lock()
+        self._open = True
+        self._pending: list[_CodeRequest] = []
+
+    def ask(self, send, timeout_s: float, activity: str, label: str) -> str:
+        """``send(request)`` returns the coroutine that posts the card (answers go to ``request.submit``),
+        or None when the surface can no longer ask. Returns the answer, or "" when there is none."""
+        from gateway.run import _approval_send_outcome
+        from gateway.run_turn_runner_clarify_delivery import SEND_ACK_WINDOW
+        from tools.approval_human_wait import activity_heartbeat, human_wait_window
+        request = _CodeRequest()
+        with self._lock:
+            if not self._open:
+                # A tool worker that outlived its turn keeps the callback: it may not ask again.
+                return ""
+            self._pending.append(request)
+        coro = send(request)
+        if coro is None:
+            request.close()
+            return ""
+        fut = self._turn._schedule(coro, f"{label} card failed to schedule")
+        # ``ambiguous`` = the card may have posted with a late ack: keep waiting, as clarify does.
+        if _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW) not in ("sent", "ambiguous"):
+            request.close()
+            return ""
+        with human_wait_window(self._turn._ctx.session_key or None):
+            return request.wait(timeout_s, lambda: bool(getattr(self._agent, "_interrupt_requested", False)),
+                                activity_heartbeat(activity))
+
+    def close(self) -> None:
+        # A tool thread abandoned by its batch deadline can still be parked on a card: release it.
+        with self._lock:
+            self._open = False
+            pending = list(self._pending)
+        for request in pending:
+            request.cancel()
+
+
 def _code_card_adapter(turn):
     adapter = getattr(turn._ctx, "_status_adapter", None)
     return adapter if getattr(type(adapter), "send_vault_code_prompt", None) is not None else None
@@ -78,42 +122,23 @@ def code_card_scope(turn, agent):
     """Install the code callback on this (agent) thread for a messaging turn whose adapter renders a
     code card; restore the previous callback and release any request still waiting when the turn ends."""
     ctx = turn._ctx
-    adapter = _code_card_adapter(turn)
     user_id = str(getattr(getattr(ctx, "source", None), "user_id", "") or "")
-    if adapter is None or not user_id:
+    if _code_card_adapter(turn) is None or not user_id:
         # No author to bind the card to: answering it would be open to anyone the adapter admits.
         yield
         return
     from agent.vault_backends import unlock
-    from gateway.run import _approval_send_outcome
-    from gateway.run_turn_runner_clarify_delivery import SEND_ACK_WINDOW
-    from gateway.session_vault_prompt import CODE_TIMEOUT_S
-    from tools.approval_human_wait import activity_heartbeat, human_wait_window
-    open_requests: list[_CodeRequest] = []
-    scope_lock = threading.Lock()
-    scope_open = [True]
+    from gateway import session_vault_prompt
+    asker = CardAsker(turn, agent)
 
     def code_prompt(site, hint):
-        # Re-read the adapter: a reconnect replaces the instance the turn started with.
-        live_adapter = _code_card_adapter(turn)
-        request = _CodeRequest()
-        with scope_lock:
-            if not scope_open[0] or live_adapter is None:
-                # A tool worker that outlived its turn keeps this callback: it may not ask again.
-                return ""
-            open_requests.append(request)
-        fut = turn._schedule(
-            live_adapter.send_vault_code_prompt(
+        def send(request):
+            # Re-read the adapter: a reconnect replaces the instance the turn started with.
+            live_adapter = _code_card_adapter(turn)
+            return None if live_adapter is None else live_adapter.send_vault_code_prompt(
                 ctx._status_chat_id, site, hint, user_id=user_id, submit=request.submit,
-                timeout_s=CODE_TIMEOUT_S, metadata=ctx._status_thread_metadata),
-            "Vault code card failed to schedule")
-        # ``ambiguous`` = the card may have posted with a late ack: keep waiting, as clarify does.
-        if _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW) not in ("sent", "ambiguous"):
-            request.close()
-            return ""
-        with human_wait_window(ctx.session_key or None):
-            return request.wait(CODE_TIMEOUT_S, lambda: bool(getattr(agent, "_interrupt_requested", False)),
-                                activity_heartbeat("waiting for a one-time code"))
+                timeout_s=session_vault_prompt.CODE_TIMEOUT_S, metadata=ctx._status_thread_metadata)
+        return asker.ask(send, session_vault_prompt.CODE_TIMEOUT_S, "waiting for a one-time code", "Vault code")
 
     previous = unlock.get_code_prompt_callback()
     unlock.set_code_prompt_callback(code_prompt)
@@ -121,9 +146,4 @@ def code_card_scope(turn, agent):
         yield
     finally:
         unlock.set_code_prompt_callback(previous)
-        # A tool thread abandoned by its batch deadline can still be parked on a card: release it.
-        with scope_lock:
-            scope_open[0] = False
-            pending = list(open_requests)
-        for request in pending:
-            request.cancel()
+        asker.close()

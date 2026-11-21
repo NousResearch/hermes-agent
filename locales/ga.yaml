@@ -1009,6 +1009,17 @@ platform:
       ended: "Tá an t-iarratas cóid seo thart; níor cuireadh aon rud isteach."
       not_author: "Ní féidir ach leis an duine a thosaigh an t-iarratas seo an cód a chur isteach."
       submitted_footer: "✓ Cód seolta"
+    # skill secret card (Slack): button / modal title ≤ 24 chars.
+    secret_entry:
+      title: "🔑 Tá {name} de dhíth ar an seisiún seo"
+      body: "Tá `{name}` de dhíth ar scil. Brúigh an cnaipe agus greamaigh an luach san fhoirm a osclaíonn: sábháiltear é i .env na próifíle seo agus ní phostáiltear anseo é ná ní thaispeántar don mhúnla é riamh."
+      skill: "Iarrtha ag an scil {skill}."
+      button: "Cuir isteach luach"
+      input_label: "Luach rúnda"
+      ended: "Tá an t-iarratas seo thart; níor sábháladh aon rud."
+      not_author: "Ní féidir ach leis an duine a thosaigh an t-iarratas seo an luach a chur isteach."
+      submitted_footer: "✓ Sábháilte i .env"
+      not_saved: "⚠️ Níor sábháladh: tá an eochair fós in easnamh. Cuir le .env de láimh í nó iarr arís."
     response_as_file: "📎 Freagra fada: tá an téacs iomlán ceangailte."
     truncated_suffix: "\n...(giorraithe)"
     unknown: "anaithnid"

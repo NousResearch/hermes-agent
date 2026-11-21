@@ -533,6 +533,8 @@ scp ~/.hermes/mcp-tokens/my-oauth-server{,.client}.json \
 
 ## 托管模式
 
+本节描述默认的 `configMode = "declarative"`。如需通过 CLI 完全控制配置，请参阅[命令式模式](#imperative-mode)。
+
 当 hermes 通过 NixOS 模块运行时，以下 CLI 命令会被**屏蔽**，并显示指向 `configuration.nix` 的描述性错误：
 
 | 被屏蔽的命令 | 原因 |
@@ -549,6 +551,50 @@ scp ~/.hermes/mcp-tokens/my-oauth-server{,.client}.json \
 2. **`.managed` 标记文件**，位于 `HERMES_HOME` 中——由激活脚本设置，对交互式 shell 可见（例如 `docker exec -it hermes-agent hermes config set ...` 也会被屏蔽）
 
 要更改配置，请编辑你的 Nix 配置并运行 `sudo nixos-rebuild switch`。
+
+
+---
+
+## 命令式模式 {#imperative-mode}
+
+设置 `configMode = "imperative"` 后，`config.yaml` 和 `.env` 归 Hermes 所有。所有修改配置的命令都可以使用：`hermes config set`、`hermes setup`、`hermes model` 与 `/model`、`hermes plugins install|enable|disable`，以及各个设置面板。Nix 仍然声明一个**基础层**，`settings`、`configFile`、`mcpServers`、`environment` 和 `environmentFiles` 都会进入这个基础层。
+
+```nix
+services.hermes-agent = {
+  enable = true;
+  configMode = "imperative";
+  settings = {
+    model.default = "anthropic/claude-sonnet-4";
+    plugins.enabled = [ "hermes-lcm" ];
+  };
+  environmentFiles = [ config.sops.secrets."hermes-env".path ];
+};
+```
+
+激活时通过三方合并把基础层应用到磁盘上的文件。对每个键，它比较三个值：**新的** Nix 值、**上一次的** Nix 值（记录在 `$HERMES_HOME/.nix-base/` 中），以及**磁盘上**的值：
+
+| 磁盘上的值 | 结果 |
+|---|---|
+| 与上一次的 Nix 值相同（你没有修改过） | 跟随新的 Nix 值。如果 Nix 不再设置该键，激活会将其删除。 |
+| 与上一次的 Nix 值不同（你修改过） | **保留你的值**，即使之后 Nix 值发生变化。激活会报告这个覆盖。 |
+| 缺失（例如执行了 `hermes config unset`） | 恢复为 Nix 值。 |
+| Nix 从未设置过的键 | 不做任何改动。 |
+
+其他规则：
+
+- **插件。** `plugins.enabled` 和 `plugins.disabled` 按集合合并。你在运行时启用或禁用的插件保持不变，之后 Nix 新增的插件仍会加入。
+- **`.env`。** 每个变量都适用相同的规则。你自己的变量和注释保持原位；更新 Nix 值时，该行的 `export` 前缀和行内注释也会保留。新的 Nix 变量追加在 `# Added by the Nix base` 注释下方。如果某个 `environmentFiles` 条目在激活时无法读取（例如密钥尚未解密），它提供的变量保持原样。
+- **恢复为 Nix 值。** 执行 `hermes config unset <key>`。Nix 值会在下一次激活时恢复，或者运行 `hermes-nix-sync` 立即恢复。Home Manager 上的 `programs.hermes-agent.enable` 和 NixOS 上的 `addToSystemPackages` 会安装 `hermes-nix-sync`。在 NixOS 上，请以 root（`sudo hermes-nix-sync`）或服务用户身份运行它。root 可以读取所有密钥文件，命令结束后会把文件交还给服务用户。
+- **删除 Nix 设置的键。** 请改为设置一个明确的值。被删除的键会从 Nix 恢复。
+- **激活期间的保存。** `.env` 的合并会持有 Hermes 保存 `.env` 时使用的同一把锁，因此双方都不会丢失对方的修改。Hermes 在保存 `config.yaml` 时不使用这样的锁。如果合并期间 `config.yaml` 发生变化，激活会重新开始；但恰好在激活写入的那一刻落下的保存可能会丢失。请避免在重建切换期间保存设置。
+
+激活不会写入 `.managed` 标记，服务带有 `HERMES_MANAGED=false`。以下几点仍然成立：
+
+- `hermes update` 会被拒绝，因为软件包位于 Nix store 中。请通过你的 flake 更新。
+- 不要运行 `hermes gateway install` 或 `hermes gateway uninstall`。服务单元由模块管理，第二个单元会与之冲突。
+- 在 NixOS 上，`hermes` 组中的交互式用户共享 `HERMES_HOME`。模块会在服务单元中设置 `HERMES_SKIP_CHMOD=1`，启用 `addToSystemPackages` 时也会在系统环境中设置。这样任何一方保存后都会保留组权限（`config.yaml` 为 0660，`.env` 为 0640），服务仍然可以读取。
+
+从 `declarative` 切换到 `imperative` 时，第一次激活会把等于其 Nix 值的键视为由 Nix 管理，其余的键归你所有。切换回 `declarative` 时，Nix 键重新优先，激活会删除 `.nix-base/`。
 
 ---
 
@@ -820,6 +866,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # 合并脚本保留用户�
 |---|---|---|---|
 | `settings` | `attrs`（深度合并） | `{}` | 声明式配置，渲染为 `config.yaml`。支持任意嵌套；多个定义通过 `lib.recursiveUpdate` 合并 |
 | `configFile` | `null` 或 `path` | `null` | 现有 `config.yaml` 的路径。设置后完全覆盖 `settings` |
+| `configMode` | `"declarative"` 或 `"imperative"` | `"declarative"` | `config.yaml` 和 `.env` 的所有者。`imperative` 让 Nix 配置成为运行时修改之下的基础层；参见[命令式模式](#imperative-mode) |
 
 ### 密钥与环境
 

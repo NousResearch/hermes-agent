@@ -15,6 +15,9 @@ from typing import Any, Optional
 
 logger = logging.getLogger("tools.terminal_tool")
 
+# Writer closed by a short-lived consumer (head/tail). POSIX 128+SIGPIPE (13).
+_SIGPIPE_EXIT = 141
+
 
 @contextmanager
 def _quiet(label: str):
@@ -165,13 +168,34 @@ def _truncate_head_tail(output: str) -> str:
     return truncate_head_tail(output, get_max_bytes())
 
 
-def _failure_hint(command: str, returncode: int, output: str, exit_note) -> Optional[str]:
+def _pipeline_exit_codes_for_model(
+    pipeline_status: Optional[list[int]],
+) -> Optional[list[int]]:
+    """Per-segment exit statuses when an earlier pipeline stage failed (not exit_code)."""
+    if not pipeline_status or len(pipeline_status) < 2:
+        return None
+    codes = [int(c) for c in pipeline_status]
+    if any(c != 0 and c != _SIGPIPE_EXIT for c in codes[:-1]):
+        return codes
+    return None
+
+
+def _failure_hint(
+    command: str,
+    returncode: int,
+    output: str,
+    exit_note,
+    *,
+    pipeline_status: Optional[list[int]] = None,
+) -> Optional[str]:
     """Recovery hints for well-known failure shapes (tools/terminal_hints.py);
     on rc=0, warn when a pipeline tail / `|| echo` may mask an upstream
     failure and the output carries strong failure indicators (advisory only)."""
     with _quiet("failure hint"):
         from tools import terminal_hints
         if returncode == 0:
+            if _pipeline_exit_codes_for_model(pipeline_status) is not None:
+                return terminal_hints.PIPELINE_EARLY_STAGE_FAILED_HINT
             return terminal_hints.annotate_masked_success(command, output)
         if not exit_note:
             return terminal_hints.annotate_failure(command, returncode, output)
@@ -254,7 +278,10 @@ def finalize_foreground_result(
     output = redact_terminal_output(output.strip(), command) if output else ""
 
     exit_note = _interpret_exit_code(command, returncode)
-    failure_hint = _failure_hint(command, returncode, output, exit_note)
+    pipeline_for_model = _pipeline_exit_codes_for_model(result.get("pipeline_status"))
+    failure_hint = _failure_hint(
+        command, returncode, output, exit_note, pipeline_status=result.get("pipeline_status"),
+    )
     # cwd echo when the command changed directory (gated on the observation
     # flag so an interrupted command can't echo another session's cwd).
     changed_cwd = None
@@ -267,7 +294,10 @@ def finalize_foreground_result(
     if approval_note and returncode == 130 and "[Command interrupted]" in output:
         approval_note = approval_note.rstrip(".") + ", then interrupted."
 
-    result_dict = {"output": output, "exit_code": returncode, "error": None}
+    result_dict: dict[str, Any] = {"output": output, "exit_code": returncode}
+    if pipeline_for_model is not None:
+        result_dict["pipeline_exit_codes"] = pipeline_for_model
+    result_dict["error"] = None
     # Optional fields in observable JSON key order; None means "omit". Spill
     # metadata is present only when output overflowed the capture window.
     optional_fields: list[tuple[str, Any]] = [

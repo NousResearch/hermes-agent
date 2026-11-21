@@ -163,6 +163,13 @@ def annotate_masked_success(command: str, output: str) -> Optional[str]:
     return next((note for rx, note in _MASKING_SHAPES if rx.search(cmd)), None)
 
 
+PIPELINE_EARLY_STAGE_FAILED_HINT = (
+    "An earlier pipeline stage exited non-zero; exit_code is the last stage only. "
+    "Re-run without the pipe to get the failing stage's real exit code (output is "
+    "auto-truncated, so piping through tail/head is never needed)."
+)
+
+
 def annotate_failure(command: str, exit_code: int, output: str) -> Optional[str]:
     """Return one short recovery hint for a failed command, or None (exit 0)."""
     if exit_code == 0:

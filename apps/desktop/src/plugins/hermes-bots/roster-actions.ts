@@ -55,7 +55,9 @@ export function setActivityToasts(enabled: boolean) {
  *  the watermark for a bot whose chat isn't on screen -> unread + toast.
  *  Watermarks follow botActivitySession (canonical Bot Chat included) —
  *  last_session alone never sees the hidden Bot Chat, so DMs delivered
- *  there would neither badge nor toast.
+ *  there would neither badge nor toast. The MARK, though, goes on whichever of
+ *  the two actually moved: a dot on the canonical Bot Chat means that chat has
+ *  something new, never that some other session of the same bot did.
  *
  *  This poll is the ONLY unread signal a canonical Bot Chat can have: it is
  *  unconditionally hidden, so it never reaches the session list the backend's
@@ -90,13 +92,25 @@ export function trackInboundActivity(roster: RosterRow[]) {
       continue
     }
 
-    // Straight into core's unread store, keyed by the same canonical id the
-    // row's SessionStatusDot reads — a parallel map here would be a second
-    // badge that drifts from the dot.
-    const canonicalSessionId = botCanonicalSessionId(bot)
+    // IDENTITY — the marker goes on the conversation whose activity moved.
+    // `botActivitySession` answers with the FRESHER of the canonical Bot Chat
+    // and the profile's newest visible session, while the roster row's dot
+    // reads the canonical id (`botCanonicalSessionId`). Writing that canonical
+    // marker for an advance in another session claims unread content the Bot
+    // Chat does not have, and opening the Bot Chat then clears a dot for
+    // content the user never read. The session that moved carries its own row
+    // and its own marker.
+    const advancedByCanonical =
+      Boolean(bot.canonical_session) &&
+      (bot.canonical_session?.last_active || 0) >= (bot.last_session?.last_active || 0)
 
-    if (canonicalSessionId) {
-      markSessionUnreadFinished(canonicalSessionId, bot.name)
+    const advancedSessionId = (advancedByCanonical ? botCanonicalSessionId(bot) : null) ?? bot.last_session?.id ?? null
+
+    if (advancedSessionId) {
+      // Straight into core's unread store, keyed by the same id the matching
+      // row's SessionStatusDot reads — a parallel map here would be a second
+      // badge that drifts from the dot.
+      markSessionUnreadFinished(advancedSessionId, bot.name)
     }
 
     // Roster-hidden bots stay quiet: the mark above accumulates silently

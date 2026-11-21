@@ -9,6 +9,7 @@ import base64
 import binascii
 import contextlib
 import hashlib
+import importlib
 import logging
 import mimetypes
 import os
@@ -29,7 +30,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 
 from agent.file_safety import (
     HOME_CREDENTIAL_DIRS, HOME_CREDENTIAL_FILES, deny_key, deny_path_under, get_nt_namespace_error,
-    get_write_denied_error, hermes_credential_homes, is_write_approval_required, resolved_home_credential_stores,
+    get_write_denied_error, is_write_approval_required, resolved_home_credential_stores,
 )
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -52,6 +53,10 @@ from hermes_cli.web_models import (
     ManagedFileUpload,
 )
 from utils import atomic_write_bytes, atomic_write_text
+
+# v0.23.3 and earlier gateways cache agent.file_safety at boot before hermes_credential_homes existed.
+_file_safety = importlib.import_module("agent.file_safety")
+hermes_credential_homes = getattr(_file_safety, "hermes_credential_homes", _file_safety._credential_store_dirs)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

@@ -675,6 +675,9 @@ class GatewayInboundMixin(
             _denied = self._check_slash_access(source, _cmd_def_inner.name)
             if _denied is not None:
                 return True, _denied
+            if _cmd_def_inner.name == "stop":
+                from tools.slash_confirm import clear as clear_slash_confirm
+                clear_slash_confirm(_quick_key)
             if _cmd_def_inner.name in ("stop", "new"):
                 self._hm_drop_held_input(event)  # before the fence: a burst flushing later would pass it
                 await self._hm_stop_owner_turn(_quick_key)

@@ -37,6 +37,15 @@ def _entry_status(entry: tuple, enabled: set, disabled: set, active: set) -> str
 _STATUS_MARKUP = {"disabled": "[red]disabled[/red]", "enabled": "[green]enabled[/green]"}
 
 
+def _entry_issues_url(entry: tuple) -> str:
+    from hermes_cli.plugins_manifest import resolve_plugin_issues_url
+
+    name, _version, _description, source, dir_path, _key = entry
+    plugin_dir = Path(dir_path) if dir_path and source != "entrypoint" else None
+    manifest = _pc()._read_manifest(plugin_dir) if plugin_dir else {}
+    return resolve_plugin_issues_url(name, {**manifest, "source": source}, plugin_dir)
+
+
 def cmd_list(args: Any | None = None) -> None:
     """List all plugins (bundled + user) with enabled/disabled state."""
     console = _pc()._console()
@@ -67,7 +76,10 @@ def cmd_list(args: Any | None = None) -> None:
 
     if getattr(args, "json", False):
         keys = ("name", "status", "version", "description", "source", "removed")
-        print(json.dumps([dict(zip(keys, row)) for row in rows], indent=2))
+        print(json.dumps([
+            {**dict(zip(keys, row)), "issues_url": _entry_issues_url(entry)}
+            for row, entry in zip(rows, entries)
+        ], indent=2))
         return
 
     if getattr(args, "plain", False):
@@ -134,6 +146,8 @@ def cmd_show(name: str) -> None:
     console.print(f"[dim]Status:[/dim] {status}")
     console.print(f"[dim]Source:[/dim] {source}")
     console.print(f"[dim]Key:[/dim] {key}")
+    if issues_url := _entry_issues_url(match):
+        console.print(f"[dim]Report issues:[/dim] {issues_url}")
     if dir_path and source != "bundled":
         from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
         from hermes_cli.plugin_isolation_audit import audit_plugin_dir

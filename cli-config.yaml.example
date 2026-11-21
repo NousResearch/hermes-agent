@@ -1508,6 +1508,10 @@ platform_toolsets:
 # Platform-specific knobs live under `extra`.
 #
 # platforms:
+#   qqbot:
+#     extra:
+#       # Per-COS-part PUT timeout in seconds (default 300; not the whole-file deadline).
+#       upload_part_timeout_seconds: 300
 #   telegram:
 #     reply_to_mode: "first"  # off | first | all
 #     # guest_mode lets explicit @mentions from non-allowlisted groups through.

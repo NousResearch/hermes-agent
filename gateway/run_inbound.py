@@ -23,7 +23,7 @@ from agent.i18n import t
 from gateway.config import Platform
 from gateway.inbound_reply_context import reply_pointer
 from gateway.platforms.base import EphemeralReply
-from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
+from gateway.platforms.event import DeferredResponse, MessageEvent, MessageType, clean_attachment_filename
 from gateway.run_busy import approval_input_words
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_inbound_hooks import GatewayInboundHooksMixin
@@ -150,8 +150,8 @@ class GatewayInboundMixin(
 
     async def _hm_admit_event(
         self, event: MessageEvent
-    ) -> Optional[tuple[MessageEvent, SessionSource, bool]]:
-        """Ingress gates for ``_handle_message``; None when dropped, else ``(event, source, is_internal)``
+    ) -> tuple[MessageEvent, SessionSource, bool] | DeferredResponse | None:
+        """Ingress gates: None when dropped, DeferredResponse when queued, else (event, source, internal)
         (the ``pre_gateway_dispatch`` hook may have rewritten ``event``)."""
         from gateway.run import _is_slack_ignored_channel
         source = event.source
@@ -210,7 +210,7 @@ class GatewayInboundMixin(
             and not executing_admission.get()
         ):
             self._queue_startup_restore_event(event)
-            return None
+            return DeferredResponse()
 
         if is_internal:
             return event, source, True
@@ -1354,8 +1354,8 @@ class GatewayInboundMixin(
         interrupt → get/create session → build context → run agent → return response."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         _admitted = await self._hm_admit_event(event)
-        if _admitted is None:
-            return None
+        if _admitted is None or isinstance(_admitted, DeferredResponse):
+            return _admitted
         event, source, is_internal = _admitted
         if not is_internal:
             from hermes_cli.observability.shared_metrics_events import record_gateway_slash_command

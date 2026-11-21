@@ -60,12 +60,78 @@ def client(monkeypatch, isolated_profiles):
     return c
 
 
+@pytest.fixture
+def plugin_skills_profile(isolated_profiles):
+    """worker_alpha enables a plugin that registers two skills; its config disables one."""
+    home = isolated_profiles["worker_alpha"]
+    plugin_dir = home / "plugins" / "skills_probe"
+    for name in ("visible", "disabled"):
+        skill_dir = plugin_dir / "skills" / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name} plugin skill\n---\n\n{name} body.\n",
+            encoding="utf-8",
+        )
+    (plugin_dir / "plugin.yaml").write_text(
+        yaml.safe_dump({"name": "skills_probe", "version": "0.1.0", "description": "skills API probe"}),
+        encoding="utf-8",
+    )
+    (plugin_dir / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        "def register(ctx):\n"
+        "    root = Path(__file__).parent / 'skills'\n"
+        "    for name in ('visible', 'disabled'):\n"
+        "        ctx.register_skill(name, root / name / 'SKILL.md', f'{name} plugin skill')\n",
+        encoding="utf-8",
+    )
+    (home / "config.yaml").write_text(
+        yaml.safe_dump({
+            "plugins": {"enabled": ["skills_probe"]},
+            "skills": {"disabled": ["skills_probe:disabled"]},
+        }),
+        encoding="utf-8",
+    )
+
+
 def _load_cfg(home):
     return yaml.safe_load((home / "config.yaml").read_text()) or {}
 
 
 class TestProfileScopedSkills:
 
+
+    def test_plugin_skills_are_listed_and_readable_in_their_profile_only(
+        self, client, plugin_skills_profile
+    ):
+        default_rows = client.get("/api/skills").json()
+        assert all(row["name"] != "skills_probe:visible" for row in default_rows)
+
+        response = client.get("/api/skills", params={"profile": "worker_alpha"})
+        assert response.status_code == 200
+        rows = {row["name"]: row for row in response.json()}
+        assert rows["skills_probe:visible"] == {
+            "name": "skills_probe:visible",
+            "description": "visible plugin skill",
+            "category": "plugin",
+            "enabled": True,
+            "usage": 0,
+            "provenance": "plugin",
+        }
+        assert rows["skills_probe:disabled"]["enabled"] is False
+        assert rows["worker-skill"]["provenance"] == "agent"
+
+        content = client.get(
+            "/api/skills/content",
+            params={"profile": "worker_alpha", "name": "skills_probe:visible"},
+        )
+        assert content.status_code == 200
+        assert content.json()["name"] == "skills_probe:visible"
+        assert "visible body." in content.json()["content"]
+        assert client.get(
+            "/api/skills/content", params={"name": "skills_probe:visible"}
+        ).status_code == 404
+
+        assert client.get("/api/skills").json() == default_rows
 
     def test_toggle_writes_into_target_profile_only(self, client, isolated_profiles):
         resp = client.put(

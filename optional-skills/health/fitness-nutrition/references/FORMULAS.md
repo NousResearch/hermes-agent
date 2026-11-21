@@ -79,7 +79,11 @@ BF% = 86.010 × log₁₀(waist − neck) − 70.041 × log₁₀(height) + 36.7
 
 BF% = 163.205 × log₁₀(waist + hip − neck) − 97.684 × log₁₀(height) − 78.387
 
-All measurements in centimeters.
+The published constants require inches. The CLI accepts centimetres and must
+convert centimetres to inches (divide each measurement by 2.54) before applying
+these equations. Substituting centimetres directly produces incorrect results.
+It rejects estimates outside `0 < body fat < 100` instead of assigning a
+category to a non-physical result.
 
 | Category      | Male   | Female |
 |--------------|--------|--------|

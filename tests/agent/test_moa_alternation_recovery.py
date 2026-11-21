@@ -49,43 +49,78 @@ def facade(monkeypatch):
     return f
 
 
-def _send(facade, model, messages, guidance="[Mixture of Agents reference context]\nadvice"):
+def _send(facade, model, messages, guidance="private observations"):
+    anchor = 2
     prepared = facade.rebase_prepared_request(
-        {"guidance": guidance, "aggregator": {"provider": "custom", "model": model}, "aggregator_temperature": None},
+        {"guidance": guidance, "guidance_anchor": anchor,
+         "guidance_prefix_key": moa_loop._hash_messages(messages[:anchor]),
+         "aggregator": {"provider": "custom", "model": model}, "aggregator_temperature": None},
         messages,
     )
     return facade._call_prepared_aggregator(prepared, {"tools": None})
 
 
-def test_alternation_400_is_classified_and_retried_once_merged_then_remembered(monkeypatch, facade):
+def _history():
+    return [
+        {"role": "system", "content": "sys"}, {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "checking", "reasoning_content": "preserve reasoning",
+         "tool_calls": [{"id": "lookup-1", "type": "function",
+                         "function": {"name": "lookup", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "lookup-1", "content": "result"},
+    ]
+
+
+def test_assistant_observation_retry_preserves_actions_and_remembers_destination(monkeypatch, facade):
     classified = classify_api_error(_AlternationRejected(), provider="custom", model="strict-model")
     assert classified.reason is FailoverReason.role_alternation
-
     calls = []
     monkeypatch.setattr(moa_loop, "call_llm", _strict_destination(calls, {"strict-model"}))
-    task = [{"role": "system", "content": "sys"}, {"role": "user", "content": "task"}]
-
-    _send(facade, "strict-model", task)  # iteration 1 of turn 1: split shape rejected → one merged retry
-    assert [[m["role"] for m in c["messages"]] for c in calls] == [["system", "user", "user"], ["system", "user"]]
-    assert calls[-1]["messages"][-1]["content"] == "task\n\n[Mixture of Agents reference context]\nadvice"
-
-    del calls[:]
-    _send(facade, "strict-model", [*task, {"role": "assistant", "content": "answer"}, {"role": "user", "content": "task2"}])
-    # Remembered destination: iteration 1 of the next turn is pre-merged, no 400 paid again.
-    assert [[m["role"] for m in c["messages"]] for c in calls] == [["system", "user", "assistant", "user"]]
-    assert calls[0]["messages"][-1]["content"].startswith("task2\n\n[Mixture of Agents reference context]")
-
-
-def test_destinations_that_accept_the_split_shape_keep_byte_identical_requests(monkeypatch, facade):
-    calls = []
-    monkeypatch.setattr(moa_loop, "call_llm", _strict_destination(calls, {"strict-model"}))
-    task = [{"role": "system", "content": "sys"}, {"role": "user", "content": "task"}]
-    guidance = "[Mixture of Agents reference context]\nadvice"
-
-    _send(facade, "strict-model", task, guidance)  # teaches the facade about the strict destination
-    del calls[:]
-    _send(facade, "lenient-model", task, guidance)
-
-    # The lenient destination on the SAME facade still gets the split, cache-stable shape in one request.
+    history = _history()
+    _send(facade, "strict-model", history)
+    assert len(calls) == 2
+    assert [m["role"] for m in calls[0]["messages"]] == ["system", "user", "assistant", "assistant", "tool"]
+    merged = calls[1]["messages"]
+    assert [m["role"] for m in merged] == ["system", "user", "assistant", "tool"]
+    assert merged[2]["tool_calls"] == history[2]["tool_calls"]
+    assert merged[2]["reasoning_content"] == history[2]["reasoning_content"]
+    assert merged[2]["content"] == "private observations\n\nchecking"
+    assert merged[-1] == history[-1]
+    assert history[2]["content"] == "checking"
+    calls.clear()
+    _send(facade, "strict-model", history)
     assert len(calls) == 1
-    assert calls[0]["messages"] == [*task, {"role": "user", "content": guidance}]
+    assert calls[0]["messages"] == merged
+
+
+def test_lenient_destination_keeps_anchored_advice_after_strict_retry(monkeypatch, facade):
+    calls = []
+    monkeypatch.setattr(moa_loop, "call_llm", _strict_destination(calls, {"strict-model"}))
+    history = _history()
+    _send(facade, "strict-model", history)
+    calls.clear()
+    _send(facade, "lenient-model", history)
+    assert len(calls) == 1
+    assert calls[0]["messages"] == [*history[:2], {"role": "assistant", "content": "private observations"}, *history[2:]]
+
+
+def test_merge_does_not_drop_existing_assistant_actions():
+    from agent.moa_alternation import merge_same_role_messages
+    history = _history()
+    actions = [history[2], {"role": "assistant", "content": "another action"}]
+    assert merge_same_role_messages(actions) is actions
+    users = [{"role": "user", "content": "task"}, {"role": "user", "content": "steering"}]
+    assert merge_same_role_messages(users) == [{"role": "user", "content": "task\n\nsteering"}]
+
+
+def test_strict_retry_accepts_tool_call_with_null_content(monkeypatch, facade):
+    calls = []
+    monkeypatch.setattr(moa_loop, "call_llm", _strict_destination(calls, {"strict-model"}))
+    history = _history()
+    history[2]["content"] = None
+    _send(facade, "strict-model", history)
+    assert len(calls) == 2
+    assert calls[-1]["messages"][2]["content"] == "private observations"
+    assert calls[-1]["messages"][2]["tool_calls"] == history[2]["tool_calls"]
+    assert calls[-1]["messages"][2]["reasoning_content"] == history[2]["reasoning_content"]
+    assert calls[-1]["messages"][-1]["tool_call_id"] == "lookup-1"
+    assert history[2]["content"] is None

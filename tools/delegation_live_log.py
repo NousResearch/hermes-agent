@@ -60,9 +60,42 @@ def _best_effort(what: str):
         logger.debug("Live transcript %s failed: %s", what, exc)
 
 
+# Result keys worth showing in the log, in priority order. A tool that reports
+# ``error`` keeps it first so a failure is never buried behind a long payload.
+_RESULT_TEXT_KEYS = ("error", "output", "stdout", "stderr", "content", "text", "result")
+
+
+def _result_text(result: Any) -> Any:
+    """Project a JSON-object tool result onto the text a reader actually wants.
+
+    Tool results reach the writer already stringified (``tool_executor`` passes
+    ``function_result``), so ``_one_line`` would collapse newlines the JSON escapes
+    had hidden and log one run-on of ``\\n``. Returns the result untouched when it is
+    not a JSON object, so a plain-text result is unaffected.
+    """
+    if not isinstance(result, str):
+        return result
+    try:
+        payload = json.loads(result)
+    except (ValueError, TypeError):
+        return result
+    if not isinstance(payload, dict):
+        return result
+    for key in _RESULT_TEXT_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return result
+
+
+def _flatten(text: Any) -> str:
+    """Collapse every run of whitespace to a single space, no length cap."""
+    return " ".join(str(text or "").split())
+
+
 def _one_line(text: Any, limit: int) -> str:
     """Collapse to a single line and truncate with an elided-chars note."""
-    s = " ".join(str(text or "").split())
+    s = _flatten(text)
     if len(s) > limit:
         s = s[:limit] + f" …(+{len(s) - limit} chars)"
     return s
@@ -138,7 +171,19 @@ class LiveTranscriptWriter:
         self._line("assistant", text, _ASSISTANT_MAX)
 
     def thinking(self, text: str) -> None:
-        self._line("think", text, _THINKING_MAX)
+        """Record a reasoning preview, unless the stream already carries this text.
+
+        A subagent turn reports its reply twice: ``turn_response_intake`` relays the
+        first line as ``_thinking`` while ``subagent.text`` streams the same text, and
+        the log must carry it once. Ordering makes this cheap — ``tool_start`` calls
+        ``flush_stream`` before writing its own line, so the stream buffer already
+        holds the turn's text by the time this runs. A provider that never streams
+        leaves the buffer empty and the preview is still recorded.
+        """
+        line = _one_line(text, _THINKING_MAX)
+        if not line or line in _flatten("".join(self._stream_buf)):
+            return
+        self.event("think", line)
 
     def tool_start(self, name: str, args_preview: Any = None) -> None:
         self.flush_stream()
@@ -151,7 +196,7 @@ class LiveTranscriptWriter:
             dur = "" if duration is None else f" {float(duration):.1f}s"
         except (TypeError, ValueError):
             dur = ""
-        self.event("result", f"{name or '?'} {status}{dur}: {_one_line(result, _RESULT_MAX)}")
+        self.event("result", f"{name or '?'} {status}{dur}: {_one_line(_result_text(result), _RESULT_MAX)}")
 
     def marker(self, text: str) -> None:
         """Lifecycle marker: start / final / error / interrupt / budget."""

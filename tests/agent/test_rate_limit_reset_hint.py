@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from agent.agent_runtime_helpers import extract_api_error_context
+from agent.error_classifier import FailoverReason
 from agent.turn_recovery import compute_error_backoff, reset_hint
 from datetime import UTC
 
@@ -70,6 +71,35 @@ def test_live_wait_line_names_the_reset_window_too():
     assert "~13m" in live
     # No reset known → no reset window is claimed.
     assert "resets in" not in run(Exception("HTTP 429")).lower()
+
+
+@pytest.mark.parametrize(
+    ("error", "reason", "expected"),
+    [
+        (TimeoutError("Codex stream produced no substantive model progress for 300s"),
+         FailoverReason.timeout, "no substantive model progress — local watchdog triggered"),
+        (Exception("Our servers are currently overloaded"),
+         FailoverReason.overloaded, "provider reported overload"),
+        (Exception("HTTP 503"), FailoverReason.server_error, "upstream http error"),
+    ],
+)
+def test_live_retry_status_uses_a_sanitized_known_failure_category(error, reason, expected):
+    """Known retry failures must not collapse into a generic provider wait."""
+    agent = MagicMock()
+    from agent.status_output import StatusOutputMixin
+    for name in ("_emit_diagnostic_wait", "_buffer_diagnostic_status"):
+        setattr(agent, name, getattr(StatusOutputMixin, name).__get__(agent))
+    agent._client_log_context.return_value = ""
+
+    compute_error_backoff(
+        agent, error, retry_count=1, max_retries=3, is_rate_limited=False,
+        is_zai_coding_overload=False, base_url="https://example.test/v1", model="test/model",
+        retry_reason=reason,
+    )
+
+    live = agent._emit_wait_notice.call_args.args[0].lower()
+    assert expected in live
+    assert "waiting on provider" not in live
 
 
 @pytest.mark.parametrize("headers, expected_seconds", [

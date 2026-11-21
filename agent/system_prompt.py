@@ -431,7 +431,8 @@ def _active_profile_line(agent: Any) -> str:
 
 def _default_platform_hint(platform_key: str, tool_names: Any = ()) -> str:
     """Built-in hint, else the plugin adapter's ``platform_hint`` plus its ``platform_hint_tool_notes`` for
-    tools in *tool_names* (the session's toolset), else ``""``."""
+    tools in *tool_names* (the session's toolset) and its ``platform_hint_extra_notes`` for truthy ``extra``
+    flags, else ``""``."""
     hint = PLATFORM_HINTS.get(platform_key, "")
     if not hint and platform_key:
         try:
@@ -446,6 +447,12 @@ def _default_platform_hint(platform_key: str, tool_names: Any = ()) -> str:
             hint = (_entry and _entry.platform_hint) or ""
             _notes = [note for tool, note in ((_entry and _entry.platform_hint_tool_notes) or {}).items()
                       if tool in (tool_names or ())]
+            _extra_notes = (_entry and _entry.platform_hint_extra_notes) or {}
+            if _extra_notes:
+                _extra = _platform_extra(platform_key)
+                for key, note in _extra_notes.items():
+                    if is_truthy_value(_extra.get(key)) and note not in _notes:
+                        _notes.append(note)
             if hint and _notes:
                 hint = " ".join([hint.rstrip(), *_notes])
         except Exception:
@@ -488,19 +495,24 @@ def platform_hint(agent: Any) -> str:
     return _effective_hint
 
 
-def _telegram_rich_messages_enabled() -> bool:
-    """``rich_messages`` from the Telegram ``extra`` config; same precedence the
-    adapter uses (top-level ``platforms.telegram.extra`` overrides
-    ``gateway.platforms.telegram.extra`` at the leaf). False on any read failure."""
+def _platform_extra(platform_key: str) -> dict:
+    """A platform's ``extra`` config with the adapter's precedence (top-level
+    ``platforms.<key>.extra`` overrides ``gateway.platforms.<key>.extra`` at the
+    leaf). ``{}`` on any read failure, so prompt assembly never breaks on config."""
     try:
         from hermes_cli.config import load_config_readonly
         _cfg = load_config_readonly()
-        _gw = (((_cfg.get("gateway") or {}).get("platforms") or {}).get("telegram") or {}).get("extra")
-        _top = ((_cfg.get("platforms") or {}).get("telegram") or {}).get("extra")
-        merged = {**(_gw if isinstance(_gw, dict) else {}), **(_top if isinstance(_top, dict) else {})}
-        return bool(merged.get("rich_messages"))
-    except Exception:
-        return False
+        _gw = (((_cfg.get("gateway") or {}).get("platforms") or {}).get(platform_key) or {}).get("extra")
+        _top = ((_cfg.get("platforms") or {}).get(platform_key) or {}).get("extra")
+        return {**(_gw if isinstance(_gw, dict) else {}), **(_top if isinstance(_top, dict) else {})}
+    except Exception:  # a prompt build must survive any config read failure; fall back to the base hint
+        logger.debug("platform extra unreadable for %s; using the base hint", platform_key, exc_info=True)
+        return {}
+
+
+def _telegram_rich_messages_enabled() -> bool:
+    """``rich_messages`` from the Telegram ``extra`` config. False on any read failure."""
+    return bool(_platform_extra("telegram").get("rich_messages"))
 
 
 def _zone_bits(now: Any, tz: Any) -> list[str]:

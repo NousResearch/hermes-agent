@@ -7048,7 +7048,7 @@ _is_connected = _env_is_connected("SLACK_BOT_TOKEN")
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
-    from .adapter_hint import PLATFORM_HINT
+    from .adapter_hint import BLOCK_TABLES_NOTE, PLATFORM_HINT
     from .send_targets import SEND_ENTRY_KWARGS
     from .dashboard_card import DASHBOARD_CARD
     from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
@@ -7079,6 +7079,7 @@ def register(ctx) -> None:
         emoji="💼",
         allow_update_command=True,
         platform_hint=PLATFORM_HINT,
+        platform_hint_extra_notes={"markdown_blocks": BLOCK_TABLES_NOTE, "rich_blocks": BLOCK_TABLES_NOTE},
         display_tier="medium",
         # Bolt posts cannot be edited like CLI; "new"/"all" spam permanent lines.
         display_overrides={"tool_progress": "off", "long_running_notifications": False, "busy_ack_detail": False},

@@ -1,0 +1,42 @@
+# Vendor-hosted remote MCP catalog submission; approval follows maintainer review.
+manifest_version: 1
+
+name: hoteluse
+description: "Compare hotel prices, room options and booking providers with live HotelUse searches."
+source: https://www.hoteluse.dev/docs/
+
+transport:
+  type: http
+  url: https://www.hoteluse.dev/mcp/search
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - search_hotels
+    - get_room_rates
+    - get_hotel
+
+suggest:
+  keywords:
+    - "hoteluse"
+    - "hotel metasearch"
+  hosts:
+    - hoteluse.dev
+  examples:
+    - "Compare hotel provider prices for Bellevue."
+    - "Show room options at Hilton Bellevue for my dates."
+
+post_install: |
+  No account, API key or credentials are required. Restart the session
+  after installation to discover the enabled read-only tools.
+
+  Search hotels, inspect hotel facts and compare grouped room options and
+  provider prices. Use future stay dates for live availability. Booking and
+  payment happen on the selected provider website. HotelUse may earn
+  commissions from affiliate links; prices and availability can change.
+
+  Documentation: https://www.hoteluse.dev/docs/
+  Privacy: https://www.hoteluse.dev/privacy.html
+  Contact: leo@pageonelab.com.

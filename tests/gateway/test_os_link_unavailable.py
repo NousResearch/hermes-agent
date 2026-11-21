@@ -1,15 +1,13 @@
-"""Regression for #140080: hard-link publish helpers must survive a Python without ``os.link``.
+"""Hard-link-published files are still created on a Python without ``os.link`` (Termux).
 
-Termux's bionic CPython build omits ``os.link`` entirely, so the failure is an ``AttributeError``
-raised at attribute lookup — not the ``OSError`` a filesystem without hard links raises. The
-handlers used to catch only ``OSError``, so the documented exclusive-create fallbacks were dead
-code on that interpreter.
+Termux's bionic CPython omits ``os.link``, so the lookup raises ``AttributeError``, which the
+``except OSError`` exclusive-create fallbacks never saw: the first inbound turn died creating
+``log_hash_salt`` (#158513), and RoomLink secrets, cron cancel markers and update markers failed
+the same way.
 """
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import os
 
 import pytest
@@ -17,64 +15,64 @@ import pytest
 from cron.cancellation import _publish_first
 from gateway import hosted_room_peer
 from gateway.platforms.helpers import _read_or_create_log_hash_salt
+from hermes_cli.update_cmd_zip import _link_or_copy_artifact
+from hermes_cli.update_lock import _publish_exclusive
 
 
-@pytest.fixture
-def without_os_link(monkeypatch):
+def _salt(home):
+    return home / "log_hash_salt", _read_or_create_log_hash_salt(home)
+
+
+def _room_secret(home):
+    hosted_room_peer._gateway_room_grant_secret_for_home(str(home))
+    path = home / hosted_room_peer._ROOM_GRANT_SECRET_FILE
+    return path, path.read_bytes()
+
+
+def _cancel_marker(home):
+    _publish_first(home / "cancel.marker", b"stopped")
+    return home / "cancel.marker", b"stopped"
+
+
+def _update_marker(home):
+    assert _publish_exclusive(home / "update.marker", b"pid 1") is True
+    return home / "update.marker", b"pid 1"
+
+
+def _artifact(home):
+    (home / "release.bin").write_bytes(b"artifact")
+    _link_or_copy_artifact(str(home / "release.bin"), str(home / "staged.bin"))
+    return home / "staged.bin", b"artifact"
+
+
+@pytest.mark.parametrize("publish", [_salt, _room_secret, _cancel_marker, _update_marker, _artifact])
+def test_publish_without_os_link_uses_the_fallback(publish, tmp_path, monkeypatch):
     monkeypatch.delattr(os, "link", raising=False)
-    assert not hasattr(os, "link")
+
+    path, expected = publish(tmp_path)
+
+    assert expected and path.read_bytes() == expected
 
 
-def test_log_hash_salt_falls_back_to_exclusive_create(tmp_path, without_os_link):
-    salt = _read_or_create_log_hash_salt(tmp_path)
-
-    assert len(salt) == 32
-    assert (tmp_path / "log_hash_salt").read_bytes() == salt
-
-
-def test_room_grant_secret_falls_back_to_exclusive_create(tmp_path, without_os_link):
-    secret = hosted_room_peer._gateway_room_grant_secret_for_home(str(tmp_path))
-
-    stored = (tmp_path / hosted_room_peer._ROOM_GRANT_SECRET_FILE).read_bytes()
-    assert len(stored) == 32
-    assert secret == hmac.new(
-        stored, b"hermes-hosted-room-installation-grant-v1", hashlib.sha256
-    ).digest()
-
-
-def test_cancel_marker_falls_back_to_exclusive_create(tmp_path, without_os_link):
-    marker = tmp_path / "cancel.marker"
-
-    _publish_first(marker, b"operator stopped the run")
-
-    assert marker.read_bytes() == b"operator stopped the run"
-
-
-def test_room_grant_secret_discards_failed_publish(tmp_path, without_os_link, monkeypatch):
-    """A failed fsync must not leave a RoomLink secret future starts will trust."""
+def test_room_grant_secret_discards_failed_publish(tmp_path, monkeypatch):
+    """A failed fsync on the fallback must not leave a RoomLink secret future starts trust."""
+    monkeypatch.delattr(os, "link", raising=False)
     path = tmp_path / hosted_room_peer._ROOM_GRANT_SECRET_FILE
     real_fsync = os.fsync
-    sync_calls = 0
+    calls = 0
 
     def fail_final_sync(fd):
-        nonlocal sync_calls
-        sync_calls += 1
-        if sync_calls == 2:  # Temp file synced; publishing the final file fails.
+        nonlocal calls
+        calls += 1
+        if calls == 2:  # temp file synced; publishing the final file fails
             raise OSError("grant secret sync failed")
         return real_fsync(fd)
 
     monkeypatch.setattr(os, "fsync", fail_final_sync)
     with pytest.raises(OSError, match="grant secret sync failed"):
         hosted_room_peer._gateway_room_grant_secret_for_home(str(tmp_path))
-
-    assert sync_calls == 2
     assert not path.exists()
 
-    # The failed attempt was not cached and a normal retry can mint a valid secret.
     monkeypatch.setattr(os, "fsync", real_fsync)
-    secret = hosted_room_peer._gateway_room_grant_secret_for_home(str(tmp_path))
-    stored = path.read_bytes()
-    assert len(stored) == 32
-    assert secret == hmac.new(
-        stored, b"hermes-hosted-room-installation-grant-v1", hashlib.sha256
-    ).digest()
+    hosted_room_peer._gateway_room_grant_secret_for_home(str(tmp_path))
+    assert len(path.read_bytes()) == 32

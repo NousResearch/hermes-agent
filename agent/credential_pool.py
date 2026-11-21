@@ -8,6 +8,7 @@ from agent.credential_pool_errors import _normalize_error_context, redact_error_
 from agent.credential_pool_selection import CredentialPoolSelectionMixin
 from agent.credential_pool_timestamps import _parse_absolute_timestamp
 
+import hashlib
 import logging
 import os
 import threading
@@ -939,6 +940,14 @@ class _RefreshDone(Exception):
         self.result = result
 
 
+
+_RETIRED_RUNTIME_KEYS_MAX = 256
+
+
+def _key_digest(key: str) -> str:
+    return hashlib.sha256(key.encode("utf-8", "surrogatepass")).hexdigest()
+
+
 class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
     def __init__(self, provider: str, entries: list[PooledCredential]):
         self.provider = provider
@@ -966,6 +975,12 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         # entries" and the caller's 401 retry loop runs unbounded. Reset when a
         # real entry is identified or an escape path returns None.
         self._unmatched_rotation_streak: int = 0
+        # Digest of every runtime key this pool replaced (OAuth refresh, peer-process
+        # token adoption) -> id of the entry that held it. A request dispatched with
+        # the previous generation still carries that key when its 401/429 reaches
+        # mark_exhausted_and_rotate(); without this map the failure matches no entry
+        # and the dead login is re-selected forever. Digests only, never raw tokens.
+        self._retired_runtime_keys: dict[str, str] = {}
 
     # ---- read accessors ---------------------------------------------------
 
@@ -1075,8 +1090,29 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         with self._lock:
             for idx, entry in enumerate(self._entries):
                 if entry.id == old.id:
+                    self._remember_retired_key(entry, new)
                     self._entries[idx] = new
                     return
+
+    def _remember_retired_key(self, old: PooledCredential, new: PooledCredential) -> None:
+        """Map the digest of a superseded OAuth token to its entry (bounded, digest-only)."""
+        # An API-key edit can switch accounts under the same entry id. A late 429
+        # from the old account must not exhaust its newly configured replacement.
+        if old.auth_type != AUTH_TYPE_OAUTH or new.auth_type != AUTH_TYPE_OAUTH:
+            return
+        try:
+            old_key, new_key = old.runtime_api_key, new.runtime_api_key
+        except Exception:
+            return
+        if not old_key or old_key == new_key:
+            return
+        self._retired_runtime_keys[_key_digest(old_key)] = old.id
+        while len(self._retired_runtime_keys) > _RETIRED_RUNTIME_KEYS_MAX:
+            self._retired_runtime_keys.pop(next(iter(self._retired_runtime_keys)))
+
+    def _entry_for_retired_key(self, api_key_hint: str) -> Optional[PooledCredential]:
+        entry_id = self._retired_runtime_keys.get(_key_digest(api_key_hint))
+        return self._find(lambda e: e.id == entry_id) if entry_id else None
 
     def _persist(
         self,
@@ -2118,6 +2154,16 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                         (entry.label or entry.id[:8]),
                         (hint_entry.label or hint_entry.id[:8]),
                     )
+                elif self._entry_for_retired_key(api_key_hint) is entry:
+                    # Refresh race: the request went out with this entry's previous
+                    # token generation and the token rotated (single-use OAuth refresh,
+                    # possibly in a peer process) before the failure was handled. The
+                    # id is right — keep it instead of rotating without marking.
+                    logger.info(
+                        "credential pool: api_key_hint is the pre-refresh token of %s; "
+                        "attributing failure to it", (entry.label or entry.id[:8]),
+                    )
+                    return entry
                 # Otherwise the id is stale and the request key is not in the
                 # pool — drop the id so we do not mark the wrong entry.
                 entry = hint_entry
@@ -2126,6 +2172,9 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
             # loaded from disk current() is None and _select_unlocked() would
             # return the NEXT key — the wrong one.
             entry = self._find(lambda e: e.runtime_api_key == api_key_hint)
+            if entry is None:
+                # Key-only identity of a token generation this pool already replaced.
+                entry = self._entry_for_retired_key(api_key_hint)
         return entry
 
     def _rotate_unmatched(self) -> Optional[PooledCredential]:

@@ -19,6 +19,7 @@
     "hermes_constants.py": 2,
     "pm/environments.py": 1,
     "pm/launch.py": 1,
+    "pm/nix_admission.py": 1,
     "pm/paths.py": 1,
     "pm/worker.py": 1,
     "tools/bot_mode_dm.py": 1,

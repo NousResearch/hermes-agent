@@ -49,13 +49,23 @@ def test_transport_normalize_response_folds_finish_reason(raw, expected):
     assert ChatCompletionsTransport().normalize_response(_fake_response(raw)).finish_reason == expected
 
 
+@pytest.mark.parametrize("raw", ["SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY"])
+def test_gateway_gemini_policy_block_reaches_refusal_path(raw):
+    # A Gemini-fronting gateway relays the native block reason with an empty message; the
+    # loop's deterministic-refusal handling keys on ``content_filter`` (as the native
+    # adapter already maps it), otherwise the block is retried as an empty response.
+    msg = SimpleNamespace(content=None, tool_calls=None, refusal=None)
+    response = SimpleNamespace(choices=[SimpleNamespace(finish_reason=raw, message=msg)], usage=None, model="gemini-3-pro")
+    assert ChatCompletionsTransport().normalize_response(response).finish_reason == "content_filter"
+
+
 def _make_stream_chunk(content=None, finish_reason=None):
     delta = SimpleNamespace(content=content, tool_calls=None, reasoning_content=None, reasoning=None)
     return SimpleNamespace(choices=[SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)],
                            model=None, usage=None)
 
 
-@pytest.mark.parametrize("raw,expected", [("STOP", "stop"), ("MAX_TOKENS", "length")])
+@pytest.mark.parametrize("raw,expected", [("STOP", "stop"), ("MAX_TOKENS", "length"), ("SAFETY", "content_filter")])
 @patch("run_agent.AIAgent._create_request_openai_client")
 @patch("run_agent.AIAgent._close_request_openai_client")
 def test_streaming_capture_folds_uppercase_finish_reason(_mock_close, mock_create, monkeypatch, raw, expected):

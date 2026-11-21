@@ -1,0 +1,54 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: channel3-shopping
+description: Shop 100M+ products across thousands of retailers — search, compare offers, watch prices.
+source: https://docs.trychannel3.com/mcp-overview
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Free tier is fully anonymous (verified live:
+# initialize and tools/list succeed without credentials). An optional API
+# key unlocks the pay-as-you-go tier with higher rate limits; when set it
+# is appended as `?apiKey=<key>` to the server URL. Leaving it blank keeps
+# the free tier.
+transport:
+  type: http
+  url: "https://mcp.trychannel3.com/${CHANNEL3_API_KEY_QUERY}"
+
+auth:
+  type: none
+  env:
+    - name: CHANNEL3_API_KEY_QUERY
+      prompt: "Optional Channel3 API key query string (leave BLANK for the free tier; or paste `?apiKey=<your-key>` from https://trychannel3.com/dashboard for the pay-as-you-go tier)"
+      required: false
+      secret: true
+      default: ""
+
+# All 8 tools enabled by default. The storefront-UI variants
+# (browse_products, get_similar, get_details) render into MCP hosts that
+# have a storefront surface; leaving them on makes those UIs work out of
+# the box. Users on a text-only host can prune with `hermes mcp configure`.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - channel3
+    - shop
+    - shopping
+    - price
+    - product
+  hosts:
+    - trychannel3.com
+
+post_install: |
+  No account needed — the free tier works immediately. For higher rate
+  limits, get a key at https://trychannel3.com/dashboard and re-run
+  `hermes mcp configure channel3-shopping` to set the API key query
+  string (format: `?apiKey=<your-key>`).
+
+  Useful tools:
+    - search_products   — find products by description
+    - get_products      — full details + live offers by product ID or URL
+    - get_price_history — 30-day price history
+    - watch_product     — monitor price/stock, notify in this chat on change

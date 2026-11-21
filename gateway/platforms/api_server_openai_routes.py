@@ -715,10 +715,12 @@ def _parse_chat_messages(messages: list[Any]) -> tuple:
     System messages -> ephemeral system prompt layered ON TOP of core, flattened to text
     (Anthropic rejects images there, OpenAI text models ignore them)."""
     from gateway.platforms.api_server import (
-        _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content)
+        _invalid_request, _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content)
     system_prompt = None
     conversation_messages: list[dict[str, str]] = []
     for idx, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            return None, None, _invalid_request(f"messages[{idx}] must be an object")
         role = msg.get("role", "")
         raw_content = msg.get("content", "")
         if role == "system":
@@ -872,10 +874,9 @@ class OpenAICompatRoutesMixin:
         limited = self._concurrency_limited_response()
         if limited is not None:
             return limited
-        try:
-            body = await request.json()
-        except Exception:
-            return _error_response("Invalid JSON in request body", 400)
+        body, body_err = await self._read_json_body(request)
+        if body_err is not None:
+            return body_err
         from gateway.platforms.api_server import _request_relay_metadata
         relay_metadata = _request_relay_metadata(body)
         messages = body.get("messages")
@@ -1371,7 +1372,7 @@ class OpenAICompatRoutesMixin:
         """POST /v1/responses — OpenAI Responses API format."""
         from gateway.platforms.api_server import (
             ThreadSafeAsyncQueue, _coerce_request_bool,
-            _error_response, _invalid_request, _redact_api_error_text,
+            _error_response, _redact_api_error_text,
             _resolve_media_to_data_urls, _responses_usage_payload)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
@@ -1380,10 +1381,9 @@ class OpenAICompatRoutesMixin:
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
-        try:
-            body = await request.json()
-        except Exception:
-            return _invalid_request("Invalid JSON in request body")
+        body, body_err = await self._read_json_body(request)
+        if body_err is not None:
+            return body_err
         raw_input = body.get("input")
         if raw_input is None:
             return _error_response("Missing 'input' field", 400)

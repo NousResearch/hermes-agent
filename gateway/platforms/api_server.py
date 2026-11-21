@@ -3330,45 +3330,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     async def _handle_create_job(self, request: web.Request) -> web.Response:
         """POST /api/jobs — create a new cron job."""
-        _, err = self._cron_request_guard(request)
-        if err:
-            return err
-        try:
-            body = await request.json()
-            name = (body.get("name") or "").strip()
-            schedule = (body.get("schedule") or "").strip()
-            prompt = body.get("prompt", "")
-            skills = body.get("skills")
-            repeat = body.get("repeat")
-            if not name:
-                return web.json_response({"error": "Name is required"}, status=400)
-            if len(name) > self._MAX_NAME_LENGTH:
-                return web.json_response({"error": f"Name must be ≤ {self._MAX_NAME_LENGTH} characters"}, status=400)
-            if not schedule:
-                return web.json_response({"error": "Schedule is required"}, status=400)
-            prompt_err = self._validate_cron_prompt(prompt)
-            if prompt_err:
-                return prompt_err
-            if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
-                return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
-            kwargs = {
-                "prompt": prompt, "schedule": schedule, "name": name,
-                "deliver": body.get("deliver", "local"),
-                "origin": self._cron_origin_from_request(request)}
-            for key in ("paused", "paused_reason", "timezone"):
-                if key in body:
-                    kwargs[key] = body[key]
-            if skills:
-                kwargs["skills"] = skills
-            if repeat is not None:
-                kwargs["repeat"] = repeat
-            return web.json_response({"job": _cron_create(**kwargs)})
-        except _CronSchedulerRegistrationError as e:
-            return web.json_response(e.to_dict(), status=424)
-        except ValueError as e:
-            return web.json_response({"error": str(e)}, status=400)
-        except Exception as e:
-            return self._cron_error_response(e)
+        from gateway.platforms.api_server_cron_jobs import handle_create_job
+        return await handle_create_job(self, request)
 
     async def _handle_get_job(self, request: web.Request) -> web.Response:
         """GET /api/jobs/{job_id} — get a single cron job."""
@@ -3454,7 +3417,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             body = {}
             with suppress(Exception):
                 body = await request.json()
-            job_id = (body or {}).get("job_id")
+            job_id = body.get("job_id") if isinstance(body, dict) else None
             if not job_id:
                 return web.json_response({"error": "missing job_id"}, status=400)
             # `hermes pause` ESTOP: refuse the fire and ask NAS to retry later.

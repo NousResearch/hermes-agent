@@ -1,4 +1,4 @@
-"""Cron job edit door of the API server: ``PATCH /api/jobs/{job_id}`` and the shared job response.
+"""Cron job doors of the API server: ``POST /api/jobs``, ``PATCH /api/jobs/{job_id}`` and the shared job response.
 
 Split out of ``gateway/platforms/api_server.py``. Store callables and helpers are read from the
 facade at call time, so ``patch("gateway.platforms.api_server._cron_update")`` keeps intercepting.
@@ -38,6 +38,52 @@ def _invalid_update(adapter, sanitized: dict):
     if "name" in sanitized and len(sanitized["name"]) > adapter._MAX_NAME_LENGTH:
         return web.json_response({"error": f"Name must be ≤ {adapter._MAX_NAME_LENGTH} characters"}, status=400)
     return adapter._validate_cron_prompt(sanitized["prompt"]) if "prompt" in sanitized else None
+
+
+async def handle_create_job(adapter, request: web.Request) -> web.Response:
+    """POST /api/jobs: create a cron job; a body that is not a JSON object is a 400, never a 500."""
+    from gateway.platforms import api_server as facade
+    _, err = adapter._cron_request_guard(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("Request body must be a JSON object")
+        name = (body.get("name") or "").strip()
+        schedule = (body.get("schedule") or "").strip()
+        prompt = body.get("prompt", "")
+        skills = body.get("skills")
+        repeat = body.get("repeat")
+        if not name:
+            return web.json_response({"error": "Name is required"}, status=400)
+        if len(name) > adapter._MAX_NAME_LENGTH:
+            return web.json_response({"error": f"Name must be ≤ {adapter._MAX_NAME_LENGTH} characters"}, status=400)
+        if not schedule:
+            return web.json_response({"error": "Schedule is required"}, status=400)
+        prompt_err = adapter._validate_cron_prompt(prompt)
+        if prompt_err:
+            return prompt_err
+        if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
+            return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
+        kwargs = {
+            "prompt": prompt, "schedule": schedule, "name": name,
+            "deliver": body.get("deliver", "local"),
+            "origin": adapter._cron_origin_from_request(request)}
+        for key in ("paused", "paused_reason", "timezone"):
+            if key in body:
+                kwargs[key] = body[key]
+        if skills:
+            kwargs["skills"] = skills
+        if repeat is not None:
+            kwargs["repeat"] = repeat
+        return web.json_response({"job": facade._cron_create(**kwargs)})
+    except facade._CronSchedulerRegistrationError as e:
+        return web.json_response(e.to_dict(), status=424)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:  # health: allow BLE001 -- the API boundary: any store failure is a redacted 500
+        return adapter._cron_error_response(e)
 
 
 async def handle_update_job(adapter, request: web.Request) -> web.Response:

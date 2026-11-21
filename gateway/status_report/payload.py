@@ -9,7 +9,7 @@ import re
 from typing import Any, Literal, Mapping
 
 from gateway.status import get_process_start_time, read_runtime_status
-from gateway.status_public import public_exit_reason, public_platform_entry
+from gateway.status_report.public import public_exit_reason, public_platform_entry
 from hermes_cli.auth import get_nous_session_validity
 
 logger = logging.getLogger(__name__)

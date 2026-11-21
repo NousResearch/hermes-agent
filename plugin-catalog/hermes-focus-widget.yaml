@@ -1,0 +1,60 @@
+# Community catalog entry — hermes-focus-widget
+#
+# Owner-submitted: the PR author (`elianjuan-g`) owns and maintains the
+# repo below. Exact-SHA pin (40-hex). No self-updating code: the desktop
+# half ships as a static `desktop/plugin.js` and never fetches,
+# downloads, or replaces itself.
+#
+# Screenshots below are real captures from a Hermes Desktop render
+# (Playwright, operator PC, 12 Nov 2026) and exist at these paths.
+# Do NOT open the catalog PR until the pinned sha is the final HEAD.
+name: hermes-focus-widget
+title: "Focus Widget"
+repo: https://github.com/elianjuan-g/hermes-focus-widget
+sha: "1b6bdcf7330539a69a23733a545dabe7025dcf37"
+version: "1.0.0"
+description: >-
+  A Pomodoro widget for Hermes Desktop that only counts focus time while
+  the agent is actually working. Agent-aware timer (25/5/15 by default,
+  configurable): the focus timer runs only while the agent is active
+  (hooks on messages, tool calls and outputs), waits automatically on
+  agent idle, and resumes on the next activity; manual mode is a full
+  classic wall-clock Pomodoro. Three Desktop surfaces (draggable
+  floating widget, status-bar chip, full page), session log with
+  today/week totals and a day streak, and a /pomodoro slash command.
+  Disclosure — 100% local: no network calls, no accounts, no API keys,
+  no credentials, no telemetry. The widget UI and its JSON API are
+  served on loopback only (127.0.0.1:18778 by default); the Desktop
+  surfaces poll that endpoint (floating widget and status-bar chip
+  every 2 s, full page every 1 s). State lives in one JSON file under
+  the Hermes plugin-data directory
+  (~/.hermes/plugin-data/hermes-focus-widget/focus-state.json), written
+  atomically, restored on gateway restart. One daemon thread for the
+  1-second timer tick and one loopback HTTP server thread, both inside
+  the gateway process. No self-updater; no core overrides.
+maintainer: elianjuan-g
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/elianjuan-g/hermes-focus-widget
+screenshots:
+  - "https://raw.githubusercontent.com/elianjuan-g/hermes-focus-widget/1b6bdcf7330539a69a23733a545dabe7025dcf37/docs/screenshots/_float.png"
+  - "https://raw.githubusercontent.com/elianjuan-g/hermes-focus-widget/1b6bdcf7330539a69a23733a545dabe7025dcf37/docs/screenshots/_page.png"
+  - "https://raw.githubusercontent.com/elianjuan-g/hermes-focus-widget/1b6bdcf7330539a69a23733a545dabe7025dcf37/docs/screenshots/_settings.png"
+  - "https://raw.githubusercontent.com/elianjuan-g/hermes-focus-widget/1b6bdcf7330539a69a23733a545dabe7025dcf37/docs/screenshots/_chip.png"
+  - "https://raw.githubusercontent.com/elianjuan-g/hermes-focus-widget/1b6bdcf7330539a69a23733a545dabe7025dcf37/docs/screenshots/_01-main.png"
+readme: true
+known_issues:
+  - "Agent activity is not human focus: the timer knows when the agent is working, not whether the operator is focused."
+  - "Local installs only: the widget UI is served on loopback (127.0.0.1); if Desktop connects to a remote gateway, the floating widget and chip cannot reach it."
+  - "One timer per gateway: sessions are recorded per gateway, not per chat session or profile."
+capabilities:
+  provides_tools:
+    - focus_timer
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - pre_tool_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

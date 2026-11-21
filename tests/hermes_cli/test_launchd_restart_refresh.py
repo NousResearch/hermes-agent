@@ -85,6 +85,9 @@ def test_failed_refresh_routes_to_bounded_bootstrap_not_the_90s_kickstart(monkey
     The bootstrap path (30s timeouts, loud failure) is the bounded revival.
     """
     monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: False)
+    # Pin "installed plist is stale" so the test never renders the real plist: rendering reads
+    # <repo>/../manifest.json, which is the real HERMES_HOME when the checkout lives inside it.
+    monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
 
     gateway_cli.launchd_restart()
 

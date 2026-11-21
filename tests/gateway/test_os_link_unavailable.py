@@ -9,6 +9,8 @@ the same way.
 from __future__ import annotations
 
 import os
+import threading
+import time
 
 import pytest
 
@@ -54,25 +56,33 @@ def test_publish_without_os_link_uses_the_fallback(publish, tmp_path, monkeypatc
     assert expected and path.read_bytes() == expected
 
 
-def test_room_grant_secret_discards_failed_publish(tmp_path, monkeypatch):
-    """A failed fsync on the fallback must not leave a RoomLink secret future starts trust."""
+def test_concurrent_first_use_without_os_link_agrees_on_one_secret(tmp_path, monkeypatch):
+    """Racing first users never read a partial secret and all sign with the same key."""
     monkeypatch.delattr(os, "link", raising=False)
-    path = tmp_path / hosted_room_peer._ROOM_GRANT_SECRET_FILE
-    real_fsync = os.fsync
-    calls = 0
+    real_fdopen = os.fdopen
 
-    def fail_final_sync(fd):
-        nonlocal calls
-        calls += 1
-        if calls == 2:  # temp file synced; publishing the final file fails
-            raise OSError("grant secret sync failed")
-        return real_fsync(fd)
+    def slow_fdopen(*args, **kwargs):  # widen the open→write window a reader could race
+        time.sleep(0.05)  # health: allow HX013 -- the open-to-write delay IS the race window under test
+        return real_fdopen(*args, **kwargs)
 
-    monkeypatch.setattr(os, "fsync", fail_final_sync)
-    with pytest.raises(OSError, match="grant secret sync failed"):
-        hosted_room_peer._gateway_room_grant_secret_for_home(str(tmp_path))
-    assert not path.exists()
+    monkeypatch.setattr(os, "fdopen", slow_fdopen)
+    mint = hosted_room_peer._gateway_room_grant_secret_for_home.__wrapped__
+    barrier = threading.Barrier(16)
+    results, errors = [], []
 
-    monkeypatch.setattr(os, "fsync", real_fsync)
-    hosted_room_peer._gateway_room_grant_secret_for_home(str(tmp_path))
-    assert len(path.read_bytes()) == 32
+    def first_use():
+        barrier.wait()
+        try:
+            results.append(mint(str(tmp_path)))
+        except Exception as exc:  # a partial read surfaces as HostedRoomGrantError
+            errors.append(exc)
+
+    threads = [threading.Thread(target=first_use) for _ in range(16)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(set(results)) == 1
+    assert len((tmp_path / hosted_room_peer._ROOM_GRANT_SECRET_FILE).read_bytes()) == 32

@@ -75,28 +75,34 @@ def _gateway_room_grant_secret_for_home(home_value: str) -> bytes:
             except FileExistsError:
                 material = _read()
             except (OSError, AttributeError):
-                # No hard links (Android/Termux without os.link, exFAT): exclusive create
-                # again, and a racing writer re-reads whoever won.
-                try:
-                    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                except FileExistsError:
-                    material = _read()
-                else:
-                    try:
-                        with os.fdopen(fd, "wb") as stream:
-                            stream.write(material)
-                            stream.flush()
-                            os.fsync(stream.fileno())
-                    except BaseException:
-                        # Do not leave an uncommitted secret blocking later mint attempts.
-                        path.unlink(missing_ok=True)
-                        raise
-                    fsync_directory(home)
+                # No hard links (Termux Python has no os.link; exFAT): publish the synced temp
+                # with an atomic replace under a sibling lock, so a reader only ever sees no file
+                # or the whole secret, and a racing first user re-reads the winner.
+                material = _publish_room_secret_locked(home, path, temporary, material, _read)
             else:
                 fsync_directory(home)
         finally:
             temporary.unlink(missing_ok=True)
     return hmac.new(material, b"hermes-hosted-room-installation-grant-v1", hashlib.sha256).digest()
+
+
+def _publish_room_secret_locked(home: Path, path: Path, temporary: Path, material: bytes, read) -> bytes:
+    from utils import fsync_directory
+    try:
+        import fcntl
+    except ImportError:  # Windows always has os.link; a no-link volume there just skips the lock
+        fcntl = None
+    fd = os.open(home / f"{_ROOM_GRANT_SECRET_FILE}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        if path.exists():
+            return read()
+        os.replace(temporary, path)
+        fsync_directory(home)
+        return material
+    finally:
+        os.close(fd)  # closing the fd releases the flock
 
 
 def gateway_room_grant_secret(root: Path | str | None = None) -> bytes:

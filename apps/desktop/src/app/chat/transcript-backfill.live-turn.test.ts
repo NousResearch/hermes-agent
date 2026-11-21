@@ -131,4 +131,101 @@ describe('a refresh that lands while the turn runs', () => {
     expect(merged.at(-2)?.id).toBe('user-sub-live')
     expect(merged.at(-1)?.id).toBe('assistant-stream-1')
   })
+
+  describe.each(Object.entries(compositions))('through %s with trailing live rows', (_label, refresh) => {
+    it('keeps the live stream and a queued follow-up when the running send is on the page', () => {
+      const window: ChatMessage[] = [
+        ...toChatMessages(history),
+        {
+          id: 'user-sub-live',
+          role: 'user',
+          parts: [{ type: 'text', text: PROMPT }],
+          timestamp: at(13),
+          attachmentRefs: []
+        },
+        {
+          id: 'assistant-stream-1',
+          role: 'assistant',
+          pending: true,
+          parts: [{ type: 'text', text: 'working on it...' }]
+        },
+        {
+          id: 'user-sub-next',
+          role: 'user',
+          parts: [{ type: 'text', text: 'queued follow-up' }],
+          timestamp: at(14),
+          attachmentRefs: []
+        }
+      ]
+
+      const page = toChatMessages([...history.slice(3), user(13, PROMPT, 'sub-live')])
+      const merged = refresh(page, window)
+
+      expect(count(merged, PROMPT)).toBe(1)
+      expect(count(merged, 'working on it...')).toBe(1)
+      expect(count(merged, 'queued follow-up')).toBe(1)
+      expect(merged.findIndex(m => chatMessageText(m).includes('working on it...'))).toBeLessThan(
+        merged.findIndex(m => chatMessageText(m).includes('queued follow-up'))
+      )
+    })
+
+    it('keeps the live stream when an interim bubble sits between the prompt and stream', () => {
+      const window: ChatMessage[] = [
+        ...toChatMessages(history),
+        {
+          id: 'user-sub-live',
+          role: 'user',
+          parts: [{ type: 'text', text: PROMPT }],
+          timestamp: at(13),
+          attachmentRefs: []
+        },
+        {
+          id: 'assistant-interim-1',
+          role: 'assistant',
+          interim: true,
+          parts: [{ type: 'text', text: 'reading the notes' }]
+        },
+        { id: 'assistant-stream-2', role: 'assistant', pending: true, parts: [{ type: 'text', text: 'finalizing...' }] }
+      ]
+
+      const page = toChatMessages([
+        ...history.slice(3),
+        user(13, PROMPT, 'sub-live'),
+        narration(14, 'reading the notes', 'live-1'),
+        tool(15, 'live-1')
+      ])
+
+      const merged = refresh(page, window)
+
+      expect(count(merged, PROMPT)).toBe(1)
+      expect(count(merged, 'reading the notes')).toBe(1)
+      expect(count(merged, 'finalizing...')).toBe(1)
+    })
+
+    it('matches by submissionId when the stored prompt text differs from the optimistic row', () => {
+      const window: ChatMessage[] = [
+        ...toChatMessages(history),
+        {
+          id: 'user-sub-skill',
+          role: 'user',
+          parts: [{ type: 'text', text: '/tidy notes' }],
+          timestamp: at(13),
+          attachmentRefs: []
+        },
+        {
+          id: 'assistant-stream-1',
+          role: 'assistant',
+          pending: true,
+          parts: [{ type: 'text', text: 'running skill...' }]
+        }
+      ]
+
+      const page = toChatMessages([...history.slice(3), user(13, 'Expanded skill instructions for notes', 'sub-skill')])
+      const merged = refresh(page, window)
+
+      expect(merged.filter(m => m.id === 'user-sub-skill')).toHaveLength(0)
+      expect(count(merged, 'Expanded skill instructions for notes')).toBe(1)
+      expect(count(merged, 'running skill...')).toBe(1)
+    })
+  })
 })

@@ -120,6 +120,29 @@ def _launch(browser_name: str) -> tuple[Optional[str], Optional[str]]:
     return launched.cdp_url, None
 
 
+def _pinned_browser() -> Optional[str]:
+    """``browser.real_profile_browser`` names the browser family real-profile browsing may drive, instead
+    of following the OS default. Empty (the default) keeps detection. A non-Chromium default (Safari on
+    macOS, Firefox on Linux) used to be the end of the road: detection reports it, ``_unsupported_reason``
+    turns that into an error, and the user has no way to say "use Chrome's profile anyway". Read per call,
+    like the consent switch, so a config change lands on the next browser use."""
+    from tools.browser_session_cloud import browser_cfg
+    name = str(browser_cfg("real_profile_browser", "") or "").strip().lower()
+    return name or None
+
+
+def _pinned_browser_reason(browser_name: str) -> Optional[str]:
+    """Why a pinned ``browser.real_profile_browser`` can't be used, else None. Fails closed on a typo:
+    a pin that isn't a family detection could have produced never reaches the launcher, where it would
+    surface as an opaque launch failure instead of a message naming the bad value."""
+    from hermes_cli.browser_connect import _BROWSER_BY_KEY
+    if browser_name in _BROWSER_BY_KEY:
+        return None
+    return (_RP + f"browser.real_profile_browser is set to '{browser_name}', which is not a supported browser "
+            "family. Use one of: chrome, edge, brave, brave-origin, chromium (the same names real-profile "
+            "detection accepts), or turn the toggle off.")
+
+
 def real_profile_cdp() -> tuple[Optional[str], Optional[str]]:
     """``(cdp_url, error)`` for consented real-profile browsing.
 
@@ -145,7 +168,12 @@ def real_profile_cdp() -> tuple[Optional[str], Optional[str]]:
         if running is not None:
             return running.cdp_url, None
         from hermes_cli.browser_connect import detect_default_chromium
-        browser_name = detect_default_chromium()
+        pinned = _pinned_browser()
+        if pinned is not None:
+            bad_pin = _pinned_browser_reason(pinned)
+            if bad_pin:
+                return None, bad_pin
+        browser_name = pinned or detect_default_chromium()
         unsupported = _unsupported_reason(browser_name)
         if unsupported:
             return None, unsupported

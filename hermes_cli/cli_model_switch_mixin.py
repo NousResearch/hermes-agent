@@ -20,6 +20,11 @@ from agent.i18n import t
 from utils import base_url_host_matches
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 
+#: Opening of the ``/model`` switch note prepended to the next user message. Persisted as a
+#: ``role="user"`` row, so ``agent.title_generator._MACHINE_PREFIXES`` guards it (keep both sides
+#: in sync — a note that is titleable becomes the session title, and the status bar renders that).
+MODEL_SWITCH_NOTE_PREFIX = "[Note: model was just switched from "
+
 logger = logging.getLogger(__name__)
 
 # CLI-level fields describing the active model route; snapshotted before a switch / one-turn
@@ -153,7 +158,7 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
     _display_old = format_model_for_display(old_model)
     _display_new = format_model_for_display(result.new_model)
     cli._pending_model_switch_note = (
-        f"[Note: model was just switched from {_display_old} to {_display_new} "
+        f"{MODEL_SWITCH_NOTE_PREFIX}{_display_old} to {_display_new} "
         f"via {result.provider_label or result.target_provider}. "
         f"{'This override applies to the next turn only. ' if one_turn else ''}"
         f"Adjust your self-identification accordingly.]")

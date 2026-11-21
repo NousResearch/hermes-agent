@@ -535,8 +535,8 @@ def _restore_bootstrap_tokens(env: dict[str, str], source: Mapping[str, str]) ->
 
 
 def gateway_child_env(target_home: str | Path, base: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Child env for a gateway this process starts on *target_home*: that profile's own secrets
-    (``served_profile_child_env``) plus the deployment's launch stamps."""
+    """Child env for a gateway this process starts on *target_home*: what ``served_profile_child_env``
+    builds, with the deployment's launch stamps kept."""
     return keep_deployment_stamps(_profile_child_env(base, target_home, True), os.environ if base is None else base)
 
 

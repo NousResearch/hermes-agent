@@ -9,7 +9,6 @@ import itertools
 import logging
 import random
 import secrets
-import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, TypeVar
@@ -86,13 +85,14 @@ class StatusReporter:
         self._last_kind: Optional[str] = None
         self._goodbyes: set[asyncio.Task] = set()
         self._pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
-        self._taking: set[concurrent.futures.Future] = set()  # lock confirmations still on a thread
-        self._release_owed = False  # a lock taken after a cancel, given back once none is out
-        self._closed_loop_decisions = threading.Lock()
+        # The one lock confirmation in flight: every caller awaits it, and only it sets _is_sender.
+        self._confirming: Optional[asyncio.Task[bool]] = None
+        self._stopped = False  # run() has ended and none has started since
 
     async def run(self, is_running: Callable[[], bool], *, tick: float = _TICK_S) -> None:
         """Poll until the gateway stops. The sleep between polls only bounds how soon a due report
         is noticed; whether one is due is decided on the wall clock."""
+        self._stopped = False
         try:
             while is_running():
                 goodbyes_said = self._goodbyes_said
@@ -102,11 +102,14 @@ class StatusReporter:
                     self._poll_failed(exc, goodbye_since=self._goodbyes_said != goodbyes_said)
                 await asyncio.sleep(tick)
         finally:
+            self._stopped = True
             for task in list(self._goodbyes):  # a goodbye outliving the watcher would report for it
                 task.cancel()
-            if self._is_sender:
+            # A confirmation still in flight would take the lock again after a release here: it sees
+            # _stopped and gives the lock back itself (_confirm).
+            if self._is_sender and (self._confirming is None or self._confirming.done()):
                 self._is_sender = False
-                release_scoped_lock(_LOCK_SCOPE, self._target.url)
+                self._give_back()
             pool, self._pool = self._pool, None
             if pool is not None:
                 pool.shutdown(wait=False)  # work already running finishes; its threads then end
@@ -205,27 +208,36 @@ class StatusReporter:
     async def _become_sender(self) -> bool:
         """Take, or confirm, the machine-local sender lock for this report URL before each report.
         Gateways of one machine that inherit the same URL share the lock, so it decides which of them
-        reports; one that
-        died is replaced on a later poll, and so is a lock directory that was repaired. Confirming
-        it each time matters because a stopped owner counts as gone: a sender that resumes after
-        another gateway took its lock stands by instead of reporting beside it."""
+        reports; one that died is replaced on a later poll, and so is a lock directory that was
+        repaired. Confirming it each time matters because a stopped owner counts as gone: a sender
+        that resumes after another gateway took its lock stands by instead of reporting beside it.
+
+        One confirmation at a time: a beat and a goodbye that both ask join the one in flight, and
+        a caller cancelled while it waits cancels only its own wait. Only that confirmation sets
+        ``_is_sender``, so a late answer can never overwrite a newer one."""
+        if self._confirming is None or self._confirming.done():
+            self._confirming = asyncio.get_running_loop().create_task(self._confirm())
+        return await asyncio.shield(self._confirming)
+
+    async def _confirm(self) -> bool:
         taking = self._submit(acquire_scoped_lock, _LOCK_SCOPE, self._target.url)
-        self._taking.add(taking)
         try:
             acquired, _holder = await asyncio.shield(asyncio.wrap_future(taking))
         except asyncio.CancelledError:
-            # The thread can still take the lock after this cancel, after run()'s cleanup released
-            # it, or once a respawned watcher is running: what is kept is decided when it is done.
-            loop = asyncio.get_running_loop()
-            taking.add_done_callback(lambda done: self._give_back_on_loop(loop, done))
+            # Callers wait through a shield, so only the loop's own shutdown cancels this: the
+            # thread gives back what it takes, as nothing on the loop will run again.
+            taking.add_done_callback(self._give_back_if_taken)
             raise
         except OSError:
             acquired = None
-        finally:
-            if taking.done():  # else a cancel left it to _give_back_unless_sending
-                self._taking.discard(taking)
+        if self._stopped:
+            # The watcher stopped while this was out (a gateway shutdown) and left the lock to it:
+            # given back if it is ours. A respawned watcher has cleared _stopped first.
+            if acquired or (acquired is None and self._is_sender):
+                self._give_back()
+            self._is_sender = False
+            return False
         if acquired is None:
-            self._settle_owed_release()
             # Permissions (gateway.status has logged the directory and its repair), a read-only or
             # full disk, a file where the directory goes. One fixed reason: the error's text is a path.
             # A sender keeps sending: no other gateway can take the lock from this directory either.
@@ -235,41 +247,18 @@ class StatusReporter:
                            "by this user, on a disk with free space)")
             return False
         self._is_sender = acquired
-        self._settle_owed_release()
         if acquired:
             self._standing_by_for = None
         else:
             self._stand_by(logging.INFO, "another gateway on this machine is the sender")
         return acquired
 
-    def _give_back_on_loop(self, loop: asyncio.AbstractEventLoop, taking: concurrent.futures.Future) -> None:
-        """Decide on the event loop, one after run()'s own release and never beside it: a release
-        reads the owner and then unlinks, so two at once could unlink a lock another gateway took
-        in between. A loop that has closed runs nothing more, so then it is decided here, under
-        a lock, since the two reporter threads can both get here."""
-        try:
-            loop.call_soon_threadsafe(self._give_back_unless_sending, taking)
-        except RuntimeError:  # the loop has closed
-            with self._closed_loop_decisions:
-                self._give_back_unless_sending(taking)
+    def _give_back(self) -> None:
+        release_scoped_lock(_LOCK_SCOPE, self._target.url)
 
-    def _give_back_unless_sending(self, taking: concurrent.futures.Future) -> None:
-        """A lock taken after its caller was cancelled is this process's lock file, whichever run
-        took it. While another confirmation is still out, the release is owed and decided once the
-        last of them is done (``_settle_owed_release``)."""
-        self._taking.discard(taking)
-        if not (taking.cancelled() or taking.exception() is not None or not taking.result()[0]):
-            self._release_owed = True
-        self._settle_owed_release()
-
-    def _settle_owed_release(self) -> None:
-        """Give back a lock taken after a cancel once no confirmation is out, unless this reporter
-        is the sender by then (a goodbye cancelled alone, or a respawned watcher)."""
-        if not self._release_owed or self._taking:
-            return
-        self._release_owed = False
-        if not self._is_sender:
-            release_scoped_lock(_LOCK_SCOPE, self._target.url)
+    def _give_back_if_taken(self, taking: concurrent.futures.Future) -> None:
+        if not taking.cancelled() and taking.exception() is None and taking.result()[0]:
+            self._give_back()
 
     def _stand_by(self, level: int, why: str) -> None:
         """Say why this gateway is not the sender once per reason, not on every poll."""

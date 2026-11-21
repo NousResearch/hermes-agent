@@ -15,9 +15,14 @@ These tests pin the two properties the fix relies on:
    as a violation verdict.
 2. ``_write_guard_cache_atomic`` publishes via ``os.replace`` from a staging
    name that the stale-fingerprint eviction globs cannot match.
+
+A read-only cwd (the isolated runner mounts /src read-only) must not crash
+``pytest_configure``: the guard scans uncached and still fails on violations.
 """
 
 import os
+
+import pytest
 
 from tests.gateway import conftest as gw_conftest
 
@@ -72,3 +77,31 @@ class TestWriteGuardCacheAtomic:
             assert staging not in evictable
         finally:
             staging.unlink(missing_ok=True)
+
+
+@pytest.fixture
+def read_only_cwd(tmp_path, monkeypatch):
+    """A cwd the guard cannot create ``.pytest-cache`` in (the isolated
+    runner mounts /src read-only; INTERNALERROR before collection)."""
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o555)
+    monkeypatch.chdir(ro)
+    yield ro
+    ro.chmod(0o755)
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes into mode-555 dirs")
+class TestGuardOnReadOnlyCwd:
+    def test_clean_tree_configures_without_cache(self, read_only_cwd):
+        assert gw_conftest.pytest_configure(None) is None
+        assert list(read_only_cwd.iterdir()) == []
+
+    def test_violation_still_fails_the_session(self, read_only_cwd, monkeypatch):
+        """No cache must not mean no guard."""
+        monkeypatch.setattr(
+            gw_conftest, "_run_adapter_antipattern_scan", lambda: ["  tests/gateway/test_x.py:\n    line 1: bad"]
+        )
+        with pytest.raises(pytest.UsageError, match="anti-pattern detected"):
+            gw_conftest.pytest_configure(None)

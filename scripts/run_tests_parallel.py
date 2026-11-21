@@ -923,20 +923,29 @@ def _load_durations(repo_root: Path) -> dict[str, float]:
 def _save_durations(
     file_times: list[tuple[Path, float]],
     repo_root: Path,
-) -> None:
+) -> bool:
     """Write the duration cache so future ``--slice`` runs can use it.
 
     Merges with any existing cache so entries from files not in the
     current run (e.g. from a different slice) are preserved. Keys are
     repo-relative paths so the cache is portable across checkouts
     and CI runners.
+
+    Returns whether the cache was written. The cache is an optimisation,
+    so a checkout that cannot be written (a read-only mount) warns on
+    stderr instead of failing a run whose tests all passed.
     """
     data: dict[str, float] = _load_durations(repo_root)
     for f, t in file_times:
         key = _format_file(f, repo_root)
         data[key] = round(t, 3)
     path = repo_root / _DURATIONS_FILE
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"  warning: durations cache not written: {exc}", file=sys.stderr)
+        return False
+    return True
 
 
 #: Estimate for a file with no cached duration (roughly the P50 from profiling).
@@ -1708,8 +1717,7 @@ def main() -> int:
     clean_times = _clean_pass_durations(
         file_times, failures, _FLAKY_RESULTS,
     )
-    if clean_times:
-        _save_durations(clean_times, repo_root)
+    if clean_times and _save_durations(clean_times, repo_root):
         print(f"  Durations cached to {_DURATIONS_FILE} ({len(clean_times)} files)")
 
     # Per-file time distribution (throwaway diagnostic — shows how

@@ -560,7 +560,19 @@ def pytest_configure(config):
     cache_file = cache_dir / f"gw-adapter-guard-{fp}"
     lock_file = cache_dir / f".gw-adapter-guard-{fp}.lock"
 
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    # A read-only checkout (the isolated runner mounts /src read-only) cannot
+    # hold the cache: scan uncached rather than die with INTERNALERROR.
+    # The guard still runs; only the cross-process reuse is lost.
+    # ``os.access`` covers a pre-existing cache dir on a read-only mount,
+    # where ``mkdir(exist_ok=True)`` succeeds but the lock file cannot be made.
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_writable = os.access(cache_dir, os.W_OK)
+    except OSError:
+        cache_writable = False
+    if not cache_writable:
+        _raise_on_guard_verdict(_adapter_guard_verdict())
+        return
 
     # Evict stale cache entries from previous fingerprints (best-effort).
     # ``.tmp-gw-adapter-guard-*`` staging files (see
@@ -610,19 +622,27 @@ def pytest_configure(config):
             raise pytest.UsageError(cached)
 
         # Slow path: this process is the first to acquire the lock.
-        violations = _run_adapter_antipattern_scan()
+        verdict = _adapter_guard_verdict()
+        _write_guard_cache_atomic(cache_file, verdict)
+        _raise_on_guard_verdict(verdict)
 
-        if violations:
-            msg = (
-                "Plugin-adapter-import anti-pattern detected in gateway tests:\n"
-                + "\n".join(violations)
-                + "\n\n"
-                + _GUARD_HINT
-            )
-            _write_guard_cache_atomic(cache_file, msg)
-            raise pytest.UsageError(msg)
-        else:
-            _write_guard_cache_atomic(cache_file, "clean")
+
+def _adapter_guard_verdict() -> str:
+    """Run the scan; return ``"clean"`` or the full violation message."""
+    violations = _run_adapter_antipattern_scan()
+    if not violations:
+        return "clean"
+    return (
+        "Plugin-adapter-import anti-pattern detected in gateway tests:\n"
+        + "\n".join(violations)
+        + "\n\n"
+        + _GUARD_HINT
+    )
+
+
+def _raise_on_guard_verdict(verdict: str) -> None:
+    if verdict != "clean":
+        raise pytest.UsageError(verdict)
 
 
 def _read_guard_cache(cache_file: Path) -> str | None:

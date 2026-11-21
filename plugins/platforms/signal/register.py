@@ -56,7 +56,7 @@ def register(ctx) -> None:
         target_ref_syntax_fn=_parse_send_target,
         # Attachments ride the JSON-RPC param on the final chunk.
         standalone_send=StandaloneSendPolicy(label="Signal", media=True, empty_list_between_chunks=True,
-                                             text_direct=True),
+                                             text_direct=True, forward_force_document=True),
         name="signal", label="Signal", adapter_factory=SignalAdapter,
         dashboard_description="Connect through a signal-cli REST bridge.",
         docs_url="https://github.com/bbernhard/signal-cli-rest-api",

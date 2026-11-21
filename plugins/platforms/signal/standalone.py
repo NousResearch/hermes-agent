@@ -2,11 +2,13 @@
 signal-cli JSON-RPC with Signal formatting, attachment batching and the process-wide rate-limit
 scheduler shared with the gateway adapter. Wired as the plugin's ``standalone_sender_fn``."""
 
+from functools import partial
 import logging
 import os
 import time
 
 from plugins.platforms.signal import signal_rate_limit as rl
+from plugins.platforms.signal.adapter import prepare_voice_batch
 from plugins.platforms.signal.signal_format import markdown_to_signal
 from gateway.platforms.base import describe_proxy_error, env_proxy_for_redaction  # httpx reads HTTPS_PROXY itself
 from gateway.outbound.senders import _error, _success
@@ -48,7 +50,7 @@ async def _signal_send_batch(post, scheduler, rl, idx, n_batches, att_batch, bat
                            idx + 1, n_batches, attempt, max_attempts, describe_proxy_error(e, env_proxy_for_redaction(target)) or str(e))
 
 
-async def _send_signal(extra, chat_id, message, media_files=None):
+async def _send_signal(extra, chat_id, message, media_files=None, *, force_document=False):
     """signal-cli JSON-RPC send; attachments go in SIGNAL_MAX_ATTACHMENTS_PER_MSG batches metered
     by the process-wide SignalAttachmentScheduler (shared with the gateway adapter's rate-limit state)."""
     try:
@@ -60,38 +62,40 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         if not account:
             return {"error": "Signal account not configured"}
         valid_media = media_files or []
-        attachment_paths = []
-        for media_path, _is_voice in valid_media:
+        attachments = []
+        for media_path, is_voice in valid_media:
             if os.path.exists(media_path):
-                attachment_paths.append(media_path)
+                attachments.append((media_path, is_voice and not force_document))
             else:
                 logger.warning("Signal media file not found, skipping: %s", media_path)
         # No attachments still means one (text-only) batch; text rides on batch #0 only.
         per_batch = rl.SIGNAL_MAX_ATTACHMENTS_PER_MSG
-        att_batches = [attachment_paths[i:i + per_batch] for i in range(0, len(attachment_paths), per_batch)] or [[]]
+        att_batches = [attachments[i:i + per_batch] for i in range(0, len(attachments), per_batch)] or [[]]
         n_batches, (plain_text, text_styles) = len(att_batches), markdown_to_signal(message)
         recipient = {"groupId": chat_id[6:]} if chat_id.startswith("group:") else {"recipient": [chat_id]}
 
-        async def _rpc_send(text, *, id_prefix, timeout, attachments=None, styled=False):
+        async def _rpc_send(text, *, id_prefix, timeout, attachments=None, styled=False, voice_note=False):
             params = {"account": account, "message": text, **recipient}
             if styled and text and text_styles:
                 params["textStyle" if len(text_styles) == 1 else "textStyles"] = (
                     text_styles[0] if len(text_styles) == 1 else text_styles)
             if attachments:
                 params["attachments"] = attachments
+                if voice_note:
+                    params["voiceNote"] = True
             payload = {"jsonrpc": "2.0", "method": "send", "params": params,
                        "id": f"{id_prefix}_{int(time.time() * 1000)}"}
             async with httpx.AsyncClient(timeout=timeout) as client:
                 return await client.post(f"{http_url}/api/v1/rpc", json=payload)
 
-        async def _post(batch_attachments, batch_message):
-            resp = await _rpc_send(batch_message, id_prefix="send", attachments=batch_attachments, styled=True,
+        async def _post(batch_attachments, batch_message, *, voice_note):
+            resp = await _rpc_send(batch_message, id_prefix="send", attachments=batch_attachments, styled=True, voice_note=voice_note,
                                    timeout=rl._signal_send_timeout(len(batch_attachments)))
             resp.raise_for_status()
             return resp.json()
         scheduler = rl.get_scheduler()
         logger.info("send_message Signal: scheduler state=%s, %d attachment(s) in %d batch(es)",
-                    scheduler.state(), len(attachment_paths), n_batches)
+                    scheduler.state(), len(attachments), n_batches)
         failed_batches: list[int] = []
         for idx, att_batch in enumerate(att_batches):
             n = len(att_batch)
@@ -102,13 +106,15 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                                     f"for Signal rate limit, batch {idx + 1}/{n_batches}.)", id_prefix="notice", timeout=30.0)
                 except Exception as _e:
                     logger.warning("Signal: inline notice failed: %s", describe_proxy_error(_e, env_proxy_for_redaction(http_url)) or _e)
-            outcome = await _signal_send_batch(_post, scheduler, rl, idx, n_batches, att_batch, plain_text if idx == 0 else "", http_url)
+            async with prepare_voice_batch(att_batch) as (paths, voice_note):
+                outcome = await _signal_send_batch(partial(_post, voice_note=voice_note), scheduler, rl,
+                                                   idx, n_batches, paths, plain_text if idx == 0 else "", http_url)
             if outcome is False:
                 failed_batches.append(idx + 1)
             elif outcome is not None:
                 return outcome
         warnings = []
-        if len(attachment_paths) < len(valid_media):
+        if len(attachments) < len(valid_media):
             warnings.append("Some media files were skipped (not found on disk)")
         if failed_batches:
             warnings.append(f"Signal rate-limited {len(failed_batches)} batch(es) "
@@ -122,6 +128,6 @@ async def _send_signal(extra, chat_id, message, media_files=None):
 
 
 async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
-    """``standalone_sender_fn``: attachments ride the JSON-RPC ``attachments`` param (thread_id and
-    force_document have no Signal equivalent)."""
-    return await _send_signal(getattr(pconfig, "extra", None) or {}, chat_id, message, media_files=media_files)
+    """Send through signal-cli without a live gateway."""
+    return await _send_signal(getattr(pconfig, "extra", None) or {}, chat_id, message,
+                              media_files=media_files, force_document=force_document)

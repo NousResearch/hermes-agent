@@ -9,13 +9,12 @@ import json
 import logging
 import os
 import random
-import shutil
 import subprocess
 import tempfile
 import time
 import uuid
 from collections import OrderedDict
-from contextlib import suppress
+from contextlib import ExitStack, asynccontextmanager, suppress
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -34,6 +33,7 @@ from gateway.platforms.helpers import redact_phone
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.media_cache import mime_for_ext
 from tools.audio_container import CONTAINER_TO_EXT, sniff_container
+from plugins.platforms.signal.voice_notes import SIGNAL_MAX_ATTACHMENT_SIZE, convert_to_voice_note, find_ffmpeg
 from plugins.platforms.signal.signal_format import markdown_to_signal
 from plugins.platforms.signal.signal_rate_limit import (
     SIGNAL_BATCH_PACING_NOTICE_THRESHOLD, SIGNAL_MAX_ATTACHMENTS_PER_MSG, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
@@ -44,7 +44,6 @@ from utils import TRUTHY_STRINGS
 
 logger = logging.getLogger(__name__)
 
-SIGNAL_MAX_ATTACHMENT_SIZE = 100 * 1024 * 1024  # 100 MB
 MAX_MESSAGE_LENGTH = 8000  # Signal message size limit
 SSE_RETRY_DELAY_INITIAL = 2.0
 SSE_RETRY_DELAY_MAX = 60.0
@@ -96,13 +95,51 @@ def _ext_to_mime(ext: str) -> str:
     return mime_for_ext(ext, fallback="application/octet-stream")
 
 
+def _read_container(path):
+    with path.open("rb") as audio:
+        return sniff_container(audio.read(16))
+
+
+async def _prepare_voice_file(source, cleanup):
+    path = Path(source)
+    container = await asyncio.to_thread(_read_container, path)
+    if container == "m4a" and path.suffix.lower() == ".m4a":
+        return source
+    if container is None:
+        return None
+    return await convert_to_voice_note(path, container, cleanup)
+
+
+@asynccontextmanager
+async def prepare_voice_batch(media):
+    """Keep converted files until the RPC (including retries) finishes.
+
+    signal-cli applies voiceNote to the entire message. On a mixed batch or a
+    failed conversion, deliver every original in order as an ordinary attachment.
+    """
+    originals = [path for path, _ in media]
+    if not media or not all(voice for _, voice in media):
+        yield originals, False
+        return
+    with ExitStack() as cleanup:
+        prepared = []
+        for path in originals:
+            try:
+                output = await _prepare_voice_file(path, cleanup)
+            except (OSError, TimeoutError) as exc:
+                logger.debug("Signal voice-note preparation failed: %s", exc)
+                output = None
+            if output is None:
+                yield originals, False
+                return
+            prepared.append(output)
+        yield prepared, True
+
+
 def _remux_aac_to_m4a(aac_data: bytes) -> Optional[tuple[bytes, str]]:
     """Losslessly remux raw ADTS AAC (Android voice notes, rejected by most STT APIs) to .m4a.
     Returns ``(m4a_bytes, ".m4a")``, or ``None`` when ffmpeg is missing/fails (caller keeps the input)."""
-    # Fall back to common Homebrew/local prefixes on macOS dev hosts.
-    ffmpeg = shutil.which("ffmpeg") or next(
-        (p for p in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")
-         if os.path.isfile(p) and os.access(p, os.X_OK)), None)
+    ffmpeg = find_ffmpeg()
     if not ffmpeg:
         logger.debug("Signal: ffmpeg not found, skipping AAC→M4A remux")
         return None
@@ -885,15 +922,18 @@ class SignalAdapter(BasePlatformAdapter):
                 "oversize": f"Image too large ({detail} bytes)"}[reason])
         return await self._send_file(chat_id, file_path, caption, "RPC send with attachment failed")
 
-    async def _send_file(self, chat_id: str, file_path: str, caption: Optional[str], fail_error: str) -> SendResult:
-        """Send one local file as a Signal attachment via the ``send`` RPC."""
-        params = await self._with_target(
-            {"account": self.account, "message": caption or "", "attachments": [file_path]}, chat_id)
+    async def _send_file(self, chat_id: str, file_path: str, caption: Optional[str], fail_error: str,
+                         voice_note: bool = False) -> SendResult:
+        """Send one local file as a Signal attachment via the ``send`` RPC (``voiceNote`` when asked)."""
+        params = {"account": self.account, "message": caption or "", "attachments": [file_path]}
+        if voice_note:
+            params["voiceNote"] = True
+        params = await self._with_target(params, chat_id)
         _, err = await self._rpc_send(params, fail_error)
         return err or SendResult(success=True)
 
     async def _send_attachment(self, chat_id: str, file_path: str, media_label: str,
-                               caption: Optional[str] = None) -> SendResult:
+                               caption: Optional[str] = None, voice_note: bool = False) -> SendResult:
         """Send any local file as a Signal attachment (shared by send_document/image_file/voice/video)."""
         await self._stop_typing_indicator(chat_id)
         try:
@@ -902,7 +942,11 @@ class SignalAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"{media_label} file not found: {file_path}")
         if file_size > SIGNAL_MAX_ATTACHMENT_SIZE:
             return SendResult(success=False, error=f"{media_label} too large ({file_size} bytes)")
-        return await self._send_file(chat_id, file_path, caption, f"RPC send {media_label.lower()} failed")
+        fail_error = f"RPC send {media_label.lower()} failed"
+        if voice_note:
+            async with prepare_voice_batch([(file_path, True)]) as (paths, playable):
+                return await self._send_file(chat_id, paths[0], caption, fail_error, voice_note=playable)
+        return await self._send_file(chat_id, file_path, caption, fail_error)
 
     async def send_document(self, chat_id, file_path, caption=None, filename=None, **kwargs) -> SendResult:
         return await self._send_attachment(chat_id, file_path, "File", caption)
@@ -911,9 +955,8 @@ class SignalAdapter(BasePlatformAdapter):
         """Native Signal attachment for the gateway MEDIA: delivery path."""
         return await self._send_attachment(chat_id, image_path, "Image", caption)
 
-    async def send_voice(self, chat_id, audio_path, caption=None, reply_to=None, **kwargs) -> SendResult:
-        """Audio attachment — Signal has no distinct voice-message API."""
-        return await self._send_attachment(chat_id, audio_path, "Audio", caption)
+    async def send_voice(self, chat_id, audio_path, caption=None, reply_to=None, *, is_voice=True, **kwargs) -> SendResult:
+        return await self._send_attachment(chat_id, audio_path, "Audio", caption, voice_note=is_voice)
 
     async def send_video(self, chat_id, video_path, caption=None, reply_to=None, **kwargs) -> SendResult:
         return await self._send_attachment(chat_id, video_path, "Video", caption)

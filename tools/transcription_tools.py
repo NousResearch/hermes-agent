@@ -28,8 +28,8 @@ from tools.transcription_common import (
     DEFAULT_STT_MODEL, LOCAL_STT_COMMAND_ENV, LOCAL_STT_LANGUAGE_ENV,
     normalize_xai_stt_model, _error_result, _get_stt_section, _ok_result)
 from tools.transcription_audio import (
-    _convert_caf_to_wav, _prepare_audio_for_transcription, _trim_silence_for_cloud_stt,
-    _validate_audio_file, _validate_audio_source_file)
+    _convert_audio_to_wav16k, _convert_caf_to_wav, _prepare_audio_for_transcription,
+    _trim_silence_for_cloud_stt, _validate_audio_file, _validate_audio_source_file)
 from tools.transcription_chunking import exceeds_upload_limit, transcribe_oversized, upload_limit
 from tools.transcription_local import (
     _get_idle_unload_seconds, _has_local_command, _join_confident_segments,
@@ -430,6 +430,25 @@ def _read_block_error(file_path: str) -> Optional[dict[str, Any]]:
     return _error_result(blocked) if blocked else None
 
 
+# Self-hosted OpenAI-compatible STT engines (phonon, whisper.cpp --server, LocalAI) decode a
+# narrow set of containers; api.openai.com accepts everything. Audio outside this set from an
+# Apple or browser client (m4a/aac from iOS, webm from Chrome) is transcoded to 16 kHz mono WAV
+# before dispatch — SUPPORTED_FORMATS accepts those suffixes, so nothing upstream catches this.
+_ENGINE_DECODABLE_STT_SUFFIXES = {".wav", ".flac", ".ogg", ".oga", ".opus", ".mp3", ".aiff", ".aif"}
+
+
+def _narrow_decoder_stt(provider: str, stt_config: dict[str, Any], suffix: str) -> bool:
+    """True when *suffix* must be transcoded for a self-hosted OpenAI-compatible STT engine.
+
+    Only ``openai`` carries a configurable ``base_url``, and when it is set the endpoint is not
+    api.openai.com — its decoder is assumed narrow. Transcoding is harmless for a proxy that
+    would have taken the original bytes; it only costs a temporary WAV.
+    """
+    if provider != "openai" or suffix in _ENGINE_DECODABLE_STT_SUFFIXES:
+        return False
+    return bool(str(_get_stt_section(stt_config, "openai").get("base_url") or "").strip())
+
+
 def _transcribe_prepared_audio(
     file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> dict[str, Any]:
     """Transcribe a validated audio file with the configured STT provider. ``model`` overrides the
@@ -447,11 +466,17 @@ def _transcribe_prepared_audio(
     remote = not _is_local_stt_provider(provider)
     with ExitStack() as cleanup:
         # Never overwrite a neighboring WAV or leave converted voice notes behind.
-        if remote and Path(file_path).suffix.lower() == ".caf":
-            work_dir = cleanup.enter_context(TemporaryDirectory(prefix="hermes-caf-", ignore_cleanup_errors=True))
-            file_path = _convert_caf_to_wav(file_path, work_dir)
-            if not file_path:
-                return _error_result("CAF audio could not be converted to WAV.")
+        suffix = Path(file_path).suffix.lower()
+        if remote and (suffix == ".caf" or _narrow_decoder_stt(provider, stt_config, suffix)):
+            work_dir = cleanup.enter_context(TemporaryDirectory(prefix="hermes-stt-conv-", ignore_cleanup_errors=True))
+            converted = (_convert_caf_to_wav(file_path, work_dir) if suffix == ".caf"
+                         else _convert_audio_to_wav16k(file_path, work_dir))
+            if not converted:
+                return _error_result(
+                    "CAF audio could not be converted to WAV." if suffix == ".caf"
+                    else f"{suffix.lstrip('.').upper() or 'Input'} audio could not be converted to WAV "
+                         "for the configured STT engine.")
+            file_path = converted
         # Best-effort pre-upload silence trim for built-in cloud providers.
         if provider in CLOUD_STT_PROVIDERS:
             trimmed = _trim_silence_for_cloud_stt(file_path, stt_config)

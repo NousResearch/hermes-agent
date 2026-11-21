@@ -1528,6 +1528,16 @@ def cmd_chat(args):
         os.environ["HERMES_IGNORE_RULES"] = "1"
     # --source: tag session source for filtering (e.g. 'tool' for integrations)
     if getattr(args, "source", None):
+        launcher_source = str(os.environ.get("HERMES_SESSION_SOURCE") or "").strip()
+        if launcher_source and launcher_source != args.source:
+            # Provenance (the launcher's) and the listing tag (--source) are separate facts;
+            # silently replacing one with the other loses where the run came from (#154979).
+            print(
+                f"Error: --source '{args.source}' conflicts with the launcher's "
+                f"HERMES_SESSION_SOURCE='{launcher_source}'. Drop one of them.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         os.environ["HERMES_SESSION_SOURCE"] = args.source
         # Explicit flag, not a label inherited from a parent TUI/Desktop session — one-shot
         # runs must keep it (see agent.session_source.session_source_for).

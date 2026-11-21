@@ -218,7 +218,11 @@ class TestPermissionRequestToolCallReachesATerminalStatus:
         future = MagicMock(spec=Future)
         future.result.return_value = _make_response(outcome)
         sent = []
-        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", return_value=future):
+        def schedule(coro, loop):
+            coro.close()
+            return future
+
+        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", side_effect=schedule):
             cb = factory(request_permission, MagicMock(spec=asyncio.AbstractEventLoop), "s1", send_update=sent.append)
             call(cb)
         requested = request_permission.call_args.kwargs["tool_call"]
@@ -253,7 +257,11 @@ class TestPermissionRequestToolCallReachesATerminalStatus:
         future = MagicMock(spec=Future)
         future.result.return_value = response
         sent = []
-        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", return_value=future):
+        def schedule(coro, loop):
+            coro.close()
+            return future
+
+        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", side_effect=schedule):
             requester = make_acp_edit_approval_requester(
                 request_permission, MagicMock(spec=asyncio.AbstractEventLoop), "s1", send_update=sent.append,
             )

@@ -2,13 +2,13 @@
 
 ``/api/status`` is public; the router calls :func:`redact_status_for_unverified` on the body for
 any caller the auth gate would not accept on a gated route. The projection itself is
-``gateway.status_public``, shared with the status report.
+``gateway.status_report.public``, shared with the status report.
 """
 from __future__ import annotations
 
 from typing import Any
 
-from gateway.status_public import public_exit_reason, public_platform_entry
+from gateway.status_report.public import public_exit_reason, public_platform_entry
 
 
 def redact_status_for_unverified(status: dict[str, Any]) -> None:

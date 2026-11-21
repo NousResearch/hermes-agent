@@ -58,6 +58,26 @@ def test_kanban_list_json_includes_session_id(kanban_home):
     )
 
 
+def test_create_branch_template_uses_allocated_task_id_and_persona_prefix(kanban_home):
+    """Regression for #139813: create can derive a governed worktree branch."""
+    output = kc.run_slash(
+        "create 'Write release notes!' --workspace worktree "
+        "--branch-template '{prefix}/{task_id}-{slug}' --branch-prefix tatl --json"
+    )
+
+    task = json.loads(output)
+    assert task["workspace_kind"] == "worktree"
+    assert task["branch_name"] == f"tatl/{task['id']}-write-release-notes"
+
+
+def test_create_branch_template_rejects_unknown_fields(kanban_home):
+    output = kc.run_slash(
+        "create task --workspace worktree --branch-template '{unknown}/{task_id}'"
+    )
+
+    assert "branch_template supports only" in output
+
+
 def test_run_slash_stats_text_includes_review_lane(kanban_home):
     """``stats`` text output must surface the ``review`` lane: board_stats() counts
     every non-archived status, so the ``By status:`` block must list ``review`` too

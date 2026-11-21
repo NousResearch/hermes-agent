@@ -1844,7 +1844,10 @@ def _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb
     persists the turn as a transient failure otherwise, and nothing in the log says the paid
     model was refused for credits or how to fix it (#115702). Other reasons stay INFO."""
     if reason != FailoverReason.billing:
-        logger.info("Fallback activated: %s → %s (%s)", old_model, fb_model, fb_provider)
+        # Keep the reason on the INFO line: after the fact an operator must be able to tell a
+        # rate limit from an overload or a content-policy refusal (#158368).
+        reason_text = reason.value if isinstance(reason, FailoverReason) else reason
+        logger.info("Fallback activated: %s → %s (%s) reason=%s", old_model, fb_model, fb_provider, reason_text)
         return
     from hermes_constants import get_hermes_home, profile_name_for_home
     profile = profile_name_for_home(get_hermes_home()) or "default"

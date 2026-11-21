@@ -898,6 +898,13 @@ _NOTIFY_SUB_COLUMNS = (
     # (which prefers ``user_id_alt``). NULL is inert.
     ("user_id_alt", "user_id_alt TEXT"),
     ("delivery_metadata", "delivery_metadata TEXT"),
+    # Durable delivery-failure parking: consecutive delivery failures counted on
+    # the row itself (survives restarts) and the epoch time before which the
+    # notifier must not claim the row again (NULL = not parked). Parking — not
+    # unsubscribing — keeps the subscription recoverable: a successful delivery
+    # or a re-subscribe clears both columns.
+    ("delivery_failures", "delivery_failures INTEGER NOT NULL DEFAULT 0"),
+    ("retry_after", "retry_after REAL"),
 )
 
 _TASK_RUN_COLUMNS = (
@@ -1099,6 +1106,8 @@ _REBUILD_SPECS = {
         " delivery_metadata TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
         " last_ping_event_id INTEGER NOT NULL DEFAULT 0,"
+        " delivery_failures INTEGER NOT NULL DEFAULT 0,"
+        " retry_after REAL,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
         ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
     ),

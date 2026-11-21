@@ -64,7 +64,7 @@ def collect(runner):
 
 async def deliver(runner, rows):
     for row in rows:
-        await _KanbanNotification(runner, row, platform_cls=Platform, sub_fail_counts={}).deliver()
+        await _KanbanNotification(runner, row, platform_cls=Platform).deliver()
 
 
 def unseen(task):
@@ -192,8 +192,8 @@ def test_kanban_wakes_install_the_destination_runtime_scope(tmp_path, monkeypatc
 
     async def concurrent_wakes():
         with _profile_runtime_scope(home):
-            await asyncio.gather(*(_KanbanNotification(runner, row, platform_cls=Platform,
-                                                       sub_fail_counts={}).deliver() for row in rows))
+            await asyncio.gather(*(_KanbanNotification(runner, row, platform_cls=Platform
+                                                       ).deliver() for row in rows))
             assert get_secret("KANBAN_TEST_SECRET") == "primary"
     asyncio.run(concurrent_wakes())
     assert sorted(observed) == [(name, name, home / "profiles" / name) for name in ("other", "yuki")]

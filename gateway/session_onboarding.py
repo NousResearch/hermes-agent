@@ -17,14 +17,15 @@ import uuid
 from functools import partial
 
 from gateway.session_contract import SessionRef
-from hermes_state_runtime import RuntimeStoreError
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
 ONBOARDING_PROFILE = 'default'
 
 
-class OnboardingRefusal(RuntimeStoreError):
+class OnboardingRefusal(AuthorityRefusal):
     """A refusal on the sidecar handler's wire: its JSON-RPC code and human message."""
 
     def __init__(self, code, message):
@@ -50,7 +51,7 @@ async def start(connection, ref, params):
     try:
         request = OnboardingStartParams.model_validate(params)
     except ValidationError as exc:
-        raise RuntimeStoreError('invalid_params', detail=str(exc)) from exc
+        raise AuthorityRefusal('invalid_params', detail=str(exc)) from exc
     target = _onboarding_connection(connection)
     if target is not connection:
         # Dispatch entered the asking profile's scope; the claim, the facts and the chat's policy are default's.
@@ -58,7 +59,7 @@ async def start(connection, ref, params):
         with owner_scope(target.authority):
             return await start(target, ref, params)
     if 'session:create' not in connection.actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     authority = connection.authority
     lock = getattr(authority, '_onboarding_start_lock', None)
     if lock is None:
@@ -101,18 +102,19 @@ def _choose_run(authority, request):
     """A refused claim (5079) or a blocked one with nothing else to run on (5080) leaves no chat, so
     the install stays due."""
     from agent.onboarding_facts import read_facts
-    from agent.onboarding_flow import Facts
+    from session_rules.onboarding_flow import Facts
     from agent.onboarding_record import load, open_session_ids
     from agent.onboarding_text import opening_prompt
     from hermes_cli.auth_constants import AuthError
-    db = authority.db
-    open_ids = open_session_ids(db)
+    db = persistence = authority_persistence(authority)
+    open_ids = open_session_ids(db, persistence=persistence)
     stored = None if request.rerun or request.fresh_launch else next(iter(open_ids), None)
     plan = {'stored': stored, 'open_ids': open_ids, 'claimed': None, 'facts': None, 'opening': None,
             'replaced': [sid for sid in open_ids if sid != stored]}
     if stored is not None:
-        facts = Facts.from_stored(load(db, stored)['facts'])
-        if not (db.get_session(stored) or {}).get('message_count'):
+        facts = Facts.from_stored(load(db, stored, persistence=persistence)['facts'])
+        row = persistence.sessions.get(stored)
+        if not (row.message_count if row is not None else 0):
             plan['opening'] = opening_prompt(facts)
         plan['facts'] = facts
         return plan
@@ -149,15 +151,16 @@ def _claim_before_run(*, assume_fresh):
 async def _create_chat(connection):
     from gateway.session_local import stage_local_session
     from gateway.session_local_recovery import restore_local_session
+    from gateway.session_local import commit_local_session
     from gateway.session_runtime_workers import tracked_write
-    from hermes_state_local import commit_local_session
     authority = connection.authority
     staged = stage_local_session(authority, connection.actor, {'source': 'gui', 'request_id': uuid.uuid4().hex},
                                  client_local=connection.native_owner,
                                  desktop_local=getattr(connection.transport, 'desktop_local', False))
     if not (staged['policy'] or {}).get('model'):
         raise OnboardingRefusal(5080, 'No model is set up to run onboarding on.')
-    await tracked_write(authority, partial(commit_local_session, authority.db, epoch=authority.epoch, receipt=staged))
+    await tracked_write(authority, partial(commit_local_session, authority_persistence(authority), epoch=authority.epoch,
+                                           receipt=staged))
     return restore_local_session(authority, staged['session_id']).session_id
 
 
@@ -200,59 +203,65 @@ def _settle_runs(authority, request, plan, stored, discards):
     """The new chat's record and title, and the end of every other open run; returns the chats it
     deleted. One open run at a time: the kept run is open before the others end, so the install flag
     never closes in between."""
-    from agent.onboarding_flow import End
+    from session_rules.onboarding_flow import End
     from agent.onboarding_record import advance, start
     from agent.onboarding_text import CHAT_TITLE
-    db = authority.db
+    db = persistence = authority_persistence(authority)
     if plan['stored'] is None:
         # The record exists before any agent is built, so the first turn already folds the toolset in.
-        start(db, stored, plan['facts'])
+        start(db, stored, plan['facts'], persistence=persistence)
     deleted = []
     if request.fresh_launch:
-        deleted = _discard_unfinished_runs(db, plan['replaced'], discards)
+        deleted = _discard_unfinished_runs(db, plan['replaced'], discards, persistence=persistence)
     for old in plan['replaced']:
         if old not in deleted:
-            advance(db, old, End('replaced'))
+            advance(db, old, End('replaced'), persistence=persistence)
     if plan['stored'] is None:
         # After the discard, so a run started over keeps the title its deleted chat had.
-        db.set_session_title(stored, db.get_next_title_in_lineage(CHAT_TITLE))
+        persistence.sessions.set_title(stored, persistence.sessions.next_title_in_lineage(CHAT_TITLE))
     return deleted
 
 
-def _discard_unfinished_runs(db, stored_ids, discards):
+def _discard_unfinished_runs(db, stored_ids, discards, *, persistence=None):
     """A new launch's start: the runs the app was closed on never count as done. A chat no window
     watches (still in *discards*) is deleted the way ``session.delete`` deletes it, which ends its run
     (``deleted``) and tells every window; the caller retires the deleted ids from the authority. A chat a
     window reopened, or one a turn still writes (the delete refuses it), is kept, and its run ends as
-    ``replaced`` so it is never resumed."""
-    from pathlib import Path
+    ``replaced`` so it is never resumed. *persistence* is the storage interface handle the delete runs on."""
     from agent.onboarding_record import delete_chat
-    sessions_dir = Path(db.db_path).parent / 'sessions'
+    from gateway.session_ingress_media import native_inputs_root
+    from session_retention import after_sessions_removed
+    home = persistence.scope.profile_dir
+    sessions_dir = home / 'sessions'
     deleted = []
     for old in stored_ids:
         with discards.lock:
             if old not in discards.ids:
                 continue
+
+            def delete(old=old):
+                removed = persistence.sessions.delete(old, refuse_guarded=True, media_root=str(native_inputs_root()))
+                after_sessions_removed(persistence, home, removed, reason='delete', primary=old, sessions_dir=sessions_dir)
+                return bool(removed)
             try:
-                if delete_chat(db, old, lambda old=old: db.delete_session(
-                        old, sessions_dir=sessions_dir, exclude_active_write_guards=True)):
+                if delete_chat(db, old, delete, persistence=persistence):
                     deleted.append(old)
             except Exception:
                 logger.exception('onboarding.start could not delete unfinished chat %s', old)
     return deleted
 
 
-def ending_run_on_delete(db, session_id, commit):
+def ending_run_on_delete(db, session_id, commit, *, persistence=None):
     """*commit* (the canonical delete's receipt transaction) wrapped so deleting the chat that holds
     the live run ends that run (``deleted``) and tells every window, as the sidecar's
-    ``session.delete`` did. Returns the receipt."""
+    ``session.delete`` did. Returns *commit*'s mutation outcome."""
     from agent.onboarding_record import delete_chat
     receipt = []
 
     def delete():
         receipt.append(commit())
-        return session_id in receipt[0]['deleted_ids']
-    delete_chat(db, session_id, delete)
+        return session_id in receipt[0].result['deleted_ids']
+    delete_chat(db, session_id, delete, persistence=persistence)
     return receipt[0]
 
 
@@ -266,23 +275,26 @@ def _withdraw_setup_cards(authority, stored_ids):
 
 
 def _opening_for(authority, stored):
-    from agent.onboarding_flow import Facts
+    from session_rules.onboarding_flow import Facts
     from agent.onboarding_record import load
     from agent.onboarding_text import opening_prompt
-    if (authority.db.get_session(stored) or {}).get('message_count'):
+    persistence = authority_persistence(authority)
+    row = persistence.sessions.get(stored)
+    if row is not None and row.message_count:
         return None
-    return opening_prompt(Facts.from_stored(load(authority.db, stored)['facts']))
+    return opening_prompt(Facts.from_stored(load(persistence, stored, persistence=persistence)['facts']))
 
 
 def _run_id(authority, stored):
     from agent.onboarding_record import load
-    return (load(authority.db, stored) or {}).get('run_id') or ''
+    persistence = authority_persistence(authority)
+    return (load(persistence, stored, persistence=persistence) or {}).get('run_id') or ''
 
 
 async def skip(connection, ref, params):
     """Skip setup: end the chat's run and close the card that waits. The card's asker reads the
     skipped record when it wakes (``setup_beat``)."""
-    from agent.onboarding_flow import End
+    from session_rules.onboarding_flow import End
     from agent.onboarding_record import advance, load
     from gateway.session_runtime_workers import tracked_write
     from gateway.session_server_requests import withdraw
@@ -291,15 +303,15 @@ async def skip(connection, ref, params):
     try:
         request = OnboardingSkipParams.model_validate(params)
     except ValidationError as exc:
-        raise RuntimeStoreError('invalid_params', detail=str(exc)) from exc
+        raise AuthorityRefusal('invalid_params', detail=str(exc)) from exc
     if not request.session_id:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     authority = connection.authority
     authority.authorize(connection.actor, ref, 'session:control')
-    db = authority.db
-    if load(db, db.get_compression_tip(ref.session_id) or ref.session_id) is None:
+    db = persistence = authority_persistence(authority)
+    if load(db, persistence.lineage.tip(ref.session_id), persistence=persistence) is None:
         return {'skipped': False}
-    step = await tracked_write(authority, partial(advance, db, ref.session_id, End('skipped')))
+    step = await tracked_write(authority, partial(advance, db, ref.session_id, End('skipped'), persistence=persistence))
     live = authority.sessions.get(ref.session_id)
     if live is not None:
         withdraw(live.event_stream, ref.session_id, 'setup_beat')

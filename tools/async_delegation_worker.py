@@ -53,8 +53,9 @@ class WorkerDelegationLedger:
             key: record[key] for key in ('goal', 'goals', 'context', 'toolsets', 'role', 'model', 'is_batch', 'task_indexes')
             if key in record}})['value']
 
-    def complete(self, event, result):
-        return self.store._apply('delegation.complete', {'event': event, 'result': result})['value']
+    def complete(self, event, result, delivery='pending'):
+        return self.store._apply('delegation.complete', {'event': event, 'result': result}
+                                 | ({'delivery': delivery} if delivery != 'pending' else {}))['value']
 
     def child(self, delegation_id, entry):
         return self.store._apply('delegation.child', {'delegation_id': delegation_id, 'entry': entry})['value']

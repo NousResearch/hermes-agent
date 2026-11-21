@@ -1,4 +1,4 @@
-#!/usr/bin/env -S npx tsx
+#!/usr/bin/env -S pnpm exec tsx
 // Export the bundled TUI English catalog as a flat {key: template} JSON for translators.
 // Function leaves are rendered with positional `{0}`, `{1}`… placeholders (the pack format the
 // runtime formats with); leaves whose function branches on its argument are flagged so a

@@ -1,0 +1,34 @@
+name: holdings
+version: "0.1.9"
+repo: https://github.com/HoldingsHQ/holdings-hermes
+sha: "23d47ab99805e1f14a2f13d666be8e7eaaa043a5"
+subdir: ""
+description: "Holdings is a Hermes Desktop plugin that shows your crypto wallet and exchange balances in one place. You can review activity against the original records and export records with a note on what each source covers. Ask Holdings answers questions with your Hermes model and checks every cited number against your records. It is read-only and never signs transactions or moves funds. The demo uses fictional records and needs no keys. Disclosure — crypto portfolio viewer, read-only (no signing, transfers or trades). Sends the wallet addresses you add and your read-only exchange API keys (stored through Hermes secrets) to their own vendors: Kraken, Binance, Bybit, Etherscan, Zerion, GoPlus, public RPCs (PublicNode, dRPC, MEV Blocker, Solana mainnet), DefiLlama and GeckoTerminal. Saved wallet and exchange records go to your active model only after you enable `share_private_chat_tools` (off by default). Weekly briefing and alert watch cron jobs are opt-in templates."
+maintainer: HoldingsHQ
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/HoldingsHQ/holdings-hermes#readme
+platforms: []
+title: Holdings
+readme: true
+onboarding: false
+screenshots: []
+known_issues:
+  - "Protected reviews and Alert watch need Holdings to load in the Hermes process, with plugins.isolation set to in_process. When plugins run in the separate plugin host (plugins.isolation set to host), Holdings shows that protected reviews are unavailable. Saved reviews also need an external vault key, and a value typed only in plugin Settings stays locked."
+  - "The weekly briefing and the alert watch Cron job are opt-in templates. They never schedule themselves, and the scheduled weekly text lists section names only."
+  - "Device notification delivery was tested with fixtures only. A live look-alike case and real-model Cron delivery were not verified, and Zerion Ethereum 1Y charts returned unavailable in native QA."
+capabilities:
+  provides_tools:
+    - holdings_help
+    - holdings_sample_lookup
+    - holdings_summary
+    - holdings_exposure
+    - holdings_recent_movements
+    - holdings_needs_attention
+    - holdings_explain_year
+    - holdings_alert_watch
+    - holdings_weekly_briefing
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

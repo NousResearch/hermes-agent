@@ -35,6 +35,12 @@ class _ButtonAdapter:
         self.send_metadata: list[Any] = []
         self._editable = editable
 
+    def max_message_length_for_chat(self, chat_id: str) -> int:
+        return 4096
+
+    def message_len_fn_for_chat(self, chat_id: str):
+        return len
+
     def pause_typing_for_chat(self, chat_id: str) -> None:
         return None
 

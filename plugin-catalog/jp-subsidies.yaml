@@ -1,13 +1,13 @@
 name: jp-subsidies
 repo: https://github.com/TakeshiTGAL/hermes-plugin-subsidies
-sha: 471ed8e7bd3e3dd9430ef86ee933e42da8d7cc73
-description: 'Japanese subsidy search and weekly watch, built on the jGrants public API. Disclosure — Searches api.jgrants-portal.go.jp with no API key and no daily request cap; each call waits at most 60 seconds and retries at most twice, and a result is a search match, not proof that every subsidy came back. The plugin has no user list of its own: anyone you allow on your Hermes gateway can call these tools and change this profile''s watch, and the agent can set up a watch by itself. In a Chatwork room listed in CHATWORK_ROOMS, everyone can call them while CHATWORK_ALLOWED_USERS is unset. The tools are on for every platform, including gateways; turn them off per platform with hermes tools. While the plugin is enabled, its skill adds one line to the skills index of every session, including surfaces where the tools are turned off. The /subsidies command is outside hermes tools; limit it with allow_admin_from or user_allowed_commands, or disable the plugin. The optional weekly watch is an unattended cron job that runs a script with no model call and is not a sandbox; delivering it to bot-chat instead runs one model turn on the fetched text. If delivery fails after the script runs, those subsidies are already marked seen and the text stays under cron/output/. Uninstall leaves the cron job, scripts/jp-subsidies-weekly-*.py and plugin-data/jp-subsidies/ until you run hermes cron remove and delete the files. The plugin does not store the name or ID of who asked. Not tested against a live gateway, with the Chatwork plugin loaded, or for result sets of several hundred rows.'
+sha: 792cb640215492dbc910efbc09e7f3375d38e127
+description: 'Japanese subsidy search and weekly watch, built on the jGrants public API. Disclosure — Searches api.jgrants-portal.go.jp with no API key and no daily request cap; each call waits at most 60 seconds and retries at most twice, and a result is a search match, not proof that every subsidy came back. The plugin has no user list of its own: anyone you allow on your Hermes gateway can call these tools and change this profile''s watch, and the agent can set up a watch by itself. In a Chatwork room listed in CHATWORK_ROOMS, everyone can call them while CHATWORK_ALLOWED_USERS is unset. The tools are on for every platform, including gateways; turn them off per platform with hermes tools. While the plugin is enabled, its skill adds one line to the skills index of every session, including surfaces where the tools are turned off, and its pre_llm_call paragraph is added on those surfaces too. The /subsidies command is outside hermes tools; limit it with allow_admin_from or user_allowed_commands, or disable the plugin. The optional weekly watch is an unattended cron job that runs a script with no model call and is not a sandbox; delivering it to bot-chat instead runs one model turn on the fetched text. If delivery fails after the script runs, those subsidies are already marked seen and the text stays under cron/output/. Uninstall leaves the cron job, scripts/jp-subsidies-weekly-*.py and plugin-data/jp-subsidies/ until you run hermes cron remove and delete the files. The plugin does not store the name or ID of who asked. Not tested against a live gateway, with the Chatwork plugin loaded, or for result sets of several hundred rows. subsidies_detail compares a corporation''s published industry, capital, employee count, and address with the call text as characters, returns a cap only when the call states one, and does not estimate an award. pre_tool_call blocks subsidies_search unless keyword is contained in industry text copied from a tool result, including a list of industry strings. A company name does not pass, including when the industry text is contained in the company name. When industry text was returned and the keyword is not that text, the block does not say the industry was missing. The block says the search was not run, eligibility is not_claimed, and no award was estimated. A company name contained in business_summary does not pass as an industry keyword. That holds when the name field is absent and the summary is トヨタ自動車は自動車を製造する。: トヨタ自動車 does not pass and 自動車 does. transform_tool_result remembers industry text and returns nothing, so the tool result is unchanged. pre_llm_call adds its paragraph only on a subsidy question (補助金, 助成金, jGrants, or 募集) or when subsidies_search, subsidies_detail, or subsidies_watch_setup was called in the previous turn, and adds nothing on other turns. A company name alone or an unrelated question does not add it. The paragraph says to call subsidies_search only with industry text copied from a tool result, that eligibility is not_claimed, and not to estimate an award or write 対象です.'
 maintainer: TakeshiTGAL
 tier: community
 category: tools
 requires_hermes: ">=0.21.4"
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-subsidies#readme
-version: 0.1.1
+version: 0.1.9
 image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-subsidies/471ed8e7bd3e3dd9430ef86ee933e42da8d7cc73/assets/catalog-banner.png
 platforms: []
 capabilities:
@@ -15,6 +15,9 @@ capabilities:
   - subsidies_search
   - subsidies_detail
   - subsidies_watch_setup
-  provides_hooks: []
+  provides_hooks:
+  - pre_llm_call
+  - transform_tool_result
+  - pre_tool_call
   provides_middleware: []
   requires_env: []

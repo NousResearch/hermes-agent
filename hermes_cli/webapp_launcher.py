@@ -234,11 +234,21 @@ def _status(target: Path) -> int:
         return 1
     status = response["result"]
     if status["state"] == "serving":
-        print(f"Serving at {status['url']}")
-        from gateway.webapp_listener import webapp_settings
+        from gateway.webapp_listener import bind_origin, webapp_settings
         settings = webapp_settings(target)
-        if note := _plain_http_note(_browser_address(target, settings, status["url"])):
+        # A gateway bound to one specific address names it (it also listens on loopback, the url, for
+        # this machine's own clients); the config on disk may name another until the next restart.
+        live = status.get("address")
+        if live:
+            print(f"Serving at {live} (this machine's own clients use {status['url']})")
+        else:
+            print(f"Serving at {status['url']}")
+        if note := _plain_http_note(settings.public_url or live or _browser_address(target, settings, status["url"])):
             print(note)
+        configured = bind_origin(settings.host, urlsplit(status["url"]).port) if settings.enabled else None
+        if settings.enabled and configured != live:
+            print(f"{target / 'config.yaml'} now sets webapp.host: {settings.host}: the gateway serves it after a "
+                  f"restart ({RESTART_COMMAND}).")
         if not settings.enabled:
             print(f"{target / 'config.yaml'} no longer turns the Webapp on: it stops at the next gateway restart "
                   f"({RESTART_COMMAND}).")
@@ -390,6 +400,8 @@ def cmd_webapp(args) -> int:
     link = response["result"]
     if note := _plain_http_note(link["url"]):
         print(note)
+    if link.get("note"):  # a specific-address Webapp whose Nous sign-in is registered for another address
+        print(link["note"])
     if link.get("sign_in"):
         # The Webapp is behind the dashboard's sign-in: the page asks for it, so its address is no secret.
         if not args.no_open and _open(link["url"]):

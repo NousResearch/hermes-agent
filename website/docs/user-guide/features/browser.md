@@ -120,7 +120,9 @@ and it works on headless servers with no desktop browser at all.
 
 1. `browser.executable_path`, when set.
 2. The Chromium (Chrome for Testing) installed by Hermes's package manager — the
-   installers and `hermes update` install it by default.
+   installers and `hermes update` install it by default. The macOS desktop app
+   does not ship it: the first browser use downloads it (about 195 MB) into
+   `~/.hermes/tools`.
 3. `/etc/hermes/chromium-executable-path` in the official Docker image.
 4. A system `chromium` / `chromium-browser` on `PATH` (Android/Termux, and
    platforms the package manager has no Chromium build for).
@@ -284,7 +286,7 @@ With auto-routing disabled, private URLs are rejected with
 `security.allow_private_urls: true` (or the legacy `browser.allow_private_urls: true`),
 which hands them to the cloud provider — usually useless, since Browserbase etc.
 can't reach your LAN. Cloud-metadata URLs (`169.254.169.254`,
-`metadata.google.internal`) written in `browser_exec` code or raw CDP params are refused on
+`metadata.google.internal`) written in `browser_exec` code or in a URL a raw CDP call fetches are refused on
 every route, sidecar included; a page that redirects there on its own is not (see
 [Security](../security.md#what-allow_private_urls-covers-and-what-it-doesnt)).
 

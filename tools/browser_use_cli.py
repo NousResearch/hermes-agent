@@ -23,8 +23,12 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
+from hermes_cli.process_identity import (
+    own_process_groups, register_child, release_process_group_once_empty, spawn_env, spawned_by_this_process)
 from hermes_constants import get_hermes_home, hermes_home_key
-from tools.browser_harness_dirs import daemon_env, daemon_identity, namespace_harness_dirs
+from tools.browser_harness_dirs import (
+    daemon_env, daemon_identity, harness_current_target, harness_pid_file, namespace_harness_dirs)
+from tools.browser_lightpanda import merge_sane_path
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -81,7 +85,8 @@ def _hermes_ensure_own_tab():
     except Exception:
         pass  # best-effort: worst case is pre-fix behavior
     try:
-        open(_marker, "w").close()
+        # Shared temp root + predictable name: never truncate through a planted symlink.
+        _os.close(_os.open(_marker, _os.O_WRONLY | _os.O_CREAT | getattr(_os, "O_NOFOLLOW", 0), 0o600))
     except OSError:
         pass
 _hermes_ensure_own_tab()
@@ -98,8 +103,6 @@ _TASK_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")  # filesystem-safe task ids
 _IMAGE_PATH_RE = re.compile(r"((?:[A-Za-z]:[\\/]|/)[^\s\"']+?\.(?:png|jpe?g|webp))", re.IGNORECASE)
 # http(s) URL literals in exec code, checked against the browser URL policy
 _URL_RE = re.compile(r"https?://[^\s'\"\\)]+", re.IGNORECASE)
-_FHS_BIN_DIRS = ("/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/sbin", "/usr/local/bin", "/usr/sbin",
-                 "/usr/bin", "/sbin", "/bin")
 
 
 def _quiet(fn: Callable[[], Any], default: Any, log_prefix: str = "") -> Any:
@@ -191,22 +194,15 @@ def _base_subprocess_env() -> dict:
         env["PYTHONPATH"] = site_dir
     else:
         env.pop("PYTHONPATH", None)
-    env["PATH"] = _floor_subprocess_path(env.get("PATH", ""))
+    # Profile workers can inherit a version-manager-only PATH; the CLI's shell helpers need /usr/bin.
+    env["PATH"] = merge_sane_path(env.get("PATH", ""))
     env.setdefault("ANONYMIZED_TELEMETRY", "false")
-    namespace_harness_dirs(env, _served_profile_tag())  # a served profile's own harness runtime/tmp dirs
+    # The harness reuses any live daemon of a BU_NAME in its runtime dir, and that dir is per OS user:
+    # every profile (served, CLI, cron) gets its own, or one drives another's attached browser (#149829).
+    namespace_harness_dirs(env, hermes_home_key())
+    # A daemon the CLI starts inherits this tag; _own_harness_daemon owns only one that names us.
+    env.update(spawn_env("browser-harness-daemon"))
     return env
-
-
-def _floor_subprocess_path(path: str) -> str:
-    """Keep system commands reachable from profile workers with a minimal PATH.
-
-    Browser subprocesses may launch shell helpers; version-manager-only paths
-    omit /usr/bin. Reuse the shared browser PATH floor on POSIX.
-    """
-    if os.name == "nt":
-        return path
-    parts = [p for p in (path or "").split(os.pathsep) if p]
-    return os.pathsep.join(parts + [d for d in _FHS_BIN_DIRS if d not in set(parts) and os.path.isdir(d)])
 
 
 def _read_browser_cfg() -> dict:
@@ -515,6 +511,17 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
         logger.debug("browser_exec: CDP supervisor attach failed (non-fatal): %s", exc)
 
 
+def _record_driven_tab(env: dict, task_id: Optional[str]) -> None:
+    """Tell the task's vault supervisor which tab this exec's daemon drives, so a later
+    ``browser_vault`` fill lands in that tab rather than the first one on the origin."""
+    if not (env.get("BU_CDP_WS") or env.get("BU_CDP_URL")):
+        return
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    supervisor = SUPERVISOR_REGISTRY.get(task_id or "default")
+    if supervisor is not None:
+        supervisor.set_driven_target(harness_current_target(env))
+
+
 def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool,
                    force_local_sidecar: bool = False, real_profile: bool = True) -> Optional[str]:
     """Resolve where the harness connects; returns an error string or None. Real-profile consent runs
@@ -554,6 +561,7 @@ def _group_popen_kwargs() -> dict:
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         return {"creationflags": windows_hide_flags() | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
                 "startupinfo": si}
+    # detached-spawn: ok — awaited CLI; a timeout kills its whole group (_run_cli_killing_process_group)
     return _quiet(_flags, {}, "Windows hide-flags unavailable") if os.name == "nt" else {"start_new_session": True}
 
 
@@ -605,6 +613,8 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
+# How often a running browser_exec re-checks for the daemon its first call starts.
+_OWN_DURING_CALL_S = 0.5
 # Harness daemons this process drove: each latches BU_CDP_* at start and outlives every call, so a backend
 # swap (/browser connect|disconnect) leaves later calls in the old browser until these are stopped.
 _driven_daemons: dict[tuple[str, ...], str] = {}  # daemon identity -> home
@@ -629,6 +639,23 @@ def stop_harness_daemons(home_key: Optional[str] = None) -> None:
     _reload_daemons(daemons)
 
 
+def _published_daemon_pid(env: dict) -> Optional[int]:
+    """The pid the harness published for the daemon ``env`` drives (``harness_pid_file``: JSON
+    ``{"pid", "started"}`` or a bare pid), or None when there is none."""
+    try:
+        raw = harness_pid_file(env).read_text(encoding="utf-8-sig").strip()
+        return int(json.loads(raw)["pid"]) if raw.startswith("{") else int(raw.split()[0])
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        return None
+
+
+def _own_harness_daemon_until_owned(env: dict) -> Optional[bool]:
+    """Periodic check while browser_exec runs: own the daemon as soon as it publishes its pid, then
+    stop (False). It also stops once the daemon can never be ours (Windows, a managed worker, a daemon
+    another Hermes started), instead of re-checking every tick for the whole call."""
+    return None if _own_harness_daemon(env) is None else False
+
+
 def _reload_daemons(daemons) -> None:  # each ``daemon_identity`` daemon, with its own dirs
     cmd = _find_cli() if daemons else None
     if not cmd:
@@ -637,6 +664,69 @@ def _reload_daemons(daemons) -> None:  # each ``daemon_identity`` daemon, with i
     for daemon in daemons:
         with contextlib.suppress(OSError, subprocess.SubprocessError):
             _run_cli_killing_process_group([*cmd, "--reload"], "", daemon_env(env, daemon), 15)
+        with _owned_daemon_groups_lock:
+            pgid = _owned_daemon_groups.pop(daemon, None)
+        if pgid is not None:
+            release_process_group_once_empty(pgid)  # a daemon --reload failed to stop stays covered
+
+
+# Daemon identity (``daemon_identity``: its dirs + BU_NAME) -> process group of the harness daemon this
+# process owns. The harness starts its daemon with start_new_session so it outlives each CLI call (that
+# is how a session persists across browser_exec calls), which also means it outlives a SIGKILLed or
+# OOM-killed Hermes forever (#121095). Its group goes to this process's owner-death supervisor, so it
+# dies with us however we die.
+_owned_daemon_groups: dict[tuple[str, ...], int] = {}
+_owned_daemon_groups_lock = threading.Lock()
+
+
+def _own_harness_daemon(env: dict) -> Optional[bool]:
+    """Hand the daemon behind ``env``'s BU_NAME to the owner-death supervisor.
+
+    The harness publishes its daemon pid in its runtime dir (``harness_pid_file``: JSON
+    ``{"pid", "started"}`` or a bare pid). The daemon is accepted only while it is this user's live
+    ``browser_harness.daemon`` leading its own session and its spawn tag names this process, so a
+    stale or planted pid file, or a daemon another Hermes started, never reaches the supervisor.
+    Runs after every browser_exec (and while a long one runs, until the daemon is owned): a pid
+    already owned for this daemon costs one file read.
+
+    Returns True once the daemon is owned, False when it can never be (Windows, a managed worker, a
+    daemon another Hermes started), None when there is nothing to own yet."""
+    if os.name != "posix":
+        return False  # Windows: the harness daemon is outside this process's job; nothing to register.
+    from agent.runtime_session_store import is_worker_process
+    if is_worker_process():
+        # A managed per-turn worker never owns it, so a killed worker does not take the browser the
+        # next turn's worker drives along (its clean exit still runs the atexit browser cleanup).
+        return False
+    import psutil
+
+    daemon = daemon_identity(env)
+    pid = _published_daemon_pid(env)
+    if pid is None:
+        logger.debug("browser_exec: no harness daemon pid published for %s", daemon[-1])
+        return None
+    try:
+        with _owned_daemon_groups_lock:
+            if _owned_daemon_groups.get(daemon) == pid:
+                return True
+        proc = psutil.Process(pid)
+        argv = proc.cmdline()
+        if (os.getsid(pid) != pid or proc.uids().real != os.getuid()  # windows-footgun: ok — posix-only, returned above
+                or argv[argv.index("-m") + 1] != "browser_harness.daemon"):
+            return None
+        if not spawned_by_this_process(pid):
+            return False  # another Hermes on the same BU_NAME started it: that Hermes owns it
+    except (OSError, ValueError, IndexError, psutil.Error) as exc:
+        logger.debug("browser_exec: no harness daemon to supervise for %s: %s", daemon[-1], exc)
+        return None
+    with _owned_daemon_groups_lock:
+        replaced = _owned_daemon_groups.get(daemon)
+        _owned_daemon_groups[daemon] = pid
+    own_process_groups([pid])
+    register_child(pid, "browser-harness-daemon")
+    if replaced is not None:
+        release_process_group_once_empty(replaced, timeout=0)  # the daemon it replaced; a survivor stays covered
+    return True
 
 
 def _route_exec(env: dict, session: str, task_id: Optional[str], local: bool, local_sidecar: bool,
@@ -683,13 +773,22 @@ def _take_real_profile_note(route_key: str) -> dict:
     return {"real_profile_unavailable": _real_profile_fallback[route_key]}
 
 
+def _no_code_error(code: str) -> Optional[str]:
+    if not code or not code.strip():
+        return ("No code provided. Pass Python that uses the pre-imported helpers, e.g. "
+                "new_tab(\"https://example.com\") then print(page_info()).")
+    return None
+
+
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
     from agent.redact import redact_sensitive_text
+    from tools.hosted_tool_policy import hosted_tool_refusal
     from tools.registry import tool_error, tool_result
-    if not code or not code.strip():
-        return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
+    # A direct (non-dispatch) entry meets the same allowlist, before any setup.
+    if refusal := hosted_tool_refusal("browser_exec") or _no_code_error(code):
+        return tool_error(refusal)
 
     # The verdict is carried into the route, never re-derived: the predicate resolves DNS, so a second
     # evaluation could relax the floor and still pick the cloud for a rebinding host.
@@ -750,6 +849,10 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         with _driven_daemons_lock:
             daemon = daemon_identity(env)
             _driven_daemons[daemon] = hermes_home_key()
+        # The first call starts the daemon and may run long (navigation, user code): own it as soon as
+        # it publishes its pid, so a Hermes killed mid-call takes it along (the call's end owns it too).
+        from agent.periodic_scheduler import schedule
+        owning = schedule(lambda: _own_harness_daemon_until_owned(env), _OWN_DURING_CALL_S)
         try:
             return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
         except subprocess.TimeoutExpired:
@@ -760,6 +863,9 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             )}
         except OSError as e:
             return {"error_result": tool_error(f"Failed to launch browser-use CLI: {e}")}
+        finally:
+            owning.cancel(wait=5)  # an in-flight check finishes before the post-call one runs
+            _record_driven_tab(env, task_id)  # only a call that ran: the supervisor is this call's browser's
 
     if bot_desktop_browser:
         from tools.browser_session import run_fenced
@@ -767,6 +873,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     else:
         dispatched = dispatch()
     _reload_if_republished(env, generation)
+    _own_harness_daemon(env)
     if "proc" not in dispatched:
         if "error_result" in dispatched:
             return dispatched["error_result"]
@@ -801,7 +908,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
 _HEADER_BASE = (
     "Drive a real browser for JS pages, logins, forms and clicks (Browser Use CLI). `code` runs as full "
-    "Python (stdlib available) with pre-imported browser helpers; stdout comes back in the result. Start `code` with a one-line "
+    "Python (stdlib available); print(...) any data you need back. Start `code` with a one-line "
     "comment describing the step for the user in plain language, max 60 chars "
     "(e.g. `# Searching Amazon for paper towels`) — the UI shows it as the step label.\n\n"
     "STATE: the browser session and workspace persist across calls; Python variables do NOT (fresh "
@@ -810,8 +917,8 @@ _HEADER_BASE = (
     "('all N products / every entry'), append each batch to a JSON/CSV file in the workspace, then read it "
     "back and aggregate in code — dedupe/count/sort with Python, not in your head — and verify the "
     "collected count against what was asked before answering.\n\n"
-    "Batch each sub-procedure (navigate, wait, extract, act) into one call — do not spend a call per "
-    "action — but for long extractions prefer several medium calls that append to workspace files over "
+    "Batch each sub-procedure (navigate, wait, extract, act) into one call, but for long extractions "
+    "prefer several medium calls that append to workspace files over "
     "one giant call, so progress survives timeouts."
 )
 
@@ -898,10 +1005,10 @@ BROWSER_EXEC_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "code": {"type": "string", "description": "Python code to execute using the pre-imported browser helpers. Use print(...) for any data you need back."},
+            "code": {"type": "string", "description": "Python using the pre-imported browser helpers."},
             "session": {"type": "string", "description": "Named isolated browser session — its own daemon and (on cloud backends) own browser, so concurrent tasks don't share tabs. Reuse the same name on every related call; omit for the shared default session."},
             "timeout_s": {"type": "integer", "default": _DEFAULT_TIMEOUT_S,
-                          "description": f"Max seconds to wait for the code to finish (default {_DEFAULT_TIMEOUT_S}, max {_MAX_TIMEOUT_S})."},
+                          "description": f"Max seconds to wait for the code to finish (max {_MAX_TIMEOUT_S})."},
         },
         "required": ["code"],
     },
@@ -944,4 +1051,5 @@ registry.register(
     check_fn=browser_exec_available,
     dynamic_schema_overrides=_dynamic_schema_overrides,
     emoji="🌐",
+    compat_args=("local",),  # advertised only when a local browser is on offer
 )

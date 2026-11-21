@@ -1,6 +1,7 @@
 """`hermes config get/set` must recognize keys the runtime reads but DEFAULT_CONFIG leaves unseeded:
-core provider selections (``browser.cloud_provider``, ``<category>.use_gateway``), core-owned keys with
-a known reader (``computer_use.backend``), and keys an ACTIVE plugin declares through ``config_keys``.
+core provider selections (``browser.cloud_provider``, ``<category>.use_gateway``), MoA preset fields
+(``moa.presets.<name>.fanout``), core-owned keys with a known reader (``computer_use.backend``), and keys
+an ACTIVE plugin declares through ``config_keys``.
 Declarations never weaken the schema's typo notices."""
 
 import argparse
@@ -62,6 +63,60 @@ def test_config_get_browser_selection_keys_print_value_without_notice(hermes_hom
 ])
 def test_config_set_runtime_read_key_is_silent(key, value, hermes_home, capsys):
     assert not _set_notice(key, value, capsys)
+
+
+def _moa_key(name, field):
+    return "moa.presets." + name.replace(".", r"\.") + "." + field
+
+
+@pytest.mark.parametrize("name", ["default", "review", "review.v2", "code review"])
+def test_moa_preset_fields_set_and_get_without_notice(name, hermes_home, capsys):
+    from hermes_cli.config import get_config_value, load_config
+    from hermes_cli.moa_config import resolve_moa_preset
+
+    slot = {"provider": "openrouter", "model": "test/actor"}
+    _write_config(hermes_home, {"moa": {"presets": {name: {"reference_models": [slot], "aggregator": slot}}}})
+    for field, value, expected in (("fanout", "every_n:5", "every_n:5"), ("reference_timeout", "900", 900)):
+        assert not _set_notice(_moa_key(name, field), value, capsys), field
+        get_config_value(_moa_key(name, field), as_json=True)
+        captured = capsys.readouterr()
+        assert json.loads(captured.out) == expected
+        assert NOTICE not in captured.err, field
+    preset = resolve_moa_preset(load_config()["moa"], name)
+    assert (preset["fanout"], preset["reference_timeout"]) == ("every_n:5", 900)
+
+
+@pytest.mark.parametrize("name", ["default", "review"])
+def test_moa_aggregator_slot_fields_set_without_notice(name, hermes_home, capsys):
+    from hermes_cli.config import load_config
+    from hermes_cli.moa_config import resolve_moa_preset
+
+    slot = {"provider": "openrouter", "model": "test/actor"}
+    _write_config(hermes_home, {"moa": {"presets": {name: {"reference_models": [slot], "aggregator": slot}}}})
+    for field, value in (("provider", "anthropic"), ("model", "test/judge"), ("reasoning_effort", "high")):
+        assert not _set_notice(_moa_key(name, "aggregator." + field), value, capsys), field
+    aggregator = resolve_moa_preset(load_config()["moa"], name)["aggregator"]
+    assert aggregator == {"provider": "anthropic", "model": "test/judge", "reasoning_effort": "high"}
+
+
+@pytest.mark.parametrize("key", [
+    pytest.param("moa.presets.default.fanoutt", id="field-typo"),
+    pytest.param("moa.presets.review.reference_timeot", id="field-typo-custom"),
+    pytest.param(r"moa.presets.review\.v2.fanoutt", id="field-typo-escaped-name"),
+    pytest.param("moa.presets.review.unexpected.fanout", id="extra-segment-before-field"),
+    pytest.param("moa.presets.review.fanout.unexpected", id="extra-segment-after-field"),
+    # The normalizer strips names, so this entry would replace the ``review`` preset.
+    pytest.param("moa.presets. review .fanout", id="space-padded-name"),
+    pytest.param("moa.presets.review", id="whole-preset"),
+    pytest.param("moa.presets.review.aggregator.bogus", id="unknown-slot-field"),
+    pytest.param("moa.presets.review.enabled.x", id="scalar-field-subpath"),
+    # ``n`` only takes effect beside ``mode: every_n``; alone it normalizes to user_turn.
+    pytest.param("moa.presets.review.fanout.n", id="fanout-mapping-half"),
+])
+def test_moa_non_field_paths_still_notice(key, hermes_home, monkeypatch, capsys):
+    # Only the schema walk and the MoA rule decide these keys; skip the plugin scan they would fall through to.
+    monkeypatch.setattr("hermes_cli.config_runtime_keys.plugin_declared_config_keys", frozenset)
+    assert _set_notice(key, "5", capsys)
 
 
 def test_every_selection_category_key_set_is_what_read_selection_returns(hermes_home, capsys):

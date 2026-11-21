@@ -41,7 +41,7 @@ def test_real_spawn_path_child_starts_interrupted(tmp_path, monkeypatch):
     from tools import delegate_tool as dt
     import tools.delegate_tool_config as dtc
     cfg = {"max_spawn_depth": 3}
-    monkeypatch.setattr(dt, "_load_config", lambda: cfg)
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", lambda: cfg)
     monkeypatch.setattr(dtc, "_load_config", lambda: cfg)
     kw = dict(api_key="k", base_url="https://openrouter.ai/api/v1", provider="openrouter",
               api_mode="chat_completions", model="anthropic/claude-sonnet-4.6", platform="cli", quiet_mode=True,

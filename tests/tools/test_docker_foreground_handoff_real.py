@@ -31,7 +31,7 @@ class _Agent(InterruptControlMixin):
     _interrupt_requested = False
 
 
-@pytest.mark.parametrize("signal_kind", ["yield", "interrupt", "attachment", "kill", "graceful-kill", "stale-kill"])
+@pytest.mark.parametrize("signal_kind", ["yield", "attachment", "kill", "graceful-kill", "stale-kill"])
 def test_foreground_handoff_keeps_one_process_and_real_completion(docker_task, signal_kind):
     ready, release, writes = (f"/tmp/{uuid.uuid4().hex}" for _ in range(3))
     result = {}
@@ -58,8 +58,6 @@ def test_foreground_handoff_keeps_one_process_and_real_completion(docker_task, s
         wait_until(lambda: control("test", "-e", ready).returncode == 0, what="running sandbox command")
         if signal_kind in {"yield", "kill", "graceful-kill", "stale-kill"}:
             interrupt.request_yield(thread.ident)
-        elif signal_kind == "interrupt":
-            interrupt.set_interrupt(True, thread_id=thread.ident)
         else:
             agent = _Agent()
             agent._tool_worker_threads = {thread.ident}

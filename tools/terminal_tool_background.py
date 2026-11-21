@@ -8,9 +8,11 @@ monkeypatch points authoritative.
 import json
 import logging
 import sys
+import threading
 from typing import Any, List, Optional
 
 from tools.environments.docker_foreground import adopt_foreground
+from tools.interrupt import is_thread_interrupted
 
 logger = logging.getLogger("tools.terminal_tool")
 
@@ -273,8 +275,9 @@ def yield_to_background_handler(
     Other backends still wait in the foreground."""
     if env_type not in {"local", "docker"}:
         return None
+    caller_tid = threading.get_ident()
 
-    def _handler(proc, output_so_far: str) -> dict:
+    def _handler(proc, output_so_far: str) -> dict | None:
         from tools.process_registry import process_registry
         kwargs = dict(command=command, cwd=cwd, task_id=effective_task_id,
                       owner_task_id=task_id or effective_task_id, session_key=session_key,
@@ -283,12 +286,14 @@ def yield_to_background_handler(
             session = adopt_foreground(process_registry, env._foreground_commands[id(proc)], proc, **kwargs)
         else:
             session = process_registry.adopt_local(proc, **kwargs)
+        if is_thread_interrupted(caller_tid):
+            process_registry.kill_process(session.id, source="foreground_interrupt", consume_output=True)
+            return None
         _stamp_routing_if_gateway(process_registry, session, session_key)
         logger.info("foreground command yielded to background as %s (pid %s)", session.id, session.pid)
         return {
             "output": output_so_far, "returncode": None, "yielded_session_id": session.id, "pid": session.pid,
         }
-    _handler.handoff_on_interrupt = env_type == "docker"
     return _handler
 
 

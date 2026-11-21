@@ -539,14 +539,14 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         Per-profile like GATEWAY_PROXY_KEY: under multiplex a raw environ read would ship a secondary's
         turns (authenticated with ITS scoped key) to the default profile's proxy. Same fallback shape as
         the key — only ``UnscopedSecretError`` (the unscoped default-profile path) reads the env."""
-        from gateway.run import _load_gateway_config
+        from gateway.proxy_url import configured_proxy_url
         from agent.secret_scope import UnscopedSecretError, get_secret
         try:
             url = (get_secret("GATEWAY_PROXY_URL") or "").strip()
         except UnscopedSecretError:
             url = os.getenv("GATEWAY_PROXY_URL", "").strip()
         if not url:
-            url = ((_load_gateway_config().get("gateway") or {}).get("proxy_url") or "").strip()
+            url = configured_proxy_url() or ""
         return url.rstrip("/") if url else None
 
     def _build_stream_consumer_config(

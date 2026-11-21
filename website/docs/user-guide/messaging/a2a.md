@@ -77,6 +77,26 @@ Inbound tasks are injected into a **live gateway session** — the same agent, m
 
 Interoperability is verified against the official Python `a2a-sdk` (card resolution, `SendMessage`, streaming).
 
+### Completed task history after restart
+
+The inbound adapter retains up to 500 terminal task records in the owning
+profile's `a2a/terminal_tasks.sqlite3`. Completed, failed, canceled and rejected
+outcomes are committed before terminal observers are notified. `GetTask` and
+`ListTasks` can read those original task/context IDs and result text after an
+adapter or gateway restart, with the same agent/tenant/peer access checks.
+The oldest-created terminal records are evicted when the existing 500-record
+bound is exceeded. This is bounded delivery history, not an indefinite archive.
+
+The database contains result text and should be included only in private profile
+backups. Push callback configuration and pending Futures are not restored. A
+history read/write failure is surfaced rather than silently accepting a new
+in-memory-only history. Existing conversation JSONL logs are unchanged.
+
+This does not resume a running model or recover an in-flight local Task that had
+not committed a terminal outcome. A missing Task after such an interruption is
+not permission to resend work with possible external effects. Forwarded-profile
+owner coordination and interrupted execution recovery remain separate contracts.
+
 ## Forwarded profile sessions after the ownership cutover
 
 Forwarding to another local profile now submits to that profile's gateway owner;

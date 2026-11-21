@@ -303,15 +303,25 @@ metrics = Metrics()
 
 
 class TaskStore:
-    """In-memory A2A tasks, kept after completion for tasks/get. Records carry agent slug +
+    """A2A tasks with optional profile-owned terminal history for tasks/get. Records carry agent slug +
     tenant; readers pass a scope and get not-found outside it (spec authz rule)."""
 
     _MAX_TERMINAL = 500
 
-    def __init__(self) -> None:
+    def __init__(self, *, profile_home=None) -> None:
+        from .task_history import TerminalTaskHistory
+
+        self._history = TerminalTaskHistory(profile_home, self._MAX_TERMINAL) if profile_home is not None else None
         self._tasks: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        if self._history is not None:
+            self._tasks.update((record["task_id"], record) for record in self._history.load())
         self._watchers: dict[str, list[Future]] = {}
         self._lock = threading.Lock()
+
+    @classmethod
+    def for_profile(cls):
+        """Bind once while constructing the owning adapter, never in an HTTP thread."""
+        return cls(profile_home=get_hermes_home())
 
     @staticmethod
     def _in_scope(rec: dict, agent_slug: str = "", tenant: str = "") -> bool:
@@ -388,7 +398,11 @@ class TaskStore:
             rec = self._tasks.get(task_id)
             if not rec or rec["state"] in TERMINAL_STATES:
                 return None
-            rec.update(state=state, reply=reply, completed_at=time.time())
+            completed = dict(rec, state=state, reply=reply, completed_at=time.time())
+            if self._history is not None and state in TERMINAL_STATES:
+                # Do not publish a terminal state or wake observers before its commit succeeds.
+                self._history.save(completed)
+            rec.update(completed)
             watchers = self._watchers.pop(task_id, [])
             self._trim_locked()
             out = dict(rec)

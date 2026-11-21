@@ -209,3 +209,20 @@ def test_a_unit_that_unsets_its_hermes_home_is_not_this_homes(home, capsys, monk
     code, out = _plan(RealUnitsHost(home, {}), capsys)
 
     assert (code, out["plan"]["blockers"], out["steps"]) == (engine.EXIT_OK, [], [])
+
+
+@pytest.mark.parametrize("kind", ["systemd", "launchd"])
+def test_a_gateway_service_the_installer_cannot_generate_is_unknown(home, monkeypatch, no_gateway_unit, kind):
+    from hermes_cli import gateway_launchd
+
+    def fail():
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(gw, "generate_systemd_unit", fail)
+    monkeypatch.setattr(gateway_launchd, "generate_launchd_plist", fail)
+    monkeypatch.setattr(backends_host, "_systemctl", FakeSystemctl("SOMEVAR=same\n"))
+    monkeypatch.setattr(SystemHost, "gateway_kind", lambda self: kind)
+
+    why = SystemHost(home).gateway_environment()[1]
+
+    assert why and "cannot be generated here (OSError)" in why

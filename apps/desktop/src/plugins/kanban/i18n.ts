@@ -191,6 +191,10 @@ type KanbanMessages = {
   importBoardTitle: string
   boardExported: (path: string) => string
   boardImported: (name: string) => string
+  /** Deep link named a board this connection doesn't have. */
+  linkBoardMissing: (slug: string) => string
+  /** Deep link named a task that isn't on the board it opened. */
+  linkTaskMissing: (id: string) => string
   boardImportedAs: (slug: string) => string
   renameBoardTitle: string
   deleteBoardTitle: (name: string) => string
@@ -424,6 +428,8 @@ export const en: KanbanMessages = {
   importBoardTitle: 'Import board…',
   boardExported: path => `Board exported to ${path}`,
   boardImported: name => `Imported ${name}`,
+  linkBoardMissing: slug => `No board “${slug}” on this connection — showing the current board`,
+  linkTaskMissing: id => `Task ${id} isn’t on this board`,
   boardImportedAs: slug => `That name was taken — imported as ${slug}`,
   renameBoardTitle: 'Rename board',
   deleteBoardTitle: name => `Delete "${name}"?`,
@@ -655,6 +661,8 @@ const ja: KanbanMessages = {
   importBoardTitle: 'ボードをインポート…',
   boardExported: path => `ボードを ${path} にエクスポートしました`,
   boardImported: name => `${name} をインポートしました`,
+  linkBoardMissing: slug => `ボード「${slug}」はこの接続にありません — 現在のボードを表示しています`,
+  linkTaskMissing: id => `タスク ${id} はこのボードにありません`,
   boardImportedAs: slug => `その名前は使用中のため ${slug} としてインポートしました`,
   renameBoardTitle: 'ボード名を変更',
   deleteBoardTitle: name => `「${name}」を削除しますか？`,
@@ -884,6 +892,8 @@ const zh: KanbanMessages = {
   importBoardTitle: '导入面板…',
   boardExported: path => `面板已导出至 ${path}`,
   boardImported: name => `已导入 ${name}`,
+  linkBoardMissing: slug => `此连接上没有面板「${slug}」— 仍显示当前面板`,
+  linkTaskMissing: id => `此面板上没有任务 ${id}`,
   boardImportedAs: slug => `该名称已被占用，已导入为 ${slug}`,
   renameBoardTitle: '重命名面板',
   deleteBoardTitle: name => `确定删除“${name}”？`,
@@ -1112,6 +1122,8 @@ const zhHant: KanbanMessages = {
   importBoardTitle: '匯入面板…',
   boardExported: path => `面板已匯出至 ${path}`,
   boardImported: name => `已匯入 ${name}`,
+  linkBoardMissing: slug => `此連線上沒有面板「${slug}」— 仍顯示目前面板`,
+  linkTaskMissing: id => `此面板上沒有任務 ${id}`,
   boardImportedAs: slug => `該名稱已被使用，已匯入為 ${slug}`,
   renameBoardTitle: '重新命名面板',
   deleteBoardTitle: name => `確定刪除「${name}」？`,

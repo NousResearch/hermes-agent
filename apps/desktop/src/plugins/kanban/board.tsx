@@ -83,6 +83,7 @@ import {
   useKanbanScope
 } from './api'
 import { BoardSwitcher } from './board-switcher'
+import { useKanbanDeepLink } from './deep-link'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
@@ -1108,13 +1109,21 @@ export function KanbanBoardPage() {
 
   // Live updates ride the events socket (bindApi); this interval is only the
   // slow heartbeat for socketless paths (OAuth remotes, dropped connections).
-  const { data: board, error } = useQuery({
+  const {
+    data: board,
+    error,
+    isFetching: boardFetching
+  } = useQuery({
     queryFn: () => fetchBoard(archived),
     queryKey: boardKey(scope, slug, archived),
     refetchInterval: 60_000
   })
 
   const [openId, setOpenId] = useState<null | string>(null)
+
+  // `/kanban?board=…&task=…` from anywhere (another plugin, a toast action).
+  useKanbanDeepLink({ board, boardFetching, k, onOpenTask: setOpenId, scope, slug })
+
   const [addStatus, setAddStatus] = useState<null | string>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [search, setSearch] = useState('')

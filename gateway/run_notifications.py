@@ -195,7 +195,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         from gateway.bot_peer_notices import automatic_notices_allowed
-        from gateway.run import _is_slack_ignored_channel
+        from gateway.run import _interim_metadata, _is_slack_ignored_channel
         adapter = self._delivery_adapter_for(source) if automatic_notices_allowed(source) else None
         if not adapter:
             return
@@ -216,7 +216,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 config.get_notice_delivery(source.platform) if config and hasattr(config, "get_notice_delivery")
                 else "public"
             )
-        metadata = self._thread_metadata_for_source(source)
+        # Operational notices must not seal a reply stream or become proactive speech.
+        metadata = _interim_metadata(self._thread_metadata_for_source(source))
         if notice_delivery == "private" and getattr(source, "user_id", None):
             with _log_suppressed(
                 logging.DEBUG, "[%s] send_private_notice failed, falling back to public",

@@ -46,6 +46,20 @@ class TestResolveOpenaiAudioClientConfig:
             )
 
 
+    def test_config_api_key_env_reference_is_expanded(self, monkeypatch):
+        """A ${VAR} api_key in tts.openai config resolves against the process
+        environment instead of being sent literally."""
+        monkeypatch.setenv("HERMES_TTS_TEST_KEY", "expanded-key")
+        config = {"openai": {"api_key": "${HERMES_TTS_TEST_KEY}"}}
+
+        with patch.object(tts_tool, "_load_tts_config", return_value=config), \
+             patch.object(tts_tool_openai, "read_selection", return_value=None):
+            assert tts_tool_openai._resolve_openai_audio_client_config() == (
+                "expanded-key",
+                tts_tool_openai.DEFAULT_OPENAI_BASE_URL,
+                False,
+            )
+
     def test_nous_selection_overrides_config_credentials(self):
         """A stored 'nous' selection (or legacy use_gateway: true) routes
         managed even when direct credentials are present."""

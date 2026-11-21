@@ -10,6 +10,7 @@ are read lazily from ``tools.transcription_tools``.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import tempfile
 from pathlib import Path
@@ -402,7 +403,7 @@ def _direct_openai_credentials(cfg_api_key: str, cfg_base_url: str) -> Optional[
     constructs a client) > env key; None if none apply."""
     from tools.tool_backend_helpers import resolve_openai_audio_api_key
     if cfg_api_key:
-        return cfg_api_key, (cfg_base_url or OPENAI_BASE_URL)
+        return os.path.expandvars(cfg_api_key), (cfg_base_url or OPENAI_BASE_URL)
     # A local OpenAI-compatible server needs no key — send a placeholder so the SDK doesn't refuse to
     # construct a client (#25193, credit @nnnet).
     if cfg_base_url and _is_local_or_private_url(cfg_base_url):

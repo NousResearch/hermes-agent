@@ -144,7 +144,7 @@ class SideThread:
 # ── registry ──────────────────────────────────────────────────────────────────────────────────
 # Keyed by (profile home, session id): one process serves many profiles and many chats, and a
 # thread id must never resolve across either boundary.
-_registry: dict[tuple[str, str], "OrderedDict[str, SideThread]"] = {}
+_registry: dict[tuple[str, str], OrderedDict[str, SideThread]] = {}
 _registry_lock = threading.Lock()
 
 
@@ -189,7 +189,7 @@ def find_thread(session_id: str, ref: str = "") -> Optional[SideThread]:
     if not ref:
         finished = [t for t in threads if not t.running]
         return finished[-1] if finished else None
-    bare = ref[len(THREAD_ID_PREFIX):] if ref.startswith(THREAD_ID_PREFIX) else ref
+    bare = ref.removeprefix(THREAD_ID_PREFIX)
     matches = [t for t in threads if t.thread_id[len(THREAD_ID_PREFIX):].startswith(bare)]
     return matches[0] if len(matches) == 1 else None
 
@@ -247,16 +247,6 @@ def describe_tool_call(name: str, args: Any) -> str:
     if len(detail) > _PROGRESS_ARG_CHARS:
         detail = detail[: _PROGRESS_ARG_CHARS - 1] + "…"
     return f"{name} · {detail}" if detail else str(name)
-
-
-def _tool_names(messages: list[dict[str, Any]]) -> list[str]:
-    names: list[str] = []
-    for msg in messages:
-        if isinstance(msg, dict) and msg.get("role") == "assistant":
-            for call in msg.get("tool_calls") or ():
-                if isinstance(call, dict):
-                    names.append(str((call.get("function") or {}).get("name") or "?"))
-    return names
 
 
 def explore_refusal(parent_agent: Any) -> Optional[SideThreadUnavailable]:
@@ -352,9 +342,10 @@ def run_side_exploration(
     result = result if isinstance(result, dict) else {}
     side_messages = list(result.get("messages") or [])[len(replayed):]
     answer = str(result.get("final_response") or "").strip()
+    # ``tool_calls`` stays what the start callback saw: tools that actually ran. A call the
+    # whitelist denied never starts, so the report never claims a tool it was refused.
     with thread._lock:
         thread.messages = side_messages
-        thread.tool_calls = _tool_names(side_messages) or thread.tool_calls
     if thread.stop_requested:
         thread._finish("stopped", answer=answer)
     elif not answer and result.get("error"):
@@ -438,7 +429,7 @@ class ThreadCommandResult:
     prompt: str = ""
 
 
-def run_thread_command(session_id: str, request: "BtwRequest") -> ThreadCommandResult:
+def run_thread_command(session_id: str, request: BtwRequest) -> ThreadCommandResult:
     """The surface-neutral half of ``/btw`` thread management; surfaces only render the result
     and, for ``promote``, submit ``prompt`` on their normal turn path."""
     from agent.i18n import t

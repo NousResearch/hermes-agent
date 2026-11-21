@@ -1,5 +1,6 @@
 """Regression for #140099: old local receipts omit the served profile in origin."""
 import json
+import time
 
 import pytest
 from persistence_assembly import close_stores_under
@@ -18,13 +19,24 @@ _AGED = {
 }
 
 
+def _legacy_main(receipt, root):
+    """A pre-multiplex standalone receipt: route, entry key and origin all under agent:main."""
+    receipt['route'] = receipt['route'].replace('agent:alpha:', 'agent:main:')
+    receipt['entry']['session_key'] = receipt['route']
+    receipt['entry']['origin']['profile'] = 'default'
+
+
+_AGED['legacy_main'] = _legacy_main
+
+
 def _receipt(store, session_id):
     """The stored creation receipt as the JSON object it was written."""
     return json.loads(store.state_meta.get(policy_key(session_id)))
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('variant', ['current', 'missing', 'null', 'foreign', 'route', 'home', 'user'])
+@pytest.mark.parametrize('variant', ['current', 'missing', 'null', 'foreign', 'route', 'home', 'user',
+                                     'legacy_main', 'legacy_main_ended'])
 async def test_secondary_receipt_restores_without_losing_its_owner(tmp_path, monkeypatch, variant):
     from gateway import run
     from gateway.run import _profile_runtime_scope
@@ -53,10 +65,12 @@ async def test_secondary_receipt_restores_without_losing_its_owner(tmp_path, mon
         original = json.loads(json.dumps(receipt))
         if variant != 'current':
             receipt['entry']['origin'].pop('profile')
-            _AGED[variant](receipt, root)
+            (_legacy_main if variant == 'legacy_main_ended' else _AGED[variant])(receipt, root)
             raw_holder(authority.persistence)._execute_write(lambda conn: conn.execute(
                 'UPDATE state_meta SET value=? WHERE key=?',
                 (json.dumps(receipt), policy_key(ref.session_id))))
+            if variant == 'legacy_main_ended':
+                authority.persistence.sessions.end(ref.session_id, 'done')
         for owner in first.session_authorities:
             close_stores_under(owner.persistence.scope.profile_dir)
 
@@ -64,7 +78,7 @@ async def test_secondary_receipt_restores_without_losing_its_owner(tmp_path, mon
         runners.append(second)
         await initialize_gateway_runtime(second)
         restored = second.session_authorities.for_home(home)
-        if variant not in ('current', 'missing'):
+        if variant not in ('current', 'missing', 'legacy_main', 'legacy_main_ended'):
             from persistence.core.errors import AuthorityRefusal
             assert ref.session_id not in restored.sessions
             with pytest.raises(AuthorityRefusal):
@@ -72,7 +86,12 @@ async def test_secondary_receipt_restores_without_losing_its_owner(tmp_path, mon
             assert _receipt(restored.persistence, ref.session_id) == receipt
             assert second.session_authorities.launch.persistence.sessions.get(ref.session_id) is None
             return
-        assert ref.session_id in restored.sessions, 'owned legacy receipt was paused on cold recovery'
+        if variant == 'legacy_main_ended':
+            # Boot no longer restores ended receipts (#143547 LC-36); a Desktop resume restores on
+            # first touch, which is the path an old chat actually takes.
+            assert ref.session_id not in restored.sessions
+        else:
+            assert ref.session_id in restored.sessions, 'owned legacy receipt was paused on cold recovery'
         with _profile_runtime_scope(home, {}):
             assert restore_local_session(restored, ref.session_id) == ref
         live = restored.sessions[ref.session_id]
@@ -80,6 +99,10 @@ async def test_secondary_receipt_restores_without_losing_its_owner(tmp_path, mon
         assert live.route == original['route']
         assert second.session_authorities.launch.persistence.sessions.get(ref.session_id) is None
         assert restored.persistence.bindings.receipt(ref.session_id).policy == original['policy']
+        if variant.startswith('legacy_main'):
+            # The promotion is a read-time decision; the durable receipt stays as the old build
+            # wrote it so a downgrade still owns the row.
+            assert _receipt(restored.persistence, ref.session_id)['route'].startswith('agent:main:local:')
     finally:
         for runner in runners:
             for owner in getattr(runner, 'session_authorities', ()):

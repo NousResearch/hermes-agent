@@ -874,7 +874,11 @@ compression:
 # lost — the full result is on disk and readable with read_file.
 #
 # tool_budget:
-#   mcp_result_size_chars: 50000   # per-result spillover threshold for mcp_* tools
+#   mcp_result_size_chars: 50000         # per-result spillover threshold for mcp_* tools
+#   default_result_size_chars: 100000    # generic per-result threshold
+#   turn_budget_chars: 200000            # all tool results in one turn
+#   unlimited_tools: []                  # tool names that never spill
+# A single MCP server can override the MCP threshold: mcp_servers.<name>.max_result_chars.
 
 # =============================================================================
 # Anthropic prompt caching TTL

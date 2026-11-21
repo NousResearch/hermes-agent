@@ -19,6 +19,7 @@ import { $focusedWorkspaceCwd } from '@/store/session-states'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
+import { FilesSortMenu } from './files/sort-menu'
 import { ProjectTree } from './files/tree'
 import { useProjectTree } from './files/use-project-tree'
 
@@ -202,6 +203,9 @@ function FilesystemTab({
             <Codicon name={showIgnored ? 'eye' : 'eye-closed'} size="0.8125rem" />
           </Button>
         </Tip>
+        <div className={HEADER_ACTION_LABEL_REVEAL}>
+          <FilesSortMenu folderPath={cwd} />
+        </div>
         <Tip label={r.refreshTree}>
           <Button
             aria-label={r.refreshTree}

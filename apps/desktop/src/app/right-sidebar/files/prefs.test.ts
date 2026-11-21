@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { $showIgnoredRoots, setShowIgnoredFiles, showsIgnoredFiles } from './prefs'
+import {
+  $folderSortPrefs,
+  $showIgnoredRoots,
+  folderSortPreference,
+  setFolderSortPreference,
+  setShowIgnoredFiles,
+  showsIgnoredFiles
+} from './prefs'
+import { DEFAULT_FILE_SORT, MEDIA_FOLDER_FILE_SORT } from './sort'
 
 describe('files show-ignored preference', () => {
   beforeEach(() => {
@@ -54,5 +62,27 @@ describe('files show-ignored preference', () => {
     setShowIgnoredFiles('/repo/', true)
 
     expect($showIgnoredRoots.get()).toHaveLength(1)
+  })
+})
+
+describe('files folder-sort preference', () => {
+  beforeEach(() => {
+    $folderSortPrefs.set({})
+  })
+
+  it('defaults ordinary folders to name ascending and media folders to newest-first', () => {
+    expect(folderSortPreference('/ws/src')).toEqual(DEFAULT_FILE_SORT)
+    expect(folderSortPreference('/ws/renders')).toEqual(MEDIA_FOLDER_FILE_SORT)
+  })
+
+  it('remembers an explicit choice per folder across path spellings', () => {
+    expect(setFolderSortPreference('C:\\Work\\renders\\', { direction: 'asc', field: 'name' })).toBe(true)
+    expect(folderSortPreference('c:/work/renders')).toEqual(DEFAULT_FILE_SORT)
+    expect(setFolderSortPreference('c:/work/renders', { direction: 'asc', field: 'name' })).toBe(false)
+  })
+
+  it('ignores an empty folder path', () => {
+    expect(setFolderSortPreference('', MEDIA_FOLDER_FILE_SORT)).toBe(false)
+    expect($folderSortPrefs.get()).toEqual({})
   })
 })

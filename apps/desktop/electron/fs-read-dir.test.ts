@@ -87,6 +87,35 @@ test('readDirForIpc returns directories before files and sorts by name within gr
   }
 })
 
+test('readDirForIpc attaches mtimeMs and size so the Files panel can sort by date', async () => {
+  const root = mkTmpDir()
+
+  try {
+    const older = path.join(root, 'older.txt')
+    const newer = path.join(root, 'newer.txt')
+    fs.writeFileSync(older, 'old')
+    // Ensure distinct mtimes on filesystems with coarse resolution.
+    const past = new Date(Date.now() - 60_000)
+    fs.utimesSync(older, past, past)
+    fs.writeFileSync(newer, 'brand-new-content')
+
+    const result = await readDirForIpc(root)
+
+    assert.equal(result.error, undefined)
+    const olderEntry = result.entries.find(entry => entry.name === 'older.txt')
+    const newerEntry = result.entries.find(entry => entry.name === 'newer.txt')
+    assert.ok(olderEntry)
+    assert.ok(newerEntry)
+    assert.equal(typeof olderEntry.mtimeMs, 'number')
+    assert.equal(typeof newerEntry.mtimeMs, 'number')
+    assert.ok(newerEntry.mtimeMs > olderEntry.mtimeMs)
+    assert.equal(typeof newerEntry.size, 'number')
+    assert.ok(newerEntry.size > olderEntry.size)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('readDirForIpc accepts file URLs for directories', async () => {
   const root = mkTmpDir()
 
@@ -209,9 +238,12 @@ test('readDirForIpc allows expanding symlink or junction directories outside the
     const result = await readDirForIpc(linkPath)
 
     assert.equal(result.error, undefined)
-    assert.deepEqual(result.entries, [
-      { name: 'outside.txt', path: path.join(linkPath, 'outside.txt'), isDirectory: false }
-    ])
+    assert.equal(result.entries.length, 1)
+    assert.equal(result.entries[0]?.name, 'outside.txt')
+    assert.equal(result.entries[0]?.path, path.join(linkPath, 'outside.txt'))
+    assert.equal(result.entries[0]?.isDirectory, false)
+    assert.equal(typeof result.entries[0]?.mtimeMs, 'number')
+    assert.equal(typeof result.entries[0]?.size, 'number')
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
     fs.rmSync(outside, { recursive: true, force: true })
@@ -233,13 +265,17 @@ test('readDirForIpc stats symbolic links and unknown entries without dropping th
       ],
       stat: async fullPath => {
         if (fullPath === resolved) {
-          return { isDirectory: () => true }
+          return { isDirectory: () => true, mtimeMs: 1, size: 0 }
         }
 
         statCalls.push(fullPath)
 
         if (fullPath.endsWith(`${path.sep}linked-dir`)) {
-          return { isDirectory: () => true }
+          return { isDirectory: () => true, mtimeMs: 2, size: 0 }
+        }
+
+        if (fullPath.endsWith(`${path.sep}plain.txt`)) {
+          return { isDirectory: () => false, mtimeMs: 3, size: 4 }
         }
 
         throw Object.assign(new Error('gone'), { code: 'ENOENT' })
@@ -250,16 +286,27 @@ test('readDirForIpc stats symbolic links and unknown entries without dropping th
   const result = await readDirForIpc(input, { fs: fsImpl })
 
   assert.equal(result.error, undefined)
+  // Always-stat path: every visible entry is statted so mtime/size can sort.
   assert.deepEqual(
     statCalls.sort(),
-    [path.join(resolved, 'broken-link'), path.join(resolved, 'linked-dir'), path.join(resolved, 'unknown-entry')].sort()
+    [
+      path.join(resolved, 'broken-link'),
+      path.join(resolved, 'linked-dir'),
+      path.join(resolved, 'plain.txt'),
+      path.join(resolved, 'unknown-entry')
+    ].sort()
   )
-  assert.deepEqual(result.entries, [
-    { name: 'linked-dir', path: path.join(resolved, 'linked-dir'), isDirectory: true },
-    { name: 'broken-link', path: path.join(resolved, 'broken-link'), isDirectory: false },
-    { name: 'plain.txt', path: path.join(resolved, 'plain.txt'), isDirectory: false },
-    { name: 'unknown-entry', path: path.join(resolved, 'unknown-entry'), isDirectory: false }
-  ])
+  assert.deepEqual(
+    result.entries.map(({ name, path: entryPath, isDirectory }) => ({ name, path: entryPath, isDirectory })),
+    [
+      { name: 'linked-dir', path: path.join(resolved, 'linked-dir'), isDirectory: true },
+      { name: 'broken-link', path: path.join(resolved, 'broken-link'), isDirectory: false },
+      { name: 'plain.txt', path: path.join(resolved, 'plain.txt'), isDirectory: false },
+      { name: 'unknown-entry', path: path.join(resolved, 'unknown-entry'), isDirectory: false }
+    ]
+  )
+  assert.equal(result.entries.find(entry => entry.name === 'plain.txt')?.mtimeMs, 3)
+  assert.equal(result.entries.find(entry => entry.name === 'plain.txt')?.size, 4)
 })
 
 test('readDirForIpc bounds concurrent stats while preserving complete sorted output', async () => {

@@ -297,7 +297,8 @@ class TestGenerate:
         ("gpt-image-2", quality) for quality in ("low", "medium", "high")
     ] + [
         (model, quality)
-        for model in ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst")
+        for model in ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+                      "gpt-image-2.6-flare", "gpt-image-2.6-sunburst")
         for quality in ("auto", "low", "medium", "high", "xhigh", "max")
     ])
     @pytest.mark.parametrize("editing", [False, True])

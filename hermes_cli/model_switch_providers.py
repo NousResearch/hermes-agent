@@ -988,6 +988,38 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
 
 
+def _picker_slug_for_key(provider_key: str) -> str:
+    """``slug`` (the ``--provider`` value) of a ``providers:`` entry: its config key, unless a
+    built-in claims that name.
+
+    ``runtime_provider_custom._shadowed_by_builtin`` deliberately routes a raw name that IS a
+    canonical built-in id to the BUILT-IN, so a row offered under a colliding bare key made every
+    client persist a provider whose first turn resolved to the built-in and failed on its own
+    missing credential (#150823). The ``custom:`` spelling is exempt there and is one of this
+    entry's own aliases, so the picker and the resolver agree by construction.
+    """
+    from hermes_cli.runtime_provider_custom import _shadowed_by_builtin
+
+    key = str(provider_key or "").strip()
+    if not key or not _shadowed_by_builtin(key.lower()):
+        return key
+    return custom_provider_slug(key)
+
+
+def _routable_identity(aliases: set[str]) -> set[str]:
+    """The aliases of a ``providers:`` row that the runtime would actually route to THAT row.
+
+    ``_shadowed_by_builtin`` defers a bare canonical built-in id to the built-in, so a session that
+    stored such a name — every ``providers:`` row used to persist its bare key — is resolved to the
+    built-in by its next turn, and the ``custom:<key>`` row must not claim that identity as current
+    (#150823). Every ``custom:`` spelling and every name no built-in claims stays routable.
+    """
+    from hermes_cli.runtime_provider_custom import _shadowed_by_builtin
+
+    return {str(alias).lower() for alias in aliases
+            if str(alias).lower().startswith("custom:") or not _shadowed_by_builtin(str(alias).lower())}
+
+
 def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
     """Section 3: ``providers:`` dict entries, grouped by (api_url, credential, api_mode,
     extra_headers) so keyed providers on one endpoint with the same wire protocol collapse into
@@ -1009,7 +1041,7 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
             # slug = first ep_name encountered; probe key from the first member (inline api_key,
             # else key_env through the per-profile secret scope).
             ep_groups[group_key] = {
-                "slug": ep_name, "name": _group_display_name(display_name), "api_url": api_url, "models": [],
+                "slug": _picker_slug_for_key(ep_name), "name": _group_display_name(display_name), "api_url": api_url, "models": [],
                 "has_explicit_models": False,
                 "api_key": inline_api_key or _scoped_key_env(key_env),
                 "headers": headers, "api_mode": ep_cfg.get("api_mode"),
@@ -1029,7 +1061,7 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
 
         ep_url_norm = _norm_url(api_url)
         ep_aliases = {str(alias).lower() for alias in grp["aliases"]}
-        is_current = b.endpoint_is_current(ep_name, ep_aliases, ep_url_norm)
+        is_current = b.endpoint_is_current(ep_name, _routable_identity(ep_aliases), ep_url_norm)
         discovered, native_catalog_empty, _ = b.discover_endpoint(
             grp["api_key"], api_url,
             ep_name if str(ep_name).strip().lower() in {"ollama", "custom:ollama"} else "custom",
@@ -1165,7 +1197,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
         if grp_url_norm and grp_url_norm in b.builtin_endpoints:
             continue
         is_current = b.endpoint_is_current(
-            slug, {str(alias).lower() for alias in grp["aliases"]}, grp_url_norm,
+            slug, _routable_identity({str(alias).lower() for alias in grp["aliases"]}), grp_url_norm,
             url_match_ok=current_url_group_count == 1)
         discovered, native_catalog_empty, probe_live = b.discover_endpoint(
             api_key, api_url,

@@ -307,3 +307,32 @@ def test_copy_failure_preserves_previous_python(installed_uv, monkeypatch, damag
                             copy_from=(facts, Store(shipped)))
         assert (previous / binary_rel).read_bytes() == b"previous interpreter"
         assert previous_facts.path.read_bytes() == before
+
+
+def test_stage_host_python_stages_the_flat_libpython_even_when_a_nested_copy_exists(tmp_path, monkeypatch):
+    """A host shipping the same libpython basename flat AND nested (Debian's python3-dev:
+    ``lib/<name>`` plus ``lib/python3.X/config-*/<name>``) must still get the top-level
+    staging the loader path needs — the stdlib copytree brings the nested copy in first,
+    so a basename-keyed guard would suppress the flat one and leave @executable_path/../lib
+    without the library."""
+    from tests.pm._fixtures import stage_host_python
+
+    fake_base = tmp_path / "base"
+    host_lib = fake_base / "lib"
+    stdlib = host_lib / "python3.12"
+    config = stdlib / "config-3.12-darwin"
+    config.mkdir(parents=True)
+    (stdlib / "os.py").write_text("", encoding="utf-8")
+    (config / "libpython3.12.so.1.0").write_bytes(b"nested")
+    (host_lib / "libpython3.12.so.1.0").write_bytes(b"flat")
+    exe = fake_base / "bin" / "python"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"#!stub\n")
+
+    monkeypatch.setattr(sys, "base_prefix", str(fake_base))
+    monkeypatch.setattr(sys, "_base_executable", str(exe))
+    python = stage_host_python(tmp_path / "staged" / "bin" / "python")
+
+    staged_lib = python.parent.parent / "lib"
+    assert (staged_lib / "libpython3.12.so.1.0").read_bytes() == b"flat"
+    assert (staged_lib / "python3.12" / "config-3.12-darwin" / "libpython3.12.so.1.0").exists()

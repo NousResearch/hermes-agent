@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
-import { $transcriptTailBySessionId, recordTranscriptTail, transcriptTailState } from '@/store/transcript-tail'
+import {
+  $transcriptTailBySessionId,
+  recordTranscriptBackfillPage,
+  recordTranscriptTail,
+  transcriptTailState
+} from '@/store/transcript-tail'
 
 import {
   _resetTranscriptBackfillForTests,
@@ -107,6 +112,71 @@ describe('transcript tail bookkeeping', () => {
     expect(transcriptTailState('bounded-1', scope)).toBeDefined()
     expect(transcriptTailState('bounded-256', scope)).toBeDefined()
   })
+
+  it('does not let a re-hydration reset the backfill cursor', () => {
+    const fullPage = {
+      messages: Array.from({ length: 120 }, (_, index) => row(index + 500, `tail${index}`)),
+      pagination: { limit: 120, offset: 0, order: 'latest' as const, returned: 120 }
+    }
+
+    // Tail hydration arms the action at its own page boundary.
+    recordTranscriptTail('stored-1', fullPage, 'work')
+    expect(transcriptTailState('stored-1', 'work')).toEqual({
+      nextOffset: 120, possiblyTruncated: true, profile: 'work'
+    })
+
+    // One "Show earlier" page lands and the cursor advances past it.
+    recordTranscriptBackfillPage('stored-1', {
+      messages: Array.from({ length: 120 }, (_, index) => row(index + 700, `older${index}`)),
+      pagination: { limit: 120, offset: 120, order: 'latest' as const, returned: 120 }
+    }, 'work')
+    expect(transcriptTailState('stored-1', 'work')).toEqual({
+      nextOffset: 240, possiblyTruncated: true, profile: 'work'
+    })
+
+    // The tile refresh re-hydrates the newest page on every resume/reconnect.
+    // The fresh page is full, but the cursor must NOT fall back to the
+    // hydration page's own start — that reset is what made every click after
+    // a refresh re-fetch rows the store already held, wedging the walk.
+    recordTranscriptTail('stored-1', fullPage, 'work')
+    expect(transcriptTailState('stored-1', 'work')).toEqual({
+      nextOffset: 240, possiblyTruncated: true, profile: 'work'
+    })
+  })
+
+  it('keeps an exhausted cursor at its position across a re-hydration', () => {
+    const fullPage = {
+      messages: Array.from({ length: 120 }, (_, index) => row(index + 500, `tail${index}`)),
+      pagination: { limit: 120, offset: 0, order: 'latest' as const, returned: 120 }
+    }
+
+    recordTranscriptTail('stored-1', fullPage, 'work')
+    recordTranscriptBackfillPage('stored-1', {
+      messages: Array.from({ length: 120 }, (_, index) => row(index + 700, `older${index}`)),
+      pagination: { limit: 120, offset: 120, order: 'latest' as const, returned: 120 }
+    }, 'work')
+
+    // The walk exhausts: the page at the cursor comes back empty and the
+    // action retires.
+    recordTranscriptBackfillPage('stored-1', {
+      messages: [],
+      pagination: { limit: 120, offset: 240, order: 'latest' as const, returned: 0 }
+    }, 'work')
+    expect(transcriptTailState('stored-1', 'work')).toEqual({
+      nextOffset: 240, possiblyTruncated: false, profile: 'work'
+    })
+
+    // A later re-hydration still reports a full page (rows do exist beyond
+    // it — they are already held). The cursor keeps the exhausted position
+    // instead of resetting to the page start; the truncation shape follows
+    // the fresh page, so genuinely new history below the cursor stays armed
+    // AT the cursor, and a static session costs one empty re-fetch that
+    // retires the action again rather than an infinite re-fetch cycle.
+    recordTranscriptTail('stored-1', fullPage, 'work')
+    expect(transcriptTailState('stored-1', 'work')).toEqual({
+      nextOffset: 240, possiblyTruncated: true, profile: 'work'
+    })
+  })
 })
 
 describe('mergeOlderTranscriptPage', () => {
@@ -157,6 +227,32 @@ describe('mergeOlderTranscriptPage', () => {
     const older = [chat('a', 1)]
 
     expect(mergeOlderTranscriptPage(existing, older)).toBe(existing)
+  })
+
+  it('replaces a held empty shell with the page copy that restores its display', () => {
+    // #96875: the compaction projection stamps the opening user row hidden, so
+    // the held copy converts to an empty shell (no parts). The origin fetch
+    // re-sends the same durable row with the stamp removed — identity alone
+    // must not discard that copy, or the unhiding is dead and the opening
+    // turn renders as an empty node forever.
+    const shell: ChatMessage = { ...chat('shell', 900), parts: [] }
+    const restored = chat('opening greeting', 900)
+    const existing = [shell, chat('b', 2)]
+
+    const merged = mergeOlderTranscriptPage(existing, [restored])
+
+    expect(merged).not.toBe(existing)
+    expect(merged[0]).toMatchObject({ rowId: 900, role: 'user' })
+    expect(merged[0].parts[0]).toMatchObject({ type: 'text', text: 'opening greeting' })
+    expect(merged.length).toBe(2)
+  })
+
+  it('never replaces a held copy that already paints with a stripped page copy', () => {
+    const painted = chat('held content', 900)
+    const stripped: ChatMessage = { ...chat('stripped', 900), parts: [] }
+    const existing = [painted, chat('b', 2)]
+
+    expect(mergeOlderTranscriptPage(existing, [stripped])).toBe(existing)
   })
 
   it('refuses to paint an older page as the whole transcript', () => {
@@ -346,6 +442,51 @@ describe('backfillOlderTranscriptPage', () => {
     expect(applyOlderPage.mock.calls[0][0].map((m: ChatMessage) => m.rowId)).toEqual([1, 2])
     // A short older page means the transcript is now fully loaded.
     expect(transcriptBackfillAvailable('stored-1')).toBe(false)
+  })
+
+  it('keeps fetching FORWARD when the tile refresh re-hydrates the tail mid-walk', async () => {
+    // Live-measured wedge: the tile refresh re-reads the newest page on every
+    // resume/reconnect, and its record used to reset the backfill cursor to
+    // the hydration page's own start. Every "Show earlier" click after a
+    // refresh then re-fetched a page the store already held — the walk never
+    // reached the unfetched history and never retired.
+    const fullTailPage = {
+      messages: Array.from({ length: 120 }, (_, index) => row(index + 500, `tail${index}`)),
+      pagination: { limit: 120, offset: 0, order: 'latest' as const, returned: 120 }
+    }
+
+    const fetchedOffsets: number[] = []
+    vi.mocked(getOlderSessionMessages).mockImplementation(async (_id: string, _profile: unknown, offset: number) => {
+      fetchedOffsets.push(offset)
+
+      return {
+        messages: Array.from({ length: 120 }, (_, index) => row(offset + index, `page${offset}-${index}`)),
+        pagination: { limit: 120, offset, order: 'latest' as const, returned: 120 },
+        session_id: 'stored-1'
+      } as never
+    })
+
+    recordTranscriptTail('stored-1', fullTailPage)
+
+    const click = () =>
+      backfillOlderTranscriptPage({
+        storedSessionId: 'stored-1',
+        isCurrent: () => true,
+        applyOlderPage: vi.fn()
+      })
+
+    // First click: fetches at the recorded cursor.
+    await click()
+    expect(fetchedOffsets).toEqual([120])
+
+    // The tile refresh re-hydrates the newest page mid-walk.
+    recordTranscriptTail('stored-1', fullTailPage)
+
+    // Second click: must fetch at the ADVANCED cursor (240), not cycle back
+    // to 120.
+    await click()
+    expect(fetchedOffsets).toEqual([120, 240])
+    expect(transcriptTailState('stored-1')?.nextOffset).toBe(360)
   })
 
   it('keeps the live tail in order when the fetched offset page includes subsequently persisted rows', async () => {

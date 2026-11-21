@@ -64,6 +64,18 @@ def test_fresh_autostash_is_not_flagged(tmp_path, capsys):
     assert "leftover update autostash" not in capsys.readouterr().out
 
 
+def test_a_fresh_park_is_named_when_the_age_filter_is_off(tmp_path, capsys):
+    """The pre-stash call names every leftover entry regardless of age: an hour-old park from a
+    failed restore must not stay invisible just because the next update's own restore worked."""
+    name = _make_repo_with_autostash(tmp_path, age_days=1 / 24)
+    count = update_cmd._warn_orphaned_update_autostashes(["git"], tmp_path, max_age_days=0)
+    out = capsys.readouterr().out
+    assert count == 1
+    assert "leftover update autostash" in out
+    assert "not in the working tree" in out
+    assert name in out
+
+
 def test_non_hermes_stash_is_ignored(tmp_path, capsys):
     import shutil
 

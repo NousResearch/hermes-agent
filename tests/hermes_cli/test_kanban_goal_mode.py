@@ -122,7 +122,7 @@ def test_loop_stops_when_worker_already_completed(monkeypatch):
         goal_text="do the thing",
         run_turn=lambda p: turns.append(p) or "x",
         task_status_fn=lambda: "done",
-        block_fn=lambda r: pytest.fail("should not block"),
+        block_fn=lambda _reason, _kind: pytest.fail("should not block"),
         first_response="done already",
     )
     assert res["outcome"] == "completed_by_worker"
@@ -144,7 +144,7 @@ def test_loop_stops_on_judge_transport_failure(monkeypatch):
         goal_text="do the thing",
         run_turn=lambda p: turns.append(p) or "x",
         task_status_fn=lambda: "running",
-        block_fn=lambda r: pytest.fail("should not block"),
+        block_fn=lambda _reason, _kind: pytest.fail("should not block"),
         first_response="first attempt",
     )
     assert res["outcome"] == "stopped"
@@ -166,7 +166,7 @@ def test_loop_stops_on_worker_failed_flag(monkeypatch):
             "failure_reason": "context_window_exceeded",
         },
         task_status_fn=lambda: "running",
-        block_fn=lambda r: pytest.fail("should not block"),
+        block_fn=lambda _reason, _kind: pytest.fail("should not block"),
         first_response="first attempt",
     )
     assert res["outcome"] == "stopped"
@@ -186,11 +186,66 @@ def test_loop_stops_on_worker_failed_flag_default_reason(monkeypatch):
             "failed": True,
         },
         task_status_fn=lambda: "running",
-        block_fn=lambda r: pytest.fail("should not block"),
+        block_fn=lambda _reason, _kind: pytest.fail("should not block"),
         first_response="first attempt",
     )
     assert res["outcome"] == "stopped"
     assert res["reason"] == "worker failed: unknown"
+
+
+@pytest.mark.parametrize(
+    "verdicts, max_turns, outcome, reason_fragment",
+    [
+        (["blocked"], 2, "blocked_unachievable", "unachievable"),
+        (["done", "done"], 3, "blocked_budget", "never called kanban_complete"),
+        (["continue"], 1, "blocked_budget", "turn budget"),
+    ],
+)
+def test_goal_loop_blocks_with_actionable_kind(monkeypatch, verdicts, max_turns, outcome, reason_fragment):
+    """Goal-mode synthetic blocks request human input, not an untyped failure (#157561)."""
+    _patch_judge(monkeypatch, verdicts)
+    blocked = []
+    result = goals.run_kanban_goal_loop(
+        task_id="t_goal",
+        goal_text="finish the card",
+        run_turn=lambda _prompt: "not finalized",
+        task_status_fn=lambda: "running",
+        block_fn=lambda reason, kind: blocked.append((reason, kind)),
+        max_turns=max_turns,
+        first_response="not done",
+    )
+    assert result["outcome"] == outcome
+    assert len(blocked) == 1
+    assert reason_fragment in blocked[0][0]
+    assert blocked[0][1] == "needs_input"
+
+
+def test_cli_goal_budget_persists_block_kind(kanban_home, monkeypatch):
+    """The one-shot CLI worker must forward the kind into the actual card row."""
+    from types import SimpleNamespace
+    from hermes_cli.cli_single_query import _run_kanban_goal_loop_q
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="goal budget", assignee="default", goal_mode=True, goal_max_turns=1,
+        )
+        task = kb.claim_task(conn, task_id)
+    assert task is not None
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(task.current_run_id))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path()))
+    _patch_judge(monkeypatch, ["continue"])
+
+    _run_kanban_goal_loop_q(
+        SimpleNamespace(agent=None, conversation_history=[]),
+        "not done",
+        run_turn=lambda _prompt: pytest.fail("a second turn must not run"),
+    )
+    with kbc.connect() as conn:
+        blocked = kb.get_task(conn, task_id)
+    assert blocked is not None
+    assert (blocked.status, blocked.block_kind) == ("blocked", "needs_input")
+
 
 
 

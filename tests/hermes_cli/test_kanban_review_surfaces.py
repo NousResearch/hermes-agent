@@ -361,7 +361,7 @@ def test_goal_loop_stops_after_reviewer_requests_changes(
         goal_text="review the change",
         run_turn=lambda prompt: pytest.fail("must not run another reviewer turn"),
         task_status_fn=lambda: "changes_requested",
-        block_fn=lambda reason: pytest.fail("must not block"),
+        block_fn=lambda _reason, _kind: pytest.fail("must not block"),
         first_response="Changes requested.",
     )
     assert result["outcome"] == "changes_requested_by_reviewer"

@@ -425,9 +425,9 @@ def _run_task_turns(agent, frame, history, context):
     def status():
         with connect_closing() as conn:
             return kb.goal_run_status(conn, context['task_id'], context['run_id'])
-    def block(reason):
+    def block(reason, kind):
         with connect_closing() as conn:
-            kb.block_task(conn, context['task_id'], reason=reason, expected_run_id=context['run_id'])
+            kb.block_task(conn, context['task_id'], reason=reason, kind=kind, expected_run_id=context['run_id'])
     def turn(prompt):
         nonlocal result
         result = agent.run_conversation(prompt, conversation_history=_stored_conversation(agent),

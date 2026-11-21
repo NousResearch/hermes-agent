@@ -98,9 +98,9 @@ def _run_kanban_goal_loop_q(cli: HermesCLI, first_response: str, run_turn=None, 
         with _kbc.connect_closing() as c:
             return _kb.goal_run_status(c, task_id, worker_run_id)
 
-    def _block(reason: str) -> None:
+    def _block(reason: str, kind: str) -> None:
         with _kbc.connect_closing() as c:
-            _kb.block_task(c, task_id, reason=reason, expected_run_id=worker_run_id)
+            _kb.block_task(c, task_id, reason=reason, kind=kind, expected_run_id=worker_run_id)
 
     _run_loop(
         task_id=task_id, goal_text=goal_text, run_turn=run_turn or _quiet_turn,

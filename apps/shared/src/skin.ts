@@ -48,6 +48,13 @@ export const SKIN_COLOR_TOKENS = [
   'syntax_number',
   'syntax_keyword',
   'syntax_comment',
+  // Markdown element roles. The heading colour is a TITLE colour and must
+  // not bleed into prose, so headings / inline code / links / math get
+  // separate tokens (each falls back to `ui_accent`).
+  'markdown_heading',
+  'markdown_code',
+  'markdown_link',
+  'markdown_math',
   // CLI / TUI chrome.
   'prompt',
   'input_rule',

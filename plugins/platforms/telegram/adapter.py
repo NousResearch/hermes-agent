@@ -214,7 +214,7 @@ from plugins.platforms.telegram.telegram_flood_cooldown import TelegramFloodCool
 from plugins.platforms.telegram.telegram_send_errors import LOST, classify_send_exception, explain_username_chat_not_found, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind, FLOOD, UNSENT, rich_failure_result
 from plugins.platforms.telegram.telegram_split import (
     REPLY_FILE_MAX_BYTES, reply_message_count, send_reply_document, split_reply_anchor)
-from plugins.platforms.telegram.telegram_typing_gate import claim_ai_action, typing_may_fire
+from plugins.platforms.telegram.telegram_typing_gate import claim_ai_action, forget_typing_waiter, record_typing_cooldown, typing_may_fire
 from plugins.platforms.telegram.telegram_voice_mention import admit_media, cache_inbound_voice
 from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, observed_media_note, shared_sender_suffix
 from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
@@ -5038,16 +5038,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return True
         return isinstance(exc, (OSError, TimeoutError, ConnectionError, asyncio.TimeoutError))
 
-    def _record_typing_cooldown(self, chat_id: str, exc: Exception) -> None:
-        """Suppress Telegram typing refreshes for this chat after transient failures."""
-        if not hasattr(self, "_telegram_typing_cooldown_until"):
-            self._telegram_typing_cooldown_until = {}
-        retry_after = getattr(exc, "retry_after", None)
-        try:
-            delay = float(retry_after) if retry_after is not None else self._telegram_typing_cooldown_seconds
-        except (TypeError, ValueError):
-            delay = self._telegram_typing_cooldown_seconds
-        self._telegram_typing_cooldown_until[str(chat_id)] = asyncio.get_running_loop().time() + max(1.0, min(delay, 300.0))
+    _record_typing_cooldown = record_typing_cooldown
 
     # --- per-chat send ordering + flood cooldown (#114396) ---------------------------------------------
     # Both keyed by the Bot-API-normalized chat id: the text path passes the raw chat_id while the media
@@ -5102,6 +5093,15 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         slot_until[str(normalize_telegram_chat_id(chat_id))] = (
             asyncio.get_running_loop().time() + max(0.0, budget))
 
+    TYPING_SEND_TIMEOUT_SECONDS = 1.5
+
+    async def _keep_typing(self, chat_id: str, interval: float = 0.5, metadata=None,
+                           stop_event: asyncio.Event | None = None) -> None:
+        await super()._keep_typing(chat_id, interval=interval, metadata=metadata, stop_event=stop_event)
+
+    async def stop_typing(self, chat_id: str, metadata=None) -> None:
+        forget_typing_waiter(self, chat_id, metadata)
+
     async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
         """Send typing indicator.
 
@@ -5109,7 +5109,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         progress, proxy and follow-up paths call this directly, not through ``_keep_typing`` (#40885)."""
         if not getattr(getattr(self, "config", None), "typing_indicator", True):
             return
-        if not self._bot or not typing_may_fire(self, chat_id):
+        if not self._bot or not typing_may_fire(self, chat_id, metadata):
             return
         _is_dm_topic: bool = False
         message_thread_id: Optional[int] = None

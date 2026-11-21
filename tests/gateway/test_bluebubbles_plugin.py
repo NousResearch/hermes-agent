@@ -781,3 +781,42 @@ class TestBlueBubblesAttachmentAuthorization:
 
         assert response.status == 200
         assert mark_read.await_count == (1 if verdict is True else 0)
+
+    @pytest.mark.asyncio
+    async def test_read_receipt_task_is_held_and_cancelled_on_disconnect(self, monkeypatch):
+        """A pending mark_read must sit in _background_tasks (the loop holds tasks weakly) so that
+        cancel_background_tasks() can cancel it, and it must drop out once it finishes."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=True)
+        adapter.set_authorization_check(lambda *args, **kwargs: True)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_mark_read(chat_id):
+            started.set()
+            await release.wait()
+            return True
+
+        async def fake_handle_message(event):
+            pass
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "mark_read", slow_mark_read)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-rr-held",
+                "text": "hello",
+                "handle": {"address": "+155****0199"},
+                "isFromMe": False,
+                "chats": [{"guid": "iMessage;-;+155****0199"}],
+            },
+        }))
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        assert response.status == 200
+        pending = [t for t in adapter._background_tasks if not t.done()]
+        assert len(pending) == 1  # the read receipt: the message task already finished
+
+        await adapter.cancel_background_tasks()
+        assert pending[0].cancelled()
+        assert not adapter._background_tasks

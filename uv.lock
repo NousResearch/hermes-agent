@@ -2629,7 +2629,7 @@ requires-dist = [
     { name = "browser-harness", marker = "python_full_version >= '3.14'", specifier = "==0.1.13" },
     { name = "certifi", marker = "python_full_version >= '3.14'", specifier = "==2026.10.19" },
     { name = "concurrent-log-handler", marker = "python_full_version >= '3.14' and sys_platform == 'win32'", specifier = "==0.9.30" },
-    { name = "croniter", marker = "python_full_version >= '3.14'", specifier = "==6.2.4" },
+    { name = "croniter", specifier = "==6.2.4" },
     { name = "cryptography", marker = "python_full_version >= '3.14'", specifier = "==50.0.2" },
     { name = "daytona", marker = "extra == 'daytona'", specifier = "==0.225.0" },
     { name = "ddgs", marker = "extra == 'ddgs'", specifier = "==9.16.0" },

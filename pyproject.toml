@@ -76,7 +76,14 @@ dependencies = [
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit==3.0.53; python_version >= '3.14'",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
-  "croniter==6.2.4; python_version >= '3.14'",
+  # UNCONDITIONAL on purpose, unlike the 3.14-gated pins around it: croniter has
+  # no transitive installer anywhere in this tree (cron/scheduler.py +
+  # cron/jobs.py import it lazily behind _ensure_croniter()), so gating it to
+  # python_version >= '3.14' left the supported 3.11-3.13 runtimes without it.
+  # Failure mode is silent and partial: an interval-kind job still works, but a
+  # cron-expression job fires once and then cannot compute its next occurrence,
+  # going state="error". croniter 6.2.4 is >=3.9, pure Python (+python-dateutil).
+  "croniter==6.2.4",
   # Snowball stemming for tool_search's BM25 (tools/tool_search.py) —
   # official Snowball project package, pure Python, zero transitive deps.
   # Applied at index AND query time so morphological variants match

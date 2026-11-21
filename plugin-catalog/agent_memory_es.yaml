@@ -8,7 +8,6 @@ category: memory
 requires_hermes: ">=0.19"
 version: "0.1.0"
 docs_url: https://github.com/patrykkopycinski/hermes-plugin-agent-memory-es#readme
-homepage_url: https://patrykkopycinski.github.io/hermes-plugin-agent-memory-es/
 readme: true
 platforms: [linux, macos, windows]
 capabilities:

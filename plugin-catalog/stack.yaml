@@ -7,7 +7,6 @@ maintainer: vykhovanets
 tier: community
 category: memory
 docs_url: https://github.com/Karb-Interactive/hermes-plugin-stack-memory#readme
-homepage_url: https://github.com/Karb-Interactive/hermes-plugin-stack-memory
 image: https://raw.githubusercontent.com/Karb-Interactive/hermes-plugin-stack-memory/a1763ec70080bf4094be7981223309264e7c0a18/docs/stack-plugin-flow-banner.webp
 capabilities:
   provides_tools: []

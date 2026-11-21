@@ -496,8 +496,8 @@ _DEV_TCP_REDIRECT_DESCRIPTION = "reverse shell via /dev/tcp or /dev/udp redirect
 _REG_WRITE_VERB = r'(?:sp|si|ni|set-item|new-item|md|mkdir)'
 
 DANGEROUS_PATTERNS = [
-    # A drive letter is a root too (`rm X:/f`; `X:\f` arrives as `X:/f` via the Windows-path variant).
-    (r'\brm\s+(-[^\s]*\s+)*["\']?(?:[a-z]:)?/', "delete in root path"),
+    # Keep Windows drive-path protection; match only bare POSIX roots.
+    (r'\brm\s+(?:-[^\s]*\s+)*["\']?(?:[a-z]:/|/(?=["\']?(?:\s|$|[;&|)`<>])))', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
     # GNU rm permutes options, so flags may FOLLOW operands (`rm build/ -rf`). The operand run
@@ -923,6 +923,7 @@ for _canonical_key, _old_key in [
     ("git branch force delete", r"git\s+branch\s+-D"),
     ("delete in root path", r"rm\s+(-[^\s]*\s+)*/"),
     ("git reset --hard (destroys uncommitted changes)", r"git\s+reset\s+--hard"),
+    ("delete in root path", r'''rm\s+(-[^\s]*\s+)*["\']?(?:[a-z]:)?/'''),
 ]:
     _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).add(_old_key)
     _PATTERN_KEY_ALIASES.setdefault(_old_key, set()).add(_canonical_key)

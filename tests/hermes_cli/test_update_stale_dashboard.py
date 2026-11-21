@@ -29,6 +29,13 @@ from hermes_cli import update_cmd_maint
 
 
 @pytest.fixture(autouse=True)
+def _stable_incarnation_for_synthetic_pids():
+    # Tests use invented PIDs: give the signal-boundary guard a stable birth.
+    with patch("gateway.status.get_process_start_time", return_value=42):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _refresh_bindings_against_live_module():
     """Rebind module-level names to the *current* defining modules.
 

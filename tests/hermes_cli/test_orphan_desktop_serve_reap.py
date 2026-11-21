@@ -17,6 +17,121 @@ from hermes_cli.dashboard_procs import (
 )
 
 
+def test_reap_refuses_indeterminate_lock_ownership():
+    with patch("hermes_cli.dashboard_procs._scan_dashboard_processes") as scan:
+        result = _reap_orphaned_desktop_local_serves(
+            lock_owned_pids_fn=lambda: (_ for _ in ()).throw(OSError("unreadable")),
+            sleep_fn=lambda _: None,
+        )
+    assert result["matched"] == []
+    scan.assert_not_called()
+
+
+def test_reap_refuses_unreadable_default_lock_directory():
+    from hermes_cli import dashboard_procs
+    class Unreadable:
+        def is_dir(self):
+            return True
+        def iterdir(self):
+            raise PermissionError("denied")
+    with (
+        patch.object(dashboard_procs, "_remote_lock_roots", return_value=[Unreadable()]),
+        patch.object(dashboard_procs, "_scan_dashboard_processes") as scan,
+    ):
+        assert _reap_orphaned_desktop_local_serves(sleep_fn=lambda _: None)["matched"] == []
+    scan.assert_not_called()
+
+
+def test_reap_refuses_existing_malformed_lock(tmp_path):
+    from hermes_cli import dashboard_procs
+    import pytest
+    lock_root = tmp_path / "desktop-ssh"
+    owner = lock_root / ("a" * 32)
+    owner.mkdir(parents=True)
+    (owner / "backend.lock.json").write_text("{bad json")
+    assert dashboard_procs._lock_owned_serve_pids(lock_root) == set()  # non-destructive reader
+    with pytest.raises(ValueError, match="uncertain remote backend lock"):
+        dashboard_procs._lock_owned_serve_pids(lock_root, strict=True)
+    # An existing but unreadable file has the same fail-closed behavior.
+    with patch.object(dashboard_procs, "read_valid_backend_lock", return_value=None):
+        with pytest.raises(ValueError, match="uncertain remote backend lock"):
+            dashboard_procs._lock_owned_serve_pids(lock_root, strict=True)
+    with (
+        patch.object(dashboard_procs, "_remote_lock_roots", return_value=[lock_root]),
+        patch.object(dashboard_procs, "_scan_dashboard_processes") as scan,
+    ):
+        assert _reap_orphaned_desktop_local_serves(sleep_fn=lambda _: None)["matched"] == []
+    scan.assert_not_called()
+
+
+def test_reap_refuses_pid_recycled_during_candidate_selection():
+    from gateway import status
+    births = {123456: 42}
+    signals = []
+    with (
+        patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[
+            (123456, "hermes serve --host 127.0.0.1 --port 0")]),
+        patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
+        patch("hermes_cli.dashboard_procs._posix_descendants", return_value={}),
+        patch.object(status, "get_process_start_time", side_effect=lambda pid: births.get(pid)),
+        patch("os.kill", side_effect=lambda pid, sig: signals.append((pid, sig))),
+    ):
+        def age(pid):
+            births[pid] = 43  # PID was recycled after scan, before the candidate is selected
+            return 600
+        result = _reap_orphaned_desktop_local_serves(
+            lock_owned_pids_fn=lambda: set(), process_age_seconds_fn=age,
+            sleep_fn=lambda _: None,
+        )
+    assert result["matched"] == [123456]
+    assert result["failed"] == [123456]
+    assert signals == []
+
+
+def test_reap_refuses_recycled_root_and_late_lock():
+    from gateway import status
+    births = {123456: 42}
+    signals = []
+    lock_scans = iter((set(), set(), set(), {123456}))
+    with (
+        patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[
+            (123456, "hermes serve --host 127.0.0.1 --port 0")]),
+        patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
+        patch("hermes_cli.dashboard_procs._posix_descendants", return_value={}),
+        patch.object(status, "get_process_start_time", side_effect=lambda pid: births.get(pid)),
+        patch("os.kill", side_effect=lambda pid, sig: signals.append((pid, sig))),
+    ):
+        result = _reap_orphaned_desktop_local_serves(
+            lock_owned_pids_fn=lambda: next(lock_scans),
+            process_age_seconds_fn=lambda _: 600,
+            sleep_fn=lambda _: births.update({123456: 43}),
+        )
+    assert result["matched"] == [123456]
+    assert [(pid, sig) for pid, sig in signals if sig != 0] == [(123456, 15)]
+    assert result["killed"] == []
+
+
+def test_reap_refuses_lock_appearing_before_term():
+    from gateway import status
+    signals = []
+    locks = iter((set(), set(), {123456}))
+    with (
+        patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[
+            (123456, "hermes serve --host 127.0.0.1 --port 0")]),
+        patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
+        patch("hermes_cli.dashboard_procs._posix_descendants", return_value={}),
+        patch.object(status, "get_process_start_time", return_value=42),
+        patch("os.kill", side_effect=lambda pid, sig: signals.append((pid, sig))),
+    ):
+        result = _reap_orphaned_desktop_local_serves(
+            lock_owned_pids_fn=lambda: next(locks),
+            process_age_seconds_fn=lambda _: 600,
+            sleep_fn=lambda _: None,
+        )
+    assert signals == []
+    assert result["failed"] == [123456]
+
+
 def test_desktop_local_serve_shape_matches_ephemeral_loopback():
     assert _is_desktop_local_serve_cmdline(
         "python -m hermes_cli.main serve --host 127.0.0.1 --port 0"
@@ -78,6 +193,7 @@ def test_reap_only_kills_ppid1_local_serves():
             side_effect=lambda pid: ppids.get(pid),
         ),
         patch("os.kill", side_effect=fake_kill),
+        patch("gateway.status.get_process_start_time", side_effect=lambda pid: 42 if pid in live else None),
     ):
         os.environ.pop("HERMES_DESKTOP_CHILD_PID", None)
         result = _reap_orphaned_desktop_local_serves(
@@ -248,6 +364,7 @@ def test_reap_spare_lock_owned_ssh_remote_backend_of_foreign_client():
             side_effect=lambda pid: ppids.get(pid),
         ),
         patch("os.kill", side_effect=fake_kill),
+        patch("gateway.status.get_process_start_time", side_effect=lambda pid: 42 if pid in live else None),
     ):
         os.environ.pop("HERMES_DESKTOP_CHILD_PID", None)
         result = _reap_orphaned_desktop_local_serves(
@@ -414,7 +531,7 @@ def test_reap_kills_descendants_of_killed_roots_but_spares_a_failed_roots_subtre
         (444, "hermes serve --host 127.0.0.1 --port 0"),  # not ours: EPERM, child 4444 spared
     ]
     descendants = {1111: (111, 5.0), 4444: (444, 6.0)}
-    start_times = {1111: 5.0, 4444: 6.0}
+    start_times = {111: 4.0, 444: 4.0, 1111: 5.0, 4444: 6.0}
     sent: list[tuple[int, int]] = []
 
     def fake_kill(pid, sig):

@@ -1,13 +1,17 @@
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
+import { copyTextToClipboard } from "@/lib/clipboard";
 
 /**
  * Lightweight markdown renderer for LLM output.
- * Handles: code blocks, inline code, bold, italic, headers, links, lists, horizontal rules.
- * NOT a full CommonMark parser — optimized for typical assistant message patterns.
+ * Handles: code blocks (with a copy button), inline code, bold, italic,
+ * headers, links, horizontal rules, lists (incl. nested levels and task
+ * list checkboxes), and GFM pipe tables.
+ * NOT a full CommonMark parser — optimized for typical assistant message
+ * patterns.
  *
  * `streaming` renders a blinking caret at the tail of the last block so it
  * appears to hug the final character instead of wrapping onto a new line
- * after a block element (paragraph/list/code/…).
+ * after a block element (paragraph/list/code/table/…).
  */
 export function Markdown({
   content,
@@ -49,16 +53,30 @@ function StreamingCaret() {
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
+type TaskState = "open" | "done";
+
+type ListItem = {
+  text: string;
+  task: TaskState | null;
+  orderedChildren: boolean;
+  children: ListItem[];
+};
+
 type BlockNode =
   | { type: "code"; lang: string; content: string }
   | { type: "heading"; level: number; content: string }
   | { type: "hr" }
-  | { type: "list"; ordered: boolean; items: string[] }
+  | { type: "list"; ordered: boolean; items: ListItem[] }
+  | { type: "table"; header: string[]; rows: string[][] }
   | { type: "paragraph"; content: string };
 
 /* ------------------------------------------------------------------ */
 /*  Block parser                                                       */
 /* ------------------------------------------------------------------ */
+
+const LIST_ITEM_RE = /^(\s*)([-*+]|\d+[.)])\s+(.+)$/;
+const TABLE_ROW_RE = /^\s*\|.*\|\s*$/;
+const TABLE_SEP_RE = /^\s*\|?[\s:|-]*\|[\s:|-]*$/;
 
 function parseBlocks(text: string): BlockNode[] {
   const lines = text.split("\n");
@@ -102,25 +120,43 @@ function parseBlocks(text: string): BlockNode[] {
       continue;
     }
 
-    // Unordered list
-    if (/^[-*+]\s/.test(line)) {
-      const items: string[] = [];
-      while (i < lines.length && /^[-*+]\s/.test(lines[i])) {
-        items.push(lines[i].replace(/^[-*+]\s/, ""));
+    // GFM pipe table: a pipe row followed by a `---|---` separator row.
+    if (
+      line.includes("|") &&
+      i + 1 < lines.length &&
+      TABLE_SEP_RE.test(lines[i + 1]) &&
+      lines[i + 1].includes("-")
+    ) {
+      const header = splitTableRow(line);
+      i += 2;
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].includes("|") && TABLE_ROW_RE.test(lines[i])) {
+        rows.push(splitTableRow(lines[i]));
         i++;
       }
-      blocks.push({ type: "list", ordered: false, items });
+      blocks.push({ type: "table", header, rows });
       continue;
     }
 
-    // Ordered list
-    if (/^\d+[.)]\s/.test(line)) {
-      const items: string[] = [];
-      while (i < lines.length && /^\d+[.)]\s/.test(lines[i])) {
-        items.push(lines[i].replace(/^\d+[.)]\s/, ""));
+    // List — contiguous list lines, nesting by indentation.
+    if (LIST_ITEM_RE.test(line)) {
+      const entries: { indent: number; ordered: boolean; text: string; task: TaskState | null }[] = [];
+      while (i < lines.length) {
+        const m = lines[i].match(LIST_ITEM_RE);
+        if (!m) break;
+        const indent = m[1].replace(/\t/g, "  ").length;
+        const ordered = /\d+[.)]/.test(m[2]);
+        let text = m[3];
+        let task: TaskState | null = null;
+        const tm = text.match(/^\[([ xX])\]\s+(.*)$/);
+        if (tm) {
+          task = tm[1] === " " ? "open" : "done";
+          text = tm[2];
+        }
+        entries.push({ indent, ordered, text, task });
         i++;
       }
-      blocks.push({ type: "list", ordered: true, items });
+      blocks.push(parseListTree(entries));
       continue;
     }
 
@@ -137,9 +173,9 @@ function parseBlocks(text: string): BlockNode[] {
       lines[i].trim() !== "" &&
       !lines[i].match(/^```/) &&
       !lines[i].match(/^#{1,4}\s/) &&
-      !lines[i].match(/^[-*+]\s/) &&
-      !lines[i].match(/^\d+[.)]\s/) &&
-      !lines[i].match(/^[-*_]{3,}\s*$/)
+      !LIST_ITEM_RE.test(lines[i]) &&
+      !lines[i].match(/^[-*_]{3,}\s*$/) &&
+      !(lines[i].includes("|") && TABLE_ROW_RE.test(lines[i]))
     ) {
       paraLines.push(lines[i]);
       i++;
@@ -150,6 +186,53 @@ function parseBlocks(text: string): BlockNode[] {
   }
 
   return blocks;
+}
+
+/** Split a `| a | b |` row into trimmed cells (edge pipes dropped). */
+function splitTableRow(line: string): string[] {
+  const cells = line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|");
+  return cells.map((cell) => cell.trim());
+}
+
+/** Flatten indented list entries into a nested tree, one list block. */
+function parseListTree(
+  entries: { indent: number; ordered: boolean; text: string; task: TaskState | null }[],
+): BlockNode {
+  const baseIndent = entries[0].indent;
+  const rootItems: ListItem[] = [];
+  const ordered = entries[0].ordered;
+  // Stack of (indent, items-array, ordered flag for that level).
+  const stack: { indent: number; items: ListItem[]; ordered: boolean }[] = [
+    { indent: baseIndent, items: rootItems, ordered },
+  ];
+
+  for (const entry of entries) {
+    // Deeper than the current level → nest under that level's last item.
+    if (entry.indent > stack[stack.length - 1].indent) {
+      const parent = stack[stack.length - 1].items[stack[stack.length - 1].items.length - 1];
+      if (parent) {
+        parent.children = [];
+        parent.orderedChildren = entry.ordered;
+        stack.push({ indent: entry.indent, items: parent.children, ordered: entry.ordered });
+      } else {
+        // No parent to nest into — keep this entry at the current level.
+        stack[stack.length - 1].items.push({ text: entry.text, task: entry.task, orderedChildren: false, children: [] });
+        continue;
+      }
+    }
+    // Shallower than a nested level → unwind back to a matching level.
+    while (stack.length > 1 && entry.indent < stack[stack.length - 1].indent) {
+      stack.pop();
+    }
+    stack[stack.length - 1].items.push({
+      text: entry.text,
+      task: entry.task,
+      orderedChildren: false,
+      children: [],
+    });
+  }
+
+  return { type: "list", ordered, items: rootItems };
 }
 
 /* ------------------------------------------------------------------ */
@@ -168,12 +251,17 @@ function Block({
   switch (block.type) {
     case "code":
       return (
-        <pre className="bg-secondary/60 border border-border px-3 py-2.5 text-xs font-mono leading-relaxed overflow-x-auto">
-          <code>
-            {block.content}
-            {caret}
-          </code>
-        </pre>
+        <div>
+          <div className="flex justify-end border border-border border-b-0 bg-secondary/60 px-2 py-1">
+            <CodeCopyButton code={block.content} />
+          </div>
+          <pre className="bg-secondary/60 border border-border px-3 py-2.5 text-xs font-mono leading-relaxed overflow-x-auto">
+            <code>
+              {block.content}
+              {caret}
+            </code>
+          </pre>
+        </div>
       );
 
     case "heading": {
@@ -200,22 +288,47 @@ function Block({
         </>
       );
 
-    case "list": {
-      const Tag = block.ordered ? "ol" : "ul";
-      const last = block.items.length - 1;
+    case "list":
       return (
-        <Tag
-          className={`space-y-0.5 ${block.ordered ? "list-decimal" : "list-disc"} pl-5 text-sm`}
-        >
-          {block.items.map((item, i) => (
-            <li key={i}>
-              <InlineContent text={item} highlightTerms={highlightTerms} />
-              {i === last ? caret : null}
-            </li>
-          ))}
-        </Tag>
+        <>
+          <ListItems items={block.items} ordered={block.ordered} highlightTerms={highlightTerms} />
+          {caret}
+        </>
       );
-    }
+
+    case "table":
+      return (
+        <>
+          <div className="overflow-x-auto">
+            <table className="border-collapse border border-border text-sm">
+              <thead>
+                <tr>
+                  {block.header.map((cell, i) => (
+                    <th
+                      key={i}
+                      className="border border-border px-2 py-1 text-left font-semibold"
+                    >
+                      <InlineContent text={cell} highlightTerms={highlightTerms} />
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {block.rows.map((row, r) => (
+                  <tr key={r}>
+                    {row.map((cell, c) => (
+                      <td key={c} className="border border-border px-2 py-1">
+                        <InlineContent text={cell} highlightTerms={highlightTerms} />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {caret}
+        </>
+      );
 
     case "paragraph":
       return (
@@ -225,6 +338,73 @@ function Block({
         </p>
       );
   }
+}
+
+function ListItems({
+  items,
+  ordered,
+  highlightTerms,
+  caret,
+}: {
+  items: ListItem[];
+  ordered: boolean;
+  highlightTerms?: string[];
+  caret?: ReactNode;
+}) {
+  const Tag = ordered ? "ol" : "ul";
+  const last = items.length - 1;
+  return (
+    <Tag
+      className={`space-y-0.5 ${ordered ? "list-decimal" : "list-disc"} pl-5 text-sm`}
+    >
+      {items.map((item, i) => (
+        <li key={i}>
+          {item.task && <TaskCheckbox done={item.task === "done"} />}
+          <InlineContent text={item.text} highlightTerms={highlightTerms} />
+          {item.children.length > 0 && (
+            <ListItems
+              items={item.children}
+              ordered={item.orderedChildren}
+              highlightTerms={highlightTerms}
+            />
+          )}
+          {i === last ? caret : null}
+        </li>
+      ))}
+    </Tag>
+  );
+}
+
+function TaskCheckbox({ done }: { done: boolean }) {
+  return (
+    <input
+      type="checkbox"
+      checked={done}
+      disabled
+      aria-label={done ? "Task completed" : "Task not completed"}
+      className="mr-1 align-middle"
+    />
+  );
+}
+
+function CodeCopyButton({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      aria-label="Copy code block"
+      className="text-[0.6875rem] uppercase tracking-[0.08em] text-text-secondary hover:text-midground"
+      onClick={() => {
+        void copyTextToClipboard(code).then((ok) => {
+          if (!ok) return;
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        });
+      }}
+    >
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
 }
 
 /* ------------------------------------------------------------------ */

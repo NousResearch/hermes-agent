@@ -417,6 +417,81 @@ class TestMetrics:
 
         asyncio.run(run())
 
+    # ── outcome bucketing follows the A2A spec's state semantics (#135244) ───
+    # Regression: input-required (an interrupted pause, NOT terminal) was counted
+    # as a completion, cancellations as failures, and rejections in no bucket.
+
+    def test_input_required_is_a_pause_not_a_completion(self):
+        """`input-required` is an interrupted pause awaiting the caller, not a
+        terminal success. Counting it as completed overstates success and hides
+        tasks that are stopped waiting on input."""
+        assert protocol.STATE_INPUT_REQUIRED not in protocol.TERMINAL_STATES
+        m = protocol.Metrics()
+        m.record_task_outcome(protocol.STATE_INPUT_REQUIRED)
+        assert m.tasks_completed == 0
+        assert m.tasks_suspended == 1
+
+    def test_terminal_outcomes_are_bucketed_by_spec_semantics(self):
+        """completed is success, failed is an error, and canceled/rejected are
+        clean terminal outcomes the caller or peer chose — never failures.
+        Latency is sampled from terminal states only."""
+        m = protocol.Metrics()
+        m.record_task_outcome(protocol.STATE_COMPLETED, latency=0.2)
+        m.record_task_outcome(protocol.STATE_FAILED, latency=0.3)
+        m.record_task_outcome(protocol.STATE_CANCELED, latency=0.4)
+        m.record_task_outcome(protocol.STATE_REJECTED, latency=0.5)
+        assert (m.tasks_completed, m.tasks_failed, m.tasks_canceled) == (1, 1, 2)
+        assert m.tasks_suspended == 0
+        # every terminal outcome contributed a latency sample; a paused one must not
+        assert len(m._latencies) == 4
+        m.record_task_outcome(protocol.STATE_INPUT_REQUIRED, latency=0.9)
+        assert len(m._latencies) == 4
+
+    def test_rejected_task_is_counted_as_canceled_not_failed(self, monkeypatch):
+        """A rejection on the immediate-terminal path (`_end_task`: empty message,
+        anti-loop) is a clean terminal outcome. Previously it landed in no bucket at
+        all, so rejections were invisible in `/metrics`."""
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda e: "unused")
+
+        async def run():
+            assert await adapter.connect() is True
+            failed_before = protocol.metrics.tasks_failed
+            canceled_before = protocol.metrics.tasks_canceled
+            resp = await asyncio.to_thread(_post_json, base + "/", _send_body(""))
+            task = resp["result"]
+            assert task["status"]["state"] == protocol.STATE_REJECTED
+            assert protocol.metrics.tasks_canceled == canceled_before + 1
+            assert protocol.metrics.tasks_failed == failed_before
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+    def test_live_input_required_does_not_increment_completed(self, monkeypatch):
+        """End-to-end: a real clarification reply rides the deferred outcome path
+        and must land in `suspended`, leaving `completed` alone."""
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        adapter, base = _make_live_adapter(
+            monkeypatch, reply_fn=lambda e: "[INPUT_REQUIRED] Which repository do you mean?")
+
+        async def run():
+            assert await adapter.connect() is True
+            # Deliberately read ONLY base-era counters before the request, so this test
+            # fails on the unfixed code for the real reason (a pause booked as success)
+            # rather than for a missing attribute.
+            completed_before = protocol.metrics.tasks_completed
+            resp = await asyncio.to_thread(
+                _post_json, base + "/", _send_body("review the code"))
+            task = resp["result"]
+            assert task["status"]["state"] == protocol.STATE_INPUT_REQUIRED
+            assert protocol.metrics.tasks_completed == completed_before
+            assert protocol.metrics.tasks_suspended >= 1
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Task store

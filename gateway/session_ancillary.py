@@ -660,9 +660,16 @@ def process_snapshot(authority, ref, agent, records):
     keys, owners = _ownership(authority, ref, agent, records)
     # Keep ownership and output together.
     with registry._lock:
-        return [{'session_id': p.id, 'command': p.command[:200],
+        owned = _owned_locked(registry, keys, owners)
+        rows = [{'session_id': p.id, 'command': p.command[:200],
                  'status': 'exited' if p.exited else 'running', 'exit_code': p.exit_code,
                  # The classic CLI dock's elapsed / exit-age / verdict and its 32k tail view.
                  'started_epoch': p.started_at, 'exited_at': p.exited_at or None,
                  'completion_reason': p.completion_reason if p.exited else None,
-                 'output_tail': p.output_buffer[-_PROCESS_TAIL_CHARS:]} for p in _owned_locked(registry, keys, owners)]
+                 'output_tail': p.output_buffer[-_PROCESS_TAIL_CHARS:]} for p in owned]
+    # Listening ports walk the OS process table: outside the registry lock. The registry imports
+    # this module itself, so it is loaded whenever there is a registry to read.
+    session_ports = sys.modules['tools.listening_ports'].session_ports
+    for row, proc in zip(rows, owned):
+        row.update(session_ports(proc))
+    return rows

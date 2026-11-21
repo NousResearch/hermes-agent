@@ -153,7 +153,8 @@ class CLICommandsSessionToolsMixin:
         _cp(f"  {_t('agents.running_processes', count=len(running))}")
         for p in running:
             up = format_uptime_short(p.get("uptime_seconds", 0))
-            _cp(f"    {p.get('session_id', '?')} · {up} · {p.get('command', '')[:80]}")
+            ports = "".join(f" · :{port}" for port in p.get("ports") or ())
+            _cp(f"    {p.get('session_id', '?')} · {up}{ports} · {p.get('command', '')[:80]}")
         if finished:
             _cp(f"  {_t('agents.recently_finished', count=len(finished))}")
         if view is None:

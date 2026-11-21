@@ -3065,6 +3065,8 @@ export interface Translations extends NoticeTranslations {
     stop: string
     dismiss: string
     exit: (code: number) => string
+    port: (port: number) => string
+    openPort: (url: string) => string
     control: {
       goalActiveTurns: (turn: number, maxTurns: number) => string
       goalDoneTurns: (turns: number) => string

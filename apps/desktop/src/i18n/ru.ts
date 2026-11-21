@@ -2802,6 +2802,8 @@ export const ruOverrides = {
     stop: 'Стоп',
     dismiss: 'Скрыть',
     exit: code => `exit ${code}`,
+    port: port => `:${port}`,
+    openPort: url => `Открыть ${url}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `Ход ${turn}/${maxTurns}`,
       goalDoneTurns: turns => `${turns} ходов`,

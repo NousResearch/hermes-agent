@@ -43,6 +43,7 @@ from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import fallback_exit_code, log_delta_command, parse_log_delta_reply
 from tools.process_registry_wsl import _is_wsl_launcher_command
+from tools.listening_ports import session_ports
 from tools.process_registry_wait import max_wait_timeout, process_deadline_floor
 
 logger = logging.getLogger(__name__)
@@ -2406,10 +2407,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 entry["notify_on_complete"] = True
             if s.persist_on_release:
                 entry["persist_on_release"] = True
+            entry.update(session_ports(s))  # a dev server's port, so nobody digs it out of the log
             if s.exited:
-                entry["exit_code"] = s.exit_code
-                entry["exited_at"] = s.exited_at
-                entry["completion_reason"] = s.completion_reason
+                entry.update(exit_code=s.exit_code, exited_at=s.exited_at, completion_reason=s.completion_reason)
             if s.detached:
                 entry["detached"] = True
             result.append(entry)

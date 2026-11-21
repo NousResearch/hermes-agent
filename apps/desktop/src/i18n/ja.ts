@@ -2545,6 +2545,8 @@ export const jaOverrides = {
     stop: '停止',
     dismiss: '閉じる',
     exit: code => `終了コード ${code}`,
+    port: port => `:${port}`,
+    openPort: url => `${url} を開く`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `ターン ${turn}/${maxTurns}`,
       goalDoneTurns: turns => `${turns} ターン`,

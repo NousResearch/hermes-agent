@@ -3920,6 +3920,7 @@ export interface ProcessEntry {
   started_epoch?: number | null
   completion_reason?: string | null
   detached?: boolean | null
+  ports?: number[] | null
   [key: string]: unknown
 }
 export interface ProcessKillParams {

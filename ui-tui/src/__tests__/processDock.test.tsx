@@ -70,6 +70,8 @@ it('keeps running processes, ages finished ones out after the retention window, 
 
   expect(rows.map(r => r.id)).toEqual(['proc_run', 'killed', 'fresh'])
   expect(rows[0]).toMatchObject({ status: 'running', detail: 'last: bundled 300 modules', elapsedSeconds: 42 })
+  // A dev server's listening port leads its row, so the URL is on screen without opening the log.
+  expect(buildProcessRows([{ ...running, ports: [5173] }], NOW * 1000)[0]!.detail).toBe(':5173 · last: bundled 300 modules')
   expect(rows[2]).toMatchObject({ status: 'failed', detail: 'exit 1 · 5s ago', elapsedSeconds: 12 })
   // A checkpoint-recovered exit without a timestamp never lingers as a phantom row.
   expect(buildProcessRows([{ ...exited('x', 1), exited_at: null }], NOW * 1000)).toEqual([])

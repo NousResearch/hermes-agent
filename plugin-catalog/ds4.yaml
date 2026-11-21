@@ -1,0 +1,26 @@
+name: ds4
+title: DwarfStar (ds4)
+repo: https://github.com/emilianbold/hermes-plugin-ds4
+sha: 70b321586ef63b3186da48bffa267ef43fa5d310
+description: "Run DeepSeek, GLM and Qwen models locally with DwarfStar (ds4), an inference engine for Apple Silicon. Turnkey from Hermes Desktop: one button installs the engine, downloads the model that fits your Mac and makes it your default; the server then starts with your first message and stops when idle. Unofficial."
+maintainer: emilianbold
+tier: community
+category: models
+version: "0.2.0"
+requires_hermes: ">=0.23.0"
+platforms:
+  - macos
+docs_url: https://github.com/emilianbold/hermes-plugin-ds4/blob/70b321586ef63b3186da48bffa267ef43fa5d310/README.md
+screenshots:
+  - https://raw.githubusercontent.com/emilianbold/hermes-plugin-ds4/70b321586ef63b3186da48bffa267ef43fa5d310/screenshots/desktop.png
+  - https://raw.githubusercontent.com/emilianbold/hermes-plugin-ds4/70b321586ef63b3186da48bffa267ef43fa5d310/screenshots/desktop-storage.png
+readme: true
+known_issues:
+  - The managed runtime needs Apple Silicon and 64 GB of memory or more (96 GB for the default model).
+  - The model-provider client requires in-process plugin execution (plugins.isolation host is not supported).
+  - Hermes keeps plugin data on uninstall; use Storage -> Remove everything first to free the models.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

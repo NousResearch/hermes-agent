@@ -202,14 +202,20 @@ def terminal_identity(authority, session_id):
             'session_key': live.route}
 
 
-async def verify_admission(authority, ref):
-    """Early refusal of a prompt into a moved checkout. Only a runner that routes local adapters can
-    hold a coding policy; the turn start verifies again either way (``begin_turn`` / ``admit_managed``)."""
+async def verify_admission(authority, ref, *, admitted):
+    """Early refusal of a new prompt into a moved checkout; ``admitted()`` reads the exact retry, which
+    keeps its original verdict. Only a runner that routes local adapters can hold a coding policy, and
+    the turn start verifies again either way (``begin_turn`` / ``admit_managed``)."""
     if getattr(authority.runner, '_adapter_for_source', None) is None:
         return
     from gateway.session_policy import policy_for_source
-    policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
-    if workspace_binding(policy):
+    try:
+        policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+    except AuthorityRefusal:
+        if admitted() is not None:
+            return
+        raise
+    if workspace_binding(policy) and admitted() is None:
         task_id = terminal_identity(authority, ref.session_id)['task_id']
         await asyncio.to_thread(verify_policy, policy, task_id=task_id)
 

@@ -8,7 +8,16 @@ import { workspaceTool } from './build/frontend-common.mjs'
 const root = process.cwd()
 const localeDir = path.join(root, 'locales')
 const webEnglishPath = path.join(root, 'web/src/i18n/en.ts')
-const pythonExecutable = 'C:\\Users\\mihai\\AppData\\Local\\Programs\\Python\\Python313\\python.exe'
+// Python interpreter running the local Argos/ LibreTranslate engine. Override with
+// HERMES_PYTHON when argostranslate lives in a dedicated environment.
+const pythonExecutable = process.env.HERMES_PYTHON || (process.platform === 'win32' ? 'python' : 'python3')
+
+// Hermes home, resolved with the same precedence as the Python side (HERMES_HOME
+// first, then the platform default) so the model cache paths stay portable.
+const hermesHome = process.env.HERMES_HOME || (process.platform === 'win32'
+  ? path.join(process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || '', 'AppData', 'Local'), 'hermes')
+  : path.join(process.env.XDG_DATA_HOME || path.join(process.env.HOME || '', '.local', 'share'), 'hermes'))
+const cacheRoot = path.join(hermesHome, 'cache')
 const translateScript = path.join(root, 'scripts/translate_libre.py')
 const batchCharacterLimit = 2400
 const concurrency = 4
@@ -116,9 +125,9 @@ async function requestTranslation(text) {
     const proc = spawn(pythonExecutable, [translateScript], {
       env: {
         ...process.env,
-        XDG_DATA_HOME: 'C:\\Users\\mihai\\AppData\\Local\\hermes\\cache\\data',
-        XDG_CONFIG_HOME: 'C:\\Users\\mihai\\AppData\\Local\\hermes\\cache\\config',
-        XDG_CACHE_HOME: 'C:\\Users\\mihai\\AppData\\Local\\hermes\\cache\\cache',
+        XDG_DATA_HOME: path.join(cacheRoot, 'data'),
+        XDG_CONFIG_HOME: path.join(cacheRoot, 'config'),
+        XDG_CACHE_HOME: path.join(cacheRoot, 'cache'),
       },
     })
     let stdout = ''

@@ -1,11 +1,23 @@
 import json
 import os
 import sys
+from pathlib import Path
 
-# Ensure local Argos / LibreTranslate models are located in hermes cache
-os.environ.setdefault("XDG_DATA_HOME", r"C:\Users\mihai\AppData\Local\hermes\cache\data")
-os.environ.setdefault("XDG_CONFIG_HOME", r"C:\Users\mihai\AppData\Local\hermes\cache\config")
-os.environ.setdefault("XDG_CACHE_HOME", r"C:\Users\mihai\AppData\Local\hermes\cache\cache")
+# Locate the local Argos / LibreTranslate models in the active Hermes cache.
+# HERMES_HOME wins; otherwise follow the platform default so the script works
+# on any machine instead of the one it was authored on.
+_hermes_home = os.environ.get("HERMES_HOME")
+if not _hermes_home:
+    if os.name == "nt":
+        local_appdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        _hermes_home = str(Path(local_appdata) / "hermes")
+    else:
+        data_home = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+        _hermes_home = str(Path(data_home) / "hermes")
+_cache_root = Path(_hermes_home) / "cache"
+os.environ.setdefault("XDG_DATA_HOME", str(_cache_root / "data"))
+os.environ.setdefault("XDG_CONFIG_HOME", str(_cache_root / "config"))
+os.environ.setdefault("XDG_CACHE_HOME", str(_cache_root / "cache"))
 
 try:
     import argostranslate.translate

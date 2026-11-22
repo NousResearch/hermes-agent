@@ -295,6 +295,15 @@ def test_commit_r2_retention_ages_out_claim_archives_and_legacy_commit_prefixes(
     assert doomed == {old_claim, old_legacy}
 
 
+def test_a_commit_claim_never_publishes_or_promotes_a_release_channel(tmp_path):
+    """publish and promote key the APT prefix and the feeds on release_channel: a commit claim's
+    manifest is refused there instead of reading as stable."""
+    manifest = {"tag": COMMIT_TAG, "packages": [], "files": []}
+    for step in (release_artifacts.publish, release_artifacts.promote):
+        with pytest.raises(ValueError, match="Commit builds publish to no release channel"):
+            step(manifest, tmp_path, PUBLIC_BASE)
+
+
 def test_release_cli_build_commit_allows_termux_and_refuses_shared_cache_lanes():
     # Direct CLI check: --with ci is rejected, --build-commit help advertises bundles + smoke only.
     help_run = subprocess.run([sys.executable, str(ROOT / "scripts/release.py"), "--help"],

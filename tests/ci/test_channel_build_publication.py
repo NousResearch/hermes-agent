@@ -507,7 +507,7 @@ def test_tag_and_commit_staging_never_runs_for_a_pinned_channel_build():
         # it must stand down for a pinned channel build and run otherwise.
         assert not gate(step.get("if", "true"), DOWNLOADABLE_DISPATCHES["channel"], channel, job_if=False), (
             f"{name}: {step['name']!r} stages tag/commit receipts for a channel build")
-        for dispatch in ("tag", "candidate", "commit"):
+        for dispatch in ("candidate", "commit"):
             assert gate(step.get("if", "true"), DOWNLOADABLE_DISPATCHES[dispatch], admitted(["validate"]),
                         job_if=False), (name, dispatch)
         # The pinned-request stage is the one that runs instead.

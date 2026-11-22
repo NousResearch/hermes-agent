@@ -452,7 +452,9 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         # The state.db torture chamber and the compaction/exactly-once
         # suites are the only tests that run real concurrent writers.
         "persistence/sqlite/",
-        "sqlite_support.py",  # journal mode, WAL fallback and durability barriers
+        # journal mode, WAL fallback and durability barriers; MOVES folds hermes_state_wal into it, so the
+        # guards see it under that oldest name
+        original_path("sqlite_support.py"),
         # Messaging-gated gateway cases: only the e2e job installs the real
         # Discord/Telegram SDKs (tests.yml "Run messaging-gated gateway cases").
         "tests/gateway/test_session_terminal_cwd_restart.py",
@@ -493,6 +495,8 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_agent/__init__.py",
         "hermes_agent/compat/",
         "hermes_cli/main_install",
+        # The old-backend notice (hermes_cli/update_backend_notice.py) reads the backend-migration marker.
+        "hermes_cli/backend_migration_marker.py",
         *_UPDATE_PIPELINE,
         *_UPDATE_ENTRY_POINTS,
         *_UPDATE_DEPENDENCIES,

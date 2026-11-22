@@ -51,6 +51,17 @@ def test_auth_parked_oauth_server_ignores_discovery_until_credentials_change(mon
         await _settle()
         assert len(attempts) == 2
 
+        # That revival failed too, so the parked backoff now limits unchanged retries; a second
+        # login must still revive it at once rather than waiting out the backoff.
+        assert task._parked_probe_failures
+        _select_new_servers({"cloud": cfg})
+        await _settle()
+        assert len(attempts) == 2
+        token_file.write_text(json.dumps({"access_token": "c", "token_type": "Bearer", "refresh_token": "newer"}))
+        _select_new_servers({"cloud": cfg})
+        await _settle()
+        assert len(attempts) == 3
+
         task._shutdown_event.set()
         await asyncio.wait_for(run, 5)
 

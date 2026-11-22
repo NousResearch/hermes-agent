@@ -93,8 +93,9 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import caption_is_command, prompt_id_counter, send_chunks
-from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
-from plugins.platforms.feishu.adapter_synthetic_events import FeishuSyntheticEventsMixin
+from .cards import map_chat_type, pop_validated_prompt_state, resolve_source_chat_type, validate_card_action
+from .adapter_choice_cards import FeishuChoiceCardsMixin
+from .adapter_synthetic_events import FeishuSyntheticEventsMixin
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
 from hermes_constants import get_hermes_home
@@ -2014,7 +2015,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             raw_chat_mode = str(getattr(data, "chat_mode", "") or "").strip().lower()
             info = {
                 "chat_id": chat_id, "name": str(getattr(data, "name", None) or chat_id),
-                "type": self._map_chat_type(raw_chat_type), "raw_type": raw_chat_type or None,
+                "type": map_chat_type(raw_chat_mode), "raw_type": raw_chat_type or None,
                 "raw_mode": raw_chat_mode or None,
             }
             self._chat_info_cache[chat_id] = info
@@ -2237,32 +2238,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         future.add_done_callback(self._log_background_failure)
         return True
 
-    def _is_interactive_operator_authorized(
-        self, open_id: str, *, user_id: str = "", union_id: str = "", chat_id: str = "",
-    ) -> bool:
-        """Return whether this card-action operator may answer gated prompts.
-
-        Feishu admins / FEISHU_ALLOWED_USERS decide when set. With neither (setup's pairing-mode
-        default) the clicker must pass the gateway authorization inbound messages get (pairing
-        store, GATEWAY_ALLOWED_USERS, ...), so a chat member who may not use the bot can't answer.
-        """
-        normalized = str(open_id or "").strip()
-        if not normalized:
-            return False
-        allowed_ids = set(self._admins) | set(self._allowed_group_users)
-        if allowed_ids:
-            # Lists may name a user by any id intake accepts (_sender_identity).
-            operator_ids = {normalized, str(user_id or "").strip(), str(union_id or "").strip()} - {""}
-            return "*" in allowed_ids or bool(operator_ids & allowed_ids)
-        # SessionSource.user_id is the tenant user_id, else open_id (_resolve_sender_profile).
-        principal = str(user_id or "").strip() or normalized
-        # Feishu chat ids don't say DM vs group; "group" is the check's own default.
-        verdict = self._is_sender_authorized(principal, "group", str(chat_id or "") or None)
-        if verdict is None:
-            logger.debug("[Feishu] No gateway authorization check for card operator %s; denying", normalized)
-            return False
-        return verdict
-
     @staticmethod
     def _card_response(card_data: Optional[dict[str, Any]] = None) -> Any:
         """Synchronous card-callback response; ``card_data`` updates the card inline."""
@@ -2282,27 +2257,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             response.toast, response.toast.type, response.toast.content = toast(), "warning", text
         return response
 
-    def _validate_card_action(
-        self, *, event: Any, state: dict[str, str], label: str, ident: Any,
-    ) -> Optional[tuple[str, str, str, str, str]]:
-        """Shared operator/chat checks for approval + update-prompt clicks: ``(open_id, callback_chat_id,
-        user_name, user_id, union_id)`` or None (already logged)."""
-        operator = getattr(event, "operator", None)
-        open_id = str(getattr(operator, "open_id", "") or "")
-        user_id = str(getattr(operator, "user_id", "") or "")
-        union_id = str(getattr(operator, "union_id", "") or "")
-        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
-        expected_chat_id = str(state.get("chat_id", "") or "")
-        if not self._is_interactive_operator_authorized(
-                open_id, user_id=user_id, union_id=union_id, chat_id=expected_chat_id or callback_chat_id):
-            logger.warning("[Feishu] Unauthorized %s click by %s", label, open_id or "<unknown>")
-            return None
-        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
-            logger.warning("[Feishu] %s callback chat mismatch for %s (expected=%s, got=%s)",
-                           label.capitalize(), ident, expected_chat_id, callback_chat_id)
-            return None
-        return open_id, callback_chat_id, self._get_cached_sender_name(open_id) or open_id, user_id, union_id
-
     def _handle_approval_card_action(self, *, event: Any, action_value: dict[str, Any], loop: Any) -> Any:
         """Schedule approval resolution and build the synchronous callback response."""
         approval_id = action_value.get("approval_id")
@@ -2314,7 +2268,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
             return self._card_response()
         choice = _APPROVAL_CHOICE_MAP.get(action_value.get("hermes_action"), "deny")
-        checked = self._validate_card_action(event=event, state=state, label="approval", ident=approval_id)
+        checked = validate_card_action(self, event=event, state=state, label="approval", ident=approval_id)
         if checked is None:
             return self._card_response()
         open_id, chat_id, user_name, user_id, union_id = checked
@@ -2342,7 +2296,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         if answer not in {"y", "n"}:
             logger.debug("[Feishu] Card action has invalid update prompt answer=%r", answer)
             return self._card_response()
-        checked = self._validate_card_action(event=event, state=state, label="update prompt", ident=prompt_id)
+        checked = validate_card_action(self, event=event, state=state, label="update prompt", ident=prompt_id)
         if checked is None:
             return self._card_response()
         open_id, chat_id, user_name, user_id, union_id = checked
@@ -2353,36 +2307,13 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             return self._card_response()
         return self._card_response(self._build_resolved_update_prompt_card(answer=answer, user_name=user_name))
 
-    def _pop_validated_prompt_state(
-        self, *, states: dict[int, dict[str, str]], ident: Any, label: str, open_id: str, chat_id: str,
-        unauthorized_fmt: str, operator_repr: str, user_id: str = "", union_id: str = "",
-    ) -> Optional[dict[str, str]]:
-        """Re-validate on the loop thread (state may have changed since the callback) and pop."""
-        state = states.get(ident)
-        if not state:
-            logger.debug("[Feishu] %s %s already resolved or unknown", label, ident)
-            return None
-        if not self._is_interactive_operator_authorized(
-            open_id, user_id=user_id, union_id=union_id, chat_id=str(state.get("chat_id", "") or "") or chat_id,
-        ):
-            logger.warning(unauthorized_fmt, operator_repr, ident)
-            return None
-        expected_chat_id = str(state.get("chat_id", "") or "")
-        if expected_chat_id and chat_id and expected_chat_id != chat_id:
-            logger.warning("[Feishu] %s %s chat mismatch (expected=%s, got=%s)", label, ident, expected_chat_id, chat_id)
-            return None
-        state = states.pop(ident, None)
-        if not state:
-            logger.debug("[Feishu] %s %s already resolved while validating callback", label, ident)
-        return state
-
     async def _resolve_approval(
         self, approval_id: Any, choice: str, user_name: str, *, open_id: str = "", chat_id: str = "",
         user_id: str = "", union_id: str = "",
     ) -> None:
         """Pop approval state and unblock the waiting agent thread."""
-        state = self._pop_validated_prompt_state(
-            states=self._approval_state, ident=approval_id, label="Approval", open_id=open_id, chat_id=chat_id,
+        state = pop_validated_prompt_state(
+            self, states=self._approval_state, ident=approval_id, label="Approval", open_id=open_id, chat_id=chat_id,
             unauthorized_fmt="[Feishu] Unauthorized approval click by %s for approval %s",
             operator_repr=open_id or "<unknown>", user_id=user_id, union_id=union_id,
         )
@@ -2414,8 +2345,8 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         user_id: str = "", union_id: str = "",
     ) -> None:
         """Persist an update prompt answer for the detached update process."""
-        state = self._pop_validated_prompt_state(
-            states=self._update_prompt_state, ident=prompt_id, label="Update prompt", open_id=open_id,
+        state = pop_validated_prompt_state(
+            self, states=self._update_prompt_state, ident=prompt_id, label="Update prompt", open_id=open_id,
             chat_id=chat_id, unauthorized_fmt="[Feishu] Unauthorized update prompt click by %s for prompt %s",
             operator_repr=open_id, user_id=user_id, union_id=union_id,
         )
@@ -2599,7 +2530,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
+            chat_type=resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
             thread_id=thread_id,
@@ -3174,22 +3105,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         if ext in _IMAGE_EXTENSIONS:
             return FeishuAdapter._default_image_media_type(ext)
         return ""
-
-    @staticmethod
-    def _map_chat_type(raw_chat_type: str) -> str:
-        normalized = (raw_chat_type or "").strip().lower()
-        if normalized == "p2p":
-            return "dm"
-        if any(marker in normalized for marker in ("topic", "thread", "forum")):
-            return "forum"
-        return "group" if normalized == "group" else "dm"
-
-    @staticmethod
-    def _resolve_source_chat_type(*, chat_info: dict[str, Any], event_chat_type: str) -> str:
-        resolved = str(chat_info.get("type") or "").strip().lower()
-        if resolved in {"group", "forum"}:
-            return resolved
-        return "dm" if event_chat_type == "p2p" else "group"
 
     async def _resolve_sender_profile(self, sender_id: Any, *, is_bot: bool = False) -> dict[str, Optional[str]]:
         """Map Feishu's ID tiers onto SessionSource: user_id (tenant) > open_id (app) as primary,

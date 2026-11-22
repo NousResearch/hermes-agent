@@ -223,6 +223,9 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         ("deepseek-flash", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"): ("0.15", "0.60", "0.003"),
         "deepseek-v4-pro": ("0.66", "1.98", "0.022"),
     }),
+    ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-11-18", {
+        "gemini-4-neon": ("3.00", "15.00", "0.15"),
+    }),
     ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-11-12", {
         "gemini-4-hydrogen": ("1.50", "7.50", "0.075"),
     }),

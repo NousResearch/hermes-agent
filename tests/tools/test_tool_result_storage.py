@@ -636,10 +636,10 @@ class TestPageableText:
     """Only the MCP handler's own envelope shape is unwrapped; every other JSON stays opaque."""
 
     def test_single_result_envelope_is_unwrapped(self):
-        assert _pageable_text(json.dumps({"result": "line one\nline two"})) == "line one\nline two"
+        assert _pageable_text(json.dumps({"result": "line one\nline two"})).content == "line one\nline two"
 
     def test_envelope_metadata_is_kept_after_the_text(self):
-        out = _pageable_text(json.dumps({"result": "text\n", "structuredContent": {"answer": 42}}))
+        out = _pageable_text(json.dumps({"result": "text\n", "structuredContent": {"answer": 42}})).content
         text, marker, tail = out.partition("\n\n<mcp-result-metadata>\n")
         assert text == "text\n"
         assert marker
@@ -659,7 +659,7 @@ class TestPageableText:
         ],
     )
     def test_unrecognized_content_is_verbatim(self, content):
-        assert _pageable_text(content) == content
+        assert _pageable_text(content).content == content
 
 class TestMcpEnvelopeSpillover:
     """An oversized MCP result spills its pageable text, not one escaped JSON line (#90426)."""
@@ -804,3 +804,51 @@ class TestMcpEnvelopeSpillover:
 
         assert PERSISTED_OUTPUT_TAG in msgs[0]["content"]
         assert (get_spillover_dir() / "tc_budget_mcp.txt").read_text(encoding="utf-8") == markdown
+
+    def test_failing_build_tail_rides_the_preview(self):
+        """The reporter's test scenario on #126532: a failing build's error line sits at the
+        END of a huge output. The metadata block led the preview, but the tail still needed
+        ``read_file`` — the preview now carries a head window AND a tail window, while the
+        spillover file keeps the full output verbatim."""
+        output = "HEAD_MARKER\n" + ("filler line\n" * 4_000) + "Traceback: TAIL_ERROR_MARKER build failed\n"
+        envelope = json.dumps({"output": output, "exit_code": 2}, ensure_ascii=False)
+
+        result = maybe_persist_tool_result(
+            content=envelope, tool_name="terminal", tool_use_id="tc_term_tail",
+            env=None, threshold=30_000)
+
+        assert PERSISTED_OUTPUT_TAG in result
+        assert "HEAD_MARKER" in result
+        assert "TAIL_ERROR_MARKER" in result
+        assert "chars elided" in result
+        # The elision is preview-only: the spilled file keeps every line.
+        persisted = (get_spillover_dir() / "tc_term_tail.txt").read_text(encoding="utf-8")
+        assert "chars elided" not in persisted
+        assert persisted.count("filler line") == 4_000
+
+    def test_preview_tail_is_the_output_not_the_metadata_after_it(self):
+        output = "".join(f"cell line {i}\n" for i in range(3_000)) + "ZeroDivisionError: LAST_LINE\n"
+        content = json.dumps({"status": "error", "output": output, "exit_code": 1,
+                              "kernel": {"mode": "session", "execution_count": 3}}, ensure_ascii=False)
+        result = maybe_persist_tool_result(
+            content=content, tool_name="execute_code", tool_use_id="tc_exec_tail",
+            env=None, threshold=30_000)
+
+        preview = result.split("Preview (first", 1)[1]
+        assert "ZeroDivisionError: LAST_LINE" in preview
+        assert '"kernel"' not in preview
+        spill = (get_spillover_dir() / "tc_exec_tail.txt").read_text(encoding="utf-8")
+        assert spill.index("LAST_LINE") < spill.index('"kernel"')
+
+    def test_failed_save_preview_points_to_no_file(self, monkeypatch):
+        """The inline fallback reuses the preview, so its elision marker must not claim a saved file."""
+        import tools.tool_result_storage as trs
+        monkeypatch.setattr(trs, "_write_to_spillover", lambda *a, **k: None)
+        output = "HEAD\n" + ("filler line\n" * 4_000) + "error: LAST_LINE\n"
+        result = maybe_persist_tool_result(
+            content=json.dumps({"output": output, "exit_code": 2}), tool_name="terminal",
+            tool_use_id="tc_term_unsaved", env=None, threshold=30_000)
+
+        assert "could not be saved" in result
+        assert "chars elided" in result and "error: LAST_LINE" in result
+        assert "spillover" not in result

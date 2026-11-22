@@ -103,15 +103,15 @@ def refuse_unresolved_model(task, workspace: str, board: str | None) -> None:
     from hermes_cli.kanban_worker_log import open_task_worker_log
     from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
 
-    if task.model_override:  # a pinned card runs its own model: no profile read, so no config outage defers it
-        return
     profile = normalize_profile_name(task.assignee)
     try:
         home = resolve_profile_env(profile)
     except FileNotFoundError:
         return  # no profile dir: the worker client resolves it (and refuses) itself
     try:
-        with dispatch._worker_profile_scope(home):
+        with dispatch._worker_profile_scope(home):  # the spawn binds it too: an outage defers even a pinned card
+            if task.model_override:  # a pinned card runs its own model: no config read
+                return
             _, unresolved = task_model(task, load_user_config_effective(Path(home) / 'config.yaml', fail_closed=True))
     except ConfigBackendUnavailable as exc:
         raise ProfileConfigUnavailable(f"config backend unavailable for profile {profile}: {exc}") from exc

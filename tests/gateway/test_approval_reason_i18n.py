@@ -95,10 +95,16 @@ def test_reasons_render_in_each_routed_profile_language(profiles, card_success):
 
     assert [kind for kind, _ in alpha] == (["card"] if card_success else ["card", "text"])
     alpha_reason, beta_reason = alpha[-1][1], beta[-1][1]
-    # Ordered; the translated item, then per-item English fallbacks (redacted), joined per catalog.
+    with _routed(profiles["de"]):
+        bundled_de = i18n.lookup("gateway.exec_approval.reasons.invisible_unicode")
+    # Ordered: overlay translation, the item's own redacted text for an unmapped or forged slug,
+    # then the bundled translation, joined with the profile's joiner.
+    assert bundled_de and bundled_de != INVISIBLE
     assert "rekursives Loeschen (Fixture) | custom plugin rule for token" in alpha_reason
-    assert "forged slug text | " + INVISIBLE in alpha_reason
-    assert "suppression recursive (fixture); custom plugin rule" in beta_reason
+    assert "forged slug text | " + bundled_de in alpha_reason
+    with _routed(profiles["fr"]):
+        fr_joiner = i18n.t("gateway.exec_approval.reason_joiner")
+    assert f"suppression recursive (fixture){fr_joiner}custom plugin rule" in beta_reason
     assert "rekursives" not in beta_reason
     assert alpha_again == alpha  # profile B's render did not leak into profile A
     for _kind, text in alpha + beta:
@@ -112,3 +118,25 @@ def test_payload_without_reasons_keeps_the_legacy_description(profiles):
     with _routed(profiles["de"]):
         seen = _render({"command": "rm -rf build/", "description": "legacy reason text"}, card_success=True)
     assert seen == [("card", "legacy reason text")]
+
+
+def test_a_language_without_its_own_entry_keeps_the_payload_text(tmp_path, monkeypatch):
+    """Codex review: a pack/overlay language that omits a reason must not borrow an English catalog
+    value (here an English overlay) in place of the payload's own redacted text."""
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    home = _home(tmp_path, "gamma", "eo",
+                 "gateway:\n  exec_approval:\n    reasons:\n      sql_drop: \"SQL DROP (eo fixture)\"\n")
+    (home / "locales" / "en.yaml").write_text(
+        "gateway:\n  exec_approval:\n    reasons:\n      recursive_delete: \"EN OVERLAY MUST NOT APPEAR\"\n",
+        encoding="utf-8")
+    i18n.reset_language_cache()
+    approval = {"command": "rm -rf build/", "description": "unused",
+                "reasons": [{"slug": "recursive_delete", "text": "recursive delete (payload)"},
+                            {"slug": "sql_drop", "text": "SQL DROP"}]}
+    try:
+        with _routed(home):
+            assert i18n.get_language() == "eo"
+            seen = _render(approval, card_success=True)
+    finally:
+        i18n.reset_language_cache()
+    assert seen == [("card", "recursive delete (payload); SQL DROP (eo fixture)")]

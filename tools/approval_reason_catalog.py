@@ -5,14 +5,15 @@ that description is also the approval/consent key a session or always grant is s
 must never be translated or renamed. This module maps a fixed set of those keys to stable slugs under
 ``gateway.exec_approval.reasons.*`` so a chat surface can show the reason in the routed profile's
 language. Only keys listed here are ever looked up: a description is never parsed and a locale key
-is never built from free text. Anything unmapped, or a slug with no catalog entry, keeps the
-redacted English text it arrived with.
+is never built from free text. Anything unmapped, or a slug the active language's own catalog (packs,
+user overlay, bundled) lacks, keeps the redacted English text it arrived with; the English catalog is
+never consulted for a reason, so an English overlay cannot replace that text in another language.
 """
 from __future__ import annotations
 
 from typing import Callable, Iterable, Mapping
 
-from agent.i18n import get_language, t
+from agent.i18n import get_language, lookup, t
 
 REASON_KEY_PREFIX = "gateway.exec_approval.reasons."
 
@@ -42,16 +43,16 @@ def reason_items(findings: Iterable[tuple[str, str]], redact: Callable[[str], st
 def render_reasons(items: Iterable[Mapping], redact: Callable[[str], str]) -> str:
     """One display string for *items* in the active profile's language, in the given order.
 
-    The language is resolved once so every item and the joiner agree. An unknown slug or a catalog
-    miss falls back to that item's own text, passed through the surface's display redaction like the
-    legacy ``description`` string."""
+    The language is resolved once so every item and the joiner agree. An unknown slug, or a slug the
+    active language does not translate itself, falls back to that item's own text, passed through the
+    surface's display redaction like the legacy ``description`` string."""
     lang = get_language()
     parts = []
     for item in items:
         slug = item.get("slug")
         key = REASON_KEY_PREFIX + slug if slug in _KNOWN_SLUGS else None
-        localized = t(key, lang=lang) if key else None
-        parts.append(localized if localized and localized != key else redact(str(item.get("text") or "")))
+        localized = lookup(key, lang) if key else None
+        parts.append(localized or redact(str(item.get("text") or "")))
     return t("gateway.exec_approval.reason_joiner", lang=lang).join(p for p in parts if p)
 
 

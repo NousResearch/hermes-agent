@@ -29,12 +29,14 @@ _RUNTIME = {
 def _owner_execution(db, job, execution_id=None):
     from gateway import session_cron
     from persistence_assembly import profile_scope
-    owner = SimpleNamespace(db=db, persistence=MagicMock(scope=profile_scope(home=db.db_path.parent)))
+    owner = SimpleNamespace(persistence=MagicMock(scope=profile_scope(home=db.db_path.parent),
+                                                  sessions=db.sessions))
     token = session_cron._execution.set((owner, "cleanup-session", job["id"], execution_id))
     try:
         yield
     finally:
         session_cron._execution.reset(token)
+        owner.persistence.close.assert_not_called()
 
 
 class HangingStore:
@@ -97,6 +99,32 @@ def test_run_job_bounds_sessiondb_finalization(tmp_path):
         assert error is None
     finally:
         release.set()
+
+
+def test_monitor_suppressed_tick_ends_owner_session_row(tmp_path):
+    """Gateway-owned admissions commit the run's session row BEFORE run_job's gates run.
+
+    A no-change monitor tick must end that pre-committed row (cron_suppressed); the old
+    early return skipped finalization entirely, leaving one never-active, never-ended
+    ``local-*`` row per suppressed tick (hundreds per day on a 5m monitor job).
+    """
+    fake_db = MagicMock()
+    fake_db.db_path = tmp_path / "state.db"
+    job = {"id": "vm-monitor", "name": "worker VM monitor", "prompt": "check",
+           "monitor_script": "echo same"}
+    outcome = SimpleNamespace(ok=True, changed=False, first_run=False, context_block=None, error=None)
+
+    with _owner_execution(fake_db, job), \
+         patch("cron.scheduler._hermes_home", tmp_path), \
+         patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+         patch("persistence_assembly.open_persistence", return_value=fake_db), \
+         patch("cron.monitor.check_monitor", return_value=outcome):
+        success, _output, final_response, error = run_job(job)
+
+    assert success is True
+    assert error is None
+    assert final_response == "[SILENT]"
+    fake_db.sessions.end.assert_called_once_with("cleanup-session", "cron_suppressed")
 
 
 def test_agent_teardown_is_bounded():

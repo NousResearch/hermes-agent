@@ -204,6 +204,7 @@ class CompactionScanTests(unittest.TestCase):
         from persistence_assembly import open_persistence, profile_scope
 
         with TemporaryDirectory() as tmp, patch.object(plugin_api, "_data_dir", return_value=Path(tmp) / "data"), patch.object(plugin_api, "get_hermes_home", return_value=Path(tmp)), patch.dict(os.environ, {"HERMES_HOME": tmp}):
+            (Path(tmp) / "data").mkdir()  # the real _data_dir() creates it; _write_json no longer does
             with open_persistence(profile_scope(home=Path(tmp))) as store:
                 store.sessions.create(NewSession(session_id="s1", source="cli", model="m"))
                 for i in range(20):

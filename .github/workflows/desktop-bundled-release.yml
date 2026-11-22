@@ -853,6 +853,9 @@ jobs:
         shell: bash
         run: |
           root="$GITHUB_WORKSPACE/staged-artifacts"
+          # Only the built packages: the build leg ran the claimed code, which can rewrite its upload.
+          unexpected="$(find "$root" -mindepth 1 \( -type d -o -type l -o ! -name '*.msix' \) -print)"
+          if [ -n "$unexpected" ]; then echo "::error::unexpected commit-claim artifact entries: $unexpected"; exit 1; fi
           record_args=()
           if [ "${LEGACY_COMMIT_BUILD:-false}" = true ]; then record_args+=(--legacy-commit-build); fi
           python -m scripts.bundles.release_artifacts record --platform windows --arch "${TARGET##*-}" \
@@ -868,7 +871,7 @@ jobs:
         run: |
           root="$GITHUB_WORKSPACE/staged-artifacts"
           python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
-            --name "$TARGET" --root "$root" --include '*.msix' --include 'metadata-*.json'
+            --name "$TARGET" --root "$root" --include '*.msix' --include "metadata-windows-${TARGET##*-}.json"
 
   stage-commit-win32-arm64:
     name: stage win32-arm64 commit claim
@@ -1371,6 +1374,9 @@ jobs:
         shell: bash
         run: |
           root="$GITHUB_WORKSPACE/staged-artifacts"
+          # Only the built packages: the build leg ran the claimed code, which can rewrite its upload.
+          unexpected="$(find "$root" -mindepth 1 \( -type d -o -type l -o ! \( -name '*.dmg' -o -name '*.zip' -o -name '*.blockmap' \) \) -print)"
+          if [ -n "$unexpected" ]; then echo "::error::unexpected commit-claim artifact entries: $unexpected"; exit 1; fi
           shopt -s nullglob
           zips=("$root"/*-mac-"${TARGET##*-}".zip)
           test "${#zips[@]}" -eq 1
@@ -1391,7 +1397,7 @@ jobs:
         run: |
           root="$GITHUB_WORKSPACE/staged-artifacts"
           python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
-            --name "$TARGET" --root "$root" --include '*.dmg' --include '*.zip' --include '*.blockmap' --include 'metadata-*.json'
+            --name "$TARGET" --root "$root" --include '*.dmg' --include '*.zip' --include '*.blockmap' --include "metadata-macos-${TARGET##*-}.json"
 
   build-darwin-arm64:
     name: bundled darwin-arm64 result
@@ -2342,6 +2348,9 @@ jobs:
         shell: bash
         run: |
           root="$GITHUB_WORKSPACE/staged-artifacts"
+          # Only the built packages: the build leg ran the claimed code, which can rewrite its upload.
+          unexpected="$(find "$root" -mindepth 1 ! -path "$root/deb" \( -type d -o -type l -o ! -path "$root/deb/*.deb" \) -print)"
+          if [ -n "$unexpected" ]; then echo "::error::unexpected commit-claim artifact entries: $unexpected"; exit 1; fi
           record_args=()
           if [ "${LEGACY_COMMIT_BUILD:-false}" = true ]; then record_args+=(--legacy-commit-build); fi
           python -m scripts.bundles.release_artifacts record --platform termux --arch aarch64 \
@@ -2357,7 +2366,7 @@ jobs:
         run: |
           root="$GITHUB_WORKSPACE/staged-artifacts"
           python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
-            --name termux --root "$root" --include 'deb/*.deb' --include 'metadata-*.json'
+            --name termux --root "$root" --include 'deb/*.deb' --include 'metadata-termux-aarch64.json'
 
   termux-deb:
     name: termux .deb result

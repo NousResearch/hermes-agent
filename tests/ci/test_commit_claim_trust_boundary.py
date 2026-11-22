@@ -309,6 +309,10 @@ def test_claim_staging_runs_the_controller_recorder_on_the_built_artifacts(
         ditto = extra_bin / "ditto"
         ditto.write_text("#!/usr/bin/env bash\nset -e\n[ \"$1\" = -x ] && [ \"$2\" = -k ] && mkdir -p \"$4/Hermes.app\"\n", encoding="utf-8")
         ditto.chmod(0o755)
+    elif target == "termux":
+        (staged / "deb/hermes-agent_0.33.0_aarch64.deb").write_bytes(b"deb-fixture")
+    else:
+        (staged / f"HermesBundled-0.33.0-win-{target.split('-')[1]}.msix").write_bytes(b"msix-fixture")
     receipts = tmp_path / "receipts.jsonl"
     context = {
         "inputs": _candidate_dispatch(COMMIT_TAG),
@@ -354,6 +358,39 @@ def test_claim_staging_reads_the_unreviewed_packages_without_the_r2_secrets(targ
             commands = [line.strip() for line in step["run"].splitlines() if line.strip()]
             assert commands[0].startswith("root=") and "scripts.releases.handoff stage" in commands[1], (target, step["name"])
             assert len([line for line in commands if not line.startswith("--")]) == 2, (target, step["name"])
+
+
+# What a build leg that rewrote its own upload could add: a sidecar the recorder would trust, a
+# metadata file the upload glob would stage, or a nested package.
+_PLANTED = {"win32-x64": ("version-info-x64.json", "nested/HermesBundled-0.33.0-win-x64.msix"),
+            "win32-arm64": ("version-info-arm64.json", "metadata-windows-arm64.json"),
+            "darwin-arm64": ("metadata-macos-arm64.json", "nested/HermesBundled-0.33.0-mac-arm64.zip"),
+            "termux": ("metadata-termux-aarch64.json", "deb/nested/hermes-agent_0.33.0_aarch64.deb")}
+
+
+@pytest.mark.parametrize("target,planted", [(t, p) for t, paths in _PLANTED.items() for p in paths])
+def test_claim_staging_refuses_anything_but_the_built_packages(tmp_path, target, planted):
+    """The build leg ran the claimed code, so its artifact may hold more than its upload step's
+    patterns: the stager refuses any other entry before recording or staging anything."""
+    jobs = _workflow("desktop-bundled-release.yml")["jobs"]
+    stager = jobs[commit_claim_stagers(jobs)[target]]
+    controller = tmp_path / "controller"
+    module = controller / "scripts/bundles/release_artifacts.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(_STAGING_STUB.format(copy="controller"), encoding="utf-8")
+    staged = controller / "staged-artifacts"
+    (staged / planted).parent.mkdir(parents=True, exist_ok=True)
+    (staged / planted).write_text("{}", encoding="utf-8")
+    receipts = tmp_path / "receipts.jsonl"
+    (step,) = [s for s in stager["steps"] if "scripts.bundles.release_artifacts record" in s.get("run", "")]
+    replay = {**step, "env": {**stager.get("env", {}), **step.get("env", {}),
+                              "GITHUB_WORKSPACE": str(controller), "STAGING_RECEIPTS": str(receipts)}}
+    context = {"inputs": _candidate_dispatch(COMMIT_TAG), "github": {"workspace": str(controller)},
+               "needs": {"validate": {"result": "success", "outputs": {
+                   "sha": SHA, "channel-build": "", "archive-tag": COMMIT_TAG, "legacy-commit-build": "false"}}}}
+    with pytest.raises(AssertionError, match="unexpected commit-claim artifact entries"):
+        workflow_steps.outputs(replay, context, cwd=controller)
+    assert not receipts.exists()
 
 
 def test_untrusted_commit_legs_disable_persisted_credentials_and_strip_write_scopes():

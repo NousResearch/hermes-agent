@@ -22,7 +22,8 @@ from session_rules.results import compact_result
 from .._holder import StoreHolder
 from ..conversation._errors import refusals
 from ..conversation._store.terminal import (
-    ADMISSION_PREFIX, IDENTITY_PREFIX, RESULT_PREFIX, WORKER_PREFIX, encode_result, identity_key, load_result,
+    ADMISSION_PREFIX, IDENTITY_PREFIX, RESULT_PREFIX, SETTLED_PREFIX, WORKER_PREFIX, encode_result, identity_key,
+    load_result, settled_key, stamp_settled,
 )
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "IDENTITY_PREFIX",
     "REPLACEMENT_PREFIX",
     "RESULT_PREFIX",
+    "SETTLED_PREFIX",
     "STEERING",
     "WORKER_PREFIX",
     "check_replaced_input",
@@ -43,6 +45,8 @@ __all__ = [
     "retire_replaced_input",
     "retry_terminal_admission",
     "settle_steer_transfers",
+    "settled_key",
+    "stamp_settled",
     "terminal_admission",
     "terminal_api_admissions",
 ]

@@ -75,6 +75,20 @@ class TestFalEditPayload:
         assert payload.get("aspect_ratio") == "16:9"
         assert payload.get("resolution") == "2K"
 
+    def test_kling_image_v4_routes_t2i_and_list_edits(self):
+        """Kling Image 4.0 is selectable: t2i sends the ratio enum at 2K, edits go to the
+        v4 i2i endpoint with an `image_urls` list (not v3's singular key) and no ratio."""
+        from tools.image_generation_tool import FAL_MODELS, _build_fal_edit_payload, _build_fal_payload
+
+        mid = "kling/v4/text-to-image"
+        t2i = _build_fal_payload(mid, "a red apple", "portrait", seed=7)
+        assert t2i == {"prompt": "a red apple", "aspect_ratio": "9:16", "num_images": 1, "resolution": "2K"}
+        refs = ["https://x/a.png", "https://x/b.png"]
+        edit = _build_fal_edit_payload(mid, "make it winter", refs, "landscape")
+        assert FAL_MODELS[mid]["edit_endpoint"] == "kling/v4/image-to-image"
+        assert edit["image_urls"] == refs
+        assert "image_url" not in edit and "aspect_ratio" not in edit
+
 
 class TestMandatoryKeysSurviveWhitelist:
     """A model whose whitelist forgets the mandatory keys must not produce a

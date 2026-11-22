@@ -607,7 +607,9 @@ def build_listener_server(served_app, host: str, port: int, *, auth_required: bo
     # bind, or a loopback bind behind a public URL / tunnel, which engages the auth gate) compresses.
     per_message_deflate = auth_required or host not in _LOOPBACK_HOST_VALUES
     if ws_ping is None:
-        ws_ping = (None, None) if host in _LOOPBACK_HOST_VALUES else (
+        # Loopback behind a public URL / reverse proxy (auth_required=True) still serves remote peers
+        # over WireGuard/tunnels and needs WS pings to detect half-open sockets, matching per_message_deflate.
+        ws_ping = (None, None) if (host in _LOOPBACK_HOST_VALUES and not auth_required) else (
             _ws_ping_setting("ws_ping_interval"), _ws_ping_setting("ws_ping_timeout"))
     _uvicorn_console_logging()
     config = uvicorn.Config(

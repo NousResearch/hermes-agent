@@ -399,3 +399,24 @@ def test_gateway_listener_compresses_only_for_remote_peers(host, auth_required, 
     config, _server = build_listener_server(lambda scope, receive, send: None, host, 0,
                                             auth_required=auth_required)
     assert config.ws_per_message_deflate is deflate
+
+
+@pytest.mark.parametrize("host, auth_required, ping_enabled", [
+    ("127.0.0.1", False, False),  # local loopback client: real FIN/RST, no ping
+    ("0.0.0.0", True, True),      # non-loopback bind: half-open detection enabled
+    ("127.0.0.1", True, True),    # loopback behind public_url / reverse proxy: remote clients need ping
+])
+def test_gateway_listener_enables_ws_ping_for_remote_peers(host, auth_required, ping_enabled):
+    """``build_listener_server`` enables WS ping keepalive whenever the listener serves remote
+    peers (non-loopback bind OR loopback behind ``webapp.public_url`` with ``auth_required=True``),
+    matching ``ws_per_message_deflate``."""
+    from hermes_cli.web_server_lifecycle import build_listener_server
+
+    config, _server = build_listener_server(lambda scope, receive, send: None, host, 0,
+                                            auth_required=auth_required)
+    if ping_enabled:
+        assert config.ws_ping_interval and config.ws_ping_interval > 0
+        assert config.ws_ping_timeout and config.ws_ping_timeout >= config.ws_ping_interval
+    else:
+        assert config.ws_ping_interval is None
+        assert config.ws_ping_timeout is None

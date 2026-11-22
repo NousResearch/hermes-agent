@@ -1072,7 +1072,7 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
     # notices the half-open tunnel (#101626). Its client count is tracked at the ASGI boundary so
     # the idle watchdog can retire the backend once nothing is connected.
     served_app = app
-    ping_interval, ping_timeout = (None, None) if _is_loopback else (
+    ping_interval, ping_timeout = (None, None) if (_is_loopback and not app.state.auth_required) else (
         _ws_ping_setting("ws_ping_interval"), _ws_ping_setting("ws_ping_timeout"))
     if ssh_isolated:
         from hermes_cli.web_server_idle_exit import (

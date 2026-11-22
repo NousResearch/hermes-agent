@@ -579,7 +579,8 @@ def _replay_env(home: str) -> dict:
     if (prepared := _REPLAY_ENVS.get(home)) is not None:
         return dict(prepared)
     from hermes_constants import get_default_hermes_root, get_routing_process_hermes_home
-    from tools.environments.local import build_subprocess_env, gateway_child_env
+    from tools.environments.local import build_subprocess_env
+    from tools.environments.local_gateway_env import gateway_child_env
     target = Path(home).resolve()
     if target != get_default_hermes_root().resolve() and target == get_routing_process_hermes_home().resolve():
         return build_subprocess_env(scrub_secrets=False, inherit_profile_home=False, extra={"HERMES_HOME": home})

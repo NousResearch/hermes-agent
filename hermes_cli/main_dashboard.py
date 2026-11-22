@@ -672,7 +672,7 @@ def _status_host_is_local(host: str) -> bool:
         return False
     if address.is_loopback or address.is_unspecified:
         return True
-    from hermes_platform.host.facts import has_interface_address
+    from hermes_platform.host.interfaces import has_interface_address
     try:
         return has_interface_address(name)
     except (OSError, ValueError):

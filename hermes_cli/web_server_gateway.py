@@ -390,7 +390,7 @@ def _profile_action_environment(
     elif profile is None:
         action_env = dict(os.environ)
         if subcommand[:1] != ["update"]:  # update restarts gateways and keeps the deployment's stamps
-            from tools.environments.local import drop_deployment_stamps
+            from tools.environments.local_gateway_env import drop_deployment_stamps
             drop_deployment_stamps(action_env)
     else:
         from hermes_cli.env_loader import (
@@ -428,7 +428,7 @@ def _profile_action_environment(
         action_env["HERMES_HOME"] = str(target_home)
         apply_subprocess_home_env(action_env)
         if _is_gateway_action(subcommand):  # as host_gateway_child_env does: install can start one too
-            from tools.environments.local import keep_deployment_stamps
+            from tools.environments.local_gateway_env import keep_deployment_stamps
             keep_deployment_stamps(action_env)
 
     action_env["HERMES_NONINTERACTIVE"] = "1"

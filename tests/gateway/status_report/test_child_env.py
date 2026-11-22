@@ -14,7 +14,7 @@ from gateway.status_report.target import STATUS_REPORT_URL_ENV
 from tests.gateway.status_report.support import new_credential, stamped_url
 from tests.tools._child_env_fixtures import child_env as child_env  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 from tests.tools._child_env_fixtures import observe_terminal
-from tools.environments import local
+from tools.environments import local, local_gateway_env
 
 STAMPS = (STATUS_REPORT_URL_ENV, SLEEP_URL_ENV)
 
@@ -88,7 +88,7 @@ def test_a_gateway_started_for_another_profile_keeps_them(stamped):
     other = Path(os.environ["HERMES_HOME"]) / "profiles" / "other"
     other.mkdir(parents=True)
 
-    assert _stamps(local.gateway_child_env(other)) == stamped
+    assert _stamps(local_gateway_env.gateway_child_env(other)) == stamped
 
 
 def test_a_dashboard_gateway_action_for_another_profile_keeps_them_and_other_actions_do_not(stamped, monkeypatch):
@@ -130,7 +130,7 @@ def test_a_gateway_for_a_profile_keeps_that_profiles_own_sleep_url(stamped, chil
     own = f"https://sleep.example/own?t={new_credential()}"
     (other / ".env").write_text(f"{SLEEP_URL_ENV}={own}\n")
 
-    env = local.gateway_child_env(other)
+    env = local_gateway_env.gateway_child_env(other)
 
     assert env[SLEEP_URL_ENV] == own, "the launch environment's sleep URL replaced the profile's own"
     assert env[STATUS_REPORT_URL_ENV] == stamped[STATUS_REPORT_URL_ENV]

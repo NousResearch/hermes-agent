@@ -423,7 +423,12 @@ branch, using the same claim/admission pipeline as stable and canary releases.
 Without `--publish` it prints the claim, its lanes and the dispatch command and
 creates nothing. The claim message records the lanes, the green policy and the
 bundle defaults; admission reads only the claim, and `stable verify` refuses
-any candidate leg whose bundle environment differs from it.
+any candidate leg whose bundle environment differs from it. Stable Release runs
+only from `main`, so a repository whose default branch is another one gets no
+claim: `--build-commit` dispatches the tagless `desktop-bundled-release.yml`
+commit build on that branch instead (its page is
+`releases/commit/<sha>/index.html`), and refuses `--only`, `--with` and
+`--without` there.
 
 Because a commit build runs arbitrary pushed commits rather than reviewed
 release commits, it enforces four trust-boundary rules:

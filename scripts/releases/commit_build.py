@@ -211,6 +211,44 @@ def dispatch_command(tag: str, repository: str, branch: str) -> list[str]:
             "-f", f"tag={tag}"]
 
 
+def tagless_dispatch_command(commit: str, repository: str, branch: str,
+                             bundle_env: dict[str, str | None] | None = None) -> list[str]:
+    """The tagless commit build (no claim): Desktop Bundled Release on the default branch, whose
+    own admission accepts that branch. A repository whose default branch isn't Stable Release's
+    controller branch builds this way, as every repository did before commit claims."""
+    from scripts.releases.bundle_env import validate
+
+    require_commit(commit)
+    command = ["gh", "workflow", "run", WORKFLOW, "--ref", branch, "--repo", repository,
+               "-f", f"build_commit={commit}", "-f", "tag=", "-f", "upload_release=false",
+               "-f", "termux_upgrade_from_tag="]
+    if bundle_env:
+        command += ["-f", "bundle_env=" + json.dumps(validate(bundle_env), sort_keys=True)]
+    return command
+
+
+def _build_tagless(args, release, *, commit: str, repository: str, branch: str,
+                   bundle_env: dict[str, str | None]) -> None:
+    from scripts.releases import r2
+    from scripts.releases.stable import CONTROLLER_BRANCH
+
+    command = tagless_dispatch_command(commit, repository, branch, bundle_env)
+    page = r2.public_url_for(r2.public_base_url(), r2.commit_page_key_for(commit))
+    print(f"{repository} defaults to {branch}, and Stable Release runs only from {CONTROLLER_BRANCH}: "
+          f"building {commit} tagless, with no claim, lanes or suites.")
+    print(f"Builds will be available at: {page}")
+    print(f"Workflow command, running from {repository}@{branch}")
+    print(f"    {shlex.join(command)}")
+    if not args.publish:
+        print("Dry run: nothing was dispatched. Add --publish to dispatch.")
+        return
+    result = subprocess.run(command, cwd=release.REPO_ROOT, capture_output=True, text=True,  # windows-footgun: ok — encoding and replacement policy are on the next line.
+                            encoding="utf-8", errors="replace", check=True, timeout=60)
+    print((result.stdout or "").strip() or f"Dispatched the commit build of {commit}.")
+    print(f"The builds page is {page}.")
+    print("A commit build publishes nowhere: no release, channel, feed, Docker tag or Store.")
+
+
 def _unused_claim_tag(release, version: str) -> str:
     """commit.<now>-v<version>, moved forward a second at a time past any claim already tagged here
     (two builds started within one second). A claim another clone pushed meanwhile still fails the
@@ -256,8 +294,13 @@ def cmd_build_commit(args) -> None:
         if not branch:
             raise ValueError("could not resolve the repository default branch")
         if branch != CONTROLLER_BRANCH:
-            # Admission would refuse the run after the claim exists; refuse before creating it.
-            raise ValueError(f"Stable Release runs only from {CONTROLLER_BRANCH}; {repository} defaults to {branch}")
+            # Stable Release would refuse the claim's run, and only it can honour a lane choice.
+            if args.only or args.with_lanes or args.without_lanes:
+                raise ValueError(f"--only/--with/--without need Stable Release, which runs only from "
+                                 f"{CONTROLLER_BRANCH}; {repository} defaults to {branch}")
+            _build_tagless(args, release, commit=commit, repository=repository, branch=branch,
+                           bundle_env=bundle_env)
+            return
         tag = _unused_claim_tag(release, version)
         message = claim_message(version=version, commit=commit, lanes=lanes,
                                 require_green=args.require_green, bundle_env=bundle_env)

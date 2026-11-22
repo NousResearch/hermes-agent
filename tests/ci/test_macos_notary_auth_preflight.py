@@ -247,15 +247,19 @@ def test_check_notary_auth_handles_success_timeout_oserror_and_redacts_secrets(t
     body = "".join(pem.splitlines()[1:-1])
     rewrapped = [body[i : i + 40] for i in range(0, len(body), 40)]
     for code, expected in ((401, PreflightStatus.AUTH_FAILED), (500, PreflightStatus.TRANSIENT)):
-        def body_echo_runner(argv: list[str], timeout: float, code: int = code) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess(
-                argv, 1, stdout="", stderr=f"Error: HTTP status code: {code}.\nkey:\n" + "\n".join(rewrapped),
-            )
+        for stream in ("stdout", "stderr"):
+            def body_echo_runner(
+                argv: list[str], timeout: float, code: int = code, stream: str = stream,
+            ) -> subprocess.CompletedProcess[str]:
+                output = f"Error: HTTP status code: {code}.\nkey:\n" + "\n".join(rewrapped)
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout=output if stream == "stdout" else "", stderr=output if stream == "stderr" else "",
+                )
 
-        echoed = check_notary_auth(str(key_file), key_id, issuer, runner=body_echo_runner)
-        assert echoed.status is expected
-        leaked = [chunk for chunk in rewrapped if chunk in f"{echoed.message}\n{echoed.detail}"]
-        assert not leaked, f"key material reached the log on HTTP {code}"
+            echoed = check_notary_auth(str(key_file), key_id, issuer, runner=body_echo_runner)
+            assert echoed.status is expected
+            leaked = [chunk for chunk in rewrapped if chunk in f"{echoed.message}\n{echoed.detail}"]
+            assert not leaked, f"key material from {stream} reached the log on HTTP {code}"
 
     # The verdict comes from notarytool's text alone; nothing in the key file can rewrite it.
     preamble_key = tmp_path / "preamble.p8"

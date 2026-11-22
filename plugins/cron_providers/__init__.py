@@ -78,6 +78,9 @@ def load_cron_scheduler(name: str) -> Optional[CronScheduler]:
     if not provider_dir:
         logger.debug("Cron provider '%s' not found in bundled or user plugins", name)
         return None
+    if _loader.refused_as_disabled(name, provider_dir, bundled=_is_bundled(provider_dir), kind="Cron provider",
+                                   logger=logger):
+        return None
     return _loader.load_named(
         name, provider_dir, _load_provider_from_dir,
         kind="Cron provider", noun="provider", logger=logger)

@@ -27,6 +27,9 @@ class TurnContext:
     _thinking_enabled: bool = False
     progress_mode: str = "off"
     progress_grouping: str = "grouped"
+    # display.tool_progress_fold resolved to "spoiler" on an adapter that renders it: decided once
+    # per turn, read by every progress path.
+    tool_progress_fold: bool = False
     tool_progress_enabled: bool = False
     progress_queue: Any = None
     log_queue: Any = None

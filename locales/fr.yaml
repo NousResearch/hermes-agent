@@ -1014,6 +1014,8 @@ gateway:
     task_status_error: "erreur"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes travaille"
+    tool_fold_summary_one: "🛠️ {count} outil · cliquer pour afficher"
+    tool_fold_summary_many: "🛠️ {count} outils · cliquer pour afficher"
   pairing:
     validity_hour: "{hours} heure"
     validity_hours: "{hours} heures"

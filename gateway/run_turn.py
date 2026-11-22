@@ -954,9 +954,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
         # Auto-cleanup of temporary progress bubbles needs a real ``delete_message`` (getattr on the
         # adapter type, so a fake adapter without it means "can't delete", not a crash).
-        _cleanup_progress = bool(
-            disp.resolve_display_setting(disp.user_config, disp.platform_key, "cleanup_progress")
-        )
+        _cleanup_progress = bool(disp.resolve_display_setting(disp.user_config, disp.platform_key, "cleanup_progress"))
         _cleanup_adapter = self._delivery_adapter_for(source) if _cleanup_progress else None
         if _cleanup_adapter is not None and getattr(type(_cleanup_adapter), "delete_message", None) in (
             None, BasePlatformAdapter.delete_message,
@@ -971,6 +969,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             _run_still_current=self._run_still_current_fn(session_key, run_generation),
             progress_queue=queue.Queue() if disp.needs_progress_queue else None,
             _voice_ack_guild=_voice_ack_guild, _voice_ack_loop=asyncio.get_running_loop(),
+            tool_progress_fold=TurnRunner.folds_tool_progress(disp, self._delivery_adapter_for(source)),
             **{name: getattr(disp, name) for name in self._DISPLAY_TO_TURN_CTX}, **turn_params,
         )
         turn_runner = TurnRunner(self, turn_ctx)

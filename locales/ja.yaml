@@ -866,6 +866,8 @@ gateway:
     task_status_error: "エラー"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes が作業中です"
+    tool_fold_summary_one: "🛠️ ツール {count} 件 · クリックで表示"
+    tool_fold_summary_many: "🛠️ ツール {count} 件 · クリックで表示"
   pairing:
     validity_hour: "{hours} 時間"
     validity_hours: "{hours} 時間"

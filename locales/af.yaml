@@ -866,6 +866,8 @@ gateway:
     task_status_error: "fout"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes werk"
+    tool_fold_summary_one: "🛠️ {count} hulpmiddel · klik om te wys"
+    tool_fold_summary_many: "🛠️ {count} hulpmiddels · klik om te wys"
   pairing:
     validity_hour: "{hours} uur"
     validity_hours: "{hours} uur"

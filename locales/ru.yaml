@@ -866,6 +866,8 @@ gateway:
     task_status_error: "ошибка"
     task_line: "- {title} — {status}"
     task_card_title: "Hermes работает"
+    tool_fold_summary_one: "🛠️ инструментов: {count} · нажмите, чтобы показать"
+    tool_fold_summary_many: "🛠️ инструментов: {count} · нажмите, чтобы показать"
   pairing:
     validity_hour: "{hours} ч"
     validity_hours: "{hours} ч"

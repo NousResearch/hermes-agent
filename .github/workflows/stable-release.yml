@@ -40,8 +40,8 @@ permissions:
 # PR-controlled code and must stay secret-free.
 # A canary takes hours; it must never queue a stable release behind it, nor share the stable
 # publication reconciler's lock.
-# Commit builds publish nowhere and never share state, so each runs on its own (its claim tag is
-# the group).
+# A commit build publishes only to its own claim archive and never writes a shared cache (it reads
+# them), so each runs on its own (its claim tag is the group).
 concurrency:
   group: ${{ startsWith(inputs.tag, 'canary.') && 'canary-release-pipeline' || startsWith(inputs.tag, 'commit.') && inputs.tag || 'stable-release' }}
   cancel-in-progress: false
@@ -666,7 +666,7 @@ jobs:
 
   publish-commit:
     name: Render the commit build's page
-    # Commit policy only (lanes.POLICY_JOBS). A commit build publishes nowhere: no channel, feed,
+    # Commit policy only (lanes.POLICY_JOBS). A commit build publishes to no channel, feed,
     # Docker tag, GitHub release, APT repository or Store. Its packages already sit in its claim
     # archive (releases/tag/<claim>/); this job lists every staged downloadable artifact of the
     # accepted candidate there as the builds page (releases/tag/<claim>/index.html) and in the run

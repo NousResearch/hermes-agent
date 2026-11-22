@@ -60,7 +60,8 @@ _CANARY_TAG_RE = re.compile(rf"^canary\.(?P<stamp>20\d{{6}}T\d{{6}}Z)-v(?P<core>
 # A commit build's claim tag: the same shape with the ``commit`` kind --
 # ``commit.<YYYYMMDDTHHMMSSZ>-v<pyproject version at the commit>``. The tag points at the built
 # commit (any pushed commit, not only main's), and its version is ``<core>+commit.<stamp>``. Commit
-# builds publish nowhere and their installs refuse updates (install stamp ``source: commit-build``).
+# builds publish to no channel, feed or release and their installs refuse updates (install stamp
+# ``source: commit-build``).
 _COMMIT_TAG_RE = re.compile(rf"^commit\.(?P<stamp>20\d{{6}}T\d{{6}}Z)-v(?P<core>{_VERSION_CORE})$")
 # Every prefix-kind claim tag that is its own release identity: kind, stamp, core.
 _KIND_TAG_RE = re.compile(rf"^(?P<kind>canary|commit)\.(?P<stamp>20\d{{6}}T\d{{6}}Z)-v(?P<core>{_VERSION_CORE})$")

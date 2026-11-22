@@ -873,8 +873,8 @@ def admit(env: dict) -> None:
     admitted = check_claim(env)
     repository = env["GITHUB_REPOSITORY"]
     policy = admitted["policy"]
-    # A commit build owns no GitHub release: it publishes nowhere, and its builds page lives in its
-    # claim archive (releases/tag/<claim>/index.html).
+    # A commit build owns no GitHub release and publishes to no channel: its packages and builds
+    # page live only in its claim archive (releases/tag/<claim>/index.html).
     release = {"databaseId": ""} if policy == "commit" else json.loads(output([
         "gh", "release", "view", admitted["claim_tag"], "--repo", repository,
         "--json", "databaseId,tagName,isDraft,isPrerelease",

@@ -21,6 +21,17 @@ UI_TRANSPORT_SOURCES = frozenset({"tui", "desktop"})
 ONESHOT_SOURCE = "oneshot"
 CLI_FAMILY_SOURCES = frozenset({"cli", ONESHOT_SOURCE})
 
+# Lanes whose identity is INTRINSIC to the agent, never inherited: a delegate child is always a
+# subagent and a scheduled run is always cron, whatever surface the spawning turn is happening on.
+# Without this the ambient gateway context wins (``HERMES_SESSION_SOURCE`` is set for the duration
+# of a parent's turn, and ``delegated_child_context`` does not clear it), so a child built inside a
+# desktop turn is stamped ``source='desktop'`` — indistinguishable from a real desktop conversation
+# in every source-based consumer (hermes sessions list, the /resume admin census, analytics).
+# Surfaces that genuinely ARE the ambient context (cli/tui/desktop/acp) still defer to it, so their
+# rows keep tracking the real session they were launched in.
+_SELF_SOURCED_PLATFORMS = frozenset({"subagent", "cron"})
+
+
 # The owner's own local surfaces: the only sources that carry OpenAI Daybreak (agent.daybreak). It is the
 # approved account's own access (no third-party or downstream use); a plugin session tagged ``telegram`` is
 # someone else's chat even when a local backend builds its agent.
@@ -37,6 +48,9 @@ def create_surface(source: str) -> str:
 
 
 def session_source_for(platform: Optional[str]) -> str:
+    if isinstance(platform, str) and platform.strip().lower() in _SELF_SOURCED_PLATFORMS:
+        return platform.strip().lower()
+
     source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip()
     single_query = get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"
     explicit = get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") == "1"

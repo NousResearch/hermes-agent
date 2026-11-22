@@ -145,6 +145,13 @@ class PluginChoice:
     enabled: frozenset = frozenset()
     disabled: frozenset = frozenset()
 
+    def is_disabled(self, plugin_dir: Path, name: str) -> bool:
+        """Whether ``plugins.disabled`` lists the plugin under any spelling the plugin commands write:
+        the provider name, its directory name or its manifest ``name:`` (read without importing)."""
+        from pm.plugins_state import plugin_spellings
+
+        return bool(self.disabled and plugin_spellings(plugin_dir, name) & self.disabled)
+
     def allows_import(self, plugin_dir: Path, name: str) -> bool:
         """A user plugin's code may run for a listing only when it is turned on: selected for this
         category or in ``plugins.enabled``, and not in ``plugins.disabled``."""
@@ -175,6 +182,28 @@ def read_plugin_choice(*selection_key: str) -> PluginChoice:
 def describe_without_import(name: str, plugin_dir: Path) -> tuple[str, str, bool]:
     """A listing row for a user plugin that is not turned on: manifest description, not available."""
     return name, read_plugin_description(plugin_dir), False
+
+
+def enable_command(name: str) -> str:
+    """``plugins enable`` for the active home from any shell, so HERMES_HOME names that home. A
+    profile-shaped HERMES_HOME already beats the sticky profile; any other home needs ``-p default``,
+    which resolves to HERMES_HOME itself (:func:`hermes_cli.profiles.profile_root_for_env_home`)."""
+    from hermes_cli.profiles import profile_root_for_env_home
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
+    selector = "" if profile_root_for_env_home(str(home), home) != home else "-p default "
+    return f"`hermes {selector}plugins enable {name}` with HERMES_HOME set to {home}"
+
+
+def refused_as_disabled(name: str, plugin_dir: Path, *, bundled: bool, kind: str,
+                        logger: logging.Logger) -> bool:
+    """True (after a warning naming the way back) when a selected NON-bundled provider is parked in
+    ``plugins.disabled``: a turned-off plugin stays off even when a category key still names it."""
+    if bundled or not read_plugin_choice().is_disabled(plugin_dir, name):
+        return False
+    logger.warning("⚠ %s '%s' is turned off: plugins.disabled lists it. Turn it back on with %s.",
+                   kind, name, enable_command(name))
+    return True
 
 
 def _new_module(name: str, file: Path, search_locations: Optional[list[str]] = None) -> Optional[Any]:

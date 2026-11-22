@@ -74,6 +74,9 @@ def load_context_engine(name: str) -> Optional[ContextEngine]:
     if engine_dir is None:
         logger.debug("Context engine '%s' not found in bundled or user plugins", name)
         return None
+    if _loader.refused_as_disabled(name, engine_dir, bundled=_is_bundled(engine_dir), kind="Context engine",
+                                   logger=logger):
+        return None
     return _loader.load_named(
         name, engine_dir, _load_engine_from_dir, kind="Context engine", noun="engine", logger=logger
     )

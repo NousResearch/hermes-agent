@@ -1,12 +1,14 @@
 """Listing context engines and cron schedulers runs a user plugin's code only when the operator turned
 it on: it is the one ``context.engine`` / ``cron.provider`` selects, or ``plugins.enabled`` names it,
 and ``plugins.disabled`` does not. Any other installed plugin still shows up (name and manifest
-description, not available) and stays inert until chosen.
+description, not available) and stays inert until chosen. Selecting a provider that
+``plugins.disabled`` lists keeps it off, the way the memory loader already does.
 
 Each plugin writes a marker line when its ``__init__.py`` runs, so "inert" is observed directly."""
 
 from __future__ import annotations
 
+import logging
 import sys
 import uuid
 from pathlib import Path
@@ -116,6 +118,17 @@ def _discover(kind: str):
     return discover_memory_providers()
 
 
+def _load(kind: str, name: str):
+    if kind == "context":
+        from plugins.context_engine import load_context_engine
+        return load_context_engine(name)
+    if kind == "cron":
+        from plugins.cron_providers import load_cron_scheduler
+        return load_cron_scheduler(name)
+    from plugins.memory import load_memory_provider
+    return load_memory_provider(name, register_skills=False)
+
+
 def _row(kind: str, name: str):
     return next((row for row in _discover(kind) if row[0] == name), None)
 
@@ -161,6 +174,46 @@ def test_the_plugins_picker_lists_an_engine_that_is_not_turned_on_without_runnin
     assert home.ran() == []
 
 
+# ── Selecting a disabled plugin by name keeps it off ──────────────────────────
+
+
+@pytest.mark.parametrize("kind", ["context", "cron"])
+def test_selecting_a_disabled_plugin_by_name_does_not_run_it(home, kind, caplog):
+    name = home.plugin(kind)
+    home.config(kind=kind, selected=name, disabled=[name])
+
+    with caplog.at_level(logging.WARNING):
+        assert _load(kind, name) is None
+    assert home.ran() == []
+    assert f"'{name}' is turned off: plugins.disabled lists it" in caplog.text
+    assert f"plugins enable {name}" in caplog.text
+
+
+def test_a_disabled_cron_provider_falls_back_to_the_built_in_ticker(home, caplog):
+    from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
+
+    name = home.plugin("cron")
+    home.config(kind="cron", selected=name, disabled=[name])
+
+    with caplog.at_level(logging.WARNING):
+        scheduler = resolve_cron_scheduler()
+    assert isinstance(scheduler, InProcessCronScheduler)
+    assert f"cron.provider '{name}' not found; using built-in ticker" in caplog.text
+    assert home.ran() == []
+
+
+def test_a_disabled_context_engine_falls_back_to_the_built_in_compressor(home, caplog):
+    from agent.agent_init import _select_context_engine
+
+    name = home.plugin("context")
+    home.config(kind="context", selected=name, disabled=[name])
+
+    with caplog.at_level(logging.WARNING):
+        assert _select_context_engine({"context": {"engine": name}}) is None
+    assert f"Context engine '{name}' not found" in caplog.text
+    assert home.ran() == []
+
+
 # ── Controls: what the operator turned on behaves as before ───────────────────
 
 
@@ -183,6 +236,16 @@ def test_an_enabled_plugin_runs_for_listing(home, kind):
 
 
 @pytest.mark.parametrize("kind", ["context", "cron", "memory"])
+def test_selecting_a_plugin_that_is_not_disabled_loads_it(home, kind):
+    name = home.plugin(kind)
+    home.config()  # no plugins.enabled entry: selection by name is the documented switch
+
+    instance = _load(kind, name)
+    assert instance is not None and instance.name == name
+    assert home.ran() != []
+
+
+@pytest.mark.parametrize("kind", ["context", "cron", "memory"])
 def test_bundled_rows_do_not_depend_on_the_plugin_lists(home, kind):
     """Bundled providers are listed and probed the same whatever plugins.enabled/disabled say."""
     home.config()
@@ -191,3 +254,13 @@ def test_bundled_rows_do_not_depend_on_the_plugin_lists(home, kind):
     home.config(enabled=[], disabled=bundled)
 
     assert _discover(kind) == plain
+
+
+def test_selecting_a_disabled_memory_provider_is_still_refused(home, caplog):
+    name = home.plugin("memory")
+    home.config(kind="memory", selected=name, disabled=[name])
+
+    with caplog.at_level(logging.WARNING):
+        assert _load("memory", name) is None
+    assert home.ran() == []
+    assert f"Memory provider '{name}' is turned off: plugins.disabled lists it" in caplog.text

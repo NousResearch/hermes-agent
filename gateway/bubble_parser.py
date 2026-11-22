@@ -22,8 +22,10 @@ import uuid
 import logging
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import quote, quote_plus, urlsplit, urlunsplit
+
+from gateway.bubble_actions import BubbleAction, EffectAction, PollAction, TapbackAction, TextBubble
 
 logger = logging.getLogger(__name__)
 
@@ -40,29 +42,43 @@ def _get_base_scratch_dir() -> Path:
 class BubbleParser:
     """Parses incremental LLM streaming deltas into discrete, Markdown-balanced bubbles."""
 
-    @staticmethod
-    def _render_card_image(card_type: str, attrs: dict[str, str], body: str = "") -> Optional[str]:
-        try:
-            if card_type == "weather":
-                from gateway.visual_card_renderer import render_weather_card_to_image
-                return render_weather_card_to_image(attrs, body=body)
-            elif card_type == "movie":
-                from gateway.visual_card_renderer import render_movie_card_to_image
-                return render_movie_card_to_image(attrs, body=body)
-            elif card_type == "word":
-                from gateway.visual_card_renderer import render_word_card_to_image
-                return render_word_card_to_image(attrs, body=body)
-        except (ImportError, OSError, ValueError):  # health: allow S110 -- optional card renderer fallback
-            return None
-        return None
+    # Explicit trusted extension points for optional local customizations
+    _custom_action_handlers: dict[str, tuple[re.Pattern, Callable]] = {}
+    _custom_transforms: list[Callable[[str], list[Any]]] = []
+    _custom_finish_hooks: list[Callable[[Any], list[BubbleAction]]] = []
 
-    @staticmethod
-    def _render_sheet_image(body: str, title: str = "", subtitle: str = "") -> Optional[str]:
-        try:
-            from gateway.visual_sheet_renderer import render_markdown_table_to_image
-            return render_markdown_table_to_image(body, title=title, subtitle=subtitle)
-        except (ImportError, OSError, ValueError):  # health: allow S110 -- optional sheet renderer fallback
-            return None
+    @classmethod
+    def register_custom_action(cls, name: str, pattern: re.Pattern, handler: Callable) -> None:
+        """Explicit registration point for trusted local customizations."""
+        if name in cls._custom_action_handlers:
+            existing_pat, existing_fn = cls._custom_action_handlers[name]
+            if existing_fn is handler and existing_pat.pattern == pattern.pattern:
+                return  # Idempotent re-registration
+            logger.warning(
+                "[BubbleParser] Refusing silent overwrite of existing custom action '%s' with a different handler",
+                name,
+            )
+            return
+        cls._custom_action_handlers[name] = (pattern, handler)
+
+    @classmethod
+    def register_custom_transform(cls, transform_fn: Callable[[str], list[Any]]) -> None:
+        """Explicit registration point for trusted local text transforms."""
+        if transform_fn not in cls._custom_transforms:
+            cls._custom_transforms.append(transform_fn)
+
+    @classmethod
+    def register_custom_finish_hook(cls, hook_fn: Callable[[Any], list[BubbleAction]]) -> None:
+        """Explicit registration point for trusted local finish hooks."""
+        if hook_fn not in cls._custom_finish_hooks:
+            cls._custom_finish_hooks.append(hook_fn)
+
+    @classmethod
+    def clear_custom_extensions(cls) -> None:
+        """Clear all registered local extensions."""
+        cls._custom_action_handlers.clear()
+        cls._custom_transforms.clear()
+        cls._custom_finish_hooks.clear()
 
 
     _OPEN_TAG = "<bubble>"
@@ -86,12 +102,13 @@ class BubbleParser:
         re.IGNORECASE | re.DOTALL,
     )
     _CALENDAR_RE = re.compile(
-        r'<(?:calendar|calendar_event|event|schedule)(?:\s+(?P<attrs>[^>]*?))?\s*>(?P<body>.*?)</(?:calendar|calendar_event|event|schedule)>|'
-        r'<(?:calendar|calendar_event|event|schedule)(?:\s+(?P<self_attrs>(?:[^"\'/>]|"[^"]*"|\'[^\']*\')*?))?\s*/?>',
+        r'<(?:calendar|calendar_event|event|schedule)(?:\s+(?P<attrs>[^\s>][^>]*?))?\s*>(?P<body>.*?)</(?:calendar|calendar_event|event|schedule)>|'
+        r'<(?:calendar|calendar_event|event|schedule)(?:\s+(?P<self_attrs>[^\s>][^>]*?))?\s*/>',
         re.IGNORECASE | re.DOTALL,
     )
     _MAP_RE = re.compile(
-        r'<(?:map|location)(?:\s+(?P<attrs>[^>]*))?\s*>(?P<body>.*?)</(?:map|location)>|<(?:map|location)(?:\s+(?P<self_attrs>(?:[^"\'/>]|"[^"]*"|\'[^\']*\')*?))?\s*/>',
+        r'<(?:map|location)(?:\s+(?P<attrs>[^\s>][^>]*?))?\s*>(?P<body>.*?)</(?:map|location)>|'
+        r'<(?:map|location)(?:\s+(?P<self_attrs>[^\s>][^>]*?))?\s*/>',
         re.IGNORECASE | re.DOTALL,
     )
     _APPLE_MAPS_URL_RE = re.compile(
@@ -241,13 +258,13 @@ class BubbleParser:
             res = re.sub(r'[\s:：，,、-]+$', '', res)
         return res.strip()
     _CONTACT_RE = re.compile(
-        r'<(?:contact|vcard|card)(?:\s+(?P<attrs>[^>]*?))?\s*>(?P<body>.*?)</(?:contact|vcard|card)>|'
-        r'<(?:contact|vcard|card)(?:\s+(?P<self_attrs>(?:[^"\'/>]|"[^"]*"|\'[^\']*\')*?))?\s*/>',
+        r'<(?:contact|vcard|card)(?:\s+(?P<attrs>[^\s>][^>]*?))?\s*>(?P<body>.*?)</(?:contact|vcard|card)>|'
+        r'<(?:contact|vcard|card)(?:\s+(?P<self_attrs>[^\s>][^>]*?))?\s*/>',
         re.IGNORECASE | re.DOTALL,
     )
     _IMAGE_TAG_RE = re.compile(
-        r'<(?:image|img|photo|media|meme)(?:\s+(?P<attrs>[^>]*?))?\s*>(?P<body>.*?)</(?:image|img|photo|media|meme)>|'
-        r'<(?:image|img|photo|media|meme)(?:\s+(?P<self_attrs>(?:[^"\'/>]|"[^"]*"|\'[^\']*\')*?))?\s*/>',
+        r'<(?:image|img|photo|media|meme)(?:\s+(?P<attrs>[^\s>][^>]*?))?\s*>(?P<body>.*?)</(?:image|img|photo|media|meme)>|'
+        r'<(?:image|img|photo|media|meme)(?:\s+(?P<self_attrs>[^\s>][^>]*?))?\s*/>',
         re.IGNORECASE | re.DOTALL,
     )
     _MEDIA_DIRECTIVE_RE = re.compile(
@@ -256,23 +273,13 @@ class BubbleParser:
         r'[`"\'*_]*[ \t]*)(?=(?:[\r\n]|$|<))',
         re.IGNORECASE,
     )
-    _CHEAT_SHEET_RE = re.compile(
-        r'<(?:cheat_sheet|visual_table|sheet)(?:\s+(?P<attrs>[^>]*?))?\s*>(?P<body>.*?)</(?:cheat_sheet|visual_table|sheet)>',
-        re.IGNORECASE | re.DOTALL,
-    )
-    _WEATHER_RE = re.compile(
-        r'<(?:weather|forecast)(?:\s+(?P<attrs>[^>]*?))?\s*>(?P<body>.*?)</(?:weather|forecast)>|'
-        r'<(?:weather|forecast)(?:\s+(?P<self_attrs>(?:[^"\'/>]|"[^"]*"|\'[^\']*\')*?))?\s*/>',
-        re.IGNORECASE | re.DOTALL,
-    )
-    _MOVIE_RE = re.compile(
-        r'<(?:movie|film|tv|drama)(?:\s+(?P<attrs>[^>]*?))?\s*>(?P<body>.*?)</(?:movie|film|tv|drama)>|'
-        r'<(?:movie|film|tv|drama)(?:\s+(?P<self_attrs>(?:[^"\'/>]|"[^"]*"|\'[^\']*\')*?))?\s*/>',
-        re.IGNORECASE | re.DOTALL,
-    )
-    _WORD_RE = re.compile(
-        r'<(?:word|dict|dictionary|lexicon)(?:\s+(?P<attrs>[^>]*?))?\s*>(?P<body>.*?)</(?:word|dict|dictionary|lexicon)>|'
-        r'<(?:word|dict|dictionary|lexicon)(?:\s+(?P<self_attrs>(?:[^"\'/>]|"[^"]*"|\'[^\']*\')*?))?\s*/>',
+    _GENERIC_UNSUPPORTED_TAG_RE = re.compile(
+        r'<(?:weather|forecast|movie|film|tv|drama|word|dict|dictionary|lexicon|cheat_sheet|visual_table|sheet)'
+        r'(?:\s+(?:[^"\'/>]|"[^"]*"|\'[^\']*\')*?)?>'
+        r'(?P<body>.*?)'
+        r'</(?:weather|forecast|movie|film|tv|drama|word|dict|dictionary|lexicon|cheat_sheet|visual_table|sheet)>|'
+        r'<(?:weather|forecast|movie|film|tv|drama|word|dict|dictionary|lexicon|cheat_sheet|visual_table|sheet)'
+        r'(?:\s+(?P<attrs>(?:[^"\'/>]|"[^"]*"|\'[^\']*\')*?))?\s*/>',
         re.IGNORECASE | re.DOTALL,
     )
     _ACTION_RE = re.compile(
@@ -305,20 +312,29 @@ class BubbleParser:
         "question": "❓", "confused": "❓", "what": "❓",
     }
 
-    def __init__(self, paragraph_fallback: bool = True, isolate_urls: bool = False) -> None:
+    def __init__(
+        self,
+        paragraph_fallback: bool = True,
+        isolate_urls: bool = False,
+        config: Optional[Any] = None,
+        chat_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+    ) -> None:
         self._buffer: str = ""
         self._in_code_block: bool = False
         self._active_code_lang: str = ""
         self._pending_effect: Optional[str] = None
         self._has_emitted_map: bool = False
         self._has_emitted_poll: bool = False
-        self._cheat_sheet_options: list[str] = []
-        self._cheat_sheet_title: str = ""
-        self._has_emitted_weather: bool = False
-        self._has_emitted_movie: bool = False
-        self._has_emitted_word: bool = False
         self.paragraph_fallback: bool = paragraph_fallback
         self.isolate_urls: bool = isolate_urls
+        self.chat_id: str = chat_id or f"chat_{uuid.uuid4().hex[:8]}"
+        self.turn_id: Optional[str] = turn_id or f"turn_{uuid.uuid4().hex[:8]}"
+        if config is None:
+            from gateway.airhermes_config import AirHermesConfig
+            self._config = AirHermesConfig()
+        else:
+            self._config = config
 
     @property
     def buffer(self) -> str:
@@ -340,16 +356,51 @@ class BubbleParser:
         lower = raw.lower()
         return cls._EMOJI_NAME_MAP.get(lower, raw)
 
+    @staticmethod
+    def _action_to_legacy_str(action: Any) -> str:
+        if isinstance(action, str):
+            return action
+        from gateway.bubble_actions import (
+            EffectAction,
+            FileAttachmentAction,
+            ImageAttachmentAction,
+            PollAction,
+            TapbackAction,
+            TextBubble,
+        )
+        if isinstance(action, TextBubble):
+            return action.content
+        if isinstance(action, PollAction):
+            return f"POLL:{json.dumps({'title': action.title, 'options': list(action.options)}, ensure_ascii=False)}"
+        if isinstance(action, TapbackAction):
+            return f"TAPBACK:{action.reaction}"
+        if isinstance(action, EffectAction):
+            return f"EFFECT:{json.dumps({'effect': action.effect_type, 'text': action.content}, ensure_ascii=False)}"
+        if isinstance(action, FileAttachmentAction):
+            return f"FILE:{action.staged_path}"
+        if isinstance(action, ImageAttachmentAction):
+            return f"IMAGE:{json.dumps({'path': action.staged_path, 'caption': action.caption or '', 'delay': 1.5}, ensure_ascii=False)}"
+        return str(action)
+
     def feed(self, delta: str) -> list[str]:
-        """Feed a streaming chunk/delta and return list of fully ready bubbles."""
-        self._buffer += delta
-        return self._extract_ready_bubbles(is_finish=False)
+        """Feed a streaming chunk/delta and return list of fully ready bubbles (legacy string API)."""
+        actions = self.feed_actions(delta)
+        return [self._action_to_legacy_str(a) for a in actions]
 
     def finish(self, exception_occurred: bool = False) -> list[str]:
-        """Finalize parsing at the end of streaming or upon exception."""
-        ready = self._extract_ready_bubbles(is_finish=True)
+        """Finalize parsing at the end of streaming or upon exception (legacy string API)."""
+        actions = self.finish_actions(exception_occurred=exception_occurred)
+        return [self._action_to_legacy_str(a) for a in actions]
+
+    def feed_actions(self, delta: str) -> list[BubbleAction]:
+        """Feed a streaming chunk/delta and return list of ready typed BubbleAction objects."""
+        self._buffer += delta
+        return self._extract_ready_actions(is_finish=False)
+
+    def finish_actions(self, exception_occurred: bool = False) -> list[BubbleAction]:
+        """Finalize parsing at stream end and return list of remaining ready typed BubbleActions."""
+        ready = self._extract_ready_actions(is_finish=True)
         if exception_occurred:
-            # Discard residual unclosed buffer upon fatal stream exception
             self._buffer = ""
             self._in_code_block = False
             self._active_code_lang = ""
@@ -368,9 +419,9 @@ class BubbleParser:
             pre = self._buffer[:unclosed_tap.start()].strip()
             self._buffer = ""
             if pre:
-                ready.extend(self._emit_bubble(pre))
-            if clean_emoji:
-                ready.append(f"TAPBACK:{clean_emoji}")
+                ready.extend(self._emit_actions(pre))
+            if clean_emoji and getattr(self._config, "enable_tapbacks", True):
+                ready.append(TapbackAction(reaction=clean_emoji))
 
         rem = self._buffer.strip()
         self._buffer = ""
@@ -379,98 +430,21 @@ class BubbleParser:
             rem = self._strip_dangling_control_tags(rem)
             if rem:
                 if self.paragraph_fallback and "\n\n" in rem and not self._is_inside_code_block(rem):
-                    # Cleanly split leftover paragraphs into individual bubbles
                     paras = [p.strip() for p in re.split(r'\n\s*\n', rem) if p.strip()]
                     for p in paras:
-                        ready.extend(self._emit_bubble(p))
+                        ready.extend(self._emit_actions(p))
                 else:
-                    ready.extend(self._emit_bubble(rem))
+                    ready.extend(self._emit_actions(rem))
 
-        # Auto-poll guardrail: when a comparison cheat sheet is emitted without an explicit poll, synthesize one
-        if not self._has_emitted_poll and self._cheat_sheet_options:
-            title_text = self._cheat_sheet_title or ""
-            if "自驾" in title_text or "路线" in title_text:
-                poll_title = "想先看哪条路线的行程细节？"
-            elif "方案" in title_text or "对比" in title_text:
-                poll_title = f"你更想了解哪个{title_text}？" if title_text else "你更想了解哪个方案？"
-            else:
-                poll_title = "你更想了解哪一项？"
-            payload = json.dumps({"title": poll_title, "options": self._cheat_sheet_options}, ensure_ascii=False)
-            ready.append(f"POLL:{payload}")
+        for hook in self._custom_finish_hooks:
+            ready.extend(hook(self))
 
         # Reset cross-turn parser state
         self._in_code_block = False
         self._active_code_lang = ""
         self._pending_effect = None
         self._has_emitted_poll = False
-        self._cheat_sheet_options = []
-        self._cheat_sheet_title = ""
-        self._has_emitted_weather = False
-        self._has_emitted_movie = False
-        self._has_emitted_word = False
         return ready
-
-    @staticmethod
-    def _is_weather_content(title: str = "", body: str = "") -> bool:
-        """Detect whether a cheat sheet or table is duplicate weather telemetry."""
-        title_lower = (title or "").lower()
-        if any(k in title_lower for k in ("天气", "气象", "今日天气", "天气概览", "天气预报", "实时天气", "气温")):
-            return True
-        combined = f"{title} {body}".lower()
-        weather_keywords = (
-            "天气", "气温", "预报", "体感", "气象", "降水", "风向",
-            "湿度", "紫外线", "aqi", "穿搭建议", "穿衣建议", "小雨",
-            "微雨", "大雨", "暴雨", "晴天", "阴天", "多云", "毛毛雨"
-        )
-        hits = sum(1 for kw in weather_keywords if kw in combined)
-        return hits >= 3
-
-    _SEQ_TIME_PATTERN = re.compile(
-        r'(?:第[一二三四五六七八九十\d]+[站步期天节次]|上午|下午|晚上|早晨|中午|凌晨|Day\s*\d|\d{1,2}:\d{2})',
-        re.IGNORECASE,
-    )
-
-    @classmethod
-    def _extract_options_from_table(cls, body: str, title: str = "") -> list[str]:
-        lines = [line.strip() for line in body.strip().splitlines() if line.strip()]
-        data_lines = []
-        for l in lines:
-            if not l.startswith('|'):
-                continue
-            cells = [c.strip() for c in l.split('|')[1:-1]]
-            if not cells:
-                continue
-            # Skip header separators like :--- or ---
-            if all(re.match(r'^:?-+:?$', c) for c in cells):
-                continue
-            data_lines.append(cells)
-        if len(data_lines) <= 1:
-            return []
-        rows = data_lines[1:]
-        options = []
-        for r in rows:
-            if not r:
-                continue
-            col0 = r[0]
-            # Strip markdown formatting
-            cleaned = re.sub(r'[*_`]', '', col0).strip()
-            # If any row is a sequential step/time (e.g. 第一站, 14:30), this is an itinerary schedule, NOT a choice!
-            if cls._SEQ_TIME_PATTERN.search(cleaned):
-                return []
-            if len(cleaned) > 28:
-                cleaned = cleaned[:27] + '…'
-            if cleaned:
-                options.append(cleaned)
-
-        # Must have clear alternative signals (e.g. 路线, 方案, 方向, [A-D]线, or title has 对比/推荐)
-        has_choice_signal = (
-            any(re.search(r'(?:路线|方案|方向|[A-D]：|[A-D]线|[A-D]方案)', opt) for opt in options)
-            or bool(re.search(r'(?:对比|可选|方向|精选推荐)', title))
-        )
-        if not has_choice_signal:
-            return []
-
-        return options
 
     def _find_matching_bubble_close(self, buffer: str, open_pos: int) -> int:
         """Find the matching </bubble> for <bubble> at open_pos, respecting tag nesting."""
@@ -501,16 +475,22 @@ class BubbleParser:
         in_code = False
         current_lang = ""
         for l in lines:
-            s = l.strip()
-            fence_idx = s.find("```")
-            if fence_idx != -1:
+            idx = 0
+            while idx < len(l):
+                fence_idx = l.find("```", idx)
+                if fence_idx == -1:
+                    break
                 if not in_code:
                     in_code = True
-                    rest = s[fence_idx + 3:].strip()
+                    rest = l[fence_idx + 3:].strip()
                     current_lang = rest.split()[0] if rest else ""
+                    idx = fence_idx + 3
+                    if current_lang:
+                        idx += len(current_lang)
                 else:
                     in_code = False
                     current_lang = ""
+                    idx = fence_idx + 3
 
         if in_code:
             text = text.rstrip() + "\n```"
@@ -524,7 +504,8 @@ class BubbleParser:
 
     def _strip_dangling_control_tags(self, text: str) -> str:
         """Strip incomplete dangling tags at stream end while protecting code blocks."""
-        cleaned = re.sub(r'</?b(u(b(b(l(e)?)?)?)?)?$', '', text, flags=re.IGNORECASE)
+        cleaned = re.sub(r'^\s*<{1,3}bubble>{1,3}', '', text, flags=re.IGNORECASE)
+        cleaned = re.sub(r'</?b(u(b(b(l(e)?)?)?)?)?$', '', cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r'<{1,3}b(u(b(b(l(e)?)?)?)?)?>{0,3}$', '', cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r'</?t(a(p(b(a(c(k)?)?)?)?)?)?$', '', cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r'</?r(e(a(c(t(i(o(n)?)?)?)?)?)?)?$', '', cleaned, flags=re.IGNORECASE)
@@ -547,8 +528,17 @@ class BubbleParser:
     def _parse_tag_attrs(attr_str: str) -> dict[str, str]:
         if not attr_str:
             return {}
-        matches = re.findall(r'([a-zA-Z0-9_\-]+)\s*=\s*["\']([^"\']*)["\']', attr_str)
-        return {k.lower(): v for k, v in matches}
+        pattern = re.compile(
+            r'([a-zA-Z0-9_\-]+)\s*=\s*(?:"((?:[^"\\\n]|\\.)*?)"|\'((?:[^\'\\\n]|\\.)*?)\')',
+            re.DOTALL
+        )
+        result = {}
+        for m in pattern.finditer(attr_str):
+            key = m.group(1).lower()
+            val = m.group(2) if m.group(2) is not None else m.group(3)
+            val = val.replace(r'\"', '"').replace(r"\'", "'")
+            result[key] = val
+        return result
 
     @classmethod
     def _resolve_media_directive(cls, raw_path: str, caption: str = "", delay: float = 1.5) -> Optional[str]:
@@ -601,6 +591,103 @@ class BubbleParser:
             return f"FILE:{p}"
 
     @staticmethod
+    def _is_valid_map_url(url_str: str) -> bool:
+        """Validate whether a URL string is a legitimate Apple Maps or Google Maps URL.
+
+        Rejects deceptive domains, embedded credentials, non-standard ports, and unsupported schemes.
+        """
+        if not url_str or not isinstance(url_str, str):
+            return False
+        raw = url_str.strip()
+        if not (raw.startswith("http://") or raw.startswith("https://") or raw.startswith("maps://")):
+            return False
+        try:
+            parsed = urlsplit(raw)
+            scheme = (parsed.scheme or "").lower()
+            if scheme not in ("http", "https", "maps"):
+                return False
+            # Reject embedded credentials (user:pass@)
+            if parsed.username or parsed.password:
+                return False
+            host = (parsed.hostname or "").lower()
+            if scheme == "maps":
+                # maps://?q=... or maps://maps.apple.com/?q=...
+                return (not host or host == "maps.apple.com") and parsed.port is None
+            if host in ("maps.apple.com", "maps.google.com"):
+                return parsed.port in (None, 80, 443)
+            return False
+        except Exception:  # health: allow S110, BLE001 -- url split error fallback
+            return False
+
+    @staticmethod
+    def _escape_vcf_text(val: str, multiline: bool = False) -> str:
+        """Escape text for vCard 3.0 per RFC 2426 §2.4.2."""
+        if not val:
+            return ""
+        # 1. Normalize line breaks
+        v = val.replace("\r\n", "\n").replace("\r", "\n")
+        # 2. Strip non-printable ASCII control characters (keep \n if multiline)
+        v = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", v)
+        # 3. Escape backslashes, semicolons, and commas
+        v = v.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
+        # 4. Handle line breaks
+        if multiline:
+            v = v.replace("\n", "\\n")
+        else:
+            v = re.sub(r"\n+", " ", v).strip()
+        return v
+
+    @staticmethod
+    def _fold_ics_line(line: str, max_octets: int = 75) -> str:
+        """Fold an iCalendar content line to at most 75 octets per RFC 5545 §3.1.
+
+        Inserts CRLF followed by a single space for continuation lines, while strictly
+        preserving multi-byte UTF-8 character boundaries.
+        """
+        line_bytes = line.encode("utf-8")
+        if len(line_bytes) <= max_octets:
+            return line
+
+        chunks: list[str] = []
+        current_line = line
+        is_first = True
+        while current_line:
+            limit = max_octets if is_first else (max_octets - 1)
+            cur_bytes = current_line.encode("utf-8")
+            if len(cur_bytes) <= limit:
+                chunks.append(current_line)
+                break
+
+            slice_len = limit
+            while slice_len > 0 and (cur_bytes[slice_len] & 0xC0) == 0x80:
+                slice_len -= 1
+
+            chunk_str = cur_bytes[:slice_len].decode("utf-8")
+            chunks.append(chunk_str)
+            current_line = cur_bytes[slice_len:].decode("utf-8")
+            is_first = False
+
+        return "\r\n ".join(chunks)
+
+    @staticmethod
+    def _escape_ics_text(val: str, multiline: bool = False) -> str:
+        """Escape text for iCalendar 2.0 per RFC 5545 §3.3.11."""
+        if not val:
+            return ""
+        # 1. Normalize line breaks
+        v = val.replace("\r\n", "\n").replace("\r", "\n")
+        # 2. Strip non-printable ASCII control characters (keep \n if multiline)
+        v = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", v)
+        # 3. Escape backslashes, semicolons, and commas
+        v = v.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
+        # 4. Handle line breaks
+        if multiline:
+            v = v.replace("\n", "\\n")
+        else:
+            v = re.sub(r"\n+", " ", v).strip()
+        return v
+
+    @staticmethod
     def _generate_vcf(
         name: str,
         phone: str = "",
@@ -610,7 +697,7 @@ class BubbleParser:
         address: str = "",
         note: str = "",
     ) -> Optional[str]:
-        clean_name = name.strip() or "新联系人"
+        clean_name = BubbleParser._escape_vcf_text(name, multiline=False) or "新联系人"
         lines = [
             "BEGIN:VCARD",
             "VERSION:3.0",
@@ -619,18 +706,31 @@ class BubbleParser:
             f"N;CHARSET=UTF-8:;{clean_name};;;",
         ]
         if org:
-            lines.append(f"ORG;CHARSET=UTF-8:{org.strip()}")
+            clean_org = BubbleParser._escape_vcf_text(org, multiline=False)
+            if clean_org:
+                lines.append(f"ORG;CHARSET=UTF-8:{clean_org}")
         if title:
-            lines.append(f"TITLE;CHARSET=UTF-8:{title.strip()}")
+            clean_title = BubbleParser._escape_vcf_text(title, multiline=False)
+            if clean_title:
+                lines.append(f"TITLE;CHARSET=UTF-8:{clean_title}")
         if phone:
-            clean_phone = re.sub(r"[^\d\+\-\s]", "", phone.strip())
-            lines.append(f"TEL;TYPE=CELL,VOICE:{clean_phone}")
+            first_phone = phone.splitlines()[0].strip() if phone else ""
+            clean_phone = re.sub(r"[^\d\+\-\s]", "", first_phone).strip()
+            if clean_phone:
+                lines.append(f"TEL;TYPE=CELL,VOICE:{clean_phone}")
         if email:
-            lines.append(f"EMAIL;TYPE=INTERNET,WORK:{email.strip()}")
+            first_email = email.splitlines()[0].strip() if email else ""
+            clean_email = re.sub(r"[\x00-\x1f\x7f\s;,:\\]", "", first_email)
+            if clean_email:
+                lines.append(f"EMAIL;TYPE=INTERNET,WORK:{clean_email}")
         if address:
-            lines.append(f"ADR;TYPE=WORK;CHARSET=UTF-8:;;{address.strip()};;;;")
+            clean_addr = BubbleParser._escape_vcf_text(address, multiline=True)
+            if clean_addr:
+                lines.append(f"ADR;TYPE=WORK;CHARSET=UTF-8:;;{clean_addr};;;;")
         if note:
-            lines.append(f"NOTE;CHARSET=UTF-8:{note.strip()}")
+            clean_note = BubbleParser._escape_vcf_text(note, multiline=True)
+            if clean_note:
+                lines.append(f"NOTE;CHARSET=UTF-8:{clean_note}")
         lines.append("END:VCARD")
         lines.append("")
 
@@ -644,29 +744,34 @@ class BubbleParser:
         try:
             os.makedirs(target_dir, exist_ok=True)
             file_path = os.path.join(target_dir, f"{safe_name}.vcf")
-            with open(file_path, "w", encoding="utf-8") as fp:
+            with open(file_path, "w", encoding="utf-8", newline="") as fp:
                 fp.write(vcf_content)
             return file_path
         except (OSError, ValueError):
             return None
 
-    @staticmethod
+    @classmethod
     def _generate_location_vcf(
+        cls,
         title: str,
         query: str = "",
         address: str = "",
         ll: str = "",
     ) -> Optional[str]:
-        clean_title = (title or query or "地图定位").strip()
-        if query.startswith("http://") or query.startswith("https://") or query.startswith("maps://"):
-            maps_url = query
+        clean_title = cls._escape_vcf_text(title or query or "地图定位", multiline=False)
+        raw_map = (query or "").strip()
+        if cls._is_valid_map_url(raw_map):
+            maps_url = raw_map
         else:
-            encoded_query = quote_plus(query or clean_title, safe=",+")
+            encoded_query = quote_plus(raw_map or clean_title, safe=",+")
             maps_url = f"https://maps.apple.com/?q={encoded_query}"
             if address:
-                maps_url += f"&address={quote_plus(address, safe=',+')}"
+                clean_raw_addr = re.sub(r"[\r\n\x00-\x1f\x7f]", "", address.strip())
+                maps_url += f"&address={quote_plus(clean_raw_addr, safe=',+')}"
             if ll:
-                maps_url += f"&ll={ll}"
+                clean_raw_ll = re.sub(r"[^\d\.\,\-\+]", "", ll.strip())
+                if clean_raw_ll:
+                    maps_url += f"&ll={clean_raw_ll}"
 
         lines = [
             "BEGIN:VCARD",
@@ -677,10 +782,12 @@ class BubbleParser:
             f"item1.URL;type=pref:{maps_url}",
             "item1.X-ABLabel:map url",
         ]
-        if ll and "," in ll:
-            lines.append(f"geo:{ll.strip()}")
+        if ll:
+            clean_ll = re.sub(r"[^\d\.\,\-\+]", "", ll.strip())
+            if "," in clean_ll:
+                lines.append(f"geo:{clean_ll}")
         if address:
-            clean_addr = address.strip().replace(";", " ")
+            clean_addr = cls._escape_vcf_text(address, multiline=False)
             lines.append(f"item2.ADR;type=pref;CHARSET=UTF-8:;;{clean_addr};;;;")
             lines.append("item2.X-ABLabel:")
         lines.append("END:VCARD")
@@ -696,7 +803,7 @@ class BubbleParser:
         try:
             os.makedirs(target_dir, exist_ok=True)
             file_path = os.path.join(target_dir, f"{safe_name}.loc.vcf")
-            with open(file_path, "w", encoding="utf-8") as fp:
+            with open(file_path, "w", encoding="utf-8", newline="") as fp:
                 fp.write(vcf_content)
             return file_path
         except (OSError, ValueError):
@@ -746,38 +853,41 @@ class BubbleParser:
         now_ics = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         uid = f"{uuid.uuid4().hex[:12]}@hermes-calendar"
 
-        def escape_ics(val: str) -> str:
-            return val.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+        clean_title = BubbleParser._escape_ics_text(title, multiline=False) or "新日程"
+        clean_desc = BubbleParser._escape_ics_text(description, multiline=True) if description else ""
+        clean_loc = BubbleParser._escape_ics_text(location, multiline=False) if location else ""
 
-        clean_title = title.strip() or "新日程"
-        ics_content = (
-            "BEGIN:VCALENDAR\r\n"
-            "VERSION:2.0\r\n"
-            "PRODID:-//Hermes Agent//iMessage Calendar//CN\r\n"
-            "CALSCALE:GREGORIAN\r\n"
-            "METHOD:PUBLISH\r\n"
-            "BEGIN:VEVENT\r\n"
-            f"UID:{uid}\r\n"
-            f"DTSTAMP:{now_ics}\r\n"
-            f"DTSTART:{start_ics}\r\n"
-            f"DTEND:{end_ics}\r\n"
-            f"SUMMARY;CHARSET=UTF-8:{escape_ics(clean_title)}\r\n"
-        )
-        if description:
-            ics_content += f"DESCRIPTION;CHARSET=UTF-8:{escape_ics(description.strip())}\r\n"
-        if location:
-            ics_content += f"LOCATION;CHARSET=UTF-8:{escape_ics(location.strip())}\r\n"
+        lines = [
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//Hermes Agent//iMessage Calendar//CN",
+            "CALSCALE:GREGORIAN",
+            "METHOD:PUBLISH",
+            "BEGIN:VEVENT",
+            f"UID:{uid}",
+            f"DTSTAMP:{now_ics}",
+            f"DTSTART:{start_ics}",
+            f"DTEND:{end_ics}",
+            f"SUMMARY:{clean_title}",
+        ]
+        if clean_desc:
+            lines.append(f"DESCRIPTION:{clean_desc}")
+        if clean_loc:
+            lines.append(f"LOCATION:{clean_loc}")
 
-        ics_content += (
-            "STATUS:CONFIRMED\r\n"
-            "BEGIN:VALARM\r\n"
-            "TRIGGER:-PT15M\r\n"
-            "ACTION:DISPLAY\r\n"
-            f"DESCRIPTION;CHARSET=UTF-8:提醒: {escape_ics(clean_title)}\r\n"
-            "END:VALARM\r\n"
-            "END:VEVENT\r\n"
-            "END:VCALENDAR\r\n"
-        )
+        lines.extend([
+            "STATUS:CONFIRMED",
+            "BEGIN:VALARM",
+            "TRIGGER:-PT15M",
+            "ACTION:DISPLAY",
+            f"DESCRIPTION:提醒: {clean_title}",
+            "END:VALARM",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ])
+
+        folded_lines = [BubbleParser._fold_ics_line(ln) for ln in lines]
+        ics_content = "\r\n".join(folded_lines) + "\r\n"
 
         h = hashlib.sha256(ics_content.encode("utf-8")).hexdigest()[:8]
         safe_name = re.sub(r'[\\/:*?"<>|\r\n\t]+', '', clean_title).strip()
@@ -788,7 +898,7 @@ class BubbleParser:
         try:
             os.makedirs(target_dir, exist_ok=True)
             file_path = os.path.join(target_dir, f"{safe_name}.ics")
-            with open(file_path, "w", encoding="utf-8") as fp:
+            with open(file_path, "w", encoding="utf-8", newline="") as fp:
                 fp.write(ics_content)
             return file_path
         except (OSError, ValueError):
@@ -906,7 +1016,7 @@ class BubbleParser:
                     os.makedirs(scratch_dir, exist_ok=True)
                     filename = f"snippet_{h}.{ext}"
                     file_path = os.path.join(scratch_dir, filename)
-                    with open(file_path, "w", encoding="utf-8") as fp:
+                    with open(file_path, "w", encoding="utf-8", newline="") as fp:
                         fp.write(code)
 
                     preview = "\n".join(lines[:5])
@@ -933,8 +1043,10 @@ class BubbleParser:
                 results.append(pre)
             spoiler_content = (m.group("text") or m.group("pipe_text") or "").strip()
             if spoiler_content:
-                payload = json.dumps({"effect": "invisible", "text": spoiler_content}, ensure_ascii=False)
-                results.append(f"EFFECT:{payload}")
+                if getattr(self._config, "enable_effects", True):
+                    results.append(EffectAction(effect_type="invisible", content=spoiler_content))
+                else:
+                    results.append(spoiler_content)
             last_idx = end
         post = text[last_idx:].strip()
         if post:
@@ -969,13 +1081,17 @@ class BubbleParser:
             if not eff_text:
                 tail = text[end:].strip()
                 if tail:
-                    payload = json.dumps({"effect": eff_name, "text": tail}, ensure_ascii=False)
-                    results.append(f"EFFECT:{payload}")
+                    if getattr(self._config, "enable_effects", True):
+                        results.append(EffectAction(effect_type=eff_name, content=tail))
+                    else:
+                        results.append(tail)
                     last_idx = len(text)
                     break
             else:
-                payload = json.dumps({"effect": eff_name, "text": eff_text}, ensure_ascii=False)
-                results.append(f"EFFECT:{payload}")
+                if getattr(self._config, "enable_effects", True):
+                    results.append(EffectAction(effect_type=eff_name, content=eff_text))
+                else:
+                    results.append(eff_text)
             last_idx = end
         post = text[last_idx:].strip()
         if post:
@@ -1022,12 +1138,31 @@ class BubbleParser:
         query: str = "",
     ) -> str:
         raw = (query or name or "").strip()
-        if raw.startswith("http://") or raw.startswith("https://") or raw.startswith("maps://"):
+        if cls._is_valid_map_url(raw):
             return raw
 
         clean_name = (name or query or "地图定位").strip()
         clean_coord = (coordinate or "").strip()
         clean_addr = (address or "").strip()
+
+        # If raw starts with a URL scheme but failed validation, safely extract readable location query
+        if raw.startswith("http://") or raw.startswith("https://") or raw.startswith("maps://"):
+            try:
+                parsed = urlsplit(raw)
+                if parsed.query:
+                    from urllib.parse import parse_qs
+                    qs_dict = parse_qs(parsed.query)
+                    for k in ("q", "query", "address", "name"):
+                        if qs_dict.get(k):
+                            extracted = qs_dict[k][0].strip()
+                            if extracted:
+                                clean_name = extracted
+                                break
+                if clean_name == raw:
+                    path_part = parsed.path.strip("/")
+                    clean_name = path_part.split("/")[-1] if path_part else "地图定位"
+            except Exception:  # health: allow S110, BLE001 -- url parse fallback
+                clean_name = "地图定位"
 
         if not clean_coord:
             haystack = f"{clean_addr} {clean_name} {raw}"
@@ -1073,12 +1208,23 @@ class BubbleParser:
             address = attrs.get("address") or attrs.get("addr") or ""
             query = attrs.get("query") or attrs.get("q") or ""
 
-            maps_url = self._build_apple_maps_url(name=name, coordinate=coord, address=address, query=query)
+            if not getattr(self._config, "enable_maps", True):
+                parts = [f"📍 地图: {name}"]
+                if address:
+                    parts.append(f"地址: {address}")
+                if coord:
+                    parts.append(f"坐标: {coord}")
+                if body and body != name:
+                    parts.append(body)
+                fallback = "\n".join(parts)
+                results.append(fallback)
+            else:
+                maps_url = self._build_apple_maps_url(name=name, coordinate=coord, address=address, query=query)
 
-            if body and body != name:
-                results.append(body)
-            results.append(maps_url)
-            self._has_emitted_map = True
+                if body and body != name:
+                    results.append(body)
+                results.append(maps_url)
+                self._has_emitted_map = True
             last_idx = end
             trailing_match = re.match(r'^\s*(?:https?://(?:maps\.apple\.com|maps\.google\.com)[^\s<>"\'\)]*|maps://[^\s<>"\'\)]*)', text[last_idx:])
             if trailing_match:
@@ -1121,199 +1267,36 @@ class BubbleParser:
             results.append(post)
         return results or [text]
 
-    def _extract_raw_markdown_table(self, text: str) -> Optional[tuple[str, str, str]]:
-        """If text contains a markdown table (>=3 lines with pipes), return (pre, table_block, post)."""
-        lines = text.splitlines(keepends=True)
-        start_idx = None
-        end_idx = None
-        consecutive_pipes = 0
-
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if "|" in stripped and len([c for c in stripped.split("|") if c.strip()]) >= 2:
-                if start_idx is None:
-                    start_idx = i
-                consecutive_pipes += 1
-                end_idx = i + 1
-            else:
-                if consecutive_pipes >= 3:
-                    break
-                elif consecutive_pipes > 0:
-                    start_idx = None
-                    consecutive_pipes = 0
-                    end_idx = None
-
-        if consecutive_pipes >= 3 and start_idx is not None and end_idx is not None:
-            pre = "".join(lines[:start_idx]).strip()
-            table = "".join(lines[start_idx:end_idx]).strip()
-            post = "".join(lines[end_idx:]).strip()
-            return pre, table, post
-        return None
-
-    def _process_embedded_cheat_sheets(self, text: str) -> list[str]:
+    def _process_unsupported_personal_tags(self, text: str) -> list[str]:
+        """Safely degrade unsupported personal tags to readable text without errors or Playwright/Pillow."""
         if "```" in text or self._is_inside_code_block(text):
             return [text]
 
-        has_weather_in_text = bool(self._WEATHER_RE.search(text))
+        if not self._GENERIC_UNSUPPORTED_TAG_RE.search(text):
+            return [text]
 
-        if self._CHEAT_SHEET_RE.search(text):
-            results: list[str] = []
-            last_idx = 0
-            for m in self._CHEAT_SHEET_RE.finditer(text):
-                start, end = m.span()
-                pre = text[last_idx:start].strip()
-                if pre:
-                    results.append(pre)
+        results: list[str] = []
+        last_idx = 0
+        for m in self._GENERIC_UNSUPPORTED_TAG_RE.finditer(text):
+            start, end = m.span()
+            pre = text[last_idx:start].strip()
+            if pre:
+                results.append(pre)
+            body = (m.group("body") or "").strip() if "body" in m.groupdict() and m.group("body") else ""
+            if body:
+                results.append(body)
+            else:
                 attrs_str = m.group("attrs") or ""
                 attrs = self._parse_tag_attrs(attrs_str)
-                title = attrs.get("title") or "速查清单"
-                subtitle = attrs.get("subtitle") or ""
-                body = (m.group("body") or "").strip()
-
-                # Deduplication: suppress weather cheat sheet if weather card is present or already emitted
-                if (has_weather_in_text or self._has_emitted_weather) and self._is_weather_content(title, body):
-                    last_idx = end
-                    continue
-
-                png_path = self._render_sheet_image(body, title=title, subtitle=subtitle)
-
-                if png_path and os.path.isfile(png_path) and os.path.getsize(png_path) > 500:
-                    payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
-                    results.append(f"IMAGE:{payload}")
-                else:
-                    if body:
-                        results.append(body)
-                last_idx = end
-            post = text[last_idx:].strip()
-            if post:
-                results.append(post)
-            return results or [text]
-
-        # Auto-detect raw markdown table (>=3 lines with pipes) only when structured comparison/table intent exists
-        table_match = self._extract_raw_markdown_table(text)
-        if table_match:
-            pre, table_block, post = table_match
-            if (has_weather_in_text or self._has_emitted_weather) and self._is_weather_content(pre, table_block):
-                return [p for p in (pre, post) if p] or [text]
-
-            # Prevent turning casual lists into unwanted cheat sheets: require explicit comparison/spec intent
-            has_table_intent = any(k in text for k in ("对比", "参数", "规格", "配置", "清单", "时间表", "行程表", "价格表"))
-            if has_table_intent:
-                title = "核心数据速查对比卡"
-                if pre:
-                    for line in reversed(pre.splitlines()):
-                        cleaned = line.strip().rstrip("：:👇 \t")
-                        if cleaned and len(cleaned) < 30 and any(k in cleaned for k in ("对比", "参数", "清单", "表")):
-                            title = cleaned
-                            break
-
-                png_path = self._render_sheet_image(table_block, title=title)
-
-                if png_path and os.path.isfile(png_path) and os.path.getsize(png_path) > 500:
-                    results: list[str] = []
-                    if pre:
-                        results.append(pre)
-                    payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
-                    results.append(f"IMAGE:{payload}")
-                    if post:
-                        results.append(post)
-                    return results
-                else:
-                    return [text]
-
-        return [text]
-
-    def _process_embedded_weather(self, text: str) -> list[str]:
-        if "```" in text or self._is_inside_code_block(text):
-            return [text]
-
-        if not self._WEATHER_RE.search(text):
-            return [text]
-
-        results: list[str] = []
-        last_idx = 0
-        for m in self._WEATHER_RE.finditer(text):
-            self._has_emitted_weather = True
-            start, end = m.span()
-            pre = text[last_idx:start].strip()
-            if pre:
-                results.append(pre)
-            attrs_str = m.group("attrs") or m.group("self_attrs") or ""
-            attrs = self._parse_tag_attrs(attrs_str)
-            body = (m.group("body") or "").strip() if "body" in m.groupdict() and m.group("body") else ""
-
-            png_path = self._render_card_image("weather", attrs, body=body)
-
-            if png_path:
-                payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
-                results.append(f"IMAGE:{payload}")
-            else:
-                if body:
-                    results.append(body)
-            last_idx = end
-        post = text[last_idx:].strip()
-        if post:
-            results.append(post)
-        return results or [text]
-
-    def _process_embedded_movies(self, text: str) -> list[str]:
-        if "```" in text or self._is_inside_code_block(text):
-            return [text]
-
-        if not self._MOVIE_RE.search(text):
-            return [text]
-
-        results: list[str] = []
-        last_idx = 0
-        for m in self._MOVIE_RE.finditer(text):
-            start, end = m.span()
-            pre = text[last_idx:start].strip()
-            if pre:
-                results.append(pre)
-            attrs_str = m.group("attrs") or m.group("self_attrs") or ""
-            attrs = self._parse_tag_attrs(attrs_str)
-            body = (m.group("body") or "").strip() if "body" in m.groupdict() and m.group("body") else ""
-
-            png_path = self._render_card_image("movie", attrs, body=body)
-
-            if png_path:
-                payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
-                results.append(f"IMAGE:{payload}")
-            else:
-                if body:
-                    results.append(body)
-            last_idx = end
-        post = text[last_idx:].strip()
-        if post:
-            results.append(post)
-        return results or [text]
-
-    def _process_embedded_words(self, text: str) -> list[str]:
-        if "```" in text or self._is_inside_code_block(text):
-            return [text]
-
-        if not self._WORD_RE.search(text):
-            return [text]
-
-        results: list[str] = []
-        last_idx = 0
-        for m in self._WORD_RE.finditer(text):
-            start, end = m.span()
-            pre = text[last_idx:start].strip()
-            if pre:
-                results.append(pre)
-            attrs_str = m.group("attrs") or m.group("self_attrs") or ""
-            attrs = self._parse_tag_attrs(attrs_str)
-            body = (m.group("body") or "").strip() if "body" in m.groupdict() and m.group("body") else ""
-
-            png_path = self._render_card_image("word", attrs, body=body)
-
-            if png_path:
-                payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
-                results.append(f"IMAGE:{payload}")
-            else:
-                if body:
-                    results.append(body)
+                label = (
+                    attrs.get("title")
+                    or attrs.get("name")
+                    or attrs.get("city")
+                    or attrs.get("word")
+                    or ""
+                )
+                if label:
+                    results.append(label)
             last_idx = end
         post = text[last_idx:].strip()
         if post:
@@ -1334,16 +1317,9 @@ class BubbleParser:
             attrs_str = m.group("attrs") or m.group("self_attrs") or ""
             attrs = self._parse_tag_attrs(attrs_str)
             body = (m.group("body") or "").strip() if "body" in m.groupdict() and m.group("body") else ""
-            img_path = attrs.get("path") or attrs.get("src") or attrs.get("url") or attrs.get("name") or body or ""
-            caption = attrs.get("caption") or attrs.get("title") or ""
-            try:
-                delay = float(attrs.get("delay", 1.5))
-            except (ValueError, TypeError):
-                delay = 1.5
-
-            norm_item = self._resolve_media_directive(img_path, caption=caption, delay=delay)
-            if norm_item:
-                results.append(norm_item)
+            caption = attrs.get("caption") or attrs.get("title") or body or ""
+            if caption:
+                results.append(caption)
             last_idx = end
         post = text[last_idx:].strip()
         if post:
@@ -1414,43 +1390,45 @@ class BubbleParser:
 
         return self._ACTION_RE.sub(_sub_action, text)
 
-    def _apply_pipeline(self, items: list[str], transform_fn) -> list[str]:
-        out: list[str] = []
+    def _apply_pipeline(self, items: list[Any], transform_fn) -> list[Any]:
+        out: list[Any] = []
         for it in items:
-            if it.startswith(("FILE:", "TAPBACK:", "POLL:", "EFFECT:", "IMAGE:")):
+            if isinstance(it, (EffectAction, PollAction, TapbackAction, TextBubble)) or isinstance(it, str) and it.startswith(("FILE:", "TAPBACK:", "POLL:", "EFFECT:", "IMAGE:")):
                 out.append(it)
             else:
-                out.extend(transform_fn(it))
+                out.extend(transform_fn(str(it)))
         return out
 
-    def _emit_bubble(self, raw_text: str) -> list[str]:
+    def _emit_bubble(self, raw_text: str) -> list[Any]:
         """Balance fences, offload large code blocks, unpack embedded effects/spoilers/cards, and isolate URLs."""
         balanced = self._balance_and_track_fences(raw_text)
         balanced = self._encode_custom_schemes(balanced)
-        current = self._offload_code_blocks(balanced)
+        current: list[Any] = self._offload_code_blocks(balanced)
 
-        transforms = (
+        transforms = [
             self._process_embedded_effects,
             self._process_embedded_spoilers,
             self._process_embedded_calendars,
             self._process_embedded_maps,
             self._process_embedded_contacts,
-            self._process_embedded_cheat_sheets,
-            self._process_embedded_weather,
-            self._process_embedded_movies,
-            self._process_embedded_words,
             self._process_embedded_images,
-            self._process_embedded_media_directives,
-        )
+        ]
+        if self._custom_transforms:
+            transforms.extend(self._custom_transforms)
+        else:
+            transforms.append(self._process_unsupported_personal_tags)
         for fn in transforms:
             current = self._apply_pipeline(current, fn)
 
-        results: list[str] = []
+        results: list[Any] = []
         for item in current:
-            if item.startswith(("FILE:", "TAPBACK:", "POLL:", "EFFECT:", "IMAGE:")):
+            if isinstance(item, (EffectAction, PollAction, TapbackAction, TextBubble)):
                 results.append(item)
                 continue
-            act_processed = self._process_embedded_actions(item)
+            if isinstance(item, str) and item.startswith(("FILE:", "TAPBACK:", "POLL:", "EFFECT:", "IMAGE:")):
+                results.append(item)
+                continue
+            act_processed = self._process_embedded_actions(str(item))
             for sub in self._split_standalone_urls(act_processed):
                 if sub.startswith(("http://", "https://", "maps://", "shortcuts://")):
                     results.append(sub)
@@ -1459,74 +1437,23 @@ class BubbleParser:
                     if cleaned:
                         results.append(cleaned)
 
-        if self._pending_effect and results:
+        if self._pending_effect and getattr(self._config, "enable_effects", True) and results:
             for i, res in enumerate(results):
-                if not res.startswith(("FILE:", "TAPBACK:", "POLL:", "EFFECT:", "IMAGE:")):
-                    payload = json.dumps({"effect": self._pending_effect, "text": res}, ensure_ascii=False)
-                    results[i] = f"EFFECT:{payload}"
+                if not isinstance(res, (PollAction, TapbackAction, EffectAction)):
+                    results[i] = EffectAction(effect_type=self._pending_effect, content=str(res))
                     self._pending_effect = None
                     break
 
         return results
 
-        return results
-
     def _handle_tapback(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
-        _start, end = c_obj.span()
-        attr1 = c_obj.group(1)
-        body = c_obj.group(2)
-        attr2 = c_obj.group(3)
-        clean_emoji = self._normalize_tapback_emoji(attr1 or body or attr2 or "")
-        self._buffer = self._buffer[end:]
-        bubbles = []
-        if pre_clean:
-            bubbles.extend(self._emit_bubble(pre_clean))
-        if clean_emoji:
-            bubbles.append(f"TAPBACK:{clean_emoji}")
-        return bubbles
+        return [self._action_to_legacy_str(a) for a in self._handle_tapback_action(c_obj, pre_clean, has_bubble_tags)]
 
     def _handle_poll(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
-        self._has_emitted_poll = True
-        _start, end = c_obj.span()
-        attr_title = c_obj.group("attr_title")
-        body = c_obj.group("body") or ""
-        opt_matches = re.findall(r'<option>(.*?)</option>', body, re.IGNORECASE | re.DOTALL)
-        if opt_matches:
-            options = [o.strip() for o in opt_matches if o.strip()]
-        elif "|" in body:
-            options = [o.strip() for o in body.split("|") if o.strip()]
-        else:
-            options = [line.strip().lstrip("1234567890.-*• ") for line in body.splitlines() if line.strip()]
-        title = (attr_title or "").strip() or "请选择"
-        self._buffer = self._buffer[end:]
-        bubbles = []
-        if pre_clean:
-            bubbles.extend(self._emit_bubble(pre_clean))
-        if options:
-            payload = json.dumps({"title": title, "options": options}, ensure_ascii=False)
-            bubbles.append(f"POLL:{payload}")
-        return bubbles
+        return [self._action_to_legacy_str(a) for a in self._handle_poll_action(c_obj, pre_clean, has_bubble_tags)]
 
     def _handle_calendar(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
-        _start, end = c_obj.span()
-        attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
-        attrs = self._parse_tag_attrs(attrs_str)
-        title = attrs.get("title") or attrs.get("summary") or attrs.get("name") or "新日程"
-        start_str = attrs.get("start") or attrs.get("time") or attrs.get("date") or attrs.get("start_time") or ""
-        end_str = attrs.get("end") or attrs.get("end_time") or ""
-        location = attrs.get("location") or attrs.get("loc") or attrs.get("place") or attrs.get("address") or ""
-        description = attrs.get("description") or attrs.get("desc") or attrs.get("notes") or attrs.get("note") or ""
-        body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
-        self._buffer = self._buffer[end:]
-        bubbles = []
-        if pre_clean:
-            bubbles.extend(self._emit_bubble(pre_clean))
-        if body:
-            bubbles.extend(self._emit_bubble(body))
-        ics_path = self._generate_ics(title, start_str, end_str, location, description)
-        if ics_path:
-            bubbles.append(f"FILE:{ics_path}")
-        return bubbles
+        return [self._action_to_legacy_str(a) for a in self._handle_calendar_action(c_obj, pre_clean, has_bubble_tags)]
 
     def _handle_map(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
         _start, end = c_obj.span()
@@ -1543,6 +1470,19 @@ class BubbleParser:
         bubbles = []
         if pre_clean:
             bubbles.extend(self._emit_bubble(pre_clean))
+
+        if not getattr(self._config, "enable_maps", True):
+            parts = [f"📍 地图: {name}"]
+            if address:
+                parts.append(f"地址: {address}")
+            if coord:
+                parts.append(f"坐标: {coord}")
+            if body and body != name:
+                parts.append(body)
+            fallback_text = "\n".join(parts)
+            bubbles.extend(self._emit_bubble(fallback_text))
+            return bubbles
+
         maps_url = self._build_apple_maps_url(name=name, coordinate=coord, address=address, query=query)
         if body and body != name:
             bubbles.extend(self._emit_bubble(body))
@@ -1551,41 +1491,10 @@ class BubbleParser:
         return bubbles
 
     def _handle_effect(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
-        _start, end = c_obj.span()
-        colon_eff = c_obj.group("colon_eff") if "colon_eff" in c_obj.groupdict() else None
-        prefix_colon = c_obj.group("prefix_colon") if "prefix_colon" in c_obj.groupdict() else None
-        prefix_name = c_obj.group("prefix_name") if "prefix_name" in c_obj.groupdict() else None
-        prefix_type = c_obj.group("prefix_type") if "prefix_type" in c_obj.groupdict() else None
-        prefix_bare = c_obj.group("prefix_bare") if "prefix_bare" in c_obj.groupdict() else None
-        attrs_str = c_obj.group("attrs") if "attrs" in c_obj.groupdict() else None
-        eff_name = colon_eff or prefix_colon or prefix_name or prefix_type or prefix_bare
-        if not eff_name:
-            attrs = self._parse_tag_attrs(attrs_str or "")
-            eff_name = attrs.get("name") or attrs.get("type") or "confetti"
-        eff_name = self._EFFECT_ALIAS_MAP.get(eff_name.lower(), eff_name.lower())
-        eff_text = (c_obj.group("text") or "").strip() if "text" in c_obj.groupdict() and c_obj.group("text") else ""
-        self._buffer = self._buffer[end:]
-        bubbles = []
-        if pre_clean:
-            bubbles.extend(self._emit_bubble(pre_clean))
-        if eff_text:
-            payload = json.dumps({"effect": eff_name, "text": eff_text}, ensure_ascii=False)
-            bubbles.append(f"EFFECT:{payload}")
-        else:
-            self._pending_effect = eff_name
-        return bubbles
+        return [self._action_to_legacy_str(a) for a in self._handle_effect_action(c_obj, pre_clean, has_bubble_tags)]
 
     def _handle_spoiler(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
-        _start, end = c_obj.span()
-        spoiler_content = (c_obj.group("text") or c_obj.group("pipe_text") or "").strip()
-        self._buffer = self._buffer[end:]
-        bubbles = []
-        if pre_clean:
-            bubbles.extend(self._emit_bubble(pre_clean))
-        if spoiler_content:
-            payload = json.dumps({"effect": "invisible", "text": spoiler_content}, ensure_ascii=False)
-            bubbles.append(f"EFFECT:{payload}")
-        return bubbles
+        return [self._action_to_legacy_str(a) for a in self._handle_spoiler_action(c_obj, pre_clean, has_bubble_tags)]
 
     def _handle_apple_maps_url(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
         _start, end = c_obj.span()
@@ -1636,109 +1545,7 @@ class BubbleParser:
         return bubbles
 
     def _handle_contact(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
-        _start, end = c_obj.span()
-        attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
-        attrs = self._parse_tag_attrs(attrs_str)
-        body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
-        name = attrs.get("name") or attrs.get("fn") or attrs.get("title") or body or "联系人"
-        phone = attrs.get("phone") or attrs.get("tel") or attrs.get("mobile") or ""
-        email = attrs.get("email") or attrs.get("mail") or ""
-        org = attrs.get("org") or attrs.get("company") or attrs.get("organization") or ""
-        title = attrs.get("title") or attrs.get("role") or attrs.get("position") or ""
-        address = attrs.get("address") or attrs.get("addr") or attrs.get("location") or ""
-        note = attrs.get("note") or attrs.get("desc") or attrs.get("description") or ""
-        self._buffer = self._buffer[end:]
-        bubbles = []
-        if pre_clean:
-            bubbles.extend(self._emit_bubble(pre_clean))
-        if body:
-            bubbles.extend(self._emit_bubble(body))
-        vcf_path = self._generate_vcf(name, phone, email, org, title, address, note)
-        if vcf_path:
-            bubbles.append(f"FILE:{vcf_path}")
-        return bubbles
-
-    def _handle_cheat_sheet(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
-        _start, end = c_obj.span()
-        attrs_str = c_obj.group("attrs") or ""
-        attrs = self._parse_tag_attrs(attrs_str)
-        title = attrs.get("title") or "速查清单"
-        subtitle = attrs.get("subtitle") or ""
-        body = (c_obj.group("body") or "").strip()
-        has_weather_in_buffer = bool(self._WEATHER_RE.search(self._buffer))
-        is_weather_dup = (self._has_emitted_weather or has_weather_in_buffer) and self._is_weather_content(title, body)
-        if not is_weather_dup:
-            extracted_opts = self._extract_options_from_table(body, title=title)
-            if 2 <= len(extracted_opts) <= 4:
-                self._cheat_sheet_options = extracted_opts
-                self._cheat_sheet_title = title
-        self._buffer = self._buffer[end:]
-        bubbles = []
-        if pre_clean:
-            bubbles.extend(self._emit_bubble(pre_clean))
-        if is_weather_dup:
-            return bubbles
-        png_path = self._render_sheet_image(body, title=title, subtitle=subtitle)
-        if png_path and os.path.isfile(png_path) and os.path.getsize(png_path) > 500:
-            payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
-            bubbles.append(f"IMAGE:{payload}")
-        elif body:
-            bubbles.extend(self._emit_bubble(body))
-        return bubbles
-
-    def _handle_weather(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
-        self._has_emitted_weather = True
-        _start, end = c_obj.span()
-        attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
-        attrs = self._parse_tag_attrs(attrs_str)
-        body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
-        self._buffer = self._buffer[end:]
-        bubbles = []
-        if pre_clean:
-            bubbles.extend(self._emit_bubble(pre_clean))
-        png_path = self._render_card_image("weather", attrs, body=body)
-        if png_path and os.path.isfile(png_path) and os.path.getsize(png_path) > 500:
-            payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
-            bubbles.append(f"IMAGE:{payload}")
-        elif body:
-            bubbles.extend(self._emit_bubble(body))
-        return bubbles
-
-    def _handle_movie(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
-        self._has_emitted_movie = True
-        _start, end = c_obj.span()
-        attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
-        attrs = self._parse_tag_attrs(attrs_str)
-        body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
-        self._buffer = self._buffer[end:]
-        bubbles = []
-        if pre_clean:
-            bubbles.extend(self._emit_bubble(pre_clean))
-        png_path = self._render_card_image("movie", attrs, body=body)
-        if png_path and os.path.isfile(png_path) and os.path.getsize(png_path) > 500:
-            payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
-            bubbles.append(f"IMAGE:{payload}")
-        elif body:
-            bubbles.extend(self._emit_bubble(body))
-        return bubbles
-
-    def _handle_word(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
-        self._has_emitted_word = True
-        _start, end = c_obj.span()
-        attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
-        attrs = self._parse_tag_attrs(attrs_str)
-        body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
-        self._buffer = self._buffer[end:]
-        bubbles = []
-        if pre_clean:
-            bubbles.extend(self._emit_bubble(pre_clean))
-        png_path = self._render_card_image("word", attrs, body=body)
-        if png_path and os.path.isfile(png_path) and os.path.getsize(png_path) > 500:
-            payload = json.dumps({"path": png_path, "caption": "", "delay": 1.5}, ensure_ascii=False)
-            bubbles.append(f"IMAGE:{payload}")
-        elif body:
-            bubbles.extend(self._emit_bubble(body))
-        return bubbles
+        return [self._action_to_legacy_str(a) for a in self._handle_contact_action(c_obj, pre_clean, has_bubble_tags)]
 
     def _handle_media_directive(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
         m_match, _tag_start, tag_end = c_obj
@@ -1753,24 +1560,7 @@ class BubbleParser:
         return bubbles
 
     def _handle_image(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
-        _start, end = c_obj.span()
-        attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
-        attrs = self._parse_tag_attrs(attrs_str)
-        body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
-        img_path = attrs.get("path") or attrs.get("src") or attrs.get("url") or attrs.get("name") or body or ""
-        caption = attrs.get("caption") or attrs.get("title") or ""
-        try:
-            delay = float(attrs.get("delay", 1.5))
-        except (ValueError, TypeError):
-            delay = 1.5
-        self._buffer = self._buffer[end:]
-        bubbles = []
-        if pre_clean:
-            bubbles.extend(self._emit_bubble(pre_clean))
-        norm_item = self._resolve_media_directive(img_path, caption=caption, delay=delay)
-        if norm_item:
-            bubbles.append(norm_item)
-        return bubbles
+        return [self._action_to_legacy_str(a) for a in self._handle_image_action(c_obj, pre_clean, has_bubble_tags)]
 
     def _handle_sep_marker(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[str]:
         self._buffer = self._buffer[c_obj + len(self._SEP_MARKER):]
@@ -1804,12 +1594,10 @@ class BubbleParser:
             (self._SPOILER_RE, "spoiler"),
             (self._ACTION_RE, "action"),
             (self._CONTACT_RE, "contact"),
-            (self._CHEAT_SHEET_RE, "cheat_sheet"),
-            (self._WEATHER_RE, "weather"),
-            (self._MOVIE_RE, "movie"),
-            (self._WORD_RE, "word"),
             (self._IMAGE_TAG_RE, "image"),
         ]
+        for name, (pat, _handler) in self._custom_action_handlers.items():
+            checks.append((pat, name))
         for regex, tag_name in checks:
             m = regex.search(self._buffer)
             if m and not self._is_inside_code_block(self._buffer[:m.start()]):
@@ -1825,15 +1613,6 @@ class BubbleParser:
                 if m.end() < len(self._buffer) or is_finish:
                     candidates.append((m.start(), tag_name, m))
 
-        m_media = self._MEDIA_DIRECTIVE_RE.search(self._buffer)
-        if m_media:
-            pre_str = m_media.group("pre") or ""
-            t_start = m_media.start() + len(pre_str)
-            t_end = m_media.end()
-            if not self._is_inside_code_block(self._buffer[:t_start]):
-                if t_end < len(self._buffer) or is_finish or self._buffer.endswith(('\n', '\r', '<', '>')):
-                    candidates.append((t_start, "media_directive", (m_media, t_start, t_end)))
-
         open_idx = self._buffer.find(self._OPEN_TAG)
         if open_idx != -1 and open_idx >= 2 and self._buffer[open_idx-2:open_idx+len(self._OPEN_TAG)+2] == self._SEP_MARKER:
             open_idx = -1
@@ -1847,29 +1626,272 @@ class BubbleParser:
         return candidates
 
     def _extract_ready_bubbles(self, is_finish: bool = False) -> list[str]:
-        """Extract complete bubbles delimited by tags with chronological ordering and nesting-aware boundaries."""
-        bubbles: list[str] = []
+        return [self._action_to_legacy_str(a) for a in self._extract_ready_actions(is_finish=is_finish)]
+
+    def _emit_actions(self, raw_text: str) -> list[BubbleAction]:
+        """Convert a bubble or paragraph text into typed BubbleAction objects."""
+        raw_bubbles = self._emit_bubble(raw_text)
+        actions: list[BubbleAction] = []
+        for b in raw_bubbles:
+            if isinstance(b, (TextBubble, PollAction, TapbackAction, EffectAction)):
+                actions.append(b)
+            else:
+                # All ordinary text (including any text with 'FILE:', 'IMAGE:', 'POLL:', 'TAPBACK:', 'EFFECT:', etc.)
+                # is strictly an unprivileged TextBubble!
+                actions.append(TextBubble(content=str(b)))
+        return actions
+
+    def _handle_tapback_action(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[BubbleAction]:
+        _start, end = c_obj.span()
+        attr1 = c_obj.group(1)
+        body = c_obj.group(2)
+        attr2 = c_obj.group(3)
+        clean_emoji = self._normalize_tapback_emoji(attr1 or body or attr2 or "")
+        self._buffer = self._buffer[end:]
+        actions: list[BubbleAction] = []
+        if pre_clean:
+            actions.extend(self._emit_actions(pre_clean))
+        if clean_emoji and getattr(self._config, "enable_tapbacks", True):
+            actions.append(TapbackAction(reaction=clean_emoji))
+        return actions
+
+    def _handle_poll_action(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[BubbleAction]:
+        self._has_emitted_poll = True
+        _start, end = c_obj.span()
+        attr_title = c_obj.group("attr_title")
+        body = c_obj.group("body") or ""
+        opt_matches = re.findall(r'<option>(.*?)</option>', body, re.IGNORECASE | re.DOTALL)
+        if opt_matches:
+            options = [o.strip() for o in opt_matches if o.strip()]
+        elif "|" in body:
+            options = [o.strip() for o in body.split("|") if o.strip()]
+        else:
+            options = [line.strip().lstrip("1234567890.-*• ") for line in body.splitlines() if line.strip()]
+        title = (attr_title or "").strip() or "请选择"
+        self._buffer = self._buffer[end:]
+        actions: list[BubbleAction] = []
+        if pre_clean:
+            actions.extend(self._emit_actions(pre_clean))
+        if not getattr(self._config, "enable_polls", True):
+            if options:
+                opt_lines = "\n".join(f"{idx+1}. {opt}" for idx, opt in enumerate(options))
+                actions.append(TextBubble(content=f"📊 投票: {title}\n{opt_lines}"))
+            return actions
+        if options:
+            actions.append(PollAction(title=title, options=tuple(options)))
+        return actions
+
+    def _handle_effect_action(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[BubbleAction]:
+        _start, end = c_obj.span()
+        gdict = c_obj.groupdict()
+        colon_eff = gdict.get("colon_eff")
+        prefix_colon = gdict.get("prefix_colon")
+        prefix_name = gdict.get("prefix_name")
+        prefix_type = gdict.get("prefix_type")
+        prefix_bare = gdict.get("prefix_bare")
+        attrs_str = gdict.get("attrs") or gdict.get("self_attrs")
+        eff_name = colon_eff or prefix_colon or prefix_name or prefix_type or prefix_bare
+        if not eff_name:
+            attrs = self._parse_tag_attrs(attrs_str or "")
+            eff_name = attrs.get("name") or attrs.get("type") or ""
+            if not eff_name and attrs_str:
+                eff_name = attrs_str.strip().split()[0] if attrs_str.strip() else ""
+            if not eff_name:
+                eff_name = "confetti"
+        eff_name = self._EFFECT_ALIAS_MAP.get(eff_name.lower(), eff_name.lower())
+        eff_text = (gdict.get("text") or "").strip()
+        self._buffer = self._buffer[end:]
+        actions: list[BubbleAction] = []
+        if pre_clean:
+            actions.extend(self._emit_actions(pre_clean))
+        if not getattr(self._config, "enable_effects", True):
+            if eff_text:
+                actions.extend(self._emit_actions(eff_text))
+            self._pending_effect = None
+            return actions
+        if eff_text:
+            actions.append(EffectAction(effect_type=eff_name, content=eff_text))
+        else:
+            self._pending_effect = eff_name
+        return actions
+
+    def _handle_spoiler_action(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[BubbleAction]:
+        _start, end = c_obj.span()
+        spoiler_content = (c_obj.group("text") or c_obj.group("pipe_text") or "").strip()
+        self._buffer = self._buffer[end:]
+        actions: list[BubbleAction] = []
+        if pre_clean:
+            actions.extend(self._emit_actions(pre_clean))
+        if spoiler_content:
+            if getattr(self._config, "enable_effects", True):
+                actions.append(EffectAction(effect_type="invisible", content=spoiler_content))
+            else:
+                actions.append(TextBubble(content=spoiler_content))
+        return actions
+
+    def _handle_bubble_open_action(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> Optional[list[BubbleAction]]:
+        close_idx = self._find_matching_bubble_close(self._buffer, c_obj)
+        if close_idx != -1:
+            bubble_raw = self._buffer[c_obj + len(self._OPEN_TAG):close_idx].strip()
+            self._buffer = self._buffer[close_idx + len(self._CLOSE_TAG):]
+            is_uri_or_action = bool(re.search(r'[a-zA-Z0-9_\-\.]+:[^\s]+', pre_clean))
+            actions: list[BubbleAction] = []
+            if pre_clean and (not has_bubble_tags or is_uri_or_action):
+                actions.extend(self._emit_actions(pre_clean))
+            if bubble_raw:
+                actions.extend(self._emit_actions(bubble_raw))
+            return actions
+        return None
+
+    def _handle_sep_marker_action(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[BubbleAction]:
+        self._buffer = self._buffer[c_obj + len(self._SEP_MARKER):]
+        actions: list[BubbleAction] = []
+        if pre_clean:
+            actions.extend(self._emit_actions(pre_clean))
+        return actions
+
+    def _handle_calendar_action(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[BubbleAction]:
+        _start, end = c_obj.span()
+        attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
+        attrs = self._parse_tag_attrs(attrs_str)
+        title = attrs.get("title") or attrs.get("summary") or attrs.get("name") or "新日程"
+        start_str = attrs.get("start") or attrs.get("time") or attrs.get("date") or attrs.get("start_time") or ""
+        end_str = attrs.get("end") or attrs.get("end_time") or ""
+        location = attrs.get("location") or attrs.get("loc") or attrs.get("place") or attrs.get("address") or ""
+        description = attrs.get("description") or attrs.get("desc") or attrs.get("notes") or attrs.get("note") or ""
+        body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
+        self._buffer = self._buffer[end:]
+        actions: list[BubbleAction] = []
+        if pre_clean:
+            actions.extend(self._emit_actions(pre_clean))
+        if not getattr(self._config, "enable_calendar", True):
+            parts = [f"📅 日程: {title}"]
+            if start_str:
+                parts.append(f"时间: {start_str}")
+            if location:
+                parts.append(f"地点: {location}")
+            if body and body != title:
+                parts.append(body)
+            actions.append(TextBubble(content="\n".join(parts)))
+            return actions
+        if body:
+            actions.extend(self._emit_actions(body))
+        ics_path = self._generate_ics(title, start_str, end_str, location, description)
+        if ics_path:
+            try:
+                from gateway.attachment_registry import registry
+                from gateway.bubble_actions import FileAttachmentAction
+                record, _err = registry.stage_and_authorize(
+                    chat_id=self.chat_id,
+                    source_path=ics_path,
+                    producer="calendar_generator",
+                    file_name=f"{title}.ics",
+                    turn_id=self.turn_id,
+                )
+                if record:
+                    actions.append(FileAttachmentAction(
+                        staged_path=record.staged_path,
+                        file_name=record.file_name,
+                        token=record.token,
+                    ))
+            except Exception as e:  # health: allow BLE001 -- calendar action staging warning
+                logger.warning("[BubbleParser] Exception staging calendar action: %s", e)
+        return actions
+
+    def _handle_map_action(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[BubbleAction]:
+        raw_bubbles = self._handle_map(c_obj, pre_clean, has_bubble_tags)
+        return [TextBubble(content=b) for b in raw_bubbles]
+
+    def _handle_apple_maps_url_action(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[BubbleAction]:
+        raw_bubbles = self._handle_apple_maps_url(c_obj, pre_clean, has_bubble_tags)
+        return [TextBubble(content=b) for b in raw_bubbles]
+
+    def _handle_shortcuts_url_action(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[BubbleAction]:
+        raw_bubbles = self._handle_shortcuts_url(c_obj, pre_clean, has_bubble_tags)
+        return [TextBubble(content=b) for b in raw_bubbles]
+
+    def _handle_action_action(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[BubbleAction]:
+        raw_bubbles = self._handle_action(c_obj, pre_clean, has_bubble_tags)
+        return [TextBubble(content=b) for b in raw_bubbles]
+
+    def _handle_apple_music_url_action(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[BubbleAction]:
+        raw_bubbles = self._handle_apple_music_url(c_obj, pre_clean, has_bubble_tags)
+        return [TextBubble(content=b) for b in raw_bubbles]
+
+    def _handle_contact_action(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[BubbleAction]:
+        _start, end = c_obj.span()
+        attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
+        attrs = self._parse_tag_attrs(attrs_str)
+        body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
+        name = attrs.get("name") or attrs.get("fn") or attrs.get("title") or body or "联系人"
+        phone = attrs.get("phone") or attrs.get("tel") or attrs.get("mobile") or ""
+        email = attrs.get("email") or attrs.get("mail") or ""
+        org = attrs.get("org") or attrs.get("company") or attrs.get("organization") or ""
+        title = attrs.get("title") or attrs.get("role") or attrs.get("position") or ""
+        address = attrs.get("address") or attrs.get("addr") or attrs.get("location") or ""
+        note = attrs.get("note") or attrs.get("desc") or attrs.get("description") or ""
+        self._buffer = self._buffer[end:]
+        actions: list[BubbleAction] = []
+        if pre_clean:
+            actions.extend(self._emit_actions(pre_clean))
+        if body:
+            actions.extend(self._emit_actions(body))
+        vcf_path = self._generate_vcf(name, phone, email, org, title, address, note)
+        if vcf_path:
+            try:
+                from gateway.attachment_registry import registry
+                from gateway.bubble_actions import FileAttachmentAction
+                record, _err = registry.stage_and_authorize(
+                    chat_id=self.chat_id,
+                    source_path=vcf_path,
+                    producer="contact_generator",
+                    file_name=f"{name}.vcf",
+                    turn_id=self.turn_id,
+                )
+                if record:
+                    actions.append(FileAttachmentAction(
+                        staged_path=record.staged_path,
+                        file_name=record.file_name,
+                        token=record.token,
+                    ))
+            except Exception as e:  # health: allow BLE001 -- contact action staging warning
+                logger.warning("[BubbleParser] Exception staging contact action: %s", e)
+        return actions
+
+    def _handle_image_action(self, c_obj: Any, pre_clean: str, has_bubble_tags: bool) -> list[BubbleAction]:
+        _start, end = c_obj.span()
+        attrs_str = c_obj.group("attrs") or c_obj.group("self_attrs") or ""
+        attrs = self._parse_tag_attrs(attrs_str)
+        body = (c_obj.group("body") or "").strip() if "body" in c_obj.groupdict() and c_obj.group("body") else ""
+        caption = attrs.get("caption") or attrs.get("title") or body or ""
+        self._buffer = self._buffer[end:]
+        actions: list[BubbleAction] = []
+        if pre_clean:
+            actions.extend(self._emit_actions(pre_clean))
+        if caption:
+            actions.append(TextBubble(content=caption))
+        return actions
+
+    def _extract_ready_actions(self, is_finish: bool = False) -> list[BubbleAction]:
+        actions: list[BubbleAction] = []
         handlers = {
-            "tapback": self._handle_tapback,
-            "poll": self._handle_poll,
-            "calendar": self._handle_calendar,
-            "map": self._handle_map,
-            "effect": self._handle_effect,
-            "spoiler": self._handle_spoiler,
-            "apple_maps_url": self._handle_apple_maps_url,
-            "shortcuts_url": self._handle_shortcuts_url,
-            "action": self._handle_action,
-            "apple_music_url": self._handle_apple_music_url,
-            "contact": self._handle_contact,
-            "cheat_sheet": self._handle_cheat_sheet,
-            "weather": self._handle_weather,
-            "movie": self._handle_movie,
-            "word": self._handle_word,
-            "media_directive": self._handle_media_directive,
-            "image": self._handle_image,
-            "sep_marker": self._handle_sep_marker,
-            "bubble_open": self._handle_bubble_open,
+            "tapback": self._handle_tapback_action,
+            "poll": self._handle_poll_action,
+            "calendar": self._handle_calendar_action,
+            "map": self._handle_map_action,
+            "effect": self._handle_effect_action,
+            "spoiler": self._handle_spoiler_action,
+            "apple_maps_url": self._handle_apple_maps_url_action,
+            "shortcuts_url": self._handle_shortcuts_url_action,
+            "action": self._handle_action_action,
+            "apple_music_url": self._handle_apple_music_url_action,
+            "contact": self._handle_contact_action,
+            "image": self._handle_image_action,
+            "sep_marker": self._handle_sep_marker_action,
+            "bubble_open": self._handle_bubble_open_action,
         }
+        for name, (_pat, handler) in self._custom_action_handlers.items():
+            handlers[name] = lambda m, pre, has_bt, h=handler: h(self, m, pre, has_bt)
 
         while True:
             candidates = self._find_candidate_tags(is_finish)
@@ -1887,7 +1909,7 @@ class BubbleParser:
                             candidate_text = pre_nl.strip()
                             self._buffer = self._buffer[nl_idx + 2:].lstrip("\r\n")
                             if candidate_text:
-                                bubbles.extend(self._emit_bubble(candidate_text))
+                                actions.extend(self._emit_actions(candidate_text))
                                 continue
                 break
 
@@ -1902,6 +1924,8 @@ class BubbleParser:
                 res = handler(c_obj, pre_clean, has_bubble_tags)
                 if res is None:  # open tag waiting for close
                     break
-                bubbles.extend(res)
+                actions.extend(res)
+            else:
+                break
 
-        return bubbles
+        return actions

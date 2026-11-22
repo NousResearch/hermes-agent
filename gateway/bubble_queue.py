@@ -101,6 +101,35 @@ class BubbleRecord:
 BubbleItem = BubbleRecord
 
 
+def _extract_text_for_pacer(val: Any) -> str:
+    if val is None:
+        return ""
+    if isinstance(val, str):
+        return val
+    try:
+        from gateway.bubble_actions import (
+            EffectAction,
+            FileAttachmentAction,
+            ImageAttachmentAction,
+            PollAction,
+            TapbackAction,
+            TextBubble,
+        )
+        if isinstance(val, TextBubble):
+            return val.content
+        if isinstance(val, TapbackAction):
+            return "TAPBACK:"
+        if isinstance(val, PollAction):
+            return "POLL:"
+        if isinstance(val, EffectAction):
+            return val.content
+        if isinstance(val, (FileAttachmentAction, ImageAttachmentAction)):
+            return "ATTACHMENT:"
+    except ImportError:  # health: allow S110 -- optional bubble_actions fallback
+        pass
+    return str(val)
+
+
 class ChatPacer:
     """Enforces minimum idle spacing per chat_id across turns using monotonic clock,
     with cognitive adaptive pacing based on bubble length, semantic tone, and burst dynamics."""
@@ -125,15 +154,15 @@ class ChatPacer:
 
     def compute_interval(
         self,
-        last_text: Optional[str] = None,
-        next_text: Optional[str] = None,
+        last_text: Optional[Any] = None,
+        next_text: Optional[Any] = None,
     ) -> float:
         """Compute organic, human-like transmission delay between bubbles."""
         if not self.adaptive:
             return self.min_interval_s
 
-        last_clean = (last_text or "").strip()
-        next_clean = (next_text or "").strip()
+        last_clean = _extract_text_for_pacer(last_text).strip()
+        next_clean = _extract_text_for_pacer(next_text).strip()
 
         # 1. Tapback reaction: ultra-fast transition (double-tap gesture on iOS)
         if last_clean.startswith("TAPBACK:") or next_clean.startswith("TAPBACK:"):
@@ -241,9 +270,12 @@ class ChatPacerRegistry:
     _lock = asyncio.Lock()
 
     @classmethod
-    def get_pacer(cls, chat_id: str, min_interval_s: float = 0.850) -> ChatPacer:
+    def get_pacer(cls, chat_id: str, min_interval_s: float = 0.850, adaptive: bool = True) -> ChatPacer:
         if chat_id not in cls._pacers:
-            cls._pacers[chat_id] = ChatPacer(chat_id, min_interval_s=min_interval_s)
+            cls._pacers[chat_id] = ChatPacer(chat_id, min_interval_s=min_interval_s, adaptive=adaptive)
+        else:
+            cls._pacers[chat_id].min_interval_s = min_interval_s
+            cls._pacers[chat_id].adaptive = adaptive
         return cls._pacers[chat_id]
 
     @classmethod
@@ -268,13 +300,14 @@ class StreamingBubbleQueue:
         pacer: Optional[ChatPacer] = None,
         circuit_breaker_threshold: int = 3,
         typing_func: Optional[Callable[..., Awaitable[Any]]] = None,
+        adaptive: bool = True,
     ) -> None:
         self.chat_id = chat_id
         self.send_func = send_func
         self.maxsize = maxsize
         self.min_interval_s = min_interval_s
         self.in_flight_timeout_s = in_flight_timeout_s
-        self.pacer = pacer or ChatPacerRegistry.get_pacer(chat_id, min_interval_s=min_interval_s)
+        self.pacer = pacer or ChatPacerRegistry.get_pacer(chat_id, min_interval_s=min_interval_s, adaptive=adaptive)
         self.circuit_breaker_threshold = circuit_breaker_threshold
         self.typing_func = typing_func
 
@@ -613,7 +646,16 @@ class StreamingBubbleQueue:
                 self._register_in_flight_task(send_task, record)
 
                 try:
-                    send_timeout = 30.0 if (record.text.startswith("IMAGE:") or record.text.startswith("FILE:") or record.text.startswith("POLL:")) else self.in_flight_timeout_s
+                    is_heavy = False
+                    if isinstance(record.text, str):
+                        is_heavy = record.text.startswith(("IMAGE:", "FILE:", "POLL:"))
+                    else:
+                        try:
+                            from gateway.bubble_actions import PollAction
+                            is_heavy = isinstance(record.text, PollAction)
+                        except ImportError:  # health: allow S110 -- optional PollAction check
+                            pass
+                    send_timeout = 30.0 if is_heavy else self.in_flight_timeout_s
                     res = await asyncio.wait_for(asyncio.shield(send_task), timeout=send_timeout)
                     record.send_finished_at = time.monotonic()
                     self.pacer.update_finish_time(record.send_finished_at, last_text=record.text)

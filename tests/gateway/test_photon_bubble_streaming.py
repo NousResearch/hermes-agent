@@ -5,19 +5,46 @@
 import asyncio
 import json
 import os
+import re
+import sys
 import unittest
+from pathlib import Path
 
-from typing import Any, Dict, List, Optional
+# Ensure repository root is at the very front of sys.path (supports both AirHermes and deployed Hermes layouts)
+_cur = Path(__file__).resolve().parent
+repo_root = str(Path(__file__).resolve().parent.parent)
+while _cur.parent != _cur:
+    if (_cur / "gateway" / "run_turn.py").is_file() or (_cur / "install.py").is_file():
+        repo_root = str(_cur)
+        break
+    _cur = _cur.parent
 
+if repo_root in sys.path:
+    sys.path.remove(repo_root)
+sys.path.insert(0, repo_root)
 
+try:
+    import gateway
+    airhermes_gateway = str(Path(repo_root) / "gateway")
+    if hasattr(gateway, "__path__") and airhermes_gateway not in gateway.__path__:
+        gateway.__path__.insert(0, airhermes_gateway)
+except ImportError:
+    pass
+
+from typing import Any, Optional
 
 from gateway.bubble_parser import BubbleParser
-
-from gateway.bubble_queue import BubbleDeliveryState, ChatPacerRegistry, QueueState
-
+from gateway.bubble_queue import ChatPacerRegistry
 from gateway.bubble_stream_consumer import BubbleStreamConsumer
 
-from plugins.platforms.photon.adapter import PhotonAdapter
+try:
+    from plugins.platforms.photon.adapter import PhotonAdapter
+    from gateway.run_turn_runner import TurnRunner
+    HERMES_UPSTREAM_AVAILABLE = True
+except ImportError:
+    PhotonAdapter = None
+    TurnRunner = None
+    HERMES_UPSTREAM_AVAILABLE = False
 
 
 
@@ -163,51 +190,8 @@ class MockAdapter:
 
 class TestPhotonBubbleStreaming(unittest.IsolatedAsyncioTestCase):
 
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        import tempfile
-        cls._test_dir = tempfile.mkdtemp(prefix="hermes_test_cards_")
-        cls._dummy_files = {}
-        for kind in ("weather", "movie", "word", "sheet"):
-            p = os.path.join(cls._test_dir, f"{kind}_test_retina.png")
-            with open(p, "wb") as f:
-                f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 1024)
-            cls._dummy_files[kind] = p
-
-        def _mock_card(card_type: str, attrs: dict, body: str = "") -> str:
-            return cls._dummy_files.get(card_type, cls._dummy_files["weather"])
-
-        def _mock_sheet(body: str, title: str = "", subtitle: str = "") -> str:
-            return cls._dummy_files["sheet"]
-
-        cls._orig_render_card = BubbleParser._render_card_image
-        cls._orig_render_sheet = BubbleParser._render_sheet_image
-        BubbleParser._render_card_image = staticmethod(_mock_card)
-        BubbleParser._render_sheet_image = staticmethod(_mock_sheet)
-
-    @classmethod
-    def tearDownClass(cls):
-        BubbleParser._render_card_image = cls._orig_render_card
-        BubbleParser._render_sheet_image = cls._orig_render_sheet
-        import shutil
-        if hasattr(cls, "_test_dir") and os.path.exists(cls._test_dir):
-            shutil.rmtree(cls._test_dir, ignore_errors=True)
-        super().tearDownClass()
-
     async def asyncSetUp(self):
-
         ChatPacerRegistry.reset()
-
-
-
-    def test_photon_adapter_flag(self):
-
-        self.assertTrue(getattr(PhotonAdapter, "SUPPORTS_BUBBLE_STREAMING", False))
-
-        self.assertFalse(getattr(PhotonAdapter, "SUPPORTS_MESSAGE_EDITING", True))
-
-
 
     def test_bubble_parser_strict_tags(self):
 
@@ -434,42 +418,6 @@ class TestPhotonBubbleStreaming(unittest.IsolatedAsyncioTestCase):
         long_txt = "A" * 80
         pacer.update_finish_time(last_text=long_txt)
         self.assertTrue(pacer.current_interval_s > 1.5)
-
-
-
-    def test_tool_heartbeat_hints(self):
-
-        from gateway.run_turn_runner import TurnRunner
-
-        hint_search = TurnRunner._format_bubble_tool_hint("web_search", {"query": "US Midterm Election"})
-
-        self.assertEqual(hint_search, "正在搜索「US Midterm Election」...")
-
-
-
-        hint_term_sched = TurnRunner._format_bubble_tool_hint("terminal", {"command": "python get_schedule.py"})
-
-        self.assertEqual(hint_term_sched, "正在翻看日程课表...")
-
-
-
-        hint_term_git = TurnRunner._format_bubble_tool_hint("terminal", {"command": "git status"})
-
-        self.assertEqual(hint_term_git, "正在检查代码仓库...")
-
-
-
-        hint_file = TurnRunner._format_bubble_tool_hint("read_file", {"path": "C:/notes/todo.md"})
-
-        self.assertEqual(hint_file, "正在查阅 todo.md...")
-
-
-
-        hint_web = TurnRunner._format_bubble_tool_hint("web_extract", {"url": "https://example.com"})
-
-        self.assertEqual(hint_web, "正在浏览网页内容...")
-
-
 
     async def test_bubble_stream_consumer_commentary(self):
 
@@ -761,7 +709,6 @@ class TestPhotonBubbleStreaming(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(res[1].startswith("POLL:"))
 
-        import json
 
         poll_data = json.loads(res[1][len("POLL:"):])
 
@@ -889,11 +836,10 @@ class TestPhotonBubbleStreaming(unittest.IsolatedAsyncioTestCase):
 
 
 
-            self.assertEqual(len(adapter.documents), 1)
-
-            self.assertEqual(adapter.documents[0]["chat_id"], "chat_file_test")
-
-            self.assertEqual(adapter.documents[0]["file_path"], temp_path)
+            # Under Phase 5 Stage 2A security hardening, unprivileged plain text FILE:
+            # is never dispatched as a native local document attachment (VULN-01).
+            self.assertEqual(len(adapter.documents), 0)
+            self.assertTrue(any(f"FILE:{temp_path}" in msg["content"] for msg in adapter.sent_messages))
 
         finally:
 
@@ -902,52 +848,6 @@ class TestPhotonBubbleStreaming(unittest.IsolatedAsyncioTestCase):
             if os.path.exists(temp_path):
 
                 os.remove(temp_path)
-
-
-
-    def test_heartbeat_debounce_fast_tool(self):
-
-        from gateway.run_turn_runner import TurnRunner
-
-        import time
-
-
-
-        emitted_hints = []
-
-        class MockConsumer:
-
-            _bubble_queue = None
-
-            def on_commentary(self, msg):
-
-                emitted_hints.append(msg)
-
-
-
-        sc = MockConsumer()
-
-        start_hook, complete_hook = TurnRunner._wrap_bubble_tool_callbacks(None, None, sc)
-
-
-
-        # Fast tool finishes in 50ms (well under 2.5s)
-
-        start_hook("call_1", "web_search", {"query": "test"})
-
-        time.sleep(0.05)  # health: allow HX013 -- debounce interval verification
-
-        complete_hook("call_1")
-
-
-
-        # Wait longer to verify timer was cancelled and did not fire
-
-        time.sleep(0.1)  # health: allow HX013 -- debounce interval verification
-
-        self.assertEqual(len(emitted_hints), 0)
-
-
 
     def test_bubble_parser_effect_extraction(self):
 
@@ -961,7 +861,6 @@ class TestPhotonBubbleStreaming(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(res[0].startswith("EFFECT:"))
 
-        import json
 
         data = json.loads(res[0][len("EFFECT:"):])
 
@@ -1030,17 +929,104 @@ class TestPhotonBubbleStreaming(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(res[1].startswith("FILE:"))
 
         file_path = res[1][len("FILE:"):].strip()
-
         self.assertTrue(os.path.exists(file_path))
 
-        with open(file_path, "r", encoding="utf-8-sig") as fp:
+        with open(file_path, "rb") as fp:
+            raw_bytes = fp.read()
 
-            content = fp.read()
+        self.assertFalse(raw_bytes.startswith(b"\xef\xbb\xbf"))  # No BOM
+        self.assertIn(b"\r\n", raw_bytes)
+        content = raw_bytes.decode("utf-8")
 
         self.assertIn("BEGIN:VCALENDAR", content)
-        self.assertIn("SUMMARY;CHARSET=UTF-8:Q4复盘会", content)
+        self.assertIn("SUMMARY:Q4复盘会", content)
+        self.assertNotIn("SUMMARY;CHARSET=UTF-8:", content)
         self.assertIn("DTSTART:20261106T140000", content)
-        self.assertIn("LOCATION;CHARSET=UTF-8:腾讯会议", content)
+        self.assertIn("LOCATION:腾讯会议", content)
+        self.assertNotIn("LOCATION;CHARSET=UTF-8:", content)
+
+    def test_bubble_parser_calendar_rfc5545_folding_and_encoding(self):
+        """Verify RFC 5545 calendar conformance: 75-octet folding, UTF-8 without BOM, CRLF line endings,
+        unfolding exact recovery, escaping, and CRLF injection protection."""
+        p = BubbleParser()
+        long_title = "这是一个非常冗长且包含很多汉字的会议主题用来严格测试RFC5545规范的75字节折行逻辑"
+        long_desc = "第一行描述包含标点, 逗号, 分号; 反斜杠\\以及各种技术规格，测试长文本属性在75字节边界下的优雅折叠与安全恢复"
+        long_loc = "北京市海淀区中关村南大街1号某某大厦B座1208多功能高保真全景视频会议室"
+        xml = (
+            f'<calendar title="{long_title}" start="2026-12-01 09:30" end="2026-12-01 11:30" '
+            f'location="{long_loc}" description="{long_desc}">详细日程</calendar>'
+        )
+        res = p.feed(xml) + p.finish()
+        self.assertEqual(len(res), 2)
+        self.assertTrue(res[1].startswith("FILE:"))
+        file_path = res[1][len("FILE:"):].strip()
+        self.assertTrue(os.path.exists(file_path))
+
+        with open(file_path, "rb") as fp:
+            raw_bytes = fp.read()
+
+        # 1. UTF-8 without BOM
+        self.assertFalse(raw_bytes.startswith(b"\xef\xbb\xbf"), "ICS file must not contain UTF-8 BOM")
+
+        # 2. Strict CRLF endings and no bare LF or double CR
+        self.assertTrue(raw_bytes.endswith(b"\r\n"))
+        self.assertNotIn(b"\r\r\n", raw_bytes)
+        lines_raw = raw_bytes.split(b"\r\n")
+        self.assertTrue(len(lines_raw) > 5)
+
+        # 3. No line exceeds 75 octets (RFC 5545 §3.1 SHOULD)
+        for idx, line_bytes in enumerate(lines_raw):
+            if not line_bytes:
+                continue
+            self.assertLessEqual(len(line_bytes), 75, f"Line {idx} exceeds 75 octets: {line_bytes}")
+
+        # 4. Check standard properties without nonstandard CHARSET parameter
+        content = raw_bytes.decode("utf-8")
+        self.assertIn("SUMMARY:", content)
+        self.assertIn("DESCRIPTION:", content)
+        self.assertIn("LOCATION:", content)
+        self.assertNotIn("SUMMARY;CHARSET=UTF-8:", content)
+        self.assertNotIn("DESCRIPTION;CHARSET=UTF-8:", content)
+        self.assertNotIn("LOCATION;CHARSET=UTF-8:", content)
+
+        # 5. Unfolding restores original content cleanly without UTF-8 sequence corruption
+        unfolded = re.sub(r"\r\n[ \t]", "", content)
+
+        expected_clean_title = BubbleParser._escape_ics_text(long_title)
+        expected_clean_desc = BubbleParser._escape_ics_text(long_desc, multiline=True)
+        expected_clean_loc = BubbleParser._escape_ics_text(long_loc)
+
+        self.assertIn(f"SUMMARY:{expected_clean_title}", unfolded)
+        self.assertIn(f"DESCRIPTION:{expected_clean_desc}", unfolded)
+        self.assertIn(f"LOCATION:{expected_clean_loc}", unfolded)
+
+        # 6. Verify escaping of comma, semicolon, backslash
+        self.assertIn(r"\,", unfolded)
+        self.assertIn(r"\;", unfolded)
+        self.assertIn(r"\\", unfolded)
+
+        # 7. Test multiline text and newline escaping via direct _generate_ics
+        multiline_desc = "第一行会议概要\n第二行关键决议\r\n第三行待办事项"
+        direct_ics = p._generate_ics("多行会议", "2026-12-02 10:00", "2026-12-02 11:00", "会议室A", multiline_desc)
+        self.assertIsNotNone(direct_ics)
+        with open(direct_ics, "rb") as fp_direct:
+            direct_bytes = fp_direct.read()
+        self.assertFalse(direct_bytes.startswith(b"\xef\xbb\xbf"))
+        direct_content = direct_bytes.decode("utf-8")
+        direct_unfolded = re.sub(r"\r\n[ \t]", "", direct_content)
+        self.assertIn(r"第一行会议概要\n第二行关键决议\n第三行待办事项", direct_unfolded)
+
+        # 8. CRLF injection protection: verify newlines in single-line fields cannot inject ICS statements
+        crlf_title = "正常标题\r\nATTENDEE;CN=Hacker:mailto:evil@test.com\r\nSUMMARY:篡改"
+        injected_ics = p._generate_ics(crlf_title, "2026-12-03 10:00", "2026-12-03 11:00", "会议室B", "")
+        self.assertIsNotNone(injected_ics)
+        with open(injected_ics, "rb") as fp_inj:
+            inj_bytes = fp_inj.read()
+        inj_content = inj_bytes.decode("utf-8")
+        inj_unfolded = re.sub(r"\r\n[ \t]", "", inj_content)
+        # Verify ATTENDEE was NOT injected as a standalone property
+        self.assertNotIn("\nATTENDEE", inj_unfolded)
+        self.assertNotIn("\rATTENDEE", inj_unfolded)
 
     def test_bubble_parser_map_extraction(self):
         p = BubbleParser()
@@ -1221,129 +1207,38 @@ class TestPhotonBubbleStreaming(unittest.IsolatedAsyncioTestCase):
 
 
 
-    def test_bubble_parser_auto_poll_guardrail_on_cheat_sheet(self):
-
-        """Verify that when a cheat_sheet is rendered without an explicit poll, the guardrail synthesizes one."""
-
+    def test_markdown_table_preserved_as_text(self):
+        """Verify that standard Markdown tables remain plain text and are not converted to images or polls."""
         raw = (
-
-            "<bubble>重庆周边自驾给你挑了2个方向：</bubble>\n"
-
-            "<cheat_sheet title=\"重庆自驾路线全对比\">\n"
-
-            "| 路线主题 | 亮点 |\n"
-
-            "| :--- | :--- |\n"
-
-            "| **路线A：武隆仙女山** | 高山草场与天坑 |\n"
-
-            "| **路线B：三峡夔门绝壁** | 峡谷天路 |\n"
-
-            "</cheat_sheet>\n"
-
-            "<bubble>你大概想自驾几天？想去哪条线我把具体的途径导航和避坑节点发你～</bubble>"
-
-        )
-
-        p = BubbleParser()
-
-        res = p.feed(raw) + p.finish()
-
-        self.assertEqual(len(res), 4)
-
-        self.assertEqual(res[0], "重庆周边自驾给你挑了2个方向：")
-
-        self.assertTrue(res[1].startswith("IMAGE:"))
-
-        self.assertEqual(res[2], "你大概想自驾几天？想去哪条线我把具体的途径导航和避坑节点发你～")
-
-        self.assertTrue(res[3].startswith("POLL:"))
-
-        poll_data = json.loads(res[3][len("POLL:"):])
-
-        self.assertEqual(poll_data["title"], "想先看哪条路线的行程细节？")
-
-        self.assertEqual(poll_data["options"], ["路线A：武隆仙女山", "路线B：三峡夔门绝壁"])
-
-
-
-    def test_bubble_parser_auto_poll_guardrail_skipped_when_poll_exists(self):
-
-        """Verify that when an explicit poll is already emitted, auto-poll does not duplicate."""
-
-        raw = (
-
-            "<cheat_sheet title=\"自驾对比\">\n"
-
-            "| 路线 | 亮点 |\n"
-
-            "| :--- | :--- |\n"
-
-            "| 路线A | 亮点A |\n"
-
-            "| 路线B | 亮点B |\n"
-
-            "</cheat_sheet>\n"
-
-            "<poll title=\"你更想选哪个？\"><option>路线A</option><option>路线B</option></poll>"
-
-        )
-
-        p = BubbleParser()
-
-        res = p.feed(raw) + p.finish()
-
-        # IMAGE: and POLL:
-
-        self.assertEqual(len(res), 2)
-
-        self.assertTrue(res[0].startswith("IMAGE:"))
-
-        self.assertTrue(res[1].startswith("POLL:"))
-
-        poll_data = json.loads(res[1][len("POLL:"):])
-
-        self.assertEqual(poll_data["title"], "你更想选哪个？")
-
-
-
-    def test_bubble_parser_auto_poll_guardrail_skipped_on_sequential_itinerary(self):
-
-        """Verify that sequential/itinerary tables (第一站, 14:30) do NOT synthesize a poll."""
-
-        raw = (
-
-            "<bubble>路线A的自驾规划如下：</bubble>\n"
-
-            "<cheat_sheet title=\"路线A：停靠规划与精选打卡点\">\n"
-
-            "| 阶段与时间 | 停靠节点 | 核心体验 |\n"
-
+            "<bubble>这是配置清单：</bubble>\n"
+            "<bubble>| 项目 | 规格 | 备注 |\n"
             "| :--- | :--- | :--- |\n"
-
-            "| **第一站：14:30 - 15:30** | 格力海岸 | 海边散步 |\n"
-
-            "| **第二站：15:45 - 17:00** | 日月贝 | 贝壳建筑 |\n"
-
-            "</cheat_sheet>\n"
-
-            "<bubble>出发集合点给你备好啦</bubble>"
-
+            "| CPU | 8核 | 3.2GHz |\n"
+            "| 内存 | 32GB | DDR5 |</bubble>\n"
+            "<bubble>请确认配置是否合适</bubble>"
         )
-
         p = BubbleParser()
-
         res = p.feed(raw) + p.finish()
-
-        # Should only have bubble, IMAGE, bubble -- NO POLL!
-
         self.assertEqual(len(res), 3)
+        self.assertEqual(res[0], "这是配置清单：")
+        self.assertIn("| CPU | 8核 | 3.2GHz |", res[1])
+        self.assertFalse(any(b.startswith("IMAGE:") for b in res))
+        self.assertFalse(any(b.startswith("POLL:") for b in res))
+        self.assertEqual(res[2], "请确认配置是否合适")
 
-        self.assertEqual(res[0], "路线A的自驾规划如下：")
-
-        self.assertTrue(res[1].startswith("IMAGE:"))
-
-        self.assertEqual(res[2], "出发集合点给你备好啦")
+        # Also verify without bubble tags (natural paragraph fallback)
+        raw_natural = (
+            "这是配置清单：\n\n"
+            "| 项目 | 规格 | 备注 |\n"
+            "| :--- | :--- | :--- |\n"
+            "| CPU | 8核 | 3.2GHz |\n"
+            "| 内存 | 32GB | DDR5 |\n\n"
+            "请确认配置是否合适"
+        )
+        p_nat = BubbleParser()
+        res_nat = p_nat.feed(raw_natural) + p_nat.finish()
+        self.assertEqual(len(res_nat), 3)
+        self.assertFalse(any(b.startswith("IMAGE:") for b in res_nat))
 
 
 
@@ -1425,167 +1320,407 @@ class TestPhotonBubbleStreaming(unittest.IsolatedAsyncioTestCase):
 
 
 
-    def test_bubble_parser_weather_tag_streaming(self):
-        """Verify <weather> tag renders retina capsule image bubble during streaming."""
-        chunks = [
-            "<bubble>今天北京降温了哈</bubble>",
-            '<weather location="北京 · 朝阳" condition="rainy" temp="17°" feel="14°C" high_low="11° ~ 19°C" pop="85%" advice="出门带伞加件风衣" />',
-            "<bubble>出门记得保暖~</bubble>",
-        ]
+    def test_unsupported_personal_tags_safe_fallback(self):
+        """Verify that unsupported personal tags safely degrade to readable plain text without errors or images."""
         p = BubbleParser()
-        res = []
-        for c in chunks:
-            res.extend(p.feed(c))
-        res.extend(p.finish())
-
-        self.assertEqual(len(res), 3)
-        self.assertEqual(res[0], "今天北京降温了哈")
-        self.assertTrue(res[1].startswith("IMAGE:"))
-        self.assertIn("weather_", res[1])
-        self.assertIn(".png", res[1])
-        self.assertEqual(res[2], "出门记得保暖~")
-
-    def test_bubble_parser_movie_tag_streaming(self):
-        """Verify <movie> tag renders retina review card during streaming."""
-        chunks = [
-            "<bubble>强烈推荐这部诺兰神作</bubble>",
-            '<movie title="奥本海默" year="2023" douban="8.8" imdb="8.9" director="克里斯托弗·诺兰" style="classic" quote="“普罗米修斯盗取了天火...”" />',
-            "<bubble>看完后劲特别大</bubble>",
-        ]
-        p = BubbleParser()
-        res = []
-        for c in chunks:
-            res.extend(p.feed(c))
-        res.extend(p.finish())
-
-        self.assertEqual(len(res), 3)
-        self.assertEqual(res[0], "强烈推荐这部诺兰神作")
-        self.assertTrue(res[1].startswith("IMAGE:"))
-        self.assertIn("movie_", res[1])
-        self.assertIn(".png", res[1])
-        self.assertEqual(res[2], "看完后劲特别大")
-
-    def test_bubble_parser_word_tag_streaming(self):
-        """Verify <word> tag renders signature Klein Blue retina card during streaming."""
-        chunks = [
-            "<bubble>这个词的语感非常美</bubble>",
-            '<word word="serendipity" phonetic="英 [ˌserənˈdɪpəti]" pos="n. 名词" meaning="不期而遇的惊喜与美好收获" roots="Serendip + -ity" />',
-            "<bubble>在文学作品里经常出现</bubble>",
-        ]
-        p = BubbleParser()
-        res = []
-        for c in chunks:
-            res.extend(p.feed(c))
-        res.extend(p.finish())
-
-        self.assertEqual(len(res), 3)
-        self.assertEqual(res[0], "这个词的语感非常美")
-        self.assertTrue(res[1].startswith("IMAGE:"))
-        self.assertIn("word_", res[1])
-        self.assertIn(".png", res[1])
-        self.assertEqual(res[2], "在文学作品里经常出现")
-
-    def test_bubble_parser_visual_cards_boilerplate_pruned(self):
-        """Verify robotic announcements for weather, movie, and word cards are pruned."""
-        p = BubbleParser()
-        raw = '天气胶囊给你生成好啦：<weather location="北京" condition="sunny" temp="22°" />'
+        raw = '<bubble>天气播报：</bubble><bubble><weather city="北京" temp="22°C">今天天气晴朗，气温舒适。</weather></bubble><bubble>祝你有愉快的一天！</bubble>'
         res = p.feed(raw) + p.finish()
-        self.assertEqual(len(res), 1)
-        self.assertTrue(res[0].startswith("IMAGE:"))
+        self.assertEqual(len(res), 3)
+        self.assertEqual(res[0], "天气播报：")
+        self.assertEqual(res[1], "今天天气晴朗，气温舒适。")
+        self.assertEqual(res[2], "祝你有愉快的一天！")
+        self.assertFalse(any(b.startswith("IMAGE:") for b in res))
 
+        # Test self-closing tag with title/label fallback
         p2 = BubbleParser()
-        raw2 = '🎬 电影卡片给你备好啦：<movie title="星际穿越" />'
+        raw2 = '<movie title="星际穿越" director="诺兰" />这是一部关于爱与时空的硬科幻电影。'
         res2 = p2.feed(raw2) + p2.finish()
-        self.assertEqual(len(res2), 1)
-        self.assertTrue(res2[0].startswith("IMAGE:"))
+        self.assertFalse(any(b.startswith("IMAGE:") for b in res2))
+        self.assertTrue(any("星际穿越" in b for b in res2))
+        self.assertTrue(any("硬科幻电影" in b for b in res2))
 
-        p3 = BubbleParser()
-        raw3 = '单词卡片已生成！<word word="epiphany" />'
-        res3 = p3.feed(raw3) + p3.finish()
-        self.assertEqual(len(res3), 1)
-        self.assertTrue(res3[0].startswith("IMAGE:"))
-
-
-    def test_bubble_parser_weather_duplicate_cheat_sheet_suppressed_batch(self):
-        """Verify that when a response contains both <weather> and a weather <cheat_sheet>, only the single weather card is emitted."""
-        raw_msg = (
-            '<weather location="珠海·斗门" condition="rainy" condition_text="阴天伴零星微雨" temp="25°" feel="22°C" high_low="25° ~ 26°C" pop="25%" humidity="81%" wind="偏东风 5-6级" />\n\n'
-            '<cheat_sheet title="珠海·斗门 今日天气概览">\n'
-            '| 指标 | 详情 | 说明 |\n'
-            '| :--- | :--- | :--- |\n'
-            '| **实时气温 / 体感** | **25°C / 22°C** | 偏东海风 5~6 级 |\n'
-            '| **降水概率** | 25% | 零星小雨 |\n'
-            '</cheat_sheet>\n\n'
-            '今天主要是阴天加吹大风，凉飕飕的很舒服～'
+    def test_code_block_with_tags_literal(self):
+        """Verify that Markdown code blocks containing formatting tags remain literal."""
+        code_snippet = (
+            "```xml\n"
+            "<weather city=\"上海\">\n"
+            "  <temp>25°C</temp>\n"
+            "</weather>\n"
+            "```"
         )
         p = BubbleParser()
-        bubbles = p.feed(raw_msg) + p.finish()
-        image_bubbles = [b for b in bubbles if b.startswith("IMAGE:")]
-        self.assertEqual(len(image_bubbles), 1, f"Expected exactly 1 image bubble, got {len(image_bubbles)}")
-        self.assertIn("weather_", image_bubbles[0])
-        # Verify text chat bubble is preserved
-        text_bubbles = [b for b in bubbles if not b.startswith("IMAGE:")]
-        self.assertTrue(any("今天主要是阴天" in b for b in text_bubbles))
-
-    def test_bubble_parser_weather_duplicate_cheat_sheet_suppressed_streaming(self):
-        """Verify that streaming input with both <weather> and <cheat_sheet> suppresses the duplicate cheat sheet image and poll."""
-        chunks = [
-            '<weather location="珠海·斗门" condition="rainy" condition_text="阴天伴零星微雨" temp="25°" feel="22°C" />',
-            '\n\n<cheat_sheet title="珠海·斗门 今日天气概览">\n',
-            '| 指标 | 详情 |\n| :--- | :--- |\n| 实时气温 | 25°C |\n',
-            '</cheat_sheet>\n\n',
-            '今天主要是阴天加吹大风。',
-        ]
-        p = BubbleParser()
-        res = []
-        for c in chunks:
-            res.extend(p.feed(c))
-        res.extend(p.finish())
-
-        image_bubbles = [b for b in res if b.startswith("IMAGE:")]
-        poll_bubbles = [b for b in res if b.startswith("POLL:")]
-        self.assertEqual(len(image_bubbles), 1, f"Expected exactly 1 image bubble in stream, got {len(image_bubbles)}")
-        self.assertIn("weather_", image_bubbles[0])
-        self.assertEqual(len(poll_bubbles), 0, "No auto-poll should be emitted for suppressed weather cheat sheet")
-        self.assertTrue(any("今天主要是阴天" in b for b in res))
-
-    def test_bubble_parser_non_weather_cheat_sheet_preserved(self):
-        """Verify that a legitimate non-weather cheat_sheet (e.g. smartphone specs) is NOT suppressed."""
-        raw_msg = (
-            '<cheat_sheet title="旗舰手机参数对比">\n'
-            '| 品牌 | 芯片 | 屏幕 |\n'
-            '| :--- | :--- | :--- |\n'
-            '| Apple | A18 Pro | 6.3 OLED |\n'
-            '| Google | Tensor G4 | 6.3 OLED |\n'
-            '</cheat_sheet>\n\n'
-            '两款机型综合素质都非常出色。'
-        )
-        p = BubbleParser()
-        bubbles = p.feed(raw_msg) + p.finish()
-        image_bubbles = [b for b in bubbles if b.startswith("IMAGE:")]
-        self.assertEqual(len(image_bubbles), 1)
-        self.assertIn("sheet_", image_bubbles[0])
+        res = p.feed(code_snippet) + p.finish()
+        self.assertEqual(len(res), 1)
+        self.assertIn("<weather city=\"上海\">", res[0])
+        self.assertIn("```", res[0])
+        self.assertFalse(any(b.startswith("IMAGE:") for b in res))
 
 
-    def test_bubble_parser_paragraph_fallback_after_visual_tag(self):
-        """Verify that multiple paragraphs following a visual tag are split into separate bubbles rather than dumped into a single block."""
-        raw_msg = (
-            '<movie title="末代皇帝" original_title="The Last Emperor" />\n\n'
-            '史诗级神作，任何对近代史感兴趣的人绝对必看。\n\n'
-            '贝托鲁奇镜头下的故宫没有现代横店的塑料感，光影、红墙都带着沉甸甸的历史苍凉感。\n\n'
-            '挑个悠闲的下午静下心来看最过瘾！'
-        )
-        p = BubbleParser()
-        bubbles = p.feed(raw_msg) + p.finish()
+class TestParserRobustnessAndLifecycle(unittest.TestCase):
+    """Regression tests for parser lifecycle, quote escaping, code fence tracking, and malformed tags."""
 
-        image_bubbles = [b for b in bubbles if b.startswith("IMAGE:")]
-        text_bubbles = [b for b in bubbles if not b.startswith("IMAGE:")]
+    def test_attribute_apostrophe_in_double_quotes(self):
+        """1. Apostrophes inside double-quoted attributes must not truncate value."""
+        attrs = BubbleParser._parse_tag_attrs('title="What\'s your plan?" name="McDonald\'s"')
+        self.assertEqual(attrs.get("title"), "What's your plan?")
+        self.assertEqual(attrs.get("name"), "McDonald's")
 
-        self.assertEqual(len(image_bubbles), 1)
-        self.assertEqual(len(text_bubbles), 3, f"Expected 3 separate paragraph bubbles, got {len(text_bubbles)}: {text_bubbles}")
-        self.assertIn("史诗级神作", text_bubbles[0])
-        self.assertIn("贝托鲁奇镜头", text_bubbles[1])
-        self.assertIn("挑个悠闲的下午", text_bubbles[2])
+    def test_attribute_escaped_quotes(self):
+        """2. Escaped quotes inside attributes must be properly unescaped."""
+        attrs = BubbleParser._parse_tag_attrs('title="He said \\"hello\\"" caption=\'She said \\\'hi\\\'\'')
+        self.assertEqual(attrs.get("title"), 'He said "hello"')
+        self.assertEqual(attrs.get("caption"), "She said 'hi'")
+
+    def test_single_line_opening_and_closing_fences(self):
+        """3. Single-line opening and closing Markdown fences must not trap subsequent bubbles in code block."""
+        parser = BubbleParser()
+        b1 = parser._balance_and_track_fences("Here is inline fence: ```python print('hello') ``` that is all.")
+        self.assertFalse(parser.in_code_block, "Parser should not remain in code block after closed single-line fence")
+        self.assertFalse(b1.endswith("\n```"), f"Trailing fence should not be added to closed fence: {b1!r}")
+
+        b2 = parser._balance_and_track_fences("This is the next normal bubble.")
+        self.assertEqual(b2, "This is the next normal bubble.")
+        self.assertFalse(parser.in_code_block)
+
+    def test_multiple_fenced_code_blocks(self):
+        """4. Multiple fenced code blocks in one text block must both balance correctly."""
+        parser = BubbleParser()
+        text = "First:\n```python\na = 1\n```\nSecond:\n```bash\necho 2\n```\nDone."
+        res = parser._balance_and_track_fences(text)
+        self.assertFalse(parser.in_code_block)
+        self.assertNotIn("\n```\n```", res)
+        # Next bubble
+        next_b = parser._balance_and_track_fences("Normal text.")
+        self.assertEqual(next_b, "Normal text.")
+
+    def test_code_fence_state_across_successive_bubbles(self):
+        """5. Code fence state across successive bubbles must properly close and reopen."""
+        parser = BubbleParser()
+        # Bubble 1 opens code block but does not close it
+        b1 = parser._balance_and_track_fences("```python\ndef foo():\n    return 42")
+        self.assertTrue(parser.in_code_block)
+        self.assertEqual(parser.active_code_lang, "python")
+        self.assertTrue(b1.endswith("```"))
+
+        # Bubble 2 continues code block and closes it
+        b2 = parser._balance_and_track_fences("    x = foo()\n```")
+        self.assertTrue(b2.startswith("```python"))
+        self.assertTrue(b2.endswith("```"))
+        self.assertFalse(parser.in_code_block)
+        self.assertEqual(parser.active_code_lang, "")
+
+        # Bubble 3 is normal text
+        b3 = parser._balance_and_track_fences("End of code.")
+        self.assertEqual(b3, "End of code.")
+        self.assertFalse(parser.in_code_block)
+
+    def test_unclosed_bubble_tags_at_stream_end(self):
+        """6. Unclosed <bubble> tags at end of stream must preserve content without leaking protocol tag."""
+        parser = BubbleParser()
+        parser.feed("<bubble>This was never closed")
+        bubbles = parser.finish()
+        self.assertEqual(bubbles, ["This was never closed"])
+
+    def test_partial_closing_tags(self):
+        """7. Partial closing tags at end of stream must be stripped cleanly."""
+        parser1 = BubbleParser()
+        parser1.feed("Clean content</bub")
+        self.assertEqual(parser1.finish(), ["Clean content"])
+
+        parser2 = BubbleParser()
+        parser2.feed("Another content</effect")
+        self.assertEqual(parser2.finish(), ["Another content"])
+
+    def test_literal_bubble_inside_code_blocks(self):
+        """8. Literal <bubble> text inside Markdown code blocks must remain untouched."""
+        parser = BubbleParser()
+        text = "```xml\n<bubble>This is inside a code block</bubble>\n```"
+        parser.feed(text)
+        bubbles = parser.finish()
+        self.assertEqual(len(bubbles), 1)
+        self.assertIn("<bubble>This is inside a code block</bubble>", bubbles[0])
+
+    def test_mixed_single_and_double_quotes_attributes(self):
+        """Mixed single-quoted and double-quoted attributes in the same tag."""
+        attrs = BubbleParser._parse_tag_attrs('title="Double quote title" author=\'Alice Smith\' count="5"')
+        self.assertEqual(attrs.get("title"), "Double quote title")
+        self.assertEqual(attrs.get("author"), "Alice Smith")
+        self.assertEqual(attrs.get("count"), "5")
+
+    def test_malformed_unterminated_attribute_values(self):
+        """Malformed or unterminated attribute values should not crash or corrupt other attributes."""
+        attrs = BubbleParser._parse_tag_attrs('title="Valid Title" broken="unterminated other=\'ok\'')
+        self.assertEqual(attrs.get("title"), "Valid Title")
+        self.assertEqual(attrs.get("other"), "ok")
+
+    def test_ordinary_text_containing_angle_brackets(self):
+        """Ordinary mathematical comparisons < and > must not be treated as tags or corrupted."""
+        parser = BubbleParser()
+        out1 = parser.feed("If x < 10 and y > 20:\n\nThen result is valid.")
+        out2 = parser.finish()
+        all_bubbles = out1 + out2
+        self.assertEqual(len(all_bubbles), 2)
+        self.assertEqual(all_bubbles[0], "If x < 10 and y > 20:")
+        self.assertEqual(all_bubbles[1], "Then result is valid.")
+
+    def test_tags_split_across_streaming_chunks(self):
+        """Tags split across streaming chunk boundaries must resolve cleanly without loss."""
+        parser = BubbleParser()
+        out1 = parser.feed("<bub")
+        self.assertEqual(out1, [])
+        out2 = parser.feed("ble>Chunk one</bub")
+        self.assertEqual(out2, [])
+        out3 = parser.feed("ble><bubble>Chunk two</bubble>")
+        self.assertEqual(out3, ["Chunk one", "Chunk two"])
+        out4 = parser.finish()
+        self.assertEqual(out4, [])
+
+
+class TestAirHermesConfigurationAndFlags(unittest.IsolatedAsyncioTestCase):
+    """Test suite covering Phase 4 configuration, feature flags, and safe fallbacks."""
+
+    def setUp(self):
+        self._orig_env = os.environ.copy()
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._orig_env)
+
+    def test_01_default_configuration_equivalence(self):
+        """1. Default configuration equivalence: empty config matches existing behavior."""
+        from gateway.airhermes_config import AirHermesConfig
+        cfg = AirHermesConfig.from_dict({})
+        self.assertTrue(cfg.bubble_streaming)
+        self.assertEqual(cfg.bubble_min_interval, 0.85)
+        self.assertTrue(cfg.bubble_adaptive_pacing)
+        self.assertTrue(cfg.enable_tapbacks)
+        self.assertTrue(cfg.enable_polls)
+        self.assertTrue(cfg.enable_calendar)
+        self.assertTrue(cfg.enable_maps)
+        self.assertTrue(cfg.enable_effects)
+
+    def test_02_environment_variable_precedence(self):
+        """2. Environment variables override YAML configuration dictionary."""
+        from gateway.airhermes_config import AirHermesConfig
+        os.environ["AIRHERMES_BUBBLE_STREAMING"] = "false"
+        os.environ["AIRHERMES_MIN_INTERVAL"] = "1.50"
+        os.environ["AIRHERMES_ENABLE_POLLS"] = "0"
+
+        yaml_dict = {
+            "bubble_streaming": True,
+            "bubble_min_interval": 0.50,
+            "enable_polls": True,
+        }
+        cfg = AirHermesConfig.from_dict(yaml_dict)
+        self.assertFalse(cfg.bubble_streaming)
+        self.assertEqual(cfg.bubble_min_interval, 1.50)
+        self.assertFalse(cfg.enable_polls)
+
+    def test_03_strict_boolean_parsing(self):
+        """3. Strict boolean parsing accepts only recognized booleans and warns on invalid values."""
+        from gateway.airhermes_config import AirHermesConfig
+        # True variants
+        for val in (True, "true", "True", "1", "yes", "on", "ON"):
+            cfg = AirHermesConfig.from_dict({"bubble_streaming": val})
+            self.assertTrue(cfg.bubble_streaming, f"Failed for {val!r}")
+
+        # False variants
+        for val in (False, "false", "False", "0", "no", "off", "OFF"):
+            cfg = AirHermesConfig.from_dict({"bubble_streaming": val})
+            self.assertFalse(cfg.bubble_streaming, f"Failed for {val!r}")
+
+        # Invalid booleans fallback to default True with warning
+        for invalid in ("invalid", "maybe", 100, [1], None):
+            cfg = AirHermesConfig.from_dict({"bubble_streaming": invalid})
+            self.assertTrue(cfg.bubble_streaming)
+
+    def test_04_invalid_numeric_values(self):
+        """4. Invalid numeric values (NaN, Inf, negative, out-of-range) fallback to default with warning."""
+        from gateway.airhermes_config import AirHermesConfig
+
+        for invalid in (float("nan"), float("inf"), float("-inf"), "nan", "inf", -1.0, 10.0, "not_a_number"):
+            cfg = AirHermesConfig.from_dict({"bubble_min_interval": invalid})
+            self.assertEqual(cfg.bubble_min_interval, 0.85, f"Failed fallback for {invalid!r}")
+
+    async def test_05_streaming_disabled_original_hermes_path(self):
+        """5. When bubble_streaming=False: capability is False, consumer is not created, exactly one final message sent."""
+        from gateway.airhermes_config import AirHermesConfig
+
+        cfg = AirHermesConfig(bubble_streaming=False)
+        adapter = MockAdapter()
+        adapter.airhermes_config = cfg
+        adapter.SUPPORTS_BUBBLE_STREAMING = False  # Instance-level override
+
+        # 1. Class-level capability remains True
+        self.assertTrue(getattr(type(adapter), "SUPPORTS_BUBBLE_STREAMING", True))
+        # 2. Instance capability is False
+        self.assertFalse(getattr(adapter, "SUPPORTS_BUBBLE_STREAMING", False))
+
+        # 3. Simulate turn delivery with streaming disabled
+        final_text = "This is the complete final response delivered at turn finish."
+        res = await adapter.send("chat_123", final_text)
+
+        self.assertTrue(getattr(res, "success", False) or getattr(res, "ok", False))
+        self.assertEqual(len(adapter.sent_messages), 1)
+        msg = adapter.sent_messages[0]
+        self.assertEqual(msg.get("content") or msg.get("text"), final_text)
+        self.assertEqual(adapter.sent_messages[0]["chat_id"], "chat_123")
+
+    def test_06_independent_feature_flags(self):
+        """6. Feature flags are fully independent and do not interfere with each other."""
+        from gateway.airhermes_config import AirHermesConfig
+        cfg = AirHermesConfig(enable_polls=False, enable_calendar=True)
+        self.assertFalse(cfg.enable_polls)
+        self.assertTrue(cfg.enable_calendar)
+        self.assertTrue(cfg.enable_maps)
+        self.assertTrue(cfg.enable_effects)
+        self.assertTrue(cfg.enable_tapbacks)
+
+    def test_07_disabled_feature_safe_fallback(self):
+        """7. Disabled features safely degrade to readable text without executing native actions."""
+        from gateway.airhermes_config import AirHermesConfig
+
+        # A. Polls disabled -> plain text options
+        p_poll = BubbleParser(config=AirHermesConfig(enable_polls=False))
+        poll_bubbles = p_poll.feed('<poll title="Dinner Choice">Hotpot\nBarbecue</poll>')
+        poll_bubbles.extend(p_poll.finish())
+        self.assertEqual(len(poll_bubbles), 1)
+        self.assertFalse(poll_bubbles[0].startswith("POLL:"))
+        self.assertIn("Dinner Choice", poll_bubbles[0])
+        self.assertIn("Hotpot", poll_bubbles[0])
+
+        # B. Calendar disabled -> readable event text without .ics
+        p_cal = BubbleParser(config=AirHermesConfig(enable_calendar=False))
+        cal_bubbles = p_cal.feed('<calendar title="Team Review" start="2026-11-25 10:00" location="Room A">Project Review</calendar>')
+        cal_bubbles.extend(p_cal.finish())
+        self.assertEqual(len(cal_bubbles), 1)
+        self.assertFalse(cal_bubbles[0].startswith("FILE:"))
+        self.assertIn("Team Review", cal_bubbles[0])
+        self.assertIn("Room A", cal_bubbles[0])
+
+        # C. Maps disabled -> readable text without .loc.vcf or Apple Maps URL (DEFECT-02)
+        p_map = BubbleParser(config=AirHermesConfig(enable_maps=False))
+        map_bubbles = p_map.feed('<map query="Forbidden City" title="故宫"/>')
+        map_bubbles.extend(p_map.finish())
+        self.assertEqual(len(map_bubbles), 1)
+        self.assertFalse(map_bubbles[0].startswith("FILE:"))
+        self.assertIn("故宫", map_bubbles[0])
+        self.assertNotIn("maps.apple.com", map_bubbles[0])
+
+        # D. Effects disabled -> plain text without EFFECT: prefix
+        p_eff = BubbleParser(config=AirHermesConfig(enable_effects=False))
+        eff_bubbles = p_eff.feed('<effect:fireworks>Congratulations!</effect>')
+        eff_bubbles.extend(p_eff.finish())
+        self.assertEqual(len(eff_bubbles), 1)
+        self.assertEqual(eff_bubbles[0], "Congratulations!")
+
+    async def test_08_no_unintended_native_side_effects_tapbacks(self):
+        """8. When tapbacks are disabled, native reaction API is NEVER called and no emoji bubble is sent."""
+        from gateway.airhermes_config import AirHermesConfig
+
+        adapter = MockAdapter()
+        # Parser with tapbacks disabled
+        parser = BubbleParser(config=AirHermesConfig(enable_tapbacks=False))
+        bubbles = parser.feed('<tapback emoji="👍">')
+        bubbles.extend(parser.finish())
+        self.assertEqual(bubbles, [])
+
+        # Consumer with tapbacks disabled
+        from gateway.bubble_actions import TapbackAction
+        consumer = BubbleStreamConsumer(adapter=adapter, chat_id="c1", config=AirHermesConfig(enable_tapbacks=False))
+        res = await consumer._send_bubble(TapbackAction(reaction="👍"))
+        is_ok = res.get("ok", False) if isinstance(res, dict) else (getattr(res, "success", False) or getattr(res, "ok", False))
+        self.assertTrue(is_ok)
+        self.assertEqual(len(adapter.reactions), 0)
+        self.assertEqual(len(adapter.sent_messages), 0)
+
+    def test_09_adaptive_pacing_disabled(self):
+        """9. When bubble_adaptive_pacing=False, ChatPacer returns constant min_interval_s without jitter."""
+        from gateway.bubble_queue import ChatPacer
+
+        pacer_off = ChatPacer("chat_test", min_interval_s=1.20, adaptive=False)
+        self.assertEqual(pacer_off.compute_interval("long message?", "burst!"), 1.20)
+        self.assertEqual(pacer_off.compute_interval("TAPBACK:👍", "next"), 1.20)
+
+    def test_10_configuration_snapshot_consistency(self):
+        """10. BubbleStreamConsumer holds an immutable configuration snapshot throughout a turn."""
+        from gateway.airhermes_config import AirHermesConfig
+
+        cfg = AirHermesConfig(bubble_min_interval=0.90)
+        adapter = MockAdapter()
+        consumer = BubbleStreamConsumer(adapter=adapter, chat_id="c_snap", config=cfg)
+
+        self.assertEqual(consumer.config.bubble_min_interval, 0.90)
+        os.environ["AIRHERMES_MIN_INTERVAL"] = "2.50"
+        self.assertEqual(consumer.config.bubble_min_interval, 0.90)
+
+    def test_11_unknown_settings(self):
+        """11. Unknown settings in config dictionary are safely ignored without error."""
+        from gateway.airhermes_config import AirHermesConfig
+
+        cfg = AirHermesConfig.from_dict({"unknown_future_setting": 12345, "another_key": "val"})
+        self.assertTrue(cfg.bubble_streaming)
+        self.assertEqual(cfg.bubble_min_interval, 0.85)
+
+    def test_12_existing_installation_compatibility(self):
+        """12. Existing installations without configuration object run with full defaults."""
+        from gateway.airhermes_config import AirHermesConfig
+
+        cfg = AirHermesConfig.from_platform_config(None)
+        self.assertTrue(cfg.bubble_streaming)
+        self.assertEqual(cfg.bubble_min_interval, 0.85)
+        self.assertTrue(cfg.bubble_adaptive_pacing)
+
+
+@unittest.skipUnless(HERMES_UPSTREAM_AVAILABLE, "Requires upstream Hermes Agent environment (PhotonAdapter/TurnRunner)")
+class TestHermesUpstreamIntegration(unittest.TestCase):
+    """Integration test suite verifying patched behavior inside upstream Hermes Agent."""
+
+    def test_photon_adapter_flag(self):
+        """Verify PhotonAdapter declares support for bubble streaming and disallows message editing."""
+        self.assertTrue(getattr(PhotonAdapter, "SUPPORTS_BUBBLE_STREAMING", False))
+        self.assertFalse(getattr(PhotonAdapter, "SUPPORTS_MESSAGE_EDITING", True))
+
+    def test_tool_heartbeat_hints(self):
+        """Verify TurnRunner._format_bubble_tool_hint formats human-readable progress descriptions."""
+        hint_search = TurnRunner._format_bubble_tool_hint("web_search", {"query": "US Midterm Election"})
+        self.assertEqual(hint_search, "正在搜索「US Midterm Election」...")
+
+        hint_term_sched = TurnRunner._format_bubble_tool_hint("terminal", {"command": "python get_schedule.py"})
+        self.assertEqual(hint_term_sched, "正在翻看日程课表...")
+
+        hint_term_git = TurnRunner._format_bubble_tool_hint("terminal", {"command": "git status"})
+        self.assertEqual(hint_term_git, "正在检查代码仓库...")
+
+        hint_file = TurnRunner._format_bubble_tool_hint("read_file", {"path": "C:/notes/todo.md"})
+        self.assertEqual(hint_file, "正在查阅 todo.md...")
+
+        hint_web = TurnRunner._format_bubble_tool_hint("web_extract", {"url": "https://example.com"})
+        self.assertEqual(hint_web, "正在浏览网页内容...")
+
+    def test_heartbeat_debounce_fast_tool(self):
+        """Verify fast tools under debounce threshold do not trigger phantom commentary heartbeats."""
+        import time
+
+        emitted_hints = []
+
+        class MockConsumer:
+            _bubble_queue = None
+
+            def on_commentary(self, msg):
+                emitted_hints.append(msg)
+
+        sc = MockConsumer()
+        start_hook, complete_hook = TurnRunner._wrap_bubble_tool_callbacks(None, None, sc)
+
+        # Fast tool finishes in 50ms (well under 2.5s threshold)
+        start_hook("call_1", "web_search", {"query": "test"})
+        time.sleep(0.05)  # health: allow HX013 -- debounce interval verification
+        complete_hook("call_1")
+
+        # Wait to verify timer was cancelled and did not fire
+        time.sleep(0.1)  # health: allow HX013 -- debounce interval verification
+        self.assertEqual(len(emitted_hints), 0)
 
 
 if __name__ == "__main__":

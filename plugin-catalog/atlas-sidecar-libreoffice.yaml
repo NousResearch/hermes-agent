@@ -20,6 +20,7 @@ description: >-
   https://github.com/AtlasOmnia/sidecar-libreoffice/releases/tag/v0.5.1
   (SHA-256 d25ae7834e313adf90c4ef2f47d23d8b6e5699c8802959cecc73a103a0f1a9a1),
   or build that tag, and add it in LibreOffice's Extension Manager (Tools > Extensions).
+  Check that 0.5.1 is enabled, then choose Restart Now or fully quit and reopen LibreOffice.
   Pair using Tools > Copy Sidecar pairing token and save it as LIBREOFFICE_LIVE_BRIDGE_TOKEN
   through Hermes. Chat is off by default (chat_port: 0); enabling it needs chat_port: 8661,
   plugins.isolation: in_process and the Hermes API server with API_SERVER_KEY.
@@ -31,21 +32,31 @@ description: >-
   static chat files and a page API, and forwards chats to the loopback Hermes API server
   (api_server_port defaults to 8642). API_SERVER_KEY is read through Hermes's profile-scoped
   secret lookup, kept in memory, never sent to LibreOffice or the browser or logged.
-  The extension authenticates the launcher by a pairing-token-derived HMAC channel;
-  one-time launch codes reach the browser through owner-only bootstrap HTML files in the
-  user cache, not process arguments. Codes expire after 30 seconds; files are deleted
+  The extension and the chat endpoint authenticate each other by an HMAC challenge-response
+  keyed by the pairing token; a 0.5.x extension never sends the token to the chat port, but
+  the endpoint still accepts it as a bearer token on legacy /chat and /health routes for
+  0.4.x extensions until 0.6.0. One-time launch codes reach the browser through owner-only
+  bootstrap HTML files in the user cache, not process arguments. Codes expire after 30 seconds; files are deleted
   within 30 seconds best effort, with startup/quit sweeps. The browser keeps its session
   token only in script memory. On eligible macOS launches, window position/state is sent
   locally to the plugin even with Follow off; HERMES_LO_SIDECAR_NO_FOLLOW=1 disables that
-  transport. The extension starts the browser and, on macOS, uses osascript to raise it
-  and open for tab fallback, with argument lists and no shell. The plugin starts no process.
+  transport. Only on a click on Open Sidecar the extension starts a browser: on macOS
+  Chrome, Edge, Brave or Chromium in app mode with its own profile under
+  ~/Library/Caches/Sidecar for LibreOffice (about 60 MB once used), asked to quit when
+  LibreOffice quits; otherwise a default-browser tab through /usr/bin/open (macOS) or the
+  .html file association (Windows). On macOS /usr/bin/osascript raises the window. Argument
+  lists, no shell; it never reads your own browser profile, cookies or keychain.
+  The plugin starts no process.
   Neither component makes third-party network calls, has telemetry or self-updates;
   the browser's own vendor calls and LibreOffice document external links are outside
   their control. Document content read by Hermes goes to its configured model.
+  calc_get_overview lists the titles and file locations of every open LibreOffice document.
   Chat's tool fence is a pre_tool_call hook, not a Hermes-enforced per-run limit;
   external-agent runtimes bypass it and are unsupported. Unresolved runs can continue
   with full Hermes tools after disable/reload removes the hook. Read the pinned README
-  and SECURITY.md and the limitations below before enabling chat.
+  and SECURITY.md and the known issues before enabling chat. Not affiliated with or
+  endorsed by The Document Foundation, Microsoft or Nous Research; LibreOffice is a
+  trademark of The Document Foundation.
 maintainer: AtlasOmnia
 tier: community
 category: tools
@@ -54,14 +65,29 @@ readme: true
 platforms: [macos, windows]  # macOS Chrome native/bounded real-gateway; Windows Firefox tab with fake Runs API. Linux CI units only; Linux UI unsupported.
 known_issues:
   - >-
-    Upgrade from 0.4.x: remove nothing. Run hermes plugins update atlas-sidecar-libreoffice,
-    restart the gateway (or reopen Hermes Desktop), then add the 0.5.1 .oxt in Extension
-    Manager. Its identifier is unchanged; pairing, ports, API key and chat settings stay.
-    Chat that was off stays off. Follow is separate, remembered and initially off.
-    Installed 0.5.0-to-0.5.1 replacement with pairing preserved passed in a disposable
-    profile; public catalog plugin-update execution remains unverified. Both installed
-    0.5.0/0.5.1 mixed pairs opened connected pages without following; a 0.4.0 extension
-    retains its legacy panel through 0.5.x. A 0.4.0 plugin cannot open the new window.
+    Upgrade from released 0.4.x builds: do not remove the extension. Before updating,
+    wait for every Sidecar run to be confirmed finished or stopped, then close all
+    Sidecar windows. If any run's outcome is unresolved, stop the gateway serving
+    this profile completely before updating; closing a page or pressing Stop alone
+    does not prove settlement. Current Hermes can reload plugins during an update,
+    so a restart only afterward does not prevent the disclosed unload-fence gap.
+    Run hermes plugins update atlas-sidecar-libreoffice, then start or restart the
+    gateway serving this profile; quit and reopen Hermes Desktop if used. Add the
+    0.5.1 .oxt in Extension Manager, confirm it is enabled, then choose Restart Now
+    or fully quit and reopen LibreOffice. The released extension identifier is
+    unchanged; pairing, ports, API key and chat settings are retained. Chat that
+    was off stays off. Follow is a separate remembered browser preference, initially off.
+    Installed macOS release-archive evidence with real plugin/fake Runs API: 0.4.1 native
+    panel replied before replacement. Extension Manager replacement by 0.5.1 preserved the
+    pairing token; the already-loaded legacy panel stayed until LibreOffice restarted.
+    New extension plus 0.4.1 plugin clearly reported that the plugin is older and opened
+    no browser; no crash occurred. Old extension plus 0.5.1 plugin retained its native
+    panel and replied. Both 0.5.1 opened Sidecar, completed one turn, stopped a hanging
+    turn and closed the browser on normal Quit. A disposable Hermes local-source reinstall
+    from 0.4.1 to 0.5.1 retained configured ports/settings and the stored pairing token.
+    This was not a public-catalog update or a real-model run. Previous 0.5.0 mixed-pair
+    evidence is historical; its extension replacement used an early integration build,
+    not the release archive. Follow is a separate browser preference, not plugin config.
     Older than 0.4.0: remove the earlier extension first (different identifier, same port),
     and restart the gateway after replacing the old libreoffice-live plugin.
   - >-
@@ -70,10 +96,12 @@ known_issues:
     real plugin/fake Runs API passed first/second/fifth-window and cold-channel performance,
     guarded title-bar drags, Writer/Calc Print Preview OFF/ON and Writer second-view close;
     seven native runs had 21 normal Quits exit 0. Windows 11, LibreOffice 26.8.3.1,
-    Firefox 160 default tab: native panel launch, formatted reply, lost Send/Try again,
-    Stop and no-follow were exercised with real plugin/fake Runs API. Later G7 passed
-    12/12 on unchanged integration executable bytes, including document-close retry while
-    another document survived; Windows native-caption real-click close remains unqualified.
+    Firefox 160 as default browser, driven by an automated harness with posted (synthetic)
+    input, not by hand: Open Sidecar opened the tab, and a formatted reply, lost Send/Try
+    again, Stop and no-follow passed with real plugin/fake Runs API. A later 12-check
+    Windows regression passed 12/12 on the same executable bytes, including a document-close
+    retry while another document stayed open; closing with a real click on the window's
+    close button was not qualified on Windows.
     These are integration observations, not fresh installed tests of the final documentation-only
     archive; the ledger records the unchanged executable-byte boundary.
   - >-
@@ -124,10 +152,12 @@ known_issues:
     best-effort stop outside the fence. Unresolved runs are not drained. Fixing this needs a
     Hermes-side per-run restriction. Gateway shutdown/restart is different: Hermes drains then
     interrupts API runs, which end with the process, without first unloading the plugin.
-    Multiple profiles must use distinct chat ports; first binder wins. Chat needs in_process.
+    In a gateway serving several profiles the first profile to bind a chat port keeps it,
+    and another profile's unload does not close it: turn chat on in one profile only.
+    Chat needs plugins.isolation: in_process.
   - >-
     Plain HTTP loopback permits port takeover while listeners are down: the plugin sends the
-    pairing token to port 8660 and API_SERVER_KEY to the API-server port. Legacy 0.4.0 panels
+    pairing token to port 8660 and API_SERVER_KEY to the API-server port. Legacy 0.4.x panels
     send the pairing token to the chat port even with chat off; new launchers use HMAC.
     Windows listeners use SO_EXCLUSIVEADDRUSE while bound; socket/admin/LOCAL SERVICE probes
     are not normal limited-token versus second-interactive-standard-account acceptance.
@@ -147,8 +177,9 @@ known_issues:
     Sidecar stays open; hidden/minimised pages can notice document close about a minute late.
     Browser crash can leave an already-open message for about two minutes (longer if still
     polling). Closing/reloading stops a reply but does not undo prior edits. Open Sidecar
-    raises the browser, not necessarily the selected document, and does not reattach; macOS
-    fallback .html associations can open an editor instead of a browser.
+    raises the browser, not necessarily the selected document, and does not reattach. Where
+    the page opens through the .html file association (Windows, and macOS tab fallback), an
+    association with an editor instead of a browser means the window does not connect.
   - >-
     Sidecar cannot answer approvals: press Stop or the run ends at its 600-second deadline.
     Unknown run outcomes stay tracked; do not blindly resend edits. Chat has no word-by-word

@@ -244,6 +244,9 @@ gateway:
       guidance: "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
     ping:
       completed: "✔ {head} terminada — {title}{handoff}"
+      chain_broke: "🪓 {head} CADENA ROTA — {title} prometió trabajo posterior ({phrase}) y no creó ningún sucesor{triage_suffix}"
+      chain_broke_phrase: "«{value}»"
+      chain_broke_triage: " — clasificado como {triage}"
       review_requested: "👀 {head} lista para revisión — {title}{handoff}"
       changes_default_reason: "los comentarios del revisor requieren cambios"
       reviewer_suffix: " — revisor @{reviewer}"

@@ -244,6 +244,9 @@ gateway:
       guidance: "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
     ping:
       completed: "✔ {head} klaar — {title}{handoff}"
+      chain_broke: "🪓 {head} KETTING GEBREAK — {title} het vervolgwerk belowe ({phrase}) en geen opvolger geskep nie{triage_suffix}"
+      chain_broke_phrase: "“{value}”"
+      chain_broke_triage: " — getasj as {triage}"
       review_requested: "👀 {head} gereed vir nasien — {title}{handoff}"
       changes_default_reason: "nasiener se terugvoer vereis veranderinge"
       reviewer_suffix: " — nasiener @{reviewer}"

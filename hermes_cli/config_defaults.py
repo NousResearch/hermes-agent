@@ -1886,6 +1886,56 @@ DEFAULT_CONFIG = {
         # Max triage tasks decomposed per tick, bounding the aux-LLM burst from a bulk load. Excess
         # defers to the next tick.
         "auto_decompose_per_tick": 3,
+        # Case-insensitive substrings marking a block reason as an OPERATOR HOLD. Cards whose
+        # CURRENT block episode matches are suppressed from ALL triage automation — auto-decomposer
+        # and specifier sweeps skip them; specify/decompose promote raises TaskHeldError — until an
+        # explicit unblock (operator -> butler) writes the `unblocked` event that clears the hold.
+        # The block-loop breaker escalates repeat holds INTO triage; that escalation is not a
+        # release. Incident: gaudi t_9375396a, 2026-10-29 (3 decomposer misfires overrode the hold).
+        "hold_markers": ["OPERATOR HOLD"],
+        # Completion-time follow-through (hermes_cli/kanban_db.py). `gate`: refuse
+        # kanban_complete on a declared successor obligation (body line `SUCCESSOR: required`, or
+        # metadata.successor_spec/downstream_action) until a successor card exists or
+        # metadata.no_successor="<reason>" waives it. `wake`: when an undeclared completion's text
+        # matches `wake_patterns` and nothing was discharged, queue one [SUCCESSOR-WAKE] routing card
+        # (assignee = routers[<board>], else kanban.orchestrator_profile), skipped while fresh work
+        # (created/started within `fresh_window_s`) is queued unless `wake_require_idle_queue` is false.
+        # Chain break (ADR-0020): a completion whose text *promises* a successor
+        # (`intent_patterns` phrases) while nothing was discharged stamps a
+        # `chain_broke` event and auto-files a `CHAIN-BROKE:` triage card, so the
+        # board never goes dead-quiet on a broken chain. Phase 1 is warn-only
+        # (`intent_gate: false` keeps the completion landing); flipping
+        # `intent_gate` to true rejects it like the `gate` does.
+        # `structural_break_check` adds the conservative zero-children/open-ancestor
+        # arm. `intent_denylist` extends the data-word guards (the
+        # wall_mid_turn_successor false-positive class).
+        "successor_guard": {
+            "gate": True,
+            "wake": False,
+            "wake_require_idle_queue": True,
+            "fresh_window_s": 21600,
+            "wake_patterns": [
+                r"\bnext (gap|step|card|peel|phase|layer|run)\b",
+                r"\bsuccessor\b",
+                r"\b(must|should|needs? to) be (minted|created|filed|queued|opened)\b",
+                r"\bfollow[- ]?up (card|task|run)\b",
+                r"\brecommend(s|ed|ing)?\b[^.\n]{0,60}\b(run|card|next|rerun)\b",
+            ],
+            # Chain-break arms (ADR-0020 §2.1/§3.2). chain_break = master switch;
+            # intent_gate false = warn phase (stamp + triage card, completion
+            # lands), true = reject like `gate`. structural_break_check = the
+            # conservative open-ancestor/zero-children arm (off: widest blast
+            # radius). intent_patterns/intent_denylist: None = the code defaults
+            # (kanban_db.DEFAULT_INTENT_PATTERNS / DEFAULT_INTENT_DENYLIST); a
+            # list here REPLACES/extends them and must stay phrase-level —
+            # bare-token patterns are how wall_mid_turn_successor false-positived.
+            "chain_break": True,
+            "intent_gate": False,
+            "structural_break_check": False,
+            "intent_patterns": None,
+            "intent_denylist": None,
+            "routers": {},
+        },
         # Running tasks with no heartbeat (last_heartbeat_at) for this many seconds are reclaimed to
         # ready on the next tick; a still-running local worker is terminated first. 0 = off.
         "dispatch_stale_timeout_seconds": 14400,

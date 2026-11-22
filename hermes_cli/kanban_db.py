@@ -2637,6 +2637,624 @@ def _claim_is_live(trow) -> bool:
     )
 
 
+# --- successor guard (completion-time follow-through) ---
+#
+# Gate: refuse a completion that declared a successor obligation (body line
+# ``SUCCESSOR: required`` or metadata ``successor_spec`` / ``downstream_action``)
+# without discharging it. Wake: post-commit keyword fallback minting one
+# ``[SUCCESSOR-WAKE]`` routing card. Config: ``kanban.successor_guard``.
+# Design: docs/SUCCESSOR-GUARD-DESIGN-2026-11-19.md section 3-6.
+
+_SUCCESSOR_WAKE_CREATOR = "kanban-successor-guard"
+_SUCCESSOR_WAKE_TITLE_PREFIX = "[SUCCESSOR-WAKE]"
+_BODY_DECLARATION_RE = re.compile(r"^SUCCESSOR:\s*required\b", re.M)
+_DECLARATION_KEYS = ("successor_spec", "downstream_action")
+_WAIVER_MIN_CHARS = 12
+_QUEUED_STATUSES = ("todo", "ready", "running", "triage")
+
+
+def _successor_guard_config() -> dict:
+    """``kanban.successor_guard`` from the shared kanban root config only, merged over defaults.
+
+    Reads ``kanban_home() / "config.yaml"`` — the shared root is the single
+    source of truth for kanban settings (fleet rule: kanban knobs live in the
+    global config only, never a seat's profile config). A dispatched worker
+    runs with ``HERMES_HOME=<root>/profiles/<seat>`` so ``load_config_readonly``
+    would see the seat's file and miss the root map; we must not use it.
+    Missing or unreadable root config yields the code defaults — never raises
+    into ``complete_task``.
+    """
+    cfg = dict(DEFAULT_CONFIG["kanban"]["successor_guard"])
+    try:
+        from hermes_cli.config_backend import read_config_doc
+        root_cfg = read_config_doc(kanban_home() / "config.yaml") or {}
+        user = (root_cfg.get("kanban") or {}).get("successor_guard")
+    except Exception:
+        user = None
+    if isinstance(user, dict):
+        cfg.update(user)
+    return cfg
+
+
+def _successor_non_empty(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, dict, set)):
+        return bool(value)
+    return False
+
+
+def _declared_successor_keys(metadata: Any) -> list[str]:
+    if not isinstance(metadata, dict):
+        return []
+    return [k for k in _DECLARATION_KEYS if _successor_non_empty(metadata.get(k))]
+
+
+def _successor_waiver_reason(metadata: Any) -> Optional[str]:
+    """``metadata.no_successor`` when it is a string of >= 12 chars after strip."""
+    if not isinstance(metadata, dict):
+        return None
+    raw = metadata.get("no_successor")
+    if isinstance(raw, str) and len(raw.strip()) >= _WAIVER_MIN_CHARS:
+        return raw.strip()
+    return None
+
+
+def _has_live_child(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True when ``task_id`` has at least one non-archived linked child."""
+    return conn.execute(
+        "SELECT 1 FROM task_links l JOIN tasks c ON c.id = l.child_id "
+        "WHERE l.parent_id = ? AND c.status != 'archived' LIMIT 1",
+        (task_id,),
+    ).fetchone() is not None
+
+
+def _successor_discharged(conn: sqlite3.Connection, task_id: str, verified_cards: list[str]) -> bool:
+    return bool(verified_cards) or _has_live_child(conn, task_id)
+
+
+def _gate_successor(
+    conn: sqlite3.Connection, task_id: str, *, metadata: Any, verified_cards: list[str],
+    summary: Optional[str], result: Optional[str],
+) -> None:
+    """Raise :class:`MissingSuccessorError` for an undischarged
+    declaration, after recording ``completion_blocked_missing_successor``. No-op when
+    ``kanban.successor_guard.gate`` is false or nothing was declared."""
+    if not _successor_guard_config().get("gate", True):
+        return
+    row = conn.execute("SELECT body FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        return
+    body_declared = bool(_BODY_DECLARATION_RE.search(row["body"] or ""))
+    keys = _declared_successor_keys(metadata)
+    if not (body_declared or keys):
+        return
+    if _successor_discharged(conn, task_id, verified_cards):
+        return
+    waiver = _successor_waiver_reason(metadata)
+    contradiction = bool(waiver and keys)
+    if waiver and not keys:
+        return
+    source = "body" if body_declared else "metadata"
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, "completion_blocked_missing_successor",
+            {
+                "source": source, "keys": keys, "contradiction": contradiction,
+                "summary_preview": _first_line(summary or result, 200) or None,
+            },
+        )
+    raise MissingSuccessorError(task_id, source, keys, contradiction=contradiction)
+
+
+def _record_successor_waiver(
+    conn: sqlite3.Connection, task_id: str, run_id: Optional[int], metadata: Any,
+) -> None:
+    """Inside the completion txn: audit a used ``metadata.no_successor`` waiver."""
+    reason = _successor_waiver_reason(metadata)
+    if reason:
+        _append_event(conn, task_id, "successor_waived", {"reason": reason}, run_id=run_id)
+
+
+# --- chain break (ADR-0020 §2.1/§3.1; card t_d5708f00) ----------------------
+#
+# G-55 only sees the *explicit* declaration (``SUCCESSOR: required`` / metadata
+# ``successor_spec`` / ``downstream_action``). The Q8 bisect specimen completed
+# with "preparing handoff successor" in its summary, created no card, and the
+# board went dead-quiet: nothing downstream existed and nothing was running.
+# ``chain_broke`` extends the completion path with a phrase-level intent
+# detector that stamps a ``chain_broke`` event and auto-files a ``CHAIN-BROKE:``
+# triage card. Phase 1 is warn-only (the completion still lands);
+# ``kanban.successor_guard.intent_gate`` promotes the intent arm to a rejection
+# without a code change.
+#
+# False-positive law (the ``wall_mid_turn_successor`` precedent): match
+# *phrases* with a verb in order, never bare tokens, and drop any match whose
+# enclosing identifier-style token (``_`` / ``/`` / ``.`` joined) is sample or
+# schema data rather than prose.
+
+CHAIN_BROKE_EVENT_KIND = "chain_broke"
+_CHAIN_BREAK_CREATOR = "kanban-chain-break"
+_CHAIN_BREAK_TITLE_PREFIX = "CHAIN-BROKE:"
+
+#: Phrase-level successor-intent triggers (ADR-0020 §3.1 rule 1). Every entry
+#: needs a handoff verb in order, so a standalone noun mention ("the successor
+#: field", "successor_labels.csv") cannot match. Overridable/extendable via
+#: ``kanban.successor_guard.intent_patterns``.
+DEFAULT_INTENT_PATTERNS: tuple[str, ...] = (
+    # "preparing (the) handoff|successor|follow-on" — the Q8 shape
+    r"prepar\w*(?:\W{1,4}(?:the|a|an|my|our|next|for|to))?\W{1,4}(?:handoff|hand[- ]off|successor|follow[-_ ]?on)",
+    # "handoff successor" / "successor handoff"
+    r"(?:handoff|hand[- ]off)\W{1,4}successor|successor\W{1,4}handoff",
+    # "successor|handoff|follow-on (card) next|will|to be|coming|queued|opened"
+    r"(?:successor|handoff|follow[-_ ]?on)\W{1,4}(?:(?:card|task|run|step)\W{1,4})?(?:next|will|to\W{1,4}be|coming|queued|minted|spawned|opened)",
+    # "follow-on card will|to|needs|should"
+    r"follow[-_ ]?on\W{1,4}card\W{1,4}(?:will|to|needs?|should|is)",
+    # "next step is|will|needs|requires"
+    r"next\W{1,4}step\W{1,4}(?:is|will|needs?|requires?|must)",
+    # "continuing|moved|split … t_<hex>" — a handoff named only in prose
+    r"(?:continuing|continued|continues|moved|split|carried)\W{1,8}(?:in|into|to|as)?\W{1,4}t_[0-9a-f]{8,}",
+)
+
+#: Data-word guards (ADR-0020 §3.1 rules 2-3). An identifier-style token
+#: (underscore / slash / dotted) is machine data, never a promise; the keyword
+#: list names the known specimen families (wall samples, datasets, fixtures).
+_INTENT_DATA_TOKEN_RE = re.compile(r"[^\s\"'`\[\]()<>]*[_/.][^\s\"'`\[\]()<>]*")
+#: Config-extendable deny patterns; code additions carry a regression fixture.
+DEFAULT_INTENT_DENYLIST: tuple[str, ...] = (
+    r"\b(?:wall|samples?|datasets?|artifacts?|snapshots?|fixtures?|labels?|specs?|metrics?|schemas?|placeholders?|filenames?)\b",
+)
+
+
+def _intent_patterns_compiled(patterns: Any) -> list[re.Pattern]:
+    """Compile config-supplied intent patterns, skipping invalid ones."""
+    if isinstance(patterns, str):
+        patterns = [patterns]
+    out: list[re.Pattern] = []
+    for pattern in patterns or DEFAULT_INTENT_PATTERNS:
+        try:
+            out.append(re.compile(str(pattern), re.I))
+        except re.error:
+            _log.warning("successor_guard: invalid intent pattern %r", pattern)
+    return out
+
+
+def _deny_patterns_compiled(patterns: Any) -> list[re.Pattern]:
+    if isinstance(patterns, str):
+        patterns = [patterns]
+    out = [re.compile(p, re.I) for p in DEFAULT_INTENT_DENYLIST]
+    for pattern in patterns or ():
+        try:
+            out.append(re.compile(str(pattern), re.I))
+        except re.error:
+            _log.warning("successor_guard: invalid intent denylist pattern %r", pattern)
+    return out
+
+
+def _enclosing_token(text: str, start: int, end: int) -> str:
+    """The whitespace-delimited token spanning ``[start, end)``.
+
+    Prose promises are space-separated words; sample/data names are identifier
+    tokens joined by ``_``, ``/`` or ``.`` (``wall_mid_turn_successor``,
+    ``successor_labels.csv``). Hyphens stay prose-safe so "follow-on card will"
+    keeps matching.
+    """
+    left = start
+    while left > 0 and not text[left - 1].isspace():
+        left -= 1
+    right = end
+    while right < len(text) and not text[right].isspace():
+        right += 1
+    return text[left:right]
+
+
+def _successor_intent_match(
+    text: str, *, patterns: Any = None, denylist: Any = None,
+) -> Optional[str]:
+    """First successor-intent phrase in ``text``; None when nothing is promised.
+
+    Three guards, in order (ADR-0020 §3.1): the pattern itself is phrase-level
+    with a verb in order (a bare noun mention cannot match); a hit sitting inside
+    an identifier-style token (``wall_mid_turn_successor``,
+    ``successor_labels.csv`` — anything joined by ``_``, ``/`` or ``.``) is
+    machine data, not a promise, and is dropped; and a hit inside a configured
+    deny pattern is dropped. Every drop is logged so the false-positive budget
+    stays auditable instead of being paid in operator attention.
+    """
+    if not text:
+        return None
+    deny = _deny_patterns_compiled(denylist)
+    for pattern in _intent_patterns_compiled(patterns):
+        for match in pattern.finditer(text):
+            phrase = match.group(0)
+            token = _enclosing_token(text, match.start(), match.end())
+            if _INTENT_DATA_TOKEN_RE.fullmatch(token):
+                _log.debug("chain_break: denied identifier %r (pattern %r)", token, pattern.pattern)
+                continue
+            if any(p.search(phrase) for p in deny):
+                _log.debug("chain_break: denied by denylist %r", phrase)
+                continue
+            return phrase
+    return None
+
+
+def _chain_break_config() -> dict:
+    """``kanban.successor_guard`` chain-break knobs merged over code defaults.
+
+    Never raises into ``complete_task``: a broken config keeps warn-phase
+    defaults, matching :func:`_successor_guard_config`'s failure posture.
+    """
+    try:
+        cfg = _successor_guard_config()
+    except Exception:
+        cfg = {}
+    merged = {
+        "chain_break": True,
+        "intent_gate": False,
+        "structural_break_check": False,
+        "intent_patterns": DEFAULT_INTENT_PATTERNS,
+        "intent_denylist": (),
+    }
+    for key, default in merged.items():
+        if cfg.get(key) is not None:
+            merged[key] = cfg.get(key)
+        else:
+            merged[key] = default
+    return merged
+
+
+def _chain_break_suppressed_reason(
+    conn: sqlite3.Connection, task_id: str, *, metadata: Any, verified_cards: list[str],
+) -> Optional[str]:
+    """Why this completion may NOT be a chain break (None = candidate)."""
+    if verified_cards or _has_live_child(conn, task_id):
+        return "discharged"
+    if _successor_waiver_reason(metadata):
+        return "waived"
+    row = conn.execute("SELECT title, created_by FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        return "missing"
+    if (row["created_by"] or "") == _CHAIN_BREAK_CREATOR:
+        return "recursion_guard"
+    if (row["title"] or "").startswith(_CHAIN_BREAK_TITLE_PREFIX):
+        return "recursion_guard"
+    if (row["title"] or "").startswith(_SUCCESSOR_WAKE_TITLE_PREFIX):
+        return "recursion_guard"
+    return None
+
+
+def _structural_chain_break(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Conservative chain-deadness signal (ADR-0020 §2.1 signal 3).
+
+    True when, the moment this card lands, the board holds open goals and
+    nothing is running — the gargantua01 DEAD shape (work still on the board,
+    no worker, nothing promotable). Cards still gated on a *live* upstream
+    (running / blocked / scheduled parent) do not count: that is
+    quiet-by-design (§3.4). Board-level liveness stays the authority for its own
+    event kinds (t_68d5b5a4); this predicate exists only to corroborate — or,
+    when ``structural_break_check`` is explicitly on, to trigger — a completion
+    that the intent arm has to justify in phase 1.
+    """
+    if _has_live_child(conn, task_id):
+        return False
+    if conn.execute("SELECT 1 FROM tasks WHERE status = 'running' LIMIT 1").fetchone():
+        return False
+    return conn.execute(
+        "SELECT 1 FROM tasks t "
+        "WHERE t.id != ? AND t.status IN ('todo','ready','blocked','triage') "
+        "AND NOT EXISTS ( "
+        "      SELECT 1 FROM task_links l JOIN tasks p ON p.id = l.parent_id "
+        "      WHERE l.child_id = t.id AND p.status IN ('running','blocked','scheduled') "
+        "  ) LIMIT 1",
+        (task_id,),
+    ).fetchone() is not None
+
+
+def _chain_break_triage_body(task: Any, matched: Optional[str], summary: Optional[str],
+                             result: Optional[str], event_payload: dict) -> str:
+    tid = task["id"]
+    excerpt = (summary or result or "").strip() or "(no summary)"
+    return (
+        f"## CONTEXT\n"
+        f"Card `{tid}` ({task['title']}) completed and promised follow-on work "
+        f"but created no successor: the chain broke here and the board went quiet.\n"
+        f"- Matched intent phrase: `{matched or '(structural arm)'}`\n"
+        f"- Structural arm: {event_payload.get('structural')}\n"
+        f"- Board: `{event_payload.get('board')}`\n\n"
+        f"## OFFENDING COMPLETION TEXT\n"
+        f"> {excerpt[:1500]}\n\n"
+        f"## OBJECTIVE\nDecide the missing successor: mint the card with the right "
+        f"specialist (parent `{tid}`), or close the chain with a documented reason.\n\n"
+        f"## ACCEPTANCE\nA successor card exists with `parents=[\"{tid}\"]`, or this "
+        f"card is completed with `metadata.no_successor=\"<why the chain legitimately ends>\"`.\n\n"
+        f"## CONSTRAINTS\nYou are a specifier/router: decompose or waive, never "
+        f"implement the broken chain yourself.\n"
+    )
+
+
+def _chain_break_event_payload(task: Any, matched: Optional[str], summary: Optional[str],
+                               result: Optional[str], structural: bool, board: str) -> dict:
+    return {
+        "matched_phrase": matched,
+        "summary_excerpt": _first_line(summary or result, 300) or None,
+        "completing_task": task["id"],
+        "board": board,
+        "structural": structural,
+    }
+
+
+def _gate_chain_break_intent(
+    conn: sqlite3.Connection, task_id: str, *, metadata: Any, verified_cards: list[str],
+    summary: Optional[str], result: Optional[str],
+) -> None:
+    """Phase-2 rejection leg (``intent_gate: true``); no-op in warn phase.
+
+    Runs BEFORE the completion txn so a rejected completion never lands. The
+    warn-phase detection lives in :func:`_check_chain_break` (post-commit),
+    which stays inert while the gate is on — the gate already refused.
+    """
+    cfg = _chain_break_config()
+    if not cfg.get("chain_break", True) or not cfg.get("intent_gate"):
+        return
+    if _chain_break_suppressed_reason(
+        conn, task_id, metadata=metadata, verified_cards=verified_cards
+    ) is not None:
+        return
+    matched = _successor_intent_match(
+        _successor_completion_text(summary, result, metadata),
+        patterns=cfg.get("intent_patterns"), denylist=cfg.get("intent_denylist"),
+    )
+    if matched is None:
+        return
+    with write_txn(conn):
+        _append_event(conn, task_id, CHAIN_BROKE_EVENT_KIND, {
+            "matched_phrase": matched,
+            "summary_excerpt": _first_line(summary or result, 300) or None,
+            "completing_task": task_id,
+            "board": get_current_board(),
+            "structural": False,
+            "gate": "reject",
+        })
+    raise MissingSuccessorError(task_id, "intent prose", [matched])
+
+
+def _check_chain_break(
+    conn: sqlite3.Connection, task_id: str, run_id: Optional[int], *,
+    summary: Optional[str], result: Optional[str], metadata: Any,
+    verified_cards: list[str],
+) -> Optional[dict]:
+    """Warn-phase chain-break stamp: event + ``CHAIN-BROKE`` triage card.
+
+    Called from :func:`complete_task` after the completion landed and after the
+    wake fallback: an actual wake mints a routing card as a live child, which
+    discharges the chain here (``_chain_break_suppressed_reason`` → discharged)
+    — the signal is for the shape wake cannot cover (wake disabled, no
+    wake-pattern match, or a wake that declined). The explicit G-55 gate and the
+    ``intent_gate`` rejection both run before the completion txn. Never raises: a
+    failure here must not undo a real completion, so it logs and emits
+    ``chain_break_skipped``. Returns the event payload (including ``triage_task``)
+    when a chain break was stamped.
+    """
+    try:
+        return _check_chain_break_unguarded(
+            conn, task_id, run_id, summary=summary, result=result, metadata=metadata,
+            verified_cards=verified_cards,
+        )
+    except Exception as exc:  # warn-phase: the completion already landed
+        _log.warning("chain_break check failed for %s: %s", task_id, exc, exc_info=True)
+        try:
+            with write_txn(conn):
+                _append_event(conn, task_id, "chain_break_skipped",
+                              {"reason": "error", "error": str(exc)[:200]}, run_id=run_id)
+        except Exception:
+            pass
+        return None
+
+
+def _check_chain_break_unguarded(
+    conn: sqlite3.Connection, task_id: str, run_id: Optional[int], *,
+    summary: Optional[str], result: Optional[str], metadata: Any,
+    verified_cards: list[str],
+) -> Optional[dict]:
+    cfg = _chain_break_config()
+    if not cfg.get("chain_break", True):
+        return None
+    if cfg.get("intent_gate"):
+        # The reject leg already ran pre-txn; a landed completion means either
+        # nothing matched or the gate was off when it checked. Stay quiet.
+        return None
+    suppressed = _chain_break_suppressed_reason(
+        conn, task_id, metadata=metadata, verified_cards=verified_cards
+    )
+    if suppressed is not None:
+        if suppressed != "discharged":
+            _log.debug("chain_break: %s suppressed (%s)", task_id, suppressed)
+        return None
+    matched = _successor_intent_match(
+        _successor_completion_text(summary, result, metadata),
+        patterns=cfg.get("intent_patterns"), denylist=cfg.get("intent_denylist"),
+    )
+    # Computed always so the payload records the shape; only `structural_break_check`
+    # lets it fire on its own (phase 1 requires the intent prose, ADR-0020 §2.1).
+    structural = _structural_chain_break(conn, task_id)
+    if matched is None and not (cfg.get("structural_break_check") and structural):
+        return None
+    structural = bool(structural)
+    task = conn.execute(
+        "SELECT id, title, priority, created_by FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if task is None:
+        return None
+    board = get_current_board()
+    payload = _chain_break_event_payload(task, matched, summary, result, structural, board)
+    triage_id = create_task(
+        conn,
+        title=f"{_CHAIN_BREAK_TITLE_PREFIX} {(task['title'] or task_id)[:80]} — promised successor, created none",
+        body=_chain_break_triage_body(task, matched, summary, result, payload),
+        assignee=_successor_wake_assignee(cfg, board),
+        created_by=_CHAIN_BREAK_CREATOR,
+        priority=task["priority"] or 0,
+        parents=[task_id],
+        idempotency_key=f"chain-broke:{task_id}",
+        triage=True,
+    )
+    payload["triage_task"] = triage_id
+    with write_txn(conn):
+        _append_event(conn, task_id, CHAIN_BROKE_EVENT_KIND, payload, run_id=run_id)
+    _log.info("chain_break: %s promised %r with no successor — triaged as %s",
+              task_id, matched, triage_id)
+    return payload
+
+
+# --- wake --------------------------------------------------------------------
+
+
+def _flatten_successor_strings(value: Any, out: list[str], depth: int = 0) -> None:
+    if depth > 6:
+        return
+    if isinstance(value, str):
+        out.append(value)
+    elif isinstance(value, dict):
+        for v in value.values():
+            _flatten_successor_strings(v, out, depth + 1)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _flatten_successor_strings(v, out, depth + 1)
+
+
+def _successor_completion_text(summary: Optional[str], result: Optional[str], metadata: Any) -> str:
+    parts: list[str] = [p for p in (summary, result) if p]
+    _flatten_successor_strings(metadata, parts)
+    return "\n".join(parts)
+
+
+def _successor_matched_pattern(text: str, patterns: Any) -> Optional[str]:
+    if isinstance(patterns, str):
+        patterns = [patterns]
+    for pattern in patterns or []:
+        try:
+            if re.search(str(pattern), text, re.I):
+                return str(pattern)
+        except re.error:
+            _log.warning("successor_guard: invalid wake pattern %r", pattern)
+    return None
+
+
+def _successor_fresh_queued(conn: sqlite3.Connection, task_id: str, window_s: int, now: int) -> list[str]:
+    """Other queued cards created, or whose current run started, within the window."""
+    cutoff = now - int(window_s)
+    marks = ",".join("?" * len(_QUEUED_STATUSES))
+    rows = conn.execute(
+        f"SELECT t.id FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        f"WHERE t.id != ? AND t.status IN ({marks}) "
+        f"AND (t.created_at >= ? OR r.started_at >= ?) ORDER BY t.id LIMIT 10",
+        (task_id, *_QUEUED_STATUSES, cutoff, cutoff),
+    ).fetchall()
+    return [r["id"] for r in rows]
+
+
+def _successor_wake_assignee(cfg: dict, board: str) -> Optional[str]:
+    """``routers[board]`` when the board has an entry, else ``kanban.orchestrator_profile``;
+    must be a live profile. A router naming a dead profile is unroutable, never a fallback."""
+    from hermes_cli.profiles import profile_exists
+
+    routers = cfg.get("routers") if isinstance(cfg.get("routers"), dict) else {}
+    cand = routers.get(board)
+    if cand is None:
+        try:
+            from hermes_cli.config_backend import read_config_doc
+            root_cfg2 = read_config_doc(kanban_home() / "config.yaml") or {}
+            cand = (root_cfg2.get("kanban") or {}).get("orchestrator_profile")
+        except Exception:
+            cand = None
+    name = str(cand).strip() if cand else ""
+    return name if name and profile_exists(name) else None
+
+
+def _successor_wake_body(task: Any, summary: Optional[str], result: Optional[str], matched: str, metadata: Any) -> str:
+    tid = task["id"]
+    keys = sorted(metadata) if isinstance(metadata, dict) else []
+    return (
+        f"## CONTEXT\n"
+        f"Card {tid} ({task['title']}) was completed without a successor card, but its completion "
+        f"text names a next step.\n"
+        f"- Summary: {(summary or result or '').strip() or '(none)'}\n"
+        f"- Matched pattern: `{matched}`\n"
+        f"- Metadata keys: {', '.join(keys) or '(none)'}\n\n"
+        f"## OBJECTIVE\nRoute the next step named by {tid}.\n\n"
+        f"## ACCEPTANCE\nEither `kanban_create` the successor with the right specialist and "
+        f"`parents=[\"{tid}\"]` and list it in `created_cards`, or close with "
+        f"`metadata.no_successor=\"<reason>\"` if no successor is needed.\n\n"
+        f"## CONSTRAINTS\nYou are a router: route, never implement the work yourself.\n\n"
+        f"## EXPECTED HANDOFF\n`created_cards` with the successor id, or the `no_successor` waiver."
+    )
+
+
+def _successor_wake_event(conn: sqlite3.Connection, task_id: str, run_id: Optional[int], kind: str, payload: dict) -> None:
+    with write_txn(conn):
+        _append_event(conn, task_id, kind, payload, run_id=run_id)
+
+
+def _maybe_wake_successor(
+    conn: sqlite3.Connection, task_id: str, run_id: Optional[int], *,
+    summary: Optional[str], result: Optional[str], metadata: Any, verified_cards: list[str],
+) -> None:
+    """Post-commit keyword fallback; never raises."""
+    try:
+        _maybe_wake_unguarded(conn, task_id, run_id, summary, result, metadata, verified_cards)
+    except Exception as exc:
+        _log.warning("successor_guard wake failed for %s: %s", task_id, exc, exc_info=True)
+        try:
+            _successor_wake_event(conn, task_id, run_id, "successor_wake_skipped",
+                        {"reason": "error", "error": str(exc)[:200]})
+        except Exception:
+            pass
+
+
+def _maybe_wake_unguarded(conn, task_id, run_id, summary, result, metadata, verified_cards) -> None:
+    def skip(reason: str, **extra: Any) -> None:
+        _successor_wake_event(conn, task_id, run_id, "successor_wake_skipped", {"reason": reason, **extra})
+
+    cfg = _successor_guard_config()
+    if not cfg.get("wake", False):
+        return skip("disabled")
+    task = conn.execute(
+        "SELECT id, title, priority, created_by FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if task is None:
+        return
+    if task["created_by"] == _SUCCESSOR_WAKE_CREATOR or (task["title"] or "").startswith(_SUCCESSOR_WAKE_TITLE_PREFIX):
+        return skip("recursion_guard")
+    matched = _successor_matched_pattern(_successor_completion_text(summary, result, metadata), cfg.get("wake_patterns"))
+    if matched is None:
+        return skip("no_pattern")
+    if _successor_waiver_reason(metadata):
+        return skip("discharged", via="waiver")
+    if _successor_discharged(conn, task_id, verified_cards):
+        return skip("discharged", via="successor")
+    key = f"successor-wake:{task_id}"
+    if conn.execute(
+        "SELECT 1 FROM tasks WHERE idempotency_key = ? AND status != 'archived' LIMIT 1", (key,)
+    ).fetchone():
+        return skip("already_woken", matched=matched)
+    if cfg.get("wake_require_idle_queue", True):
+        queued = _successor_fresh_queued(conn, task_id, int(cfg.get("fresh_window_s", 21600)), int(time.time()))
+        if queued:
+            return skip("fresh_work_queued", queued=queued, matched=matched)
+    board = get_current_board()
+    assignee = _successor_wake_assignee(cfg, board)
+    if assignee is None:
+        _successor_wake_event(conn, task_id, run_id, "successor_wake_unroutable", {"board": board, "matched": matched})
+        return
+    wake_id = create_task(
+        conn, title=f"{_SUCCESSOR_WAKE_TITLE_PREFIX} {(task['title'] or '')[:80]}",
+        body=_successor_wake_body(task, summary, result, matched, metadata),
+        assignee=assignee, created_by=_SUCCESSOR_WAKE_CREATOR, priority=task["priority"] or 0,
+        parents=[task_id], idempotency_key=key,
+    )
+    _successor_wake_event(conn, task_id, run_id, "successor_wake_fired", {"wake_task": wake_id, "matched": matched})
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
@@ -2659,6 +3277,13 @@ def complete_task(
     or ``summary``, or a stripped result already stored on the card. Empty or
     whitespace-only evidence raises :class:`EmptyCompletionError` after an
     auditable event. Approving a card out of ``review`` stays exempt.
+    A declared successor obligation that nothing discharges raises
+    :class:`MissingSuccessorError` (never bypassed by ``force``); the post-commit
+    wake is :func:`_maybe_wake_successor`. A completion whose text *promises*
+    follow-on work while discharging nothing is a chain break: with
+    ``intent_gate`` on it raises the same error, otherwise (phase 1) it lands and
+    :func:`_check_chain_break` stamps ``chain_broke`` plus a ``CHAIN-BROKE``
+    triage card so the board never goes dead-quiet (ADR-0020).
     """
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
@@ -2669,6 +3294,12 @@ def complete_task(
     _gate_empty_completion(conn, task_id, result=result, summary=summary)
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
+    )
+    _gate_successor(
+        conn, task_id, metadata=metadata, verified_cards=verified_cards, summary=summary, result=result,
+    )
+    _gate_chain_break_intent(
+        conn, task_id, metadata=metadata, verified_cards=verified_cards, summary=summary, result=result,
     )
     handoff_summary = summary if summary is not None else result
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
@@ -2734,6 +3365,20 @@ def complete_task(
             run_id=run_id,
         )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
+    _maybe_wake_successor(
+        conn, task_id, run_id, summary=summary, result=result, metadata=metadata,
+        verified_cards=verified_cards,
+    )
+    # Runs AFTER the wake fallback on purpose: when wake is enabled it mints a
+    # routing card as a live child, which discharges the chain — the board is
+    # already being handed the next step and a second CHAIN-BROKE card would be
+    # noise. Chain-break is the signal for the shape wake cannot cover: wake
+    # disabled (the shipped default), no wake-pattern match, or a wake that
+    # declined (recursion guard / fresh queue / unroutable).
+    _check_chain_break(
+        conn, task_id, run_id, summary=summary, result=result, metadata=metadata,
+        verified_cards=verified_cards,
+    )
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)
     recompute_ready(conn)  # separate txn so children see ``done``

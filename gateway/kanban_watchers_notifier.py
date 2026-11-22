@@ -44,7 +44,10 @@ def _pin_first():
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
-TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+# ``chain_broke`` (ADR-0020 §2.4) rides the same route as ``completed``: a
+# completion that promised a successor and created none must notify, not go
+# quiet — it is primary attention, never diagnostic.
+TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested", "chain_broke")
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
@@ -420,6 +423,22 @@ def _fmt_completed(ev, n) -> tuple:
     return t("gateway.kanban.ping.completed", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
 
+def _fmt_chain_broke(ev, n) -> tuple:
+    """ADR-0020 §2.4: a completion that promised a successor and created none.
+
+    Rendered next to ``completed`` on the same delivery route; the triage card
+    id is the actionable pointer (open it, mint the missing successor or waive).
+    """
+    phrase = _clip(ev, "matched_phrase", "gateway.kanban.ping.chain_broke_phrase", 80)
+    triage = _payload(ev, "triage_task")
+    triage_suffix = (
+        t("gateway.kanban.ping.chain_broke_triage", triage=str(triage)) if triage else ""
+    )
+    msg = t("gateway.kanban.ping.chain_broke", head=n.head, title=n.title,
+            phrase=phrase or "", triage_suffix=triage_suffix)
+    return msg, phrase or None, None
+
+
 def _fmt_review_requested(ev, n) -> tuple:
     # Implementation done; task moved to the review lane. Carry the handoff
     # into the wake turn like ``completed`` so the reviewer needn't re-read the board.
@@ -490,6 +509,7 @@ def _fmt_timed_out(ev, n) -> tuple:
 # never wake the creator.
 _EVENT_FORMATTERS: dict[str, Callable[[Any, _KanbanNotification], tuple]] = {
     "completed": _fmt_completed,
+    "chain_broke": _fmt_chain_broke,
     "blocked": lambda ev, n: (
         t("gateway.kanban.ping.blocked", head=n.head, reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160)),
         None, None,

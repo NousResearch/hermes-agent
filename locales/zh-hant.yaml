@@ -244,6 +244,9 @@ gateway:
       guidance: "這是自動任務狀態通知，不是再次分解任務的請求。建立後續任務前請先檢查目前看板；不要重複建立已存在的任務或任務圖。"
     ping:
       completed: "✔ {head} 已完成 — {title}{handoff}"
+      chain_broke: "🪓 {head} 鏈條斷裂 — {title} 承諾了後續工作（{phrase}）卻沒有建立後繼卡片{triage_suffix}"
+      chain_broke_phrase: "「{value}」"
+      chain_broke_triage: " — 已分診為 {triage}"
       review_requested: "👀 {head} 可供審查 — {title}{handoff}"
       changes_default_reason: "審查者回饋要求修改"
       reviewer_suffix: " — 審查者 @{reviewer}"

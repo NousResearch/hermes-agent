@@ -244,6 +244,9 @@ gateway:
       guidance: "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
     ping:
       completed: "✔ {head} déanta — {title}{handoff}"
+      chain_broke: "🪓 {head} SLABHRA BRISTE — gheall {title} obair leanúnach ({phrase}) agus níor chruthaigh comharba{triage_suffix}"
+      chain_broke_phrase: "“{value}”"
+      chain_broke_triage: " — triáistithe mar {triage}"
       review_requested: "👀 {head} réidh le hathbhreithniú — {title}{handoff}"
       changes_default_reason: "éilíonn aiseolas an athbhreithneora athruithe"
       reviewer_suffix: " — athbhreithneoir @{reviewer}"

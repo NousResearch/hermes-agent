@@ -2892,7 +2892,7 @@ def _chain_break_config() -> dict:
     """
     try:
         cfg = _successor_guard_config()
-    except Exception:
+    except Exception:  # health: allow BLE001 -- config read must never raise into complete_task; warn-phase defaults are the fallback
         cfg = {}
     merged = {
         "chain_break": True,
@@ -3046,14 +3046,14 @@ def _check_chain_break(
             conn, task_id, run_id, summary=summary, result=result, metadata=metadata,
             verified_cards=verified_cards,
         )
-    except Exception as exc:  # warn-phase: the completion already landed
+    except Exception as exc:  # health: allow BLE001 -- warn-phase boundary: the completion already landed, so any check failure is stamped and swallowed rather than undone
         _log.warning("chain_break check failed for %s: %s", task_id, exc, exc_info=True)
         try:
             with write_txn(conn):
                 _append_event(conn, task_id, "chain_break_skipped",
                               {"reason": "error", "error": str(exc)[:200]}, run_id=run_id)
-        except Exception:
-            pass
+        except Exception as stamp_exc:  # health: allow BLE001 -- the skip stamp is best-effort; losing it must not raise out of complete_task
+            _log.debug("chain_break_skipped stamp failed for %s: %s", task_id, stamp_exc)
         return None
 
 

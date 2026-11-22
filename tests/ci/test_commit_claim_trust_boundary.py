@@ -121,13 +121,23 @@ def test_termux_commit_branch_is_read_only_and_has_no_apt_signing_key_access():
 
     assert release_job["cache-mode"] == "write"
     assert commit_job["cache-mode"] == "read"
+    assert commit_job.get("permissions") == {"contents": "read", "packages": "read"}
 
-    # The commit Termux job must never reference the APT GPG key or passphrase, and must never save caches.
+    # The commit Termux job must never expose GH_TOKEN or R2 secrets in job-level env,
+    # never push to GHCR, never reference the APT GPG key or passphrase, and never save caches.
+    job_env = commit_job.get("env") or {}
+    assert "GH_TOKEN" not in job_env
+    assert "GITHUB_TOKEN" not in job_env
+    assert "CLOUDFLARE_R2_SECRET_ACCESS_KEY" not in job_env
+    assert "CLOUDFLARE_R2_ACCESS_KEY_ID" not in job_env
     serialized_commit = json.dumps(commit_job)
     assert "TERMUX_APT_GPG_KEY" not in serialized_commit
     assert "TERMUX_APT_GPG_PASSPHRASE" not in serialized_commit
     assert "stage_apt_repo.py" not in serialized_commit
     assert not any(str(step.get("uses", "")).startswith("actions/cache/save") for step in commit_job["steps"])
+    builder_step = next(step for step in commit_job["steps"] if step.get("id") == "builder_image")
+    assert "GITHUB_TOKEN" not in (builder_step.get("env") or {})
+    assert (builder_step.get("env") or {}).get("TERMUX_BUILDER_NO_PUSH") == "1"
     setup_pm = next(step for step in commit_job["steps"] if step.get("uses") == "./.github/actions/setup-pm")
     assert setup_pm["with"]["save-tools-cache"] is False
     assert setup_pm["with"]["save-node-cache"] is False

@@ -6,8 +6,16 @@
 # Pushes to GHCR with the repo's CI identity (GITHUB_TOKEN); idempotent --
 # an existing identical tag is left alone.
 #
-# Usage: build_builder_image.sh            (build + push if missing)
+# Usage: build_builder_image.sh [--no-push]   (build + push if missing; --no-push or TERMUX_BUILDER_NO_PUSH=1 builds locally only)
 set -euo pipefail
+
+NO_PUSH="${TERMUX_BUILDER_NO_PUSH:-0}"
+for arg in "$@"; do
+    case "$arg" in
+        --no-push) NO_PUSH=1 ;;
+        *) echo "unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
@@ -34,11 +42,16 @@ if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
     exit 0
 fi
 
-echo "building $IMAGE from $BASE"
+TARGET_IMAGE="$IMAGE"
+if [ "$NO_PUSH" = "1" ]; then
+    TARGET_IMAGE="hermes-termux-builder-local:${SHORT}"
+fi
+
+echo "building $TARGET_IMAGE from $BASE"
 docker build \
     -f "$DOCKERFILE" \
     --build-arg "BASE=${BASE}" \
-    -t "$IMAGE" \
+    -t "$TARGET_IMAGE" \
     scripts/termux \
     || { echo "builder image build failed" >&2; exit 1; }
 
@@ -46,7 +59,7 @@ docker build \
 # performs (clang + rustc + cargo + make) before we publish it. /bin/sh is
 # linked at RUNTIME inside the wheelhouse phase's --tmpfs /bin, so it is
 # deliberately absent from the baked image.
-docker run --rm --platform linux/arm64 "$IMAGE" \
+docker run --rm --platform linux/arm64 "$TARGET_IMAGE" \
     /data/data/com.termux/files/usr/bin/bash -c '
         export PREFIX=/data/data/com.termux/files/usr
         for tool in clang rustc cargo make; do
@@ -55,7 +68,13 @@ docker run --rm --platform linux/arm64 "$IMAGE" \
         echo "builder image smoke OK"
     ' || { echo "builder image failed its smoke test" >&2; exit 1; }
 
+if [ "$NO_PUSH" = "1" ]; then
+    echo "built locally (push disabled): $TARGET_IMAGE"
+    echo "$TARGET_IMAGE"
+    exit 0
+fi
+
 echo "$GITHUB_TOKEN" | docker login "$REGISTRY" -u "${GITHUB_ACTOR:-x}" --password-stdin
-docker push "$IMAGE" || { echo "builder image push failed" >&2; exit 1; }
-echo "published $IMAGE"
-echo "$IMAGE"
+docker push "$TARGET_IMAGE" || { echo "builder image push failed" >&2; exit 1; }
+echo "published $TARGET_IMAGE"
+echo "$TARGET_IMAGE"

@@ -41,4 +41,10 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_subparsers.add_parser("check", help="Check for missing/outdated config")
     config_subparsers.add_parser("migrate", help="Update config with new options")
 
+    config_subparsers.add_parser(
+        "init-repo", help="Start git versioning of config files in the Hermes home")
+    config_snapshot = config_subparsers.add_parser(
+        "snapshot", help="Commit config changes to the local git history")
+    config_snapshot.add_argument("-m", "--message", help="Commit message")
+
     config_parser.set_defaults(func=cmd_config)

@@ -848,12 +848,9 @@ jobs:
           artifact-ids: ${{ env.COMMIT_ARTIFACT_ID }}
           merge-multiple: true
           path: staged-artifacts
-      - name: Record and stage commit claim Windows packages to R2
+      # Reading the unreviewed leg's packages never holds the R2 secrets; only the upload does.
+      - name: Record commit claim Windows packages
         shell: bash
-        env:
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
         run: |
           root="$GITHUB_WORKSPACE/staged-artifacts"
           record_args=()
@@ -862,6 +859,14 @@ jobs:
             --root "$root" --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
             "${record_args[@]}" \
             --out "$root/metadata-windows-${TARGET##*-}.json"
+      - name: Stage commit claim Windows packages to R2
+        shell: bash
+        env:
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+        run: |
+          root="$GITHUB_WORKSPACE/staged-artifacts"
           python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
             --name "$TARGET" --root "$root" --include '*.msix' --include 'metadata-*.json'
 
@@ -1361,12 +1366,9 @@ jobs:
           artifact-ids: ${{ env.COMMIT_ARTIFACT_ID }}
           merge-multiple: true
           path: staged-artifacts
-      - name: Record and stage commit claim macOS packages to R2
+      # Unzipping and reading the unreviewed leg's packages never holds the R2 secrets.
+      - name: Record commit claim macOS packages
         shell: bash
-        env:
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
         run: |
           root="$GITHUB_WORKSPACE/staged-artifacts"
           shopt -s nullglob
@@ -1380,6 +1382,14 @@ jobs:
             --root "$root" --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
             "${record_args[@]}" \
             --out "$root/metadata-macos-${TARGET##*-}.json"
+      - name: Stage commit claim macOS packages to R2
+        shell: bash
+        env:
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+        run: |
+          root="$GITHUB_WORKSPACE/staged-artifacts"
           python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
             --name "$TARGET" --root "$root" --include '*.dmg' --include '*.zip' --include '*.blockmap' --include 'metadata-*.json'
 
@@ -2327,12 +2337,9 @@ jobs:
           artifact-ids: ${{ env.COMMIT_ARTIFACT_ID }}
           merge-multiple: true
           path: staged-artifacts/deb
-      - name: Record and stage commit claim Termux package to R2
+      # Reading the unreviewed leg's package never holds the R2 secrets; only the upload does.
+      - name: Record commit claim Termux package
         shell: bash
-        env:
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
         run: |
           root="$GITHUB_WORKSPACE/staged-artifacts"
           record_args=()
@@ -2341,6 +2348,14 @@ jobs:
             --root "$root" --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
             "${record_args[@]}" \
             --out "$root/metadata-termux-aarch64.json"
+      - name: Stage commit claim Termux package to R2
+        shell: bash
+        env:
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+        run: |
+          root="$GITHUB_WORKSPACE/staged-artifacts"
           python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
             --name termux --root "$root" --include 'deb/*.deb' --include 'metadata-*.json'
 

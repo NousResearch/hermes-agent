@@ -66,7 +66,11 @@ _PAGINATION_SUFFIX_RE = re.compile(r"\s*\(\d+/\d+\)$")
 _ADDRESS_RE = re.compile(r"^\+\d+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
-_LOCAL_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost", "::"}
+# Loopback URL to register for a local bind. BlueBubbles resolves the registered host itself, and
+# on a dual-stack host "localhost" resolves to ::1 first, which an IPv4 bind (the 127.0.0.1 default)
+# never answers. asyncio binds "::" IPv6-only, so that bind is reachable on ::1 only.
+_LOOPBACK_FOR_BIND = {"0.0.0.0": "127.0.0.1", "127.0.0.1": "127.0.0.1", "localhost": "127.0.0.1",
+                      "::": "[::1]", "::1": "[::1]"}
 
 
 def _redact(text: str) -> str:
@@ -273,12 +277,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     @property
     def _webhook_url(self) -> str:
-        """External webhook URL for BlueBubbles registration (local binds → localhost). In
+        """External webhook URL for BlueBubbles registration (local binds → their loopback). In
         shared-listener mode it is the default listener's ``/p/<profile>/`` URL."""
         shared = getattr(self, "_shared_ingress_url", None)
         if shared:
             return shared
-        host = "localhost" if self.webhook_host in _LOCAL_HOSTS else self.webhook_host
+        host = _LOOPBACK_FOR_BIND.get(self.webhook_host, self.webhook_host)
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     def _webhook_register_url_with(self, password_param: str) -> str:

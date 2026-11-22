@@ -114,7 +114,7 @@ hermes logs gateway
 
 ```text
 [bluebubbles] connected to http://192.168.1.10:1234 (private_api=False, helper=False)
-[bluebubbles] webhook registered with server: http://localhost:8645/bluebubbles-webhook?password=***
+[bluebubbles] webhook registered with server: http://127.0.0.1:8645/bluebubbles-webhook?password=***
 ```
 
 Finally, send yourself a test message from another device: a reply (or the pairing code for a new DM) is the end-to-end proof that inbound delivery works.
@@ -135,7 +135,7 @@ Hermes → BlueBubbles REST API → Messages.app → iMessage
 The setup uses two URLs that point in opposite directions — don't confuse them:
 
 - `BLUEBUBBLES_SERVER_URL` (e.g. `http://192.168.1.10:1234`) — Hermes **calls** your BlueBubbles server's API. This is the Server URL shown in BlueBubbles Server → Settings → API.
-- The webhook (default `http://localhost:8645/bluebubbles-webhook`) — BlueBubbles **POSTs** new-message events to Hermes. Its host/port/path come from `BLUEBUBBLES_WEBHOOK_HOST` / `BLUEBUBBLES_WEBHOOK_PORT` / `BLUEBUBBLES_WEBHOOK_PATH`.
+- The webhook (default `http://127.0.0.1:8645/bluebubbles-webhook`) — BlueBubbles **POSTs** new-message events to Hermes. Its host/port/path come from `BLUEBUBBLES_WEBHOOK_HOST` / `BLUEBUBBLES_WEBHOOK_PORT` / `BLUEBUBBLES_WEBHOOK_PATH`.
 
 ### How the webhook is registered
 

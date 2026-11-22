@@ -1,8 +1,8 @@
 name: hermes-island
 repo: https://github.com/hunterbohm/hermes-island
-sha: 1dbd8ced69f156a24f9e5b76c538279b82ce034f
+sha: 2433366e6150ea6be637bd92fe17be7f44e3b97e
 subdir: hermes-plugin
-description: 'Hermes Island: a Dynamic Island style voice window on macOS for talking to Hermes. The island_call_back tool rings it when a job is done and says the result when you answer; `hermes island status|build|setup` builds the app from a source checkout and points its talks at this Hermes.'
+description: 'Hermes Island: a Dynamic Island style voice window on macOS for talking to Hermes. The island_call_back tool rings it when a job is done and says the result when you answer; `hermes island status|build|setup` builds the app at the same pinned commit and points its talks at this Hermes.'
 maintainer: hunterbohm
 tier: community
 category: voice

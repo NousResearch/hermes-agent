@@ -2249,6 +2249,41 @@ class TestV1SpecRegressionFixes:
         assert restored is not None
         assert restored["state"] == protocol.STATE_WORKING
 
+    def test_the_watchdog_ends_a_forwarded_task_the_owner_finished(self, monkeypatch, tmp_path):
+        """A forwarded accept-then-poll task must end from the watchdog alone.
+
+        `tasks/get` refreshes on every poll, but a registered push callback and a
+        `tasks/subscribe` stream have no poller to drive them, so the watchdog's ledger
+        refresh is the only thing that ends these tasks. Exercise `_fail_orphans_once()`
+        with no poll in between: before the refresh existed the task stayed WORKING for
+        good and neither push nor subscribe ever fired.
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from gateway import session_a2a
+
+        async def status(home, **params):
+            return {"status": "terminal", "outcome": "completed",
+                    "result": {"final_response": "owner finished", "failed": False},
+                    "admission_id": "a"}
+
+        monkeypatch.setattr(session_a2a, "status_from_owner", status)
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(tmp_path))
+        pushed = []
+        monkeypatch.setattr(A2AAdapter, "_send_push_notification",
+                            lambda self, task_id, context_id, reply, state: pushed.append((task_id, state, reply)))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        adapter.tasks.create("t-watch", "c1", "peer", "dev", "", input_id="in-1")
+        adapter.tasks.set_push_config("t-watch", "https://example.invalid/cb", "dev", "")
+        completed_before = protocol.metrics.tasks_completed
+
+        # No tasks/get in between: the watchdog is the only reader of the ledger.
+        assert adapter._fail_orphans_once() == []
+        stored = adapter.tasks.get("t-watch")
+        assert stored["state"] == protocol.STATE_COMPLETED
+        assert protocol.metrics.tasks_completed == completed_before + 1
+        assert pushed == [("t-watch", protocol.STATE_COMPLETED, "owner finished")]
+
     def test_input_required_survives_the_orphan_grace_but_not_the_job_budget(self, monkeypatch):
         """TASK_STATE_INPUT_REQUIRED is not terminal, so it is exposed to the orphan sweep — but the
         task is waiting on the human, not on a reply window. The short grace must not fail a

@@ -21,6 +21,7 @@ from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
 from agent.context_default_record import mark_context_defaulted, records_context_defaults
 from agent.model_metadata_llamacpp import llamacpp_context
+from agent.model_metadata_anthropic import query_anthropic_context_length as _query_anthropic_context_length
 from agent.model_metadata_memo_bounds import MEMO_LOCK, bound_codex_caches, remember_endpoint_models as _remember_endpoint_models
 from agent.process_transport import is_local_server as _is_local_server
 from agent.model_metadata_memo_keys import endpoint_disk_slot as _endpoint_disk_slot, endpoint_memo_key as _endpoint_memo_key
@@ -1628,29 +1629,6 @@ def _normalize_model_version(model: str) -> str:
     return model.replace(".", "-")
 
 
-def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> Optional[int]:
-    """Anthropic /v1/models max_input_tokens; OAuth tokens (sk-ant-oat*) 401 and are skipped.
-
-    ``api_key`` may be a ``key_cmd`` callable token source; the metadata probe never mints — a
-    callable is not a Console key, so the lookup is skipped like an OAuth token (#114967).
-    """
-    if not api_key or not isinstance(api_key, str) or api_key.startswith("sk-ant-oat"):
-        return None
-    try:
-        base = base_url.rstrip("/").removesuffix("/v1")
-        headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
-        resp = model_metadata_http.get(f"{base}/v1/models?limit=1000", headers=headers, timeout=(5, 10), verify=model_metadata_http.resolve_verify(base_url))
-        if resp.status_code != 200:
-            return None
-        for m in resp.json().get("data", []):
-            ctx = m.get("max_input_tokens") if m.get("id") == model else None
-            if isinstance(ctx, int) and ctx > 0:
-                return ctx
-    except Exception as e:
-        logger.debug("Anthropic /v1/models query failed: %s", e)
-    return None
-
-
 # Codex OAuth `context_window` values (what Codex enforces — lower than the direct API for the same
 # slugs). Fallback when the live probe fails; longest-key-first. gpt-5.3-codex-spark is listed so "gpt-5.3-codex" doesn't win.
 _CODEX_OAUTH_CONTEXT_FALLBACK: dict[str, int] = {
@@ -2286,7 +2264,8 @@ def get_model_context_length(
     if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url) and (provider or "").strip().lower() != "openai-codex":
         resolve = _resolve_custom_codex_route_context_length if codex_route else _resolve_custom_endpoint_context_length
         return resolve(model, base_url, api_key, provider)
-    # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
+    # 4. Anthropic /v1/models API: the live max_input_tokens for this credential (API key, or a
+    # Claude login's OAuth token on api.anthropic.com), memoized briefly per credential.
     if provider == "anthropic" or (base_url and base_url_hostname(base_url) == "api.anthropic.com"):
         ctx = _query_anthropic_context_length(model, base_url or "https://api.anthropic.com", api_key)
         if ctx:

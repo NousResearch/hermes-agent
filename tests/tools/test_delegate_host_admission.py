@@ -11,7 +11,7 @@ from unittest.mock import Mock
 import pytest
 
 from tests.waiting import wait_until
-from tools import async_delegation, delegate_tool, host_policy
+from tools import async_delegation, delegate_tool, delegate_tool_config, host_policy
 from tools.delegate_tool_routes import TaskRoute
 from tools.worker_admission import admission_status, reserve_workers
 
@@ -71,11 +71,11 @@ def runtime(tmp_path, monkeypatch):
         enabled_toolsets=["file"], tools=[], quiet_mode=True,
     )
     cfg = {"max_concurrent_children": 3, "max_spawn_depth": 3}
-    monkeypatch.setattr(delegate_tool, "_load_config", lambda: cfg)
+    monkeypatch.setattr(delegate_tool_config, "_load_config", lambda: cfg)
     creds = dict.fromkeys(("model", "provider", "base_url", "api_key", "api_mode"))
     route = TaskRoute(creds=creds, routing_cfg={})
     monkeypatch.setattr(delegate_tool, "_routes_for", lambda tasks, *_args: ([route] * len(tasks), None))
-    monkeypatch.setattr(delegate_tool, "_resolve_delegation_credentials", lambda *_args: creds)
+    monkeypatch.setattr(delegate_tool_config, "_resolve_delegation_credentials", lambda *_args: creds)
     children = []
 
     def build(**kwargs):

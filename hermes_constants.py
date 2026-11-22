@@ -1007,7 +1007,6 @@ def _prune_scratch_dir_once(scratch: Path) -> None:
     root = scratch.resolve()
     if root in _scratch_pruned_roots:
         return
-    _scratch_pruned_roots.add(root)
     import time
     stamp = scratch / _SCRATCH_PRUNE_STAMP
     try:
@@ -1015,6 +1014,7 @@ def _prune_scratch_dir_once(scratch: Path) -> None:
             return
     except OSError:
         pass
+    _scratch_pruned_roots.add(root)
     with contextlib.suppress(Exception):
         stamp.touch()
         from hermes_constants_scratch_detach import spawn_prune

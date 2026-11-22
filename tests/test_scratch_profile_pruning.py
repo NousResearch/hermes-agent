@@ -55,17 +55,29 @@ def test_recent_stamp_and_once_per_root_guards_remain_independent(tmp_path: Path
     import hermes_constants
     import hermes_constants_scratch_detach as detach
 
+    now = 1_000_000.0
+    monkeypatch.setattr(time, "time", lambda: now)
     spawned: list[Path] = []
     monkeypatch.setattr(detach, "spawn_prune", spawned.append)
     monkeypatch.setattr(hermes_constants, "_scratch_pruned_roots", set())
     default, profile = tmp_path / "default", tmp_path / "profiles" / "one"
     default_scratch = hermes_constants.get_scratch_dir(default, prune=False)
     profile_scratch = hermes_constants.get_scratch_dir(profile, prune=False)
-    (default_scratch / ".last_prune").touch()
+    stamp = default_scratch / ".last_prune"
+    stamp.touch()
+    recent = now - hermes_constants._SCRATCH_PRUNE_INTERVAL_SECONDS + 1
+    os.utime(stamp, (recent, recent))
 
     hermes_constants._prune_scratch_dir_once(default_scratch)
+    hermes_constants._prune_scratch_dir_once(default_scratch)
     assert spawned == [], "a recent stamp must still suppress pruning"
+    old = now - hermes_constants._SCRATCH_PRUNE_INTERVAL_SECONDS - 1
+    os.utime(stamp, (old, old))
+    hermes_constants._prune_scratch_dir_once(default_scratch)
+    assert spawned == [default_scratch], "a root should be eligible once its stamp expires"
+    hermes_constants._prune_scratch_dir_once(default_scratch)
+    assert spawned == [default_scratch], "an expired root should be pruned only once per process"
     hermes_constants._prune_scratch_dir_once(profile_scratch)
-    assert spawned == [profile_scratch], "another root's stamp must not suppress this profile"
+    assert spawned == [default_scratch, profile_scratch], "another root's stamp must not suppress this profile"
     hermes_constants._prune_scratch_dir_once(profile_scratch / ".." / "scratch")
-    assert spawned == [profile_scratch], "the same root must not be pruned twice in a process"
+    assert spawned == [default_scratch, profile_scratch], "the same root must not be pruned twice in a process"

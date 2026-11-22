@@ -96,6 +96,28 @@ async def handle(event_type: str, context: dict):
 | `reaction:added` | An emoji reaction was added to a message the bot can see (Slack adapter currently). Requires the `reactions:read` scope + the `reaction_added` bot event subscription; the bot must be a member of the channel. | `platform`, `reaction`, `user_id`, `item_user_id`, `item_type`, `channel_id`, `message_ts`, `team_id`, `event_ts`, `raw_event` |
 | `reaction:removed` | An emoji reaction was removed from a message the bot can see. Requires the `reaction_removed` bot event subscription. | same shape as `reaction:added` |
 | `command:*` | Any slash command executed | `platform`, `user_id`, `command`, `args` |
+| `telegram:callback` | A Telegram inline-keyboard button was pressed (fires **before** the built-in callback dispatch) | `platform`, `data` (the `callback_data`), `chat_id`, `chat_type`, `thread_id`, `user_id`, `user_name`, `message_id`, `query` (the `CallbackQuery`), `adapter`, `bot` |
+
+#### Claiming a Telegram button tap
+
+`telegram:callback` exists so an integration can receive the presses of **its own** inline buttons without patching the adapter. The hook fires before Hermes' built-in callback handlers (approvals, clarify cards, model pickers, Gmail triage); whenever a hook subscribes, the sender is first checked with the same authorization gate the built-in handlers use, so an unadmitted tap is refused exactly like an unauthorized built-in callback and never reaches your code.
+
+Return **`True`** (or `{"handled": True}`) from `handle()` to claim the press: the built-in dispatch is then skipped. Return `None` to let Hermes handle it as usual. A claimed handler owns its own confirmation — call `context["bot"].answer_callback_query(...)` (the context carries `query`, `adapter` and `bot`), because answering the same query twice is an error.
+
+```python
+# ~/.hermes/hooks/approval-buttons/handler.py
+async def handle(event_type, context):
+    if not context["data"].startswith("deploy:"):
+        return None                      # not ours -> Hermes dispatches normally
+    action = context["data"].split(":", 1)[1]
+    await context["bot"].answer_callback_query(context["query"].id, text=f"{action} in corso…")
+    print(f"deploy {action} requested by {context['user_id']} in chat {context['chat_id']}")
+    return True                          # claim the tap
+```
+
+:::warning
+A hook that claims a built-in prefix (`ea:`, `cl:`, `cp:`, `mp:`, …) shadows that built-in for every tap it handles. Use your own prefix unless you mean to replace the behaviour.
+:::
 
 #### Wildcard Matching
 

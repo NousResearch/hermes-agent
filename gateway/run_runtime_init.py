@@ -225,11 +225,13 @@ class GatewayRuntimeInitMixin:
         # ``pairing_store``: global/default store (CLI, callers without profile context); ``pairing_stores``:
         # per-profile map ``authz_mixin._is_user_authorized`` routes through (one whitelist per profile).
         from gateway.pairing import PairingStore
-        from gateway.hooks import ProfileHookRegistries
+        from gateway.hooks import shared_hook_registry
         self.pairing_store = PairingStore()
         self.pairing_stores: Dict[str, PairingStore] = {}
         # One HookRegistry per served profile home, resolved from the active scope at emit time.
-        self.hooks = ProfileHookRegistries()
+        # Shared with emitters outside the runner (the Telegram adapter fires ``telegram:callback``):
+        # one instance per process keeps a single hook load rather than re-importing user handlers.
+        self.hooks = shared_hook_registry()
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
         # Per-(bot, guild, text channel, user) transcript dedup: voice/STT can emit one utterance twice.

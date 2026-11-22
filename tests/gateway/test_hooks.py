@@ -95,6 +95,37 @@ class TestEmit:
         assert "command:reset" in results
 
 
+class TestHasHandlers:
+    """``has_handlers()`` — an emitter's cheap "does anybody listen" probe."""
+
+    def test_exact_and_wildcard_subscriptions_count(self):
+        reg = HookRegistry()
+        reg._handlers["telegram:callback"] = [lambda _e, _c: True]
+        assert reg.has_handlers("telegram:callback") is True
+
+        wild = HookRegistry()
+        wild._handlers["telegram:*"] = [lambda _e, _c: True]
+        assert wild.has_handlers("telegram:callback") is True
+
+    def test_unrelated_or_bare_type_does_not_count(self):
+        reg = HookRegistry()
+        reg._handlers["command:*"] = [lambda _e, _c: True]
+        assert reg.has_handlers("telegram:callback") is False
+        assert reg.has_handlers("telegram") is False  # a bare base type never fires for the child
+
+    def test_empty_registry_reports_nothing(self):
+        assert HookRegistry().has_handlers("telegram:callback") is False
+
+    def test_shared_registry_is_one_instance_per_process(self):
+        from gateway.hooks import reset_shared_hook_registry, shared_hook_registry
+
+        reset_shared_hook_registry()
+        try:
+            assert shared_hook_registry() is shared_hook_registry()
+        finally:
+            reset_shared_hook_registry()
+
+
 class TestEmitCollect:
     """Tests for emit_collect() — returns handler return values for decision-style hooks."""
 

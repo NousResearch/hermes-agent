@@ -414,6 +414,7 @@ _UPDATE_DEPENDENCIES = (
     "agent/checkpoints/maintenance.py",
     "tools/skills_sync.py",
     "tools/environments/local_env_policy.py",
+    "tools/environments/local_gateway_env.py",
     "pm/progress.py",
     # The compilers source_build / the Desktop build run (freshness, node-deps,
     # tui, web, desktop and their shared frontend-common).

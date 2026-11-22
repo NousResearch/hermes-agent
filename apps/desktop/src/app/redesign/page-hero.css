@@ -18,6 +18,9 @@
   background: var(--page-hero-art) left top / cover no-repeat;
   mix-blend-mode: var(--page-hero-blend);
   pointer-events: none;
+  /* The band reaches the panel's top far corner and takes its radius itself: a blended box is
+     not reliably cut by an ancestor's rounded clip. */
+  border-start-end-radius: var(--portal-panel-radius);
 }
 
 /* The content after the hero paints over it: positioned elements paint after in-flow ones, so the

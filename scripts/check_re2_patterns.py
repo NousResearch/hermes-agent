@@ -8,7 +8,8 @@ For every call `<alias>.compile/search/match/fullmatch/findall/finditer/split/su
 <alias> is the name the file binds to the regex module, and every call of such a function imported by name
 (`from hermes_re import compile [as c]`); the pattern may be positional or the `pattern=` keyword:
   REJECTED   hermes_re refuses the pattern, or its RE2 program cannot be built
-  SURROGATE  the pattern names a lone surrogate (U+D800..U+DFFF); RE2 can never match one
+  SURROGATE  the pattern names a lone surrogate (U+D800..U+DFFF), as a character or a \\u / \\U escape; RE2 can
+             never match one
   INEXACT    the pattern has a `\\b` / `\\B` that RE2 evaluates with ASCII word rules
   DIFFERS    the call's operation gives another result than stdlib `re` on generated strings (bytes too)
   UNCHECKED  stdlib `re` did not finish the comparison within DEADLINE seconds (catastrophic backtracking on the
@@ -53,7 +54,10 @@ def _repo_root():
 ROOT = _repo_root()
 FUNCS = {"compile": 1, "search": 2, "match": 2, "fullmatch": 2, "findall": 2, "finditer": 2, "split": 3, "sub": 4, "subn": 4}
 FLAGS = {"I": 2, "IGNORECASE": 2, "M": 8, "MULTILINE": 8, "S": 16, "DOTALL": 16, "A": 256, "ASCII": 256, "U": 32,
-         "UNICODE": 32, "X": 64, "VERBOSE": 64, "NOFLAG": 0}
+         "UNICODE": 32, "X": 64, "VERBOSE": 64, "L": 4, "LOCALE": 4, "DEBUG": 128, "NOFLAG": 0}
+# \uD800..\uDFFF or \U0000D800..\U0000DFFF after an even run of backslashes: the escape a raw pattern spells a lone
+# surrogate with (its source text is ASCII, so the character check below never sees it)
+ESCAPED_SURROGATE = stdlib_re.compile(r"(?<!\\)(?:\\\\)*\\(?:u|U0000)[dD][89a-fA-F][0-9a-fA-F]{2}")
 WAIVER = "# re2: reviewed --"
 EXTRA = " \n\t-_.,:;/|@=\"'()aZ09\u00e9\u00df\u0436\u65e5\u017f\u0130"
 SAMPLES = 160
@@ -189,6 +193,8 @@ def classify(facade, node, fn, pattern):
     flags = flags or 0
     if isinstance(pattern, str) and any("\ud800" <= c <= "\udfff" for c in pattern):
         return "SURROGATE", "lone surrogate in the pattern"
+    if isinstance(pattern, str) and ESCAPED_SURROGATE.search(pattern):
+        return "SURROGATE", "escaped lone surrogate in the pattern"
     try:
         facade.build(pattern, flags)
     except Exception as exc:  # health: allow BLE001 -- every way a pattern fails to build is reported as a finding

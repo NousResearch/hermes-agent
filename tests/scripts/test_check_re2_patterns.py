@@ -68,12 +68,24 @@ def test_clean_or_out_of_scope_passes(tmp_path, source):
         ("import hermes_re as re\nre.findall(rb'a*?', b'aa')\n", "DIFFERS"),
         # a module-level facade alias still reaches a function that does not rebind it
         ("import hermes_re as re\n\n\ndef f():\n    return re.compile(r'(a)\\1')\n", "REJECTED"),
+        # a raw pattern spells a surrogate as an ASCII escape: stdlib matches "\ud83d", hermes_re never does
+        ("import hermes_re as re\nre.compile(r'[\\ud800-\\udfff]')\n", "SURROGATE"),
+        ("import hermes_re as re\nre.sub(r'\\U0000DC80', '', 'x')\n", "SURROGATE"),
+        # flags hermes_re exports but refuses reach build() instead of passing as non-literal flags
+        ("import hermes_re as re\nre.compile(rb'a', re.L)\n", "REJECTED"),
+        ("import hermes_re as re\nre.compile(r'a', flags=re.LOCALE | re.I)\n", "REJECTED"),
+        ("import hermes_re as re\nre.search(r'a', 'a', re.DEBUG)\n", "REJECTED"),
     ],
-    ids=["waiver-in-string", "bytes", "module-alias-in-function"],
+    ids=["waiver-in-string", "bytes", "module-alias-in-function", "escaped-surrogate-class", "escaped-surrogate-U",
+         "locale-short", "locale-keyword", "debug"],
 )
 def test_finding_is_reported(tmp_path, source, kind):
     code, out = _gate(tmp_path, source)
     assert code == 1 and out.startswith(kind), out
+
+
+def test_escaped_backslash_before_u_is_not_a_surrogate(tmp_path):
+    assert _gate(tmp_path, "import hermes_re as re\nre.compile(r'\\\\ud800')\n")[0] == 0
 
 
 _SHADOWED = (

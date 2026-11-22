@@ -119,8 +119,9 @@ def main() -> int:
         return 4
 
     writer = PdfWriter()
+    writer.clone_document_from_reader(reader)
     overlay_cache: dict[tuple[float, float], object] = {}
-    for idx, page in enumerate(reader.pages, start=1):
+    for idx, page in enumerate(writer.pages, start=1):
         if idx in pages:
             size = (float(page.mediabox.width), float(page.mediabox.height))
             if size not in overlay_cache:
@@ -131,7 +132,6 @@ def main() -> int:
                 page.merge_page(stamp, over=False)
             else:
                 page.merge_page(stamp)
-        writer.add_page(page)
     with open(args.output, "wb") as fh:
         writer.write(fh)
     print(json.dumps({"output": args.output, "stamped_pages": sorted(pages),

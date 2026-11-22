@@ -2,7 +2,7 @@ name: sessionretitler
 repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
 sha: a547a12ff0b4fcf44d614d0ddbd167bc71faa6c8
 subdir: public/sessionretitler
-description: "Keeps the session list readable as the topic drifts. Every 10 titleable user messages by default, retitles the session from the latest exchanges, then again as the interval elapses. A title you set yourself is never overwritten. Disclosure: writes the new title through the published persistence interface because no plugin SDK title-write seam exists yet; an unreadable title source skips the write and a failed write is logged."
+description: "Keeps the session list readable as the topic drifts. Every 10 titleable user messages by default, retitles the session from the latest exchanges, then again as the interval elapses. A title you set yourself is never overwritten. Disclosure — every 10 user messages (configurable) it sends a digest of the latest exchanges, up to about 7,000 characters, to your auxiliary title model and renames the session; titles you set yourself are never changed."
 maintainer: apoapostolov
 tier: community
 category: desktop

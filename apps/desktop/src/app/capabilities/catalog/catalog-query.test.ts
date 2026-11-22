@@ -54,3 +54,17 @@ describe('installed-skill usage and updates', () => {
     expect(filterCatalog(rows, { ...EMPTY_FACETS, updatesOnly: true }, '', () => true, 'skills').map(row => row.name)).toEqual(['hot'])
   })
 })
+
+describe('sort option gating', () => {
+  const labels = { discover: 'd', usage: 'u', stars: 's', newest: 'n', updated: 'r', name: 'a' }
+  const values = (rows: CatalogEntry[]) => catalogSortOptions(rows, 'skills', labels).map(o => o.value)
+
+  it('hides Stars when no entry carries a star count, whether null or absent', () => {
+    expect(values([{ ...entry('a', 'local'), stars: null }] as CatalogEntry[])).not.toContain('stars')
+    expect(values([entry('b', 'local')])).not.toContain('stars')
+  })
+
+  it('offers Stars once any entry has a numeric count, including zero', () => {
+    expect(values([entry('a', 'local'), { ...entry('b', 'hub'), stars: 0 }] as CatalogEntry[])).toContain('stars')
+  })
+})

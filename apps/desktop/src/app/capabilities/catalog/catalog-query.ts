@@ -128,7 +128,7 @@ export function catalogSortOptions(entries: CatalogEntry[], kind: CatalogKind, l
   const available: Record<CatalogSort, boolean> = {
     discover: kind === 'skills',
     usage: entries.some(entry => (entry.usage ?? 0) > 0),
-    stars: entries.some(entry => entry.stars !== null),
+    stars: entries.some(entry => typeof entry.stars === 'number'),
     newest: entries.some(entry => entry.addedAt),
     updated: entries.some(entry => entry.updatedAt),
     name: kind === 'skills'

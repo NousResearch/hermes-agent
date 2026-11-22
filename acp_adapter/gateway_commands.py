@@ -141,7 +141,7 @@ async def _rewind(agent, client, session_id, command, arg):
     agent._mutations.acknowledge(session_id, 'rewind', payload)
     content = (result.get('target_message') or {}).get('content')
     if retry:
-        from agent.context_compressor import retryable_user_text
+        from session_rules.turns import retryable_user_text
         try:
             text = retryable_user_text(content)
         except ValueError as exc:
@@ -177,6 +177,11 @@ async def _steer(agent, session_id, text):
         if str(exc) == 'stale_generation':
             return None
         raise
+    if result.get('voice_stopped') is True:
+        # TUI-26: the guidance was a bare stop phrase that ended this LOCAL session's voice chat;
+        # no turn saw it, and sending it on as a prompt would admit ``stop`` as a turn.
+        from agent.i18n import t
+        return t('cli.voice.stop_phrase_typed')
     if result.get('status') != 'queued':
         return None
     return f"⏩ Steer queued for the active turn: {text[:80]}{'...' if len(text) > 80 else ''}"

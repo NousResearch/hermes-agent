@@ -100,7 +100,7 @@ async def test_unknown_row_settles_the_interactive_turn(capsys):
         return view.failure
     view, failure = await gapped(answer, interactive)
     assert failure is None and view.completions["a"]["outcome"] == "unknown"
-    assert "outcome is unknown" in capsys.readouterr().out
+    assert "couldn't confirm how this turn ended" in capsys.readouterr().out
 
 
 @pytest.mark.asyncio

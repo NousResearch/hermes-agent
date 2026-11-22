@@ -20,6 +20,7 @@ import threading
 
 import pytest
 
+from persistence_assembly import close_stores_under, store_location
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes
 from tests.waiting import wait_until
 
@@ -70,7 +71,7 @@ def _gateway(tmp_path, monkeypatch, *, served, unserved=(), linked=(), multiplex
             service = getattr(authority, 'hosted_room_service', None)
             if service is not None:
                 assert service.stop(timeout=5)
-            authority.db.close()
+            close_stores_under(store_location(authority.persistence.scope))
         if getattr(runner, 'session_control_server', None) is not None:
             call(runner.session_control_server.stop())
         loop.call_soon_threadsafe(loop.stop)
@@ -135,12 +136,12 @@ def test_desktop_group_of_served_bots_is_created_and_runs(tmp_path, monkeypatch)
         sent = desktop('default', 'groups.send', room_id='crew', event_id='hello',
                        payload={'text': '@alpha hello', 'thread_id': 'thread'})
         assert 'result' in sent, sent
-        db_path = runner.session_authority.db.db_path
+        room_store = runner.session_authority.persistence
         wait_until(lambda: any(e['kind'] == 'room.activity' and e['payload'].get('status') == 'settled'
-                               for e in hosted_rooms.read_events(db_path, room_id='crew')['events']),
+                               for e in hosted_rooms.read_events(room_store, placement='profile', room_id='crew')['events']),
                    what='the room settled after alpha answered')
         assert ran == [(str(homes['alpha']), str(homes['alpha']))], [
-            e['payload'] for e in hosted_rooms.read_events(db_path, room_id='crew')['events']]
+            e['payload'] for e in hosted_rooms.read_events(room_store, placement='profile', room_id='crew')['events']]
 
 
 def test_unserving_one_bot_keeps_the_rest_of_its_group_talking(tmp_path, monkeypatch):
@@ -161,17 +162,17 @@ def test_unserving_one_bot_keeps_the_rest_of_its_group_talking(tmp_path, monkeyp
                                    members=_members('default', 'alpha', 'beta'))
         assert call(unserve_profile_runtime(runner, homes['alpha']))
         assert runner.session_authorities.for_home(homes['alpha']) is None
-        db_path = runner.session_authority.db.db_path
+        room_store = runner.session_authority.persistence
 
         def settled(count):
             return sum(e['kind'] == 'room.activity' and e['payload'].get('status') == 'settled'
-                       for e in hosted_rooms.read_events(db_path, room_id='crew')['events']) >= count
+                       for e in hosted_rooms.read_events(room_store, placement='profile', room_id='crew')['events']) >= count
         sent = desktop('default', 'groups.send', room_id='crew', event_id='hello',
                        payload={'text': '@beta hello', 'thread_id': 'thread'})
         assert 'result' in sent, sent
         wait_until(lambda: settled(1), what='the room settled after beta answered')
         assert ran == [str(homes['beta'])], [
-            e['payload'] for e in hosted_rooms.read_events(db_path, room_id='crew')['events']]
+            e['payload'] for e in hosted_rooms.read_events(room_store, placement='profile', room_id='crew')['events']]
         # A turn for alpha fails as alpha's own turn, without wedging the room for beta.
         assert 'result' in desktop('default', 'groups.send', room_id='crew', event_id='to-alpha',
                                    payload={'text': '@alpha hello', 'thread_id': 'thread'})
@@ -290,9 +291,9 @@ def test_a_bad_hosted_rooms_entry_refuses_only_the_member_naming_it(tmp_path, mo
         sent = desktop('default', 'groups.send', room_id='kept', event_id='hello',
                        payload={'text': '@beta hello', 'thread_id': 'thread'})
         assert 'result' in sent, sent
-        db_path = runner.session_authority.db.db_path
+        room_store = runner.session_authority.persistence
         wait_until(lambda: any(e['kind'] == 'room.activity' and e['payload'].get('status') == 'settled'
-                               for e in hosted_rooms.read_events(db_path, room_id='kept')['events']),
+                               for e in hosted_rooms.read_events(room_store, placement='profile', room_id='kept')['events']),
                    what='the room settled after beta answered')
         assert ran == [str(homes['beta'])]
 
@@ -326,3 +327,21 @@ def test_a_linked_profile_is_refused_by_name_until_groups_support_it(tmp_path, m
         # Its home never answers to another name: default still seats the rest.
         seated = desktop('default', 'groups.create', room_id='crew', name='Crew', members=_members('default', 'alpha'))
         assert 'result' in seated, seated
+
+
+def test_capabilities_name_exactly_the_profiles_this_caller_can_seat(tmp_path, monkeypatch):
+    """#141178: the New Group Chat picker offered every bot on the connection, and groups.create
+    then refused the ones the caller cannot seat. groups.capabilities now names that roster, and
+    each name it lists is one create accepts."""
+    with _gateway(tmp_path, monkeypatch, served=('alpha', 'beta'), unserved=('gamma',)) as (runner, homes, call):
+        host = _desktop(runner, call)
+        assert host('default', 'groups.capabilities')['result']['seatable_profiles'] == ['alpha', 'beta', 'default']
+        # A profile-bound socket seats only its own profile (plus its entries), as create rules.
+        bound = _desktop(runner, call, scope='profile')
+        assert bound('default', 'groups.capabilities')['result']['seatable_profiles'] == ['default']
+        # A sibling being torn down runs nothing, so it drops out before create would refuse it.
+        runner.session_authorities.require(homes['beta']).retiring = True
+        seatable = host('default', 'groups.capabilities')['result']['seatable_profiles']
+        assert seatable == ['alpha', 'default']
+        created = host('default', 'groups.create', room_id='crew', name='Crew', members=_members(*seatable))
+        assert 'result' in created, created

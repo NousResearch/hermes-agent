@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import transcript_rows
 from tests.gateway.test_session_busy_controls import owner, settled
 from tests.gateway.fixtures.local_recovery_probe import rpc, websocket
 
@@ -137,10 +139,33 @@ def test_session_export_keeps_the_assistant_reply_and_refuses_a_client_path(tmp_
         asyncio.run(probe())
 
 
+
+@pytest.mark.platforms("linux")
+def test_session_export_json_restores_with_its_title_through_import_sessions(tmp_path):
+    """CLI-19: the classic CLI's ``/save json`` is this export, so it must be the canonical snapshot:
+    ``import_sessions`` restores the session with its title and messages."""
+    with owner(tmp_path) as (home, _peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='rt', source='tui', toolsets=[]))['result']['session_id']
+                await rpc(ws, 'prompt.submit', session_id=sid, input_id='first', text='SAVE_ME')
+                await settled(home)
+                revision = (await rpc(ws, 'session.resume', session_id=sid))['result']['revision']
+                renamed = await rpc(ws, 'session.mutate', session_id=sid, request_id='title', expected_revision=revision,
+                                    operation='rename', payload={'title': 'Saved Title'})
+                assert 'result' in renamed, renamed
+                data = json.loads((await rpc(ws, 'session.export', session_id=sid, format='json'))['result']['content'])
+                assert data['title'] == 'Saved Title' and all('active' in m for m in data['messages']), data
+                with open_persistence(profile_scope(home=tmp_path / 'restored')) as restored:
+                    assert restored.maintenance.import_sessions([data]).ok
+                    assert restored.sessions.get(data['id']).title == 'Saved Title'
+                    assert 'SAVE_ME' in [m['content'] for m in transcript_rows(restored, data['id'])]
+        asyncio.run(probe())
+
 def _checkpoint(home, cwd, reason):
     """A checkpoint in the owner profile's shared store (what the agent takes before a write)."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.checkpoint_manager import CheckpointManager
+    from agent.checkpoints.manager import CheckpointManager
     token = set_hermes_home_override(str(home))
     try:
         assert CheckpointManager(enabled=True).ensure_checkpoint(str(cwd), reason)
@@ -214,7 +239,7 @@ def test_rollback_lists_diffs_and_restores_the_session_cwd_and_rewinds_the_last_
 def _agent_write(home, path, text):
     """A file write Hermes made (and recorded in the agent-write ledger that safe restore reads)."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.checkpoint_manager import CheckpointManager
+    from agent.checkpoints.manager import CheckpointManager
     path.write_text(text)
     token = set_hermes_home_override(str(home))
     try:

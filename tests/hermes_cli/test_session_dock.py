@@ -133,3 +133,26 @@ def test_dock_loop_row_counts_down_to_the_next_wakeup(hermes_home):
     assert dock.refresh(now=due) and dock.loop == "⏸ loop paused · user-paused · 1 run · check the deploy"
     mgr.clear()
     assert dock.refresh(now=due) and not dock.has_rows
+
+
+def test_dock_repaints_a_goal_a_tool_changed_mid_turn(hermes_home):
+    """A plugin tool adds criteria to the goal mid-turn: the gateway's ``session.control.update`` frame
+    marks the CLI's mirrored manager stale and the dock's next poll re-reads it (once), not at turn end."""
+    from hermes_cli.cli_loops_mixin import CLILoopsMixin
+    from hermes_cli.cli_subagent_monitor import SubagentMonitor
+    from hermes_cli.gateway_agent import _HANDLERS
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_id="sid-a")
+    mgr.set("ship the dock feature")
+    cli = SimpleNamespace(agent=None, session_id="sid-a", _goal_manager=mgr, _pending_input=queue.Queue())
+    dock = SubagentMonitor(cli)
+    dock.refresh()
+    GoalManager(session_id="sid-a").add_subgoal("tests pass")  # the tool's own writer
+    dock.refresh()
+    assert "subgoal" not in dock.dock_text(columns=80, rows=40)
+
+    agent = SimpleNamespace(control_update_callback=lambda: CLILoopsMixin._mark_automation_stale(cli))
+    _HANDLERS["session.control.update"](agent, {"control": {}}, None, {})
+    assert dock.refresh() and "1 subgoal" in dock.dock_text(columns=80, rows=40).splitlines()[0]
+    assert cli._automation_stale is False

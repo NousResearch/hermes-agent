@@ -23,7 +23,7 @@ def _detached(env_home, marker):
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-@pytest.mark.platforms("linux")
+@pytest.mark.platforms("linux", "macos")
 @pytest.mark.live_system_guard_bypass  # signals only the two children this test spawned
 def test_session_teardown_terminates_daemons_under_the_session_basetemp_only(tmp_path):
     basetemp, elsewhere = tmp_path / "basetemp", tmp_path / "elsewhere"
@@ -32,7 +32,7 @@ def test_session_teardown_terminates_daemons_under_the_session_basetemp_only(tmp
     inside = _detached(basetemp / "t0" / "hermes", "inside")
     outside = _detached(elsewhere, "outside")
     try:
-        # Both children have exec'd with their HERMES_HOME (what the reaper reads from /proc).
+        # Both children have exec'd with their HERMES_HOME (what the reaper reads via psutil environ()).
         wait_until(lambda: {inside.pid, outside.pid} <= set(suite_conftest._processes_with_hermes_home_under(
             [basetemp, elsewhere])), timeout=10, what='both detached children started')
         config = SimpleNamespace(_tmp_path_factory=SimpleNamespace(_basetemp=basetemp))

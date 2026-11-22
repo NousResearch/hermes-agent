@@ -15,7 +15,9 @@ from pathlib import Path
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv
-from utils import atomic_replace, load_yaml_file_readonly, mkstemp_beside
+from hermes_constants import hermes_home_key, is_launch_only_env_key
+from hermes_cli.left_core_migration import profile_env_names
+from utils import atomic_replace, mkstemp_beside
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,7 @@ _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
 _WARNED_KEYS: set[str] = set()          # credential names already given the non-ASCII warning
 _WARNED_UTF32_PATHS: set[str] = set()   # .env paths already given the UTF-32 refuse-to-mangle warning
 _SCOPED_SKIP_LOGGED: set[str] = set()   # routed profile homes whose multiplex dotenv skip was logged
+_WARNED_UNREADABLE_PATHS: set[str] = set()  # unreadable profile .env / .op.env paths already given the warning
 
 # env-var name → source label ("bitwarden", …) for externally injected credentials; setup / `hermes
 # model` tell users WHERE a key came from when .env lacks it.
@@ -51,13 +54,18 @@ _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 # Per home: the subset of the snapshot a dotenv reload may re-assert — see ``AppliedVar.authoritative`` (#74265).
 _SECRET_SOURCE_RESTORE_BY_HOME: dict[str, dict[str, str]] = {}
 # Per home: what the process-global path WROTE into ``os.environ`` for an external source — name →
-# (source name, value written, value the name held before the first write or None). The per-home
+# (source name, value written, value the name held before the first write or None). The frozen launch
+# env keeps its own record of the writes it holds (``launch_profile_policy._source_writes``). The per-home
 # snapshot above is republished on every pass, but ``os.environ`` is not: without this record a value a
 # since-removed or disabled source injected stayed in the process env, and single-profile
 # ``get_secret()`` kept serving it through its ``os.environ`` fallback until restart. Deliberately NOT
 # cleared by a per-home ``reset_secret_source_cache``: it describes ``os.environ``, which a reset does not
 # touch, and the next pass needs it to revoke.
 _SECRET_SOURCE_WRITES_BY_HOME: dict[str, dict[str, tuple[str, str, str | None]]] = {}
+# Per home: YAML-bridge claims a source released when it supplied the name (applied OR skipped as equal)
+# — name → (source name, bridge marker digest). Revoking that source hands the value back to the bridge
+# while it is still the bridged value, or a later YAML tightening would read it as the operator's.
+_RELEASED_BRIDGE_CLAIMS_BY_HOME: dict[str, dict[str, tuple[str, str]]] = {}
 # HERMES_HOME paths already pulled external secrets for: load_hermes_dotenv() runs at import time from
 # several hot modules, so without this the Bitwarden status line prints 3-5x per startup and the config
 # re-parse + ASCII sweep re-run each time (Bitwarden's own cache only saves the network call).
@@ -87,10 +95,11 @@ _SPAWN_CREDENTIAL_KEYS: frozenset[str] = frozenset({"HERMES_DASHBOARD_SESSION_TO
 # onto the wrong provider path; these — and ONLY these — are scrubbed at startup when absent from the
 # profile's .env. Credentials are excluded: shell exports are a documented way to supply them, and
 # read-time secret-scope checks (agent/secret_scope.py) own cross-profile credential isolation.
+# Providers that left core keep theirs listed on their ``LEFT_CORE`` row (``profile_env``), read statically:
+# this runs before provider discovery, and with the plugin absent nothing else names them.
 _PROFILE_MANAGED_ENV_KEYS: frozenset[str] = frozenset({
-    "HERMES_ACP_AUTH_METHOD", "HERMES_ACP_AUTO_APPROVE", "HERMES_COPILOT_ACP_COMMAND",
-    "HERMES_COPILOT_ACP_ARGS", "COPILOT_CLI_PATH", "COPILOT_ACP_BASE_URL",
-})
+    "HERMES_ACP_AUTH_METHOD", "HERMES_ACP_AUTO_APPROVE",
+}) | profile_env_names()
 
 
 def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
@@ -153,22 +162,65 @@ def launch_dotenv_keys() -> frozenset[str]:
     return frozenset(_LOADED_DOTENV_KEYS)
 
 
+def dotenv_published_values(name: str) -> frozenset[str]:
+    """The values dotenv loads in this process last wrote to ``name``, its name matched case-insensitively:
+    on Windows ``https_proxy`` in a .env and an inherited ``HTTPS_PROXY`` are one environment variable."""
+    folded = name.upper()
+    with _DOTENV_LOCK:
+        return frozenset(value for key, (_base, value, _pass) in _DOTENV_PUBLISHED.items() if key.upper() == folded)
+
+
+def has_nonblank_dotenv_value(name: str) -> bool:
+    """Whether dotenv supplied an override, not merely an empty assignment later filled by YAML.
+
+    A known key without a publication receipt is conservatively treated as explicit provenance.
+    On Windows the name matches case-insensitively: a ``telegram_reactions`` line in ``.env`` and
+    ``TELEGRAM_REACTIONS`` are one environment variable there, and two distinct ones elsewhere.
+    """
+    from hermes_platform.host.facts import os_family
+
+    fold = str.upper if os_family() == "win32" else str
+    with _DOTENV_LOCK:
+        keys = [key for key in (*_LOADED_DOTENV_KEYS, *_MANAGED_DOTENV_KEYS) if fold(key) == fold(name)]
+        if not keys:
+            return False
+        published = [_DOTENV_PUBLISHED[key] for key in keys if key in _DOTENV_PUBLISHED]
+        return not published or any(record[1].strip() for record in published)
+
+
 def managed_dotenv_keys() -> frozenset[str]:
     """KEY names the administrator-managed ``.env`` loaded (see ``_MANAGED_DOTENV_KEYS``). Policy for
     every profile: never stripped from a routed child, and re-applied over the routed scope."""
     return frozenset(_MANAGED_DOTENV_KEYS)
 
 
+def env_provenance() -> dict[str, list[str]]:
+    """Names only: which keys in ``os.environ`` this process's sources, dotenvs and managed ``.env`` put
+    there. A fresh interpreter handed this environ inherits the values but not where they came from, so
+    one that builds routed-child envs (the update's abort recovery) adopts this with ``adopt_env_provenance``."""
+    return {"source_supplied": list(source_supplied_names()), "dotenv_loaded": sorted(_LOADED_DOTENV_KEYS),
+            "managed": sorted(_MANAGED_DOTENV_KEYS)}
+
+
+def adopt_env_provenance(provenance: dict[str, list[str]]) -> None:
+    """Record the parent's ``env_provenance`` as this process's own (additive, like a load)."""
+    _SOURCE_SUPPLIED_NAMES.update(provenance.get("source_supplied", ()))
+    _LOADED_DOTENV_KEYS.update(provenance.get("dotenv_loaded", ()))
+    _MANAGED_DOTENV_KEYS.update(provenance.get("managed", ()))
+
+
 def get_secret_source_values(hermes_home: str | os.PathLike) -> dict[str, str]:
     """Return the external-secret value snapshot for ``hermes_home``."""
-    return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(str(Path(hermes_home).resolve()), {}))
+    return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(hermes_home_key(hermes_home), {}))
 
 
 def hydrate_profile_secret_sources(hermes_home: str | os.PathLike) -> dict[str, str]:
     """Resolve one profile's configured sources without mutating ``os.environ``: multiplex gateways route
     turns to profiles that never ran the process-global dotenv path, so resolve against a private mapping
     seeded from that ``.env`` and record the per-home snapshot for ``build_profile_secret_scope()``.
-    Fail-open / once-per-home like ``_apply_external_secret_sources``; never returns plaintext .env entries."""
+    Fail-open / once-per-home like ``_apply_external_secret_sources``; never returns plaintext .env entries.
+    The one fail-closed case is D32's: under the remote config backend, a source that supplies a
+    protected name raises :class:`ConfigBackendUnavailable` and records nothing for the home."""
     with _SECRET_SOURCE_CACHE_LOCK:
         return _hydrate_profile_secret_sources(Path(hermes_home))
 
@@ -179,7 +231,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
 
     if worker_config_snapshot() is not None:
         return {}
-    home_key = str(home.resolve())
+    home_key = hermes_home_key(home)
     if home_key in _APPLIED_HOMES:
         return get_secret_source_values(home)
 
@@ -192,7 +244,10 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         cfg = _load_secrets_config(home)
     except Exception:
         return {}
-    if not cfg:
+    if not cfg:  # removed: its earlier values are no longer applied, so stop masking them
+        from agent.redact_secret_sources import publish_secret_source_values
+
+        publish_secret_source_values(home, {})
         return {}
 
     try:
@@ -210,12 +265,24 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
             for _name, _value in load_env_file(op_env).items():
                 local_env.setdefault(_name, _value)
         local_env["HERMES_HOME"] = str(home)
+        env_before = dict(local_env)
         report = apply_all(cfg, home, environ=local_env)
     except Exception:
         return {}
 
-    if not report.sources:
+    if not report.sources:  # every source disabled: nothing is applied any more, so stop masking it
+        from agent.redact_secret_sources import publish_secret_source_values
+
+        publish_secret_source_values(home, {})
         return {}
+    # D32, as on the process-global path: a source must never supply the config backend's own
+    # deployment or plane credential, for a routed profile either (this snapshot feeds that
+    # profile's secret scope, which the Portal/plane resolvers read). Checked before anything of
+    # this attempt is recorded: the remote backend refuses the profile (raises, nothing cached, so
+    # every retry refuses again until the mapping is removed); the file backend drops the selector.
+    from hermes_cli.config_backend import get_config_backend
+
+    _refuse_protected_env_from_sources(report, get_config_backend(), env_before, env=local_env, routed_home=home)
 
     # Routed profiles have no runtime reset path. Keep a failed source retryable so correcting its
     # profile-local bootstrap credentials takes effect on the next turn; successful sources from a
@@ -234,6 +301,9 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         _SECRET_SOURCES[name] = applied.source
         values[name] = value
     _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    from agent.redact_secret_sources import publish_secret_source_values
+
+    publish_secret_source_values(home, values)
     return dict(values)
 
 
@@ -251,8 +321,9 @@ def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> N
         _SECRET_SOURCE_VALUES_BY_HOME.clear()
         _SECRET_SOURCE_RESTORE_BY_HOME.clear()
         _SECRET_SOURCE_WRITES_BY_HOME.clear()
+        _RELEASED_BRIDGE_CLAIMS_BY_HOME.clear()
         return
-    home_key = str(Path(hermes_home).resolve())
+    home_key = hermes_home_key(hermes_home)
     _APPLIED_HOMES.discard(home_key)
     _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
     _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
@@ -325,16 +396,8 @@ def _sanitize_loaded_credentials() -> None:
         )
 
 
-def _load_dotenv_with_fallback(
-    path: Path, *, override: bool, load_pass: int | None = None, managed: bool = False,
-) -> None:
-    """Load one dotenv file into ``os.environ`` like ``dotenv.load_dotenv`` — same parser, same
-    ``${VAR}`` / ``${VAR:-default}`` / precedence rules — except that ``${VAR}`` resolves against the value
-    VAR had before this process's earlier passes published it (see ``_DOTENV_PUBLISHED``).
-
-    ``load_pass`` groups the layered files of one ``load_hermes_dotenv`` call: within a pass a later layer
-    (project, managed) still sees the earlier layer's output, as it always did; only OTHER passes' output
-    is peeled. A bare call (``hermes send``'s direct reload) is its own pass."""
+def _parse_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
+    """``(name, raw value)`` assignments of one dotenv file, uninterpolated, in file order."""
     raw = path.read_bytes()
     try:
         # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
@@ -346,29 +409,129 @@ def _load_dotenv_with_fallback(
     # Imported here, not at module level: gateway tests stub ``sys.modules["dotenv"]`` with a bare module
     # exposing only ``load_dotenv``, and ``gateway.run`` imports this module at import time.
     from dotenv.main import DotEnv
+
+    return list(DotEnv(dotenv_path=None, stream=io.StringIO(text), interpolate=False).parse())
+
+
+def _dotenv_lookup_env(load_pass: int | None) -> dict[str, str]:
+    """``os.environ`` with every value an earlier pass (any pass, for ``None``) published peeled back to
+    its baseline — what ``${VAR}`` resolves against (see ``_DOTENV_PUBLISHED``). Caller holds the lock."""
+    lookup_env = dict(os.environ)
+    for name, (baseline, published, published_pass) in _DOTENV_PUBLISHED.items():
+        if published_pass != load_pass and lookup_env.get(name) == published:
+            if baseline is None:
+                del lookup_env[name]  # absent, so ``${VAR:-default}`` takes the default again
+            else:
+                lookup_env[name] = baseline
+    return lookup_env
+
+
+def _resolve_dotenv_assignments(
+    assignments: list[tuple[str, str | None]], lookup_env: dict[str, str], *, override: bool,
+) -> dict[str, str | None]:
+    """Expand ``${VAR}`` / ``${VAR:-default}`` like ``dotenv.main.resolve_variables``, minus the live
+    ``os.environ``: a line sees *lookup_env* and the file's earlier lines (earlier lines win under
+    *override*, the environment otherwise)."""
     from dotenv.variables import parse_variables
 
-    assignments = list(DotEnv(dotenv_path=None, stream=io.StringIO(text), interpolate=False).parse())
+    resolved: dict[str, str | None] = {}
+    for name, value in assignments:
+        if value is not None:
+            lookup = {**lookup_env, **resolved} if override else {**resolved, **lookup_env}
+            value = "".join(atom.resolve(lookup) for atom in parse_variables(value))
+        resolved[name] = value
+    return resolved
 
+
+def environ_before_dotenv(name: str) -> str | None:
+    """*name* as the environment this process was started with set it: ``os.environ`` with what this
+    process's dotenv passes published peeled back. None when it was not set there."""
+    with _DOTENV_LOCK:
+        return _dotenv_lookup_env(None).get(name)
+
+
+def resolve_project_dotenv(project_env: Path, home: Path, *, removed: frozenset[str] = frozenset()) -> dict[str, str]:
+    """What ``load_hermes_dotenv`` would publish from the checkout's *project_env* in a process started
+    for *home* now, read-only, with the names in *removed* gone from *home*'s ``.env``: the process's own
+    environment (this process's dotenv output peeled back), then *home*'s ``.env`` with override, then
+    *project_env* with override only when *home* has no ``.env`` (else it fills gaps), ``${VAR}`` expanded
+    by the same rules at each layer."""
+    with _DOTENV_LOCK:
+        lookup_env = _dotenv_lookup_env(None)
+    user_env = home / ".env"
+    try:
+        home_assignments = [item for item in _parse_dotenv_file(user_env) if item[0] not in removed]
+    except OSError:
+        home_assignments = []
+    for name, value in _resolve_dotenv_assignments(home_assignments, lookup_env, override=True).items():
+        if value is not None:
+            lookup_env[name] = value
+    try:
+        assignments = _parse_dotenv_file(project_env)
+    except OSError:
+        return {}
+    override = not user_env.exists()
+    return {name: value for name, value in
+            _resolve_dotenv_assignments(assignments, lookup_env, override=override).items()
+            if value is not None and (override or name not in lookup_env)}
+
+
+def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None) -> dict[str, str]:
+    """What ``load_hermes_dotenv`` would publish from *home*'s dotenv layers, read-only: the home's
+    ``.env`` then the administrator-managed ``.env``, both with override and ``${VAR}`` expanded by the
+    same rules against the process's own environment (this process's dotenv output peeled back), each
+    layer seeing the one before. External secret sources and the project ``.env`` are not included.
+    *lookup_env* replaces that environment: another profile's file must not resolve against this one's."""
+    from hermes_cli import managed_scope
+
+    managed_dir = managed_scope.get_managed_dir()
+    layers = [home / ".env", *([managed_dir / ".env"] if managed_dir is not None else [])]
+    if lookup_env is not None:
+        lookup_env = dict(lookup_env)
+    else:
+        with _DOTENV_LOCK:
+            lookup_env = _dotenv_lookup_env(None)
+    out: dict[str, str] = {}
+    for path in layers:
+        try:
+            assignments = _parse_dotenv_file(path)
+        except OSError:
+            continue
+        for name, value in _resolve_dotenv_assignments(assignments, lookup_env, override=True).items():
+            if value is not None:
+                lookup_env[name] = out[name] = value
+    return out
+
+
+def _release_bridge_claim(name: str) -> None:
+    """An operator source now owns *name*: drop the YAML bridge's marker for it, or a value equal to an
+    earlier bridged one would still read as the bridge's and be scrubbed from child envs."""
+    from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX
+
+    os.environ.pop(BRIDGED_ENV_MARKER_PREFIX + name, None)
+
+
+def _load_dotenv_with_fallback(
+    path: Path, *, override: bool, load_pass: int | None = None, managed: bool = False,
+) -> None:
+    """Load one dotenv file into ``os.environ`` like ``dotenv.load_dotenv`` — same parser, same
+    ``${VAR}`` / ``${VAR:-default}`` / precedence rules — except that ``${VAR}`` resolves against the value
+    VAR had before this process's earlier passes published it (see ``_DOTENV_PUBLISHED``).
+
+    ``load_pass`` groups the layered files of one ``load_hermes_dotenv`` call: within a pass a later layer
+    (project, managed) still sees the earlier layer's output, as it always did; only OTHER passes' output
+    is peeled. A bare call (``hermes send``'s direct reload) is its own pass."""
+    assignments = _parse_dotenv_file(path)
     with _DOTENV_LOCK:
         if load_pass is None:
             load_pass = next(_DOTENV_PASSES)
-        lookup_env: dict[str, str | None] = dict(os.environ)
-        for name, (baseline, published, published_pass) in _DOTENV_PUBLISHED.items():
-            if published_pass != load_pass and lookup_env.get(name) == published:
-                if baseline is None:
-                    del lookup_env[name]  # absent, so ``${VAR:-default}`` takes the default again
-                else:
-                    lookup_env[name] = baseline
-        resolved: dict[str, str | None] = {}
-        for name, value in assignments:
-            if value is not None:  # mirrors dotenv.main.resolve_variables, minus the live os.environ
-                lookup = {**lookup_env, **resolved} if override else {**resolved, **lookup_env}
-                value = "".join(atom.resolve(lookup) for atom in parse_variables(value))
-            resolved[name] = value
+        resolved = _resolve_dotenv_assignments(assignments, _dotenv_lookup_env(load_pass), override=override)
         for name, value in resolved.items():
             if value is None or (not override and name in os.environ):
                 continue
+            if is_launch_only_env_key(name):
+                _warn_launch_only_key(f"dotenv {path}", name)
+                continue  # deployment bootstrap knob (#135200, #144685)
             current = os.environ.get(name)
             record = _DOTENV_PUBLISHED.get(name)
             ours = record is not None and current == record[1]
@@ -378,11 +541,141 @@ def _load_dotenv_with_fallback(
             baseline = record[0] if ours else current
             os.environ[name] = value
             _DOTENV_PUBLISHED[name] = (baseline, value, load_pass)
+            if value.strip():
+                _release_bridge_claim(name)
     # Every key this file defines, for the launch-residue strip: dotenv never unsets, so a key later
     # removed from the launch .env stays in os.environ and a re-parse of the file no longer names it.
     # Managed keys are recorded separately: they are administrator policy, not launch-profile residue.
-    (_MANAGED_DOTENV_KEYS if managed else _LOADED_DOTENV_KEYS).update(name for name, _value in assignments)
+    # Launch-only keys are recorded nowhere: they were never published, so a leftover file entry must
+    # not strip the launch value from a routed child either (#135200).
+    (_MANAGED_DOTENV_KEYS if managed else _LOADED_DOTENV_KEYS).update(
+        name for name, _value in assignments if not is_launch_only_env_key(name))
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
+
+
+_LAUNCH_ONLY_WARNED: set[tuple[str, str, str]] = set()
+
+
+def _warn_launch_only_key(source: str, name: str) -> None:
+    """Log a skipped launch-only key once per (profile home, source, name): the gateway reloads
+    ``.env`` every turn, and a multiplex process serves several homes that each deserve the warning."""
+    marker = (hermes_home_key(), source, name)
+    if marker not in _LAUNCH_ONLY_WARNED:
+        _LAUNCH_ONLY_WARNED.add(marker)
+        logger.warning("%s: ignoring launch-only key %s — only the launch environment may set it",
+                       source, name)
+
+
+def bridge_config_scalars(cfg: dict, target) -> None:
+    """Copy top-level ``config.yaml`` scalars into ``target`` (env or scope mapping) where unset.
+
+    Launch-only keys are refused like a ``.env`` entry: config.yaml is user-writable, so a
+    ``HERMES_MANAGED_DIR:`` line there must not repoint the managed scope (#135200, #144685)."""
+    for name, value in cfg.items():
+        if not isinstance(value, (str, int, float, bool)) or name in target:
+            continue
+        if is_launch_only_env_key(name):
+            _warn_launch_only_key("config.yaml", name)
+            continue
+        target[name] = str(value)
+
+
+def _dotenv_assignments(path: Path) -> list:
+    """``(name, raw value)`` pairs of one dotenv file as the loader will see it once
+    ``_sanitize_env_file_if_needed`` has run: :func:`_parse_dotenv_file` plus the sanitizer's UTF-16
+    rewrite and NUL strip, for the pre-boot bootstrap reads that run before the sanitizer."""
+    raw = path.read_bytes()
+    if raw.startswith(codecs.BOM_UTF16_LE) or raw.startswith(codecs.BOM_UTF16_BE):
+        # Notepad "Unicode": ``_sanitize_env_file_if_needed`` rewrites it as UTF-8 before the loader
+        # reads it, so parse it as that rewrite will -- bootstrap / stage2 run before the sanitizer
+        # and must select the same backend the runtime then boots.
+        try:
+            with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-16", newline=None) as f:
+                text = f.read()
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1")
+    else:
+        try:
+            # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
+            # first key name and silently drop it from os.environ under its canonical name.
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raw = raw.removeprefix(codecs.BOM_UTF8)
+            text = raw.decode("latin-1")
+    text = text.replace("\x00", "")  # the sanitizer strips NULs too (BOM-less UTF-16 / NUL-padded ASCII)
+    # Imported here, not at module level: gateway tests stub ``sys.modules["dotenv"]`` with a bare module
+    # exposing only ``load_dotenv``, and ``gateway.run`` imports this module at import time.
+    from dotenv.main import DotEnv
+
+    return list(DotEnv(dotenv_path=None, stream=io.StringIO(text), interpolate=False).parse())
+
+
+def _bootstrap_env(home: Path | None = None, project_env: Path | None = None) -> dict:
+    """The process env as ``load_hermes_dotenv`` leaves it for the names its dotenv layers define:
+    the home's ``.env`` (override), ``.op.env`` (fills gaps, only without a process
+    ``OP_SERVICE_ACCOUNT_TOKEN``), the caller's *project_env* (fills gaps when the home has a
+    ``.env``, else overrides) and the managed ``.env`` (override, last); ``${VAR}`` resolved, the
+    loader's parser. Read-only: nothing is published and no file is rewritten (sanitizing imports
+    hermes_cli.config, whose import-time config read must not run before the backend is decided)."""
+    home = Path(home) if home is not None else _process_hermes_home()
+    env = dict(os.environ)
+    user_env = home / ".env"
+    layers: list[tuple[Path, bool]] = [(user_env, True)]
+    if not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+        layers.append((home / ".op.env", False))
+    if project_env is not None:
+        layers.append((Path(project_env), not user_env.exists()))
+    try:
+        from hermes_cli import managed_scope
+
+        managed_dir = managed_scope.get_managed_dir()
+    except Exception:  # health: allow BLE001 -- managed scope never blocks startup, as in _apply_managed_env
+        managed_dir = None
+    if managed_dir is not None:
+        layers.append((managed_dir / ".env", True))
+    for path, override in layers:
+        try:
+            assignments = _dotenv_assignments(path)
+        except OSError:
+            continue
+        resolved = _resolve_dotenv_assignments(assignments, env, override=override)
+        for name, value in resolved.items():
+            if value is not None and (override or name not in env):
+                env[name] = value
+    return env
+
+
+def selected_config_backend_name(home: Path | None = None) -> str:
+    """The config backend ``load_hermes_dotenv`` selects for *home*, decided without loading or
+    booting anything. For a caller that must decide before Hermes starts (Docker stage2 skips the
+    config-file migration in remote mode, D12)."""
+    from hermes_cli.config_backend import BACKEND_ENV
+
+    return (_bootstrap_env(home).get(BACKEND_ENV) or "").strip().lower() or "file"
+
+
+def apply_config_bootstrap_env(backend_names, home: Path | None = None, project_env: Path | None = None) -> None:
+    """Publish ``backend_names(kind)`` (the selected backend's deployment and credential, D26/D32) from the
+    launch home's ``.env`` and the managed ``.env``, with the values ``load_hermes_dotenv`` gives
+    them. Called before the first config read of a process, which can come before
+    ``load_hermes_dotenv`` (``hermes_cli.config`` reads config at import time): the backend is
+    selected and authenticated from the same deployment either way. A file deployment gets only its
+    selector (the file backend needs nothing else before boot); values the process env holds and
+    no file defines are left alone; ``load_hermes_dotenv`` later publishes the same values."""
+    from agent.safe_worker_policy import worker_config_snapshot
+    from hermes_cli.config_backend import BACKEND_ENV
+
+    # A frozen-policy worker reads no profile dotenv (``load_hermes_dotenv`` returns early there):
+    # its bootstrap supplied the process env explicitly, so nothing is published from the files.
+    if worker_config_snapshot() is not None:
+        return
+    env = _bootstrap_env(home, project_env)
+    # The selector itself always, so a file deployment is not read as another kind meanwhile.
+    names = {BACKEND_ENV} | set(backend_names((env.get(BACKEND_ENV) or "").strip().lower() or "file"))
+    for name in names:
+        value = env.get(name)
+        if value is not None and os.environ.get(name) != value:
+            os.environ[name] = value
 
 
 def _sanitize_env_file_if_needed(path: Path) -> None:
@@ -455,6 +748,37 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         pass  # best-effort — don't block gateway startup
 
 
+def dotenv_unreadable(path: Path) -> bool:
+    """True when *path* exists but this process may not read it."""
+    try:
+        with open(path, "rb"):
+            return False
+    except PermissionError:
+        return True
+    except OSError:  # missing, or a failure that is not a refusal
+        return False
+
+
+def _load_user_dotenv(path: Path, *, load_pass: int, override: bool = True) -> bool:
+    """Load a profile env file (``.env``, or ``.op.env`` with ``override=False``); False when it exists
+    but cannot be read and managed scope pins ``terminal.backend``. A sandbox launcher withholds the
+    file, passes the keys it allows in as environment and pins the backend. Without that pin the
+    ``PermissionError`` propagates: the file may be the only place the backend is set, and skipping it
+    would run terminal commands on the host."""
+    try:
+        _load_dotenv_with_fallback(path, override=override, load_pass=load_pass)
+    except PermissionError:
+        from hermes_cli import managed_scope
+
+        if managed_scope.pinned_terminal_backend() is None:
+            raise
+        if str(path) not in _WARNED_UNREADABLE_PATHS:
+            _WARNED_UNREADABLE_PATHS.add(str(path))
+            logger.warning("Cannot read %s; managed scope pins terminal.backend, so it loads as absent", path)
+        return False
+    return True
+
+
 def load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
@@ -490,7 +814,7 @@ def load_hermes_dotenv(
     launch_home = _process_hermes_home().resolve()
     if (is_multiplex_active() and get_hermes_home_override() is not None
             and (home_path.resolve() != launch_home or get_hermes_home().resolve() != launch_home)):
-        home_key = str(home_path.resolve())
+        home_key = hermes_home_key(home_path)
         if home_key not in _SCOPED_SKIP_LOGGED:
             _SCOPED_SKIP_LOGGED.add(home_key)
             logger.debug("multiplex: skipping process-global dotenv load for routed "
@@ -507,13 +831,19 @@ def load_hermes_dotenv(
     project_env_path = Path(project_env) if project_env else None
     load_pass = next(_DOTENV_PASSES)  # one pass: later layers below see the earlier layers' output
 
+    # Before anything below imports hermes_cli.config (the .env sanitizer does), whose import-time
+    # config read selects and boots the backend: publish the deployment and plane credential from
+    # THIS load's layers, the project .env included, with the precedence the loads below give them.
+    from hermes_cli.config_backend import bootstrap_deployment
+
+    bootstrap_deployment(home_path, project_env_path)
+
     if user_env.exists():  # normalize formatting / strip NULs before parsing
         _sanitize_env_file_if_needed(user_env)
     if project_env_path and project_env_path.exists():
         _sanitize_env_file_if_needed(project_env_path)
 
-    if user_env.exists():
-        _load_dotenv_with_fallback(user_env, override=True, load_pass=load_pass)
+    if user_env.exists() and _load_user_dotenv(user_env, load_pass=load_pass):
         loaded.append(user_env)
         _clear_known_keys_missing_from_dotenv(user_env)  # mirrors reload_env(): inherited keys must not leak
 
@@ -522,10 +852,10 @@ def load_hermes_dotenv(
     # the committed .env. override=False lets a systemd `EnvironmentFile=-…/.op.env` token win.
     op_env = home_path / ".op.env"
     if op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
-        _load_dotenv_with_fallback(op_env, override=False, load_pass=load_pass)
+        _load_user_dotenv(op_env, load_pass=load_pass, override=False)
 
     if project_env_path and project_env_path.exists():
-        _load_dotenv_with_fallback(project_env_path, override=not loaded, load_pass=load_pass)
+        _load_dotenv_with_fallback(project_env_path, override=not user_env.exists(), load_pass=load_pass)
         loaded.append(project_env_path)
 
     # The override=True loads above wrote the raw .env line (``__BITWARDEN_MANAGED__`` placeholder, stale
@@ -533,9 +863,23 @@ def load_hermes_dotenv(
     # once-per-home no-op — so the clobber stuck for the life of the process (#74265). Re-assert only what the
     # source is authoritative for; managed scope, applied last with override=True, still wins on purpose.
     if _SECRET_SOURCE_RESTORE_BY_HOME:
-        for name, value in _SECRET_SOURCE_RESTORE_BY_HOME.get(str(home_path.resolve()), {}).items():
+        for name, value in _SECRET_SOURCE_RESTORE_BY_HOME.get(hermes_home_key(home_path), {}).items():
             if os.environ.get(name) != value:
                 os.environ[name] = value
+
+    # The config backend is selected here — after the .env files, before the first config.yaml read
+    # (``_apply_external_secret_sources`` reads ``secrets:``) — so an unavailable backend stops the
+    # process before any reader could fall back to defaults (config-config design §4.4, D11/D32). A
+    # remote backend fetches this home's config here, failing closed; the file backend does nothing.
+    from hermes_cli.config_backend import get_config_backend
+
+    # The administrator-managed .env is part of the deployment the backend boots from (it may be
+    # where the selector, plane URL or instance id live). The override=True loads above may have
+    # replaced those names with the home's values, so re-publish the deployment names (only those)
+    # with the bootstrap precedence -- managed last -- before the boot. The full managed overlay
+    # still applies once, last below, where it keeps its precedence over secret-source results.
+    bootstrap_deployment(home_path, project_env_path)
+    get_config_backend().boot(home_path)
 
     # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must not
     # import optional secret-manager libs (Bitwarden → cryptography → _rust.pyd) into the process replacing
@@ -608,9 +952,17 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
     replaced since (the profile's ``.env``, the administrator-managed ``.env``, a shell export, a later
     source) is theirs and stays. A revoked name gets back the value it held before the source's first
     write, or is removed when it had none."""
-    home_key = str(Path(home_path).resolve())
+    home_key = hermes_home_key(home_path)
     writes = _SECRET_SOURCE_WRITES_BY_HOME.get(home_key)
-    if not writes:
+    claims = _RELEASED_BRIDGE_CLAIMS_BY_HOME.get(home_key)
+    # The frozen launch env's copies of this home's writes, revoked by their own record: the
+    # os.environ record may be gone or retargeted since (another writer, a failed fetch).
+    policy = _launch_policy()
+    if policy is not None:
+        for name, source in policy._launch_env_source_writes(home_key).items():
+            if not keep(name, source):
+                policy._revoke_launch_env_write(home_key, name)
+    if not writes and not claims:
         return
     try:
         from agent.secret_scope import load_env_file
@@ -618,6 +970,27 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
         owned_by_dotenv = set(load_env_file(Path(home_path) / ".env")) | _MANAGED_DOTENV_KEYS
     except Exception:
         owned_by_dotenv = set(_MANAGED_DOTENV_KEYS)
+    _revoke_value_writes(home_key, writes or {}, keep, owned_by_dotenv)
+    _restore_bridge_claims(home_key, claims or {}, keep, owned_by_dotenv)
+
+
+def _restore_bridge_claims(home_key: str, claims: dict, keep, owned_by_dotenv: set) -> None:
+    """Give a revoked source's name back to the YAML bridge when it again holds the bridged value."""
+    from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX, bridged_env_digest
+
+    kept = {name: claim for name, claim in claims.items() if keep(name, claim[0])}
+    for name, (_source, marker) in claims.items():
+        if name not in kept and name not in owned_by_dotenv and bridged_env_digest(os.environ.get(name)) == marker:
+            os.environ[BRIDGED_ENV_MARKER_PREFIX + name] = marker
+    if kept:
+        _RELEASED_BRIDGE_CLAIMS_BY_HOME[home_key] = kept
+    else:
+        _RELEASED_BRIDGE_CLAIMS_BY_HOME.pop(home_key, None)
+
+
+def _revoke_value_writes(home_key: str, writes: dict, keep, owned_by_dotenv: set) -> None:
+    if not writes:
+        return
     kept: dict[str, tuple[str, str, str | None]] = {}
     for name, (source, value, prior) in writes.items():
         if keep(name, source):
@@ -639,12 +1012,75 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
         _SECRET_SOURCE_WRITES_BY_HOME.pop(home_key, None)
 
 
+def _refuse_protected_env_from_sources(report, backend=None, environ_before=None, env=None, *, routed_home=None) -> None:
+    """D32: the config backend's own credential (which plane, which agent, which token) must never
+    come from a secret source — a source that could change it could point config at another plane.
+    Exits (the backend is unusable), even when the pre-existing value won.
+
+    *backend* is the backend selected BEFORE the sources ran: judging by the backend selected after
+    them would let a source that writes ``HERMES_CONFIG_BACKEND=file`` switch remote mode off and
+    disarm this very check. The selector itself is never a source's to change, under any backend:
+    a source's write to it is reverted in *env* (the mapping the sources wrote into; default
+    ``os.environ``) to its *environ_before* value before anything else.
+
+    Startup runs the sources against a private staging copy of the environment and calls this
+    BEFORE publishing it (:func:`_publish_staged_env`), so a refused value is never visible to a
+    concurrent request — the poller reads the plane URL and credential live from ``os.environ``."""
+    if env is None:
+        env = os.environ
+    from hermes_cli.config_backend import BACKEND_ENV, ConfigBackendUnavailable, get_config_backend
+
+    if backend is None:
+        backend = get_config_backend()
+    supplied = set(report.provenance)
+    for src in report.sources:
+        supplied.update(getattr(src, "skipped_existing", ()) or ())
+    protected = backend.protected_env_names() | {BACKEND_ENV}
+    clash = sorted(supplied & protected)
+    if not clash:
+        return
+    if environ_before is not None:  # undo the source's writes to protected names before deciding
+        for name in clash:
+            if name in environ_before:
+                env[name] = environ_before[name]
+            else:
+                env.pop(name, None)
+    if not backend.protected_env_names():
+        # The file backend has no plane credential: only the selector clashed. Reverted, and dropped
+        # from the report so no provenance/snapshot re-applies it later; keep going.
+        for name in clash:
+            report.provenance.pop(name, None)
+            for src in report.sources:
+                for bucket in (getattr(src, "applied", None), getattr(src, "skipped_existing", None)):
+                    if isinstance(bucket, list) and name in bucket:
+                        bucket.remove(name)
+        print(f"  Secret sources: ignored {BACKEND_ENV} from a secrets: source (the config backend is "
+              "chosen by .env or the process environment only).", file=sys.stderr)
+        return
+    outcome = (f"Hermes does not serve profile home {routed_home} with it." if routed_home is not None
+               else "Hermes does not start with it.")
+    raise ConfigBackendUnavailable(
+        f"A secrets: source supplies {', '.join(clash)}, which the {backend.name!r} config "
+        "backend uses to reach its config plane. That credential must come from auth.json or .env, never "
+        f"from a secret source; remove the mapping. {outcome}")
+
+
+def _publish_staged_env(staged: dict, environ_before: dict) -> None:
+    """Copy into ``os.environ`` exactly the names the sources set in *staged* (value differs from
+    *environ_before*). Sources only ever set names, so nothing is removed; a name nobody's source
+    touched is left alone even if another thread changed it meanwhile."""
+    for name, value in staged.items():
+        if environ_before.get(name) != value:
+            os.environ[name] = value
+            _release_bridge_claim(name)
+
+
 def _apply_external_secret_sources(home_path: Path) -> None:
     """Pull secrets from every enabled external source into env — AFTER dotenv (sources need .env bootstrap
     tokens), BEFORE Hermes reads credentials; failures never block startup. Precedence/conflicts/provenance
     live in ``registry.apply_all``; this wrapper owns the once-per-home guard, the post-apply ASCII sweep,
     the ``_SECRET_SOURCES`` map and status lines."""
-    home_key = str(Path(home_path).resolve())
+    home_key = hermes_home_key(home_path)
     if home_key in _APPLIED_HOMES:
         return
 
@@ -660,6 +1096,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # review). A config READ failure above keeps them — fail-open, same as the fetch-failure path below.
     if not cfg:
         _revoke_secret_source_writes(home_path, keep=lambda _name, _source: False)
+        _publish_live_source_values(home_key, home_path, {})
         return
 
     # Defer the registry import until a source is enabled — bitwarden eagerly loads cryptography._rust.pyd,
@@ -668,6 +1105,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     any_enabled = any(isinstance(v, dict) and v.get("enabled") is True for v in cfg.values())
     if not any_enabled:
         _revoke_secret_source_writes(home_path, keep=lambda _name, _source: False)
+        _publish_live_source_values(home_key, home_path, {})
         return
 
     try:
@@ -684,14 +1122,29 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     if active is not None:
         _revoke_secret_source_writes(home_path, keep=lambda _name, source: source in active)
     environ_before = dict(os.environ)
+    # Read the capture state AFTER the copy (and before the publish: see _record_secret_source_writes):
+    # an activation landing first is then seen as captured, so an adopted prior always predates capture.
+    policy = _launch_policy()
+    launch_env_captured = policy is not None and policy._launch_env_captured()
+    # Latched before the sources run: a source must not be able to re-select the backend (D32).
+    from hermes_cli.config_backend import get_config_backend
 
+    backend_before = get_config_backend()
+
+    # The sources write into a private staging copy, published only after the D32 check: written
+    # straight into os.environ, a forbidden plane URL or credential would be live for any request
+    # (the config poller, another thread's write) until the check reverted it.
+    staged = dict(environ_before)
     try:
-        report = apply_all(cfg, home_path)
+        report = apply_all(cfg, home_path, environ=staged)
     except Exception:
         return
 
     if not report.sources:  # no source enabled: keep retrying cheaply so flipping one on takes effect
+        _publish_live_source_values(home_key, home_path, {})
         return
+    _refuse_protected_env_from_sources(report, backend_before, environ_before, env=staged)
+    _publish_staged_env(staged, environ_before)
 
     # A real fetch attempt happened (success OR error): mark the home so the 3-5 import-time calls per
     # startup don't re-fetch / re-print (error retries are opt-in via reset_secret_source_cache()).
@@ -712,12 +1165,15 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # snapshot failed every default-profile turn for the process lifetime (#102041).
     values: dict[str, str] = {}
     supplied = _record_supplied_names(report)
+    _record_released_bridge_claims(home_key, report, supplied, environ_before)
     for name in supplied:
         if name in os.environ:
             values[name] = os.environ[name]
-    _record_secret_source_writes(home_key, report, supplied, environ_before)
+            _release_bridge_claim(name)  # a value a source supplies is the operator's, even one it skipped
+    _record_secret_source_writes(home_key, report, supplied, environ_before, staged, launch_env_captured)
     if values:
         _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    _publish_live_source_values(home_key, home_path, values)
     _SECRET_SOURCE_RESTORE_BY_HOME[home_key] = {
         n: values[n] for n, a in report.provenance.items() if a.authoritative and n in values}
 
@@ -736,10 +1192,66 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         print(f"  Secret sources: {conflict}", file=sys.stderr)
 
 
-def _record_secret_source_writes(home_key: str, report, supplied: set[str], environ_before: dict) -> None:
+def _record_released_bridge_claims(home_key: str, report, supplied: set[str], environ_before: dict) -> None:
+    """Remember each bridge-owned value (marker matched before this pass) a source now supplies."""
+    from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX, bridged_env_digest
+
+    owner = {name: src.name for src in report.sources for name in src.skipped_existing}
+    owner.update({name: applied.source for name, applied in report.provenance.items()})
+    claims = _RELEASED_BRIDGE_CLAIMS_BY_HOME.setdefault(home_key, {})
+    for name in supplied:
+        marker = environ_before.get(BRIDGED_ENV_MARKER_PREFIX + name)
+        if marker and name in owner and bridged_env_digest(environ_before.get(name)) == marker:
+            claims[name] = (owner[name], marker)
+    if not claims:
+        _RELEASED_BRIDGE_CLAIMS_BY_HOME.pop(home_key, None)
+
+
+def _publish_live_source_values(home_key: str, home_path: Path, values: dict[str, str]) -> None:
+    """Hand the redactor every source value live in ``os.environ`` for this home. A source whose re-pull
+    FAILED keeps its earlier write (not a revocation), so its value must stay masked: publish every
+    recorded write still holding its value, not only this pass's supplied names. Revoked writes were
+    already dropped from the record, so they unregister here — an empty set included."""
+    from agent.redact_secret_sources import publish_secret_source_values
+
+    live = {name: rec[1] for name, rec in _SECRET_SOURCE_WRITES_BY_HOME.get(home_key, {}).items()
+            if os.environ.get(name) == rec[1]}
+    live.update(values)
+    publish_secret_source_values(home_path, live)
+
+
+def _published_value(name: str, staged: dict) -> str | None:
+    """The value this pass published for *name*, in the form ``_sanitize_loaded_credentials`` leaves it."""
+    value = staged.get(name)
+    if value is None or value.isascii() or not name.endswith(_CREDENTIAL_SUFFIXES):
+        return value
+    return value.encode("ascii", errors="ignore").decode("ascii")
+
+
+def _launch_policy():
+    """``tui_gateway.launch_profile_policy`` once something imported it, else None: until then no
+    launch env is frozen, and a boot path must not import the gateway package just to learn that."""
+    return sys.modules.get("tui_gateway.launch_profile_policy")
+
+
+def _recorded_environ_writes() -> list[tuple[str, str, str, str, str | None]]:
+    """For ``launch_profile_policy`` at capture: every recorded write as
+    ``(home key, name, source, value written, os.environ prior)``."""
+    return [(home, name, *rec) for home, writes in list(_SECRET_SOURCE_WRITES_BY_HOME.items())
+            for name, rec in list(writes.items())]
+
+
+def _record_secret_source_writes(home_key: str, report, supplied: set[str], environ_before: dict,
+                                 staged: dict, launch_env_captured: bool = True) -> None:
     """Refresh ``_SECRET_SOURCE_WRITES_BY_HOME`` after one process-global pass, revoking a write its
     still-enabled source has stopped supplying (rotated out, mapping removed). A source whose fetch
-    FAILED this pass keeps its earlier writes: a transient vault outage is not a revocation."""
+    FAILED this pass keeps its earlier writes: a transient vault outage is not a revocation.
+
+    The frozen launch env keeps its own record of the writes it holds and follows only the value
+    the source published (*staged*): another thread may write the same name into os.environ during
+    the fetch, and that value must never enter the snapshot. *launch_env_captured* is whether the
+    launch env was frozen before this pass published: when activation landed mid-pass, the snapshot
+    may hold this pass's write without any record of it yet."""
     failed = {src.name for src in report.sources if not src.result.ok}
     previous = _SECRET_SOURCE_WRITES_BY_HOME.get(home_key, {})
     _revoke_secret_source_writes(
@@ -747,6 +1259,7 @@ def _record_secret_source_writes(home_key: str, report, supplied: set[str], envi
         keep=lambda name, source: name in report.provenance or name in supplied or source in failed)
     writes = {name: rec for name, rec in _SECRET_SOURCE_WRITES_BY_HOME.get(home_key, {}).items()
               if name not in report.provenance and os.environ.get(name) == rec[1]}
+    held: list[str] = []  # names whose published value os.environ still holds
     for name, applied in report.provenance.items():
         if name not in os.environ:
             continue
@@ -754,11 +1267,18 @@ def _record_secret_source_writes(home_key: str, report, supplied: set[str], envi
         earlier = previous.get(name)
         # Re-applied over our own earlier write: the pre-source value is the one recorded then.
         prior = earlier[2] if earlier is not None and earlier[1] == before else before
-        writes[name] = (applied.source, os.environ[name], prior)
+        writes[name] = (applied.source, _published_value(name, staged), prior)
+        if os.environ[name] == writes[name][1]:
+            held.append(name)
     if writes:
         _SECRET_SOURCE_WRITES_BY_HOME[home_key] = writes
     else:
         _SECRET_SOURCE_WRITES_BY_HOME.pop(home_key, None)
+    # Tracked only once the record is published: an activation landing before this point adopts the
+    # writes (adopt=), one landing after it finds them in the record at capture.
+    policy = _launch_policy()
+    for name in held if policy is not None else ():
+        policy._track_launch_env_write(home_key, name, *writes[name], adopt=not launch_env_captured)
 
 
 def _remediation_hint(source_name: str, error_kind, secrets_cfg: dict, *, scope: str | None = None) -> str:
@@ -778,8 +1298,10 @@ def _remediation_hint(source_name: str, error_kind, secrets_cfg: dict, *, scope:
 
 def _load_secrets_config(home_path: Path) -> dict:
     """Read just the ``secrets:`` section of config.yaml, isolated so a malformed config can't break dotenv."""
+    from hermes_cli.config_backend import config_exists, read_config_doc_readonly
+
     config_path = home_path / "config.yaml"
-    if not config_path.exists():
+    if not config_exists(config_path):
         return {}
     # Prefer the shared raw-config cache: this is the first config.yaml read of a normal startup, so
     # populating it lets main.py's early bridge and hermes_logging reuse one parse instead of 3-4.
@@ -793,7 +1315,7 @@ def _load_secrets_config(home_path: Path) -> dict:
             pass
     # Routed profiles re-enter their scope on every poll/turn; only re-parse after the file changed.
     try:
-        data = load_yaml_file_readonly(config_path) or {}
+        data = read_config_doc_readonly(config_path) or {}
     except Exception:
         return {}
     return data.get("secrets") or {}

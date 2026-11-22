@@ -4,10 +4,9 @@ import hmac
 import json
 import logging
 from dataclasses import asdict
-from pathlib import Path
 
 from agent.credential_persistence import fingerprint_secret_value
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 PREFIX = 'profile-config-v1:'
@@ -193,7 +192,8 @@ def _binding(config, path):
 
 
 def config_reference(authority, session_id, policy, secrets):
-    home = Path(authority.db.db_path).resolve().parent
+    from gateway.session_persistence import authority_persistence
+    home = authority_persistence(authority).scope.profile_dir
     config = json.loads(policy.config_json)
     return PREFIX + json.dumps({'home': str(home), 'profile': authority.profile_id,
         # ``policy`` (the whole-policy hash) is still written for an older gateway reading this reference;
@@ -214,21 +214,21 @@ def _check_scope(authority, source, policy, home, skip):
     an unrelated provider or MCP server, a policy field a later release added) is not a credential change."""
     for name, mine in (('home', str(home)), ('profile', authority.profile_id)):
         if source[name] != mine:
-            raise RuntimeStoreError('launch_credentials_unavailable', field=name,
-                                    detail=f'the frozen config credentials belong to another {name}')
+            raise AuthorityRefusal('launch_credentials_unavailable', field=name,
+                                   detail=f'the frozen config credentials belong to another {name}')
     if 'bound' not in source:
         # Stamped before ``bound``: its whole-policy hash is its only endpoint guard, so it must still
         # match -- allowing for the policy fields added since, at their defaults (_legacy_identities).
         # The next re-bind writes ``bound``.
         if source['policy'] not in _legacy_identities(policy):
-            raise RuntimeStoreError('launch_credentials_unavailable', field='config_secret_ref',
-                                    detail='stamped by an older gateway for another session policy')
+            raise AuthorityRefusal('launch_credentials_unavailable', field='config_secret_ref',
+                                   detail='stamped by an older gateway for another session policy')
         return
     config = json.loads(policy.config_json)
     for path, digest in source['bound']:
         if path[0] not in skip and not hmac.compare_digest(_binding(config, path), digest):
-            raise RuntimeStoreError('launch_credentials_unavailable', field=_field(path),
-                                    detail='its endpoint moved in the session policy without a re-bind')
+            raise AuthorityRefusal('launch_credentials_unavailable', field=_field(path),
+                                   detail='its endpoint moved in the session policy without a re-bind')
 
 
 def secrets_moved(ref, secrets, sections):
@@ -252,11 +252,12 @@ def recover_config_secrets(authority, policy, skip=None):
     if not ref.startswith(PREFIX):
         values = getattr(authority, '_local_config_secrets', {}).get(ref)
         if values is None:
-            raise RuntimeStoreError('launch_credentials_unavailable')
+            raise AuthorityRefusal('launch_credentials_unavailable')
         return {path: value for path, value in values.items() if path[0] not in skip}
     try:
+        from gateway.session_persistence import authority_persistence
         source = json.loads(ref[len(PREFIX):])
-        home = Path(authority.db.db_path).resolve().parent
+        home = authority_persistence(authority).scope.profile_dir
         _check_scope(authority, source, policy, home, skip)
         cached = getattr(authority, '_local_config_secrets', {}).get(ref)
         if cached is not None:
@@ -266,8 +267,12 @@ def recover_config_secrets(authority, policy, skip=None):
         config = _load_gateway_config(home / 'config.yaml') if any(path[0] is not None for path, _ in entries) else {}
         route = None  # computed on the first mismatch only: an unchanged source never needs it
         values, dropped = RecoveredSecrets(), []
+        frozen = None  # parsed on the first legacy entry only
         for path, fingerprint in entries:
             value, lookup = config, path
+            if path[0] == 'custom_providers' and len(path) > 2 and type(path[1]) is int:
+                frozen = json.loads(policy.config_json) if frozen is None else frozen
+                lookup = _current_custom_path(frozen, config, path)
             if path[0] is None:
                 from tools.terminal_scope import build_profile_terminal_scope
                 value, lookup = build_profile_terminal_scope(home), path[1:]
@@ -277,7 +282,7 @@ def recover_config_secrets(authority, policy, skip=None):
                 if route is None:
                     route = _route_paths(policy)
                 if tuple(path) in route:
-                    raise RuntimeStoreError('launch_credentials_unavailable', field=_field(path),
+                    raise AuthorityRefusal('launch_credentials_unavailable', field=_field(path),
                         detail=('removed from' if value is _ABSENT else 'changed in')
                         + ' config.yaml since this session started')
                 # Any other secret (an MCP env token, an unused provider's key) is simply no longer
@@ -289,12 +294,42 @@ def recover_config_secrets(authority, policy, skip=None):
             values[tuple(path)] = value
         values.dropped, values.session = tuple(dropped), source.get('session')
         return values
-    except RuntimeStoreError:
+    except AuthorityRefusal:
         raise
     except (KeyError, TypeError, ValueError, AttributeError, OSError) as exc:
         logger.warning('Frozen config reference unreadable: %s', type(exc).__name__)
-        raise RuntimeStoreError('launch_credentials_unavailable', field='config_secret_ref',
-                                detail=f'unreadable ({type(exc).__name__})') from exc
+        raise AuthorityRefusal('launch_credentials_unavailable', field='config_secret_ref',
+                               detail=f'unreadable ({type(exc).__name__})') from exc
+
+
+def _current_custom_path(frozen, config, path):
+    """*path* (``custom_providers[i]...``, an index into the frozen list) re-pointed at the profile's
+    entry of the SAME canonical identity (``custom_provider_slug``), wherever a reorder moved it.
+    An entry the profile no longer declares maps to no index (absent), never to whatever entry now
+    sits at ``i``, unless that entry is the same endpoint renamed in place (the fingerprint then decides,
+    as on main). A frozen entry with no name has no identity: its index is all there is."""
+    from hermes_cli.providers import custom_provider_slug
+
+    def identity(entry):
+        if not isinstance(entry, dict) or not (entry.get('name') or entry.get('provider_key')):
+            return None
+        return custom_provider_slug(str(entry.get('name') or ''), str(entry.get('provider_key') or ''))
+
+    held = frozen.get('custom_providers')
+    mine = identity(held[path[1]]) if isinstance(held, list) and 0 <= path[1] < len(held) else None
+    current = config.get('custom_providers')
+    if mine is None or not isinstance(current, list):
+        return path
+    if 0 <= path[1] < len(current) and identity(current[path[1]]) == mine:
+        return path  # unmoved (also keeps a duplicate-named later entry on its own index)
+    for index, entry in enumerate(current):
+        if identity(entry) == mine:  # the first match, as the runtime's own name lookup takes
+            return (path[0], index, *path[2:])
+    from hermes_cli.runtime_provider_custom import _entry_url, _normalize_base_url_for_match as url
+    if 0 <= path[1] < len(current) and isinstance(current[path[1]], dict) \
+            and url(_entry_url(current[path[1]])) == url(_entry_url(held[path[1]])):
+        return path  # renamed in place: same endpoint at the same index, as main read it (the fingerprint decides)
+    return (path[0], len(current), *path[2:])  # gone: past the end reads as absent
 
 
 def _entry_owner_path(entry, config):

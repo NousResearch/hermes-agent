@@ -1,0 +1,28 @@
+# Catalog entry — bonsai-garden
+#
+# Add this file at `plugin-catalog/bonsai-garden.yaml` in a PR against
+# NousResearch/hermes-agent (one file, nothing else). The `sha` below is the
+# commit that already contains the catalog layout; re-check it matches the
+# pushed commit before opening the PR, and re-pin `version`/`image`/
+# `screenshots` whenever the sha moves.
+name: bonsai-garden
+title: Bonsai Garden
+repo: "https://github.com/thehangingforest/bonsai-garden"
+sha: "e02e93e8304b71ac66da62b639d620f87c0fcdaa"
+description: "A live isometric bonsai garden for Hermes Desktop: every profile on the roster is one bonsai on a drawn shelf, the focused busy agent's tree steps down onto a stand and returns to its exact shelf slot when it goes idle, and clicking any drawn tree opens that agent's conversation, exactly like its roster row; a monk walks its stretch of garden from elapsed time — drifting slowly at rest, faster while its agent is busy — and a cat spawns at random and can be dragged. Four opaque black plaques carry local time, local date, recurring agent routines and reported session cost, and can be dragged anywhere over the drawing, while each agent row opens that agent's conversation or stops its live session. Season and month come from the local clock in English, with one care line per month shipped inside the artwork, and every pot is signed with the agent's name and shipped avatar; the interface is English throughout. Disclosure — the page talks to the host only through the plugin SDK: it subscribes to the host's focused-session atoms (busy state, profile, session id, reported usage cost and tokens), asks each profile's own gateway cron store for its recurring jobs on demand (cron.manage list, scoped per profile), reads the focused session's own title metadata through session.info, and calls session.interrupt only when the user presses Stop. Reported cost is shown as reported; when only tokens are available a cost line marked with a tilde is estimated at one documented blended rate and the README says so, and unreported cost stays Unavailable rather than a fabricated zero. It reads no message content and no transcript, makes no outbound network requests of its own (every read goes through the host's own SDK socket), needs no credentials and no environment variables, installs nothing and patches no Hermes core file. Derived from office-3d (listed): same isometric-room idea and the same MIT lineage, but a materially different implementation and behaviour — one bonsai per agent on a shelf grid measured on the artwork instead of desks and a cost leaderboard, no Python backend, no agent tool, no CLI-wide monitoring and no login backend."
+maintainer: thehangingforest
+tier: community
+category: desktop
+requires_hermes: ">=0.20.0"
+version: "0.6.3"
+platforms: [linux]
+docs_url: "https://github.com/thehangingforest/bonsai-garden#readme"
+image: "https://raw.githubusercontent.com/thehangingforest/bonsai-garden/e02e93e8304b71ac66da62b639d620f87c0fcdaa/docs/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/thehangingforest/bonsai-garden/e02e93e8304b71ac66da62b639d620f87c0fcdaa/docs/screenshot.png"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

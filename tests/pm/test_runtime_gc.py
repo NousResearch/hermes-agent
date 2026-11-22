@@ -54,8 +54,9 @@ def test_collector_yields_to_an_in_flight_stage(tmp_path):
     assert collect_runtime_generations(root) == [aborted]
 
 
+@pytest.mark.platforms("any")
 def test_next_reader_removes_lease_left_by_hard_exit(tmp_path):
-    from hermes_cli.runtime_state import lease_directory
+    from hermes_cli.runtime_state import lease_directory, lease_dirs
 
     generation = _generation(tmp_path / "pm-runtime", "selected")
     code = """
@@ -68,7 +69,7 @@ lease_directory(Path(sys.argv[1]))
 os._exit(0)
 """
     subprocess.run([sys.executable, "-c", code, str(generation)], check=True, env=dict(os.environ))
-    leases = generation / ".leases"
+    leases = lease_dirs(generation)[0]
     stale = list(leases.iterdir())
     assert len(stale) == 1
 
@@ -83,15 +84,16 @@ os._exit(0)
     assert list(leases.iterdir()) == []
 
 
+@pytest.mark.platforms("posix")
 @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root opens mode-0 files")
 def test_prune_keeps_unopenable_sibling_lease(tmp_path):
     """A lease this user cannot open (root-owned, `sudo hermes` on the same checkout) is HELD:
     boot never raises and GC never collects."""
-    from hermes_cli.runtime_state import lease_directory, leases_held
+    from hermes_cli.runtime_state import lease_directory, lease_dirs, leases_held
 
     generation = _generation(tmp_path / "pm-runtime", "selected")
-    leases = generation / ".leases"
-    leases.mkdir()
+    leases = lease_dirs(generation)[0]
+    leases.mkdir(parents=True)
     foreign = leases / "foreign"
     foreign.touch()
     foreign.chmod(0)
@@ -103,14 +105,15 @@ def test_prune_keeps_unopenable_sibling_lease(tmp_path):
         foreign.chmod(0o600)
 
 
+@pytest.mark.platforms("posix")
 def test_lease_taken_while_a_peer_pruned_it_is_retaken(tmp_path, monkeypatch):
     """A peer's prune can lock-and-unlink our lease between create and flock; the writer must
     end up holding a lease the collectors can see, never an unlinked inode."""
     from hermes_cli import runtime_state
-    from hermes_cli.runtime_state import lease_directory, leases_held
+    from hermes_cli.runtime_state import lease_directory, lease_dirs, leases_held
 
     generation = _generation(tmp_path / "pm-runtime", "selected")
-    leases = generation / ".leases"
+    leases = lease_dirs(generation)[0]
     real_lock = runtime_state._lock
     raced = []
 

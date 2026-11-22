@@ -27,9 +27,8 @@ registry.register(
     schema={
         "name": "focus_pane",
         "description": (
-            "Reveal and focus a Hermes desktop pane when the user asks to see it: "
-            "chat, files, terminal, review (git diff), or sessions. For URLs/"
-            "files use the desktop_preview tool instead."
+            "Show a desktop pane: chat, files, terminal, review (git diff) or sessions. "
+            "Use when the user asks to see one; for URLs/files use desktop_preview."
         ),
         "parameters": {
             "type": "object",

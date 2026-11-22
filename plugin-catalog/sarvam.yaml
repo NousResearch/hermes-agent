@@ -1,0 +1,36 @@
+name: sarvam
+repo: https://github.com/Subramanyarao11/hermes-sarvam
+sha: 3d036b0d5fdaaca20597b144c2bb14c624df73a7
+subdir: sarvam
+description: >-
+  Sarvam AI for Hermes: speech-to-text (voice notes and live transcription in voice mode) and
+  text-to-speech (Bulbul voices) for 22 Indian languages, plus six tools: sarvam_translate,
+  sarvam_transliterate, sarvam_detect_language, sarvam_read_document (PDF/image OCR),
+  sarvam_translate_document and sarvam_transcribe_recording (long audio with speaker labels). Not
+  affiliated with Sarvam AI. Disclosure — registers one transcription provider, one TTS provider and six
+  tools (toolset "sarvam"), no hooks; requests go to https://api.sarvam.ai (and wss://api.sarvam.ai for
+  live transcription) with SARVAM_API_KEY read through Hermes's secret store; document translation and
+  long recordings upload the file to, and download results from, the signed https storage URL Sarvam
+  returns for that job; sends audio Hermes asks to transcribe, text to speak, tool text, and files whose
+  path the agent supplies; writes the requested audio file and translated document copies beside the
+  original under a new name; one WebSocket only while live transcription runs; no stored state, shell
+  commands, background processes or telemetry; every call is billed by Sarvam to the user's key.
+maintainer: Subramanyarao11
+tier: community
+category: voice
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Subramanyarao11/hermes-sarvam
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+  - sarvam_translate
+  - sarvam_transliterate
+  - sarvam_detect_language
+  - sarvam_read_document
+  - sarvam_translate_document
+  - sarvam_transcribe_recording
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - SARVAM_API_KEY

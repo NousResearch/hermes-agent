@@ -153,7 +153,7 @@ description: "在 Excel 中构建增厚/摊薄（并购）模型 — 备考损�
 - **否则**，回退至：
   - 针对 SEC EDGAR（`https://www.sec.gov/cgi-bin/browse-edgar`）使用 `web_search` / `web_extract` 获取美国文件
   - 公司投资者关系页面获取新闻稿、财报材料
-  - 使用 `browser_navigate` 访问交互式数据门户
+  - 使用 `browser_exec` 访问交互式数据门户
   - 用户提供的数据（当上下文中没有时，明确向用户询问）
 - **严禁捏造数据**。如果某个倍数、前例交易或文件数字无法溯源，将该单元格标记为 `[UNSOURCED]` 并告知用户。
 

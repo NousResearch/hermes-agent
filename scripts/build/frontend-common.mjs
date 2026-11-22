@@ -31,9 +31,9 @@ function contains(parent, child) {
 
 const productMarker = '.hermes-product'
 const productOwner = 'hermes-frontend-product-v1\n'
-const developerOutputs = ['ui-tui/dist', 'hermes_cli/web_dist', 'apps/desktop/dist', 'apps/desktop/build/native-deps']
+const developerOutputs = ['ui-tui/dist', 'hermes_cli/web_dist', 'apps/desktop/dist', 'apps/desktop/dist-webapp', 'apps/desktop/build/native-deps']
 
-// `npm run builder -- --<platform> --<arch>` stages one native tree per target
+// `pnpm run builder --<platform> --<arch>` stages one native tree per target
 // (apps/desktop/scripts/run-electron-builder.mjs): build/native-deps-<platform>-<arch>.
 const nativeTargetOutput = /^apps[\\/]desktop[\\/]build[\\/]native-deps-(darwin|linux|win32)-(x64|arm64)$/
 
@@ -48,7 +48,7 @@ function requireOwnedOutput(out, source) {
   const stat = lstatSync(out, { throwIfNoEntry: false })
   if (!stat) return
   if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Output must be a directory, not a file or symlink: ${out}`)
-  // These exact npm destinations belong to their compiler. Other paths require
+  // These exact developer destinations belong to their compiler. Other paths require
   // explicit ownership before an existing directory can be replaced.
   if (developerOutput(source, out)) return
   const marker = path.join(out, productMarker)

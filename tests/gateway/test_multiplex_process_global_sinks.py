@@ -1,5 +1,5 @@
 """Per-profile isolation for the remaining process-global sinks under gateway.multiplex_profiles:
-Yuanbao auto-sethome env write, the config ``terminal.env_passthrough`` allowlist, and the runner-level
+the config ``terminal.env_passthrough`` allowlist, and the runner-level
 Slack ignored-channel fail-safe (which only had the DEFAULT profile's GatewayConfig)."""
 from __future__ import annotations
 
@@ -19,27 +19,6 @@ def _under_secondary(home, fn):
         reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
         set_multiplex_active(False)
-
-
-def test_yuanbao_auto_sethome_from_secondary_stays_in_its_config(tmp_path, monkeypatch):
-    from plugins.platforms.yuanbao.adapter import AutoSetHomeMiddleware
-
-    monkeypatch.delenv("YUANBAO_HOME_CHANNEL", raising=False)
-    secondary = tmp_path / "profiles" / "b2"
-    secondary.mkdir(parents=True)
-    (secondary / "config.yaml").write_text("{}\n")
-
-    class Adapter:
-        name = "yuanbao-b2"
-
-    class Ctx:
-        chat_id = "dm:tenant-b2"
-        chat_name = "b2"
-
-    _under_secondary(secondary, lambda: AutoSetHomeMiddleware._persist_home(Adapter(), Ctx()))
-
-    assert "YUANBAO_HOME_CHANNEL" not in os.environ
-    assert "dm:tenant-b2" in (secondary / "config.yaml").read_text()
 
 
 def test_env_passthrough_allowlist_follows_the_active_profile(tmp_path, monkeypatch):

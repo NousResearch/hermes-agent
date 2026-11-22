@@ -1,0 +1,18 @@
+name: screentime
+repo: https://github.com/aldot311/hermes-screentime
+sha: 34e034d517010743f499f43cf7faf7afd92de977
+description: "Measure how long a product is on screen in a video: every can, bottle or shoe is tracked, each one is checked against the product photo so look-alikes are not counted, plain-English contract terms are checked with the moment that proves each, and a proof reel comes back in the chat. Runs on the models your Hermes already has (your vision model tracks and checks, Hermes speech-to-text listens); an optional Meta Model API key switches to SAM 3.1, Muse Spark and Voice Transcribe. Compare measures a draft against a reference shot by shot with ffmpeg only. Disclosure: with your own models, sampled frames, crops and the product photo go to your vision provider and short audio clips to your speech-to-text provider; with a Meta key the video is uploaded to Meta (one-hour expiry, deleted after the run, spend caps enforced); Compare, /screentime demo and selftest make no network calls; runs ffmpeg and ffprobe on files you name; no background processes, no telemetry."
+maintainer: aldot311
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/aldot311/hermes-screentime#readme
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - screentime_measure
+    - screentime_compare
+    - screentime_runs
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

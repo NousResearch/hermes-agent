@@ -1,0 +1,58 @@
+"""Display-only catalog that localizes command-approval reasons.
+
+The detectors in ``tools/approval_detection.py`` name each finding by its English description, and
+that description is also the approval/consent key a session or always grant is stored under, so it
+must never be translated or renamed. This module maps a fixed set of those keys to stable slugs under
+``gateway.exec_approval.reasons.*`` so a chat surface can show the reason in the routed profile's
+language. Only keys listed here are ever looked up: a description is never parsed and a locale key
+is never built from free text. Anything unmapped, or a slug with no catalog entry, keeps the
+redacted English text it arrived with.
+"""
+from __future__ import annotations
+
+from typing import Callable, Iterable, Mapping
+
+from agent.i18n import get_language, t
+
+REASON_KEY_PREFIX = "gateway.exec_approval.reasons."
+
+# Detector key (the English description, verbatim) -> catalog slug. Literal strings keep this module
+# free of the detector import; a test pins every key to a finding the detectors really produce. A
+# vertical slice: extend by adding a row plus ``gateway.exec_approval.reasons.<slug>`` in every locale.
+REASON_SLUGS: Mapping[str, str] = {
+    "delete in root path": "delete_in_root_path",
+    "recursive delete": "recursive_delete",
+    "world/other-writable permissions": "world_writable_permissions",
+    "SQL DROP": "sql_drop",
+    "pipe remote content to shell": "pipe_remote_to_shell",
+    "git reset --hard (destroys uncommitted changes)": "git_reset_hard",
+    "upload a secret or credential file via curl/wget (possible exfiltration)": "credential_upload",
+    "invisible or bidirectional Unicode control character (possible obfuscation)": "invisible_unicode",
+    "command too complex to scan fully; review before running": "scan_incomplete",
+}
+_KNOWN_SLUGS = frozenset(REASON_SLUGS.values())
+
+
+def reason_items(findings: Iterable[tuple[str, str]], redact: Callable[[str], str]) -> list[dict]:
+    """``[{"slug", "text"}]`` for ordered ``(pattern_key, description)`` findings: the catalog slug
+    (``None`` when unmapped) and the redacted English text that is shown when no translation applies."""
+    return [{"slug": REASON_SLUGS.get(key), "text": redact(text)} for key, text in findings]
+
+
+def render_reasons(items: Iterable[Mapping], redact: Callable[[str], str]) -> str:
+    """One display string for *items* in the active profile's language, in the given order.
+
+    The language is resolved once so every item and the joiner agree. An unknown slug or a catalog
+    miss falls back to that item's own text, passed through the surface's display redaction like the
+    legacy ``description`` string."""
+    lang = get_language()
+    parts = []
+    for item in items:
+        slug = item.get("slug")
+        key = REASON_KEY_PREFIX + slug if slug in _KNOWN_SLUGS else None
+        localized = t(key, lang=lang) if key else None
+        parts.append(localized if localized and localized != key else redact(str(item.get("text") or "")))
+    return t("gateway.exec_approval.reason_joiner", lang=lang).join(p for p in parts if p)
+
+
+__all__ = ["REASON_KEY_PREFIX", "REASON_SLUGS", "reason_items", "render_reasons"]

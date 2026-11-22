@@ -855,7 +855,7 @@ jobs:
           root="$GITHUB_WORKSPACE/staged-artifacts"
           # Only the built packages: the build leg ran the claimed code, which can rewrite its upload.
           # The recorder reads the one non-Store MSIX for this arch; nothing else may be staged.
-          unexpected="$(find "$root" -mindepth 1 \( -type d -o -type l -o -name 'Store-*' -o ! -name "*-win-${TARGET##*-}.msix" \) -print)"
+          unexpected="$(find "$root" -mindepth 1 \( -type d -o -type l -o -name '.*' -o -name 'Store-*' -o ! -name "*-win-${TARGET##*-}.msix" \) -print)"
           if [ -n "$unexpected" ]; then echo "::error::unexpected commit-claim artifact entries: $unexpected"; exit 1; fi
           record_args=()
           if [ "${LEGACY_COMMIT_BUILD:-false}" = true ]; then record_args+=(--legacy-commit-build); fi
@@ -1403,9 +1403,10 @@ jobs:
         run: |
           root="$GITHUB_WORKSPACE/staged-artifacts"
           # Only the built packages: the build leg ran the claimed code, which can rewrite its upload.
-          # This arch's one .dmg and one .zip (the recorder requires that one), and their blockmaps.
+          # This arch's one .dmg and one .zip and their blockmaps, none hidden: the globs below skip
+          # hidden names, the uploader's Path.glob does not.
           shopt -s nullglob
-          unexpected="$(find "$root" -mindepth 1 \( -type d -o -type l -o ! \( -name "*-mac-${TARGET##*-}.dmg" -o -name "*-mac-${TARGET##*-}.zip" -o -name '*.blockmap' \) \) -print)"
+          unexpected="$(find "$root" -mindepth 1 \( -type d -o -type l -o -name '.*' -o ! \( -name "*-mac-${TARGET##*-}.dmg" -o -name "*-mac-${TARGET##*-}.zip" -o -name '*.blockmap' \) \) -print)"
           for blockmap in "$root"/*.blockmap; do [ -f "${blockmap%.blockmap}" ] || unexpected+=" $blockmap"; done
           dmgs=("$root"/*.dmg)
           if [ "${#dmgs[@]}" -ne 1 ]; then unexpected+=" ${#dmgs[@]} DMGs"; fi
@@ -2381,7 +2382,7 @@ jobs:
         run: |
           root="$GITHUB_WORKSPACE/staged-artifacts"
           # Only the built packages: the build leg ran the claimed code, which can rewrite its upload.
-          unexpected="$(find "$root" -mindepth 1 ! -path "$root/deb" \( -type d -o -type l -o ! -path "$root/deb/*.deb" \) -print)"
+          unexpected="$(find "$root" -mindepth 1 ! -path "$root/deb" \( -type d -o -type l -o -name '.*' -o ! -path "$root/deb/*.deb" \) -print)"
           if [ ! -d "$root/deb" ] || [ -L "$root/deb" ]; then unexpected+=" $root/deb"; fi
           if [ -n "$unexpected" ]; then echo "::error::unexpected commit-claim artifact entries: $unexpected"; exit 1; fi
           record_args=()

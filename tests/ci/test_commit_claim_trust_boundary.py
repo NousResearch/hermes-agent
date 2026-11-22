@@ -372,13 +372,17 @@ def test_claim_staging_reads_the_unreviewed_packages_without_the_r2_secrets(targ
 
 # What a build leg that rewrote its own upload could add next to its packages: a sidecar the
 # recorder would trust, a metadata file or a package the recorder never reads (Store, another
-# arch, a second DMG, a stray blockmap), a nested package, or a symlinked deb directory.
+# arch, a second DMG, a stray blockmap, any of them hidden), a nested package, or a symlinked
+# deb directory.
 _PLANTED = {"win32-x64": ("version-info-x64.json", "nested/HermesBundled-0.33.0-win-x64.msix",
                           "Store-HermesBundled-0.33.0-win-x64.msix", "HermesBundled-0.33.0-win-arm64.msix"),
-            "win32-arm64": ("version-info-arm64.json", "metadata-windows-arm64.json"),
+            "win32-arm64": ("version-info-arm64.json", "metadata-windows-arm64.json",
+                            ".Other-0.33.0-win-arm64.msix"),
             "darwin-arm64": ("metadata-macos-arm64.json", "nested/HermesBundled-0.33.0-mac-arm64.zip",
-                             "Other-0.33.0-mac-arm64.dmg", "HermesBundled-0.33.0-mac-x64.dmg", "evil.blockmap"),
-            "termux": ("metadata-termux-aarch64.json", "deb/nested/hermes-agent_0.33.0_aarch64.deb", "<deb symlink>")}
+                             "Other-0.33.0-mac-arm64.dmg", "HermesBundled-0.33.0-mac-x64.dmg", "evil.blockmap",
+                             ".Other-0.33.0-mac-arm64.dmg", ".evil.blockmap"),
+            "termux": ("metadata-termux-aarch64.json", "deb/nested/hermes-agent_0.33.0_aarch64.deb", "<deb symlink>",
+                       "deb/.other_0.33.0_aarch64.deb")}
 
 
 @pytest.mark.parametrize("target,planted", [(t, p) for t, paths in _PLANTED.items() for p in paths])

@@ -281,6 +281,22 @@ def test_a_profile_and_root_copy_enabled_by_directory_name_behave_as_before(dash
     assert dash.ping("foo-tool").status_code == 200
 
 
+@pytest.mark.parametrize("bundled_name", ["telegram", "openai"])
+def test_a_dashboard_name_of_a_bundled_platform_or_backend_plugin_is_not_registered(dash, caplog, bundled_name):
+    """A bundled plugin's name (a platform or backend one included) is that plugin's: another plugin's
+    dashboard by that name is not registered, and the log says what to change and what stays off."""
+    imported = _install(dash.home, "tab-dir", bundled_name, yaml_name="tab-dir")
+    _plugins(dash.home, enabled=["tab-dir", bundled_name])
+    with caplog.at_level("WARNING", logger="hermes_cli.web_server"):
+        dash.start()
+
+    assert not imported.exists()
+    assert bundled_name not in dash.listed()
+    message = next(r.getMessage() for r in caplog.records if "is not registered" in r.getMessage())
+    assert "tab-dir/dashboard/manifest.json" in message
+    assert "not shown" in message
+
+
 def test_plugin_enabled_by_its_directory_key_mounts_and_lists(dash):
     """``hermes plugins enable hermes-mobile`` turns on a plugin whose dashboard calls itself ``mobile``."""
     imported = _install(dash.home, "hermes-mobile", "mobile", yaml_name="hermes-mobile")

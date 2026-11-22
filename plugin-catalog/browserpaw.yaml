@@ -1,6 +1,6 @@
 name: browserpaw
 repo: https://github.com/GoldenLoaf24h/browserpaw
-sha: b519111bdd4ae41c5410d4dc93c4fec48a43eaea
+sha: dc1e7f3034adff341c22144ec50ad4bd9de88c85
 subdir: "plugins/browserpaw-hermes"
 description: >-
   Run the local BrowserPaw CLI as one Hermes tool and register its canonical Agent
@@ -10,14 +10,17 @@ description: >-
   click, fill, upload, download, inspect page data and run learned recipes against
   logged-in sites without per-command shell expansion or Hermes approval prompts,
   so users should choose Hermes trust settings appropriate to unattended browser
-  control. No MCP server, Jev/TypeSafe service, credential files or telemetry are
+  control. Model-supplied write paths (--out) are confined to ~/.browserpaw/out and
+  checked via Hermes file-safety rules, read paths are checked via Hermes
+  file-safety rules, and installer commands (setup, uninstall, doctor --fix) are
+  refused. No MCP server, Jev/TypeSafe service, credential files or telemetry are
   bundled.
 maintainer: GoldenLoaf24h
 tier: community
 category: web
 requires_hermes: ">=0.21.5"
 docs_url: "https://github.com/GoldenLoaf24h/browserpaw/tree/main/plugins/browserpaw-hermes#readme"
-version: "5.0.0"
+version: "5.0.1"
 capabilities:
   provides_tools:
     - browserpaw

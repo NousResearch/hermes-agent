@@ -16,6 +16,7 @@ interface StoredRow {
   id: number
   role: 'assistant' | 'user' | 'tool'
   content: string
+  message_uid?: string
 }
 
 /** Replay a synthetic machine turn through the real socket listener and IPC history reader. */
@@ -105,7 +106,6 @@ test('a clipped Desktop refresh shows a backend-started tool turn once', async (
     expect(cut).toBeGreaterThan(1)
     const first = Math.max(...history.map(row => row.id)) + 1
     const metadata = { display_text: wake }
-    const turnMetadata = { stream_turn_id: turnId }
     const at = Date.now() / 1000
 
     const starter = {
@@ -124,17 +124,17 @@ test('a clipped Desktop refresh shows a backend-started tool turn once', async (
       return [
         {
           id,
+          message_uid: `machine-fixture-uid-${id}`,
           role: 'assistant',
           content: text,
-          display_metadata: turnMetadata,
           timestamp: at + index,
           tool_calls: [{ id: toolId, type: 'function', function: { name: 'terminal', arguments: '{}' } }]
         },
         {
           id: id + 1,
+          message_uid: `machine-fixture-uid-${id + 1}`,
           role: 'tool',
           content: `machine result ${index}`,
-          display_metadata: turnMetadata,
           timestamp: at + index,
           tool_call_id: toolId,
           tool_name: 'terminal'
@@ -143,7 +143,15 @@ test('a clipped Desktop refresh shows a backend-started tool turn once', async (
     })
 
     const end = first + rows.length + 1
-    const finalRow = { id: end, role: 'assistant', content: final, display_metadata: turnMetadata, timestamp: at + 3 }
+
+    const finalRow = {
+      id: end,
+      message_uid: `machine-fixture-uid-${end}`,
+      role: 'assistant',
+      content: final,
+      timestamp: at + 3
+    }
+
     const pageRows = [...history.slice(cut), starter, ...rows, finalRow]
 
     const emit = (type: string, payload: Record<string, unknown>) => {
@@ -159,15 +167,21 @@ test('a clipped Desktop refresh shows a backend-started tool turn once', async (
 
     emit('message.start', { turn_id: turnId })
 
+    // A current host names the stored row each interim, tool event and the final reply is
+    // (agent/live_row_identity.py): the narration row of the round.
+    const named = (row: { id: number; message_uid: string }) => ({ row_id: row.id, message_uid: row.message_uid })
+
     for (const [index, text] of interim.entries()) {
+      const row = named(rows[index * 2] as { id: number; message_uid: string })
       emit('message.delta', { text, turn_id: turnId, segment: index, offset: 0 })
       await expect(viewport).toContainText(text)
-      emit('message.interim', { text, already_streamed: true, turn_id: turnId, segment: index })
-      emit('tool.start', { name: 'terminal', tool_id: `machine-fixture-tool-${index}`, args: {} })
+      emit('message.interim', { text, already_streamed: true, turn_id: turnId, segment: index, ...row })
+      emit('tool.start', { name: 'terminal', tool_id: `machine-fixture-tool-${index}`, args: {}, ...row })
       emit('tool.complete', {
         name: 'terminal',
         tool_id: `machine-fixture-tool-${index}`,
-        result: `machine result ${index}`
+        result: `machine result ${index}`,
+        ...row
       })
     }
 
@@ -182,7 +196,8 @@ test('a clipped Desktop refresh shows a backend-started tool turn once', async (
         user_row_ids: [first],
         final_assistant_row_id: end,
         row_ids: [starter.id, ...rows.map(row => row.id), end]
-      }
+      },
+      ...named(finalRow)
     })
     await expect.poll(() => count(interim[0])).toBe(1)
 

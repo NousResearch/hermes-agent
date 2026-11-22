@@ -31,9 +31,10 @@ export interface TimelinePartMetadata {
   sourceRowId?: number
   /** A stored `tool-call` part's own source: the assistant row that made the call. */
   sourceCallRowId?: number
-  /** The stream turn that wrote this stored part's row (`display_metadata.stream_turn_id`,
-   *  agent/session_persistence.py): the stored side of a live row's `streamTurnId`. */
-  storedTurnId?: string
+  /** The `message_uid` of the row `sourceRowId` / `sourceCallRowId` names: the durable identity a
+   *  compaction keeps when it re-issues the row id. A live part carries both from its interim or
+   *  tool event (agent/live_row_identity.py), a stored part from its row. */
+  sourceMessageUid?: string
   /** The provider's own id of a stored call that hydration renamed (`withUniqueToolCallIds`)
    *  because an earlier call in the same folded bubble used it: two rounds of one turn can both
    *  call `call_0`. Only the live copy's pairing reads it, never paired across rows by itself. */

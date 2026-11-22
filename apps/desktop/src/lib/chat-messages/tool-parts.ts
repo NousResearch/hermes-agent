@@ -8,6 +8,7 @@ import { isCardToolName } from '@/lib/tool-render-class'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 import type { SessionMessage, StoredToolCallLabels } from '@/types/hermes'
 
+import { type LiveRowIdentity, liveRowIdentity, storedRowFields } from './live-row-identity'
 import type { ChatMessage, ChatMessagePart, GatewayEventPayload } from './types'
 
 function toolId(payload: GatewayEventPayload | undefined): string {
@@ -343,6 +344,27 @@ function completeOpenStreamParts(parts: ChatMessagePart[], completedAt: number):
   return next
 }
 
+/**
+ * A stored assistant row holds a round's narration and its calls, so a tool event that names its row
+ * names the narration streamed just before the round's first card too. Hosts that seal narration with
+ * `message.interim` stamped it already; the session authority and managed workers send no seal for
+ * streamed narration. Stamps, in place, the unaddressed text parts after the last tool card when the
+ * event opens a new card.
+ */
+function stampNarrationOf(parts: ChatMessagePart[], stored: LiveRowIdentity, newCard: boolean) {
+  if (!newCard || (stored.rowId === undefined && stored.messageUid === undefined)) {
+    return
+  }
+
+  for (let at = parts.length - 1; at >= 0 && parts[at].type !== 'tool-call'; at -= 1) {
+    const part = parts[at]
+
+    if (part.type === 'text' && part.sourceRowId === undefined && part.sourceMessageUid === undefined) {
+      parts[at] = { ...part, ...storedRowFields('text', stored) }
+    }
+  }
+}
+
 export function upsertToolPart(
   parts: ChatMessagePart[],
   payload: GatewayEventPayload | undefined,
@@ -367,6 +389,9 @@ export function upsertToolPart(
     (prev && 'toolCallId' in prev && typeof prev.toolCallId === 'string' ? prev.toolCallId : '') ||
     nextLiveToolId(name)
 
+  const stored = liveRowIdentity(payload)
+  stampNarrationOf(next, stored, index === -1)
+
   const base = {
     type: 'tool-call' as const,
     toolCallId: id,
@@ -374,6 +399,8 @@ export function upsertToolPart(
     args: args as never,
     argsText: JSON.stringify(args),
     timestamp: prev?.timestamp ?? occurredAt,
+    // The stored row that holds this call, when the event names it; an event without it keeps the earlier one.
+    ...storedRowFields('tool-call', stored),
     ...(phase === 'complete' && {
       completedAt: occurredAt,
       result: payload?.result !== undefined ? payload.result : prevResult,

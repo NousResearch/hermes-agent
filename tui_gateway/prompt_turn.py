@@ -788,10 +788,13 @@ def _invoke_agent(
 
     # Interim assistant text (commentary beside tool calls, pre-nudge final answer) is sealed
     # by the desktop as its own segment instead of being lost to message.complete.
+    from agent.live_row_identity import interim_row_identity
+
     def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
         if getattr(agent, "_mute_notification_reply", False):
             return
-        _emit("message.interim", sid, {"text": text, "already_streamed": already_streamed})
+        _emit("message.interim", sid, {"text": text, "already_streamed": already_streamed,
+                                       **interim_row_identity(agent)})
     agent.interim_assistant_callback = (
         _interim_assistant_cb if _load_interim_assistant_messages() else None)
     # A synthesized turn is typed at turn START so a crash persist writes a timeline event,
@@ -918,6 +921,15 @@ def _persisted_turn_receipt(st: _TurnRun, raw: Any, status: str) -> dict | None:
             committed_row_id(before) is not None and committed_row_id(before) == committed_row_id(after)))
 
 
+def _final_reply_row(st: _TurnRun, raw: Any, status: str) -> dict:
+    """The delivered reply's own stored row, named even when the receipt withholds itself
+    (``agent.live_row_identity.final_reply_row_identity``)."""
+    from agent.live_row_identity import final_reply_row_identity
+
+    messages = st.result.get("messages")
+    return final_reply_row_identity(messages, st.history, raw, status) if isinstance(messages, list) else {}
+
+
 def _retain_refused_turn(agent, result: dict) -> None:
     """Take the refused turn out of the agent's durable model transcript, keeping it for display."""
     from agent.agent_init_session import agent_interface
@@ -967,9 +979,11 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     # The receipt verifies the stored row's body, which keeps the model's text as written;
     # only the delivered copy drops a silence marker.
     receipt = _persisted_turn_receipt(st, raw, status)
+    final_row = _final_reply_row(st, raw, status)
     if _is_bot_mode_session(session):
         raw = _bot_mode_delivery_text(raw, successful=status == "complete")
-    payload = {"text": raw, "usage": _get_usage(agent), "status": status, **_pause_mark(session, status)}
+    payload = {"text": raw, "usage": _get_usage(agent), "status": status, **_pause_mark(session, status),
+               **final_row}
     if receipt:
         payload["persisted_turn"] = receipt
     if last_reasoning:
@@ -1197,9 +1211,6 @@ def _run_prompt_submit(
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
             receipt_committed=terminal_callback is None)
-        # The rows this turn writes carry its stream identity (agent/session_persistence.STREAM_TURN_ATTR).
-        from agent.session_persistence import STREAM_TURN_ATTR
-        setattr(st.agent, STREAM_TURN_ATTR, segments.turn_id)
         st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None,
             notification_category=(display_metadata or {}).get("notification_category"))
         goal_followup = None
@@ -1248,8 +1259,6 @@ def _run_prompt_submit(
                     _release_hosted_room_turn_slot(session)
                     if session.get(SESSION_KEY) is segments:
                         session.pop(SESSION_KEY)
-                    if getattr(st.agent, STREAM_TURN_ATTR, None) == segments.turn_id:
-                        setattr(st.agent, STREAM_TURN_ATTR, None)
                 # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
                 # agent.session_id is re-read because compression may have rotated it (an
                 # accepted/finished pair whose id changed IS a rotation trace).

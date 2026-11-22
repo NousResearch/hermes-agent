@@ -286,11 +286,6 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             segments = self._segments = (generation, TurnSegments())
         return segments[1]
 
-    def _stream_turn_id(self):
-        """The ``turn_id`` this execution's reply frames carry, or None off the authority's viewer stream."""
-        owner = getattr(self, "_approval_owner", None)
-        return self._turn_segments(owner[2]).turn_id if owner is not None else None
-
     def _publish_api_tool(self, event_type, call_id, tool_name, args, result=None):
         """The retained tool payload reaches the API observers of this exact admission only;
         the shared viewer stream keeps its ID-correlated frames."""
@@ -404,7 +399,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 # final that arrives with no deltas then suppresses the reply (message.complete "").
                 # Publish the in-process TUI's message.interim contract instead, and count the text
                 # as delivered only when a viewer or observer actually took it.
-                payload = {"text": text, "already_streamed": False}
+                from agent.live_row_identity import interim_row_identity
+                payload = {"text": text, "already_streamed": False, **interim_row_identity(ctx.agent_holder[0])}
                 unseen = not self._publish_execution("message.interim", payload)
             if stts is not None:
                 # Flush accepted deltas; completed commentary is a separate speech segment.
@@ -1150,14 +1146,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 # marker that follows a written reply on that reply, before transform/persistence.
                 agent._silence_marker_needs_reply = not silence_allowed(
                     ctx.persist_user_display_kind, ctx.reply_expected)
-                # The rows this turn writes carry the turn id its reply frames carry (session_persistence).
-                from agent.session_persistence import STREAM_TURN_ATTR
-                setattr(agent, STREAM_TURN_ATTR, self._stream_turn_id())
                 try:
                     result = agent.run_conversation(api_message, **kwargs)
                 finally:
                     agent._silence_marker_needs_reply = False
-                    setattr(agent, STREAM_TURN_ATTR, None)
             if captured is not None:
                 incoming = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
                 outgoing = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
@@ -1512,6 +1504,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 from gateway.session_local_inventory import publish_settled_info
                 publish_settled_info(self, agent)
         persisted_turn = _persisted_turn(agent, agent_history, result, compressions)
+        # The reply's own stored row, named on message.complete whether or not the receipt rides along.
+        from agent.live_row_identity import reply_row_result_fields
+        reply_row = reply_row_result_fields(result, agent_history)
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         if _finite_viewer_turn() and getattr(agent, "_codex_session", None) is not None:
             # The classic `chat -q` process exit bounded the codex app-server child; a finite turn
@@ -1566,6 +1561,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             **({"current_turn_user_idx": result["current_turn_user_idx"]} if "current_turn_user_idx" in result else {}),
             **usage,
             **({"persisted_turn": persisted_turn} if persisted_turn else {}),
+            **reply_row,
         }
         previewed = result.get("response_previewed", False)
         viewer_meta = {}

@@ -35,7 +35,7 @@ RESULT_FIELDS = ('final_response', 'failed', 'interrupted', 'completed', 'partia
                  'estimated_cost_usd', 'cost_status', 'cost_source', 'service_tier', 'failure_reason',
                  'session_id', 'requested_model', 'served_model', '_turn_input_tokens', '_turn_output_tokens',
                  'failure_retryable', 'failure_resets_at', 'billing_block', 'free_tier', 'usage_window_message',
-                 'refused_turn_boundary_row_id')
+                 'refused_turn_boundary_row_id', 'reply_row_id', 'reply_message_uid')
 # The structured fields and their allowed keys: ``billing_block`` (``agent/billing_links.BillingBlock``
 # plus ``unverified``) and ``free_tier`` (``agent/turn_recovery._stamp_free_tier``). With
 # ``failure_reason``, ``failure_retryable`` and ``failure_resets_at`` they are what
@@ -193,21 +193,10 @@ def activity_frame_interval(frame):
     return None
 
 
-_STREAM_TURN_ID = re.compile(r'[0-9a-f]{32}')  # tui_gateway.stream_segments.TurnSegments: uuid4().hex
-
-
-def bootstrap_stream_turn(frame):
-    """The presentation ``turn_id`` the owner minted for this execution (``stream_turn_v1`` on the
-    hydrated request) and stamps on the deltas it relays, or None from an owner that mints none. The
-    worker's rows carry it (agent/session_persistence.STREAM_TURN_ATTR), so a viewer that drew the
-    turn live can tell its stored rows before the receipt."""
-    asked = json.loads(frame['policy'].get('request_json') or '{}').get('stream_turn_v1')
-    if asked is None:
-        return None
-    if (not isinstance(asked, dict) or set(asked) != {'turn_id'} or not isinstance(asked['turn_id'], str)
-            or not _STREAM_TURN_ID.fullmatch(asked['turn_id'])):
-        raise ValueError('invalid_managed_worker_bootstrap')
-    return asked['turn_id']
+def live_rows_asked(frame):
+    """True when the owner reads the stored-row fields of tool and result frames (``live_rows_v1``):
+    an older owner refuses a frame with unknown fields, so it never asks and never receives them."""
+    return json.loads(frame['policy'].get('request_json') or '{}').get('live_rows_v1') is True
 
 
 _INTERRUPTED = object()
@@ -419,8 +408,9 @@ def execute(frame, channel):
     # The owner RPC below imports gateway/config modules (hermes_cli.config, providers,
     # hermes_cli.plugins) transitively; the policy must already be frozen when they load.
     bind_worker_policy(frame)
-    stream_turn = bootstrap_stream_turn(frame)
     from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
+    from agent.live_row_identity import reply_row_result_fields, tool_call_row_identity
+    stored_row = (lambda call_id: tool_call_row_identity(agent, call_id)) if live_rows_asked(frame) else (lambda _: {})
     scope = dict(frame['scope'])
     # This process serves exactly one turn of one profile: bind it as the runtime scope. The
     # profile state is this process's own (its environment names the home), so only the slot.
@@ -472,13 +462,11 @@ def execute(frame, channel):
                 **routing_agent_kwargs(policy.config(), policy.model, policy.provider, policy.base_url),
                 stream_delta_callback=lambda text: channel.send('delta', text=text) if text else None,
                 clarify_callback=controls.clarify,
-                tool_start_callback=lambda call_id, name, args: channel.send('tool.start', **tool_frame(call_id, name, args)),
-                tool_complete_callback=lambda call_id, name, args, result: channel.send('tool.complete',
-                                                                                         **tool_frame(call_id, name, args, result)))
+                tool_start_callback=lambda call_id, name, args: channel.send(
+                    'tool.start', **tool_frame(call_id, name, args), **stored_row(call_id)),
+                tool_complete_callback=lambda call_id, name, args, result: channel.send(
+                    'tool.complete', **tool_frame(call_id, name, args, result), **stored_row(call_id)))
             controls.agent = agent
-            # Every row this execution writes carries the turn id its relayed deltas carry.
-            from agent.session_persistence import STREAM_TURN_ATTR
-            setattr(agent, STREAM_TURN_ATTR, stream_turn)
             interval = activity_frame_interval(frame)
             if interval is not None:
                 from agent.memory_provider import spawn_context_thread
@@ -503,6 +491,9 @@ def execute(frame, channel):
             # Most failed results name no provider or model; the owner's error card needs the agent's.
             result = {'provider': getattr(agent, 'provider', None), 'model': getattr(agent, 'model', None),
                       **run_worker_turns(agent, frame, history)}
+            # The reply's stored row, which the owner names on message.complete (agent/live_row_identity.py).
+            if live_rows_asked(frame):
+                result.update(reply_row_result_fields(result, history))
             turn_done.set()
             result['_turn_input_tokens'] = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
             result['_turn_output_tokens'] = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])

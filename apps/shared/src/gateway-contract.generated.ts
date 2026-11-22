@@ -3268,6 +3268,7 @@ export interface TranscriptMessage {
   tool_call_id?: string | null
   timestamp?: number | null
   row_id?: number | null
+  message_uid?: string | null
   display_kind?: string | null
   display_metadata?: unknown | null
   name?: string | null
@@ -5657,6 +5658,7 @@ export interface StoredTranscriptRow {
   tool_call_id?: string | null
   timestamp?: number | null
   row_id?: number | null
+  message_uid?: string | null
   display_kind?: string | null
   display_metadata?: unknown | null
   name?: string | null
@@ -6003,6 +6005,8 @@ export interface MessageInterimPayload {
   already_streamed: boolean
   turn_id?: string | null
   segment?: number | null
+  row_id?: number | null
+  message_uid?: string | null
 }
 /** ``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` / ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text``, plus ``status`` for a completed child) / ``compute_host_bridge`` (``text`` + ``status``). */
 export interface MessageCompletePayload {
@@ -6023,6 +6027,8 @@ export interface MessageCompletePayload {
   partial?: boolean | null
   persisted_turn?: PersistedTurn | null
   paused?: boolean | null
+  row_id?: number | null
+  message_uid?: string | null
 }
 /** ``prompt_turn._result_status``. */
 export type TurnStatus = 'complete' | 'error' | 'interrupted'
@@ -6137,6 +6143,9 @@ export interface ToolStartPayload {
   args_text?: string | null
   preview?: string | null
   labels?: ToolLabel[] | null
+  row_id?: number | null
+  message_uid?: string | null
+  tool_call_uid?: string | null
 }
 /** ``tool_progress._on_tool_complete``; ``todos``/``revision`` merged in for the todo tools. */
 export interface ToolCompletePayload {
@@ -6152,6 +6161,9 @@ export interface ToolCompletePayload {
   revision?: number | null
   labels?: ToolLabel[] | null
   image_path?: string | null
+  row_id?: number | null
+  message_uid?: string | null
+  tool_call_uid?: string | null
 }
 /** ``agent_callbacks`` tool_gen_callback. */
 export interface ToolGeneratingPayload {

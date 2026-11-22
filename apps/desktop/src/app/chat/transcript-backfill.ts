@@ -15,11 +15,11 @@
  * drift on the next page.
  */
 
+import { reconcileLiveRowsWithPage } from '@/app/chat/transcript-live-rows'
 import {
   dropPageFoldsCutByTheBoundary,
   dropPageRowsOfStoppedTurns,
-  dropReceiptTurnsThePageHolds,
-  reconcileLiveTurnsWithPage
+  dropReceiptTurnsThePageHolds
 } from '@/app/chat/transcript-receipt-turns'
 import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
 import { getOlderSessionMessages, getSessionMessages, type ProfileScope } from '@/hermes'
@@ -406,7 +406,7 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
 
   // The page rows that will be drawn (cut folds and stopped turns' partial copies filtered out)
   // are the only ones a live turn's rows may give way to.
-  const live = reconcileLiveTurnsWithPage(
+  const live = reconcileLiveRowsWithPage(
     receiptDrop.window.filter(message => !anchorNotice(message)),
     dropPageRowsOfStoppedTurns(previous, dropPageFoldsCutByTheBoundary(previous, refreshedTail))
   )

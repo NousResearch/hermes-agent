@@ -80,40 +80,34 @@ def test_deltas_and_seals_carry_turn_segment_and_utf16_offset(monkeypatch):
     assert srv.stream_segments.SESSION_KEY not in session
 
 
-def test_committed_tool_round_has_its_stream_identity_before_completion(monkeypatch, tmp_path):
-    from agent.session_persistence import SessionPersistenceMixin
-    from persistence_assembly import open_persistence, profile_scope
-    from tests.fixtures.storage_read import transcript_rows
-    from tests.fixtures.storage_seed import seed_session
+def test_interim_and_tool_frames_name_the_stored_row_of_the_round(monkeypatch):
+    """The frames a client sees carry the identity the round names (agent/live_row_identity.py), through
+    the contract's validation; a frame fired outside the round names no row."""
+    from agent.live_row_identity import live_assistant_row
 
-    committed = []
-    with open_persistence(profile_scope(home=tmp_path)) as store:
-        seed_session(store, "session-key", "test")
+    row = {"role": "assistant", "content": "Checking", "_row_id": 41, "_db_persisted": True,
+           "message_uid": "uid-41", "_tool_call_uids": {"call_0": "call-uid-41"},
+           "tool_calls": [{"id": "call_0", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]}
 
-        def run_conversation(agent, prompt, stream_callback=None, conversation_history=None, **_kwargs):
-            agent.persistence = agent._session_db = store
-            agent._session_db_created = True
-            history = list(conversation_history or [])
-            messages = history + [
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": "Checking", "tool_calls": [
-                    {"id": "call_0", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}
-                ]},
-                {"role": "tool", "content": "ok", "tool_call_id": "call_0", "display_metadata": {"detail": "keep"}},
-            ]
-            assert stream_callback is not None
-            stream_callback("Checking")
+    def run_conversation(agent, prompt, stream_callback=None, **_kwargs):
+        stream_callback("Checking")
+        with live_assistant_row(agent, row):
             agent.interim_assistant_callback("Checking", already_streamed=True)
-            assert SessionPersistenceMixin._flush_messages_to_session_db_unlocked(agent, messages, history)
-            committed.append(transcript_rows(store, "session-key")[-3:])
-            return {"final_response": "Done.", "messages": messages}
+            srv._on_tool_start("sid", "call_0", "terminal", {})
+            srv._on_tool_complete("sid", "call_0", "terminal", {}, "ok")
+        srv._on_tool_start("sid", "call_0", "terminal", {})
+        stream_callback("Done.")
+        return {"final_response": "Done.", "messages": [
+            {"role": "user", "content": prompt}, {"role": "assistant", "content": "Done."}]}
 
-        frames, _session = _submit_turns(monkeypatch, run_conversation, turns=2)
+    frames, _session = _submit_turns(monkeypatch, run_conversation, turns=1)
 
-    starts = [payload["turn_id"] for event, payload in frames if event == "message.start"]
-    assert len(set(starts)) == 2
-    for rows, turn in zip(committed, starts, strict=True):
-        assert [row["role"] for row in rows] == ["user", "assistant", "tool"]
-        assert "stream_turn_id" not in (rows[0]["display_metadata"] or {})
-        assert rows[1]["display_metadata"] == {"stream_turn_id": turn}
-        assert rows[2]["display_metadata"] == {"stream_turn_id": turn, "detail": "keep"}
+    named = {"row_id": 41, "message_uid": "uid-41"}
+    picked = [(event, {key: payload.get(key) for key in ("row_id", "message_uid", "tool_call_uid")})
+              for event, payload in frames if event in {"message.interim", "tool.start", "tool.complete"}]
+    assert picked == [
+        ("message.interim", {**named, "tool_call_uid": None}),
+        ("tool.start", {**named, "tool_call_uid": "call-uid-41"}),
+        ("tool.complete", {**named, "tool_call_uid": "call-uid-41"}),
+        ("tool.start", {"row_id": None, "message_uid": None, "tool_call_uid": None}),
+    ]

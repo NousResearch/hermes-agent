@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import logging
 from typing import Any, Dict, Optional, Tuple
 
+from agent.live_row_identity import live_assistant_row
 from agent.message_metadata import append_message
 from agent.message_sanitization import normalize_provider_tool_call_ids
 from session_rules.turns import coalesce_tool_call_id
@@ -156,9 +157,11 @@ def run_tool_round(
         return _verdict("break")
 
     # A UI must never observe an assistant/tool-call row that is only an in-memory
-    # projection: emit interim commentary after the DB append.
+    # projection: emit interim commentary after the DB append. The row is durable now,
+    # so its interim and tool events name it (agent/live_row_identity.py).
     if not duplicate_previous_interim:
-        agent._emit_interim_assistant_message(assistant_msg)
+        with live_assistant_row(agent, assistant_msg):
+            agent._emit_interim_assistant_message(assistant_msg)
 
     # Flush open streaming boxes before tools so early content doesn't wrap tool feed
     # lines. Display callback only — TTS (_stream_callback) must NOT receive None (EOS).
@@ -171,7 +174,8 @@ def run_tool_round(
     from agent.prepared_compaction import maybe_prepare
     maybe_prepare(agent, messages, origin="tool-batch")
 
-    agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+    with live_assistant_row(agent, assistant_msg):
+        agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
     from hermes_cli.observability.shared_metrics_harness import finish_tool_round
 
     finish_tool_round(agent)

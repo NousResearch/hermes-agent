@@ -6,6 +6,8 @@ import {
   assistantTextPart,
   type ChatMessage,
   chatMessageText,
+  indexStoredParts,
+  isLocalRowToKeep,
   preserveLocalAssistantErrors,
   textPart,
   toChatMessages
@@ -615,6 +617,7 @@ export function preserveLocalPendingTurnMessages(
   const remainingNext = nextMessages.slice(acknowledged.storedIndex + 1)
   const acknowledgedTurn = nextMessages.slice(Math.max(0, acknowledged.storedIndex))
   const storedRowIds = new Set(nextMessages.flatMap(transcriptRowIds))
+  const storedParts = indexStoredParts(nextMessages)
   const lastStoredRowId = [...storedRowIds].reduce((last, rowId) => Math.max(last, rowId), 0)
   const nextByRoleOrdinal = new Map<string, ChatMessage>()
   const nextRoleCounts = new Map<ChatMessage['role'], number>()
@@ -711,7 +714,9 @@ export function preserveLocalPendingTurnMessages(
       chatMessageText(message).trim() !== '' &&
       !nextByRoleOrdinal.has(`assistant:${ordinal}`)
 
-    if (!isOptimisticUser && !isPendingAssistant && !isSettledUnpersistedAssistant) {
+    if (
+      !isLocalRowToKeep(message, storedParts, isOptimisticUser, isPendingAssistant || isSettledUnpersistedAssistant)
+    ) {
       continue
     }
 

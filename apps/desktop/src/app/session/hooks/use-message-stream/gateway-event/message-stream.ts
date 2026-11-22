@@ -3,7 +3,7 @@ import { type BillingBlock, mergeUsage } from '@hermes/shared'
 import { noteTurnSettled } from '@/app/session/hooks/use-session-actions/settled-turns'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
-import { type GatewayEventPayload, markQueuedPromptStarted } from '@/lib/chat-messages'
+import { type GatewayEventPayload, liveRowIdentity, markQueuedPromptStarted } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -294,7 +294,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       const text = coerceGatewayText(payload?.text)
 
       if (text) {
-        finalizeInterimAssistantMessage(sessionId, text, occurredAt, segmentStamp(payload))
+        finalizeInterimAssistantMessage(sessionId, text, occurredAt, segmentStamp(payload), liveRowIdentity(payload))
       }
     }
 
@@ -454,7 +454,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       Boolean(payload?.response_transformed),
       typeof payload?.status === 'string' ? payload.status : undefined,
       payload?.response_reused === true,
-      typeof payload?.failure_reason === 'string' ? payload.failure_reason : undefined
+      typeof payload?.failure_reason === 'string' ? payload.failure_reason : undefined,
+      liveRowIdentity(payload)
     )
 
     // The continuation a pause waited for has ended: sends held for it go now. Interrupted to be continued

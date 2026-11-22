@@ -89,6 +89,10 @@ def completion_payload(row, settled, response, captured):
     if isinstance(captured_result.get('persisted_turn'), dict):
         complete['persisted_turn'] = {**captured_result['persisted_turn'],
                                       'submission_id': row['request_id']}
+    if complete['status'] == 'complete':
+        # The reply's stored row (agent/live_row_identity.py), independent of the receipt above.
+        from agent.live_row_identity import reply_row_payload
+        complete.update(reply_row_payload(captured_result))
     return complete
 
 

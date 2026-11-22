@@ -213,20 +213,13 @@ function parseDisplayMetadata(metadata: SessionMessage['display_metadata']): nul
   return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
 }
 
-/** The stream turn a stored row was written by (agent/session_persistence.STREAM_TURN_METADATA_KEY). */
-function streamTurnOfRow(message: SessionMessage): string | undefined {
-  const turnId = parseDisplayMetadata(message.display_metadata)?.stream_turn_id
-
-  return typeof turnId === 'string' && turnId ? turnId : undefined
-}
-
 /** Mark source rows before several transcript rows fold into one assistant message. */
 function stampStoredParts(parts: ChatMessagePart[], message: SessionMessage, rowId: number | undefined): void {
   if (rowId === undefined) {
     return
   }
 
-  const storedTurnId = message.role === 'assistant' ? streamTurnOfRow(message) : undefined
+  const uid = typeof message.message_uid === 'string' && message.message_uid ? message.message_uid : undefined
 
   for (const part of parts) {
     if (part.type === 'text') {
@@ -235,8 +228,8 @@ function stampStoredParts(parts: ChatMessagePart[], message: SessionMessage, row
       part.sourceCallRowId = rowId
     }
 
-    if (storedTurnId && (part.type === 'text' || part.type === 'tool-call')) {
-      part.storedTurnId = storedTurnId
+    if (uid && (part.type === 'text' || part.type === 'tool-call')) {
+      part.sourceMessageUid = uid
     }
   }
 }

@@ -34,9 +34,9 @@ import { reconcileActiveTranscript } from './use-background-sync'
  * stream paints sealed narration and tool cards. A refresh of a long chat whose
  * newest page starts inside an older tool fold takes the stored-id merge; the
  * turn's live copy must give way to the page's stored copy exactly once, and
- * only where the producer proved which stored rows are that turn's: the
- * completion receipt's row ids, or the stream turn id each row the turn wrote
- * carries (`display_metadata.stream_turn_id`, agent/session_persistence.py).
+ * only where the producer proved which stored rows are that turn's: the stored
+ * row each live event names (`row_id` / `message_uid`, agent/live_row_identity.py),
+ * or, from an older runtime, the completion receipt's row ids.
  */
 
 vi.mock('@/hermes', async original => ({
@@ -49,10 +49,11 @@ const STORED = 'machine-stored'
 const ROUNDS = 6
 const noop = async () => undefined
 
-/** What the turn's writer stamps on its assistant/tool rows; absent on older runtimes. */
+/** The turn whose current runtime wrote a row; null for an older runtime's rows. */
 type Producer = { turnId: string } | null
 
-const written = (producer: Producer) => (producer ? { display_metadata: { stream_turn_id: producer.turnId } } : {})
+/** The durable uid a current runtime's rows carry (`messages.message_uid`); older rows have none. */
+const uidOf = (id: number, producer: Producer) => (producer ? { message_uid: `uid-${producer.turnId}-${id}` } : {})
 
 const user = (id: number, text: string, extra: Partial<SessionMessage> = {}): SessionMessage =>
   ({ id, role: 'user', content: text, timestamp: id, ...extra }) as SessionMessage
@@ -64,7 +65,7 @@ const narration = (id: number, text: string, calls: string[], producer: Producer
     content: text,
     timestamp: id,
     tool_calls: calls.map(call => ({ id: call, type: 'function', function: { name: 'terminal', arguments: '{}' } })),
-    ...written(producer)
+    ...uidOf(id, producer)
   }) as SessionMessage
 
 const tool = (id: number, call: string, producer: Producer = null, content = 'ok'): SessionMessage =>
@@ -75,11 +76,17 @@ const tool = (id: number, call: string, producer: Producer = null, content = 'ok
     tool_call_id: call,
     tool_name: 'terminal',
     timestamp: id,
-    ...written(producer)
+    ...uidOf(id, producer)
   }) as SessionMessage
 
 const answer = (id: number, text: string, producer: Producer = null): SessionMessage =>
-  ({ id, role: 'assistant', content: text, timestamp: id, ...written(producer) }) as SessionMessage
+  ({
+    id,
+    role: 'assistant',
+    content: text,
+    timestamp: id,
+    ...uidOf(id, producer)
+  }) as SessionMessage
 
 /** A user turn of three narrated tool rounds: rows first..first+7. */
 const olderTurn = (first: number, tag: string): SessionMessage[] => [
@@ -109,7 +116,7 @@ interface MachineTurn {
 interface TurnOptions {
   prose?: string
   kind?: string
-  /** Rows written by a runtime that stamps the stream turn id (default), or by an older one. */
+  /** Rows written by a current runtime, which gives each a `message_uid` (default), or by an older one. */
   keyed?: boolean
   narrations?: (round: number) => string
 }
@@ -213,6 +220,9 @@ interface StreamOptions {
    *  its reply frames (gateway/run_turn_runner.py `_stamp_segment`).
    *  `legacy`: an older runtime that names no stream turn on any frame. */
   owner?: 'classic' | 'authority' | 'legacy'
+  /** False for a host that sends no `message.interim` for narration it streamed: the session
+   *  authority (gateway/run_turn_runner.py) and a managed worker publish none. */
+  seal?: boolean
   rounds?: number
   displayKind?: string
 }
@@ -221,10 +231,20 @@ interface StreamOptions {
 const replyStamp = (turn: MachineTurn, owner: StreamOptions['owner'], segment: number, offset?: number) =>
   owner === 'legacy' ? {} : { turn_id: turn.tag, segment, ...(offset === undefined ? {} : { offset }) }
 
+/** The stored row a current runtime names on round `round`'s interim and tool frames
+ *  (agent/live_row_identity.py): the round's narration row. An older runtime names none. */
+function storedRowOf(turn: MachineTurn, owner: StreamOptions['owner'], round: number) {
+  const row = turn.rows.filter(entry => entry.role === 'assistant' && Array.isArray(entry.tool_calls))[round]
+
+  return owner === 'legacy' || !row
+    ? {}
+    : { row_id: row.id, ...(row.message_uid ? { message_uid: row.message_uid } : {}) }
+}
+
 /** Replays the backend's frames of `turn`'s first `rounds` rounds; tool frames carry no turn id. */
 async function streamRounds(
   turn: MachineTurn,
-  { owner = 'classic', rounds = ROUNDS, displayKind }: StreamOptions = {}
+  { owner = 'classic', seal = true, rounds = ROUNDS, displayKind }: StreamOptions = {}
 ) {
   const execution: Execution =
     owner === 'authority' ? { authority_epoch: 1, execution_generation: 4, admission_id: turn.tag } : {}
@@ -237,13 +257,22 @@ async function streamRounds(
   })
 
   for (const [index, text] of turn.narrations.slice(0, rounds).entries()) {
+    const stored = storedRowOf(turn, owner, index)
     emit('message.delta', { text, ...replyStamp(turn, owner, index, 0) })
     await flush()
-    emit('message.interim', { text, already_streamed: true, ...replyStamp(turn, owner, index) })
+
+    if (seal) {
+      emit('message.interim', { text, already_streamed: true, ...replyStamp(turn, owner, index), ...stored })
+    }
 
     for (const [slot, call] of turn.tools.slice(index * 2, index * 2 + 2).entries()) {
-      emit('tool.start', { name: 'terminal', tool_id: call, args: {} })
-      emit('tool.complete', { name: 'terminal', tool_id: call, result: turn.results?.[index * 2 + slot] ?? 'ok' })
+      emit('tool.start', { name: 'terminal', tool_id: call, args: {}, ...stored })
+      emit('tool.complete', {
+        name: 'terminal',
+        tool_id: call,
+        result: turn.results?.[index * 2 + slot] ?? 'ok',
+        ...stored
+      })
     }
   }
 
@@ -265,10 +294,19 @@ async function streamMachineTurn(turn: MachineTurn, receipt: Receipt, options: S
       ? { ...turn.receipt, row_ids: turn.receipt.row_ids.slice(0, -1), final_assistant_row_id: undefined }
       : turn.receipt
 
+  // A current runtime names the stored reply on the completion whether or not a receipt rides along.
+  const finalRow = turn.rows.at(-1)!
+
+  const named =
+    options.owner === 'legacy' || receipt === 'without-final'
+      ? {}
+      : { row_id: finalRow.id, ...(finalRow.message_uid ? { message_uid: finalRow.message_uid } : {}) }
+
   emit('message.complete', {
     status: 'complete',
     text: turn.final,
-    persisted_turn: receipt === 'none' ? undefined : { ...coverage, complete: receipt === 'complete' }
+    persisted_turn: receipt === 'none' ? undefined : { ...coverage, complete: receipt === 'complete' },
+    ...named
   })
 }
 
@@ -412,6 +450,18 @@ describe('a refreshed page over a settled backend-started turn', () => {
     expect(list.filter(message => message.rowId === turn.first)).toHaveLength(kind === 'hidden' ? 0 : 1)
   })
 
+  it('gives the reply its uid when the receipt already bound its row', async () => {
+    seed(history)
+    await streamMachineTurn(machine, 'complete')
+    const finalRow = machine.rows.at(-1)!
+
+    const reply = messages()
+      .flatMap(message => message.parts)
+      .find(part => part.type === 'text' && part.text === machine.final)
+
+    expect([reply?.sourceRowId, reply?.sourceMessageUid]).toEqual([finalRow.id, finalRow.message_uid])
+  })
+
   it('is idempotent across repeated refreshes', async () => {
     seed(history)
     await streamMachineTurn(machine, 'complete')
@@ -523,9 +573,69 @@ describe('a refreshed page over a settled backend-started turn', () => {
   })
 })
 
+describe('a host that streams narration without sealing it', () => {
+  // The session authority and a managed worker publish no message.interim for streamed narration,
+  // and a managed worker sends no receipt: the tool events name the round's row, narration included.
+  const unsealed = { owner: 'authority', seal: false } as const
+
+  it('names each round’s streamed narration by the row its tool events name', async () => {
+    seed(history)
+    await streamMachineTurn(machine, 'none', unsealed)
+
+    const named = messages()
+      .flatMap(message => message.parts)
+      .flatMap(part => (part.type === 'text' && machine.narrations.includes(part.text) ? [part] : []))
+
+    const rows = machine.rows.filter(row => Array.isArray(row.tool_calls))
+
+    expect(named.map(part => [part.sourceRowId, part.sourceMessageUid])).toEqual(
+      rows.map(row => [row.id, row.message_uid])
+    )
+  })
+
+  it('keeps a narration’s row when a completion with no new text names another row', async () => {
+    seed(history)
+    const emit = await streamRounds(machine, unsealed)
+    const lastRound = machine.rows.filter(row => Array.isArray(row.tool_calls)).at(-1)!
+    // No reply text streamed after the last round: the bubble's last text part is that round's narration.
+    emit('message.complete', { status: 'complete', text: '', row_id: 999, message_uid: 'uid-other' })
+
+    const narration = messages()
+      .flatMap(message => message.parts)
+      .find(part => part.type === 'text' && part.text === machine.narrations.at(-1))
+
+    expect([narration?.sourceRowId, narration?.sourceMessageUid]).toEqual([lastRound.id, lastRound.message_uid])
+  })
+
+  it.each(['complete', 'none'] as const)('draws the turn once after a refresh (receipt: %s)', async receipt => {
+    seed(history)
+    await streamMachineTurn(machine, receipt, unsealed)
+
+    const list = await refreshWith(page)
+
+    expectDrawnOnce(list, machine)
+    expect(list.filter(message => message.rowId === machine.first).map(message => message.role)).toEqual(['system'])
+  })
+
+  it.each([
+    ['refresh', refreshed],
+    ['reopen', reopen]
+  ] as const)('draws a receipt-less turn once through %s, idempotently', async (_, compose) => {
+    seed(history)
+    await streamMachineTurn(machine, 'none', unsealed)
+    const live = messages()
+
+    const once = compose(page, live)
+    const twice = compose(page, once)
+
+    expectDrawnOnce(once, machine)
+    expect(twice.map(message => message.id)).toEqual(once.map(message => message.id))
+  })
+})
+
 describe('an older runtime that names no stream turn anywhere', () => {
-  // No `turn_id` on any frame and no `stream_turn_id` on any stored row: the completion receipt
-  // is the only identity, and the window has no prompt of a backend-started turn to anchor it.
+  // No `turn_id` and no stored row named on any frame, and no `message_uid` on any stored row: the
+  // completion receipt is the only identity, and the window has no prompt of a backend-started turn to anchor it.
   const legacy = (first = 17, tag = 'legacy', options: TurnOptions = {}) =>
     machineTurn(first, tag, { keyed: false, ...options })
 
@@ -540,9 +650,7 @@ describe('an older runtime that names no stream turn anywhere', () => {
 
   const unstampedPage = (rows: SessionMessage[]) => {
     const list = toChatMessages(rows)
-    expect(list.flatMap(message => message.parts).filter(part => 'storedTurnId' in part && part.storedTurnId)).toEqual(
-      []
-    )
+    expect(list.flatMap(message => message.parts).filter(part => part.sourceMessageUid)).toEqual([])
 
     return rows
   }
@@ -819,8 +927,8 @@ describe('one tool-call id the same turn reuses in two rounds', () => {
 describe('a provider tool id another turn reuses', () => {
   // Provider tool-call ids are not unique across turns (lib/chat-messages/reconciliation.ts).
   it.each([
-    ['an older runtime (no stream turn on the rows)', null],
-    ['its own stream turn', { turnId: 'another-turn' }]
+    ['an older runtime (no uid on the rows)', null],
+    ['a current runtime', { turnId: 'another-turn' }]
   ] as const)('keeps a live result when a stored turn written by %s reuses its id', async (_, producer) => {
     const lost = machineTurn(17, 'lost-identity')
     const reused = lost.tools[0]
@@ -952,5 +1060,46 @@ describe('the stream turn a live row is stamped with', () => {
     send('message.delta', { text: current.narrations[0], turn_id: current.tag, segment: 0, offset: 0 }, execution)
     await flush()
     expect(messages().at(-1)?.streamTurnId).toBe(current.tag)
+  })
+})
+
+describe('a compaction during the backend-started turn', () => {
+  // A post-tool compaction archives the active rows and writes copies under new ids, keeping each
+  // row's message_uid (persistence/conversation/messages.py `compact`). The live events of the rounds
+  // before it named the old ids; the page names the new ones.
+  const REISSUE = 1000
+
+  const compacted = (rows: SessionMessage[], from: number) =>
+    rows.map(row =>
+      (row.id as number) >= from ? ({ ...row, id: (row.id as number) + REISSUE } as SessionMessage) : row
+    )
+
+  it.each([
+    ['refresh', refreshed],
+    ['reopen', reopen]
+  ] as const)('draws each piece once by its uid when the row ids were re-issued (%s)', async (_, compose) => {
+    seed(history)
+    await streamMachineTurn(machine, 'none')
+    const live = messages()
+
+    const list = compose(compacted(page, machine.first), live)
+
+    expectDrawnOnce(list, machine)
+    expect(occurrences(allText(list), 'old-b answer')).toBe(1)
+  })
+
+  it('needs the uid: a row id alone no longer names the page row', async () => {
+    seed(history)
+    await streamMachineTurn(machine, 'none')
+
+    // The same events with their uids stripped: the old row ids are all that is left.
+    const live = messages().map(message => ({
+      ...message,
+      parts: message.parts.map(part => ({ ...part, sourceMessageUid: undefined }))
+    }))
+
+    const list = refreshed(compacted(page, machine.first), live)
+
+    expect(occurrences(allText(list), machine.narrations[0])).toBe(2)
   })
 })

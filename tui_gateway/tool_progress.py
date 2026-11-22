@@ -297,7 +297,10 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         session.setdefault("tool_result_metadata", {}).pop(tool_call_id, None)
     if (_tool_progress_enabled(sid) or _tool_lifecycle_required_for_ui(name)
             or _connector_tool_lifecycle(name, args)):
-        payload: dict[str, object] = {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)}
+        from agent.live_row_identity import tool_call_row_identity
+
+        payload: dict[str, object] = {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args),
+                                      **tool_call_row_identity((session or {}).get("agent"), tool_call_id)}
         if (labels := _tool_labels(name, args)) is not None:
             payload["labels"] = labels
         # Full args (not just the 80-char `context` preview) so the desktop's expanded tool row is complete
@@ -335,7 +338,10 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     metadata = prepared.pop(tool_call_id, None)
     if _connector_lifecycle_is_stale(sid, name, args):
         return
-    payload = {"tool_id": tool_call_id, "name": name, "args": args}
+    from agent.live_row_identity import tool_call_row_identity
+
+    payload = {"tool_id": tool_call_id, "name": name, "args": args,
+               **tool_call_row_identity((session or {}).get("agent"), tool_call_id)}
     if (labels := _tool_labels(name, args)) is not None:
         payload["labels"] = labels
     if metadata is None:

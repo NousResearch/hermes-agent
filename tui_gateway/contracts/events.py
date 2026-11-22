@@ -189,6 +189,10 @@ class MessageInterimPayload(Payload):
     #: The turn and segment this seal closes; a re-sent seal of a closed segment is not a new bubble.
     turn_id: str | None = None
     segment: int | None = None
+    #: The stored assistant row this commentary is (agent/live_row_identity.py): absent while the row
+    #: is not durable and from older hosts. Key on ``message_uid``; a compaction re-issues ``row_id``.
+    row_id: int | None = None
+    message_uid: str | None = None
 
 
 event("message.interim", MessageInterimPayload,
@@ -302,6 +306,10 @@ class MessageCompletePayload(Payload):
     persisted_turn: PersistedTurn | None = None
     #: An interrupted turn its interrupter will continue (``session.interrupt`` ``resume``): not stopped for good.
     paused: bool | None = None
+    #: The stored row of the delivered reply, named even when ``persisted_turn`` is withheld
+    #: (agent/live_row_identity.final_reply_row_identity). Key on ``message_uid``.
+    row_id: int | None = None
+    message_uid: str | None = None
 
 
 event("message.complete", MessageCompletePayload, doc="The turn ended: final text, usage and outcome.")
@@ -410,6 +418,11 @@ class ToolStartPayload(Payload):
     args_text: str | None = None
     preview: str | None = None
     labels: list[ToolLabel] | None = None
+    #: The stored assistant row that holds this call, and the call's own uid (agent/live_row_identity.py);
+    #: absent when the call's row is not the running round's durable row, and from older hosts.
+    row_id: int | None = None
+    message_uid: str | None = None
+    tool_call_uid: str | None = None
 
 
 event("tool.start", ToolStartPayload, doc="A tool call began (stable id + full args).")
@@ -430,6 +443,10 @@ class ToolCompletePayload(Payload):
     revision: int | None = None
     labels: list[ToolLabel] | None = None
     image_path: str | None = None  # local image the call produced or looked at (agent.terminal_image.tool_image_path)
+    #: As on ``tool.start``: the stored row that holds the call.
+    row_id: int | None = None
+    message_uid: str | None = None
+    tool_call_uid: str | None = None
 
 
 event("tool.complete", ToolCompletePayload, doc="A tool call finished: parsed result, summary, optional diff / todo snapshot.")

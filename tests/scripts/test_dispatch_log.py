@@ -131,6 +131,13 @@ def test_an_unreadable_jobs_value_is_reported_not_raised():
     assert '"jobs": "mac,mac"' in text
 
 
+@pytest.mark.parametrize("extra", [{"DEFAULT_BRANCH": "develop"}, {"CHANNEL": "magic-test"}])
+def test_a_malformed_commit_is_reported_without_a_replay_not_raised(extra):
+    # The log must not fail the build; admission refuses the input next.
+    text = dispatch_log.report(env(BUILD_COMMIT="not-a-sha", **extra))
+    assert "workflow: " not in text and '"build_commit": "not-a-sha"' in text
+
+
 def test_report_omits_values_the_workflow_did_not_forward(monkeypatch):
     monkeypatch.setenv("CLOUDFLARE_R2_SECRET_ACCESS_KEY", "secret-value")
     text = dispatch_log.report(env(BUILD_COMMIT=SHA))

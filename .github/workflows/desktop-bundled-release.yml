@@ -480,6 +480,7 @@ jobs:
           fetch-depth: ${{ (inputs.build_commit != '' || needs.validate.outputs.channel-build != '') && 1 || 0 }}
           filter: blob:none
           fetch-tags: ${{ inputs.build_commit == '' && needs.validate.outputs.channel-build == '' }}
+          persist-credentials: false
 
       - name: Check out trusted channel controller
         if: needs.validate.outputs.channel-build != ''
@@ -767,6 +768,9 @@ jobs:
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
     cache-mode: read
+    permissions:
+      contents: read
+      id-token: write
     timeout-minutes: 900
     strategy: *win32-strategy
     env: *win32-env
@@ -783,6 +787,9 @@ jobs:
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
     cache-mode: read
+    permissions:
+      contents: read
+      id-token: write
     timeout-minutes: 900
     strategy: *win32-strategy-arm64
     env: *win32-env
@@ -897,6 +904,7 @@ jobs:
           fetch-depth: ${{ (inputs.build_commit != '' || needs.validate.outputs.channel-build != '') && 1 || 0 }}
           filter: blob:none
           fetch-tags: ${{ inputs.build_commit == '' && needs.validate.outputs.channel-build == '' }}
+          persist-credentials: false
 
       - name: Check out trusted channel controller
         # Release candidates take the notarization preflight from here too: the
@@ -1229,6 +1237,8 @@ jobs:
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
     cache-mode: read
+    permissions:
+      contents: read
     timeout-minutes: 360
     strategy: *darwin-strategy
     env: *darwin-env

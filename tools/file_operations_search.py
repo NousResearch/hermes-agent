@@ -953,7 +953,7 @@ class SearchMixin:
             return None
         path = self._expand_path(path)  # the same backend root the primary search used (~ included)
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
-        words = [self._quote_executable(rg_executable), "--hidden --no-ignore --count",
+        words = [self._quote_executable(rg_executable), "--hidden --no-ignore --count --with-filename",
                  f"{glob_expr} {self._search_prune_glob_args()}",
                  "-e", self._escape_shell_arg(pattern, translate_path=False), "--", self._escape_native_tool_arg(path)]
         bound = 1000

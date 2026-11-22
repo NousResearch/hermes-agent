@@ -1,12 +1,12 @@
 name: galaxymem
 repo: https://github.com/k1ng0mar/galaxymem
-sha: bb0485f6818b3729a683f0597201ec092cab80c6
-description: "Entity-scoped memory provider with four epistemic networks (world, experience, opinion, observation), decay, hybrid vector and keyword recall, temporal queries, spreading activation and autonomous reflection, all in one local SQLite file. Exposes 18 gm_* tools and injects bright memories into the prompt. Disclosure: batched extraction, reflection, query expansion and reasoning send turn text to the LLM configured for auxiliary.galaxymem through Hermes credentials. Embeddings run locally with fastembed; first use downloads BAAI/bge-small-en-v1.5 from Hugging Face, about 100 MB. GALAXYMEM_EMBEDDING_API_URL sends embedding text to that endpoint, with GALAXYMEM_EMBEDDING_API_KEY read from the environment. The optional reranker downloads cross-encoder/ms-marco-MiniLM-L-6-v2 from Hugging Face. Data lives in $HERMES_HOME/galaxymem/db or GALAXYMEM_DB_PATH. No telemetry, no self-updater."
+sha: 48768998c89a378a564426812de2ae0912f14b35
+description: "Entity-scoped memory provider with four epistemic networks (world, experience, opinion, observation), decay, hybrid vector and keyword recall, temporal queries, spreading activation and autonomous reflection, all in one local SQLite file. Exposes 18 gm_* tools and injects bright memories into the prompt. Disclosure: batched extraction, reflection, query expansion and reasoning call the LLM configured for auxiliary.galaxymem through Hermes credentials; the task follows the active model unless overridden. Embeddings run locally with fastembed; first use downloads BAAI/bge-small-en-v1.5 from Hugging Face, about 100 MB. The optional reranker downloads cross-encoder/ms-marco-MiniLM-L-6-v2 from Hugging Face. Data lives in $HERMES_HOME/galaxymem/db or GALAXYMEM_DB_PATH. No telemetry, no self-updater."
 maintainer: k1ng0mar
 tier: community
 category: memory
 requires_hermes: ">=0.23.0"
-version: "0.2.2"
+version: "0.2.3"
 docs_url: https://github.com/k1ng0mar/galaxymem#readme
 capabilities:
   provides_tools:

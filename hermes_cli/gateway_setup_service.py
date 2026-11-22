@@ -120,6 +120,12 @@ def _requests_install_options(args) -> bool:
             or any(getattr(args, k, False) for k in ("system", "run_as_user", "force", "force_unit_path")))
 
 
+def _messaging_configured() -> bool:
+    """A messaging platform is connected the way the gateway itself loads it (env or config.yaml)."""
+    from gateway.config import load_gateway_config
+    return bool(load_gateway_config().get_connected_platforms())
+
+
 def install_after_setup(args) -> bool:
     """``hermes gateway install --if-missing``, the installers' step after setup: setup's one
     consent question, never a second install path. A recorded decline installs nothing; an
@@ -138,6 +144,11 @@ def install_after_setup(args) -> bool:
         return False
     if _requests_install_options(args):
         return True
+    if _recorded_choice() is None and not _messaging_configured():
+        # First-run setup asks one question and connects no platform: nothing needs a service yet.
+        gw.print_info("No messaging platform connected, so no gateway service was installed. "
+                      "Connect one with: hermes setup gateway")
+        return False
     if ensure_gateway_service(context="setup", interactive=True):
         return False
     # A Yes (now or saved) that did not end in a running service is a failure: the install or its

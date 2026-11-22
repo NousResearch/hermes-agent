@@ -32,8 +32,22 @@ function transcriptBytes(state: ClientSessionState): number {
   return JSON.stringify(state.messages).length * 2
 }
 
+const pendingMessageByTranscript = new WeakMap<ClientSessionState['messages'], boolean>()
+
 function hasDraftOrInFlightMessage(state: ClientSessionState): boolean {
-  return state.messages.some(message => message.pending === true)
+  // prune() runs after every published state, including each streamed delta.
+  // Most of the cache is settled transcripts whose arrays never change, so the
+  // O(messages) scan only needs to happen once per array identity.
+  const cached = pendingMessageByTranscript.get(state.messages)
+
+  if (cached !== undefined) {
+    return cached
+  }
+
+  const pending = state.messages.some(message => message.pending === true)
+  pendingMessageByTranscript.set(state.messages, pending)
+
+  return pending
 }
 
 /**

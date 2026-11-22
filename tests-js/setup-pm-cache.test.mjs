@@ -73,8 +73,10 @@ const targetOf = job => job.strategy.matrix.target.map(row => row.label)
 const desktopLegs = cacheUsers(desktop)
 
 const SHA = 'a'.repeat(40)
+// A release leg builds only for Stable Release's candidate phase (stable-release.yml passes
+// release-phase: candidate and no upload_release); a direct tag dispatch is refused at validate.
 const dispatches = {
-  tag: { build_commit: '', channel: '', 'release-phase': '', upload_release: true },
+  candidate: { build_commit: '', channel: '', 'release-phase': 'candidate', upload_release: false },
   commit: { build_commit: SHA, channel: '', 'release-phase': '', upload_release: false },
   channel: { build_commit: SHA, channel: 'preview', 'release-phase': '', upload_release: false },
 }
@@ -107,7 +109,7 @@ it.each([
     // Only the release branch writes the shared cache; commit and channel
     // builds of unreviewed inputs run the read-only leg.
     const needs = admitted(targetOf(job))
-    expect(evaluate(job.if, { inputs: dispatches.tag, needs })).toBe(cacheMode === 'write')
+    expect(evaluate(job.if, { inputs: dispatches.candidate, needs })).toBe(cacheMode === 'write')
     expect(evaluate(job.if, { inputs: dispatches.commit, needs })).toBe(cacheMode === 'read')
     expect(evaluate(job.if, { inputs: dispatches.channel, needs })).toBe(cacheMode === 'read')
   }
@@ -151,7 +153,7 @@ it.each([
     ...context, steps: { prepare: { outcome } }, status: { failure: outcome !== 'success' },
   })
   const trusted = cacheMode
-    ? { inputs: dispatches.tag }
+    ? { inputs: dispatches.candidate }
     : { inputs: { ref: '' }, github: payloadEvents.trusted }
   expect(saves(trusted)).toBe(true)
   expect(saves(trusted, 'failure')).toBe(false)
@@ -182,8 +184,8 @@ it('each selection gate joins exactly one target\'s two trust branches after adm
     // The gate runs always() to judge a skipped branch, so it must still
     // refuse a failed admission itself.
     const needs = admitted([label])
-    expect(evaluate(gate.if, { inputs: dispatches.tag, needs })).toBe(true)
-    expect(evaluate(gate.if, { inputs: dispatches.tag,
+    expect(evaluate(gate.if, { inputs: dispatches.candidate, needs })).toBe(true)
+    expect(evaluate(gate.if, { inputs: dispatches.candidate,
       needs: { validate: { ...needs.validate, result: 'failure' } } })).toBe(false)
   }
 })

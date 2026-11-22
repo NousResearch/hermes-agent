@@ -166,17 +166,24 @@ def test_explicit_install_records_only_completed_install(supervisor, monkeypatch
 
 
 @pytest.mark.platforms("linux")
-@pytest.mark.parametrize("choice, answer, fail", [
-    ("decline", True, False), (None, False, False), (None, True, True), ("install", True, True)])
-def test_installer_step_after_setup_honours_the_recorded_choice(supervisor, monkeypatch, choice, answer, fail):
+@pytest.mark.parametrize("choice, answer, fail, messaging", [
+    ("decline", True, False, True), (None, False, False, True), (None, True, True, True),
+    ("install", True, True, False), (None, True, False, False), (None, False, False, "yaml")])
+def test_installer_step_after_setup_honours_the_recorded_choice(supervisor, monkeypatch, choice, answer, fail,
+                                                                 messaging):
     """Regression for #157677: ``install.sh``/``install.ps1`` run ``gateway install --if-missing``
     after setup. A decline recorded there installs nothing and stays recorded; an unanswered
-    question is asked once, No still writes no unit, and a Yes (fresh or saved) whose install
-    fails exits 1."""
+    question is asked once when a platform is connected (none connected: not asked, nothing
+    installed), No still writes no unit, and a Yes (fresh or saved) whose install fails exits 1."""
     from argparse import Namespace
 
     _profile, calls = supervisor
     config_api.save_config({"gateway": {"service_install_choice": choice}})
+    if messaging == "yaml":  # a bot saved in config.yaml only, no env token
+        config_api.save_config({"gateway": {"service_install_choice": choice},
+                                "platforms": {"telegram": {"enabled": True, "token": "123:test-token"}}})
+    elif messaging:
+        config_api.save_env_value("TELEGRAM_BOT_TOKEN", "123:test-token")
     if fail:
         monkeypatch.setenv("CHOICE_FAIL", "1")
     prompts = []
@@ -195,8 +202,8 @@ def test_installer_step_after_setup_honours_the_recorded_choice(supervisor, monk
     gateway._cmd_install(args)
     assert not gateway.get_systemd_unit_path().exists()
     assert not any(set(op) & {"enable", "start", "daemon-reload"} for op in _operations(calls))
-    assert config_api.load_config()["gateway"]["service_install_choice"] == "decline"
-    assert len(prompts) == (0 if choice == "decline" else 1)
+    assert config_api.load_config()["gateway"]["service_install_choice"] == ("decline" if messaging else None)
+    assert len(prompts) == (1 if messaging and choice is None else 0)
 
 
 @pytest.mark.platforms("linux")

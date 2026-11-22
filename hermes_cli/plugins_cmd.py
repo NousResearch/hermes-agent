@@ -15,7 +15,7 @@ import threading
 from pathlib import Path
 from typing import Any, NoReturn, Optional
 
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_constants import get_hermes_home, hermes_home_key, mkdir_under_hermes_home
 from hermes_cli.config import cfg_get
 from hermes_cli.plugin_capabilities import _child_dict
 # Tests patch these two on the facade; the install/remove siblings read them through it.
@@ -263,9 +263,7 @@ def _scan_merged_tree(plugin_dir: Path, identifier: str, merged: Optional[list[s
 
 def _plugins_dir() -> Path:
     """Return the user plugins directory, creating it if needed."""
-    plugins = get_hermes_home() / "plugins"
-    plugins.mkdir(parents=True, exist_ok=True)
-    return plugins
+    return mkdir_under_hermes_home(get_hermes_home() / "plugins")
 
 
 def _sanitize_plugin_name(name: str, plugins_dir: Path, *, allow_subdir: bool = False) -> Path:
@@ -1102,6 +1100,11 @@ def _catalog():
     return plugins_cmd_catalog
 
 
+def _settings_cli():
+    from hermes_cli.plugins_settings import cli
+    return cli
+
+
 def _action_update(args):
     if args.name:
         if getattr(args, "yes", False):
@@ -1175,6 +1178,7 @@ _PLUGIN_ACTIONS = {
     "pack": _action_pack,
     "show": lambda args: cmd_show(args.name),
     "info": lambda args: _catalog().cmd_info(args.name),
+    **dict.fromkeys(("config", "configure", "settings"), lambda args: _settings_cli().cmd_config(args.name)),
     None: lambda args: cmd_toggle(),
 }
 

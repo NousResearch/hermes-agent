@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 import json
@@ -25,10 +25,6 @@ _PEM_BEGIN = "-----BEGIN " + "PRIVATE KEY-----"
 _PEM_END = "-----END " + "PRIVATE KEY-----"
 # AlgorithmIdentifier contents: OID id-ecPublicKey (1.2.840.10045.2.1), OID prime256v1 (1.2.840.10045.3.1.7).
 _P256_ALGORITHM = bytes.fromhex("06072a8648ce3d0201 06082a8648ce3d030107")
-_PEM_BLOCK_RE = re.compile(
-    r"-----BEGIN [A-Z0-9 ]+-----.*?-----END [A-Z0-9 ]+-----",
-    re.DOTALL,
-)
 _HTTP_STATUS_RE = re.compile(
     r'\b(?:HTTP\s+status\s+code|"?statusCode"?)\s*:\s*(?:Optional\()?(\d{3})\b',
     re.IGNORECASE,
@@ -129,15 +125,6 @@ def validate_p8_pem(pem_text: str) -> str | None:
     if not _is_p256_pkcs8(der):
         return "App Store Connect .p8 key file does not contain a complete PKCS#8 EC P-256 private key"
     return None
-
-
-def redact_secrets(text: str, secrets: Iterable[str]) -> str:
-    """Remove secret tokens and PEM blocks before logging diagnostic output."""
-    cleaned = _PEM_BLOCK_RE.sub("[REDACTED PEM]", text)
-    for secret in secrets:
-        if secret:
-            cleaned = cleaned.replace(secret, "***")
-    return cleaned.strip()
 
 
 def classify_notarytool_failure(output: str) -> tuple[PreflightStatus, str]:
@@ -288,12 +275,11 @@ def check_notary_auth(
     if proc.returncode == 0:
         return PreflightResult(PreflightStatus.OK, _success_message(proc.stdout or ""))
 
-    raw_output = "\n".join(part for part in (proc.stderr or "", proc.stdout or "") if part.strip())
-    # Key material echoed without its PEM markers would escape the block pattern.
-    body = [line.strip() for line in pem_text.splitlines() if line.strip() and not line.strip().startswith("-----")]
-    redacted = redact_secrets(raw_output, (*body, clean_key_id, clean_issuer))
-    status, message = classify_notarytool_failure(redacted)
-    return PreflightResult(status, message, detail=redacted)
+    # notarytool's own text is classified but never logged: it can echo arguments or key
+    # material in a layout no redaction anticipates. The notarize hook logs its own run.
+    output = "\n".join(part for part in (proc.stderr or "", proc.stdout or "") if part.strip())
+    status, message = classify_notarytool_failure(output)
+    return PreflightResult(status, message, detail=f"xcrun notarytool history exited with status {proc.returncode}")
 
 
 def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) -> int:

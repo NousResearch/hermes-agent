@@ -242,18 +242,29 @@ def test_check_notary_auth_handles_success_timeout_oserror_and_redacts_secrets(t
     assert issuer not in combined
     assert _PEM_BEGIN not in combined
 
-    body_lines = pem.splitlines()[1:-1]
+    # Key material echoed without markers, wrapped at other columns than the file's, on either log path.
+    body = "".join(pem.splitlines()[1:-1])
+    rewrapped = [body[i : i + 40] for i in range(0, len(body), 40)]
     for code, expected in ((401, PreflightStatus.AUTH_FAILED), (500, PreflightStatus.TRANSIENT)):
         def body_echo_runner(argv: list[str], timeout: float, code: int = code) -> subprocess.CompletedProcess[str]:
             return subprocess.CompletedProcess(
-                argv, 1, stdout="", stderr=f"Error: HTTP status code: {code}.\nkey:\n" + "\n".join(body_lines),
+                argv, 1, stdout="", stderr=f"Error: HTTP status code: {code}.\nkey:\n" + "\n".join(rewrapped),
             )
 
         echoed = check_notary_auth(str(key_file), key_id, issuer, runner=body_echo_runner)
         assert echoed.status is expected
-        assert "HTTP status code" in echoed.detail
-        leaked = [line for line in body_lines if line in f"{echoed.message}\n{echoed.detail}"]
-        assert not leaked, f"key body lines reached the log on HTTP {code}"
+        leaked = [chunk for chunk in rewrapped if chunk in f"{echoed.message}\n{echoed.detail}"]
+        assert not leaked, f"key material reached the log on HTTP {code}"
+
+    # The verdict comes from notarytool's text alone; nothing in the key file can rewrite it.
+    preamble_key = tmp_path / "preamble.p8"
+    preamble_key.write_text("403\n" + pem, encoding="utf-8")
+
+    def forbidden_runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="Error: HTTP status code: 403. Forbidden.")
+
+    forbidden = check_notary_auth(str(preamble_key), key_id, issuer, runner=forbidden_runner)
+    assert forbidden.status is PreflightStatus.AUTH_FAILED
 
     def timeout_runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(argv, timeout)

@@ -36,11 +36,21 @@ fi
 if [ "${1:-}" = "run" ]; then
   shift
   has_model=0
+  has_server=0
   for arg in "$@"; do
-    case "$arg" in -m|--model|--model=*) has_model=1 ;; esac
+    case "$arg" in
+      -m|--model|--model=*) has_model=1 ;;
+      --standalone|--server|--server=*) has_server=1 ;;
+    esac
   done
   if [ "$has_model" = 0 ]; then
     set -- -m "$OPENCODE_DEFAULT_MODEL" "$@"
+  fi
+  # 2026-11-22 OpenCode 2: `run` talks to a shared background service by default, which keeps the
+  # environment it was started with (key, PlainBoard token). A private server per run keeps the
+  # wrapper's environment and slots meaningful.
+  if [ "$has_server" = 0 ]; then
+    set -- --standalone "$@"
   fi
   set -- run "$@"
 

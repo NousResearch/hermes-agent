@@ -225,11 +225,13 @@ It also supports:
 - approval callbacks for dangerous commands
 
 Docker foreground commands retain namespace process-group ownership when yielded to the
-registry. Cancellation sends TERM to the whole owned group, waits the grace period, sends
-KILL to survivors, and verifies termination. Unlike host process teardown, this does not
+registry. Cancellation sends TERM to the whole owned group and, when
+`terminal.daemon_term_grace_seconds` is positive, waits that grace period, sends KILL to
+survivors, and verifies termination. Setting it to 0 disables escalation and permits survivors
+without reporting a termination failure. Unlike host process teardown, this does not
 give only the parent a separate grace period. A non-trapping workload stops on TERM;
 TERM handlers may legitimately write cleanup output during the grace period, and ignoring
-TERM does not prevent escalation to KILL. A stop acknowledgement is not a transactional
+TERM does not prevent escalation to KILL when enabled. A stop acknowledgement is not a transactional
 rollback of side effects already performed.
 
 `tools/process_registry_adoption.py` owns local and sandbox foreground adoption as registry

@@ -46,6 +46,9 @@ class DockerForeground:
     def kill(self) -> None:
         q = shlex.quote
         steps = math.ceil(self.term_grace / 0.05)
+        escalation = (f'wait_group {steps} && exit 0; '
+                      'kill -KILL -- -"$p" 2>/dev/null || :; wait_group 40'
+                      if steps else 'exit 0')
         # The cancel fence also covers an interrupt before the namespace child has published its PID.
         result = self.control(
             f"mkdir -p {q(self.directory)} && touch {q(self.directory + '/cancel')} || exit 1; "
@@ -60,8 +63,6 @@ class DockerForeground:
             'wait_group() { local attempt; for ((attempt=0; attempt<$1; attempt++)); do '
             'alive_group || return 0; sleep 0.05; done; ! alive_group; }; '
             'kill -TERM -- -"$p" 2>/dev/null || :; '
-            f'wait_group {steps} && exit 0; '
-            'kill -KILL -- -"$p" 2>/dev/null || :; '
-            'wait_group 40; else exit 0; fi', timeout=max(10, self.term_grace + 5))
+            f'{escalation}; else exit 0; fi', timeout=max(10, self.term_grace + 5))
         if result["returncode"] != 0:
             raise RuntimeError("Docker foreground process group termination could not be verified")

@@ -1,17 +1,17 @@
 name: ceo-pack
 title: CEO Pack
 repo: https://github.com/tradersurfer/ceo-pack
-sha: c0335cd2a162ca5bde9d9d1b5baec6b59723c392
+sha: e3f18e0ba28b0c168b845dfb768dd6f6f1f14dc6
 description: "CEO Pack gives you an AI C-suite inside Hermes. You say what your business needs in plain words, and the pack turns it into a plan — it works out which seat should own each job (money, legal, marketing, tech, operations, or the chief of staff), assigns it, and checks the work before calling it done. Anything big, priced, or hard to undo stops and asks for your approval first, so you stay the boss. v0.5.0 adds a dashboard tab with a live org chart, task board and approval center, a persistent task registry, delegation you can configure from chat, and a native Desktop plugin. Every answer is ELI5 — plain words a business owner can follow. For developers — stdlib-only, no network calls and no model calls. The plugin routes and verifies work on your Hermes model, suggests a free model by default, and keeps every task, decision, and run in a local registry. Type 1 approval is owner-only: there is no model-callable approval tool, and you approve from the dashboard or with /task-approve."
 maintainer: tradersurfer93
 tier: community
 category: tools
 requires_hermes: ">=0.22.5"
-docs_url: https://github.com/tradersurfer/ceo-pack/blob/c0335cd2a162ca5bde9d9d1b5baec6b59723c392/README.md
-image: https://raw.githubusercontent.com/tradersurfer/ceo-pack/c0335cd2a162ca5bde9d9d1b5baec6b59723c392/assets/ceo-pack-cover-v040.jpg
+docs_url: https://github.com/tradersurfer/ceo-pack/blob/e3f18e0ba28b0c168b845dfb768dd6f6f1f14dc6/README.md
+image: https://raw.githubusercontent.com/tradersurfer/ceo-pack/e3f18e0ba28b0c168b845dfb768dd6f6f1f14dc6/assets/ceo-pack-cover-v040.jpg
 screenshots:
-  - https://raw.githubusercontent.com/tradersurfer/ceo-pack/c0335cd2a162ca5bde9d9d1b5baec6b59723c392/assets/readme/ceo-pack-dashboard-org.png
-  - https://raw.githubusercontent.com/tradersurfer/ceo-pack/c0335cd2a162ca5bde9d9d1b5baec6b59723c392/assets/readme/ceo-pack-dashboard-board.png
+  - https://raw.githubusercontent.com/tradersurfer/ceo-pack/e3f18e0ba28b0c168b845dfb768dd6f6f1f14dc6/assets/readme/ceo-pack-dashboard-org.png
+  - https://raw.githubusercontent.com/tradersurfer/ceo-pack/e3f18e0ba28b0c168b845dfb768dd6f6f1f14dc6/assets/readme/ceo-pack-dashboard-board.png
 readme: true
 platforms: []
 known_issues:

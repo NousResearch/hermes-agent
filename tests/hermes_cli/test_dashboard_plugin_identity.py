@@ -151,6 +151,50 @@ def test_unenabled_plugin_borrowing_a_user_plugins_name_stays_inert(dash):
     assert rows["owner-tool"]["runtime_status"] == "enabled"
 
 
+@pytest.mark.parametrize("tab", ["own-tab", "borrowed"])
+@pytest.mark.parametrize("owner", ["disk-cleanup", "owner-tool"])
+def test_a_plugin_yaml_name_borrowed_from_another_plugin_grants_no_consent(dash, owner, tab):
+    """``plugins.enabled`` naming a plugin never turns on another directory whose plugin.yaml claims that
+    name (the loader skips such a directory too), whatever its dashboard name."""
+    tab = owner if tab == "borrowed" else tab
+    if owner == "owner-tool":
+        _install(dash.home, "owner-tool", "owner-tool", yaml_name="owner-tool")
+    imported = _install(dash.home, "other-dir", tab, yaml_name=owner)
+    _plugins(dash.home, enabled=[owner])
+    dash.start()
+
+    assert not imported.exists()
+    response = dash.ping(tab)
+    assert response.status_code == 404 or response.json() == {"pong": "owner-tool"}  # never the other plugin
+    assert tab == "owner-tool" or tab not in dash.listed()
+    assert not imported.exists()
+    if owner == "owner-tool":  # the plugin that owns the name keeps it
+        assert dash.ping("owner-tool").json() == {"pong": "owner-tool"}
+
+
+def test_a_plugin_yaml_name_another_plugin_also_answers_to_still_disables_it(dash):
+    """Owning a name decides consent only: ``plugins.disabled`` still matches every name a plugin declares."""
+    _install(dash.home, "shared-name", "shared-name", yaml_name="shared-name")
+    imported = _install(dash.home, "dash-dir", "dir-tab", yaml_name="shared-name")
+    _plugins(dash.home, enabled=["dash-dir"], disabled=["shared-name"])
+    dash.start()
+
+    assert not imported.exists()
+    assert dash.ping("dir-tab").status_code == 404
+    assert dash.asset("dir-tab").status_code == 404
+    assert not imported.exists()
+
+
+def test_a_plugin_enabled_by_its_own_plugin_yaml_name_mounts(dash):
+    """The loader's other spelling: ``plugins.enabled`` naming the plugin.yaml name turns it on too."""
+    imported = _install(dash.home, "dash-dir", "dir-tab", yaml_name="yaml-only-name")
+    _plugins(dash.home, enabled=["yaml-only-name"])
+    dash.start()
+
+    assert imported.exists()
+    assert dash.ping("dir-tab").json() == {"pong": "dash-dir"}
+
+
 def test_plugin_enabled_by_its_directory_key_mounts_and_lists(dash):
     """``hermes plugins enable hermes-mobile`` turns on a plugin whose dashboard calls itself ``mobile``."""
     imported = _install(dash.home, "hermes-mobile", "mobile", yaml_name="hermes-mobile")

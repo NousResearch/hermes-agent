@@ -10,8 +10,14 @@ vi.mock('@/store/gateway', () => ({ $gateway: atom(null) }))
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ reloadOpenStarmapGraph: vi.fn(), resetStarmapGraph: vi.fn() }))
 
-const { $profiles, $profilesByConnection, invalidateProfileListFetches, refreshActiveProfile, refreshProfiles } =
-  await import('./profile')
+const {
+  $profiles,
+  $profilesByConnection,
+  freshProfileRoster,
+  invalidateProfileListFetches,
+  refreshActiveProfile,
+  refreshProfiles
+} = await import('./profile')
 
 const { $connection } = await import('./session')
 
@@ -68,8 +74,10 @@ it('keeps failed incoming profile reads isolated while retaining the outgoing co
   await refresh
 
   expect($profiles.get()).not.toContain(outgoing[1])
+  expect(freshProfileRoster('source-b')).toBeNull()
   activate('source-a')
   expect($profiles.get()).toBe(outgoing)
+  expect(freshProfileRoster('source-a')).toBeNull()
 })
 
 it('lets a fresh active-source list land even when the fleet roster arrives first', async () => {
@@ -135,4 +143,46 @@ it('strands a retry during a same-profile source change without retargeting it t
   expect(api.mock.calls.map(([request]) => request.connectionId)).toEqual(['source-a', 'source-b'])
   expect($profiles.get()).toBe(incoming)
   expect($profilesByConnection.get().get('source-b')).toBe(incoming)
+})
+
+it('authorizes only the accepted fresh source roster, never a cached paint or stranded flight', async () => {
+  const original = [profile('default')]
+  const updated = [profile('default'), profile('worker')]
+  let resolveOld!: (value: { profiles: ProfileInfo[] }) => void
+
+  const api = vi.fn<(request: { connectionId?: string }) => Promise<{ profiles: ProfileInfo[] }>>(async () => ({
+    profiles: original
+  }))
+
+  vi.stubGlobal('window', { hermesDesktop: { api } })
+  activate('source-a')
+  await refreshProfiles()
+  expect(freshProfileRoster('source-a')).toBe(original)
+  expect(freshProfileRoster('source-b')).toBeNull()
+  setApiRequestConnection('source-b')
+  expect(freshProfileRoster('source-a')).toBeNull()
+  setApiRequestConnection('source-a')
+
+  api.mockImplementationOnce(() => new Promise(done => (resolveOld = done)))
+  const staleFlight = refreshProfiles()
+  activate('source-b')
+  expect(freshProfileRoster('source-a')).toBeNull()
+  activate('source-a')
+  expect($profiles.get()).toBe(original)
+  expect(freshProfileRoster('source-a')).toBeNull()
+  resolveOld({ profiles: updated })
+  await staleFlight
+  expect(freshProfileRoster('source-a')).toBeNull()
+  // A successful but misrouted ambient read must not certify source A.
+  setApiRequestConnection('source-b')
+  await refreshProfiles()
+  expect(freshProfileRoster('source-a')).toBeNull()
+  setApiRequestConnection('source-a')
+
+  api.mockResolvedValueOnce({ profiles: updated })
+  await refreshProfiles()
+  expect(freshProfileRoster('source-a')).toBe(updated)
+  expect(api.mock.calls.at(-1)?.[0].connectionId).toBe('source-a')
+  invalidateProfileListFetches()
+  expect(freshProfileRoster('source-a')).toBeNull()
 })

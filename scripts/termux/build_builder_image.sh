@@ -6,7 +6,7 @@
 # Pushes to GHCR with the repo's CI identity (GITHUB_TOKEN); idempotent --
 # an existing identical tag is left alone.
 #
-# Usage: build_builder_image.sh [--no-push]   (build + push if missing; --no-push or TERMUX_BUILDER_NO_PUSH=1 builds locally only)
+# Usage: build_builder_image.sh [--no-push]   (build + push if missing; --no-push or TERMUX_BUILDER_NO_PUSH=1 falls back to the digest-pinned base image)
 set -euo pipefail
 
 NO_PUSH="${TERMUX_BUILDER_NO_PUSH:-0}"
@@ -42,16 +42,21 @@ if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
     exit 0
 fi
 
-TARGET_IMAGE="$IMAGE"
 if [ "$NO_PUSH" = "1" ]; then
-    TARGET_IMAGE="hermes-termux-builder-local:${SHORT}"
+    # termux_build.sh pulls the image and reads RepoDigests[0]; a job-local tag
+    # has neither. Falling back to the digest-pinned base image works on both
+    # current and pre-claim checkouts because termux_build.sh provisions the
+    # toolchain inside the container when clang/git are absent.
+    echo "builder image not published (push disabled); falling back to base: $BASE"
+    echo "$BASE"
+    exit 0
 fi
 
-echo "building $TARGET_IMAGE from $BASE"
+echo "building $IMAGE from $BASE"
 docker build \
     -f "$DOCKERFILE" \
     --build-arg "BASE=${BASE}" \
-    -t "$TARGET_IMAGE" \
+    -t "$IMAGE" \
     scripts/termux \
     || { echo "builder image build failed" >&2; exit 1; }
 
@@ -59,7 +64,7 @@ docker build \
 # performs (clang + rustc + cargo + make) before we publish it. /bin/sh is
 # linked at RUNTIME inside the wheelhouse phase's --tmpfs /bin, so it is
 # deliberately absent from the baked image.
-docker run --rm --platform linux/arm64 "$TARGET_IMAGE" \
+docker run --rm --platform linux/arm64 "$IMAGE" \
     /data/data/com.termux/files/usr/bin/bash -c '
         export PREFIX=/data/data/com.termux/files/usr
         for tool in clang rustc cargo make; do
@@ -68,13 +73,7 @@ docker run --rm --platform linux/arm64 "$TARGET_IMAGE" \
         echo "builder image smoke OK"
     ' || { echo "builder image failed its smoke test" >&2; exit 1; }
 
-if [ "$NO_PUSH" = "1" ]; then
-    echo "built locally (push disabled): $TARGET_IMAGE"
-    echo "$TARGET_IMAGE"
-    exit 0
-fi
-
 echo "$GITHUB_TOKEN" | docker login "$REGISTRY" -u "${GITHUB_ACTOR:-x}" --password-stdin
-docker push "$TARGET_IMAGE" || { echo "builder image push failed" >&2; exit 1; }
-echo "published $TARGET_IMAGE"
-echo "$TARGET_IMAGE"
+docker push "$IMAGE" || { echo "builder image push failed" >&2; exit 1; }
+echo "published $IMAGE"
+echo "$IMAGE"

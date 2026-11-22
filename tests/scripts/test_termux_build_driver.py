@@ -231,8 +231,10 @@ def test_builder_image_identity_covers_all_inputs(tmp_path, changed_input):
 
 
 @pytest.mark.parametrize("mode", ["flag", "env"])
-def test_builder_image_no_push_builds_local_image_without_registry_login_or_push(tmp_path, mode):
-    """Commit builds must never log in or push to GHCR on a builder-image cache miss."""
+def test_builder_image_no_push_falls_back_to_digest_pinned_base_image(tmp_path, mode):
+    """Commit builds must never build/login/push to GHCR on a miss; fall back to the pinned base digest."""
+    from pm.lock import termux_docker_digest
+
     repo = tmp_path / "repo"
     scripts = repo / "scripts/termux"
     scripts.mkdir(parents=True)
@@ -249,9 +251,7 @@ def test_builder_image_no_push_builds_local_image_without_registry_login_or_push
         "printf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\n"
         "case \"$1 $2\" in\n"
         "  'manifest inspect') exit 1 ;;\n"
-        "  'build '*) exit 0 ;;\n"
-        "  'run '*) echo 'builder image smoke OK'; exit 0 ;;\n"
-        "  'login '*|'push '*) echo \"FORBIDDEN docker $1\" >&2; exit 99 ;;\n"
+        "  'build '*|'run '*|'login '*|'push '*) echo \"FORBIDDEN docker $1\" >&2; exit 99 ;;\n"
         "  *) exit 1 ;;\n"
         "esac\n",
         encoding="utf-8",
@@ -268,9 +268,6 @@ def test_builder_image_no_push_builds_local_image_without_registry_login_or_push
     result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     image = result.stdout.splitlines()[-1]
-    assert image.startswith("hermes-termux-builder-local:"), image
+    assert image == f"termux/termux-docker@{termux_docker_digest()}", image
     calls = docker_log.read_text(encoding="utf-8").splitlines()
-    assert any(c.startswith("manifest inspect ghcr.io/nousresearch/hermes-termux-builder:") for c in calls)
-    assert any(c.startswith("build ") and f"-t {image}" in c for c in calls)
-    assert any(c.startswith("run ") and image in c for c in calls)
-    assert not any(c.startswith(("login ", "push ")) for c in calls), calls
+    assert len(calls) == 1 and calls[0].startswith("manifest inspect ghcr.io/nousresearch/hermes-termux-builder:")

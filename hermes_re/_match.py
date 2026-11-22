@@ -6,6 +6,7 @@ when the group did not take part), already in the caller's group numbering. For 
 """
 from __future__ import annotations
 
+import operator
 import types
 
 from . import _offsets
@@ -30,11 +31,11 @@ class Match:
         self._offsets = offsets  # sparse offset index of the subject (None for byte == char offsets)
 
     def _index(self, group):
-        if group.__class__ is int:
-            if 0 <= group <= self.re.groups:
-                return group
+        if group.__class__ is int or hasattr(type(group), "__index__"):  # as stdlib: True is group 1
+            if 0 <= operator.index(group) <= self.re.groups:
+                return operator.index(group)
         else:
-            index = self.re.groupindex.get(group)
+            index = self.re._names.get(group)
             if index is not None:
                 return index
         raise IndexError("no such group")
@@ -85,11 +86,20 @@ class Match:
         return tuple(self._text(g, default) for g in range(1, self.re.groups + 1))
 
     def groupdict(self, default=None):
-        return {name: self._text(index, default) for name, index in self.re.groupindex.items()}
+        return {name: self._text(index, default) for name, index in self.re._names.items()}
 
     def expand(self, template):
-        fill = _template(template, self.re)
+        fill = _template(template, self.re, False)
         return fill(self) if callable(fill) else fill
+
+    def __copy__(self):  # as stdlib: a Match is immutable, so a copy is itself
+        return self
+
+    def __deepcopy__(self, memo):
+        return self
+
+    def __reduce__(self):
+        raise TypeError("cannot pickle 're.Match' object")
 
     @property
     def lastindex(self):
@@ -112,7 +122,7 @@ class Match:
     @property
     def lastgroup(self):
         index = self.lastindex
-        for name, number in self.re.groupindex.items():
+        for name, number in self.re._names.items():
             if number == index:
                 return name
         return None

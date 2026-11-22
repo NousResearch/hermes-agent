@@ -48,4 +48,5 @@ _SPECIAL[0] = "\\x00"
 def escape(pattern):
     if isinstance(pattern, str):
         return pattern.translate(_SPECIAL)
-    return pattern.decode("latin-1").translate(_SPECIAL).encode("latin-1")
+    # str(buffer, ...) as stdlib: any bytes-like object, and its TypeError for anything else
+    return str(pattern, "latin-1").translate(_SPECIAL).encode("latin-1")

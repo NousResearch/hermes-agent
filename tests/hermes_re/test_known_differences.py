@@ -53,5 +53,3 @@ def test_escape_spells_newline_and_nul_differently():
 def test_missing_api():
     assert hasattr(std.compile("a"), "scanner") and not hasattr(hre.compile("a"), "scanner")
     assert hasattr(std, "Scanner") and not hasattr(hre, "Scanner")
-    assert type(hre.compile("(?P<a>x)").groupindex) is dict  # stdlib: a read-only mappingproxy
-    assert int(std.compile("(?i)a").flags) == 34 and int(hre.compile("(?i)a").flags) == 32  # inline flags are not reported

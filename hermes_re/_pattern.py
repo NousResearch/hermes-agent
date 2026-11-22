@@ -41,7 +41,7 @@ import weakref
 from . import _budget, _comments, _edge_bound, _edge_plan, _engine
 from ._edge_run import step
 from ._errors import error
-from ._flags import RegexFlag, checked
+from ._flags import SSIZE_MAX, SSIZE_MIN, SUPPORTED, RegexFlag, checked, inline_globals, ssize
 from ._form import Form
 from ._match import Match
 from ._offsets import Offsets
@@ -126,26 +126,47 @@ class _Narrow:
 
 
 class Pattern:
-    __slots__ = ("__weakref__", "_anchors", "_built", "_cost", "_edge", "_form", "_is_str", "_key", "_nonb",
-                 "_ranks", "_rx", "_special", "_wide", "_wide_built", "_wide_text", "flags", "groupindex", "groups", "pattern")
+    __slots__ = (
+        "__weakref__",
+        "_anchors",
+        "_built",
+        "_cost",
+        "_edge",
+        "_form",
+        "_is_str",
+        "_key",
+        "_names",
+        "_nonb",
+        "_ranks",
+        "_rx",
+        "_special",
+        "_wide",
+        "_wide_built",
+        "_wide_text",
+        "flags",
+        "groups",
+        "pattern",
+    )
     __class_getitem__ = classmethod(types.GenericAlias)
 
     def __init__(self, pattern, flags):
-        self.pattern, self.flags = pattern, RegexFlag(flags)
+        self.pattern, self.flags = pattern, int(flags)  # an int, as stdlib's
         is_str = self._is_str = isinstance(pattern, str)
         self._ranks = None
         self._built = False
         self._cost, self._key = 0, None
+        engine_flags = int(flags) & SUPPORTED  # a bit without a meaning is ignored, as in stdlib
         if is_str:
-            text, engine_flags = pattern, int(flags)
+            text = pattern
         else:  # bytes: matched byte-wise (Latin-1) with the ASCII classes
-            text, engine_flags = pattern.decode("latin-1"), int(flags) | 256
+            text, engine_flags = pattern.decode("latin-1"), engine_flags | 256
         text = _comments.strip(text, pattern)[0]
         stdlib_syntax(text, not is_str, pattern)  # raises ``error`` where stdlib does
+        self.flags |= inline_globals(text)  # as stdlib: `(?i)a` reports IGNORECASE
         if _edge_plan.wanted(text):  # what the guard rewrite would hide (``_validate.check``)
             check(text, not is_str, pattern, True)
         form = self._form = Form(pattern, text, engine_flags, not is_str, True, weakref.ref(self))  # raises ``error``
-        self.groups, self.groupindex = form.groups, form.groupindex
+        self.groups, self._names = form.groups, types.MappingProxyType(form.groupindex)
         wide = None
         if is_str and "\\b" in text:
             wide = _edge_bound.rewrite(text, engine_flags)[0]
@@ -224,6 +245,10 @@ class Pattern:
             self._build()
             return getattr(self, name)
         raise AttributeError(name)
+
+    @property
+    def groupindex(self):  # as stdlib: read-only, and a new empty dict for a pattern without names
+        return self._names if self._names else {}
 
     def __eq__(self, other):  # as stdlib: equal when pattern and flags are equal
         if other.__class__ is not Pattern:
@@ -304,6 +329,8 @@ class Pattern:
 
     def _one(self, kind, string, pos, endpos):
         """One match attempt. ``kind``: 0 search, 1 match, 2 fullmatch."""
+        if not (pos.__class__ is int is endpos.__class__ and SSIZE_MIN <= pos <= SSIZE_MAX and SSIZE_MIN <= endpos <= SSIZE_MAX):
+            pos, endpos = ssize(pos), ssize(endpos)  # as stdlib: TypeError / OverflowError, bool as int
         data, mode, start, end, offsets, shift, _ = self._open(string, pos, endpos)
         if start > end:
             return None
@@ -363,6 +390,8 @@ class Pattern:
                 start = step(data, last)
 
     def finditer(self, string, pos=0, endpos=sys.maxsize):
+        if not (pos.__class__ is int is endpos.__class__ and SSIZE_MIN <= pos <= SSIZE_MAX and SSIZE_MIN <= endpos <= SSIZE_MAX):
+            pos, endpos = ssize(pos), ssize(endpos)  # as stdlib: TypeError / OverflowError, bool as int
         data, mode, start, end, offsets, shift, _ = self._open(string, pos, endpos)  # argument errors raise now
         return (Match(self, string, data, mode, spans, pos, endpos, offsets, shift)
                 for spans in self._spans(data, mode, start, end))
@@ -384,6 +413,8 @@ class Pattern:
         return standin, False
 
     def findall(self, string, pos=0, endpos=sys.maxsize):
+        if not (pos.__class__ is int is endpos.__class__ and SSIZE_MIN <= pos <= SSIZE_MAX and SSIZE_MIN <= endpos <= SSIZE_MAX):
+            pos, endpos = ssize(pos), ssize(endpos)  # as stdlib: TypeError / OverflowError, bool as int
         data, mode, start, end, offsets, _, source = self._open(string, pos, endpos)
         take, raw = self._texts(source, data, mode, offsets)
         empty = b"" if raw else ("" if self._is_str else b"")  # raw: UTF-8 bytes, decoded at the end
@@ -404,6 +435,8 @@ class Pattern:
         return [tuple(str(part, "utf-8") for part in item) for item in out]
 
     def split(self, string, maxsplit=0):
+        if maxsplit.__class__ is not int or not SSIZE_MIN <= maxsplit <= SSIZE_MAX:
+            maxsplit = ssize(maxsplit)
         data, mode, start, end, offsets, _, source = self._open(string, 0, sys.maxsize)
         take, raw = self._texts(source, data, mode, offsets)
         out, last, done = [], 0, 0
@@ -418,6 +451,8 @@ class Pattern:
         return [None if item is None else item.decode("utf-8") for item in out] if raw else out
 
     def subn(self, repl, string, count=0):
+        if count.__class__ is not int or not SSIZE_MIN <= count <= SSIZE_MAX:
+            count = ssize(count)
         data, mode, start, end, offsets, _, source = self._open(string, 0, sys.maxsize)
         take, raw = self._texts(source, data, mode, offsets)
         fill = repl if callable(repl) else _template(repl, self)

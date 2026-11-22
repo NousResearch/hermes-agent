@@ -79,11 +79,34 @@ def parse(template, groups, names):
     return tuple(parts)
 
 
-def template(template, pattern):
-    """The literal itself when it has no escapes, else a callable that expands it."""
+def _binary(template, sub: bool):
+    """A replacement that is neither ``str`` nor ``bytes``, as stdlib's ``sub`` and ``expand``
+    take it: ``sub`` inserts a bytes-like one without a backslash as it is; otherwise it is
+    parsed as bytes once ``re._compile_template``'s cache has hashed it (an unhashable buffer
+    such as a bytearray as its bytes; a typed or writable memoryview raises ValueError there)."""
+    if sub:
+        try:
+            if b"\\" not in memoryview(template).tobytes():
+                return template, True
+        except TypeError:  # not a buffer: stdlib hands it to the template parser, which raises
+            pass
+    try:
+        hash(template)
+    except TypeError:
+        template = bytes(memoryview(template))  # TypeError for an object that is no buffer either
+    return str(template, "latin-1").encode("latin-1"), False
+
+
+def template(template, pattern, sub: bool = True):
+    """The literal itself when it has no escapes, else a callable that expands it. ``sub``:
+    called by ``sub()`` rather than ``Match.expand()``, which differ for a bytes-like literal."""
+    if not isinstance(template, (str, bytes)):
+        template, literal = _binary(template, sub)
+        if literal:
+            return template
     if (b"\\" if isinstance(template, bytes) else "\\") not in template:
         return template
-    parts = parse(template, pattern.groups, tuple(sorted(pattern.groupindex.items())))
+    parts = parse(template, pattern.groups, tuple(sorted(pattern._names.items())))
     if len(parts) == 1 and not isinstance(parts[0], int):
         return parts[0]
     empty = template[:0]

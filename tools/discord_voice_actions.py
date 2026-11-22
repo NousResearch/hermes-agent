@@ -97,6 +97,12 @@ def _connected_guilds(adapter) -> list:
     return out
 
 
+def _join_lock(runner, adapter, guild_id: int) -> asyncio.Lock:
+    """Per-(adapter, guild) lock; only called on the gateway loop, which owns the lock."""
+    locks = runner.__dict__.setdefault("_voice_action_join_locks", {})
+    return locks.setdefault((id(adapter), guild_id), asyncio.Lock())
+
+
 async def _do(runner, adapter, source, action: str, home: str = "") -> dict:
     from gateway.session import SessionSource
 
@@ -112,14 +118,17 @@ async def _do(runner, adapter, source, action: str, home: str = "") -> dict:
                 return {"error": "Not in a server channel and DISCORD_HOME_CHANNEL is not resolvable."}
             source, guild_id = fallback, int(fallback.scope_id)
         sources = getattr(adapter, "_voice_sources", None)
-        before = sources.get(guild_id) if isinstance(sources, dict) else None
-        message = await runner._voice_channel_join_for_source(source, guild_id)
-        joined = bool(adapter.is_in_voice_channel(guild_id))
-        if isinstance(sources, dict):
-            # The shared join path writes a fresh binding only on success, so an older connection
-            # that survived a failed join does not read as success.
-            after = sources.get(guild_id)
-            joined = joined and after is not None and after is not before
+        # One join per guild at a time, so a binding written by an overlapping join cannot be read
+        # as this join's success. (A concurrent ``/voice join`` does not take this lock.)
+        async with _join_lock(runner, adapter, guild_id):
+            before = sources.get(guild_id) if isinstance(sources, dict) else None
+            message = await runner._voice_channel_join_for_source(source, guild_id)
+            joined = bool(adapter.is_in_voice_channel(guild_id))
+            if isinstance(sources, dict):
+                # The shared join path writes a fresh binding only on success, so an older
+                # connection that survived a failed join does not read as success.
+                after = sources.get(guild_id)
+                joined = joined and after is not None and after is not before
         return {"success": joined, "action": "join", "message": message,
                 "text_channel_id": source.chat_id}
     if guild_id is None and source.chat_type == "dm":

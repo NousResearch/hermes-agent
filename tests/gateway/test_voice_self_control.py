@@ -310,6 +310,36 @@ def test_failed_join_with_older_connection_is_not_success(runner):
     assert adapter._voice_sources[GUILD] is old
 
 
+def test_overlapping_joins_do_not_borrow_each_others_binding(runner):
+    """Join A fails (requester not in voice) while join B for the same guild succeeds. Without the
+    per-guild lock, B's new binding would make A read as success."""
+    import tools.discord_voice_actions as tool
+
+    adapter = _adapter(connected=False)
+
+    async def _join(source, guild_id):
+        if source.user_id == "first":
+            await asyncio.sleep(0.05)  # still awaiting when an unlocked second request would run
+            return "not in voice"
+        adapter._voice_sources[guild_id] = source.to_dict()
+        adapter.is_in_voice_channel = MagicMock(return_value=True)
+        return "joined"
+
+    runner._voice_channel_join_for_source = _join
+    first = SessionSource(platform=Platform.DISCORD, chat_id="2002", chat_type="group", user_id="first")
+    second = SessionSource(platform=Platform.DISCORD, chat_id="6006", chat_type="group", user_id="second")
+    for src in (first, second):
+        src.scope_id = str(GUILD)
+
+    async def _both():
+        return await asyncio.gather(tool._do(runner, adapter, first, "join"),
+                                    tool._do(runner, adapter, second, "join"))
+
+    out_first, out_second = asyncio.run(asyncio.wait_for(_both(), 5))
+    assert out_first["success"] is False
+    assert out_second["success"] is True
+
+
 def test_timeout_cancels_the_pending_action(runner, monkeypatch):
     import tools.discord_voice_actions as tool
     started, cancelled = threading.Event(), threading.Event()

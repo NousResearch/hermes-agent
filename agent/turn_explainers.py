@@ -49,8 +49,10 @@ _EXIT_REASON_PREFIX_EXPLANATIONS = tuple(
     (prefix, f"explainer.exit.{prefix}") for prefix in ("interrupted_during_api_call", "max_iterations_reached", "error_near_max_iterations", "repeated_outer_errors")
 )
 
-# ``session_persistence_failed`` refined by the classified cause (lock contention ≠ disk full).
-_PERSISTENCE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease", "session_row_missing", "locked", "replaced", "deleted_wal", "corrupt", "fts_index", "disk"})
+# ``session_persistence_failed`` refined by the classified cause (lock contention ≠ disk full,
+# store bloat ≠ disk full). Every cause here needs its own ``explainer.persistence.<cause>`` key;
+# an unlisted cause silently degrades to ``explainer.persistence.default``.
+_PERSISTENCE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease", "session_row_missing", "locked", "replaced", "deleted_wal", "corrupt", "fts_index", "disk", "store_bloat", "wal_pressure"})
 
 
 def _persistence_explanation_key(cause: Optional[str]) -> str:

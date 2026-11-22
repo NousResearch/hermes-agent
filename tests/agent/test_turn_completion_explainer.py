@@ -138,6 +138,42 @@ def test_explanation_persistence_disk_cause_keeps_disk_wording():
     assert "free some space" in lower or "disk space" in lower
 
 
+def test_explanation_persistence_store_bloat_cause_is_not_misdiagnosed_as_disk():
+    """A store that outgrew the write patience must not send the operator hunting disk space
+    that was never full (the 778 Mo noyau crash, diagnosed by measurement on the recurrence card)."""
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "store_bloat"
+    )
+    lower = out.lower()
+    assert "state.db" in lower or "state store" in lower
+    assert "optimize-storage" in lower
+    assert "disk is probably full" not in lower
+    assert "free some space" not in lower
+
+
+def test_explanation_persistence_wal_pressure_cause_names_the_log_and_the_checkpoint():
+    """WAL pressure gets its own remedy (checkpoint), not the bloat remedy (optimize-storage):
+    the two look alike in the crash text and are opposite operations."""
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "wal_pressure"
+    )
+    lower = out.lower()
+    assert "write-ahead log" in lower
+    assert "doctor --fix" in lower
+    assert "optimize-storage" not in lower
+
+
+def test_explanation_persistence_default_no_longer_names_only_disk():
+    """The fallback bucket used to promise 'the drive is out of room' first; a store that merely
+    grew large reads that as a hunt for space that is not missing."""
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "not_a_cause"
+    )
+    lower = out.lower()
+    assert "possible causes" in lower
+    assert "large state.db" in lower or "storage pressure" in lower
+
+
 def test_explanation_persistence_corrupt_cause_never_says_free_space():
     """Structural corruption must point at the repair path, not disk space
     (the #77386-family misdiagnosis: 'database disk image is malformed'

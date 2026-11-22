@@ -49,6 +49,7 @@ __all__ = [
     "SessionRowMissing",
     "SessionWriteGuarded",
     "StaleFenceKind",
+    "StoreBloatError",
     "StoreContention",
     "StoreQuarantined",
     "StoreReplaced",
@@ -56,13 +57,14 @@ __all__ = [
     "TransientStoreError",
     "TurnLeaseLost",
     "UnknownExecution",
+    "WalPressureError",
     "busy_refusal",
 ]
 
 # Every bucket of the store's error classification; consumers enumerate this tuple.
 PERSISTENCE_ERROR_CAUSES = (
     "locked", "compression", "compression_closed", "turn_lease", "corrupt", "fts_index",
-    "replaced", "deleted_wal", "disk", "session_row_missing", "unknown",
+    "replaced", "deleted_wal", "disk", "session_row_missing", "store_bloat", "wal_pressure", "unknown",
 )
 
 
@@ -239,6 +241,41 @@ class StoreContention(TransientStoreError):
 
 class DiskFull(TransientStoreError):
     """The filesystem cannot accept another write (no space left on the device)."""
+
+
+class StoreBloatError(TransientStoreError):
+    """The state store grew past its size threshold: writes that used to be fast now wait out their
+    patience on a store whose search index is the bulk of it. A retry after compaction succeeds, so
+    it is a ``TransientStoreError`` (``503``) and not a permanent failure — but on its own it does
+    not clear, which is why it carries its own cause instead of ``"disk"``."""
+
+    cause = "store_bloat"
+
+    def __init__(self, current_size: int, threshold: int, *, reason: Optional[str] = None) -> None:
+        self.current_size = current_size
+        self.threshold = threshold
+        super().__init__(
+            f"state.db ({current_size:,} bytes) exceeds configured bloat threshold "
+            f"({threshold:,} bytes); compaction required before further writes",
+            reason=reason,
+        )
+
+
+class WalPressureError(TransientStoreError):
+    """The write-ahead log grew past its size threshold: every new writer waits on the checkpoint
+    that is draining it. A ``wal_checkpoint`` clears it, so — like ``StoreBloatError`` — it is
+    transient but self-owned, with a cause of its own instead of ``"disk"``."""
+
+    cause = "wal_pressure"
+
+    def __init__(self, current_size: int, threshold: int, *, reason: Optional[str] = None) -> None:
+        self.current_size = current_size
+        self.threshold = threshold
+        super().__init__(
+            f"state.db-wal ({current_size:,} bytes) exceeds configured pressure threshold "
+            f"({threshold:,} bytes); checkpoint required before further writes",
+            reason=reason,
+        )
 
 
 class PermanentStoreError(PersistenceError):

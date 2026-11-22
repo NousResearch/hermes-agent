@@ -230,8 +230,8 @@ gateway:
     wake:
       completed: "completed"
       gave_up: "gave up (retries exhausted)"
-      crashed: "crashed (worker exited); dispatcher will retry"
-      timed_out: "timed out; dispatcher will retry"
+      crashed: "crashed (worker exited)"
+      timed_out: "timed out"
       blocked: "blocked; needs attention"
       review_requested: "handed off for review; the implementation is done"
       changes_requested: "review requested changes (BLOCK); implementation is not approved"
@@ -3595,6 +3595,8 @@ explainer:
     repeated_outer_errors: "die beurt het met herhaalde foute bly misluk en is vroeg gestop in plaas van om eindeloos te herprobeer. Kyk na die foute hierbo en stuur dan `continue` om weer te probeer."
   persistence:
     compression: "die beurt is gestop omdat 'n ander proses hierdie sessie besig was om saam te pers. Jou boodskap behoort reeds gestoor te wees — stuur dit asseblief weer nadat die kompressie voltooi is."
+    store_bloat: "the turn was stopped because the state store (state.db) has grown beyond its configured size threshold. Run `hermes {profile_arg}doctor` to check storage and WAL size, then `hermes {profile_arg}sessions optimize-storage` with the profile's gateway stopped to compact FTS storage and reclaim space."
+    wal_pressure: "the turn was stopped because the session database's write-ahead log has grown beyond its configured size threshold, causing checkpoint contention that blocks new writes. Run `hermes {profile_arg}doctor` to check storage and WAL size; if the WAL is large, stop the profile's gateway then run `hermes {profile_arg}doctor --fix` to checkpoint it, then send your message again."
     compression_closed: "die beurt is gestop omdat hierdie sessie deur kontekskompressie geroteer is en sy lewendige voortsetting nie oorgeneem kon word nie. Die berging self is gesond — verfris die kliënt (of begin 'n nuwe beurt) sodat dit die nuwe sessie-ID oppik, en stuur dan jou boodskap weer."
     turn_lease: "die beurt is gestop omdat 'n ander Hermes-proses hierdie sessie oorgeneem het. Jou antwoord is nie gestoor nie — wag totdat die ander proses klaar is, en stuur dan jou boodskap weer."
     session_row_missing: "hierdie sessie is uit die berging verwyder terwyl die klets nog oop was, en Hermes kon dit nie herskep nie, so hierdie boodskap is nie gestoor nie. Stuur jou boodskap weer; as dit bly misluk, voer `hermes {profile_arg}doctor` uit."

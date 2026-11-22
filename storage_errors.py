@@ -146,6 +146,12 @@ _PERSISTENCE_CAUSE_BY_PHRASE = (
     (("locked", "busy"), "locked"),
     # A flush rejected by the session-row FK: the row was removed under a live agent (#123583).
     (("foreign key constraint failed",), "session_row_missing"),
+    # Store bloat / WAL pressure markers. Literal substrings (wrapped RPC strings lose the
+    # exception type, so match the domain text itself, not a message-pattern).
+    (("store bloat", "exceeds configured bloat threshold", "storage pressure on a large state.db"),
+     "store_bloat"),
+    (("wal pressure", "exceeds configured pressure threshold", "write-ahead-log backlog"),
+     "wal_pressure"),
 )
 
 

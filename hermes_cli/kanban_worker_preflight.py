@@ -30,6 +30,8 @@ def task_model(task, config) -> tuple[str, bool]:
     identity = profile_route_identity(dict(config, model=held))
     entry = (_get_named_custom_provider(str(held.get('provider') or ''), config=config, resolve_credentials=False)
              if identity.startswith('custom:') else None) or {}
+    if not entry and identity not in ('auto', 'custom', 'openrouter'):
+        identity = _turn_provider(held, identity)
     if str(entry.get('model') or '').strip():
         return str(entry['model']).strip(), False
     if identity == 'auto':
@@ -39,6 +41,21 @@ def task_model(task, config) -> tuple[str, bool]:
         return '', False
     model = '' if entry else get_default_model_for_provider(identity)
     return model, not model and not get_fallback_chain(config)
+
+
+def _turn_provider(held, identity) -> str:
+    """The built-in provider the turn's own resolver (``auth.resolve_provider``) runs the held name as, where the
+    catalog's aliases may differ: ``qwen`` is Alibaba there but Qwen OAuth for the turn, whose catalog is empty."""
+    from hermes_cli.auth import AuthError, resolve_provider
+    try:
+        return resolve_provider(str(held.get('provider') or ''))
+    except AuthError:
+        return identity
+
+
+# Overrides the runtime reads in a provider's own resolver rather than through its registry ``base_url_env_var``.
+_RUNTIME_BASE_URL_ENV = {'openai-codex': 'HERMES_CODEX_BASE_URL', 'nous': 'NOUS_INFERENCE_BASE_URL',
+                         'qwen-oauth': 'HERMES_QWEN_BASE_URL'}
 
 
 def _route_base_url(identity, held, entry) -> str:
@@ -64,7 +81,8 @@ def _builtin_base_url(identity, base_url, get_secret_str) -> str:
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.runtime_provider_custom import _DIRECT_API_BASE_URLS
     pconfig = PROVIDER_REGISTRY.get(identity)
-    env_var = getattr(pconfig, 'base_url_env_var', '') or ('OPENAI_BASE_URL' if identity in _DIRECT_API_BASE_URLS else '')
+    env_var = (getattr(pconfig, 'base_url_env_var', '') or _RUNTIME_BASE_URL_ENV.get(identity)
+               or ('OPENAI_BASE_URL' if identity in _DIRECT_API_BASE_URLS else ''))
     urls = [url for url in ((get_secret_str(env_var).strip() if env_var else ''), base_url,
                             str(getattr(pconfig, 'inference_base_url', '') or '')) if url]
     return next((url for url in urls if _self_hosted(url)), urls[0] if urls else '')

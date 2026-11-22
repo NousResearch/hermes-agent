@@ -470,3 +470,31 @@ def test_a_refusal_names_the_unblock_that_re_runs_a_blocked_card(dispatch_profil
     profile, _ = dispatch_profile
     task_id, _, task, _, _ = _dispatch(profile, "model:\n  provider: custom\n  base_url: https://llm.example.test/v1\n")
     assert f"`hermes kanban --board work unblock {task_id}`" in task.last_failure_error
+
+
+def test_a_provider_alias_takes_the_catalog_of_the_provider_the_turn_runs(monkeypatch):
+    """``qwen`` is Alibaba in the catalog's aliases but Qwen OAuth for the turn: freezing Alibaba's default would send
+    ``qwen3.8-max`` to the Qwen portal. The card is judged as ``qwen-oauth`` is, whose catalog is empty."""
+    from hermes_cli import models
+    from hermes_cli.kanban_worker_preflight import task_model
+
+    monkeypatch.setattr(models, "get_default_model_for_provider", lambda provider: {"alibaba": "qwen3.8-max"}.get(provider, ""))
+    assert task_model(_card(), {"model": {"provider": "qwen"}}) == task_model(_card(), {"model": {"provider": "qwen-oauth"}})
+    assert task_model(_card(), {"model": {"provider": "qwen"}}) == ("", True)
+    assert task_model(_card(), {"model": {"provider": "dashscope"}}) == ("qwen3.8-max", False)  # Alibaba for both
+
+
+@pytest.mark.parametrize("provider, env_var", [
+    ("openai-codex", "HERMES_CODEX_BASE_URL"), ("nous", "NOUS_INFERENCE_BASE_URL"), ("qwen-oauth", "HERMES_QWEN_BASE_URL"),
+])
+@pytest.mark.parametrize("url, expected", [
+    ("http://127.0.0.1:8080/v1", ("", False)), ("https://proxy.example.test/v1", ("cloud-model", False)),
+], ids=["local-override", "public-override"])
+def test_a_providers_own_base_url_override_decides_locality(provider, env_var, url, expected, monkeypatch):
+    """These overrides are read by each provider's own resolver, not through the registry's ``base_url_env_var``."""
+    from hermes_cli import models
+    from hermes_cli.kanban_worker_preflight import task_model
+
+    monkeypatch.setenv(env_var, url)
+    monkeypatch.setattr(models, "get_default_model_for_provider", lambda name: "cloud-model")
+    assert task_model(_card(), {"model": {"provider": provider}}) == expected

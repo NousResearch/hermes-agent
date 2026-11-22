@@ -209,6 +209,26 @@ def test_claim_staging_runs_the_controller_recorder_on_the_built_artifacts(
     assert ("--legacy-commit-build" in record["argv"]) == (legacy == "true")
 
 
+def test_untrusted_commit_legs_disable_persisted_credentials_and_strip_write_scopes():
+    """Every build leg executing unreviewed commit code strips git credentials and write scopes."""
+    jobs = _workflow("desktop-bundled-release.yml")["jobs"]
+    legs = native_builds(jobs)
+    t_legs = termux_builds(jobs)
+    expected_perms = {
+        legs[("win32-x64", "commit")]: {"contents": "read", "id-token": "write"},
+        legs[("win32-arm64", "commit")]: {"contents": "read", "id-token": "write"},
+        legs[("darwin-arm64", "commit")]: {"contents": "read"},
+        t_legs["commit"]: {"contents": "read", "packages": "read"},
+    }
+    for job_name, expected in expected_perms.items():
+        job = jobs[job_name]
+        assert job.get("permissions") == expected, (job_name, job.get("permissions"))
+        checkouts = [step for step in job["steps"] if "checkout@" in str(step.get("uses", ""))]
+        assert checkouts, job_name
+        for step in checkouts:
+            assert (step.get("with") or {}).get("persist-credentials") in (False, "false"), (job_name, step)
+
+
 def test_every_cache_save_step_skips_commit_and_channel_claims():
     jobs = _workflow("desktop-bundled-release.yml")["jobs"]
     untrusted_cases = (

@@ -21,8 +21,8 @@ import pytest
 
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
+from tests.e2e.core.upgrade import _logs as L
 from tests.e2e.core.upgrade.handoff import _handoff as X
-from tests.e2e.core.upgrade.handoff._scenario import log_offsets, log_text_since
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
 pytestmark = [
@@ -76,7 +76,7 @@ def _fold_cell(inst: X.Install, provider_url: str) -> None:
     assert len(standalone) == 1, f"premise: only {WORK}'s own gateway runs: {standalone}\n{inst.diagnostics()}"
 
     X.publish_target(inst)
-    offsets = log_offsets(inst)
+    offsets = L.log_offsets([inst.hermes_home], inst.logs)
     up = inst.update()
     out = up.stdout + up.stderr
     ident = X.settle_gateway(inst, standalone[0]["pid"], timeout=300)
@@ -88,7 +88,7 @@ def _fold_cell(inst: X.Install, provider_url: str) -> None:
 
     assert up.returncode == 0 and X.TRACEBACK not in out, f"the update failed\n{diag}"
     assert inst.sha() == inst.target, f"the update did not move the checkout\n{diag}"
-    bad = I.engine_error_lines(f"{out}\n{log_text_since(inst, offsets)}")
+    bad = I.engine_error_lines(f"{out}\n{L.log_text_since(offsets, [inst.hermes_home], inst.logs)}")
     assert not bad, "the update or a log line written since names the regex engine or a missing module:\n" + \
         "\n".join(bad[:20]) + f"\n{diag}"
     assert MIGRATING in out, f"the update never ran the multiplex migration\n{diag}"

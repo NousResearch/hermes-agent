@@ -30,6 +30,7 @@ import pytest
 from tests.e2e.core._pending_fixes import known_failure, known_gate
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
+from tests.e2e.core.upgrade import _logs as L
 from tests.e2e.core.upgrade.handoff import _handoff as X
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
@@ -297,26 +298,6 @@ def _quiet_wait(pred, *, timeout: float, what: str, interval: float = 1.0):
         return None
 
 
-def _logs(inst: X.Install) -> list[Path]:
-    """Every log the user's machine writes in the cell: process logs, ``$HERMES_HOME/logs``, worker logs."""
-    found = [*inst.logs, *(inst.hermes_home / "logs").glob("*.log"), *inst.hermes_home.rglob("t_*.log")]
-    return sorted(set(p for p in found if p.is_file()))
-
-
-def log_offsets(inst: X.Install) -> dict[Path, int]:
-    return {p: p.stat().st_size for p in _logs(inst)}
-
-
-def log_text_since(inst: X.Install, offsets: dict[Path, int]) -> str:
-    """What every log gained since ``offsets`` (a log created since then, whole)."""
-    parts = []
-    for p in _logs(inst):
-        with p.open("rb") as fh:
-            fh.seek(offsets.get(p, 0))
-            parts.append(f"--- {p.name} ---\n" + fh.read().decode("utf-8", errors="replace"))
-    return "\n".join(parts)
-
-
 def skip_unless_start_carries(column: str, gate: str) -> None:
     if column == "n1" and not I.start_carries(GATE_FIXES[gate], X.refs().base):
         pytest.skip(f"{X.refs().base_tag} predates the {GATE_FIXES[gate]} fix this {gate} property depends on")
@@ -365,7 +346,7 @@ def run(column: str, root: Path) -> SimpleNamespace:
             o.job_id = job["id"]
             assert not model.cron_calls, "premise: the job ran before it was due"
 
-            offsets = log_offsets(inst)
+            offsets = L.log_offsets([inst.hermes_home], inst.logs)
             o.up = inst.update()
             # Still mid-turn here: the gateway must be the one that started it, its restart pending.
             o.old_alive_after_update = inst.host.alive(o.old_pid)
@@ -430,7 +411,7 @@ def run(column: str, root: Path) -> SimpleNamespace:
         o.runs = {t: _kanban(inst, "SELECT id, outcome, started_at, ended_at FROM task_runs WHERE task_id = ? "
                                    "ORDER BY id", (t,)) for t in (o.card1, o.card2)}
         o.worker_logs = worker_logs(inst)
-        o.engine_text = f"{o.up.stdout}\n{o.up.stderr}\n{log_text_since(inst, offsets)}"
+        o.engine_text = f"{o.up.stdout}\n{o.up.stderr}\n{L.log_text_since(offsets, [inst.hermes_home], inst.logs)}"
         card_log = {t: next((p.read_text(errors="replace") for p in inst.hermes_home.rglob(f"{t}.log")), "")
                     for t in (o.card1, o.card2)}
         # Workers spawned after the update: every run of the new card, and every re-run of the in-flight one.

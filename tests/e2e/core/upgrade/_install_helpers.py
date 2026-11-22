@@ -183,11 +183,6 @@ def engine_error_lines(text: str) -> list[str]:
     return [line for line in _lines(text) if _ENGINE_ERROR.search(line)]
 
 
-def log_texts(*paths: Path) -> str:
-    """The named logs that exist, each under a ``--- <path> ---`` header (missing ones are skipped)."""
-    return "\n".join(f"--- {p} ---\n{p.read_text(errors='replace')}" for p in paths if p.is_file())
-
-
 def make_origin(root: Path, ref: str) -> Path:
     """Bare origin with ``main`` at ``ref``.
 

@@ -32,8 +32,8 @@ import pytest
 
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
+from tests.e2e.core.upgrade import _logs as L
 from tests.e2e.core.upgrade.handoff import _handoff as X
-from tests.e2e.core.upgrade.handoff._scenario import log_offsets, log_text_since
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
 pytestmark = [
@@ -93,6 +93,14 @@ def test_failed_sync_after_the_move_then_the_next_update_recovers(root, armed):
         assert not leaked, f"processes outlived the sandbox: {leaked}"
 
 
+def _log_offsets(inst: X.Install) -> dict:
+    return L.log_offsets([inst.hermes_home], inst.logs)
+
+
+def _log_text_since(inst: X.Install, offsets: dict) -> str:
+    return L.log_text_since(offsets, [inst.hermes_home], inst.logs)
+
+
 def _engine_lines(text: str, armed: bool) -> list[str]:
     """Regex-engine lines that are failures: with the guard armed its own refusal is the expected one."""
     return [line for line in I.engine_error_lines(text) if not (armed and REFUSED in line)]
@@ -103,16 +111,16 @@ def _cell(inst: X.Install, armed: bool) -> None:
     target = _publish_seamed_head(inst)
     toggle = inst.home / BREAK_DEPS
     toggle.write_text("on\n", encoding="utf-8")
-    offsets = log_offsets(inst)
+    offsets = _log_offsets(inst)
     up = inst.update()
     out = up.stdout + up.stderr
     resumed = None
     if armed:
-        resumed = X.wait_for(lambda: REFUSED in log_text_since(inst, offsets), timeout=300, interval=1.0,
+        resumed = X.wait_for(lambda: REFUSED in _log_text_since(inst, offsets), timeout=300, interval=1.0,
                              what=f"the resumed gateway's {REFUSED!r}") if up.returncode == 0 else None
     else:
         resumed = X.settle_gateway(inst, before["pid"], timeout=300)
-    logs = log_text_since(inst, offsets)
+    logs = _log_text_since(inst, offsets)
     diag = inst.diagnostics(up) + f"\n--- logs since the update ---\n{logs[-8000:]}"
     assert inst.sha() == target, f"premise: the update did not move the checkout\n{diag}"
     assert DEPS_OWED.search(out), f"premise: the dependency sync did not fail after the move\n{diag}"
@@ -126,12 +134,12 @@ def _cell(inst: X.Install, armed: bool) -> None:
     # The network is back: the next plain `hermes update` finishes the sync and the gateway serves the
     # new code again, with no other command.
     toggle.unlink()
-    offsets = log_offsets(inst)
+    offsets = _log_offsets(inst)
     again = inst.update()
     out = again.stdout + again.stderr
     ident = X.settle_gateway(inst, before["pid"], timeout=300)
     gateways = X.gateway_pids(inst)
-    logs = log_text_since(inst, offsets)
+    logs = _log_text_since(inst, offsets)
     diag = inst.diagnostics(again) + f"\n--- logs since the second update ---\n{logs[-8000:]}"
     assert again.returncode == 0 and X.TRACEBACK not in out, f"the second update failed\n{diag}"
     bad = I.engine_error_lines(f"{out}\n{logs}")

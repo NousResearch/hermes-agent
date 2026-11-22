@@ -69,6 +69,7 @@ import hermes_yaml as yaml
 from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
+from tests.e2e.core.upgrade import _logs as L
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
 pytestmark = [
@@ -436,19 +437,9 @@ def _profile_homes(leg: Leg) -> dict[str, Path]:
     return {"default": leg.hermes_home, "work": leg.hermes_home / "profiles" / "work"}
 
 
-def _log_sizes(leg: Leg) -> dict[str, int]:
-    return {str(p): p.stat().st_size for p in (leg.hermes_home / "logs").glob("*.log")}
-
-
 def new_log_text(leg: Leg) -> str:
-    """What the install's logs gained since the leg was staged (the N-1 CLI wrote the rest)."""
-    since = leg.snapshot.get("logs", {})
-    parts = []
-    for p in sorted((leg.hermes_home / "logs").glob("*.log")):
-        with p.open("rb") as fh:
-            fh.seek(since.get(str(p), 0))
-            parts.append(f"--- {p.name} ---\n" + fh.read().decode("utf-8", errors="replace"))
-    return "\n".join(parts)
+    """What the logs of every profile gained since the leg was staged (the N-1 CLI wrote the rest)."""
+    return L.log_text_since(leg.snapshot.get("logs", {}), _profile_homes(leg).values())
 
 
 def assert_no_engine_errors(leg: Leg, cp: subprocess.CompletedProcess) -> None:
@@ -460,7 +451,7 @@ def assert_no_engine_errors(leg: Leg, cp: subprocess.CompletedProcess) -> None:
 
 
 def snapshot_state(leg: Leg) -> dict:
-    snap = {"logs": _log_sizes(leg)}
+    snap = {"logs": L.log_offsets(_profile_homes(leg).values())}
     for name, home in _profile_homes(leg).items():
         snap[name] = {
             "config": (home / "config.yaml").read_bytes(),

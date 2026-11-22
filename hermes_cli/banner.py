@@ -242,6 +242,23 @@ def format_banner_version_label() -> str:
     return f"{base} · upstream {upstream} · local {local} (+{ahead} carried {_plural(ahead, 'commit')})"
 
 
+def _banner_hyperlinks_enabled() -> bool:
+    """Whether the banner title may carry an OSC 8 hyperlink (``display.banner_hyperlinks``).
+
+    Some terminals (notably SecureCRT) truncate OSC parameters at the first ';' when parsing OSC
+    sequences, so rich's ``ESC ] 8 ; id=<n> ; URL ESC \\`` leaks ``d=<n>;<URL>`` as visible text
+    and overflows the panel title border. The flag lets those users opt out; the title text is
+    identical either way, just without the escape sequence.
+    """
+    from hermes_cli.config import load_config
+
+    def _read() -> bool:
+        display = (load_config() or {}).get("display") or {}
+        return bool(display.get("banner_hyperlinks", True))
+
+    return _quiet(_read, True)
+
+
 # === Non-blocking update check ===
 
 _update_result: Optional[int] = None
@@ -755,7 +772,7 @@ def build_welcome_banner(
     layout_table.add_row("\n".join(left_lines), "\n".join(right_lines))
     version_label = format_banner_version_label()
     release_info = get_latest_release_tag()
-    if release_info:
+    if release_info and _banner_hyperlinks_enabled():
         version_label = f"[link={release_info[1]}]{version_label}[/link]"
     outer_panel = Panel(
         layout_table, title=f"[bold {_skin_color('banner_title', '#FFD700')}]{version_label}[/]",

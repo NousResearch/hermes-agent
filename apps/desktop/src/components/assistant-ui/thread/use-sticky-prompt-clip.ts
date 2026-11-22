@@ -69,16 +69,17 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
       }
 
       // Only a pinned (sticky) prompt owns an exclusion. Process notifications
-      // and agent deliveries share the prompt's data-slot but scroll in flow
-      // (computed `top: auto`); taken as the "later prompt" while crossing the
-      // top edge, one stretched the clip from the real card down to its own
-      // bottom: an opaque band over the transcript below the pinned card.
-      const stickyTop = Number.parseFloat(getComputedStyle(prompt).top)
+      // and agent deliveries share the prompt's data-slot (and its `top` inset
+      // from styles.css) but scroll in flow. Taken as the "later prompt" while
+      // crossing the top edge, one stretched the clip from the real card down
+      // to its own bottom: an opaque band over the transcript below the card.
+      const promptStyle = getComputedStyle(prompt)
 
-      if (Number.isNaN(stickyTop)) {
+      if (promptStyle.position !== 'sticky') {
         continue
       }
 
+      const stickyTop = Number.parseFloat(promptStyle.top) || 0
       const promptRect = prompt.getBoundingClientRect()
 
       if (promptRect.top > viewportTop + stickyTop + 1 || promptRect.bottom <= viewportTop) {
@@ -158,13 +159,37 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
     }
   }
 
+  // Outer boxes only: never force layout inside content-visibility's skipped rows.
+  const refreshVisible = () => {
+    const viewportRect = viewport.getBoundingClientRect()
+
+    for (const group of observed) {
+      const rect = group.getBoundingClientRect()
+
+      if (rect.bottom > viewportRect.top && rect.top < viewportRect.bottom) {
+        visible.add(group)
+        sizes.observe(group)
+      } else {
+        visible.delete(group)
+        sizes.unobserve(group)
+      }
+    }
+  }
+
   // Size changes are delivered after layout and before paint, in the frame
   // whose geometry they describe. Measuring there (not one rAF later) matters
   // when the viewport itself resizes: the browser clamps scrollTop, the
   // content moves under a clip still sized for the old position, and for one
-  // painted frame a band below the pinned card hid the transcript.
-  const sizes = new ResizeObserver(() => {
+  // painted frame a band below the pinned card hid the transcript. A viewport
+  // resize can also bring a turn into view before IntersectionObserver
+  // delivers it, so refresh visibility from outer boxes first.
+  const sizes: ResizeObserver = new ResizeObserver(entries => {
     cancelAnimationFrame(frame)
+
+    if (entries.some(entry => entry.target === viewport)) {
+      refreshVisible()
+    }
+
     measure()
   })
 

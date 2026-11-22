@@ -114,7 +114,8 @@ def _validate(python: Path, env: dict[str, str]) -> str:
 @contextmanager
 def _prepare_lock(root: Path, *, timeout: float | None):
     """Serialize staging and collection of *root*'s generations; yields whether the lock is held."""
-    from pm.filesystem import moved_lock
+    # runtime_state's moved_lock also resolves in a process that kept v0.23.3's pm.filesystem (#158723)
+    from hermes_cli.runtime_state import moved_lock
 
     with moved_lock(root / ".prepare.lock", root.parent / "locks" / "prepare.lock", timeout=timeout) as held:
         yield held

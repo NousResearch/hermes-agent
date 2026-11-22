@@ -21,15 +21,15 @@ from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_arc
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
 from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES, provider_plugin_snapshot_dir
-from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, delete_failed_error, delete_incomplete_message, record_delete_finished, wait_profile_unowned
+from hermes_cli.profiles_remove import (
+    _rmtree_make_writable, _rmtree_with_retry, delete_failed_error, delete_incomplete_message, mark_delete_incomplete,
+    named_profile_delete_incomplete, record_delete_finished, wait_profile_unowned)
 from hermes_cli.profiles_export_scrub import (
     GATEWAY_CONNECTION_STORE_RE as _GATEWAY_CONNECTION_STORE_RE, GATEWAY_CONNECTION_STORES as _GATEWAY_CONNECTION_STORES,
     scrub_export_secrets as _scrub_export_secrets)
 from hermes_cli.profiles_run_elsewhere import own_profile_dir_when_unlistable, without_profiles_run_elsewhere
-from hermes_constants import (
-    LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
-    named_profile_delete_incomplete, named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
-)
+from hermes_constants import (LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
+                              named_profile_has_identity, named_profile_is_deleted, named_profile_is_live)
 from hermes_cli.config_backend import (
     config_cache_version, config_cache_version_or_none, config_exists, require_file_tooling)
 from hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read, json_safe_dumps
@@ -1730,7 +1730,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     _stop_bot_desktop(profile_dir)
 
     # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
-    mark_named_profile_deleted(profile_dir, incomplete=True)  # until rmtree succeeds
+    mark_delete_incomplete(profile_dir)  # until rmtree succeeds
     # 5. The name no longer resolves; clear active_profile now, since Ctrl-C skips the code after rmtree
     _retarget_active_profile(canon, "default", "✓ Active profile reset to default")
     # The multiplexer sees the tombstone, stops this profile's adapters and releases its handles

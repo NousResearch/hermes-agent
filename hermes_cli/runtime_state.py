@@ -18,15 +18,31 @@ from pm.environments import dependency_home_root, install_state_dir, runtime_fac
 # Private aliases: this module calls them through its globals (tests patch ``_atomic_bytes``
 # here) and updaters shipped before PM import them by these names mid-swap
 # (tests/compat/old_updater_surface.json). New code imports the pm.filesystem names.
+from pm import filesystem as _pm_filesystem
 from pm.filesystem import (
     durable_write_bytes as _atomic_bytes,
     file_digest as _digest,
     lock_fd as _lock,
-    moved_lock,
     read_bytes_or_none as _bytes,
 )
 
 LOG = logging.getLogger(__name__)
+
+
+@contextmanager
+def _old_path_lock(old: Path, new: Path, *, timeout: float | None):
+    """The install lock as v0.23.3 takes it: *old* alone (current processes take *old* first too)."""
+    fd = _pm_filesystem.lock_path(old, timeout=timeout, create_dir=True)
+    try:
+        yield fd is not None
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+# A v0.23.3 process keeps its pm.filesystem (no moved_lock) and reaches this module lazily after
+# `hermes update` moved the checkout (#158723).
+moved_lock = getattr(_pm_filesystem, "moved_lock", _old_path_lock)
 
 # How long a process that only needs to READ the install state waits for a writer. The holder can
 # be another profile's backend rebuilding the whole dependency environment (measured: tens of

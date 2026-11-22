@@ -101,8 +101,8 @@ def orphan_install_states(installs: Path) -> list[Path]:
 def _install_lock(state: Path):
     """Hold the state's install lock (``runtime_lock``'s) without waiting: yields False while
     another process holds it, or when it cannot even be opened."""
-    from hermes_cli.runtime_state import install_lock_paths
-    from pm.filesystem import moved_lock
+    # runtime_state's moved_lock also resolves in a process that kept v0.23.3's pm.filesystem (#158723)
+    from hermes_cli.runtime_state import install_lock_paths, moved_lock
 
     with contextlib.ExitStack() as stack:
         try:

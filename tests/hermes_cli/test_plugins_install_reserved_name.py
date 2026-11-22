@@ -1,10 +1,11 @@
-"""``hermes plugins install`` never installs a plugin AS ``plugins/model-providers``.
+"""``hermes plugins install`` refuses a new install AS ``plugins/model-providers``.
 
 Provider discovery imports every package inside ``$HERMES_HOME/plugins/model-providers/`` by
 placement alone, so a plugin installed under that folder name would load its packages as providers
 while install, ``plugins list`` and ``plugins disable`` all call it not enabled. The installer refuses
 that name (any letter case) before anything is written; operator-placed providers in that folder keep
-loading exactly as before.
+loading exactly as before, and an existing install of that name still re-installs from its recorded
+source.
 """
 
 from __future__ import annotations

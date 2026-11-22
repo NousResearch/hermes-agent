@@ -4,6 +4,10 @@ and ``plugins.disabled`` does not. Any other installed plugin still shows up (na
 description, not available) and stays inert until chosen. Selecting a provider that
 ``plugins.disabled`` lists keeps it off, the way the memory loader already does.
 
+Memory providers stay listable and probed whether or not they are enabled (the dashboard readiness
+check needs their real availability), except one that ``plugins.disabled`` turns off: the memory
+listings show it from its manifest without running it.
+
 Each plugin writes a marker line when its ``__init__.py`` runs, so "inert" is observed directly."""
 
 from __future__ import annotations
@@ -264,3 +268,61 @@ def test_selecting_a_disabled_memory_provider_is_still_refused(home, caplog):
         assert _load("memory", name) is None
     assert home.ran() == []
     assert f"Memory provider '{name}' is turned off: plugins.disabled lists it" in caplog.text
+
+
+# ── Memory: a provider turned off in plugins.disabled is listed without running ──
+
+
+@pytest.mark.parametrize("spelling", ["directory", "manifest"])
+def test_a_disabled_memory_provider_is_listed_without_running(home, spelling):
+    name = home.plugin("memory", manifest_name="Parked-Memory")
+    home.config(disabled=[name if spelling == "directory" else "Parked-Memory"])
+
+    row = _row("memory", name)
+    assert home.ran() == []
+    assert row == (name, "demo memory plugin", False)
+
+
+def test_a_disabled_memory_provider_stays_inert_in_listings_even_when_selected(home):
+    name = home.plugin("memory")
+    home.config(kind="memory", selected=name, disabled=[name])
+
+    row = _row("memory", name)
+    assert home.ran() == []
+    assert row == (name, "demo memory plugin", False)
+
+
+def test_the_dashboard_plugins_page_lists_a_disabled_memory_provider_without_running_it(home):
+    from hermes_cli.web_server_dashboard import _merged_plugins_hub
+
+    name = home.plugin("memory")
+    home.config(disabled=[name])
+
+    options = _merged_plugins_hub(force_refresh=True)["providers"]["memory_options"]
+    row = next(option for option in options if option["name"] == name)
+    assert home.ran() == []
+    assert (row["description"], row["available"], row["status"]) == ("demo memory plugin", False, "unavailable")
+
+
+def test_memory_status_reports_a_disabled_provider_without_running_it(home, capsys):
+    from types import SimpleNamespace
+
+    from hermes_cli.memory_setup import cmd_status
+
+    name = home.plugin("memory")
+    home.config(kind="memory", selected=name, disabled=[name])
+
+    cmd_status(SimpleNamespace())
+    out = capsys.readouterr().out
+    assert home.ran() == []
+    assert "Plugin:    turned off ✗" in out
+    assert f"Memory provider '{name}' is turned off: plugins.disabled lists it" in out
+
+
+def test_a_memory_provider_that_is_not_turned_on_is_still_probed_for_listing(home):
+    """Not enabled and not selected, but not disabled either: listed with its real availability."""
+    name = home.plugin("memory")
+    home.config()
+
+    assert _row("memory", name) == (name, "demo memory plugin", True)
+    assert home.ran() != []

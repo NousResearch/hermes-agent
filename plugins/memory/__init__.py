@@ -197,10 +197,14 @@ def list_memory_provider_names() -> list[str]:
 
 def discover_memory_providers() -> list[tuple[str, str, bool]]:
     """``[(name, description, is_available), ...]``; bundled wins on name collisions,
-    then user directories, then pip."""
+    then user directories, then pip. A user provider that ``plugins.disabled`` lists is listed from
+    its manifest as not available without running its code; ``load_memory_provider`` refuses it too."""
+    choice = _loader.read_plugin_choice()
     results = [
-        (name, _loader.read_plugin_description(child),
-         _loader.probe_availability(lambda c=child: _load_provider_from_dir(c, register_skills=False)))
+        _loader.describe_without_import(name, child)
+        if not _is_bundled(child) and choice.is_disabled(child, name)
+        else (name, _loader.read_plugin_description(child),
+              _loader.probe_availability(lambda c=child: _load_provider_from_dir(c, register_skills=False)))
         for name, child in _iter_provider_dirs()
     ]
     seen = {name for name, _, _ in results}

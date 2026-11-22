@@ -460,6 +460,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message; the first valid `{"action": "block", "message": ...}` ends the turn before any inference request. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform`, `side_question_token`, `review_signals` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
+| `transform_outbound_message` | Transform | Last step before a **final reply** reaches the platform adapter, after the assistant row is persisted; first non-empty string replaces what is sent. The transcript, the model's next-turn context and memory keep the original. | `text`, `platform`, `chat_type`, `session_id` | Full final reply text as it would be sent (attachments already extracted). |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
 | `post_api_request` | Observer | After normalized provider success; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count` | Sanitized `response` is available, but raw normalized `assistant_message` may contain model/user content; `usage` is accounting data. |
@@ -1910,6 +1911,27 @@ What else is held:
 - **Tool progress and reasoning** are not the reply and keep their own settings (`display.tool_progress`, `display.show_reasoning`). Turn them off as well if model output the plugin never saw must not reach the user.
 
 `hold_stream` applies to `transform_llm_output` only; on any other hook it is ignored with a warning. Plugins that register `transform_llm_output` without it keep normal streaming.
+
+### `transform_outbound_message`
+
+Fires as the **last step before a final reply reaches the platform adapter** — after the assistant row is already persisted. It exists for presentation that must not become conversation: folding detail behind a tap, adding a footer, de-emphasizing a block. Whatever `transform_llm_output` returns is stored and replayed to the model on later turns; whatever this hook returns is only what the user's client receives.
+
+```python
+def fold_detail(event_type, **kw):
+    text = kw["text"]
+    if kw["platform"] != "telegram" or len(text) < 600:
+        return None                      # not ours to shorten
+    head, _, tail = text.partition("\n\n")
+    if not tail:
+        return None
+    quoted = "\n".join(f"> {line}" for line in tail.splitlines())
+    return f"{head}\n\n**{quoted}||"     # **> opens an expandable blockquote, || closes it
+```
+
+- **First non-empty string wins**, like every transform hook. Returning `None` leaves the reply untouched.
+- **Fail-open.** A raising or timed-out hook sends the original reply: a broken presentation plugin must never cost the user their answer.
+- **Attachments are already extracted.** The hook sees text only — a `MEDIA:` marker it invents is sent as literal text.
+- **Not fired for** notification-lane sends, streamed commentary, or a ledger redelivery (the transformed text is what the ledger stored, so a redelivery resends exactly what the user already saw).
 
 ### API-request observer hooks
 

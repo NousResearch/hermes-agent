@@ -41,6 +41,9 @@ logger = logging.getLogger("hermes_cli.plugins")
 # gates/flushes.
 _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
+    # Sits on the final-reply delivery path (gateway/platforms/base.py): a hung presentation plugin
+    # must not hold the answer hostage, so it fails open (the original text goes out).
+    "transform_outbound_message",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end", "on_session_open",
     # Fail-open consumer on every inbound gateway message: a hung plugin must not stall the profile.

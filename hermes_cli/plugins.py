@@ -114,6 +114,12 @@ VALID_HOOKS: set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
+    # transform_outbound_message: display-only rewrite of a FINAL reply just before a platform
+    # adapter sends it — fired after the assistant row is persisted, so the transcript, the
+    # model's next-turn context and memory keep the original text; only the wire text changes.
+    # Kwargs: text, platform, chat_type, session_id. Return a replacement string (first non-None
+    # wins) or None. Fail-open: a raising hook leaves the reply untouched.
+    "transform_outbound_message",
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.
     "on_stream_start", "on_stream_delta", "on_stream_end", "on_interim_message",

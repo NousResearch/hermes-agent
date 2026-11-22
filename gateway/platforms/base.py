@@ -439,7 +439,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, sender_may_see_activity, typing_pause_key, typing_refresh_wanted
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import (
-    finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
+    finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation, transform_outbound_text)
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
@@ -4191,7 +4191,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
         """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
         result, delivery_adapter = await self.send_final_ledgered(
-            event, session_key, text_content, metadata,
+            event, session_key, transform_outbound_text(self, event, session_key, text_content), metadata,
             reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
         record_delivery(result)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:

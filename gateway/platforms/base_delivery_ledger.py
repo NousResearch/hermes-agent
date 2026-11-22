@@ -12,6 +12,39 @@ from typing import Any, Awaitable, Callable, Optional
 logger = logging.getLogger("gateway.platforms.base")
 
 
+def transform_outbound_text(adapter: Any, event: Any, session_key: str, text: str) -> str:
+    """Display-only rewrite of a final reply immediately before it goes on the wire (#156752).
+
+    ``transform_outbound_message`` fires here — *after* ``agent/turn_finalizer`` persisted the
+    assistant row — so the stored transcript, the model's next-turn context and memory keep the
+    original text while the user's client receives the presentation version. The transformed text
+    is what the ledger records, so a redelivery resends verbatim what the user already saw. First
+    non-empty string wins; a raising or timed-out hook is fail-open: the original reply still goes
+    out, because a broken presentation plugin must never cost the user their answer. Attachments and
+    MEDIA markers are already extracted at this point, so the hook rewrites text only — a marker it
+    invents is sent as literal text.
+    """
+    if not text:
+        return text
+    source = getattr(event, "source", None)
+    payload = dict(text=text, platform=getattr(source, "platform", "") or "",
+                   chat_type=getattr(source, "chat_type", None) or "", session_id=session_key or "")
+    adapter_name = getattr(adapter, "name", "")
+    try:
+        from hermes_cli.plugins import invoke_hook
+        results = invoke_hook("transform_outbound_message", **payload)
+    except Exception:
+        logger.warning("[%s] transform_outbound_message hook failed; sending the original reply",
+                       adapter_name, exc_info=True)
+        return text
+    rewrite = next((r for r in results if isinstance(r, str) and r), None)
+    if rewrite is None:
+        return text
+    logger.info("[%s] transform_outbound_message rewrote the reply (%d -> %d chars)",
+                adapter_name, len(text), len(rewrite))
+    return rewrite
+
+
 async def ledger_bracket(adapter: Any, event: Any, session_key: str, text_content: str,
                          send: Callable[[Any, Optional[str]], Awaitable[Any]], *,
                          is_ephemeral_response: bool = False) -> "tuple[Any, Any]":

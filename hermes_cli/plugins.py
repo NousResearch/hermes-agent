@@ -181,6 +181,17 @@ VALID_HOOKS: set[str] = {
     #   (privacy: task ids, assignees, workspace paths).
     "on_kanban_worker_spawned", "on_kanban_worker_exited", "on_kanban_worker_stale_claim",
     "on_kanban_task_updated", "on_kanban_dispatch_tick",
+    # pre_attachment_store (hermes_cli.kanban_db_attachments): POLICY hook, fired while the staged
+    # blob is on disk (mode 0600 during callbacks) but BEFORE its row exists, on every kanban
+    # attachment ingress shared by the agent tools, the CLI, the dashboard upload and completion/
+    # review artifact staging. Kwargs: task_id, board, filename, content_type, size, source
+    # ("attach" | "attach_url" | "dashboard" | "cli" | "completion_artifact"), uploaded_by,
+    # path (str). Return None/{"action":"allow"} to store; {"action":"block","message": ...} to
+    # refuse — any block wins; the message is surfaced to the uploader verbatim, so name the
+    # finding (label/fingerprint), never the matched content. A subscriber may rewrite the file
+    # at path in place to redact before allowing; the row records the post-hook size. Timeout and
+    # raised callbacks fail closed (same contract as pre_tool_call); core ships no scanner.
+    "pre_attachment_store",
     # gateway_platform_event: normalized envelopes only, never raw SDK objects or adapter handles.
     # Kwargs: platform, event_type, payload (event_type-local; see hooks.md). New event types land
     # only together with real fire-sites.

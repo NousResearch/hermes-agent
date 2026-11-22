@@ -14,6 +14,7 @@ import importlib
 import json
 import logging
 import re
+import secrets
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -36,7 +37,8 @@ from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_diagnostics as kd
-from hermes_cli.kanban_db import KANBAN_ATTACHMENT_MAX_BYTES, _collision_free_path, _safe_attachment_name
+from hermes_cli import kanban_db_attachments
+from hermes_cli.kanban_db import KANBAN_ATTACHMENT_MAX_BYTES
 
 log = logging.getLogger(__name__)
 
@@ -472,30 +474,35 @@ async def upload_task_attachment(
     file: UploadFile = File(...),
     board: Optional[str] = Query(None),
     uploaded_by: Optional[str] = Form(None)):
-    """Store an upload under ``attachments_root(board)/<task_id>/`` (sanitised,
-    collision-resolved name; ``_safe_attachment_name`` ValueError → 400) and record it."""
+    """Stream the upload to a private ``.part`` file, then adopt it through the shared
+    store lane (``store_attachment_file``: size cap, sanitised collision-resolved name,
+    ``pre_attachment_store`` policy gate, metadata row) so the policy scans exactly the
+    bytes that would become durable. A policy refusal is a ``ValueError`` → 400 whose
+    detail is the policy's own message."""
     with _board_conn(board) as (board, conn), _value_error_400():
         _require_task(conn, task_id)
-        safe_name = _safe_attachment_name(file.filename or "")
         dest_dir = kanban_db.task_attachments_dir(task_id, board=board)
         dest_dir.mkdir(parents=True, exist_ok=True)
-        dest_path = _collision_free_path(dest_dir, safe_name)  # foo.pdf → foo (1).pdf …
+        staged = dest_dir / f".upload-{secrets.token_hex(8)}.part"
         total = 0  # stream in chunks with a hard size cap so one upload can't fill the disk
         try:
-            with open(dest_path, "wb") as out:  # noqa: ASYNC230 -- chunked local write of the upload stream; open() is non-blocking in practice
+            with open(staged, "xb") as out:  # noqa: ASYNC230 -- health: allow ASYNC230 -- chunked local write of the upload stream; open() is non-blocking in practice
                 while chunk := await file.read(1024 * 1024):
                     total += len(chunk)
                     if total > KANBAN_ATTACHMENT_MAX_BYTES:
-                        out.close()
-                        dest_path.unlink(missing_ok=True)
                         raise HTTPException(
                             status_code=413, detail=f"attachment exceeds {KANBAN_ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit")
                     out.write(chunk)
+        except HTTPException:
+            staged.unlink(missing_ok=True)
+            raise
         except OSError as exc:
+            staged.unlink(missing_ok=True)
             raise HTTPException(status_code=500, detail=f"failed to store attachment: {exc}")
-        att_id = kanban_db.add_attachment(
-            conn, task_id, filename=dest_path.name, stored_path=str(dest_path.resolve()),
-            content_type=file.content_type, size=total, uploaded_by=(uploaded_by or "dashboard"))
+        # From here the store lane owns ``staged`` (adopted by rename, or unlinked on refusal).
+        att_id = kanban_db_attachments.store_attachment_file(
+            conn, task_id, file.filename or "", staged,
+            content_type=file.content_type, uploaded_by=(uploaded_by or "dashboard"), board=board)
         att = kanban_db.get_attachment(conn, att_id)
         return {"attachment": _attachment_dict(att) if att else None}
 

@@ -153,8 +153,9 @@ def _persisted_identity() -> str:
 
 def _kanban_handler(tool_name: str) -> Callable:
     """Wrap a handler so every failure is a structured tool error. ``ValueError``
-    (invalid board slug, DB validation such as cycle/self-link, ``AttachmentTooLarge``)
-    is reported without a traceback; anything else is logged with ``logger.exception``."""
+    (invalid board slug, DB validation such as cycle/self-link, ``AttachmentTooLarge``,
+    a policy ``AttachmentPolicyBlocked``) is reported without a traceback; anything
+    else is logged with ``logger.exception``."""
     def deco(fn):
         @functools.wraps(fn)
         def wrapper(args: dict, **kw) -> str:
@@ -991,13 +992,15 @@ def _handle_comment(args: dict, **kw) -> str:
         return _ok(task_id=tid, comment_id=cid)
 
 
-def _store_attachment(board, tid, filename, data, content_type) -> str:
-    """Store via ``kanban_db.store_attachment_bytes`` (shared size cap, per-task
-    dir, metadata row) so agent, dashboard, and CLI surfaces stay in lockstep."""
-    with _board(board) as (kb, conn):
-        att_id = kb.store_attachment_bytes(
+def _store_attachment(board, tid, filename, data, content_type, source) -> str:
+    """Store via ``kanban_db_attachments.store_attachment_bytes`` (shared size cap,
+    ``pre_attachment_store`` policy gate, per-task dir, metadata row) so agent,
+    dashboard, and CLI surfaces stay in lockstep."""
+    from hermes_cli import kanban_db_attachments
+    with _board(board) as (_kb, conn):
+        att_id = kanban_db_attachments.store_attachment_bytes(
             conn, tid, str(filename), data,
-            content_type=content_type, uploaded_by="agent", board=board)
+            content_type=content_type, uploaded_by="agent", board=board, source=source)
         return _ok(task_id=tid, attachment_id=att_id, size=len(data))
 
 
@@ -1013,7 +1016,7 @@ def _handle_attach(args: dict, **kw) -> str:
         data = base64.b64decode(str(content_b64), validate=True)
     except (binascii.Error, ValueError) as e:
         raise _Reject(f"content_base64 is not valid base64: {e}")
-    return _store_attachment(args.get("board"), tid, filename, data, args.get("content_type"))
+    return _store_attachment(args.get("board"), tid, filename, data, args.get("content_type"), "attach")
 
 
 _MAX_ATTACH_URL_REDIRECTS = 5
@@ -1076,7 +1079,7 @@ def _handle_attach_url(args: dict, **kw) -> str:
         logger.exception("kanban_attach_url download failed")
         return tool_error(f"kanban_attach_url: failed to fetch {url}: {e}")
     return _store_attachment(
-        args.get("board"), tid, filename, data, args.get("content_type") or fetched_ct)
+        args.get("board"), tid, filename, data, args.get("content_type") or fetched_ct, "attach_url")
 
 
 @_kanban_handler("kanban_attachments")

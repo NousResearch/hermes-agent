@@ -10,6 +10,8 @@ import shutil
 import subprocess
 import sys
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 import pytest
 
 from tests.ci.desktop_release_roles import (
@@ -26,11 +28,24 @@ _PEM_BEGIN = "-----BEGIN " + "PRIVATE KEY-----"
 _PEM_END = "-----END " + "PRIVATE KEY-----"
 
 
-def _synthetic_p8(*, newline: str = "\n") -> str:
-    """Build a syntactically valid PKCS#8 DER-framed test fixture (not a real key)."""
-    der = bytes([0x30, 0x26]) + b"\x02\x01\x00" + (b"\x04" * 35)
+def _der(tag: int, content: bytes) -> bytes:
+    if len(content) < 0x80:
+        return bytes([tag, len(content)]) + content
+    return bytes([tag, 0x81, len(content)]) + content
+
+
+def _pem(der: bytes, *, newline: str = "\n") -> str:
     body = base64.b64encode(der).decode("ascii")
-    return f"{_PEM_BEGIN}{newline}{body[:40]}{newline}{body[40:]}{newline}{_PEM_END}{newline}"
+    return newline.join([_PEM_BEGIN, *(body[i : i + 64] for i in range(0, len(body), 64)), _PEM_END, ""])
+
+
+def _synthetic_p8(*, newline: str = "\n") -> str:
+    """Build a PKCS#8 P-256 key laid out like App Store Connect's .p8 files (not a usable key)."""
+    p256 = _der(0x06, bytes.fromhex("2a8648ce3d030107"))
+    algorithm = _der(0x30, _der(0x06, bytes.fromhex("2a8648ce3d0201")) + p256)
+    public = _der(0xA1, _der(0x03, b"\x00\x04" + b"\x22" * 64))
+    ec_key = _der(0x30, _der(0x02, b"\x01") + _der(0x04, b"\x11" * 32) + _der(0xA0, p256) + public)
+    return _pem(_der(0x30, _der(0x02, b"\x00") + algorithm + _der(0x04, ec_key)), newline=newline)
 
 
 def _step_by_name(job: dict, name: str) -> tuple[int, dict]:
@@ -80,10 +95,23 @@ def test_darwin_legs_verify_notary_credentials_after_writing_key_and_before_buil
 def test_validate_p8_pem_accepts_pkcs8_and_rejects_malformed_keys():
     from scripts.ci.check_macos_notary_auth import validate_p8_pem
 
+    disposable = ec.generate_private_key(ec.SECP256R1()).private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption(),
+    )
+    assert validate_p8_pem(disposable.decode("ascii")) is None
     assert validate_p8_pem(_synthetic_p8()) is None
     assert validate_p8_pem(_synthetic_p8(newline="\r\n")) is None
 
+    # A lost body line still decodes as base64 and still starts with the SEQUENCE tag.
+    lost_line = _synthetic_p8().splitlines()
+    del lost_line[2]
+    fields = _der(0x02, b"\x00") + _der(0x30, b"") + _der(0x04, b"\x00")
     for bad in (
+        "\n".join(lost_line),
+        _pem(_der(0x30, _der(0x04, b"\x00" * 40))),
+        _pem(_der(0x31, fields)),
+        _pem(_der(0x30, fields) + b"\x00"),
+        _pem(_der(0x30, fields[:-2] + b"\x02\x00")),
         "",
         "   \n\t ",
         "not-a-pem-key",

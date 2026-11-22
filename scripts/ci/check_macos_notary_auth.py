@@ -72,6 +72,34 @@ class PreflightResult:
     detail: str = ""
 
 
+def _der_element(der: bytes, pos: int) -> tuple[int, int, int]:
+    """Return the tag, content start and end of the definite-length DER element at *pos*."""
+    if pos + 2 > len(der):
+        raise ValueError("truncated DER header")
+    tag, length, pos = der[pos], der[pos + 1], pos + 2
+    if length & 0x80:
+        count = length & 0x7F
+        length, pos = int.from_bytes(der[pos : pos + count], "big"), pos + count
+    if pos + length > len(der):
+        raise ValueError("truncated DER element")
+    return tag, pos, pos + length
+
+
+def _is_pkcs8_private_key_info(der: bytes) -> bool:
+    """SEQUENCE { INTEGER version, SEQUENCE algorithm, OCTET STRING privateKey, ... } filling *der* exactly."""
+    try:
+        tag, pos, end = _der_element(der, 0)
+        if tag != 0x30 or end != len(der):
+            return False
+        tags = []
+        while pos < end and len(tags) < 3:
+            child, _start, pos = _der_element(der, pos)
+            tags.append(child)
+    except ValueError:
+        return False
+    return tags == [0x02, 0x30, 0x04]
+
+
 def validate_p8_pem(pem_text: str) -> str | None:
     """Return an error message if *pem_text* is not a valid PKCS#8 PEM private key."""
     lines = [line.strip() for line in pem_text.splitlines() if line.strip()]
@@ -93,8 +121,8 @@ def validate_p8_pem(pem_text: str) -> str | None:
         der = base64.b64decode("".join(body_lines), validate=True)
     except (binascii.Error, ValueError):
         return "App Store Connect .p8 key file contains invalid base64 PEM data"
-    if len(der) < 32 or der[0] != 0x30:
-        return "App Store Connect .p8 key file does not contain a DER-encoded PKCS#8 key"
+    if not _is_pkcs8_private_key_info(der):
+        return "App Store Connect .p8 key file does not contain a complete DER-encoded PKCS#8 key"
     return None
 
 

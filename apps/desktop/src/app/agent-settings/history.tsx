@@ -64,7 +64,6 @@ export function AgentHistory(props: AgentHistoryProps) {
 
 function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
   const c = useHistoryCopy()
-  const { t } = useI18n()
   const navigate = useNavigate()
   const client = useQueryClient()
   const mounted = useRef(true)
@@ -231,35 +230,16 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
 
   return (
     <section aria-label={c.title} className="agent-history">
-      <header className="agent-history-heading">
-        <h2 className="sr-only">{c.title}</h2>
-        <HistorySummary
-          archivedShown={filters.archived !== 'exclude'}
-          onCleanEmpty={() => setCleanup({ days: 0, messages: 'empty' })}
-          pending={recent.isPending}
-          rows={rows}
-        />
-        <p className="agent-history-help">{c.description}</p>
-      </header>
-      <div className="agent-history-toolbar">
-        <SearchField
-          containerClassName="agent-history-search"
-          loading={Boolean(search && recent.isFetching)}
-          onChange={value => {
-            setSearch(value)
-            setSelected(new Set())
-          }}
-          placeholder={c.search}
-          value={search}
-          variant="box"
-        />
-        <HistoryFilterPopover filters={filters} onChange={changeFilters} />
-        <Button disabled={busy} onClick={() => setCleanup({})} variant="secondary">
-          <Codicon name="trash" />
-          {c.cleanup}…
-        </Button>
-      </div>
-      <HistoryFilterChips filters={filters} onChange={changeFilters} />
+      <h2 className="sr-only">{c.title}</h2>
+      {outcome && <HistoryOutcome onDismiss={() => setOutcome(null)} outcome={outcome} />}
+      <HistorySummary
+        archivedShown={filters.archived !== 'exclude'}
+        busy={busy}
+        onCleanEmpty={() => setCleanup({ days: 0, messages: 'empty' })}
+        onCleanup={() => setCleanup({})}
+        pending={recent.isPending}
+        rows={rows}
+      />
       {recent.isError && <HistoryError error={recent.error} retry={() => void recent.refetch()} />}
       {running.isError && <HistoryError error={running.error} retry={() => void running.refetch()} />}
       {Boolean(error) && (
@@ -271,37 +251,32 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
           }}
         />
       )}
-      {outcome && <HistoryOutcome outcome={outcome} />}
-      {selectedRows.length > 0 && (
-        <div aria-label={c.selectedCount(selectedRows.length)} className="agent-history-selection" role="toolbar">
-          <span>{c.selectedCount(selectedRows.length)}</span>
-          <Button
-            disabled={busy}
-            onClick={() => void mutate(selectedRows, { pinned: true }).catch(setError)}
-            variant="ghost"
-          >
-            <Pin aria-hidden />
-            {c.pin}
-          </Button>
-          <Button
-            disabled={busy}
-            onClick={() => void mutate(selectedRows, { archived: true, pinned: false }).catch(setError)}
-            variant="ghost"
-          >
-            <Codicon name="archive" />
-            {c.archive}
-          </Button>
-          <Button disabled={busy} onClick={() => setDeleting(selectedRows)} variant="destructiveOutline">
-            <Codicon name="trash" />
-            {c.delete}
-          </Button>
-          <Button disabled={busy} onClick={() => setSelected(new Set())} variant="ghost">
-            {t.common.clear}
-          </Button>
-        </div>
-      )}
       <div className="agent-history-body">
+        {/* The table card (18563:12889): search and Filter, then the rows. */}
         <div className="agent-history-list">
+          <div className="agent-history-toolbar">
+            <SearchField
+              containerClassName="agent-history-search"
+              loading={Boolean(search && recent.isFetching)}
+              onChange={value => {
+                setSearch(value)
+                setSelected(new Set())
+              }}
+              placeholder={c.search}
+              value={search}
+              variant="box"
+            />
+            <HistoryFilterPopover filters={filters} onChange={changeFilters} />
+          </div>
+          <HistoryFilterChips filters={filters} onChange={changeFilters} />
+          <HistorySelectionBar
+            busy={busy}
+            onArchive={() => void mutate(selectedRows, { archived: true, pinned: false }).catch(setError)}
+            onClear={() => setSelected(new Set())}
+            onDelete={() => setDeleting(selectedRows)}
+            onPin={() => void mutate(selectedRows, { pinned: true }).catch(setError)}
+            rows={selectedRows}
+          />
           {!rows.length && !recent.isPending && !recent.isError && (
             <p className="agent-history-help">{recent.hasNextPage ? c.partial : c.empty}</p>
           )}
@@ -421,6 +396,46 @@ function HistoryScope({ hasNextPage, isPending, isError, search }: HistoryScopeP
       ) : (
         c.complete
       )}
+    </div>
+  )
+}
+
+interface HistorySelectionBarProps {
+  rows: SessionInfo[]
+  busy: boolean
+  onPin: () => void
+  onArchive: () => void
+  onDelete: () => void
+  onClear: () => void
+}
+
+/** The selection bar (878:7772): the count, then Pin, Archive, Delete and Clear for the checked rows. */
+function HistorySelectionBar({ rows, busy, onPin, onArchive, onDelete, onClear }: HistorySelectionBarProps) {
+  const c = useHistoryCopy()
+  const { t } = useI18n()
+
+  if (!rows.length) {
+    return null
+  }
+
+  return (
+    <div aria-label={c.selectedCount(rows.length)} className="agent-history-selection" role="toolbar">
+      <span>{c.selectedCount(rows.length)}</span>
+      <Button disabled={busy} onClick={onPin} variant="ghost">
+        <Pin aria-hidden />
+        {c.pin}
+      </Button>
+      <Button disabled={busy} onClick={onArchive} variant="ghost">
+        <Codicon name="archive" />
+        {c.archive}
+      </Button>
+      <Button disabled={busy} onClick={onDelete} variant="destructiveOutline">
+        <Codicon name="trash" />
+        {c.delete}
+      </Button>
+      <Button disabled={busy} onClick={onClear} variant="ghost">
+        {t.common.clear}
+      </Button>
     </div>
   )
 }
@@ -547,6 +562,19 @@ function HistoryFilterPopover({
   )
 }
 
+/** Running, Empty and Archived as small badges at the row's end; running is the status green. */
+function HistoryRowChips({ row, running }: { row: SessionInfo; running: Set<string> }) {
+  const c = useHistoryCopy()
+
+  return (
+    <span className="agent-history-chips">
+      {historyRunning(row, running) && <small data-tone="running">{c.runningChip}</small>}
+      {row.message_count === 0 && <small>{c.emptyMessages}</small>}
+      {row.archived && <small>{c.archived}</small>}
+    </span>
+  )
+}
+
 interface HistoryRowsProps {
   rows: SessionInfo[]
   /** First page still loading: hold the table's geometry with placeholder rows. */
@@ -623,10 +651,13 @@ function HistoryRows(props: HistoryRowsProps) {
             <Fragment key={group}>
               {group && (
                 <tr className="agent-history-group">
+                  {/* Folder and name at the start, the count at the end (18563:12890). */}
                   <th colSpan={8} scope="rowgroup" title={group}>
-                    <Codicon name={props.filters.group === 'project' ? 'folder' : 'comment-discussion'} />
-                    {props.filters.group === 'project' ? pathLabel(group) : group}{' '}
-                    <span>{c.itemCount(rows.length)}</span>
+                    <span className="agent-history-group-label">
+                      <Codicon name={props.filters.group === 'project' ? 'folder' : 'comment-discussion'} />
+                      <span>{props.filters.group === 'project' ? pathLabel(group) : group}</span>{' '}
+                      <span>{c.itemCount(rows.length)}</span>
+                    </span>
                   </th>
                 </tr>
               )}
@@ -644,9 +675,6 @@ function HistoryRows(props: HistoryRowsProps) {
                     <button className="agent-history-row-main" onClick={() => props.onOpen(row)} type="button">
                       {row.pinned && <Pin aria-label={c.pinned} className="agent-history-pin" role="img" />}
                       <span className="agent-history-row-title">{sessionTitle(row)}</span>
-                      {historyRunning(row, props.running) && <small data-tone="running">{c.runningChip}</small>}
-                      {row.message_count === 0 && <small>{c.emptyMessages}</small>}
-                      {row.archived && <small>{c.archived}</small>}
                     </button>
                   </td>
                   <td>{sourceName(row)}</td>
@@ -662,7 +690,9 @@ function HistoryRows(props: HistoryRowsProps) {
                         )}
                   </td>
                   <td>{row.last_active > 0 ? <HistoryLastActive seconds={row.last_active} /> : '—'}</td>
-                  <td>
+                  {/* The row's state chips at its end (18563:12895), then its menu. */}
+                  <td className="agent-history-row-end">
+                    <HistoryRowChips row={row} running={props.running} />
                     <ActionsMenu
                       contentClassName="agent-history-row-menu"
                       items={kit =>
@@ -775,11 +805,14 @@ interface HistorySummaryProps {
   pending: boolean
   /** Archived rows are only loaded when the filter includes them; never count what is not shown. */
   archivedShown: boolean
+  busy: boolean
   onCleanEmpty: () => void
+  onCleanup: () => void
 }
 
-/** "13 items · 387 messages · 1 archived", then the empty-chats clean-up link (877:5946). */
-function HistorySummary({ rows, archivedShown, pending, onCleanEmpty }: HistorySummaryProps) {
+/** The summary card (18563:12882): "13 items / 387 messages / 1 archived", what History holds, the
+ *  empty-chats clean-up link, and Clean up at the card's end. */
+function HistorySummary({ rows, archivedShown, busy, pending, onCleanEmpty, onCleanup }: HistorySummaryProps) {
   const c = useHistoryCopy()
   const empty = rows.filter(row => row.message_count === 0).length
 
@@ -790,42 +823,68 @@ function HistorySummary({ rows, archivedShown, pending, onCleanEmpty }: HistoryS
   ]
 
   return (
-    <div className="agent-history-stats">
-      {pending ? (
-        <Skeleton className="agent-history-skeleton" style={{ width: '12rem' }} />
-      ) : (
-        <span>{stats.join(' · ')}</span>
-      )}
-      {empty > 0 && (
-        <button onClick={onCleanEmpty} type="button">
-          {c.emptyChats(empty)} · {c.cleanupLink}
-        </button>
-      )}
-    </div>
+    <header className="agent-history-heading">
+      <div className="agent-history-summary">
+        <div className="agent-history-stats">
+          {pending ? (
+            <Skeleton className="agent-history-skeleton" style={{ width: '12rem' }} />
+          ) : (
+            stats.map((stat, index) => (
+              <Fragment key={index}>
+                {index > 0 && <span aria-hidden> / </span>}
+                <span>{stat}</span>
+              </Fragment>
+            ))
+          )}
+        </div>
+        <p className="agent-history-help">{c.description}</p>
+        {empty > 0 && (
+          <button className="agent-history-clean-empty" onClick={onCleanEmpty} type="button">
+            {c.emptyChats(empty)} · {c.cleanupLink}
+          </button>
+        )}
+      </div>
+      <Button disabled={busy} onClick={onCleanup} variant="secondary">
+        {c.cleanup}
+      </Button>
+    </header>
   )
 }
 
-function HistoryOutcome({ outcome }: { outcome: HistoryDeleteOutcome }) {
+/** The result of a delete as a banner over the page (18563:13119): green when everything went, the
+ *  pending orange when something failed; the counts it names are the non-zero ones. */
+function HistoryOutcome({ outcome, onDismiss }: { outcome: HistoryDeleteOutcome; onDismiss: () => void }) {
   const c = useHistoryCopy()
+  const { t } = useI18n()
+
+  const parts: Array<[string, string[] | HistoryDeleteOutcome['errors']]> = [
+    [c.running, outcome.running],
+    [c.changed, outcome.changed],
+    [c.errors, outcome.errors]
+  ]
 
   return (
-    <div className="agent-history-outcome" role="status">
-      <p>
-        {c.deleted}: {outcome.deleted.length} · {c.running}: {outcome.running.length} · {c.changed}:{' '}
-        {outcome.changed.length} · {c.errors}: {outcome.errors.length}
-      </p>
-      {outcome.errors.length > 0 && (
-        <>
-          <p>{c.errorHint}</p>
-          <ul>
-            {outcome.errors.map(error => (
-              <li key={error.id}>
-                {error.id}: {error.error}
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
+    <div className="agent-history-outcome" data-tone={outcome.errors.length ? 'warn' : 'ok'} role="status">
+      <div>
+        <p>
+          {[`${c.deleted}: ${outcome.deleted.length}`, ...parts.filter(([, ids]) => ids.length).map(([label, ids]) => `${label}: ${ids.length}`)].join(' · ')}
+        </p>
+        {outcome.errors.length > 0 && (
+          <>
+            <p>{c.errorHint}</p>
+            <ul>
+              {outcome.errors.map(error => (
+                <li key={error.id}>
+                  {error.id}: {error.error}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+      <Button aria-label={t.common.close} onClick={onDismiss} size="icon-xs" variant="ghost">
+        <Codicon name="close" />
+      </Button>
     </div>
   )
 }

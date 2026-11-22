@@ -5,6 +5,7 @@ import { useI18n } from '@/i18n'
 import { usePortalShell } from '@/store/shell-variant'
 
 import { PageHeader } from '../redesign/page-header'
+import type { PageHeroArt } from '../redesign/page-hero'
 
 import { usePageFrameCopy } from './page-frame-copy'
 
@@ -21,8 +22,12 @@ export interface PageFrame {
   description?: string
   /** The header leads with a tile (the agent avatar). */
   leading?: boolean
-  /** The header carries a tab bar. */
-  tabs?: boolean
+  /** The header has a line over the H1 (the agent's home path). */
+  eyebrow?: boolean
+  /** The header carries a tab bar, underlined (`true`) or segmented. */
+  tabs?: boolean | 'segmented'
+  /** The artwork band behind the top of the stage (PageHero). */
+  hero?: PageHeroArt
 }
 
 /** The routed pages whose frame differs from the plain one (a header at the stage inset). */
@@ -34,7 +39,7 @@ export function usePageFrame(kind: PageFrameKind): PageFrame {
   const copy = usePageFrameCopy()
 
   const frames: Record<PageFrameKind, PageFrame> = {
-    agent: { panel: t.simplifiedAgents.agents, leading: true, tabs: true },
+    agent: { panel: t.simplifiedAgents.agents, leading: true, eyebrow: true, tabs: 'segmented', hero: 'tide' },
     agents: { title: t.profiles.title, description: copy.agentsDescription },
     capabilities: { title: t.sidebar.nav.capabilities, tabs: true },
     library: { title: t.simplifiedAgents.library, description: copy.libraryDescription, tabs: true },
@@ -58,8 +63,17 @@ export function PageHeaderSkeleton({ className, frame = {} }: { className?: stri
       aria-label={t.common.loading}
       className={className}
       description={frame.description ?? <CountSkeleton className="page-frame-skeleton-line" />}
+      eyebrow={frame.eyebrow ? <CountSkeleton className="page-frame-skeleton-eyebrow" /> : undefined}
       leading={frame.leading ? <span aria-hidden className="page-frame-skeleton-tile" /> : undefined}
-      tabs={frame.tabs ? <div aria-hidden className="portal-page-tabs page-frame-skeleton-tabs" /> : undefined}
+      tabs={
+        frame.tabs ? (
+          <div
+            aria-hidden
+            className="portal-page-tabs page-frame-skeleton-tabs"
+            data-variant={frame.tabs === 'segmented' ? 'segmented' : undefined}
+          />
+        ) : undefined
+      }
       title={frame.title ?? <CountSkeleton className="page-frame-skeleton-title" />}
     />
   )

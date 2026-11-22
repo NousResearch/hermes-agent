@@ -140,6 +140,10 @@
      and card rows share a 32px text inset; cards pad 16px over and under their rows, rows 12px. */
   --portal-settings-column: 40rem;
   --portal-settings-top: 6.5rem;
+  /* A page whose header opens with an eyebrow line (the agent page, 18563:12658) starts that line one
+     eyebrow (a 16px line and its 4px gap) above the Settings top, so its H1 lands where a Settings
+     page's does; below wide it is the page top, as Settings' is. */
+  --portal-page-eyebrow-top: max(var(--portal-page-top), calc(var(--portal-settings-top) - 1.25rem));
   --portal-settings-inset: 2rem;
   --portal-settings-card-pad: 1rem;
   --portal-settings-row-pad: 0.75rem;

@@ -77,3 +77,37 @@ it('shows a loading placeholder in place of a count that has not arrived', () =>
   expect(screen.getByRole('tab', { name: /Plugins/ }).querySelector('[data-slot="count-skeleton"]')).toBeTruthy()
   expect(screen.getByRole('tab', { name: /Tools/ }).querySelector('[data-slot="count-skeleton"]')).toBeNull()
 })
+
+it('names the page by its H1 alone, with an eyebrow above it and a badge beside it', () => {
+  render(
+    <PageHeader
+      badge={<span>Hermes machine</span>}
+      eyebrow={<span>~/.hermes</span>}
+      tabs={<PageTabs label="Agent" onChange={() => {}} tabs={TABS} value="skills" variant="segmented" />}
+      title="research"
+    />
+  )
+
+  expect(screen.getByRole('heading', { level: 1, name: 'research' })).toBeTruthy()
+  expect(screen.getByText('~/.hermes')).toBeTruthy()
+  expect(screen.getByText('Hermes machine')).toBeTruthy()
+})
+
+it('keeps the tab roles and keys on the segmented tab bar', () => {
+  function Segmented() {
+    const [tab, setTab] = useState('skills')
+
+    return <PageTabs label="Agent" onChange={setTab} tabs={TABS} value={tab} variant="segmented" />
+  }
+
+  render(<Segmented />)
+  const tab = (name: RegExp) => screen.getByRole('tab', { name })
+
+  expect(screen.getByRole('tablist', { name: 'Agent' })).toBeTruthy()
+  tab(/Skills/).focus()
+  fireEvent.keyDown(tab(/Skills/), { key: 'End' })
+  expect(tab(/Tools/).getAttribute('aria-selected')).toBe('true')
+  expect(tab(/Tools/).ownerDocument.activeElement).toBe(tab(/Tools/))
+  expect(tab(/Tools/).tabIndex).toBe(0)
+  expect(tab(/Skills/).tabIndex).toBe(-1)
+})

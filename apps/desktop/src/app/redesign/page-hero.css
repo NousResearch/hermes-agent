@@ -1,0 +1,93 @@
+/* The page hero (page-hero.tsx; DESIGN.md › Page hero): a band of artwork behind the top of a page's
+   stage, Figma's masked "interference tide" (agent history 18563:12855). Each art is ONE baked image
+   per theme with Figma's fade already in it, painted once with a single blend mode: dark screens a
+   navy-on-black image (black is a no-op), light multiplies a blue-on-white one (white is a no-op),
+   so the band fades into whatever veil the stage paints with no mask, filter or gradient at paint
+   time. It sits still while the page scrolls (no fixed attachment). A control drawn over the band
+   needs a solid fill of its own: a translucent one vanishes over the art's brightest part. Only the
+   redesign renders it; every rule gates on the root through :where(), which adds no specificity. */
+
+:where(:root[data-shell='portal']) .portal-page-hero {
+  /* Each art sets its Figma box: --page-hero-min-width (the panel width Figma draws it on) and
+     --page-hero-ratio. A wider stage scales the box up; a narrower one crops it at the far side. */
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: var(--page-stage-nav, 0px);
+  width: max(100% - var(--page-stage-nav, 0px), var(--page-hero-min-width));
+  aspect-ratio: var(--page-hero-ratio);
+  background: var(--page-hero-art) left top / cover no-repeat;
+  mix-blend-mode: var(--page-hero-blend);
+  pointer-events: none;
+}
+
+/* The content after the hero paints over it: positioned elements paint after in-flow ones, so the
+   stage's following children join it as positioned (relative) boxes. */
+:where(:root[data-shell='portal']) .portal-page-hero ~ :where(*) {
+  position: relative;
+}
+
+:where(:root[data-shell='portal'].dark) .portal-page-hero {
+  --page-hero-blend: screen;
+}
+
+:where(:root[data-shell='portal']:not(.dark)) .portal-page-hero {
+  --page-hero-blend: multiply;
+}
+
+/* Interference tide, the agent page (18563:12855 dark; 18563:29970 light, where Figma excludes a grey
+   cut of the art from the panel and lightens it with the brand blue; the light asset is that result
+   divided out of the light panel). The 1024px image Figma places at the panel's start, the 536px of it
+   the fade leaves; dark 1536x804 (1.5x), light 1024x536 (its Figma source is 1024 wide). */
+:where(:root[data-shell='portal']) .portal-page-hero[data-art='tide'] {
+  --page-hero-min-width: 64rem;
+  --page-hero-ratio: 1024 / 536;
+}
+
+:where(:root[data-shell='portal'].dark) .portal-page-hero[data-art='tide'] {
+  --page-hero-art: url('../../assets/page-hero-tide-dark.avif');
+}
+
+:where(:root[data-shell='portal']:not(.dark)) .portal-page-hero[data-art='tide'] {
+  --page-hero-art: url('../../assets/page-hero-tide-light.avif');
+}
+
+/* Null stream, Account & Plan (18563:12252 dark, 18563:29384 light) and raster veil, Machines
+   (18563:12520 dark, 18563:29634 light): Figma's own renders of the panel's mask group, the panel's
+   ground taken back out (inverse screen for dark, a divide for light, the light grain floor lifted),
+   cropped where the art ends with a 48px fade, at 1.5x of the 860px panel. The veil sits in the
+   panel's trailing corner, so its box keeps to the trailing edge. */
+:where(:root[data-shell='portal']) .portal-page-hero[data-art='stream'] {
+  --page-hero-min-width: 53.75rem;
+  --page-hero-ratio: 860 / 328;
+}
+
+:where(:root[data-shell='portal']) .portal-page-hero[data-art='veil'] {
+  --page-hero-min-width: 53.75rem;
+  --page-hero-ratio: 860 / 480;
+
+  inset-inline: auto 0;
+}
+
+:where(:root[data-shell='portal'].dark) .portal-page-hero[data-art='stream'] {
+  --page-hero-art: url('../../assets/page-hero-stream-dark.avif');
+}
+
+:where(:root[data-shell='portal']:not(.dark)) .portal-page-hero[data-art='stream'] {
+  --page-hero-art: url('../../assets/page-hero-stream-light.avif');
+}
+
+:where(:root[data-shell='portal'].dark) .portal-page-hero[data-art='veil'] {
+  --page-hero-art: url('../../assets/page-hero-veil-dark.avif');
+}
+
+:where(:root[data-shell='portal']:not(.dark)) .portal-page-hero[data-art='veil'] {
+  --page-hero-art: url('../../assets/page-hero-veil-light.avif');
+}
+
+/* Compact (breakpoints.ts: max-width 639.98px): the Settings bands scale down with the column instead
+   of cropping to their brightest corner, which would sit behind the page title and description. */
+@media (max-width: 639.98px) {
+  :where(:root[data-shell='portal']) .portal-page-hero:is([data-art='stream'], [data-art='veil']) {
+    --page-hero-min-width: 0px;
+  }
+}

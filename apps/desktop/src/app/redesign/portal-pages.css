@@ -52,10 +52,16 @@
   padding-block: var(--portal-page-top) 0;
 }
 
+/* The agent page's frame starts at its eyebrow top, as the loaded page does (agent-settings.css). */
+:where(:root[data-shell='portal']) [data-page-surface] .management-panel.page-frame-fallback.page-frame-eyebrow {
+  padding-block: var(--portal-page-eyebrow-top) 0;
+}
+
 /* Loading placeholders, on every redesigned surface: the token block, never the classic accent. */
 :root[data-shell='portal'] [data-slot='skeleton'],
 :where(:root[data-shell='portal']) .page-frame-skeleton-title,
 :where(:root[data-shell='portal']) .page-frame-skeleton-line,
+:where(:root[data-shell='portal']) .page-frame-skeleton-eyebrow,
 :where(:root[data-shell='portal']) .page-frame-skeleton-tile {
   border-radius: var(--portal-radius-chip);
   background-color: var(--portal-surface-skeleton);
@@ -83,9 +89,24 @@
   border-radius: var(--portal-radius-card);
 }
 
-/* The tab bar's rail at its loaded height, tabs still to come. */
+/* The tab bar's rail at its loaded height, tabs still to come; a segmented track is its tabs'
+   height less 2px plus its 3px inset on both sides (portal-page-header.css). */
 :where(:root[data-shell='portal']) .page-frame-skeleton-tabs {
   height: var(--portal-page-tab-height);
+}
+
+:where(:root[data-shell='portal']) .page-frame-skeleton-tabs[data-variant='segmented'] {
+  width: 15rem;
+  height: calc(var(--portal-page-tab-height) + 4px);
+  border-radius: var(--portal-radius-surface);
+  background-color: var(--portal-control-fill);
+}
+
+/* The eyebrow line (a path) at its loaded line box. */
+:where(:root[data-shell='portal']) .page-frame-skeleton-eyebrow {
+  width: 6rem;
+  height: 0.5rem;
+  translate: none;
 }
 
 /* ── Settings page heading (856:3405) ──

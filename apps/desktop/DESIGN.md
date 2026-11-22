@@ -940,6 +940,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-panel-first-row` | `7.625rem` | ″ |  |
 | `--portal-settings-column` | `40rem` | ″ | Global Settings ("Prod - Desktop" 06 · Settings/Account, Panel/flexible 16292:16447): a 640px column centred in the stage, its header 104px under the stage's top; the header, section heads and card rows share a 32px text inset; cards pad 16px over and under their rows, rows 12px. |
 | `--portal-settings-top` | `6.5rem` | ″ | `(max-width: 1023.98px)`: `var(--portal-page-top)`. |
+| `--portal-page-eyebrow-top` | `max(var(--portal-page-top), calc(var(--portal-settings-top) - 1.25rem))` | ″ | A page whose header opens with an eyebrow line (the agent page, 18563:12658) starts that line one eyebrow (a 16px line and its 4px gap) above the Settings top, so its H1 lands where a Settings page's does; below wide it is the page top, as Settings' is. |
 | `--portal-settings-inset` | `2rem` | ″ | `(max-width: 639.98px)`: `1rem`. |
 | `--portal-settings-card-pad` | `1rem` | ″ |  |
 | `--portal-settings-row-pad` | `0.75rem` | ″ |  |
@@ -1171,6 +1172,11 @@ the content; without tabs the content follows after the page rhythm, 32. `PageTa
 tab list (arrows, Home, End; roving focus) whose tabs all take the widest tab's width, and a count
 reserves three digits while it loads, so switching tabs or a count arriving never moves a neighbour.
 On compact the actions take their own row and the tabs keep their own widths in one row that scrolls sideways when it must (44px on touch).
+Two optional slots extend the title block: `eyebrow` (a caption line over the H1, the agent's home
+path) and `badge` (a chip beside the H1 that stays out of the heading's accessible name, the agent's
+machine). `PageTabs variant="segmented"` (the agent page, 18563:12870) draws the same tab list as one
+filled track (control fill, r6, 3px inset, 36 tall) whose selected tab is filled in the brand colour;
+roles, roving focus and keys are the underline bar's.
 A page that loads in fills its first paint with placeholders shaped like the loaded content
 (`SettingsCardSkeleton`: the card's 64px rows and 48px add row), never arbitrary spacers.
 
@@ -1180,6 +1186,40 @@ inset; its sides keep `--page-content-inset` at least (16 on compact); the heade
 (24 under tabs, the page rhythm without), which the content under it never adds to; and a page
 scroller ends `--portal-page-end-space` above the floor. Global Settings keeps its own frame
 (`--portal-settings-*`), and a conversation keeps the chat column.
+
+### Page hero (`app/redesign/page-hero.tsx`)
+
+A band of artwork behind the top of a page's stage that fades into the page. Three pages carry one:
+the agent page (`tide`, 18563:12658), Account & Plan (`stream`, 18563:12067) and Machines (`veil`,
+18563:12326); no other Settings page does. `<PageHero art="…" />` takes the art as a variant
+(`PageHeroArt`) and renders one decorative, `aria-hidden`, pointer-transparent box. Mount it as a
+child of the stage, after any page sidebar panel and before the header; the stage must be its
+containing block (`position: relative`: the agent page's `.agent-management`, Settings'
+`[data-slot='overlay-main']`, which takes `relative` only while it shows a band). The box sits at the
+stage's top from `--page-stage-nav` (0 where the page has none) at Figma's own geometry per art
+(`--page-hero-min-width`, the panel width Figma draws it on, and `--page-hero-ratio`); a wider stage
+scales it up and a narrower one crops it at the far side (`veil` keeps to the trailing edge, where
+its art is). Its following siblings become `position: relative` so they paint over it. The page frame
+placeholder carries it too (`PageFrame.hero`), so it does not pop in when the page's code lands.
+
+Each art is two baked images in `src/assets/` (`page-hero-<art>-dark.avif`, `-light.avif`) with
+Figma's fade already in them, painted with one blend mode and nothing else: dark `screen`s a
+navy-on-black image (black is a no-op), light `multiply`s a tinted-on-white one (white is a no-op), so
+the band fades into whatever veil the stage paints. No mask, filter, gradient or fixed attachment at
+paint time; it sits still while the page scrolls, and scrolling over it measured no cost against the
+same page without it. `tide` is baked from the source image and Figma's mask (light: the art
+excluded from the panel, then lightened with the brand blue, divided back out of the light ground);
+`stream` and `veil` from Figma's own 2x renders of the panel's mask group with the panel's ground
+taken back out (inverse screen for dark, a divide for light, the light grain floor lifted), cropped
+where the art ends with a 48px fade. Keep each under ~150KB (tide 101/35KB, stream 50/16KB, veil
+42/52KB, dark/light). A new art is a new `PageHeroArt` value plus its geometry and two
+`--page-hero-art` rules in `page-hero.css`. A control drawn over the band needs a solid fill of its
+own: a translucent ink fill vanishes over the art's brightest part (the agent header's overflow
+button takes `--portal-surface-elevated`).
+
+A page whose header opens with an eyebrow line (the agent page) starts its stage at
+`--portal-page-eyebrow-top`, one eyebrow above `--portal-settings-top`, so its H1 lands where a
+Settings page title does; below wide both are the page top.
 
 ### Routines (`app/routines/`)
 

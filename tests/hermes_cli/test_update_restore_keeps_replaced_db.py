@@ -1,8 +1,10 @@
 """The post-update guard must never destroy the only copy of rows newer than its snapshot."""
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
+from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
 from hermes_cli import update_cmd_maint
 from hermes_cli.backup import _should_exclude
 
@@ -98,6 +100,34 @@ def test_no_restore_when_the_copy_cannot_be_written(tmp_path, monkeypatch, capsy
     assert (home / "state.db").read_bytes() == damaged
     assert not list(home.glob("state.db.replaced-*"))
     assert "No space left on device" in capsys.readouterr().out
+
+
+def test_row_committed_after_the_copy_is_never_lost(tmp_path, monkeypatch):
+    home, _ = _damaged_home_with_old_snapshot(tmp_path)
+    keep, committed = update_cmd_maint._keep_replaced_state_db, []
+
+    def copy_then_runtime_writes(state_path):
+        kept, runtime = keep(state_path), ProfileOwnership()
+        try:
+            runtime.reserve([home])  # a starting gateway writes only once it owns the home
+        except OwnershipConflict:
+            return kept
+        with closing(sqlite3.connect(state_path)) as conn, conn:
+            conn.execute("CREATE TABLE late AS SELECT 'last committed row' AS name")
+        committed.append("last committed row")
+        runtime.release(home)
+        return kept
+
+    monkeypatch.setattr(update_cmd_maint, "_keep_replaced_state_db", copy_then_runtime_writes)
+
+    update_cmd_maint._verify_and_restore_one_state_db(home, label="default home")
+
+    surviving = set()
+    for db in [home / "state.db", *home.glob("state.db.replaced-*[0-9]")]:
+        with closing(sqlite3.connect(db)) as conn:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE name='late'").fetchone():
+                surviving.update(row[0] for row in conn.execute("SELECT name FROM late"))
+    assert set(committed) <= surviving
 
 
 def test_backups_skip_the_kept_copy():

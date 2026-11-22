@@ -406,7 +406,8 @@ def _discard_kept_state_db(kept: Path) -> None:
 def _state_db_unchanged_since_kept(state_path: Path, kept: Path) -> bool:
     import filecmp
 
-    for suffix in _SQLITE_FILE_SUFFIXES:
+    # -shm is a shared-memory index that any reader rewrites; only the data files say "touched".
+    for suffix in ("", "-wal", "-journal"):
         live = state_path.with_name(state_path.name + suffix)
         copy = kept.with_name(kept.name + suffix)
         if live.exists() != copy.exists():
@@ -422,7 +423,7 @@ def _keep_replaced_state_db(state_path: Path) -> Path:
     The snapshot can be far older than the damaged file, which often still holds recoverable rows.
     An OSError here stops the restore: a damaged database beats no database.
     """
-    from hermes_state_dbfile import _fsync_path
+    from hermes_cli.backup_atomic import _fsync_file, _fsync_staged_dir
 
     stamp = _time.strftime("%Y%m%d-%H%M%S", _time.gmtime())
     kept = state_path.with_name(f"{state_path.name}.replaced-{stamp}-{os.getpid()}")
@@ -433,8 +434,8 @@ def _keep_replaced_state_db(state_path: Path) -> Path:
                 target = kept.with_name(kept.name + suffix)
                 shutil.copy2(source, target)
                 target.chmod(0o600)
-                _fsync_path(target)
-        _fsync_path(state_path.parent)
+                _fsync_file(target)
+        _fsync_staged_dir(state_path.parent)
     except OSError:
         _discard_kept_state_db(kept)
         raise
@@ -447,12 +448,35 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
     Use the single-database primitive, not whole-profile restore: post-update config
     and unrelated files must not roll back with a damaged transcript store.
     """
+    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
     from hermes_cli.backup import verify_sqlite_integrity
-    from hermes_cli.backup_restore import _safe_restore_db
 
     snap_state.stat()  # Preserve the caller's OSError reporting for missing snapshots.
     if not verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True).get("valid"):
         return False
+    # Hold the reservation _safe_restore_db takes (it nests) from before the copy through
+    # publication: a writer committing in between would land its row in neither file.
+    try:
+        with exclusive_maintenance([state_path.absolute().parent, state_path.resolve().parent]):
+            return _keep_and_restore_state_db(state_path, snap_state)
+    except OwnershipConflict as exc:
+        logger.error("%s", exc)
+        _print_restore_refused()
+        return False
+
+
+def _print_restore_refused() -> None:
+    print("  ✗ Auto-restore refused or failed; state.db was not restored.")
+    print("    Stop the owning runtime and close database handles before retrying.")
+    print("    If the canonical runtime epoch is unreadable, do not restore in place:")
+    print("    use `hermes sessions recover --source <snapshot> --output <separate-path>`")
+    print("    to salvage transcripts into a separate output.")
+
+
+def _keep_and_restore_state_db(state_path: Path, snap_state: Path) -> bool:
+    from hermes_cli.backup import verify_sqlite_integrity
+    from hermes_cli.backup_restore import _safe_restore_db
+
     kept = _keep_replaced_state_db(state_path)
     if not _safe_restore_db(snap_state, state_path):
         # A restore can fail after it unlinked or partly rewrote state.db; then the copy is the
@@ -463,11 +487,7 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
             print(f"    Salvage it with `hermes sessions recover --source {kept} --output <new-path> --allow-partial`")
             return False
         _discard_kept_state_db(kept)
-        print("  ✗ Auto-restore refused or failed; state.db was not restored.")
-        print("    Stop the owning runtime and close database handles before retrying.")
-        print("    If the canonical runtime epoch is unreadable, do not restore in place:")
-        print("    use `hermes sessions recover --source <snapshot> --output <separate-path>`")
-        print("    to salvage transcripts into a separate output.")
+        _print_restore_refused()
         return False
     print(f"  ⚠ Replaced state.db kept at {kept}")
     print(f"    Rows newer than snapshot {snap_state.parent.name} are only there: salvage them with")

@@ -1095,6 +1095,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     const applyTarget = (node: HTMLElement) => {
       node.scrollTop = threadScrollTargetTop(target, node)
       ownScrollTop = node.scrollTop
+      // Restore writes can run from a ResizeObserver after the clip measured.
+      node.dispatchEvent(new Event(STICKY_PROMPT_CLIP_REMEASURE))
     }
 
     applyRestoreRef.current = () => {

@@ -17,6 +17,7 @@ import {
 import { stubThreadEnvironment, stubThreadViewportSize } from '../test-utils'
 
 import { SESSION_SWITCHING_ATTRIBUTE } from './session-switching'
+import { STICKY_PROMPT_CLIP_REMEASURE } from './use-sticky-prompt-clip'
 import { TranscriptWindowProvider, type TranscriptWindowValue } from './transcript-window'
 
 import { Thread } from '.'
@@ -205,13 +206,21 @@ describe('list session-scroll restore', () => {
       // Hold the library's follow frame so the resize leg is the only writer.
       const raf = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation(() => 0)
 
+      // The re-pin runs after the sticky-prompt clip measured; it must tell the
+      // clip synchronously, after the write, so the clip matches the painted
+      // position.
+      const remeasuredAt: number[] = []
+      vp.addEventListener(STICKY_PROMPT_CLIP_REMEASURE, () => remeasuredAt.push(vp.scrollTop))
+
       try {
         // Several streamed chunks land; the reader never leaves the bottom.
         for (const delta of [120, 240, 168, 300]) {
           scrollHeightValue += delta
+          remeasuredAt.length = 0
           act(deliverContentResize)
 
           expect(vp.scrollTop).toBe(scrollHeightValue - CLIENT_H)
+          expect(remeasuredAt).toEqual([scrollHeightValue - CLIENT_H])
         }
 
         // An open inline edit holds the viewport: its growth is not followed.

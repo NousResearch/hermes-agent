@@ -58,11 +58,9 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
   const visible = new Set<HTMLElement>()
   const clipped = new Set<HTMLElement>()
   let frame = 0
-  let measuredScrollTop = viewport.scrollTop
 
   const measure = () => {
     frame = 0
-    measuredScrollTop = viewport.scrollTop
     const viewportTop = viewport.getBoundingClientRect().top
     const next = new Map<HTMLElement, number>()
     let activePrompt: HTMLElement | null = null
@@ -189,18 +187,13 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
   // whose geometry they describe. Measuring there (not one rAF later) matters
   // when the viewport itself resizes: the browser clamps scrollTop, the
   // content moves under a clip still sized for the old position, and for one
-  // painted frame a band below the pinned card hid the transcript. A viewport
-  // resize, or a content resize that clamps scrollTop (collapsing the last
-  // turn at the bottom), can also bring a turn into view before
-  // IntersectionObserver delivers it, so refresh visibility from outer boxes
-  // first.
-  const sizes: ResizeObserver = new ResizeObserver(entries => {
+  // painted frame a band below the pinned card hid the transcript. Any resize
+  // (viewport, a collapsing row, a clamped scrollTop) can also bring a turn
+  // into view before IntersectionObserver delivers it, so refresh visibility
+  // from outer boxes first.
+  const sizes: ResizeObserver = new ResizeObserver(() => {
     cancelAnimationFrame(frame)
-
-    if (viewport.scrollTop !== measuredScrollTop || entries.some(entry => entry.target === viewport)) {
-      refreshVisible()
-    }
-
+    refreshVisible()
     measure()
   })
 

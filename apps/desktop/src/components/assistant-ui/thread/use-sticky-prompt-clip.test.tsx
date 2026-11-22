@@ -274,7 +274,7 @@ it('refreshes visible turns from outer boxes when the viewport itself resizes', 
 
 // At the bottom of a fixed-height viewport, collapsing a tall last turn clamps
 // scrollTop and brings an earlier turn into view. Only content boxes resize,
-// so the clamp (not a viewport entry) must trigger the visibility refresh.
+// with no viewport entry, so every resize delivery refreshes visibility.
 it('refreshes visible turns when a content resize clamps scrollTop', () => {
   const viewport = window.document.createElement('div')
   const content = makeRow(viewport)
@@ -303,6 +303,35 @@ it('refreshes visible turns when a content resize clamps scrollTop', () => {
   viewport.scrollTop = 50
   turnRect.mockReturnValue(rect(-50, 800))
   act(() => resize.current([{ target: content } as unknown as ResizeObserverEntry], {} as ResizeObserver))
+  expect(reply.style.getPropertyValue('--sticky-prompt-clip')).toBe('115px')
+})
+
+// A preceding row collapsing moves a hidden turn under the pinned prompt
+// without changing scrollTop at all.
+it('refreshes visible turns when a resize moves them without a scrollTop change', () => {
+  const viewport = window.document.createElement('div')
+  const content = makeRow(viewport)
+  vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(rect(0, 400))
+
+  const turn = makeRow(content, 'aui_message-group')
+  const prompt = makeRow(turn, 'aui_user-message-root')
+  prompt.style.position = 'sticky'
+  prompt.style.top = '5px'
+  const reply = makeRow(turn)
+  const turnRect = vi.spyOn(turn, 'getBoundingClientRect').mockReturnValue(rect(450, 800))
+  vi.spyOn(prompt, 'getBoundingClientRect').mockReturnValue(rect(5, 60))
+  vi.spyOn(reply, 'getBoundingClientRect').mockReturnValue(rect(-50, 300))
+  viewport.scrollTop = 300
+  const resize = stubObservers()
+
+  renderHook(props => useStickyPromptClip(props), {
+    initialProps: { scrollRef: { current: viewport }, contentRef: { current: content }, paneVisible: true, rows: 'r' }
+  })
+  expect(reply.hasAttribute('data-sticky-prompt-clip')).toBe(false)
+
+  turnRect.mockReturnValue(rect(-50, 800))
+  act(() => resize.current([{ target: content } as unknown as ResizeObserverEntry], {} as ResizeObserver))
+  expect(viewport.scrollTop).toBe(300)
   expect(reply.style.getPropertyValue('--sticky-prompt-clip')).toBe('115px')
 })
 

@@ -1,15 +1,15 @@
 name: fleet-control
 repo: https://github.com/driptothebone/fleet-control
-sha: 3c2b4bb83b00747b948b3f1c4bdad6edb5428156
-description: "Phone-first bulk model routing across profiles with exact preview, confirmation and saved-setting readback. Disclosure — Rewrites the model, reasoning-effort, Fast, subagent, auxiliary and fallback settings in every profile you select, through Hermes's own dashboard settings routes, after you preview and confirm the change."
+sha: 730904e247ab36c92c694f108d4eb4bfd60688d8
+description: "Phone-first bulk model routing across profiles with exact preview, confirmation and saved-setting readback. Disclosure — Rewrites the model, reasoning-effort, Fast, subagent, auxiliary and fallback settings in every profile you select, through Hermes's own dashboard settings routes, after you preview and confirm the change. If you configure other machines, the plugin reads and writes selected profiles there through each machine’s Hermes dashboard."
 maintainer: driptothebone
 tier: community
 category: models
 requires_hermes: ">=0.23.0"
-version: "2.1.0"
+version: "2.2.1"
 title: Fleet Control
 screenshots:
-  - https://raw.githubusercontent.com/driptothebone/fleet-control/3c2b4bb83b00747b948b3f1c4bdad6edb5428156/docs/phone-demo.png
+  - https://raw.githubusercontent.com/driptothebone/fleet-control/730904e247ab36c92c694f108d4eb4bfd60688d8/docs/phone-demo.png
 known_issues:
   - Requires an in-process dashboard and the local-file config backend. Isolated plugin workers and remote backends are unsupported.
   - Hermes config saves have no revision check yet (NousResearch/hermes-agent#156100). Each profile is rechecked right before saving, so only a change made in that same instant is missed.

@@ -33,6 +33,50 @@ if [ -z "${PLAINBOARD_MCP_TOKEN:-}" ] && [ -r "$OPENCODE_PLAINBOARD_TOKEN_FILE" 
   export PLAINBOARD_MCP_TOKEN
 fi
 
+# 2026-11-22 OpenCode 2 has no top-level `export` (v1 had one): `opencode export <id>` becomes
+# `opencode session export <id>`. nodeterm's chat view still calls the v1 spelling.
+if [ "${1:-}" = "export" ]; then
+  shift
+  set -- session export "$@"
+fi
+
+# 2026-11-22 nodeterm, owner instance only: NODETERM_OPENCODE_DATA_ROOTS lists other OpenCode data
+# dirs (`label=/abs/path` separated by `;`, `*` as a whole path segment). A session id that is not
+# in this user's own store is looked up there, read-only, and OpenCode then runs against the store
+# that holds it (XDG_DATA_HOME), so resume and export work for every session the list shows. The
+# variable is unset everywhere else, so nothing changes there.
+if [ -n "${NODETERM_OPENCODE_DATA_ROOTS:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
+  oc_sid=""
+  oc_prev=""
+  for arg in "$@"; do
+    case "$oc_prev" in --session|-s|export) oc_sid="$arg" ;; esac
+    case "$arg" in --session=*) oc_sid="${arg#--session=}" ;; esac
+    oc_prev="$arg"
+  done
+  if printf '%s' "$oc_sid" | grep -Eq '^ses_[A-Za-z0-9]{1,120}$'; then
+    oc_has() {
+      [ -r "$1/opencode.db" ] &&
+        [ -n "$(sqlite3 -readonly "$1/opencode.db" "SELECT 1 FROM session_v2 WHERE id='$oc_sid' LIMIT 1" 2>/dev/null)" ]
+    }
+    if ! oc_has "${XDG_DATA_HOME:-$HOME/.local/share}/opencode"; then
+      IFS=';' read -r -a oc_entries <<< "$NODETERM_OPENCODE_DATA_ROOTS"
+      for oc_entry in "${oc_entries[@]}"; do
+        oc_pat="${oc_entry#*=}"
+        case "$oc_pat" in /*) ;; *) continue ;; esac
+        for oc_dir in $oc_pat; do
+          if [ -d "$oc_dir" ] && oc_has "$oc_dir"; then
+            XDG_DATA_HOME="$(dirname "$oc_dir")"
+            export XDG_DATA_HOME
+            # The shared background service only knows the user's own store: use a private one.
+            case " $* " in *" --standalone "*|*" --server "*|*" --server="*) ;; *) set -- "$@" --standalone ;; esac
+            break 2
+          fi
+        done
+      done
+    fi
+  fi
+fi
+
 if [ "${1:-}" = "run" ]; then
   shift
   has_model=0

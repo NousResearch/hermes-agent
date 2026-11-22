@@ -280,10 +280,12 @@ class GeminiAPIError(Exception):
     """Error shape compatible with Hermes retry/error classification."""
 
     def __init__(self, message: str, *, code: str = "gemini_api_error", status_code: Optional[int] = None,
-                 response: Optional[httpx.Response] = None, retry_after: Optional[float] = None, details: Optional[dict[str, Any]] = None):
+                 response: Optional[httpx.Response] = None, retry_after: Optional[float] = None, details: Optional[dict[str, Any]] = None,
+                 body: Optional[dict] = None):
         super().__init__(message)
         self.code, self.status_code, self.response = code, status_code, response
         self.retry_after, self.details = retry_after, details or {}
+        self.body = body
 
 
 # ── OpenAI → Gemini request translation ──────────────────────────────────────
@@ -899,6 +901,8 @@ def gemini_http_error(
     return GeminiAPIError(
         message, code=_HTTP_ERROR_CODES.get(status, f"gemini_http_{status}"), status_code=status, response=response,
         retry_after=retry_after, details={"status": err_status, "reason": reason, "metadata": metadata, "message": err_message},
+        # Preserve guidance for classification even after the streaming body is consumed.
+        body={"error": {**err_obj, "message": message}} if isinstance(err_obj.get("message"), str) and err_message else None,
     )
 
 

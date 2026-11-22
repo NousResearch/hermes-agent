@@ -632,6 +632,18 @@ def _announce_source(identifier: str, console, *, brief: bool) -> tuple[Optional
     return entry, entry.install_identifier
 
 
+def _not_enabled_notice(target: Path, installed_name: str) -> str:
+    """The install outcome line when the operator did not enable *installed_name*. Provider discovery
+    loads a provider plugin without a ``plugins.enabled`` entry (``providers._scan_home_layer``), so
+    for one it does not skip via ``plugins.disabled`` the line says it is active and how to turn it off."""
+    from providers import _plugin_disabled
+    if _pc()._default_on(target, "user") and not _plugin_disabled(target):
+        return (f"[dim]Plugin installed. Provider plugins are active without an entry in plugins.enabled; "
+                f"`hermes plugins disable {installed_name}` turns it off.[/dim]")
+    return (f"[dim]Plugin installed but not enabled. "
+            f"Run `hermes plugins enable {installed_name}` to activate.[/dim]")
+
+
 def cmd_install(
     identifier: str,
     force: bool = False,
@@ -764,9 +776,7 @@ def cmd_install(
                 f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
             )
     else:
-        console.print(
-            f"[dim]Plugin installed but not enabled. "
-            f"Run `hermes plugins enable {installed_name}` to activate.[/dim]")
+        console.print(_not_enabled_notice(target, installed_name))
 
     from hermes_cli.plugin_provider_requests import requires_auth_notice
     if notice := requires_auth_notice(installed_manifest):

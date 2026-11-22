@@ -218,8 +218,17 @@ def test_existing_pointer_is_not_archived_again(home):
     assert not (home / "cache" / "pruned").exists()
 
 
-def test_compaction_remote_backend_keeps_plain_stubs(home, monkeypatch):
-    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+def test_compaction_on_a_backend_without_the_archive_folder_keeps_plain_stubs(home, monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "some_plugin_backend")
     original = [{"role": "tool", "content": "original" * 1000}]
     replacement = [{"role": "tool", "content": "shorter"}]
     assert archive_compaction_drops(original, replacement, "s1") == (replacement, [], 0)
+
+
+def test_compaction_on_a_synced_backend_names_the_remote_archive(home, monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    original = [{"role": "tool", "content": "original" * 1000}]
+    replacement = [{"role": "tool", "content": "shorter"}]
+    rows, written, reverted = archive_compaction_drops(original, replacement, "s1")
+    assert (len(written), reverted) == (1, 0)
+    assert "full result: ~/.hermes/cache/pruned/" in rows[0]["content"]

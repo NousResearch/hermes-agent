@@ -44,10 +44,12 @@ import { bind, type Bound } from './i18n-bind'
 import { type BotsMessages } from './i18n-messages'
 import { ROSTER_CHROME } from './roster-chrome-locales'
 import { getPluginCtx } from './shared'
+import { TEAMMATE_WAIT_LOCALES } from './teammate-wait-locales'
 
 const en: BotsMessages = {
   canonical: CANONICAL_GROUP_LOCALES.en,
   crossGateway: CROSS_GATEWAY_GROUP_LOCALES.en,
+  waiting: TEAMMATE_WAIT_LOCALES.en,
   editor: {
     fullConfigHint: 'Full configuration needs a newer gateway (restart it after updating Hermes).',
     liveCapabilities: 'Capabilities (applies immediately — skills, tools, MCP)',
@@ -81,7 +83,7 @@ const en: BotsMessages = {
     shareKeys: 'Share keys & accounts with the main profile',
     shareKeysOn: target => `Share keys & accounts with the default profile on ${target}`,
     shareKeysHint:
-      'Subscriptions, OAuth logins, and API keys stay shared with the default profile (not copied), so token refreshes never invalidate each other. Uncheck for an isolated snapshot copy.',
+      'Logins stay shared with the default profile (not copied), so token refreshes never invalidate each other. If the bot starts from another profile that has its own logins (the bot it clones, or, for a fresh bot, the named profile creating it), it gets a copy of those instead. API keys are copied either way. Uncheck for an isolated copy. Subscription logins that can\'t be copied are read from the default profile instead.',
     needsModel:
       'No model provider is ready for it yet, so it skipped its introduction. Pick a provider and model under Advanced.',
     configureModel: 'Configure model',
@@ -480,6 +482,7 @@ const en: BotsMessages = {
 const ja: BotsMessages = {
   canonical: CANONICAL_GROUP_LOCALES.ja,
   crossGateway: CROSS_GATEWAY_GROUP_LOCALES.ja,
+  waiting: TEAMMATE_WAIT_LOCALES.ja,
   editor: {
     fullConfigHint: 'すべての設定を使うには新しいゲートウェイが必要です（Hermes 更新後に再起動してください）。',
     liveCapabilities: '機能（即時適用 — スキル、ツール、MCP）',
@@ -514,7 +517,7 @@ const ja: BotsMessages = {
     shareKeys: 'メインプロファイルとキー・アカウントを共有',
     shareKeysOn: target => `${target} の default プロファイルとキー・アカウントを共有`,
     shareKeysHint:
-      'サブスクリプション、OAuth ログイン、API キーを default プロファイルとコピーせず共有するため、トークン更新で互いに無効になりません。チェックを外すと独立したスナップショットをコピーします。',
+      'ログインは default プロファイルとコピーせず共有するため、トークン更新で互いに無効になりません。独自のログインを持つ別のプロファイル（複製元のボット、複製しない場合は作成元の名前付きプロファイル）から始める場合は、代わりにそのログインのコピーを使います。API キーはどちらの場合もコピーされます。チェックを外すと独立したコピーになります。コピーできないサブスクリプションのログインは、代わりに default プロファイルのものを使います。',
     needsModel:
       'まだ使用できるモデルプロバイダーがないため、自己紹介をスキップしました。「詳細設定」でプロバイダーとモデルを選んでください。',
     configureModel: 'モデルを設定',
@@ -916,6 +919,7 @@ const ja: BotsMessages = {
 const zh: BotsMessages = {
   canonical: CANONICAL_GROUP_LOCALES.zh,
   crossGateway: CROSS_GATEWAY_GROUP_LOCALES.zh,
+  waiting: TEAMMATE_WAIT_LOCALES.zh,
   editor: {
     fullConfigHint: '完整配置需要更新网关（更新 Hermes 后请重启网关）。',
     liveCapabilities: '功能（立即生效 — 技能、工具、MCP）',
@@ -948,7 +952,7 @@ const zh: BotsMessages = {
     shareKeys: '与主配置档案共享密钥和账户',
     shareKeysOn: target => `与 ${target} 上的 default 配置档案共享密钥和账户`,
     shareKeysHint:
-      '订阅、OAuth 登录和 API 密钥与 default 配置档案保持共享而非复制，令牌刷新不会使另一方失效。取消勾选则创建隔离的快照副本。',
+      '登录信息与 default 配置档案保持共享而非复制，令牌刷新不会使另一方失效。如果机器人基于另一个拥有自己登录信息的配置档案（被克隆的机器人；不克隆时则为创建它的命名配置档案），则会改为获得这些登录信息的副本。API 密钥在两种情况下都会复制。取消勾选则创建独立副本。无法复制的订阅登录会改为使用 default 配置档案中的登录。',
     needsModel: '它还没有可用的模型提供商，因此跳过了自我介绍。请在“高级”中选择提供商和模型。',
     configureModel: '配置模型',
     createEmpty: '创建空配置（跳过内置技能）',
@@ -1335,6 +1339,7 @@ const zh: BotsMessages = {
 const zhHant: BotsMessages = {
   canonical: CANONICAL_GROUP_LOCALES['zh-hant'],
   crossGateway: CROSS_GATEWAY_GROUP_LOCALES['zh-hant'],
+  waiting: TEAMMATE_WAIT_LOCALES['zh-hant'],
   editor: {
     fullConfigHint: '完整設定需要更新閘道（更新 Hermes 後請重新啟動閘道）。',
     liveCapabilities: '功能（立即生效 — 技能、工具、MCP）',
@@ -1367,7 +1372,7 @@ const zhHant: BotsMessages = {
     shareKeys: '與主要設定檔共用金鑰和帳戶',
     shareKeysOn: target => `與 ${target} 上的 default 設定檔共用金鑰和帳戶`,
     shareKeysHint:
-      '訂閱、OAuth 登入和 API 金鑰與 default 設定檔保持共用而非複製，權杖更新不會使另一方失效。取消勾選則建立隔離的快照副本。',
+      '登入資訊與 default 設定檔保持共用而非複製，權杖更新不會使另一方失效。如果機器人以另一個擁有自己登入資訊的設定檔為基礎（被複製的機器人；不複製時則為建立它的具名設定檔），則會改為取得這些登入資訊的副本。API 金鑰在兩種情況下都會複製。取消勾選則建立獨立副本。無法複製的訂閱登入會改為使用 default 設定檔中的登入。',
     needsModel: '它還沒有可用的模型提供者，因此略過了自我介紹。請在「進階」中選擇提供者和模型。',
     configureModel: '設定模型',
     createEmpty: '建立空白設定（略過內建技能）',

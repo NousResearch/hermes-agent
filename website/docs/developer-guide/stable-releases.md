@@ -134,6 +134,7 @@ lists every lane.
 | `windows-store` | on | the unsigned Microsoft Store bundle, submitted to Partner Center (needs no Azure signing) |
 | `macos-arm64` | on | macOS Apple Silicon DMG and ZIP |
 | `termux` | off | Termux (Android aarch64) APT package |
+| `linux` | off | diagnostic Linux x64 + arm64 AppImage builds (non-gating; on for canaries) |
 | `ci`, `nix`, `docker-tests`, `pm-bundle`, `windows-live`, `install-e2e`, `bootstrap-version` | on | the standalone suites |
 | `termux-checks` | on | Termux verification; runs only with `termux` |
 | `smoke` | on | native install and chat smoke of each built desktop package |
@@ -173,8 +174,11 @@ What a release publishes follows what it built:
   bundle file, and moves no channel. The protected R2 stable head, the App Installer and macOS
   feeds, the APT channel, downloads page,
   `releases/stable/release-candidates.json` and the signed-package baseline stay
-  on the previous full release. Source checkouts on the official repository
-  follow `releases/stable/release-candidates.json`, so they stay too.
+  on the previous full release. Source checkouts of the official repository on
+  `stable`, their default channel, do not stay: that channel is GitHub's latest
+  published `vX.Y.Z` release (`_resolve_stable` in
+  `hermes_cli/source_releases.py`) and reads no R2 pointer, so every published
+  release moves them, whatever its lanes.
 - **Finished.** A release that advances the desktop channel is finished when
   the protected R2 head names it. One that only moves Docker is finished when
   the `stable` alias carries the digest its final tag binds. One that moves no
@@ -307,8 +311,9 @@ retain no downloadable job artifacts.
 
 The desktop workflow takes a `jobs` input with the groups `darwin-arm64`,
 `win32-arm64`, `win32-x64`, `win32-bundle`, `linux-x64`, `linux-arm64`, and
-`termux`. Stable calls it once per group, except the linux groups, which wait
-for a real Linux build, and the `termux` and any other group whose lane the
+`termux`. Stable calls it once per group, except the linux groups, whose
+diagnostic AppImage builds no lane selects yet, and the `termux` and any other
+group whose lane the
 claim leaves out, which it does not call. The Mac arch and the Windows bundle
 stage a receipt, and each install arm starts from its own receipt as soon as
 its own bytes are staged. `acceptance` is the one join that blocks publication.
@@ -337,32 +342,53 @@ Channel and commit builds write annotated post-build receipts such as
 `v0.0.0+commit.<YYYYMMDDTHHMMSSZ>.<run-id>` only after publication succeeds.
 Receipt tags do not create GitHub releases and do not trigger workflows.
 
-Canary source identity is only
-`v<stable>+canary.<YYYYMMDDTHHMMSSZ>`. Build metadata intentionally makes it
-SemVer-equal to its stable core; the protected channel record and embedded UTC
-timestamp decide progression. Desktop clients treat that validated channel
-sequence as the update authority rather than asking SemVer to order build
-metadata. `Canary Release` runs once a day at 06:41 UTC from the default
-branch, and a manual dispatch starts one at any time. Runs queue with
+A canary tag is `canary.<YYYYMMDDTHHMMSSZ>-v<stable>`, the same claim shape as
+a stable `rc.N-v<stable>`, so nothing that lists `v*` release tags mistakes it for
+a release. The tag is the canary's identity everywhere: its GitHub prerelease,
+its archive (`releases/tag/<tag>/`), the tag stamped into its builds and its
+Docker image tag. The version it publishes is `<stable>+canary.<stamp>`. Build
+metadata intentionally makes it SemVer-equal to its stable core; the protected
+channel record and embedded UTC timestamp decide progression. Desktop clients
+treat that validated channel sequence as the update authority rather than
+asking SemVer to order build metadata.
+
+A canary runs the Stable Release pipeline itself. Its tag message is its claim:
+the lanes it runs (`release.py --canary` takes `--only`, `--with` and
+`--without`, starting from every lane except the signed-package upgrade arms,
+which a canary can never run) and whether a red suite holds its publication
+(`--require-green`, the default, or `--no-require-green`). `Canary Release`
+runs once a day at 06:41 UTC from the default branch with `--no-require-green`.
+Publication still waits for the selected suites to finish. The candidate must
+build and pass its smoke tests, but unrelated suite failures do not block it.
+A manual dispatch starts one at any time and requires every selected suite to
+pass unless its `require_green` input is off. Runs queue with
 `cancel-in-progress: false`. If `main` has no new commits, the run resumes an
-unpublished canary or does nothing. Historical `-canary.` identities are
-unsupported.
+unpublished canary or does nothing. The retired `v<stable>+canary.<stamp>` and
+`-canary.` identities are no longer produced; old ones age out through
+`--prune-canaries`.
 If a process stops after pushing the canary tag, rerunning the command verifies
 the exact remote tag object, repairs the missing draft, and redispatches until the
 protected canary head receipts that tag.
 The protected publication controller verifies that exact annotated tag object
 before it flips the GitHub prerelease from draft to public, reads both states back,
 and only then advances the R2 head.
+Only Stable Release's `publish-canary` job publishes a canary. A direct dispatch of
+`desktop-bundled-release.yml` refuses a release tag, and the controller refuses
+any other workflow as a canary publisher. The canary Docker aliases (`:canary`,
+`:canary-desktop`) move only after `publish-canary` succeeds, so they follow the
+claim's green policy and lanes like every other canary channel. The canary's
+Termux packages go to `hermes-canary` under a pool prefix named by its tag, just
+as a stable attempt's go to `hermes-stable` under its attempt ref.
 
-Pull requests and pushes to `main` run no E2E suite. After each successful
-`Canary Release`, `Canary E2E` (`canary-e2e.yml`) runs a claim's E2E calls (full
-CI with `release: true`, install/update E2E, Windows live E2E) on the commit that
-canary tagged, so an E2E regression shows up within a day of landing rather than
-at the next claim. A commit an automatic run already passed is not run again
-(a canary with no new commits resumes its last tag). It only reports: the
-canary does not wait for it, and
-`install-e2e-red.yml` keeps one `install-e2e-red` issue open while the latest run
-is red.
+Pull requests and pushes to `main` run no E2E suite. Each daily `Canary Release`
+dispatches `Stable Release` with the canary claim tag, running full CI with
+`release: true`, install/update E2E, and Windows live E2E directly inside the
+canary pipeline so an E2E regression shows up within a day of landing rather than
+at the next stable claim. Scheduled runs pass `--no-require-green` so a red suite
+reports without blocking canary publication once the candidate builds and smokes
+pass, and `stable-release.yml`'s `track-canary-red` job keeps one
+`install-e2e-red` issue open while the latest canary run is red (`install-e2e-red.yml`
+remains available for manual dry-run preview/replay).
 
 ## Canary and one-off desktop identities
 
@@ -380,7 +406,9 @@ the short SHA. All desktop icon formats derive from the same artwork.
 One-off stamps use `source: commit-build`. No app update feed or App Installer
 subscription is published for them, and both the GUI and bundled CLI refuse
 update requests. They direct the recipient to ask the developer for a new
-build. Source checkouts are separate: `main` is their only valid channel.
+build. Source checkouts are separate: an official-repository checkout follows
+`stable` and a fork or mirror follows `main`, until
+`hermes update --set-channel` picks another channel.
 
 `--build-commit` prints its deterministic downloads-page URL before dispatch,
 including in dry runs:
@@ -523,7 +551,8 @@ See [the bundled update contract](https://github.com/NousResearch/hermes-agent/b
   All applicable source CI jobs still run, regardless of changed paths.
 - OSV vulnerability findings retain their existing advisory policy. Required
   scanner execution failures are failures, not advisory findings.
-- Disabled Linux desktop packaging is not claimed as shipped. Native Linux
+- Linux desktop AppImages, diagnostic canary builds, are not claimed as
+  shipped. Native Linux
   PM bundles, Docker, Nix and install/update checks remain required.
 - Housekeeping, autofix, comment and skills-index/deploy workflows are not
   release acceptance suites.

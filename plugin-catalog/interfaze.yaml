@@ -1,0 +1,37 @@
+name: interfaze
+title: Interfaze
+repo: https://github.com/InterfazeAI/interfaze-agent-plugin
+sha: f3c7fc1c8794e40c540a3e71786ce3dd32421a47
+description: >-
+  Interfaze, a model built for deterministic tasks, with accurate and verifiable output in
+  one call: web search, web scraping, OCR for images, PDFs and Word documents, speech-to-text,
+  object and GUI detection, translation, classification and time-series forecasting
+  through the hosted Interfaze MCP server (Streamable HTTP, API key or keyless), with seven
+  skills bundled. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/).
+  Disclosure — hosted-only connector with no local code: every tool call goes to the
+  Interfaze MCP server at api.interfaze.ai, with INTERFAZE_API_KEY when it is set, or
+  keyless without it (README). It sends prompts, search queries, URLs, text, and the
+  images, documents and audio that the agent attaches. get_upload_url uploads local
+  files to Interfaze storage. Interfaze stores the prompts, responses and intermediate
+  task outputs of each call, and keeps the request ID, status, timestamp and token
+  counts. The plugin does not send the zero data retention header (x-interfaze-zdr), so
+  Interfaze stores the request contents. For keyless calls, Interfaze also keeps the caller's IP
+  address and token counts. Interfaze does not use the data for model training without
+  explicit consent. Results go into the session context and reach the user's model
+  provider. The tool list
+  comes from the server at run time, so the pinned commit does not cover it. The
+  package marks the server untrusted, so Hermes asks before get_upload_url. No
+  telemetry, no stored credentials, no self-update.
+maintainer: "jade-interfaze <jade@interfaze.ai>"
+tier: community
+category: web
+requires_hermes: ">=0.22.6"
+version: "0.1.2"
+docs_url: https://github.com/InterfazeAI/interfaze-agent-plugin/blob/f3c7fc1c8794e40c540a3e71786ce3dd32421a47/README.md
+image: https://raw.githubusercontent.com/InterfazeAI/interfaze-agent-plugin/f3c7fc1c8794e40c540a3e71786ce3dd32421a47/assets/banner.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [INTERFAZE_API_KEY]

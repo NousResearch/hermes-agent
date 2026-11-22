@@ -379,15 +379,37 @@ with open_persistence_reader(profile_scope().profile_dir) as store:
 
 #### Turn helpers kept for pinned catalog plugins
 
-The same refactor moved a few turn helpers into `session_rules.turns`. The catalog's pinned OpenViking (2.1.2) and Honcho (1.2.0) memory plugins import them from their old place at load time, and a catalog repin does not change an installed plugin's source, so these exact names stay importable as an exception to the rule above:
+The same refactor moved a few turn helpers into `session_rules.turns` and folded `hermes_state_wal` into `sqlite_support`. The catalog's pinned OpenViking (2.1.2), Honcho (1.2.0) and holographic (0.29.x) memory plugins import them from their old place at load time, and a catalog repin does not change an installed plugin's source, so these exact names stay importable as an exception to the rule above:
 
 | Old import | Defined now in |
 |---|---|
 | `agent.message_content.flatten_message_text`, `_text_from_part` | `session_rules.turns` |
 | `agent.skill_commands.extract_user_instruction_from_skill_message` | `session_rules.turns` |
 | `hermes_state_common.TITLE_SOURCE_DERIVED`, `TITLE_SOURCE_LLM` | the values stored in `sessions.title_source` |
+| `hermes_state_wal` (the whole module, e.g. `apply_wal_with_fallback`) | `sqlite_support` |
 
-They follow the `hermes_state` window: supported through v0.26 and removed no earlier than v0.27.0. No other moved name is carried. A plugin should import from `session_rules.turns` now.
+They follow the `hermes_state` window: supported through v0.26 and removed no earlier than v0.27.0. No other moved name is carried. A plugin should import from `session_rules.turns` and `sqlite_support` now.
+
+#### Core PRs that break a pinned catalog plugin
+
+A core pull request that removes or renames a module or name some pinned catalog plugin imports gets a warning from the **Name the pinned catalog plugins this change breaks** step of Repository guards. It never blocks the merge: it tells the author which public interface the plugins need before the break ships. The check covers private imports too. It reads `scripts/ci/catalog_core_imports/`, which records every Hermes import each catalog entry makes at its pinned sha and is refreshed daily for new entries and repins. It resolves those imports against the PR's base and merge commit, so it needs no network, runs no plugin code and takes a few seconds.
+
+The warning appears as a check annotation per plugin, in the job summary, and in the CI review comment on the PR. It lists each core name the change takes away, whether it is private (not in `hermes_cli/data/plugin_api.json`) and how many plugins import it, then each affected plugin's catalog record: title, version, tier, category, maintainer, repository (and subdir) at its pinned sha, a link to its `plugin-catalog/<name>.yaml` and marketplace page, and a link to each import line. For example:
+
+```
+- `hermes_state_wal.apply_wal_with_fallback` (private): 1 plugin: holographic
+...
+- **holographic** 0.29.2 · catalog `holographic` · community · memory · maintainer `...`
+  - repo: https://github.com/... @ `<pin>`
+  - store.py:227 imports `hermes_state_wal.apply_wal_with_fallback`: fails to load
+```
+
+An import inside a `try` whose fallback still resolves is not a break. To keep the plugins working:
+
+1. **Give the name a public interface** (a `ctx` method, a hook, or a `hermes_cli/data/plugin_api.json` entry listed in [the public plugin API](public-api.md)), then ask each plugin's maintainer to move to it.
+2. **Or keep the old name importable**: a moved module gets a key in `hermes_agent/compat/moves.py`, and a moved name stays where it was.
+
+Run it locally with `python3 scripts/ci/catalog_core_imports.py check --base "$(git merge-base origin/main HEAD)"` (the merge base, so a branch is not blamed for what `main` added since it was cut), and re-index one entry with `python3 scripts/ci/catalog_core_imports.py build <name>`. The check only asks whether an imported name still exists. A name that stays but changes behaviour or signature passes, and so does a name read as an attribute after `import module` (`hermes_constants.get_hermes_home()`), where only the module is imported.
 
 ## What you're building
 
@@ -1076,6 +1098,12 @@ Config and state have different owners: settings are user-visible behavior in
 
 ### Settings form in the Desktop
 
+The same declaration also gives your plugin a terminal editor: `hermes plugins config <name>`
+lists every `config_schema` key and every `requires_env` variable with its current value and
+edits them one at a time (choices and `bool` as pickers, `secret` and `secret: true` env
+entries masked). It saves through the same writers as the form below, so no CLI code is
+needed either. Give each key a `label` and `description`: they are all the user sees.
+
 Every key you declare in the manifest's `config_schema` renders as a row on the
 plugin's own page under the Desktop app's **Settings → Plugins** (the gear on the
 plugin's Capabilities → Plugins row opens it). No
@@ -1254,6 +1282,11 @@ state_file = plugin_data_dir("my-plugin") / "state.json"
 conn = plugin_db("my-plugin")
 conn.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY)")
 ```
+
+`plugin_data_dir()` raises `FileNotFoundError` when the active named profile
+was deleted or renamed while a session was still bound to it, instead of
+recreating that profile's directory. Catch it if your plugin writes from a
+background hook and should skip the write.
 
 One directory per plugin means every plugin's data is inspectable in one
 predictable place. Secrets don't belong here — credential reads go through

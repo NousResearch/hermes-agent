@@ -193,6 +193,74 @@ def test_creates_of_one_name_share_a_lock_others_do_not(root, monkeypatch):
         provision_profile(ProfileCreateRequest(name="twin", clone_config=True, alias=False))
 
 
+def test_a_create_another_process_published_first_gets_already_exists(root, monkeypatch):
+    """Another process passed the exists check too and published first: the loser's publish rename hits
+    a non-empty destination (ENOTEMPTY). It gets the usual "already exists" and leaves no staging."""
+    import os
+    real = os.rename
+
+    def rename(src, dst, *a, **k):
+        if Path(dst).name == "racer":
+            Path(dst).mkdir()
+            (Path(dst) / "config.yaml").write_text("model: {}\n")
+        return real(src, dst, *a, **k)
+    monkeypatch.setattr(profiles.os, "rename", rename)
+    with pytest.raises(FileExistsError, match="A profile named 'racer' already exists"):
+        provision_profile(ProfileCreateRequest(name="racer", alias=False))
+    assert sorted(p.name for p in (root / "profiles").iterdir()) == ["racer"]
+    monkeypatch.setattr(profiles.os, "rename", real)
+    with pytest.raises(OSError) as other:  # any other publish failure stays raw
+        from hermes_cli.profiles_initialization import publish_staging
+        publish_staging(root / "missing-staging", root / "profiles" / "fresh", lambda: profiles._profile_exists_error("fresh"))
+    assert type(other.value) is FileNotFoundError and "already exists" not in str(other.value)
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("held_open", [False, True], ids=["occupied", "file_held_in_staging"])
+def test_a_windows_publish_onto_an_existing_profile_is_already_exists(root, held_open):
+    """Native Windows refuses a rename onto an existing directory with WinError 183 (FileExistsError), or
+    with WinError 5 (PermissionError) while a file in the staging tree is held open: both mean another
+    create published first, so the loser gets "already exists"."""
+    from hermes_cli.profiles_initialization import publish_staging
+    dest = root / "profiles" / "racer"
+    (dest).mkdir(parents=True)
+    (dest / "config.yaml").write_text("model: {}\n")
+    staging = root / "profiles" / ".racer.staging-1"
+    staging.mkdir()
+    with open(staging / "held.txt", "w") if held_open else contextlib.nullcontext():
+        with pytest.raises(FileExistsError, match="A profile named 'racer' already exists"):
+            publish_staging(staging, dest, lambda: profiles._profile_exists_error("racer"))
+    assert (dest / "config.yaml").read_text() == "model: {}\n"
+
+
+@pytest.mark.platforms("windows")
+def test_a_windows_publish_with_a_file_held_and_no_profile_stays_raw(root):
+    """WinError 5 with nothing at the destination is not a lost race (a scanner holding a staged file, say):
+    the error stays raw instead of naming a profile that does not exist."""
+    from hermes_cli.profiles_initialization import publish_staging
+    staging = root / "profiles" / ".racer.staging-1"
+    staging.mkdir(parents=True)
+    with open(staging / "held.txt", "w"), pytest.raises(PermissionError) as caught:
+        publish_staging(staging, root / "profiles" / "racer", lambda: profiles._profile_exists_error("racer"))
+    assert "already exists" not in str(caught.value)
+
+
+@pytest.mark.platforms("posix")
+def test_a_posix_publish_permission_error_stays_raw(root, monkeypatch):
+    """Off Windows a PermissionError from the publish rename is a real failure, even with the destination
+    present: it stays raw instead of reading as a profile somebody else published."""
+    from hermes_cli.profiles_initialization import publish_staging
+    dest = root / "profiles" / "racer"
+    dest.mkdir(parents=True)
+
+    def refuse(src, dst, *a, **k):
+        raise PermissionError(1, "Operation not permitted", str(dst))
+    monkeypatch.setattr(profiles.os, "rename", refuse)
+    with pytest.raises(PermissionError) as caught:
+        publish_staging(root / "staging", dest, lambda: profiles._profile_exists_error("racer"))
+    assert "already exists" not in str(caught.value)
+
+
 def test_gateway_answers_that_create_nothing_here_or_report_the_unknown(root, monkeypatch):
     from hermes_cli.gateway_client import GatewayRPCError
     from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway

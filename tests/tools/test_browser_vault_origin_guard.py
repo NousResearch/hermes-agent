@@ -50,15 +50,20 @@ class _FakePage:
     def __init__(self, href: str, controls: list[dict]):
         self.href, self.controls, self.writes = href, controls, []
 
-    def focus_page(self, origin, *, accept=None, unique=False):
-        return {"ok": not origin or normalize_origin(self.href) == origin, "url": self.href}
+    def focus_page(self, origin: str, *, accept=None, unique=False) -> dict:
+        return {"ok": not origin or normalize_origin(self.href) == origin, "url": self.href, "session_id": "S1"}
 
-    def evaluate_runtime(self, expression: str) -> dict:
+    def current_page_session(self) -> str:
+        return "S1"
+
+    def evaluate_runtime(self, expression: str, *, session_id=None, **kwargs) -> dict:
         if expression.strip() == "window.location.href":
             return {"ok": True, "result": self.href}
-        if "expectedOrigin" in expression:  # the fill script (build_fill_js)
+        if "let filled = 0" in expression:  # the fill script (build_fill_js)
             self.writes.append(expression)
             return {"ok": True, "result": json.dumps({"filled": 1})}
+        if '"landed"' in expression:  # the read-back (build_fill_verify_js): the page kept the value
+            return {"ok": True, "result": json.dumps({"landed": 1, "reverted": 0, "missing": []})}
         return {"ok": True, "result": json.dumps(self.controls)}  # input inspection
 
 

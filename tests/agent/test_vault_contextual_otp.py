@@ -24,7 +24,7 @@ const form = {tagName: 'FORM', querySelectorAll() { return context.sameForm ? [i
 const inputs = context.labels.map((label, i) => ({
   type: 'text', tagName: 'INPUT', id: 'floatingLabelInput' + i, name: '', autocomplete: context.autocomplete,
   labels: [{textContent: label}], form, maxLength: -1,
-  getClientRects() { return [1]; }, getAttribute() { return ''; },
+  getClientRects() { return [1]; }, getAttribute(key) { return key === 'autocomplete' ? context.autocomplete : ''; },
   setAttribute(k,v) {this[k] = v;}, removeAttribute(k) {delete this[k];},
   getRootNode() {return document;}, focus() {}, dispatchEvent() {},
 }));
@@ -39,7 +39,7 @@ const sandbox = {document, window: {location: {origin:'https://example.test'}},
 vm.createContext(sandbox);
 const probe = vm.runInContext(data.probe, sandbox);
 const controls = JSON.parse(vm.runInContext(data.inspect, sandbox));
-const result = data.fill ? JSON.parse(vm.runInContext(data.fill, sandbox)) : null;
+const result = data.fill ? vm.runInContext(data.fill, sandbox) : null;
 console.log(JSON.stringify({probe,controls,result}));
 '''
     result = subprocess.run(["node", "-e", script,

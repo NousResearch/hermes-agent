@@ -68,8 +68,11 @@ def _schedule(coro, loop, *, timeout: float):
     return fut.result(timeout=timeout)
 
 
-def _fail(error: str) -> dict[str, Any]:
-    return {"ok": False, "error": error}
+def _fail(error: str, *, code: str = "") -> dict[str, Any]:
+    return {"ok": False, "error": error, **({"code": code} if code else {})}
+
+
+_SESSION_CHANGED = "the page session changed since it was validated"
 
 
 def _err(exc: BaseException) -> dict[str, Any]:
@@ -127,6 +130,10 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         self._pending_calls: dict[int, asyncio.Future] = {}
         self._ws: Optional[ClientConnection] = None
         self._page_session_id: Optional[str] = None
+        # Per page session: how many top-level documents it has committed (``Page.frameNavigated``).
+        # ``evaluate_runtime`` reports the count its script was sent under; ``insert_text`` refuses
+        # once it moved, so a keystroke checked on one document never lands in the next one.
+        self._documents: dict[str, int] = {}
         # The tab the task's browser_exec daemon last drove (``set_driven_target``); ``focus_page`` prefers it.
         self._driven_target_id: Optional[str] = None
         # Dialog auto-dismiss watchdog handles (per dialog id) + id generator.
@@ -213,30 +220,44 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         return {"ok": True, "dialog": dialog.to_dict()}
 
     def evaluate_runtime(self, expression: str, *, return_by_value: bool = True,
-                         await_promise: bool = True, timeout: float = 10.0) -> dict[str, Any]:
+                         await_promise: bool = True, timeout: float = 10.0,
+                         session_id: Optional[str] = None) -> dict[str, Any]:
         """Evaluate ``expression`` in the page's Runtime context over the live WS.
-        Returns ``{"ok": True, "result", "result_type"}`` or ``{"ok": False, "error"}``.
+        Returns ``{"ok": True, "result", "result_type", "document"}`` or ``{"ok": False, "error"}``;
+        ``document`` names the top-level document the script was sent to (see ``insert_text``).
         ``return_by_value=True`` JSON-serializes the result (DevTools-console
-        semantics); non-serializable objects come back as a description string."""
+        semantics); non-serializable objects come back as a description string.
+
+        ``session_id`` pins the call to a page session the caller validated
+        (``current_page_session``), as ``insert_text`` does: it is refused once the supervisor
+        has moved to another session. None = the session the supervisor is on now."""
         loop = self._loop
         if loop is None or not loop.is_running():
             return _fail("supervisor loop is not running")
         with self._state_lock:
-            active, session_id = self._active, self._page_session_id
+            active, current = self._active, self._page_session_id
         if not active:
             return _fail("supervisor is not active")
-        if not session_id:
+        if not current:
             return _fail("supervisor has no attached page session")
+        if session_id is not None and session_id != current:
+            return _fail(_SESSION_CHANGED, code="session_changed")
+        session_id = current
 
-        def _run_eval(by_value: bool) -> dict[str, Any]:
+        async def _eval(params: dict[str, Any]) -> tuple[dict[str, Any], int]:
+            # The document count is read on the loop BEFORE the script is sent: a navigation whose
+            # event lands later (before or after the script ran) moves the count past it.
+            document = self._document_of(session_id)
+            return await self._cdp("Runtime.evaluate", params, session_id=session_id, timeout=timeout), document
+
+        def _run_eval(by_value: bool) -> tuple[dict[str, Any], int]:
             # userGesture: clipboard / fullscreen APIs need user activation.
             params = {"expression": expression, "returnByValue": by_value,
                       "awaitPromise": await_promise, "userGesture": True}
-            coro = self._cdp("Runtime.evaluate", params, session_id=session_id, timeout=timeout)
-            return _schedule(coro, loop, timeout=timeout + 1)
+            return _schedule(_eval(params), loop, timeout=timeout + 1)
 
         try:
-            response = _run_eval(return_by_value)
+            response, document = _run_eval(return_by_value)
         except Exception as exc:
             # Deep-serializing live DOM nodes / NodeLists / Window can blow past
             # CDP's recursion guard (``Object reference chain is too long``).
@@ -244,7 +265,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             if not (return_by_value and "reference chain is too long" in str(exc).lower()):
                 return _err(exc)
             try:
-                response = _run_eval(False)
+                response, document = _run_eval(False)
             except Exception as exc2:
                 return _err(exc2)
 
@@ -265,7 +286,73 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         else:
             # Non-serializable (functions, DOM nodes…) — give the model the browser's description.
             value = result_obj.get("description") or result_obj.get("unserializableValue")
-        return {"ok": True, "result": value, "result_type": result_type}
+        return {"ok": True, "result": value, "result_type": result_type, "document": document}
+
+    def _document_of(self, session_id: Optional[str]) -> int:
+        with self._state_lock:
+            return self._documents.get(session_id or "", 0)
+
+    def current_page_session(self) -> Optional[str]:
+        """The CDP session id of the page the supervisor is attached to now (None: none attached).
+
+        A caller that validates a page (``insert_text``'s focus check) pins this id and passes it
+        back, so a later ``focus_page`` or reconnect cannot silently move the keystrokes elsewhere.
+        """
+        with self._state_lock:
+            return self._page_session_id if self._active else None
+
+    def insert_text(self, text: str, *, session_id: str, document: int, timeout: float = 5.0) -> dict[str, Any]:
+        """Type ``text`` into the element that holds focus in page session ``session_id``, as TRUSTED
+        browser input.
+
+        ``Input.insertText`` is the CDP-level equivalent of a user keystroke: the page sees the
+        same ``input`` events a human would trigger, so framework-controlled inputs (React/Vue/MUI)
+        accept the value instead of reverting it — and a page cannot tell the value apart from
+        a human typing it.
+
+        TRUSTED INPUT IS ADDRESSED TO WHATEVER HOLDS FOCUS. This method does not know which
+        element that is and does not check: the caller MUST assert focus first (see
+        ``agent.vault_login_classifier.build_focus_js``) and abort if the focus is not the
+        intended field. Typing a secret into the wrong focused element leaks it.
+
+        ``session_id`` is the page session the caller validated (``current_page_session``). The
+        frame is sent on that session only, and refused when the supervisor has since moved to
+        another page session: the focus check no longer describes the page that would get the text.
+        ``document`` is what the focus check's ``evaluate_runtime`` reported: once that session has
+        committed another top-level document (a redirect, a submit) the text is refused too. Both are
+        checked on the supervisor loop immediately before the frame is sent. What remains is the
+        browser's side of the socket: a navigation that commits after the frame left, or whose event is
+        still in flight, is not seen here; the caller's read-back (origin-guarded) reports it after.
+
+        Returns ``{"ok": True}`` or ``{"ok": False, "error": <str>, "code"?}`` (``session_changed`` /
+        ``document_changed`` when the page moved). Never raises.
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return _fail("supervisor loop is not running")
+        with self._state_lock:
+            active, current = self._active, self._page_session_id
+        if not active:
+            return _fail("supervisor is not active")
+        if not session_id or session_id != current:
+            return _fail(_SESSION_CHANGED, code="session_changed")
+
+        async def _type() -> Optional[dict[str, Any]]:
+            with self._state_lock:
+                moved = self._page_session_id != session_id or self._documents.get(session_id, 0) != document
+            if moved:
+                return None
+            return await self._cdp("Input.insertText", {"text": text}, session_id=session_id, timeout=timeout)
+
+        try:
+            response = _schedule(_type(), loop, timeout=timeout + 1)
+            if response is None:
+                return _fail("the page navigated or moved since it was checked", code="document_changed")
+        except Exception as exc:  # health: allow BLE001 -- trusted typing must report failure, never raise into a fill
+            return _err(exc)
+        if isinstance(response, dict) and response.get("error"):
+            return _fail(f"Input.insertText failed: {response['error']}")
+        return {"ok": True}
 
     def set_driven_target(self, target_id: Optional[str]) -> None:
         """Record the CDP target the task's browser_exec session drives (None: unknown)."""
@@ -281,7 +368,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         so a login and a checkout tab on one site resolve to the right one. When the tab browser_exec
         drives (``set_driven_target``) is on ``origin`` it is the only candidate, probe or not: on a shared
         CDP browser the first same-origin tab can be another session's or a stale one. Returns
-        ``{"ok": True, "url"}`` or ``{"ok": False, "error"}``; on failure the previous session stays."""
+        ``{"ok": True, "url", "session_id"}`` (the session it attached, for the caller to pin) or
+        ``{"ok": False, "error"}``; on failure the previous session stays."""
         loop = self._loop
         if loop is None or not loop.is_running():
             return _fail("supervisor loop is not running")
@@ -327,11 +415,11 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                     continue
                 with self._state_lock:
                     self._page_session_id = sid
-                return {"ok": True, "url": url}
+                return {"ok": True, "url": url, "session_id": sid}
             if unique and len(matched) == 1:
                 with self._state_lock:
                     self._page_session_id = matched[0][0]
-                return {"ok": True, "url": matched[0][1]}
+                return {"ok": True, "url": matched[0][1], "session_id": matched[0][0]}
             for sid, _ in matched:
                 await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
             if matched:

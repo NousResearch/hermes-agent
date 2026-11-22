@@ -601,6 +601,7 @@ def test_the_store_release_joins_the_pass_after_the_aliases_move(monkeypatch):
         channel_releases, "advance_stable",
         lambda env, record, root: (head.append(record["version"]),
                                    events.append(("feed", record["version"]))))
+    monkeypatch.setattr(channel_releases, "stable_head_version", lambda _env: head[-1])
     monkeypatch.setattr(
         docker, "promote_stable",
         lambda claim_tag, digest, release_tag: events.append(("aliases", claim_tag, release_tag)))
@@ -650,7 +651,11 @@ def test_store_release_recovers_after_alias_movement_without_rewinding_channels(
         return release_from_env(environment, candidate, run=api)
 
     monkeypatch.setattr(channel_releases, "advance_stable", advance)
+    monkeypatch.setattr(channel_releases, "stable_head_version", lambda _env: head[0])
     monkeypatch.setattr(docker, "promote_stable", interrupt_after_aliases)
+    # The interrupted promotion had already moved the aliases.
+    monkeypatch.setattr(docker, "stable_alias_digest", lambda: "sha256:" + "b" * 64)
+    monkeypatch.setattr(docker, "stable_desktop_alias_behind", lambda _tag: False)
     monkeypatch.setattr(store, "release_from_env", release_store)
     with pytest.raises(KeyboardInterrupt, match="after aliases moved"):
         sequencer.reconcile(env, run=run, read_head=lambda: head[0], read_archive=lambda _key: manifest)
@@ -686,6 +691,8 @@ def test_store_reconciliation_finds_the_newest_matching_published_submission(mon
     tags, releases, run = _sequencer_fixture("0.21.5", "0.21.6", manifest_digest=None)
     for version, raw in zip(("0.21.5", "0.21.6"), manifests.values()):
         tags[f"v{version}"][2]["candidateManifestSha256"] = hashlib.sha256(raw).hexdigest()
+    # 0.21.6's advance finished: its candidate pointer names it.
+    manifests["releases/stable/release-candidates.json"] = manifests["releases/tag/rc.1-v0.21.6/release-candidates.json"]
     for row in releases:
         row.update(draft=False, published_at="2026-09-22T01:00:00Z")
     api = _Api(files=[newest_file if pending_is_latest else STORE_FILE])
@@ -700,6 +707,9 @@ def test_store_reconciliation_finds_the_newest_matching_published_submission(mon
     monkeypatch.setattr(store, "release_from_env", release_store)
     monkeypatch.setattr(channel_releases, "advance_stable",
                         lambda *_args: pytest.fail("Store reconciliation moved the desktop head"))
+    monkeypatch.setattr(channel_releases, "stable_head_version", lambda _env: "0.21.6")
+    monkeypatch.setattr(docker, "stable_alias_digest", lambda: "sha256:" + "b" * 64)
+    monkeypatch.setattr(docker, "stable_desktop_alias_behind", lambda _tag: False)
     monkeypatch.setattr(docker, "promote_stable",
                         lambda *_args: pytest.fail("Store reconciliation moved the Docker aliases"))
     env = {"GITHUB_REPOSITORY": "example/project", "MS_STORE_PRODUCT_ID": "9NTEST",
@@ -711,6 +721,182 @@ def test_store_reconciliation_finds_the_newest_matching_published_submission(mon
     assert seen == ([(newest_file, "immediate")] if pending_is_latest else
                     [(newest_file, "superseded"), (STORE_FILE, "immediate")])
     assert api.mode == "Immediate" and api.commits == 1
+
+
+def _registry(monkeypatch, images: dict[str, str]) -> dict[str, str]:
+    """A fake image registry behind docker._inspect: tag -> digest, a missing tag fails like the CLI."""
+    from scripts.releases import docker
+
+    def inspect(reference, _run):
+        tag = reference.removeprefix(f"{docker.IMAGE}:")
+        if tag not in images:
+            raise subprocess.CalledProcessError(1, ["docker", "buildx", "imagetools", "inspect", reference])
+        return images[tag]
+
+    monkeypatch.setattr(docker, "_inspect", inspect)
+    return images
+
+
+SLIM, DESKTOP, OLD = "sha256:" + "b" * 64, "sha256:" + "c" * 64, "sha256:" + "9" * 64
+
+
+def _unfinished_head_fixture(monkeypatch, pointer, *, slim=None, desktop=None):
+    """0.21.5 is public and the protected desktop head, but its advance stopped after the head moved:
+    publish_release writes the candidate pointer last, then the slim and the desktop Docker aliases."""
+    from hermes_cli.release_channels import ChannelError
+    from scripts.releases import channel_releases, docker, store
+
+    archived = json.dumps({"tag": "v0.21.5", "packages": []}).encode()
+    tags, releases, run = _sequencer_fixture("0.21.5", manifest_digest=hashlib.sha256(archived).hexdigest(),
+                                             docker_digest=SLIM)
+    for row in releases:
+        row.update(draft=False, published_at="2026-09-22T01:00:00Z")
+    objects = {"releases/tag/rc.1-v0.21.5/release-candidates.json": archived}
+    if pointer is not None:
+        objects["releases/stable/release-candidates.json"] = archived if pointer == "current" else pointer
+
+    def read_archive(key):
+        if key not in objects:
+            raise ChannelError(f"Release archive object is unavailable: {key}")
+        return objects[key]
+
+    images = _registry(monkeypatch, {"rc.1-v0.21.5": SLIM, "rc.1-v0.21.5-desktop": DESKTOP})
+    images.update({alias: digest for alias, digest in (("stable", slim), ("stable-desktop", desktop)) if digest})
+    events = []
+
+    def advance(_env, record, _root):
+        events.append(("feed", record["version"]))
+        objects["releases/stable/release-candidates.json"] = archived
+
+    def promote(claim_tag, moved, release_tag):
+        events.append(("aliases", claim_tag, release_tag))
+        images.update({"stable": moved, "stable-desktop": images[f"{claim_tag}-desktop"]})
+
+    monkeypatch.setattr(channel_releases, "advance_stable", advance)
+    monkeypatch.setattr(channel_releases, "stable_head_version", lambda _env: "0.21.5")
+    monkeypatch.setattr(docker, "promote_stable", promote)
+    monkeypatch.setattr(store, "release_from_env", lambda *_a: None)
+    return tags, run, read_archive, events
+
+
+@pytest.mark.parametrize("pointer,slim,desktop", [
+    (b'{"tag":"v0.21.4"}\n', OLD, OLD),  # the pointer write failed, so the aliases never moved
+    (None, OLD, OLD),                    # the first bundled release's pointer write failed
+    ("current", OLD, OLD),               # the pointer landed but its read-back or the slim promotion failed
+    ("current", SLIM, OLD),              # the slim aliases moved and the desktop ones failed
+])
+def test_a_head_whose_advance_stopped_after_the_head_moved_finishes_it(monkeypatch, pointer, slim, desktop):
+    """The head already names 0.21.5, so plan() alone would call it done; its pointer (the source
+    channel's update target) or its Docker aliases never moved. The pass advances it again."""
+    from scripts.releases import sequencer
+
+    _tags, run, read_archive, events = _unfinished_head_fixture(monkeypatch, pointer, slim=slim, desktop=desktop)
+    env = {"GITHUB_REPOSITORY": "example/project"}
+
+    assert sequencer.reconcile(env, run=run, read_head=lambda: "0.21.5", read_archive=read_archive) == [
+        {"advance": "0.21.5"}]
+    assert events == [("feed", "0.21.5"), ("aliases", "rc.1-v0.21.5", "v0.21.5")]
+    assert sequencer.reconcile(env, run=run, read_head=lambda: "0.21.5", read_archive=read_archive) == []
+    assert len(events) == 2
+
+
+def test_an_unreadable_attempt_desktop_image_does_not_abort_the_pass(monkeypatch):
+    """Pointer and slim alias are current; the recovery check of stable-desktop then needs the
+    attempt's -desktop image, and a registry error there proves nothing about the promotion.
+    The pass carries on (here with nothing to do) instead of failing before it can plan."""
+    from scripts.releases import docker, sequencer
+
+    _tags, run, read_archive, events = _unfinished_head_fixture(monkeypatch, "current", slim=SLIM, desktop=OLD)
+    registry = docker._inspect
+
+    def inspect(reference, run_):
+        if reference == f"{docker.IMAGE}:rc.1-v0.21.5-desktop":
+            raise subprocess.CalledProcessError(1, ["docker", "buildx", "imagetools", "inspect", reference])
+        return registry(reference, run_)
+
+    monkeypatch.setattr(docker, "_inspect", inspect)
+
+    assert sequencer.reconcile({"GITHUB_REPOSITORY": "example/project"}, run=run, read_head=lambda: "0.21.5",
+                               read_archive=read_archive) == []
+    assert events == []
+
+
+def test_an_unfinished_head_under_a_newer_release_repeats_only_its_desktop_advance(monkeypatch):
+    """A newer release already moved the aliases; repeating 0.21.5's whole advance would move them back."""
+    from scripts.releases import sequencer
+
+    _tags, run, read_archive, events = _unfinished_head_fixture(monkeypatch, b'{"tag":"v0.21.4"}\n')
+    env = {"GITHUB_REPOSITORY": "example/project"}
+
+    assert sequencer.reconcile(env, run=run, read_head=lambda: "0.21.6", read_archive=read_archive) == [
+        {"finish": "0.21.5"}]
+    assert events == [("feed", "0.21.5")]
+    assert sequencer.reconcile(env, run=run, read_head=lambda: "0.21.6", read_archive=read_archive) == []
+    assert events == [("feed", "0.21.5")]
+
+
+@pytest.mark.parametrize("pointer_current", [True, False])
+@pytest.mark.parametrize("failed_probes", [1, 2])
+def test_a_registry_error_never_rolls_the_aliases_back_to_the_desktop_head(monkeypatch, pointer_current,
+                                                                          failed_probes):
+    """A newer Docker-only 0.21.6 owns the aliases. The first alias probe fails, so the channel head
+    falls back to the desktop head 0.21.5; the recovery probe then sees 0.21.6's digest (that
+    release's, not a sign 0.21.5's promotion stopped) or fails too (owner unknown). A stale 0.21.5
+    pointer still gets its desktop advance, without the Docker promotion that would move the
+    aliases back."""
+    from hermes_cli.release_channels import ChannelError
+    from scripts.releases import channel_releases, docker, sequencer, store
+
+    archived = json.dumps({"tag": "v0.21.5", "packages": []}).encode()
+    tags, releases, run = _sequencer_fixture(
+        "0.21.5", "0.21.6", manifest_digest=hashlib.sha256(archived).hexdigest(), docker_digest=SLIM)
+    newer = "sha256:" + "e" * 64
+    claim = tags["rc.1-v0.21.6"][2]
+    claim.pop("skipBundles"), claim.pop("skipTests")
+    claim["lanes"] = ["docker"]
+    tags["v0.21.6"][2].update(dockerManifestDigest=newer, candidateManifestSha256=None)  # builds no bundle
+    for row in releases:
+        row.update(draft=False, published_at="2026-09-22T01:00:00Z")
+    objects = {"releases/tag/rc.1-v0.21.5/release-candidates.json": archived}
+    if pointer_current:
+        objects["releases/stable/release-candidates.json"] = archived
+
+    def read_archive(key):
+        if key not in objects:
+            raise ChannelError(f"Release archive object is unavailable: {key}")
+        return objects[key]
+
+    _registry(monkeypatch, {"rc.1-v0.21.5": SLIM, "rc.1-v0.21.5-desktop": DESKTOP, "rc.1-v0.21.6": newer,
+                            "stable-desktop": "sha256:" + "f" * 64})
+    probes = []
+
+    def inspect(reference, run_):
+        if reference.endswith(":stable"):
+            probes.append(reference)
+            if len(probes) <= failed_probes:
+                raise subprocess.CalledProcessError(1, ["docker"])
+            return newer
+        return registry_inspect(reference, run_)
+
+    registry_inspect = docker._inspect
+    monkeypatch.setattr(docker, "_inspect", inspect)
+    events = []
+
+    def advance(_env, record, _root):
+        events.append(("feed", record["version"]))
+        objects["releases/stable/release-candidates.json"] = archived
+
+    monkeypatch.setattr(channel_releases, "advance_stable", advance)
+    monkeypatch.setattr(channel_releases, "stable_head_version", lambda _env: "0.21.5")
+    monkeypatch.setattr(docker, "promote_stable",
+                        lambda claim_tag, _digest, _release_tag: events.append(("aliases", claim_tag)))
+    monkeypatch.setattr(store, "release_from_env", lambda *_a: None)
+
+    steps = sequencer.reconcile({"GITHUB_REPOSITORY": "example/project"}, run=run, read_archive=read_archive)
+
+    assert steps == ([] if pointer_current else [{"finish": "0.21.5"}]) + [{"advance": "0.21.6"}]
+    assert events == ([] if pointer_current else [("feed", "0.21.5")]) + [("aliases", "rc.1-v0.21.6")]
+    assert len(probes) > failed_probes
 
 
 def test_a_publish_that_died_before_the_retarget_is_repaired():

@@ -812,6 +812,18 @@ export interface SharedMetricsDesktopActionDay {
 export interface SharedMetricsDesktopDailyResult {
   recorded: boolean
 }
+/** One finished UTC day's long-frame histogram and visible window time, aggregated on the client. ``day`` (YYYY-MM-DD) only latches a resend and is never recorded. */
+export interface SharedMetricsDesktopLongFramesParams {
+  profile?: string | null
+  day: string
+  frames?: SharedMetricsDesktopLongFrameCount[]
+  visible_ms?: number
+}
+/** Long animation frames counted in one duration bucket while the window was visible. */
+export interface SharedMetricsDesktopLongFrameCount {
+  bucket: '50ms_to_100ms' | '100ms_to_250ms' | '250ms_to_1s' | '1s_to_5s' | 'gte_5s'
+  count: number
+}
 export interface ModelOptionsParams {
   profile?: string | null
   session_id?: string | null
@@ -1971,6 +1983,27 @@ export interface BotRelayReplyParams {
   error?: string | null
   reason?: string | null
 }
+/** ``profile`` is the SENDER bot; it routes the call to that profile's connection. */
+export interface BotDeliveryListParams {
+  profile?: string | null
+}
+export interface BotDeliveryListResult {
+  sender: string
+  deliveries: BotDeliveryRow[]
+}
+/** ``tools/bot_delivery_status.py::list_sender_deliveries``. ``since`` is the receipt's last write (epoch seconds); ``waiting_on`` is set for ``waiting_on_you``, ``reason`` (+ ``error``) for ``failed`` — ``unknown_outcome`` means the target may have acted: never resend it. */
+export interface BotDeliveryRow {
+  delivery_id: string
+  target: string
+  target_handle: string
+  state: BotDeliveryState
+  since: number
+  preview: string
+  waiting_on?: string | null
+  reason?: string | null
+  error?: string | null
+}
+export type BotDeliveryState = 'queued' | 'claimed' | 'working' | 'waiting_on_you' | 'failed'
 export interface I18nLanguagesResult {
   languages: LanguageOption[]
 }
@@ -3717,6 +3750,7 @@ export interface SessionInterruptParams {
   session_id: string
   profile?: string | null
   expected_hosted_task_id?: string | null
+  resume?: boolean | null
 }
 export interface SessionInterruptResult {
   status: InterruptStatus
@@ -5970,7 +6004,7 @@ export interface MessageInterimPayload {
   turn_id?: string | null
   segment?: number | null
 }
-/** ``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` / ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) / ``compute_host_bridge`` (``text`` + ``status``). */
+/** ``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` / ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text``, plus ``status`` for a completed child) / ``compute_host_bridge`` (``text`` + ``status``). */
 export interface MessageCompletePayload {
   text?: string | unknown
   usage?: Usage | null
@@ -5988,6 +6022,7 @@ export interface MessageCompletePayload {
   error_surface?: ErrorSurface | null
   partial?: boolean | null
   persisted_turn?: PersistedTurn | null
+  paused?: boolean | null
 }
 /** ``prompt_turn._result_status``. */
 export type TurnStatus = 'complete' | 'error' | 'interrupted'
@@ -6372,6 +6407,8 @@ export interface RpcMethods {
   'billing.state': { params: ProfileParams; result: BillingStateResult }
   /** Run the billing:manage device flow; the URL/code arrive via billing.step_up.verification. */
   'billing.step_up': { params: BillingStepUpParams; result: BillingStepUpResult }
+  /** Read-only: this bot's unsettled message_agent deliveries to local teammates, newest first. */
+  'bot_delivery.list': { params: BotDeliveryListParams; result: BotDeliveryListResult }
   /** Deliver a relayed DM into a Bot Chat on this gateway and return the one-turn reply (blocking). */
   'bot_relay.deliver': { params: BotRelayDeliverParams; result: BotRelayDeliverResult }
   /** Atomically claim every pending cross-connection envelope queued on this gateway. */
@@ -6780,6 +6817,8 @@ export interface RpcMethods {
   'shared_metrics.desktop_feature_use': { params: SharedMetricsDesktopFeatureUseParams; result: OkResult }
   /** Count one Desktop friction event (fire-and-forget; capped per day; a no-op unless on). */
   'shared_metrics.desktop_friction': { params: SharedMetricsDesktopFrictionParams; result: OkResult }
+  /** Record one finished Desktop day's long-frame histogram (uncapped); recorded=false keeps it for a retry. */
+  'shared_metrics.desktop_long_frames': { params: SharedMetricsDesktopLongFramesParams; result: SharedMetricsDesktopDailyResult }
   /** Count one Desktop first-run step transition (fire-and-forget; once per step+event; a no-op unless on). */
   'shared_metrics.desktop_onboarding': { params: SharedMetricsDesktopOnboardingParams; result: OkResult }
   /** Write both shared-metrics opt-ins at once (send requires collection) and reconcile consent windows. */
@@ -6889,6 +6928,7 @@ export const RPC_METHODS = [
   'billing.keep_going_on_credits',
   'billing.state',
   'billing.step_up',
+  'bot_delivery.list',
   'bot_relay.deliver',
   'bot_relay.outbox.drain',
   'bot_relay.reply',
@@ -7093,6 +7133,7 @@ export const RPC_METHODS = [
   'shared_metrics.desktop_dislike',
   'shared_metrics.desktop_feature_use',
   'shared_metrics.desktop_friction',
+  'shared_metrics.desktop_long_frames',
   'shared_metrics.desktop_onboarding',
   'shared_metrics.set',
   'shared_metrics.slash_command',

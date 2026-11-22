@@ -224,6 +224,11 @@ def rewrite_pruned_rows(holder: StoreHolder, session_id: str, changes: list[tupl
                 replacement.get("tool_calls")), timestamp, keep_reasoning=role == "assistant")
             changed = [column for column, old, new in zip(_MESSAGE_ROW_COLUMNS, before, after)
                        if old != new and column not in _PRUNE_FIXED_COLUMNS]
+            # A legacy row may hold both copies although its serialized before/after reasoning is NULL.
+            # Changing either carrier must write both, or the old reasoning text survives beside the new one.
+            if {"reasoning", "reasoning_content"}.intersection(changed):
+                changed = [column for column in _MESSAGE_ROW_COLUMNS
+                           if column in changed or column in ("reasoning", "reasoning_content")]
             if changed:
                 updates.append((int(row["id"]), changed, [
                     value for column, value in zip(_MESSAGE_ROW_COLUMNS, after) if column in changed],

@@ -161,4 +161,3 @@ class TestSharedReasoningStoredOnce:
         assert tuple(self._columns(db, "fork")) == (None, self.TEXT)
         msg = _assistant(get_messages_as_conversation(db, "fork"))
         assert (msg["reasoning"], msg["reasoning_content"]) == (self.TEXT, self.TEXT)
-

@@ -85,8 +85,11 @@ def test_reasoning_fields_persist_redacted_and_signed_details_stay_exact(tmp_pat
     stored, rows = _persist(tmp_path, msg)
 
     reasoning, reasoning_content, details_json = rows[0]
-    assert _SECRET not in reasoning
+    # Identical reasoning is stored once (#125273): the reasoning column may be NULL and read back from
+    # reasoning_content, so check both what the columns hold and what the session reads back.
+    assert _SECRET not in (reasoning or "")
     assert _SECRET not in reasoning_content
+    assert stored["reasoning"] and _SECRET not in stored["reasoning"]
     unsigned_summary, signed, encrypted, unsigned_thinking, signed_thinking = stored["reasoning_details"]
     assert _SECRET not in unsigned_summary["summary"]
     assert _SECRET not in unsigned_thinking["thinking"]

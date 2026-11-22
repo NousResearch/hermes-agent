@@ -5,6 +5,7 @@ import { useMemo, useRef, useState } from 'react'
 import { useSessionView } from '@/app/chat/session-view'
 import { CatalogAdvancedDialog } from '@/components/assistant-ui/catalog-advanced-dialog'
 import { connectionRequestOwnsPart, useConnectorFocusHandoff } from '@/components/assistant-ui/connector-tool'
+import { usePendingTargetRegistration } from '@/components/assistant-ui/thread/pending-input-navigation'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { Button } from '@/components/ui/button'
@@ -18,6 +19,7 @@ import {
   connectionOpOf,
   connectionOwnerFor,
   type ConnectionRequest,
+  connectionRequestOpen,
   type ConnectionTarget,
   continueConnectionRequest,
   respondToConnectionRequest,
@@ -121,6 +123,7 @@ export function CatalogInstallCard({ request }: { request: ConnectionRequest }) 
   const unresolved = rows.some(target => !target.catalog.resolved)
   const profile = rows[0]?.catalog.targetProfile
 
+  usePendingTargetRegistration('connection', connectionRequestOpen(request) ? request.opId : undefined, cardRef)
   useConnectorFocusHandoff(request.targets, cardRef)
 
   return (

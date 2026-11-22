@@ -6,6 +6,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { createContext, type FC, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { approvalTargetKey, usePendingTargetRegistration } from '@/components/assistant-ui/thread/pending-input-navigation'
 import { SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { Button } from '@/components/ui/button'
 import { CardStack, type CardStackAction } from '@/components/ui/card-stack'
@@ -254,6 +255,7 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
   // approval hands focus back to whatever held it before the press (#113839).
   const focusOrigin = useRef<HTMLElement | null>(null)
   const cardRef = useRef<HTMLElement | null>(null)
+  usePendingTargetRegistration('approval', !busy ? approvalTargetKey(request) : undefined, cardRef)
 
   const rememberFocusOrigin = useCallback(() => {
     const active = document.activeElement

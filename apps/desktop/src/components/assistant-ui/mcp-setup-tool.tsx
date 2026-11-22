@@ -13,6 +13,7 @@ import {
   reissueConnectionTarget,
   useConnectorFocusHandoff
 } from '@/components/assistant-ui/connector-tool'
+import { usePendingTargetRegistration } from '@/components/assistant-ui/thread/pending-input-navigation'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { useConnectionOwner } from '@/components/assistant-ui/use-connection-owner'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
@@ -28,6 +29,7 @@ import {
   connectionOpOf,
   type ConnectionOwner,
   type ConnectionRequest,
+  connectionRequestOpen,
   type ConnectionTarget,
   type ConnectionTargetState,
   continueConnectionRequest,
@@ -246,6 +248,7 @@ export function McpSetupOffer({ action, owner, request }: McpSetupOfferProps) {
   // A DOM handle for the focus handoff, never rendered state.
   const cardRef = useRef<HTMLDivElement | null>(null)
 
+  usePendingTargetRegistration('connection', connectionRequestOpen(request) ? request.opId : undefined, cardRef)
   useConnectorFocusHandoff(request.targets, cardRef)
 
   // Try again is one RPC on the open operation. An authorize target comes back with a fresh link,

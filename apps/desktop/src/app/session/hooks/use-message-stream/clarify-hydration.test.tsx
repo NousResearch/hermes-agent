@@ -86,7 +86,7 @@ describe('clarify request stream hydration', () => {
     })
   })
 
-  it('reveals a clarify prompt raised by the active session', () => {
+  it('projects one active-session clarify row without broadcasting a bottom jump', () => {
     mountStream()
 
     clarifyRequest({
@@ -94,7 +94,10 @@ describe('clarify request stream hydration', () => {
       request_id: 'req-reveal'
     })
 
-    expect(scrollToBottom).toHaveBeenCalledOnce()
+    const parts = clarifyParts()
+    expect(parts).toHaveLength(1)
+    expect(parts[0]).toMatchObject({ clarifyRequestId: 'req-reveal' })
+    expect(scrollToBottom).not.toHaveBeenCalled()
   })
 
   it('does not move the active thread for a background session clarify', () => {

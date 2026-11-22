@@ -3,6 +3,7 @@
 import { useStore } from '@nanostores/react'
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { usePendingTargetRegistration } from '@/components/assistant-ui/thread/pending-input-navigation'
 import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -271,6 +272,7 @@ export function ClarifyToolPending({
   const isStaged = useCallback((question: ClarifyQuestion) => stagedAnswer(question) !== null, [stagedAnswer])
 
   const formRef = useRef<HTMLFormElement | null>(null)
+  usePendingTargetRegistration('clarify', ready && !undelivered && !submitting ? request?.requestId : undefined, formRef)
 
   const keys = useClarifyKeys({
     enabled: ready && !submitting,

@@ -2,9 +2,10 @@
 
 import type { ToolCallMessagePart, ToolCallMessagePartProps } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { usePendingTargetRegistration } from '@/components/assistant-ui/thread/pending-input-navigation'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { LAYOUTS_AREA } from '@/components/pane-shell/tree/presets'
 import { Codicon } from '@/components/ui/codicon'
@@ -106,6 +107,14 @@ export function ThemeTool(props: ToolCallMessagePartProps) {
   const [picked, setPicked] = useState<AppliedAppearance | null>(null)
   const picker = setThemeCall(props.toolName, props.args)?.picker ?? null
 
+  const request = sessionId ? picks[sessionId] : undefined
+  const cardRef = useRef<HTMLDivElement>(null)
+  usePendingTargetRegistration(
+    'theme',
+    props.result === undefined && !picked && picker && request?.picker === picker ? request.requestId : undefined,
+    cardRef
+  )
+
   if (props.result !== undefined) {
     const result = recordOf(props.result)
     const said = connectorText(result.said)?.trim()
@@ -128,8 +137,6 @@ export function ThemeTool(props: ToolCallMessagePartProps) {
     return <ThemeReceipt values={picked} />
   }
 
-  const request = sessionId ? picks[sessionId] : undefined
-
   if (!sessionId || !picker || request?.picker !== picker) {
     return <ToolFallback {...props} />
   }
@@ -145,7 +152,7 @@ export function ThemeTool(props: ToolCallMessagePartProps) {
   }
 
   return (
-    <div className={cn(SHELL_CLASS, 'grid gap-2')} data-theme-picker={picker}>
+    <div className={cn(SHELL_CLASS, 'grid gap-2')} data-theme-picker={picker} ref={cardRef}>
       <div className="flex items-center justify-between gap-2">
         <span className={CARD_LABEL_CLASS}>{copy[picker]}</span>
         <button

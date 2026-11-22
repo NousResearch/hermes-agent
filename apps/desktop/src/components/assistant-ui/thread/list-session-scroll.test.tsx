@@ -1,10 +1,17 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { act, render, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ScrollToBottomButton } from '@/app/chat/scroll-to-bottom-button'
+import { PRIMARY_SESSION_VIEW, SessionViewProvider } from '@/app/chat/session-view'
+import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { PaneLifecycleContext, PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
+import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
+import { toRuntimeMessage } from '@/lib/chat-runtime'
 import { rescopeConnectionScopedStores } from '@/lib/connection-scoped'
 import { keybindAction } from '@/lib/keybinds/actions'
+import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setActiveProfile } from '@/store/profile'
 import {
   getThreadScrollPosition,
@@ -16,6 +23,7 @@ import {
 
 import { stubThreadEnvironment, stubThreadViewportSize } from '../test-utils'
 
+import { PendingInputNavigationProvider } from './pending-input-navigation'
 import { SESSION_SWITCHING_ATTRIBUTE } from './session-switching'
 import { TranscriptWindowProvider, type TranscriptWindowValue } from './transcript-window'
 
@@ -128,6 +136,207 @@ function ScrollHarness({
 }
 
 describe('list session-scroll restore', () => {
+  it.each([
+    ['reveals the heading once at a saved offset', 'restore'],
+    ['preserves upward wheel intent through a same-frame resize and hydration', 'wheel'],
+    ['leaves a settled reader in place and shows the pending question pill', 'settled'],
+    ['preserves pointer intent when activating a pane with a pending question', 'pointer']
+  ])('%s', async (_, scenario) => {
+    const reading = scenario === 'wheel' || scenario === 'settled'
+    const sessionId = 'pending-reveal'
+    const view = { ...PRIMARY_SESSION_VIEW, $runtimeId: atom(sessionId) }
+
+    const request = {
+      requestId: 'question-1',
+      sessionId,
+      questions: [{ qid: 'q1', question: 'Which release?', choices: ['Stable', 'Preview'], multiSelect: false }]
+    }
+
+    const messages = sessionMessages(sessionId, 180)
+    const assistant = messages.at(-1)!
+
+    const { messages: projected } = restorePendingClarifyToolCall(
+      [{ id: assistant.id, role: 'assistant', parts: [{ type: 'text', text: 'One more detail.' }] }],
+      pendingClarifyToolPayload(request),
+      createdAt.getTime() / 1000
+    )
+
+    const liveMessages = [...messages.slice(0, -1), ...projected.map(toRuntimeMessage)]
+    saveThreadScrollPosition(sessionId, { fromBottom: 1100, kind: 'offset' })
+    const storedTop = SCROLL_H - CLIENT_H - 1100
+    const previousObserver = globalThis.ResizeObserver
+    const contentObservers = new Set<ResizeObserver>()
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(private callback: ResizeObserverCallback) {}
+        observe(node: Element) {
+          if (node.getAttribute('data-slot') === 'aui_thread-content') {
+            contentObservers.add(this as unknown as ResizeObserver)
+          }
+        }
+        unobserve() {}
+        disconnect() {}
+        resize(node: Element) {
+          this.callback(
+            [{ target: node, contentRect: new DOMRect(0, 0, 800, scrollHeightValue) } as ResizeObserverEntry],
+            this as unknown as ResizeObserver
+          )
+        }
+      }
+    )
+
+    const resize = (vp: HTMLElement) => {
+      const content = vp.querySelector('[data-slot="aui_thread-content"]')!
+
+      for (const observer of [...contentObservers]) {
+        // Deliberately deliver even a disconnected callback to exercise cancellation.
+        const pending = observer as unknown as { resize: (node: Element) => void }
+        pending.resize(content)
+      }
+    }
+
+    let headingY = 4200
+
+    const geometry = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement
+    ) {
+      if (this.dataset.slot === VIEWPORT_SLOT) {
+        return new DOMRect(0, 0, 800, CLIENT_H)
+      }
+
+      if (this.dataset.slot === 'aui_user-message-root') {
+        return new DOMRect(0, 0, 600, 40)
+      }
+
+      if (this.matches('form[data-clarify-batch]')) {
+        const viewport = this.closest<HTMLElement>(`[data-slot="${VIEWPORT_SLOT}"]`)!
+
+        return new DOMRect(0, headingY - viewport.scrollTop, 600, 950)
+      }
+
+      return new DOMRect()
+    })
+
+    const tree = (transcript: ThreadMessage[], active = true) => (
+      <SessionViewProvider value={view}>
+        <PendingInputNavigationProvider active={active} sessionId={sessionId}>
+          <ScrollHarness
+            isRunning={transcript !== messages}
+            messages={transcript}
+            sessionId={sessionId}
+            sessionKey={sessionId}
+          />
+          <ScrollToBottomButton sessionId={sessionId} />
+        </PendingInputNavigationProvider>
+      </SessionViewProvider>
+    )
+
+    if (scenario === 'restore') {
+      setClarifyRequest(request)
+    }
+
+    const { container, rerender, unmount } = render(tree(reading ? messages : liveMessages, reading))
+
+    try {
+      const vp = viewportEl(container)
+      await settleScroll(10)
+      expect(vp.scrollTop).toBe(storedTop)
+
+      const readingTop = storedTop - 120
+
+      if (reading) {
+        act(() => {
+          vp.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -120 }))
+          vp.scrollTop = readingTop
+          vp.dispatchEvent(new Event('scroll'))
+          scrollHeightValue += 120
+          resize(vp)
+
+          if (scenario === 'wheel') {
+            setClarifyRequest(request)
+          }
+        })
+
+        if (scenario === 'settled') {
+          await act(() => new Promise(resolve => setTimeout(resolve, 260)))
+          expect(vp.dataset.following).toBe('false')
+          headingY = readingTop - 125
+          vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'requestAnimationFrame', 'cancelAnimationFrame'] })
+
+          try {
+            act(() => setClarifyRequest(request))
+            rerender(tree(liveMessages))
+            await act(async () => vi.advanceTimersByTimeAsync(120))
+            expect(vp.scrollTop).toBe(readingTop)
+            const pill = screen.getByRole('button', { name: 'Needs your input' })
+            expect(pill.querySelector('.codicon-arrow-up')).toBeTruthy()
+          } finally {
+            vi.useRealTimers()
+          }
+        } else {
+          rerender(tree(liveMessages))
+          await waitFor(() => expect(container.querySelectorAll('form[data-clarify-batch]')).toHaveLength(1))
+          await settleScroll(10)
+          expect(vp.scrollTop).toBe(readingTop)
+        }
+      } else if (scenario === 'pointer') {
+        act(() => setClarifyRequest(request))
+        expect(container.querySelectorAll('form[data-clarify-batch]')).toHaveLength(1)
+        // Park the card above the reader so a reveal would move the viewport:
+        // the assertion below then proves pointer intent suppressed one.
+        headingY = storedTop - 125
+        vi.useFakeTimers()
+
+        try {
+          rerender(tree(liveMessages))
+          fireEvent.pointerDown(vp)
+          await act(async () => vi.advanceTimersByTimeAsync(250))
+          expect(vp.scrollTop).toBe(storedTop)
+        } finally {
+          vi.useRealTimers()
+        }
+      } else {
+        expect(container.querySelectorAll('form[data-clarify-batch]')).toHaveLength(1)
+        vi.useFakeTimers()
+
+        try {
+          rerender(tree(liveMessages))
+          await act(async () => vi.advanceTimersByTimeAsync(20))
+          expect(vp.scrollTop).toBe(headingY - 48)
+
+          act(() => {
+            headingY += 80
+            scrollHeightValue += 80
+            resize(vp)
+          })
+          expect(vp.scrollTop).toBe(headingY - 48)
+          await act(async () => vi.advanceTimersByTimeAsync(250))
+        } finally {
+          vi.useRealTimers()
+        }
+      }
+
+      const laterTop = readingTop - 80
+      act(() => {
+        vp.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -80 }))
+        vp.scrollTop = laterTop
+        vp.dispatchEvent(new Event('scroll'))
+        setClarifyRequest({ ...request, lockedAnswers: { q1: 'Stable' } })
+        resize(vp)
+      })
+      rerender(tree([...liveMessages]))
+      await settleScroll(10)
+      expect(vp.scrollTop).toBe(laterTop)
+    } finally {
+      unmount()
+      clearClarifyRequest(request.requestId, sessionId)
+      geometry.mockRestore()
+      vi.stubGlobal('ResizeObserver', previousObserver)
+    }
+  })
+
   it('marks the chat surface data-session-switching while a switched transcript settles, then clears it', async () => {
     // The documented theme hook for chat-switch transitions: present from the
     // commit the new transcript lands until its scroll restore settles.

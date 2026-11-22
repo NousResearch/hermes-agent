@@ -42,7 +42,6 @@ import {
 } from '@/store/session-states'
 import { parkSetupBeat, type SetupBeatCard } from '@/store/setup-beat'
 import { parkThemePick } from '@/store/theme-pick'
-import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
 
 import type { GatewayEventDeps } from './types'
@@ -338,10 +337,6 @@ const parkClarify = (ctx: ServerRequestContext, clarifyRequest: ClarifyRequest) 
         needsInput: true
       }
     })
-
-    if (sessionId === deps.activeSessionIdRef.current) {
-      requestScrollToBottom(sessionId)
-    }
   }
 
   notifyInput(ctx, clarifyRequest.questions.map(q => q.question).join(' · '))

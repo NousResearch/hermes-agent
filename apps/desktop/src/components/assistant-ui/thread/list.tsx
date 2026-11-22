@@ -46,6 +46,7 @@ import { isSecondaryWindow } from '@/store/windows'
 import { MessageRenderBoundary } from '../message-render-boundary'
 import { PendingApprovalStack } from '../tool/approval'
 
+import { usePendingInputReveal } from './pending-input-navigation'
 import { responseMessageRole, ResponseMessages } from './response-group'
 import { holdSessionSwitching } from './session-switching'
 import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
@@ -627,7 +628,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // What the in-flight load is steering toward; decides whether a backfill
   // step may anchor while the load is still unsettled.
   const loadTargetRef = useRef<ThreadScrollState>(THREAD_SCROLL_BOTTOM)
-  const cancelRestoreRef = useRef<(() => void) | null>(null)
+  const cancelRestoreRef = useRef<((release?: boolean) => void) | null>(null)
   const applyRestoreRef = useRef<(() => void) | null>(null)
   // Pages auto-spent toward the current parked offset; reset at each park.
   const autoGrowPagesRef = useRef(0)
@@ -643,6 +644,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const isRunningRef = useRef(isRunning)
   isRunningRef.current = isRunning
   const clearanceRef = useRef<HTMLDivElement>(null)
+  const titlebarMaskRef = useRef<HTMLDivElement>(null)
   // Session the settle loop last armed for, so a re-arm within the same load
   // is distinguishable from a switch to a different transcript.
   const settleKeyRef = useRef(sessionKey)
@@ -1178,8 +1180,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     const restoreResizeMetrics = () => readThreadScrollResizeMetrics(el, clearanceRef.current)
 
     let lastRestoreMetrics = restoreResizeMetrics()
+    let restoring = true
 
     const resizeObserver = new ResizeObserver(() => {
+      if (!restoring) {
+        return
+      }
+
       const next = restoreResizeMetrics()
       const previous = lastRestoreMetrics
       lastRestoreMetrics = next
@@ -1200,6 +1207,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     const cancelRestore = () => {
+      restoring = false
       applyRestoreRef.current = null
       resizeObserver.disconnect()
       cancelAnimationFrame(rafId)
@@ -1216,7 +1224,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       restoreFromBottomRef.current = el.scrollHeight - el.scrollTop
     }
 
-    cancelRestoreRef.current = target.kind === 'offset' ? cancelRestore : () => resizeObserver.disconnect()
+    cancelRestoreRef.current = release => {
+      if (target.kind === 'offset' || release) {
+        cancelRestore()
+      } else {
+        restoring = false
+        resizeObserver.disconnect()
+      }
+    }
 
     const onWheel = (event: WheelEvent) => {
       resizeObserver.disconnect()
@@ -1250,6 +1265,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       cancelRestore()
       // A jump replaces reading intent, including an in-flight prepend anchor.
       // Re-arm resize protection: deferred markdown may grow after this click.
+      restoring = true
       target = THREAD_SCROLL_BOTTOM
       restoreFromBottomRef.current = null
       liveScrollStateRef.current = target
@@ -1274,6 +1290,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     el.addEventListener('keydown', cancelRestore)
 
     return () => {
+      restoring = false
       cancelRestoreRef.current = null
       applyRestoreRef.current = null
       resizeObserver.disconnect()
@@ -1601,6 +1618,78 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey, sessionId: scrollSessionId })
   useStickyPromptClip({ contentRef, scrollRef, paneVisible, rows })
 
+  const measurePendingHeading = useCallback((node: HTMLElement, viewport: HTMLElement) => {
+    const viewportRect = viewport.getBoundingClientRect()
+    const surface = viewport.closest('[data-chat-surface]')
+    const header = surface?.querySelector(':scope > header')
+    const dock = surface?.querySelector('[data-slot="composer-dock"]:not([data-popped-out])')
+
+    const top = Math.max(
+      viewportRect.top,
+      titlebarMaskRef.current?.getBoundingClientRect().bottom ?? 0,
+      header?.getBoundingClientRect().bottom ?? 0
+    )
+
+    const dockRect = dock?.getBoundingClientRect()
+    const bottom = dockRect?.height ? Math.min(viewportRect.bottom, dockRect.top) : viewportRect.bottom
+    const rect = node.getBoundingClientRect()
+
+    if (bottom <= top || !rect.height) {
+      return null
+    }
+
+    // The form can be taller than the usable viewport. Only its leading edge
+    // needs to clear the sticky prompt and the composer.
+    const prompt = node.closest('[data-slot="aui_message-group"]')
+      ?.querySelector<HTMLElement>('[data-slot="aui_user-message-root"]')
+
+    const promptRect = prompt?.getBoundingClientRect()
+    const stickyTop = prompt ? viewportRect.top + (Number.parseFloat(getComputedStyle(prompt).top) || 0) : top
+    const clip = node.closest<HTMLElement>('[data-sticky-prompt-clip]')
+    const clipInset = clip ? Number.parseFloat(clip.style.getPropertyValue('--sticky-prompt-clip')) : 0
+    const clipTop = clip && clipInset > 0 ? clip.getBoundingClientRect().top + clipInset : top
+    const visibleTop = Math.max(top, clipTop, promptRect?.bottom ?? top)
+    const alignTop = Math.min(bottom - 1, Math.max(top, stickyTop + (promptRect?.height ?? 0)) + 8)
+
+    return { visible: rect.top >= visibleTop - 0.5 && rect.top < bottom - 1, delta: rect.top - alignTop }
+  }, [])
+
+  const pendingRevealBlocked = useCallback(
+    (el: HTMLElement) => el.hasAttribute('data-editing') || hasTranscriptTextSelection(el),
+    []
+  )
+
+  const revealPendingHeading = useCallback((el: HTMLElement, delta: number) => {
+    const top = Math.max(0, Math.min(el.scrollHeight - el.clientHeight, el.scrollTop + delta))
+
+    if (Math.abs(top - el.scrollTop) <= SCROLL_TARGET_EPSILON_PX) {
+      return
+    }
+
+    cancelRestoreRef.current?.(true)
+    applyRestoreRef.current = null
+    restoreFromBottomRef.current = null
+    anchorHeightRef.current = null
+    loadSettledRef.current = true
+    stopScroll()
+    el.scrollTop = top
+    liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+  }, [stopScroll])
+
+  usePendingInputReveal({
+    viewport: scrollRef,
+    content: contentRef,
+    visible: paneVisible,
+    following: isAtBottom,
+    transcriptKey: sessionKey ?? null,
+    ready: !sessionLoading,
+    historical: isHistorical,
+    returnToLatest,
+    blocked: pendingRevealBlocked,
+    measure: measurePendingHeading,
+    move: revealPendingHeading
+  })
+
   return (
     <div
       className="relative min-h-0 max-w-full overflow-hidden contain-[layout_paint]"
@@ -1620,6 +1709,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         <div
           aria-hidden="true"
           className="absolute inset-x-0 top-0 z-10 h-(--titlebar-height) bg-background [-webkit-app-region:drag]"
+          ref={titlebarMaskRef}
         />
       )}
       <div

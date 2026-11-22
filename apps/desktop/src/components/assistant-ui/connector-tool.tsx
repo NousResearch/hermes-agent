@@ -8,6 +8,7 @@ import { accountRenameRoute } from '@/app/capabilities/connectors/data/deep-link
 import { useSessionView } from '@/app/chat/session-view'
 import { sessionRoute } from '@/app/routes'
 import { ConnectorDirectoryCard } from '@/components/assistant-ui/connector-directory-card'
+import { usePendingTargetRegistration } from '@/components/assistant-ui/thread/pending-input-navigation'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { TypedAnswer } from '@/components/assistant-ui/typed-answer'
 import { useConnectionOwner } from '@/components/assistant-ui/use-connection-owner'
@@ -168,12 +169,21 @@ interface ConnectorDirectoryToolProps {
 /** The display card while its operation is open; afterwards the one line the result says, or the generic row
  *  for a call that failed. */
 function ConnectorDirectoryTool({ live, part, request }: ConnectorDirectoryToolProps) {
+  const cardRef = useRef<HTMLDivElement>(null)
+  usePendingTargetRegistration(
+    'connection',
+    live && request && connectionRequestOpen(request) ? request.opId : undefined,
+    cardRef
+  )
+
   if (live && request && !request.settled) {
     return (
-      <ConnectorDirectoryCard
-        onContinue={() => void continueConnectionRequest(request)}
-        suggested={request.display?.suggested}
-      />
+      <div ref={cardRef}>
+        <ConnectorDirectoryCard
+          onContinue={() => void continueConnectionRequest(request)}
+          suggested={request.display?.suggested}
+        />
+      </div>
     )
   }
 
@@ -333,6 +343,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   // A DOM handle for the focus handoff, never rendered state.
   const cardRef = useRef<HTMLDivElement | null>(null)
 
+  usePendingTargetRegistration('connection', connectionRequestOpen(request) ? request.opId : undefined, cardRef)
   useConnectorFocusHandoff(request.targets, cardRef)
 
   // The update frame paints the row as waiting with the fresh link; the user opens it from the row.

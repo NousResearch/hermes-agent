@@ -1,6 +1,13 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { useRef } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import {
+  PendingInputNavigationProvider,
+  usePendingInputReveal,
+  usePendingTargetRegistration
+} from '@/components/assistant-ui/thread/pending-input-navigation'
+import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearAllPrompts, clearApprovalRequest, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
 import {
@@ -9,9 +16,47 @@ import {
   resetThreadScroll,
   setThreadAtBottom
 } from '@/store/thread-scroll'
+import { stubResizeObserver } from '@/test/jsdom'
 
 import { ComposerSurfaceProvider } from './composer/scope'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
+
+stubResizeObserver()
+
+const neverBlocked = () => false
+
+const noOp = () => {}
+
+function PendingQuestionAtBottom({ move }: { move: (viewport: HTMLElement, delta: number) => void }) {
+  const viewport = useRef<HTMLDivElement>(null)
+  const content = useRef<HTMLDivElement>(null)
+  const heading = useRef<HTMLHeadingElement>(null)
+  usePendingTargetRegistration('clarify', 'req-above', heading)
+  usePendingInputReveal({
+    viewport,
+    content,
+    visible: true,
+    following: true,
+    transcriptKey: 'sess-1',
+    ready: true,
+    historical: false,
+    returnToLatest: noOp,
+    blocked: neverBlocked,
+    measure: node => ({ visible: false, delta: node.getBoundingClientRect().top }),
+    move
+  })
+
+  return (
+    <>
+      <div ref={viewport}>
+        <div ref={content}>
+          <h2 ref={heading}>Which release?</h2>
+        </div>
+      </div>
+      <ScrollToBottomButton sessionId="sess-1" />
+    </>
+  )
+}
 
 function pendingApproval() {
   $activeSessionId.set('sess-1')
@@ -21,6 +66,7 @@ function pendingApproval() {
 afterEach(() => {
   cleanup()
   clearAllPrompts()
+  clearClarifyRequest()
 
   for (const id of ['sess-1', 'sess-a', 'sess-b', 'tile-runtime', 'surface-a', 'surface-b']) {
     resetThreadScroll(id)
@@ -135,6 +181,37 @@ describe('ScrollToBottomButton', () => {
 
     view.rerender(<ScrollToBottomButton sessionId="sess-1" />)
     expect(screen.getByRole('button', { name: 'Approval needed' })).toBeTruthy()
+  })
+
+  it('shows a pending question above the true bottom and jumps to its heading', async () => {
+    setThreadAtBottom(true, 'sess-1')
+    setClarifyRequest({
+      requestId: 'req-above',
+      sessionId: 'sess-1',
+      questions: [{ choices: ['Stable', 'Preview'], multiSelect: false, qid: 'q1', question: 'Which release?' }]
+    })
+    const bottom = vi.fn()
+    const stop = onScrollToBottomRequest(bottom, 'sess-1')
+    const move = vi.fn()
+    render(
+      <PendingInputNavigationProvider active={false} sessionId="sess-1">
+        <PendingQuestionAtBottom move={move} />
+      </PendingInputNavigationProvider>
+    )
+    const heading = screen.getByRole('heading', { name: 'Which release?' })
+    const geometry = vi.spyOn(heading, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, -125, 100, 20))
+
+    try {
+      const button = screen.getByRole('button', { name: 'Needs your input' })
+      fireEvent.scroll(heading.parentElement!.parentElement!)
+      await waitFor(() => expect(button.querySelector('.codicon-arrow-up')).toBeTruthy())
+      fireEvent.click(button)
+      await waitFor(() => expect(move).toHaveBeenCalledWith(expect.any(HTMLElement), -125))
+      expect(bottom).not.toHaveBeenCalled()
+    } finally {
+      geometry.mockRestore()
+      stop()
+    }
   })
 
   it('re-arms sticky-bottom on click', () => {

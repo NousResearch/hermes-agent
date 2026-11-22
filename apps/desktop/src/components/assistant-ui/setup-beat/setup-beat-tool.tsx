@@ -4,13 +4,14 @@ import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { SetupBeat } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { Puzzle } from 'lucide-react'
-import { type ComponentType, type ReactNode, useState } from 'react'
+import { type ComponentType, type ReactNode, type RefObject, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { CLARIFY_ICON_CLASS } from '@/components/assistant-ui/clarify/core/shell'
 import { ConnectorDirectoryCard } from '@/components/assistant-ui/connector-directory-card'
 import { AccentPickerCard } from '@/components/assistant-ui/theme-picker/accent-picker-card'
 import { LayoutPickerCard } from '@/components/assistant-ui/theme-picker/layout-picker-card'
+import { usePendingTargetRegistration } from '@/components/assistant-ui/thread/pending-input-navigation'
 import { LayoutDashboard, MessageQuestion, Palette, Plug } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { applyAppearance } from '@/store/appearance-apply'
@@ -99,11 +100,21 @@ const BEAT_ICONS = {
   tour: MessageQuestion
 } satisfies Record<SetupBeat, ComponentType<{ className?: string }>>
 
-function BeatShell({ beat, children, question }: { beat: SetupBeat; children: ReactNode; question: string }) {
+function BeatShell({
+  beat,
+  cardRef,
+  children,
+  question
+}: {
+  beat: SetupBeat
+  cardRef: RefObject<HTMLDivElement | null>
+  children: ReactNode
+  question: string
+}) {
   const Icon = BEAT_ICONS[beat]
 
   return (
-    <div className={cn(SETUP_BEAT_SHELL_CLASS, 'grid gap-3')} data-setup-beat={beat}>
+    <div className={cn(SETUP_BEAT_SHELL_CLASS, 'grid gap-3')} data-setup-beat={beat} ref={cardRef}>
       <div className="flex items-start gap-2">
         <span className={cn(CARD_LABEL_CLASS, 'flex-1')}>{question}</span>
         <Icon aria-hidden className={CLARIFY_ICON_CLASS} />
@@ -122,6 +133,11 @@ export function SetupBeatTool(props: ToolCallMessagePartProps) {
   const requests = useStore($setupBeatRequests)
   const [settled, setSettled] = useState<null | SetupBeatOutcome>(null)
 
+  const pending = sessionId ? requests[sessionId] : undefined
+  const request = pending && (pending.toolCallId ?? props.toolCallId) === props.toolCallId ? pending : undefined
+  const cardRef = useRef<HTMLDivElement>(null)
+  usePendingTargetRegistration('setup', props.result === undefined && !settled ? request?.requestId : undefined, cardRef)
+
   if (props.result !== undefined) {
     const outcome = setupBeatOutcome(setupBeatResult(props.result))
 
@@ -132,9 +148,6 @@ export function SetupBeatTool(props: ToolCallMessagePartProps) {
   if (settled) {
     return <SetupBeatReceipt outcome={settled} />
   }
-
-  const pending = sessionId ? requests[sessionId] : undefined
-  const request = pending && (pending.toolCallId ?? props.toolCallId) === props.toolCallId ? pending : undefined
 
   if (!sessionId || !request) {
     // A row left without a result and no card for it once the turn is over (a crash, a restart).
@@ -154,7 +167,7 @@ export function SetupBeatTool(props: ToolCallMessagePartProps) {
   // The directory card has its own header and plug icon; a frame label above it would be a second header.
   if (request.beat === 'connectors') {
     return (
-      <div data-setup-beat="connectors">
+      <div data-setup-beat="connectors" ref={cardRef}>
         <ConnectorDirectoryCard
           onContinue={({ connected, newly_connected }) => answer({ connected, newly_connected })}
           suggested={Array.isArray(request.card.suggested) ? request.card.suggested : []}
@@ -164,7 +177,7 @@ export function SetupBeatTool(props: ToolCallMessagePartProps) {
   }
 
   return (
-    <BeatShell beat={request.beat} question={request.question}>
+    <BeatShell beat={request.beat} cardRef={cardRef} question={request.question}>
       <BeatBody answer={answer} request={request} />
     </BeatShell>
   )

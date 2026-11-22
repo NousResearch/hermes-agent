@@ -8,6 +8,7 @@ import { useLocation } from 'react-router'
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { sessionShouldHaveTranscript } from '@/app/session/hooks/use-session-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
+import { PendingInputNavigationProvider } from '@/components/assistant-ui/thread/pending-input-navigation'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
@@ -793,25 +794,30 @@ const ChatViewContent = memo(function ChatViewContent({
           data-slot="composer-bounds"
           {...dropHandlers}
         >
-          <Thread
-            clampToComposer={showChatBar}
-            cwd={currentCwd}
-            gateway={gateway}
-            intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
-            loading={threadLoading}
-            onBranchInNewChat={onBranchInNewChat}
-            onCancel={haltRun}
-            onDismissError={onDismissError}
-            onRestoreToMessage={onRestoreToMessage}
-            scrollProfile={modelOptionsProfile || activeGatewayProfile}
-            sessionId={activeSessionId}
-            sessionKey={threadKey}
-          />
-          {isPrimary && isMainWindow() && <IntroCopy />}
-          {resumeExhausted && routedSessionId && (
-            <ResumeExhaustedOverlay onRetryResume={onRetryResume} sessionId={routedSessionId} />
-          )}
-          {showChatBar && <ScrollToBottomButton sessionId={activeSessionId} />}
+          <PendingInputNavigationProvider
+            active={(surfaceFocused || isAuxiliaryWindow()) && !routeSessionMismatch}
+            sessionId={routeSessionMismatch ? null : activeSessionId}
+          >
+            <Thread
+              clampToComposer={showChatBar}
+              cwd={currentCwd}
+              gateway={gateway}
+              intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
+              loading={threadLoading}
+              onBranchInNewChat={onBranchInNewChat}
+              onCancel={haltRun}
+              onDismissError={onDismissError}
+              onRestoreToMessage={onRestoreToMessage}
+              scrollProfile={modelOptionsProfile || activeGatewayProfile}
+              sessionId={activeSessionId}
+              sessionKey={threadKey}
+            />
+            {isPrimary && isMainWindow() && <IntroCopy />}
+            {resumeExhausted && routedSessionId && (
+              <ResumeExhaustedOverlay onRetryResume={onRetryResume} sessionId={routedSessionId} />
+            )}
+            {showChatBar && <ScrollToBottomButton sessionId={activeSessionId} />}
+          </PendingInputNavigationProvider>
           {/* Vibe hearts rise from the composer only when no pet is out (else
               they play on the pet). Fired by the core `reaction` event. */}
           {!petPresent && (

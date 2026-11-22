@@ -43,7 +43,7 @@ def task_model(task, config) -> tuple[str, bool]:
 
 def _route_base_url(identity, held, entry) -> str:
     from agent.secret_scope import get_secret_str
-    from hermes_cli.runtime_provider_custom import _LLAMACPP_ALIASES
+    from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
 
     # A named entry owns its own URL; the bare custom and OpenRouter runtime also honor scoped .env.
     base_url = str(entry.get('base_url') or held.get('base_url') or '').strip()
@@ -51,7 +51,7 @@ def _route_base_url(identity, held, entry) -> str:
         return base_url
     if identity not in ('custom', 'openrouter'):
         return _builtin_base_url(identity, base_url, get_secret_str)
-    if str(held.get('provider') or '').strip().lower() in _LLAMACPP_ALIASES:
+    if str(held.get('provider') or '').strip().lower() in LLAMACPP_ALIASES:
         return 'http://127.0.0.1'  # the managed llama.cpp server, whatever model.base_url says (_resolve_llamacpp_runtime)
     return (get_secret_str('CUSTOM_BASE_URL').strip() or base_url
             or get_secret_str('OPENROUTER_BASE_URL').strip())
@@ -100,8 +100,11 @@ def refuse_unresolved_model(task, workspace: str, board: str | None) -> None:
     from hermes_cli import kanban_db_dispatch as dispatch
     from hermes_cli.config_backend import ConfigBackendUnavailable
     from hermes_cli.config_effective import load_user_config_effective
+    from hermes_cli.kanban_worker_log import open_task_worker_log
     from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
 
+    if task.model_override:  # a pinned card runs its own model: no profile read, so no config outage defers it
+        return
     profile = normalize_profile_name(task.assignee)
     try:
         home = resolve_profile_env(profile)
@@ -109,16 +112,17 @@ def refuse_unresolved_model(task, workspace: str, board: str | None) -> None:
         return  # no profile dir: the worker client resolves it (and refuses) itself
     try:
         with dispatch._worker_profile_scope(home):
-            _, unresolved = task_model(task, load_user_config_effective(Path(home) / 'config.yaml'))
+            _, unresolved = task_model(task, load_user_config_effective(Path(home) / 'config.yaml', fail_closed=True))
     except ConfigBackendUnavailable as exc:
         raise ProfileConfigUnavailable(f"config backend unavailable for profile {profile}: {exc}") from exc
-    except Exception:  # health: allow BLE001 -- the owner builds and refuses this policy itself; logged
+    except Exception:  # health: allow BLE001 -- unreadable config included: the owner decides; logged
         logger.debug("kanban model preflight for %s skipped", task.id, exc_info=True)
         return
     if not unresolved:
         return
-    message = missing_model_detail(profile, home)
-    with dispatch._open_worker_log(task, board) as log:
+    # A refusal spends the retry budget; once it blocks the card, set-model alone does not re-run it.
+    message = f"{missing_model_detail(profile, home)}; then `hermes kanban unblock {task.id}` if it was blocked"
+    with open_task_worker_log(task, board) as log:
         log.write(f"Kanban worker refused: {message}\n".encode())
     raise RuntimeError(message)
 

@@ -93,6 +93,6 @@ def open_task_worker_log(task, board: Optional[str]):
     `hermes kanban log` reads its own file and boards sharing task ids don't
     collide. Reached as ``kanban_db_dispatch._open_worker_log``."""
     from hermes_cli import kanban_db as _kb
-    log_dir = _kb.worker_logs_dir(board=board)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    return open_worker_log(log_dir / f"{task.id}.log")
+    log_path = _kb.worker_log_path(task.id, board=board)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    return open_worker_log(log_path)

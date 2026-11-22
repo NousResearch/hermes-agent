@@ -284,6 +284,54 @@ def test_e2e_compacts_and_persists_through_real_agent(tmp_path, monkeypatch):
     assert live[-1]["role"] == "assistant" and live[-1]["content"] == "reply"
 
 
+def test_e2e_compacts_after_task_tool_resources_are_released(tmp_path, monkeypatch):
+    """The summary needs no live VM/browser; its task key still resets skill dedup."""
+    from tools import browser_tool, file_tools, terminal_tool
+    from tools.skills_tool_dedup import _check_skill_view_dedup, _record_skill_view
+
+    db, sid, agent = _real_agent(tmp_path, monkeypatch)
+    released = []
+    env = SimpleNamespace(cleanup=lambda: released.append("vm"))
+    monkeypatch.setitem(terminal_tool._active_environments, "task", env)
+    monkeypatch.setitem(file_tools._file_ops_cache, "task", object())
+    monkeypatch.setitem(file_tools._read_tracker, "task", {"dedup_generation_reads": {"old"}})
+    monkeypatch.setitem(browser_tool._active_sessions, "task", {"bb_session_id": None})
+    monkeypatch.setattr("tools.browser_tool_cloud._is_headed_mode", lambda: False)
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(
+        "tools.browser_tool_session._run_browser_command",
+        lambda *_a, **_kw: released.append("browser"),
+    )
+    skill = tmp_path / "SKILL.md"
+    skill.write_text("Task-local skill content", encoding="utf-8")
+    _record_skill_view("task", "cleanup-skill", None, {
+        "name": "cleanup-skill", "_source_path": str(skill),
+    })
+    assert _check_skill_view_dedup("task", "cleanup-skill", None) is not None
+    compress = agent.context_compressor.compress.side_effect
+
+    def summarize_after_cleanup(messages, *args, **kwargs):
+        assert released == ["vm", "browser"]
+        assert "task" not in terminal_tool._active_environments
+        assert "task" not in browser_tool._active_sessions
+        assert "task" not in file_tools._file_ops_cache
+        assert "task" not in file_tools._read_tracker
+        return compress(messages, *args, **kwargs)
+
+    agent.context_compressor.compress.side_effect = summarize_after_cleanup
+
+    messages, result = _e2e_turn(agent, monkeypatch)
+
+    agent.context_compressor.compress.assert_called_once()
+    assert _check_skill_view_dedup("task", "cleanup-skill", None) is None
+    assert "task" not in terminal_tool._active_environments
+    assert "task" not in browser_tool._active_sessions
+    assert result["messages"] is messages
+    live = db.get_messages_as_conversation(agent.session_id)
+    assert live[0]["content"].startswith("[CONTEXT COMPACTION]")
+    assert live[-1]["content"] == result["final_response"] == "reply"
+
+
 def test_e2e_defers_to_a_held_compression_lock(tmp_path, monkeypatch):
     """Another holder's per-session lock makes the eager pass a strict no-op — the reply is still
     persisted, nothing rotates, and the foreign lease is untouched."""

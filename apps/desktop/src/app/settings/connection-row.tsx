@@ -138,7 +138,7 @@ function PortalConnectionRow({ isCurrent, kindMeta, peerHint, ...actions }: Port
       description={description}
       title={
         // The pills wrap under a long name; the name keeps its icon and truncates.
-        <span className="flex min-w-0 flex-wrap items-center gap-2">
+        <span className="flex min-w-0 flex-wrap items-center gap-2" data-slot="connection-title">
           <span className="flex max-w-full min-w-0 items-center gap-2">
             <Icon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
             <span className="truncate">{conn.label}</span>

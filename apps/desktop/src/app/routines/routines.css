@@ -92,7 +92,7 @@
   font-size: var(--portal-type-caption-size);
   font-weight: 400;
   letter-spacing: var(--portal-tracking-caption);
-  /* The 1rem box less its 1px strokes: one centred line. */
+  /* token-exempt: the 1rem box less its 1px strokes, one centred line */
   line-height: calc(1rem - 2px);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -205,13 +205,17 @@
   white-space: nowrap;
 }
 
-/* The name and its status chip on the H1 line: a long name wraps, the chip rides its last line. */
-.routines-detail-header h1 {
+/* The name and its status chip on the H1 line: a long name wraps, the chip rides its last line. The
+   shared header keeps an H1 to one clipped line (portal-page-header.css); a routine's name is the
+   person's own sentence, so here it wraps instead. */
+.routines-detail-header .portal-page-header-title > h1 {
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
   align-items: center;
   column-gap: 0.75rem;
+  overflow: visible;
+  white-space: normal;
 }
 
 .routines-title {

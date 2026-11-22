@@ -35,6 +35,17 @@
   white-space: nowrap;
 }
 
+/* A long machine name gives way before the agent's own name does: it keeps at most 14rem and ends
+   in an ellipsis (the shared header holds everything beside an H1 at its full width). */
+.portal-page-header-name > .agent-management-machine {
+  min-width: 0;
+  max-width: 14rem;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .agent-management-machine[data-connected='true'] {
   background-color: var(--portal-badge-ok-fill);
   color: var(--portal-badge-ink);

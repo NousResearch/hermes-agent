@@ -524,7 +524,10 @@ describe('saved connection status in the redesign', () => {
   })
 
   const badgeFor = (label: string) =>
-    screen.getByText(label).parentElement?.querySelector('[data-slot="connection-status"]')?.textContent ?? null
+    screen
+      .getByText(label)
+      .closest('[data-slot="connection-title"]')
+      ?.querySelector('[data-slot="connection-status"]')?.textContent ?? null
 
   afterEach(() => {
     setGatewayState('idle')

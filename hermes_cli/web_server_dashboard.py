@@ -713,9 +713,9 @@ def _discover_dashboard_plugins(search_dirs: Optional[list] = None) -> list:
     """Scan ``<plugins root>/*/dashboard/manifest.json`` across user, bundled and (opt-in)
     project plugin sources — same three sources as ``hermes_cli.plugins`` — or ``search_dirs``.
 
-    Each entry also records the plugin's install identity (``_key``, its directory name, and
-    ``_spellings``, every name the plugin loader accepts for it) so the enable check matches the
-    loader's. A dashboard name that is another installed plugin's name is skipped (see
+    Each entry also records the names the plugin answers to (``_spellings``, every name the plugin
+    loader accepts for it, and ``_owned``, the ones no other installed plugin answers to) so the
+    enable check matches the loader's. A dashboard name that is another installed plugin's name is skipped (see
     :func:`_dashboard_name_taken`).
     """
     from pm.plugins_state import plugin_spellings
@@ -748,7 +748,7 @@ def _discover_dashboard_plugins(search_dirs: Optional[list] = None) -> list:
                     continue
                 seen_names.add(name)
                 entry = _dashboard_plugin_entry(data, name, child / "dashboard", source)
-                plugins.append({**entry, "_key": child.name, "_spellings": spellings, "_owned": owned})
+                plugins.append({**entry, "_spellings": spellings, "_owned": owned})
             except OSError as exc:
                 _log.warning("Skipping unreadable dashboard plugin %s: %s", manifest_file, exc)
                 continue

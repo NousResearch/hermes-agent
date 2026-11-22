@@ -1,13 +1,13 @@
 name: ficelle
 title: Ficelle
 repo: https://github.com/TheBlueHouse75/ficelle-open-core
-sha: 0b7c0fa5e7e05aa4cf33de7b9f9aefc5b34becc5
+sha: cc4944df23da94a91a82fbf5616133c425af73d0
 subdir: src/ficelle/assets/hermes-plugin/ficelle
 description: "Model provider for Ficelle, a local OpenAI-compatible router that fails over between free models of the providers you add keys for (not unlimited free access). Disclosure — only when the user selects Ficelle in hermes model and confirms (default no): downloads Ficelle's official bootstrap from an immutable TheBlueHouse75/ficelle-open-core commit, verifies its pinned SHA-256 and runs it with a Python outside Hermes; the bootstrap installs Ficelle Core (SHA-256-pinned wheel from the official GitHub release) into ~/.local/share/ficelle/venv with state and provider keys in ~/.ficelle, links the ficelle commands into ~/.local/bin, and creates a long-running loopback service (LaunchAgent or systemd --user unit, 127.0.0.1:8646) that keeps running after Hermes exits and updates through Ficelle's own updater, outside the plugin; sends one test request to that service; then sets FICELLE_API_KEY (a non-secret local value, only when unset) in the profile's .env and the profile's default model through Hermes helpers. The plugin never asks for, reads or stores provider keys; removing it does not uninstall Ficelle."
 maintainer: TheBlueHouse75
 tier: community
 category: models
-version: "0.3.14"
+version: "0.3.15"
 requires_hermes: ">=0.22.6"
 platforms:
   - linux

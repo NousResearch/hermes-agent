@@ -1,7 +1,7 @@
 """Lazy build: `compile()` checks and translates, the RE2 program is built on first use.
 
 What must hold: every construct the facade refuses still raises at `compile()`; nothing but the
-memory budget and an unknown `\\p{Name}` is left to first use; `build` / `build_all` force the
+memory budget is left to first use; `build` / `build_all` force the
 build; the registry behind `build_all` is weak; threads never see a half-built Pattern.
 """
 import gc
@@ -59,7 +59,7 @@ def test_what_the_facade_refuses_raises_at_compile_without_any_build():
                r"(a)?(?(1)b|c)", r"\N{EM DASH}", r"(?a)\w", r"(?L)a", r"(?x) a", r"x$y", r"(x$)+", "\ud800", "a\\",
                r"(", r")", r"[a", r"[z-a]", r"*a", r"a**", r"a{2}{3}", r"a{3,2}", r"a{1001}", r"(?:a{40}){30}",
                r"(?:(?:a{10}){10}){11}", r"\q", r"\x4g", r"\u12", r"\8", r"(?P<1a>x)", r"(?P<a>x)(?P<a>y)", r"(?P<n", r"(?i",
-               r"^*", r"\b+", r"\Qa\E", r"\C", r"\p{Xx}", r"(?#unterminated"]
+               r"^*", r"\b+", r"\Qa\E", r"\C", r"\p{Xx}", r"\p{Klingon}", r"(?#unterminated"]
     hre.purge()
     gc.collect()
     for source in refused:
@@ -72,11 +72,11 @@ def test_what_the_facade_refuses_raises_at_compile_without_any_build():
     assert hre.build_all() == []  # nothing refused was registered
 
 
-def test_only_the_budget_and_unknown_property_names_are_left_to_first_use():
+def test_only_the_budget_is_left_to_first_use():
     hre.purge()
     gc.collect()
-    for source, phrase in ((r"\w{1000}" * 4, "too large"), (r"\p{Klingon}", "invalid character class range")):
-        compiled = hre.compile(source)  # accepted: neither can be told from the text
+    for source, phrase in ((r"\w{1000}" * 4, "too large"),):
+        compiled = hre.compile(source)  # accepted: the program size cannot be told from the text
         for call in (lambda: compiled.search("x"), lambda: compiled.sub("", "x"), lambda: hre.build(compiled),
                      lambda: hre.search(source, "x")):
             try:

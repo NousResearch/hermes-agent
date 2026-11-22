@@ -35,11 +35,6 @@ def test_pos_greater_than_endpos_never_matches():
     assert std.compile("").match("abc", 3, 0) is not None and hre.compile("").match("abc", 3, 0) is None
 
 
-def test_re2_only_syntax_is_accepted():
-    assert outcome(lambda: std.compile(r"\pL")) == "raises error" and hre.fullmatch(r"\pL", "\u00e9") is not None
-    assert outcome(lambda: std.compile(r"x(?i)i")) == "raises error" and hre.fullmatch(r"x(?i)i", "xI") is not None
-
-
 def test_repeat_counts_over_1000_are_refused_and_huge_programs_fail_at_first_use():
     assert std.compile(r"a{1001}") is not None and outcome(lambda: hre.compile(r"a{1001}")) == "raises error"
     assert std.compile(r"(?:a{40}){30}") is not None and outcome(lambda: hre.compile(r"(?:a{40}){30}")) == "raises error"

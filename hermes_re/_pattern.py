@@ -47,6 +47,7 @@ from ._match import Match
 from ._offsets import Offsets
 from ._subject import DIRECT, UTF8, WINDOW, held, subject, window
 from ._template import template as _template
+from ._validate import stdlib_syntax
 
 _LAZY = frozenset(("_anchors", "_edge", "_rx"))  # slots filled by the build
 # Every Pattern alive (the compile cache's and the ones modules hold), keyed by identity: equal
@@ -140,6 +141,7 @@ class Pattern:
         else:  # bytes: matched byte-wise (Latin-1) with the ASCII classes
             text, engine_flags = pattern.decode("latin-1"), int(flags) | 256
         text = _comments.strip(text, pattern)[0]
+        stdlib_syntax(text, not is_str, pattern)  # raises ``error`` where stdlib does
         form = self._form = Form(pattern, text, engine_flags, not is_str, True, weakref.ref(self))  # raises ``error``
         self.groups, self.groupindex = form.groups, form.groupindex
         wide = None

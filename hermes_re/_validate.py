@@ -10,15 +10,17 @@ groups, conditionals, named characters, Python-only inline flags).
 ``Pattern.groupindex`` need no engine: ``(number of capture groups, ((name, number), ...))``.
 
 Where stdlib and RE2 disagree the stricter reading wins (a repeated anchor, a duplicate group
-name, ``\Q...\E``, ``\C``), except for the RE2-only spellings the facade has always let through:
-``\z``, ``\pL`` / ``\p{Name}``, ``(?<name>...)``, ``(?U)``, a global inline flag after the start.
+name, ``\Q...\E``, ``\C``). ``stdlib_syntax`` refuses, on the caller's text before any edge
+rewrite, the syntax RE2 would take but stdlib refuses: ``\pL`` / ``\p{Name}``, ``\z`` before
+Python 3.14, ``(?<name>...)``, ``(?U)`` and every other unknown extension or flag letter, a
+global inline flag after the start, and the flag combinations ``_parse_flags`` rejects.
 
 What is NOT decided here and can still fail when the program is built: a program larger than
-the memory budget, and a ``\p{Name}`` whose name RE2 does not know (general categories are
-checked; script names are not listed here).
+the memory budget.
 """
 from __future__ import annotations
 
+import sys
 import unicodedata
 
 from ._errors import error
@@ -30,7 +32,7 @@ _HEX = frozenset("0123456789abcdefABCDEF")
 _WIDTH = {"x": 2, "u": 4, "U": 8}
 _ANCHORS = frozenset("bBAZz")
 _PLAIN_ESCAPES = frozenset("dDwWsSafnrtv")
-_RE2_FLAGS = frozenset("imsU")
+_RE2_FLAGS = frozenset("ims")
 _PYTHON_FLAGS = frozenset("auLx")
 _NAME_CATEGORIES = frozenset(("Lu", "Ll", "Lt", "Lm", "Lo", "Mn", "Mc", "Me", "Nd", "Nl", "No", "Pc"))
 _CATEGORIES = frozenset((
@@ -201,8 +203,6 @@ def _open(w: _Walk) -> None:
         w.push(i + 3)
     elif p.startswith("?P<", i + 1):
         _named(w, i + 4)
-    elif p.startswith("?<", i + 1) and p[i + 3:i + 4] not in ("=", "!"):
-        _named(w, i + 3)
     else:
         for token, message in _LACKING:
             if p.startswith(token, i + 1):
@@ -294,3 +294,85 @@ def check(text: str, latin1: bool, original):
     if w.stack:
         raise error("missing ), unterminated subpattern", original)
     return w.ncap, tuple(w.names)
+
+
+# stdlib's inline flag letters, the type letters of them, and the extensions that may follow `(?`
+_STD_FLAGS = frozenset("aiLmsux")
+_STD_TYPES = frozenset("auL")
+_STD_EXTENSIONS = frozenset(":P=!<>(")
+_STD_ESCAPES = frozenset("pP") if sys.version_info >= (3, 14) else frozenset("pPz")  # 3.14 added `\z`
+
+
+def _std_flags(text: str, i: int, latin1: bool, fail):
+    """Read the flags of the group extension at ``text[i:]`` (just after ``(?``) as stdlib's
+    ``_parse_flags`` does: ``(index after it, whether it opens a scoped group)``."""
+    n, on, off = len(text), "", ""
+    while i < n and text[i] in _STD_FLAGS:
+        if text[i] == ("u" if latin1 else "L"):
+            raise fail(f"bad inline flags: cannot use '{text[i]}' flag with a {'bytes' if latin1 else 'str'} pattern")
+        on += text[i]
+        if len(_STD_TYPES.intersection(on)) > 1:
+            raise fail("bad inline flags: flags 'a', 'u' and 'L' are incompatible")
+        i += 1
+    closer = text[i:i + 1]
+    if on and closer == ")":
+        return i + 1, False
+    if closer == "-":
+        i += 1
+        while i < n and text[i] in _STD_FLAGS:
+            if text[i] in _STD_TYPES:
+                raise fail("bad inline flags: cannot turn off flags 'a', 'u' and 'L'")
+            off += text[i]
+            i += 1
+        if not off:
+            raise fail("missing flag")
+        closer = text[i:i + 1]
+    if closer != ":":
+        raise fail("missing :" if off else "missing -, : or )")
+    if set(on) & set(off):
+        raise fail("bad inline flags: flag turned on and off")
+    return i + 1, True
+
+
+def _std_extension(text: str, i: int, latin1: bool, fail):
+    """The group extension at ``text[i]`` (an ``(`` followed by ``?``): ``(index after its
+    opening, whether it is a global flag group)``, or ``error`` where stdlib raises."""
+    char = text[i + 2:i + 3]
+    if char in _STD_FLAGS or char == "-":
+        end, scoped = _std_flags(text, i + 2, latin1, fail)
+        return end, not scoped
+    if char == "<" and text[i + 3:i + 4] not in ("=", "!"):
+        raise fail("unknown extension ?<" + text[i + 3:i + 4])
+    if char not in _STD_EXTENSIONS:
+        raise fail("unknown extension ?" + char)
+    return i + 1, False
+
+
+def stdlib_syntax(text: str, latin1: bool, original) -> None:
+    """Raise ``error`` (carrying ``original``) for syntax in ``text`` (Python dialect, comment
+    groups removed) that stdlib refuses and RE2 would run. Everything else is left to ``check``."""
+    i, n, lead = 0, len(text), True  # lead: nothing but global flag groups read so far
+
+    def fail(message):
+        return error(f"{message} (position {i})", original)
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            if text[i + 1:i + 2] in _STD_ESCAPES:
+                raise fail(f"bad escape {text[i:i + 2]}")
+            i += 2
+        elif ch == "[":  # a class: skipped (the class translator reads its escapes)
+            j = i + 2 if text.startswith("^", i + 1) else i + 1
+            j += text.startswith("]", j)
+            while j < n and text[j] != "]":
+                j += 2 if text[j] == "\\" else 1
+            i = j + 1
+        elif ch == "(" and text.startswith("?", i + 1):
+            end, is_global = _std_extension(text, i, latin1, fail)
+            if is_global and not lead:
+                raise fail("global flags not at the start of the expression")
+            i, lead = end, lead and is_global
+            continue
+        else:
+            i += 1
+        lead = False

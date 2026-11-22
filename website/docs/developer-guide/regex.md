@@ -44,6 +44,9 @@ another engine.
 | Repeat count over 1000 (also as a product of nested counts) | `a{1001}`, `(?:a{501}){2}` | A smaller bound, or `*` / `+` and a length check in Python. |
 | A lone surrogate outside a bracket class | `"\ud800"` | See *Lone surrogates* below. |
 
+Syntax the running stdlib refuses raises `hermes_re.error` as well, even where RE2 could run it:
+`\pL`, `(?<name>a)`, `(?U)`, a global inline flag after the start (`a(?i)b`), and `\z` before Python 3.14.
+
 **Edge guards are supported.** One guard per edge of a top-level alternative: a one-character lookbehind
 at its start (`(?<!\w)`, `(?<=[.!])`), a lookahead at its end (`(?!\w)`, `(?=\s|$)`), and a tail `$`.
 That covers the usual "not part of a longer word" patterns unchanged.
@@ -95,7 +98,7 @@ These compile and can give a result that differs from stdlib:
 | B3 | Lone surrogates (above) | `findall(r"[\ud800-\udfff]", "a\ud83db")`: `['\ud83d']` → `[]` |
 | B4 | A repeated body that can match empty: group contents can differ | `fullmatch("((b??)+)?", "bbb").groups()` |
 | B5 | `pos > endpos` | `compile("").match("abc", 3, 0)`: match → `None` |
-| B6 | RE2-only syntax is accepted where stdlib raises | `\pL`, `\p{Greek}`, `\z`, `(?<name>a)`, `(?U)a+` |
+| B6 | (none: syntax stdlib refuses, such as `\pL`, `(?<name>a)` or `(?U)`, is refused at `compile()`) | |
 | B7 | IGNORECASE classes with members above U+FFFF follow Python 3.14's rule on every interpreter | |
 | B8 | An interpreter whose Unicode version, or an RE2 build whose Unicode generation, has no entry in `hermes_re/_tables.py` gets RE2's own `\w` / `\d` where they differ | caught by `tests/hermes_re/test_tables_current.py` |
 

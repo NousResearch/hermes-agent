@@ -74,6 +74,15 @@ export const GROUP_CHAT_ERRORS = {
     attachmentFallback: "adjunto",
     pastedImage: "imagen pegada"
   },
+  'pt': {
+    sendRouteRequired: "Para enviar a este chat de grupo são necessárias a conexão, o perfil e o identificador dele",
+    savedMessagesUnreadable: "Não foi possível ler as mensagens salvas do chat de grupo",
+    savedMessageUnreadable: "Não foi possível ler uma mensagem salva do chat de grupo",
+    sendNeedsUpdate: "O envio ao grupo precisa de uma versão atualizada do Desktop; reinicie o Hermes Desktop",
+    attachmentTooLarge: name => `${name}: grande demais (máximo de 15 MB).`,
+    attachmentFallback: "anexo",
+    pastedImage: "imagem colada"
+  },
   'ru': {
     sendRouteRequired: "Для отправки нужны подключение, профиль и идентификатор группового чата",
     savedMessagesUnreadable: "Не удалось прочитать сохранённые сообщения группового чата",

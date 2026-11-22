@@ -1,10 +1,10 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 
 // Tradução pt-BR completa (gerada por Stacy em 2026-08-01).
 // Fallback automático para inglês via defineLocale (padrão do projeto).
-export const pt = defineLocale({
+export const ptOverrides = {
 common: {
    apply: 'Aplicar',
    back: 'Voltar',
@@ -43,7 +43,6 @@ common: {
    skip: 'Pular',
    update: 'Atualizar',
    tryHint: term => `Tente “${term}”`,
-   on: 'Ligado',
    off: 'Desligado'
  },
 
@@ -74,7 +73,6 @@ common: {
    categories: {
      composer: 'Compositor',
      profiles: 'Perfis',
-     session: 'Sessão',
      navigation: 'Navegação',
      view: 'Exibição'
    },
@@ -274,16 +272,9 @@ common: {
    mcpServers: 'Servidores MCP',
    archivedChats: 'Conversas arquivadas',
    sections: { maintenance: 'Manutenção', sessions: 'Sessões', system: 'Sistema', usage: 'Uso' },
-   sectionDescriptions: {
-     maintenance: 'Diagnóstico, backups, curador e dados de memória',
-     sessions: 'Pesquisar e gerenciar sessões',
-     system: 'Status, logs e ações do sistema',
-     usage: 'Atividade de tokens, custos e habilidades ao longo do tempo'
-   },
    nav: {
      newChat: { title: 'Nova sessão', detail: 'Iniciar uma sessão nova' },
      settings: { title: 'Configurações', detail: 'Configurar o Hermes desktop' },
-     skills: { title: 'Capacidades', detail: 'Habilidades, ferramentas e servidores MCP' },
      messaging: { title: 'Mensagens', detail: 'Configurar Telegram, Slack, Discord e mais' },
      artifacts: { title: 'Artefatos', detail: 'Navegar pelos resultados gerados' }
    },
@@ -362,9 +353,6 @@ common: {
      resume: 'Retomar',
      runNow: 'Executar agora',
      memoryData: 'Dados de memória',
-     memoryDataDesc: 'Arquivos de memória integrados injetados em toda sessão',
-     memoryProvider: name => `Provedor ativo: ${name}`,
-     builtinMemory: 'integrado',
      memoryFile: 'Memória do agente (MEMORY.md)',
      userFile: 'Perfil do usuário (USER.md)',
      bytes: size => size,
@@ -694,7 +682,7 @@ common: {
      scopeLastTurn: 'Último turno',
      commit: 'Commitar',
      commitAndPush: 'Commitar e Enviar',
-     commitPlaceholder: 'Mensagem (⌘↵ para commitar)',
+     commitPlaceholder: shortcut => `Mensagem (${shortcut} para commitar)`,
      generateCommitMessage: 'Gerar mensagem de commit',
      stopGenerating: 'Parar geração',
      createPr: 'Criar PR',
@@ -911,7 +899,6 @@ common: {
        title: 'Uso de Contexto',
        tokenSummary: (used, max) => `${used} / ${max} Tokens`
      },
-     session: 'Sessão',
      yoloOn: 'YOLO ligado — comandos perigosos aprovados automaticamente. Shift+clique alterna globalmente.',
      yoloOff: 'YOLO desligado. Shift+clique alterna globalmente.',
      modelNone: 'nenhum',
@@ -949,6 +936,11 @@ common: {
      toggle: open => `${open ? 'Mostrar' : 'Ocultar'} barra lateral`
    }
  },
+  gatewayGroupOpen: {
+    opening: 'Abrindo o chat de grupo…',
+    lookupFailed: 'Não foi possível localizar este chat de grupo na gateway. Tente novamente.',
+    missing: 'Este chat de grupo não existe mais.',
+  },
 fileMenu: {
     revealFinder: 'Mostrar no Finder',
     revealExplorer: 'Mostrar no Explorador de Arquivos',
@@ -992,7 +984,6 @@ fileMenu: {
         'O backend do desktop rejeitou essa solicitação (405 Method Not Allowed). Tente reiniciar o Hermes Desktop.',
       microphonePermission: 'Permissão de microfone foi negada.',
       openaiRejectedApiKey: 'OpenAI rejeitou a chave de API.',
-      openaiRejectedApiKeyWithStatus: status => `OpenAI rejeitou a chave de API (${status} invalid_api_key).`,
       openaiTtsNeedsKey: 'TTS do OpenAI precisa de VOICE_TOOLS_OPENAI_KEY ou OPENAI_API_KEY.'
     },
     voice: {
@@ -1057,15 +1048,10 @@ fileMenu: {
     },
     plugins: {
       title: 'Plugins do desktop',
-      blurb: 'Embutidos ou colocados na pasta desktop-plugins. Desative para descarregar em tempo real.',
-      count: n => `${n} instalado${n === 1 ? '' : 's'}`,
       openFolder: 'Abrir pasta de plugins',
       rescan: 'Reescanear',
       reveal: 'Mostrar no gerenciador de arquivos',
-      enable: 'Ativar',
-      disable: 'Desativar',
       failed: 'falhou',
-      empty: 'Nenhum plugin de desktop instalado ainda.',
       kinds: { bundled: 'embutido', disk: 'no disco', runtime: 'em tempo de execução' }
     },
     notifications: {
@@ -1184,8 +1170,6 @@ fileMenu: {
           'Adote um mascote animado do petdex que flutua sobre o app e reage ao que o Hermes está fazendo — correndo enquanto ferramentas executam, comemorando em sucesso, frustrado em erros.',
         restartHint:
           'Os mascotes precisam de uma reinicialização rápida — o app em execução foi iniciado antes deste recurso ser adicionado. Saia e reabra o Hermes, depois volte aqui.',
-        on: 'Ligado',
-        off: 'Desligado',
         scaleTitle: 'Tamanho',
         scaleDesc: 'Redimensione o mascote flutuante. Aplica-se em todo lugar instantaneamente.',
         roamTitle: 'Vagar',
@@ -1221,32 +1205,7 @@ fileMenu: {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     about: {
-      heading: 'Hermes Desktop',
-      version: value => `Versão ${value}`,
-      versionUnavailable: 'Versão indisponível',
       updates: 'Atualizações',
-      checkNow: 'Verificar agora',
-      checking: 'Verificando…',
-      seeWhatsNew: 'Ver novidades',
-      updateNow: 'Atualizar agora',
-      releaseNotes: 'Notas da versão',
-      onLatest: 'Você está na versão mais recente.',
-      installing: 'Uma atualização está sendo instalada no momento.',
-      cantUpdate: 'Esta versão não pode se atualizar de dentro do app.',
-      cantReach: 'Não foi possível acessar o servidor de atualização.',
-      tapCheck: 'Toque em "Verificar agora" para procurar atualizações.',
-      updateReady: count => `Uma nova atualização está pronta (${count} alteração${count === 1 ? '' : 's'} incluída${count === 1 ? '' : 's'}).`,
-      lastChecked: age => `Última verificação ${age}`,
-      justNowSuffix: ' · agora há pouco',
-      automaticUpdates: 'Atualizações automáticas',
-      automaticUpdatesDesc:
-        'O Hermes verifica atualizações automaticamente em segundo plano e avisa quando uma está pronta.',
-      branchCommit: (branch, commit) => `Branch ${branch} · Commit ${commit}`,
-      never: 'nunca',
-      justNow: 'agora há pouco',
-      minAgo: count => `${count} min atrás`,
-      hoursAgo: count => `${count} h atrás`,
-      daysAgo: count => `${count} dias atrás`
     },
     config: {
       none: 'Nenhum',
@@ -1310,19 +1269,12 @@ fileMenu: {
       envOverride: 'substituição por env',
       intro:
         'Local por padrão. Use remoto quando este app deve controlar um backend do Hermes em outro lugar. Substituições por perfil abaixo.',
-      appliesTo: 'Aplica-se a',
-      allProfiles: 'Todos os perfis',
-      defaultConnection: 'Conexão padrão para todo perfil que não tenha sua própria substituição.',
-      profileConnection: profile =>
-        `Conexão usada apenas quando "${profile}" é o perfil ativo. Escolha Usar gateway padrão para remover sua substituição.`,
       envOverrideTitle: 'Variáveis de ambiente estão controlando esta sessão do desktop.',
       envOverrideDesc:
         'Remova HERMES_DESKTOP_REMOTE_URL e HERMES_DESKTOP_REMOTE_TOKEN para usar a configuração salva abaixo.',
       modeTitle: 'Modo de conexão',
       localTitle: 'Gateway local',
       localDesc: 'Inicia um backend privado do Hermes em localhost. Este é o padrão e funciona offline.',
-      inheritTitle: 'Usar gateway padrão',
-      inheritDesc: 'Remove a substituição deste perfil e usa a conexão padrão.',
       remoteTitle: 'Gateway remoto',
       remoteDesc: 'Conecta este shell do desktop a um backend remoto do Hermes.',
       remoteAuthHint: 'Gateways hospedados usam OAuth ou usuário e senha; os auto-hospedados podem usar um token de sessão.',
@@ -1422,8 +1374,6 @@ fileMenu: {
       sshHermesPathTitle: 'Caminho do Hermes (opcional)',
       sshHermesPathDesc: 'Caminho completo para o binário remoto do hermes. Em branco = detecção automática.',
       sshHermesPathPlaceholder: 'detecção automática',
-      sshRemoteProfileTitle: 'Perfil remoto (opcional)',
-      sshRemoteProfileDesc: 'Nome do perfil no host remoto. Em branco = usar o nome do perfil do Desktop.',
       sshTestConnection: 'Testar SSH',
       sshConnect: 'Conectar',
       sshButtonsHint: 'Salvar aplica na próxima inicialização. Conectar reconecta agora.',
@@ -1449,53 +1399,19 @@ fileMenu: {
     },
     mcp: {
       loading: 'Carregando servidores MCP...',
-      failedLoad: 'Falha ao carregar configuração do MCP',
-      nameRequiredTitle: 'Nome obrigatório',
-      nameRequiredMessage: 'Dê a este servidor MCP uma chave de configuração.',
-      objectRequired: 'A configuração do servidor deve ser um objeto JSON',
       invalidJson: 'JSON do MCP inválido',
       saveFailed: 'Falha ao salvar',
       removeFailed: 'Falha ao remover',
-      gatewayUnavailableTitle: 'Gateway indisponível',
-      gatewayUnavailableMessage: 'Reconecte o gateway antes de recarregar o MCP.',
-      reloadedTitle: 'Ferramentas MCP recarregadas',
-      reloadedMessage: 'Novos esquemas de ferramentas aplicam-se a novos turnos.',
       reloadFailed: 'Falha ao recarregar MCP',
       savedTitle: 'Servidor MCP salvo',
       savedMessage: name => `${name} aplica-se após recarregar o MCP.`,
-      newServer: 'Novo servidor',
-      reload: 'Recarregar MCP',
-      reloading: 'Recarregando...',
-      emptyTitle: 'Nenhum servidor MCP',
-      emptyDesc: 'Adicione um servidor stdio ou HTTP para expor ferramentas MCP.',
       disabled: 'desativado',
-      editServer: 'Editar servidor',
       name: 'Nome',
       serverJson: 'JSON do servidor',
       remove: 'Remover',
-      saveServer: 'Salvar servidor',
       test: 'Testar conexão',
-      testing: 'Testando...',
-      testOk: count => `Conectado — ${count} ferramenta${count === 1 ? '' : 's'} disponível${count === 1 ? '' : 's'}`,
-      testFailed: 'Falha na conexão',
-      enableServer: name => `Ativar ${name}`,
-      disableServer: name => `Desativar ${name}`,
-      serverEnabled: name => `${name} ativado — aplica-se a novas sessões.`,
-      serverDisabled: name => `${name} desativado — aplica-se a novas sessões.`,
-      toggleFailed: (name, enabled) => `Falha ao ${enabled ? 'ativar' : 'desativar'} ${name}`,
-      tabServers: 'Servidores',
-      tabCatalog: 'Catálogo',
       catalogLoading: 'Carregando catálogo MCP...',
-      catalogLoadFailed: 'Falha ao carregar catálogo MCP',
-      catalogEmpty: 'Nenhuma entrada de catálogo disponível.',
-      catalogInstalled: 'Instalado',
-      catalogEnabled: 'Ativado',
-      catalogNeedsInstall: 'Precisa de build',
-      catalogInstall: 'Instalar',
-      catalogInstalling: 'Instalando...',
-      catalogInstallStarted: name => `Instalando ${name}... aplica-se a novas sessões quando concluído.`,
       catalogInstallFailed: name => `Falha ao instalar ${name}`,
-      catalogEnvPrompt: name => `${name} requer credenciais`,
       catalogEnvRequired: 'Preencha os valores obrigatórios antes de instalar.',
       capabilitySummary: (tools, prompts, resources) =>
         `${[`${tools} ferramentas`, ...(prompts ? [`${prompts} prompts`] : []), ...(resources ? [`${resources} recursos`] : [])].join(', ')} ativado(s)`,
@@ -1506,11 +1422,7 @@ fileMenu: {
       allServers: 'Todos os servidores',
       authenticatedTitle: 'Autenticado',
       authenticatedMessage: (server, count) => `${server}: ${count} ferramentas`,
-      waitingForBrowser: 'Aguardando o navegador…',
       authenticate: 'Autenticar',
-      unsavedConnect: 'Não salvo — salve o mcp.json para conectar.',
-      enableTool: tool => `Ativar ${tool}`,
-      disableTool: tool => `Desativar ${tool}`,
       noOutput: 'Nenhuma saída ainda.'
     },
     model: {
@@ -1594,7 +1506,6 @@ fileMenu: {
       defaultDirTitle: 'Diretório de projeto padrão',
       defaultDirDesc:
         'Novas sessões começam nesta pasta a menos que você escolha outra. Deixe em branco para usar seu diretório home.',
-      defaultDirUpdated: 'Diretório de projeto padrão atualizado — inicie uma nova conversa (Ctrl/⌘+N) para que entre em vigor',
       defaultsTo: label => `Padrão: ${label}.`,
       change: 'Alterar',
       choose: 'Escolher',
@@ -1742,9 +1653,6 @@ fileMenu: {
     copyAuthCode: 'Copie o código de autorização e cole abaixo.',
     pasteAuthCode: 'Colar código de autorização',
     reopenAuthPage: 'Reabrir página de autorização',
-    autoBrowser: provider =>
-      `Abrimos ${provider} no seu navegador. Autorize o Hermes lá e você será conectado automaticamente — nada para copiar ou colar.`,
-    reopenSignInPage: 'Reabrir página de login',
     waitingAuthorize: 'Aguardando você autorizar...',
     externalPending: provider =>
       `${provider} faz login através de seu próprio CLI. Execute este comando em um terminal, depois volte e escolha "Já entrei":`,
@@ -1764,10 +1672,6 @@ fileMenu: {
 
   preview: {
     tab: 'Pré-visualização',
-    closeTab: label => `Fechar ${label}`,
-    closeOthers: 'Fechar outras',
-    closeToRight: 'Fechar à direita',
-    closeAll: 'Fechar todas',
     closePane: 'Fechar painel de pré-visualização',
     loading: 'Carregando pré-visualização',
     unavailable: 'Pré-visualização indisponível',
@@ -2001,9 +1905,8 @@ boot: {
     unmuteHaptics: 'Ativar háptica',
     openSettings: 'Abrir configurações',
     openStarmap: 'Abrir grafo de memória',
-    openKeybinds: 'Atalhos de teclado',
     layoutEditor: 'Editor de layout',
-    layoutEditorTitle: 'Editor de layout — ⌘-clique reinicia o layout'
+    layoutEditorTitle: mod => `Editor de layout — clique com ${mod} reinicia o layout`
   },
 
   findInPage: {
@@ -2024,8 +1927,6 @@ boot: {
   skills: {
     tabSkills: 'Skills',
     tabToolsets: 'Ferramentas',
-    tabMcp: 'MCP',
-    tabHub: 'Explorar Hub',
     all: 'Todas',
     searchSkills: 'Buscar skills...',
     searchToolsets: 'Buscar ferramentas...',
@@ -2511,7 +2412,6 @@ boot: {
 
   composer: {
     message: 'Mensagem',
-    wakingProfile: profile => `Acordando ${profile}…`,
     placeholderStarting: 'Iniciando Hermes...',
     placeholderReconnecting: 'Reconectando ao Hermes…',
     placeholderFollowUp: 'Enviar acompanhamento',
@@ -2765,8 +2665,6 @@ boot: {
   },
 
   zones: {
-    showHeader: 'Mostrar cabeçalho',
-    hideHeader: 'Ocultar cabeçalho',
     minimize: 'Minimizar',
     restore: 'Restaurar',
     closeRunningTitle: 'Fechar aba em execução?',
@@ -2872,10 +2770,6 @@ boot: {
       placeholder: 'Digite sua resposta…',
       skip: 'Pular',
       skipped: 'Pulado',
-      continueLabel: 'Continuar',
-      lateAnswer: (question, choice) => `Re: "${question}" — minha resposta: ${choice}`,
-      lateAnswerTip: 'Rascunhar esta resposta como mensagem de acompanhamento',
-      lateAnswerHint: 'Este prompt não está mais aguardando. Escolha uma opção para rascunhá-lo como mensagem de acompanhamento.'
     },
     tool: {
       copyCode: 'Copiar código',
@@ -2964,4 +2858,6 @@ boot: {
       }
     }
   }
-})
+} satisfies TranslationOverrides
+
+export const pt = defineLocale(ptOverrides)

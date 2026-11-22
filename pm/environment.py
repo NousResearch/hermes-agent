@@ -258,11 +258,29 @@ def _base_environment(env: Mapping[str, str] | None = None) -> dict[str, str]:
     return base
 
 
+def _same_executable(candidate: Path, pinned: Path) -> bool:
+    left, right = candidate.resolve(), pinned.resolve()
+    if left == right:
+        return True
+    try:
+        if left.samefile(right):
+            return True
+        if not (left.is_file() and right.is_file()) or left.stat().st_size != right.stat().st_size:
+            return False
+        with left.open("rb") as first, right.open("rb") as second:
+            while chunk := first.read(65536):
+                if chunk != second.read(len(chunk)):
+                    return False
+            return not second.read(1)
+    except OSError:
+        return False
+
+
 def managed_environment(destination: Path, *, python: Path | None = None,
                         cache: Path | None = None, env: Mapping[str, str] | None = None,
                         offline: bool = False, explicit: bool = False,
                         output: TextIO | None = None, realize: bool = True) -> PythonEnvironment:
-    from pm._uv import _toolchain
+    from pm._uv import _toolchain  # noqa: TID251
     from pm.packages import uv_cache_dir
 
     tools = _toolchain(explicit=explicit, realize=realize)
@@ -271,8 +289,8 @@ def managed_environment(destination: Path, *, python: Path | None = None,
     uv, pinned_python = tools
     python = pinned_python if python is None else python.absolute()
     build_env = _base_environment(env)
-    if python.resolve() == pinned_python.resolve():
-        # Only our interpreter: a separately selected one (e.g. Nix) keeps its own sysconfig.
+    if _same_executable(python, pinned_python):
+        # Staged copies (bundle payloads) share our interpreter's sysconfig; foreign ones (e.g. Nix) keep theirs.
         from pm.build_compilers import pinned_build_defaults
 
         for key, value in pinned_build_defaults(python, build_env).items():
@@ -401,10 +419,13 @@ class PythonEnvironment:
         with (self.destination / "pyvenv.cfg").open("a", encoding="utf-8") as cfg:
             cfg.write(f"{PM_BUILT_KEY} = true\n")
 
-    def lock(self, source: Path, *, upgrade: bool = False, timeout: int = 1800) -> None:
+    def lock(self, source: Path, *, upgrade: bool = False, upgrade_packages: Sequence[str] = (),
+             timeout: int = 1800) -> None:
         command = ["lock", "--python", str(self.python)]
         if upgrade:
             command.append("--upgrade")
+        for requirement in upgrade_packages:
+            command += ["--upgrade-package", requirement]
         result = self._run(command, cwd=source, timeout=timeout)
         if result.returncode:
             raise classify_uv_failure("lock", result.returncode, result.stderr or result.stdout)
@@ -425,14 +446,15 @@ class PythonEnvironment:
     def sync(self, source: Path, *, extras: Sequence[str] = (), groups: Sequence[str] = (),
              timeout: int = 1800, frozen: bool = True, all_extras: bool = False,
              no_install_project: bool = False, locked: bool = False,
-             no_default_groups: bool = False) -> None:
+             no_default_groups: bool = False, upgrade: Sequence[str] = ()) -> None:
         """Install the root and every member; resolve only in a writable workspace.
 
         ``frozen=False`` is reserved for the caller-owned generated workspace,
-        never the original project's lock. Seed/replay policy belongs to PM.
+        never the original project's lock. Seed/replay policy belongs to PM;
+        *upgrade* is that policy's ``uv lock -P`` list.
         """
         if not frozen:
-            self.lock(source, timeout=timeout)
+            self.lock(source, upgrade_packages=upgrade, timeout=timeout)
         # Locking members alone is insufficient: plain sync only installs root deps.
         # uv writes no __pycache__ (pip does): without --compile-bytecode the first import
         # of every module in the foreground of a user request compiles it (#100461).

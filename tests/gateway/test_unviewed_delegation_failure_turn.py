@@ -4,12 +4,15 @@
 call. That is right for a result the parent will read next time, but a failed subagent leaves the
 parent's plan stalled until a human returns: a provider refusal (``content_policy_blocked``) stopped a
 background subagent and the parent sat on the note for 48 minutes. A final delegation result with a
-failed child now runs as the parent's turn, so it can re-dispatch (on another model) or report. A
-successful result, a parent/user stop, and the early per-task notice stay notes. So do a manual cron
-run's result, a failure in a chat its viewer closed, and a failure past the unattended-wake limit.
+failed child now runs as the parent's turn, so it can re-dispatch (on another model) or report, as a
+successful one does (test_unviewed_completion_resumes_parent.py). The early per-task notice stays a
+note. So do a manual cron run's result, a failure in a chat its viewer closed, and a failure past the
+unattended-wake limit.
 """
 import pytest
 
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_read import transcript_rows
 from tests.gateway.test_completion_admission import pending
 from tests.gateway.test_session_end_delegations import _admissions, _local
 from tests.gateway.test_unviewed_completion_notes import _human, _target, _turns
@@ -42,7 +45,7 @@ def _batch(route, name, *statuses):
 
 
 def _notes(authority, target, name):
-    return [m for m in authority.db.get_messages(target)
+    return [m for m in transcript_rows(authority.persistence, target)
             if name in str(m.get("content")) and (m.get("display_metadata") or {}).get("completion_note")]
 
 
@@ -51,9 +54,9 @@ def _notes(authority, target, name):
     (("error",), True),                     # the reported case: the only child refused
     (("timeout",), True),
     (("completed", "failed"), True),        # one failed sibling is enough
-    (("completed",), False),                # a result the parent reads next time stays a note
-    (("interrupted",), False),              # a parent/user stop is not a failure to recover from
-    (("cancelled", "completed"), False),
+    (("completed",), True),                 # a finished result resumes the parent too
+    (("interrupted",), True),               # unbounded like a success: a stop is not a failure
+    (("cancelled", "completed"), True),
 ], ids=["refused", "timeout", "mixed", "success", "interrupted", "cancelled"])
 async def test_unviewed_failed_delegation_runs_as_a_turn(tmp_path, monkeypatch, statuses, turn):
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
@@ -70,7 +73,7 @@ async def test_unviewed_failed_delegation_runs_as_a_turn(tmp_path, monkeypatch, 
             assert "[ASYNC DELEGATION BATCH COMPLETE — deleg_fail]" in seen[0][0]
         assert [r["outcome"] for r in _admissions(authority, ref)] == ["completed"]
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -87,7 +90,7 @@ async def test_failed_sibling_in_a_coalesced_group_wakes_the_parent(tmp_path, mo
         assert len(seen) == 1 and "deleg_ok" in seen[0][0] and "deleg_bad" in seen[0][0]
         assert len(_admissions(authority, ref)) == 1
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -109,7 +112,7 @@ async def test_crashed_batch_with_no_child_results_wakes_the_parent(tmp_path, mo
         assert len(seen) == 1 and "did not complete successfully" in seen[0][0]
         assert _notes(authority, target, "deleg_crash") == []
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -126,7 +129,7 @@ async def test_early_task_failure_notice_stays_a_note(tmp_path, monkeypatch):
         await authority._drain(ref)
         assert seen == []
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 def test_refused_child_block_names_the_recovery():
@@ -148,11 +151,12 @@ def _batch_event(status):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stall,turn", [({"stalled_after_quiet_seconds": 600.0}, True), ({}, False)],
+@pytest.mark.parametrize("stall,failed", [({"stalled_after_quiet_seconds": 600.0}, True), ({}, False)],
                          ids=["stall-monitor", "user-stop"])
-async def test_unit_the_stall_monitor_stopped_wakes_the_parent(tmp_path, monkeypatch, stall, turn):
+async def test_unit_the_stall_monitor_stopped_wakes_the_parent(tmp_path, monkeypatch, stall, failed):
     """A stuck child that honours the stall monitor's stop reports ``interrupted``, as a user stop does:
-    the unit's stall context is what makes it a failure to recover from."""
+    the unit's stall context is what makes it a failure to recover from (bounded, and told why). Both
+    resume the parent."""
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     try:
         route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
@@ -160,12 +164,11 @@ async def test_unit_the_stall_monitor_stopped_wakes_the_parent(tmp_path, monkeyp
         assert await runner._deliver_async_delegation_group([evt]) is True
         seen = _turns(runner, authority, target, "deleg_stall")
         await authority._drain(ref)
-        assert len(seen) == int(turn)
-        assert len(_notes(authority, target, "deleg_stall")) == int(not turn)
-        if turn:
-            assert "stall monitor stopped this unit after 600s" in seen[0][0]
+        assert len(seen) == 1 and _notes(authority, target, "deleg_stall") == []
+        assert ("stall monitor stopped this unit after 600s" in seen[0][0]) is failed
+        assert authority.sessions[ref.session_id].unattended_wakes == int(failed)
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -186,7 +189,7 @@ async def test_failed_manual_cron_run_stays_a_note(tmp_path, monkeypatch):
         assert seen == []
         assert len(_notes(authority, target, "deleg_cron")) == 1
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 def test_cron_run_coalesced_with_a_failed_delegation_still_wakes():
@@ -225,7 +228,7 @@ async def test_unattended_wakes_stop_at_the_limit_until_the_user_returns(tmp_pat
         await _fail(runner, authority, ref, route, target, "deleg_loop_after")
         assert len(seen) == UNATTENDED_WAKE_LIMIT + 2 and "deleg_loop_after" in seen[-1][0]
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -245,7 +248,7 @@ async def test_failure_in_a_chat_its_viewer_closed_stays_a_note(tmp_path, monkey
         await _fail(runner, authority, ref, route, target, "deleg_closed1")
         assert len(seen) == 1 and "deleg_closed1" in seen[0][0]
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.parametrize("reason,told", [("billing", True), ("auth", True), ("model_not_found", True),

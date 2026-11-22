@@ -495,6 +495,9 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
         return failed(f"command {spec.command!r} cannot be parsed: {exc}")
     if not argv:
         return failed("empty command")
+    from tools.hosted_tool_policy import host_feature_refusal
+    if refusal := host_feature_refusal("shell_hooks", "A shell hook"):  # the one subprocess site
+        return failed(refusal)
     t0 = time.monotonic()
     # Own process group on POSIX so a timed-out hook's descendants are reaped with it (Windows: kill_process_tree
     # / taskkill /T). Hooks that finish in time keep detached helpers alive.
@@ -542,8 +545,10 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]
 
     def _callback(**kwargs: Any) -> Optional[dict[str, Any]]:
         from agent.safe_worker_policy import safe_worker_enabled
+        from tools.hosted_tool_policy import host_feature_enabled
 
-        if safe_worker_enabled():
+        # A hosted scope's events carry the tenant's payload; a shell hook is a process on this host.
+        if safe_worker_enabled() or not host_feature_enabled("shell_hooks"):
             return None
         if spec.event in _TOOL_EVENTS and not spec.matches_tool(kwargs.get("tool_name")):
             return None

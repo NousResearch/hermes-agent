@@ -5,7 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 def handlers(connection):
@@ -16,16 +16,16 @@ def handlers(connection):
 def _authorize(connection, ref, params):
     authority, actor = connection.authority, connection.actor
     if actor.profile_id != authority.profile_id:
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
     if 'session:read' not in actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     for name in ('profile', 'session_id'):
         if name in params and not isinstance(params[name], str):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
     if params.get('profile'):
         from hermes_cli.profiles import profile_matches_home
         if not profile_matches_home(params['profile'], Path(authority.profile_id)):
-            raise RuntimeStoreError('profile_mismatch')
+            raise AuthorityRefusal('profile_mismatch')
     if ref.session_id:
         authority.authorize(actor, ref, 'session:read')
         from gateway.session_policy import policy_for_source
@@ -64,16 +64,16 @@ def _client_config(cfg):
 
 async def config_get(connection, ref, params):
     if set(params) - {'session_id', 'profile', 'key', 'cwd'}:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     key = params.get('key')
     if not isinstance(key, str):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if key in ('busy', 'verbose', 'yolo', 'show_reasoning'):
         from gateway.session_busy_controls import busy_config
         return await busy_config(connection, ref, params)
     policy = _authorize(connection, ref, params)
     if 'cwd' in params and (key != 'project' or not isinstance(params['cwd'], str)):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if key == 'voice':
         return _voice(connection, ref)
     agent = connection.authority.agent(ref) if ref.session_id else None
@@ -110,7 +110,7 @@ async def config_get(connection, ref, params):
                 'profile': lambda: {'home': str(home), 'display': str(home)},
             }
             if key not in getters:
-                raise RuntimeStoreError('invalid_params')
+                raise AuthorityRefusal('invalid_params')
             return getters[key]()
     return await asyncio.to_thread(read)
 
@@ -174,7 +174,7 @@ def _voice(connection, ref):
     """The session's own ``/voice`` mode, so Ink mirrors the gateway's per-session state instead of
     the sidecar's process-global ``HERMES_VOICE`` (T9)."""
     if not ref.session_id:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     return {'value': session_voice_mode(connection, ref)}
 
 
@@ -192,7 +192,7 @@ def _service_tier(connection, ref, policy):
     from agent.fast_mode import service_tier_word
     from gateway.session_tui_config import current_tier, service_tier_options
     if not ref.session_id:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     return {'value': service_tier_word(current_tier(connection, ref, policy)),
             'options': service_tier_options(connection, ref, policy)}
 
@@ -225,7 +225,7 @@ async def model_options(connection, ref, params):
     flags = {'explicit_only', 'include_unconfigured', 'refresh'}
     if (set(params) - flags - {'profile', 'session_id'}
             or any(type(params[k]) is not bool for k in flags & params.keys())):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     policy = _authorize(connection, ref, params)
     agent = connection.authority.agent(ref) if ref.session_id else None
     provider = getattr(agent, 'provider', None) or (policy.provider if policy else None)

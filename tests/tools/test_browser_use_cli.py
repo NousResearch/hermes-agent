@@ -120,11 +120,12 @@ class TestSubprocessEnvironment:
         assert "/bin" in parts
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX PATH-floor semantics")
-    def test_floor_preserves_existing_entries_and_order(self):
+    def test_floor_preserves_existing_entries_and_order(self, monkeypatch):
         """The floor only adds dirs — never drops or reorders what the
         caller's environment already had."""
         original = "/opt/toolchain/bin:/usr/bin:/snap/bin"
-        merged = bu_cli._floor_subprocess_path(original).split(os.pathsep)
+        monkeypatch.setattr(bs, "build_browser_env", lambda: {"PATH": original})
+        merged = bu_cli._base_subprocess_env()["PATH"].split(os.pathsep)
 
         assert set(original.split(os.pathsep)) <= set(merged)
         positions = [merged.index(p) for p in original.split(os.pathsep)]
@@ -577,6 +578,19 @@ class TestOwnTabPreamble:
         ast.parse(bu_cli._OWN_TAB_PREAMBLE)
         # and composes with model code
         ast.parse(bu_cli._OWN_TAB_PREAMBLE + "print('x')")
+
+    @pytest.mark.platforms("posix")
+    def test_marker_write_never_follows_a_planted_symlink(self, tmp_path, monkeypatch):
+        """The marker name in the shared temp root is predictable: a planted link must not create its target."""
+        monkeypatch.setenv("BU_NAME", "r7k2")
+        monkeypatch.setitem(sys.modules, "browser_harness", None)  # no daemon pid: marker suffix "0"
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+        victim = tmp_path / "victim"
+        (tmp_path / f"hermes-bu-owntab-{os.getuid()}-r7k2-0").symlink_to(victim)  # windows-footgun: ok — posix-only
+
+        exec(bu_cli._OWN_TAB_PREAMBLE, {"cdp": lambda *a, **k: {}, "switch_tab": lambda _tid: None})
+
+        assert not victim.exists()
 
 
 class TestProviderPickerIntegration:

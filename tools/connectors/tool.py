@@ -51,7 +51,7 @@ def manage_connections(
 MANAGE_CONNECTIONS_SCHEMA = {
     "name": "manage_connections",
     "description": (
-        "Connect the user to apps. Two kinds: a hosted connector account (Gmail, Notion, ...) "
+        "Connect the user's app accounts and install MCP servers. Two kinds: a hosted connector account (Gmail, Notion, ...) "
         "served through the tool gateway, and a local MCP server from the bundled catalog. Many names exist on "
         "both sides, so the user's own words decide: a target is MCP only when the user asks for "
         "an MCP server, a local server or an install, or when the name exists only as a catalog "

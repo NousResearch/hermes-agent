@@ -6,15 +6,17 @@ import pytest
 
 from gateway import hosted_room_driver as driver
 from gateway.session_controls import AuthorityConnection
-from tests.tui_gateway.test_hosted_room_peer_recovery import _crashed_turn, _UnreachablePeerClient
-from tests.tui_gateway.test_hosted_room_retry_progress import _deferred_room, _worker_row
+from persistence.gateway.hosted_rooms import InvalidTaskTransitionError
+from tests.tui_gateway.test_hosted_room_peer_recovery import (
+    _crashed_turn, _UnreachablePeerClient, close_storage_handles)
+from tests.tui_gateway.test_hosted_room_retry_progress import _deferred_room, _worker_row, store_fixture
 from tui_gateway.hosted_room_member_activity import forget_task_progress, task_progress
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
 
 
-def test_peer_poll_uses_the_task_generation_and_late_replaced_polls_stay_out(tmp_path, monkeypatch):
-    service, task_id, lease = _deferred_room(tmp_path, monkeypatch)
-    [old_task] = driver.list_tasks(service.db_path, room_id="room", status="deferred")
+def test_peer_poll_uses_the_task_generation_and_late_replaced_polls_stay_out(tmp_path, monkeypatch, store):
+    service, task_id, lease = _deferred_room(tmp_path, monkeypatch, store)
+    [old_task] = driver.list_tasks(service.store, placement=service.placement, room_id="room", status="deferred")
     client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
     for generation in (1, 2):
         client._runs[(task_id, generation)] = {
@@ -35,9 +37,9 @@ def test_peer_poll_uses_the_task_generation_and_late_replaced_polls_stay_out(tmp
     record(old_task, old_info)
     assert task_progress("room", task_id, 1) == {"tool": "terminal", "progress_at": 1234.5}
     service.retry_room_task("room", task_id=task_id, member_id="worker", execution_generation=1)
-    driver.start_task(service.db_path, old_task["identity"], lease, expected_cancel_generation=0,
-                      clock=service.runtime.clock)
-    [current] = driver.list_tasks(service.db_path, room_id="room", status="running")
+    driver.start_task(service.store, old_task["identity"], lease, placement=service.placement,
+                      expected_cancel_generation=0, clock=service.runtime.clock)
+    [current] = driver.list_tasks(service.store, placement=service.placement, room_id="room", status="running")
     assert current["execution_generation"] == 2
     record(old_task, old_info)
     record(current, old_info)  # a transport answer for a different attempt is rejected too
@@ -54,7 +56,7 @@ def _recovering_peer(tmp_path, monkeypatch):
     turn = _crashed_turn(tmp_path, peer)
     turn.now[0] = 108.0
     turn.service.runtime._run_room_once(turn.binding)
-    assert driver.get_task(turn.db, turn.identity)["status"] == "deferred"
+    assert driver.get_task(turn.db, turn.identity, placement="profile")["status"] == "deferred"
     peer.reachable = True
     peer.history = lambda **kwargs: []
     info = {
@@ -65,7 +67,7 @@ def _recovering_peer(tmp_path, monkeypatch):
     monkeypatch.setattr(turn.service.runtime, "status", lambda: {**runtime_status(), "running": True})
     turn.service.authorize_room = lambda *_args: None
     authority = SimpleNamespace(profile_id=str(tmp_path), instance_id="home", events={}, sessions={},
-                                db=SimpleNamespace(db_path=turn.db), hosted_room_service=turn.service)
+                                db=turn.db, persistence=turn.db, hosted_room_service=turn.service)
     connection = AuthorityConnection(authority, object(), {"user_id": "reader"})
 
     def state():
@@ -102,7 +104,7 @@ def test_groups_state_shows_only_confirmed_active_recovered_peer_progress(tmp_pa
 def test_repeated_refused_retry_preserves_the_recovered_attempts_progress(tmp_path, monkeypatch):
     turn, _peer, info, state = _recovering_peer(tmp_path, monkeypatch)
     for progress_at in (1240.0, 1250.0):
-        with pytest.raises(driver.InvalidTaskTransitionError, match="still active"):
+        with pytest.raises(InvalidTaskTransitionError, match="still active"):
             turn.service.retry_room_task("room-1", task_id=turn.identity.task_id, execution_generation=1)
         assert state()["member_activity"][0]["progress_at"] == info["progress_at"]
         info.update(tool="web_search", progress_at=progress_at)

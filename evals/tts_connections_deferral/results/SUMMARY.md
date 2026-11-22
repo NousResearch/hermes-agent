@@ -72,3 +72,36 @@ image_gen, tts, connections (no browser, web or delegation: a narrower prefix th
 5. Harness corrections, applied to both arms: conn_negative and conn_second_account were rerun (24 cells
    discarded) after a scripted reply fired on a connection string ending in `?sslmode=` and the stub's
    status listing did not show a newly added account.
+
+
+## Follow-up: can manage_connections be deferred with a better catalog line? (three models, four arms)
+
+`battery.py`, one tree, 44 cells per arm per model (4 MCP-install phrasings x 5, 8 other tasks x 3), 528 cells,
+1 wall timeout (scored 0), 0 unscored. Arms: A eager, B deferred, C deferred with the first sentence reworded to
+"Connect the user's app accounts and install MCP servers.", D eager with that sentence.
+
+| model | arm | done | wrong-route cells | model calls/task | tokens/task | tokens/completed task | $/task |
+|---|---|---|---|---|---|---|---|
+| claude-fable-5.2 | A | 44/44 | 3 | 2.55 | 30,941 | 30,941 | 0.0178 |
+| claude-fable-5.2 | B | 44/44 | 18 | 4.84 | 62,022 | 62,022 | 0.0694 |
+| claude-fable-5.2 | C | 44/44 | 8 | 3.73 | 44,029 | 44,029 | 0.0371 |
+| claude-fable-5.2 | D | 44/44 | 2 | 2.61 | 31,800 | 31,800 | 0.0240 |
+| gpt-5.6-luna | A | 44/44 | 0 | 2.25 | 17,180 | 17,180 | 0.0009 |
+| gpt-5.6-luna | B | 44/44 | 14 | 6.23 | 61,086 | 61,086 | 0.0029 |
+| gpt-5.6-luna | C | 44/44 | 3 | 4.41 | 32,922 | 32,922 | 0.0015 |
+| gpt-5.6-luna | D | 44/44 | 0 | 2.30 | 17,607 | 17,607 | 0.0009 |
+| qwen3.8-27b | A | 39/44 | 10 | 6.25 | 105,147 | 118,627 | 0.0097 |
+| qwen3.8-27b | B | 32/44 | 17 | 10.43 | 226,970 | 312,083 | 0.0216 |
+| qwen3.8-27b | C | 39/44 | 16 | 8.41 | 132,233 | 149,186 | 0.0110 |
+| qwen3.8-27b | D | 42/44 | 12 | 7.18 | 134,450 | 140,852 | 0.0129 |
+
+Pass bar (against A, on every model: no fewer done, no more wrong-route cells, calls/task up by at most 0.2,
+tokens/task not higher): B fails on all three models, C fails on all three. The reworded line roughly halves the
+cost of deferral (B to C) and restores tasks done on qwen, but every task that uses the tool still pays one to
+three extra model calls for describe and call, so deferral only wins in sessions that never touch connections
+(1,536 Fable tokens saved per request). On this per-task bar manage_connections would stay eager; #153254 ships
+arm C anyway, because opted-in telemetry shows about 3.6% of reporting installs calling it on a given day.
+
+Limit found in review: `mcp_setup_github` asks for a server the bundled MCP catalog does not carry. The stub
+checks argument shape only, so those cells (5 per arm, the same on every arm) score an install the real tool
+would refuse.

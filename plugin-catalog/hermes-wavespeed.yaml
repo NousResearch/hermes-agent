@@ -1,0 +1,23 @@
+name: hermes-wavespeed
+title: WaveSpeedAI
+repo: https://github.com/WaveSpeedAI/hermes-wavespeed
+sha: e5ca1eccf67e7ab080a5d13c16c4603eda1530c8
+description: "WaveSpeedAI image and video generation as an image_gen and a video_gen provider (image_gen.provider / video_gen.provider: wavespeed): text-to-image, text-to-video and image-to-video with any WaveSpeedAI model id. Reads each model's live input schema and sends only the parameters that model declares; anything it lacks is dropped and reported. Disclosure — sends prompts, settings and the optional start-image URL with WAVESPEED_API_KEY (read per request through Hermes secret scope) to api.wavespeed.ai; every generation is billed to the WaveSpeedAI account with no Hermes approval prompt. A request is sent once and never retried; a run that times out (5 minutes for an image, 15 for a video) may still complete and be billed. The result is downloaded from the link WaveSpeedAI returns into the Hermes media cache; the model list is read live and kept in memory for one hour. No telemetry, shell commands, background processes, self-updates or extra Python dependencies."
+maintainer: WaveSpeedAI
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/WaveSpeedAI/hermes-wavespeed#readme
+readme: true
+platforms: []
+known_issues:
+  - "Image editing is not supported; an image_generate call with an input image is refused."
+  - "The start image for image-to-video must be a public http(s) URL; local files are refused. Reference images are not supported and are reported as dropped."
+  - "Live-tested with wavespeed-ai/z-image/turbo (text-to-image). Video generation is covered by offline tests against the live model schemas only."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - WAVESPEED_API_KEY

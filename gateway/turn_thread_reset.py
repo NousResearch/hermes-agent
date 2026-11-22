@@ -7,7 +7,8 @@ with none of it; a parked executor worker (gateway/turn_executor.py) must drop a
 takes another session's turn, or turn 1's interrupt, approval callback or cached sudo password is
 live in turn 2. Context variables need nothing here: every item runs in a fresh context.
 
-Modules are looked up in ``sys.modules`` only: one that was never imported holds no state.
+Modules are looked up in ``sys.modules`` only: one that was never imported holds no state, and neither
+does one still executing its body, which is published there before the state below is defined.
 A new per-turn ``threading.local`` in turn code belongs in ``_PER_TURN_THREAD_LOCALS``.
 """
 
@@ -37,12 +38,13 @@ _PER_TURN_THREAD_LOCALS = (
 def reset_reused_thread_state() -> None:
     """Drop the calling thread's turn-keyed state (call from the worker itself, between items)."""
     tid = threading.get_ident()
-    interrupt = sys.modules.get("tools.interrupt")
-    if interrupt is not None:
-        interrupt.set_interrupt(False, tid)  # clears the bit, its reason and a pending yield
+    set_interrupt = getattr(sys.modules.get("tools.interrupt"), "set_interrupt", None)
+    if set_interrupt is not None:
+        set_interrupt(False, tid)  # clears the bit, its reason and a pending yield
     sudo = sys.modules.get("tools.terminal_tool_sudo")
-    if sudo is not None:
-        with sudo._sudo_password_cache_lock:
+    lock = getattr(sudo, "_sudo_password_cache_lock", None)
+    if lock is not None:
+        with lock:
             sudo._sudo_password_cache.pop(f"thread:{tid}", None)
     for module_name, attr in _PER_TURN_THREAD_LOCALS:
         local = getattr(sys.modules.get(module_name), attr, None)

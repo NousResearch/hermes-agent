@@ -46,7 +46,7 @@ def _runner(tmp_path, monkeypatch, executed):
     return store, runner
 
 
-async def _lost_head_then_restart(tmp_path, monkeypatch, executed, admit_head):
+async def _lost_head_then_restart(tmp_path, monkeypatch, executed, admit_head, follower=True):
     """Owner 1 admits a head (via ``admit_head``) and a person's follower, claims the head, dies.
     Owner 2 starts on the same store. Returns (store, owner2, head_id, follower_id)."""
     store, runner = _runner(tmp_path, monkeypatch, executed)
@@ -59,13 +59,15 @@ async def _lost_head_then_restart(tmp_path, monkeypatch, executed, admit_head):
     actor = AuthorityConnection(first, Peer(), {'user_id': 'human'}).actor
     first._schedule = lambda ref: None
     head_id = await admit_head(first, actor, ref)
-    follower = await first.submit(actor, Submission('follower', ref, {'text': 'FOLLOWER'}, 'queue'))
+    follower_id = None
+    if follower:
+        follower_id = (await first.submit(actor, Submission('follower', ref, {'text': 'FOLLOWER'}, 'queue'))).admission_id
     claimed = db.admissions.claim(epoch=first.epoch, session_id='s')
     assert claimed.admission_id == head_id
     seed_messages(db, 's', {'role': 'user', 'content': 'HEAD'})  # the lost turn got as far as its user row
     second = await initialize_session_authority(runner, profile_id='p', instance_id='owner-2')
     second.sessions['s'] = LiveSession(source, 's')
-    return store, second, head_id, follower.admission_id
+    return store, second, head_id, follower_id
 
 
 async def _automation_head(authority, _actor, _ref):
@@ -125,16 +127,68 @@ async def test_unknown_automation_settles_interrupted_and_fifo_moves_on(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_a_persons_unknown_turn_still_pauses_the_fifo(tmp_path, monkeypatch):
+async def test_a_persons_unknown_turn_with_nothing_behind_it_still_pauses(tmp_path, monkeypatch):
     executed = []
-    store, authority, head_id, follower_id = await _lost_head_then_restart(tmp_path, monkeypatch, executed, _person_head)
+    store, authority, head_id, _ = await _lost_head_then_restart(
+        tmp_path, monkeypatch, executed, _person_head, follower=False)
     try:
         assert _statuses(authority.persistence)[head_id] == ('unknown', None)
         authority._schedule(SessionRef('p', 's'))
         live = authority.sessions['s']
         await async_wait_until(lambda: live.task is not None and live.task.done(), what='drain paused')
         assert executed == []
-        assert _statuses(authority.persistence)[follower_id] == ('queued', None)
+        assert _statuses(authority.persistence)[head_id] == ('unknown', None)
+    finally:
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_persons_own_next_input_settles_the_lost_turn_behind_it(tmp_path, monkeypatch):
+    """The person typing past their lost turn is the signal that it need not be replayed: it settles
+    ``interrupted`` (the copy ``/discard`` writes) and the message they sent after it runs."""
+    from agent.turn_failure_copy import PARTIAL_FAILED_TURN_NOTICE
+    executed = []
+    store, authority, head_id, follower_id = await _lost_head_then_restart(tmp_path, monkeypatch, executed, _person_head)
+    try:
+        authority._schedule(SessionRef('p', 's'))
+        live = authority.sessions['s']
+        await async_wait_until(lambda: live.task is not None and live.task.done(), what='drain finished')
+        assert executed == ['FOLLOWER']
+        statuses = _statuses(authority.persistence)
+        assert statuses[head_id] == ('terminal', 'interrupted')
+        assert statuses[follower_id] == ('terminal', 'completed')
+        notices = [m['content'] for m in transcript_rows(authority.persistence, 's')
+                   if m.get('display_kind') == 'failed_turn']
+        assert notices == [PARTIAL_FAILED_TURN_NOTICE], notices
+    finally:
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_an_automation_follower_does_not_end_a_persons_pause(tmp_path, monkeypatch):
+    """A cron run or a process completion queued behind a person's lost turn is not the person
+    typing past it: the pause stays until they resolve it."""
+    executed = []
+    store, runner = _runner(tmp_path, monkeypatch, executed)
+    db = store.persistence
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id='gw10')
+    seed_session(db, 's', 'telegram')
+    first = await initialize_session_authority(runner, profile_id='p', instance_id='owner-1')
+    first.sessions['s'] = LiveSession(source, 's')
+    ref = SessionRef('p', 's')
+    actor = AuthorityConnection(first, Peer(), {'user_id': 'human'}).actor
+    first._schedule = lambda ref: None
+    head_id = await _person_head(first, actor, ref)
+    await _automation_head(first, actor, ref)
+    assert db.admissions.claim(epoch=first.epoch, session_id='s').admission_id == head_id
+    second = await initialize_session_authority(runner, profile_id='p', instance_id='owner-2')
+    second.sessions['s'] = LiveSession(source, 's')
+    try:
+        second._schedule(ref)
+        live = second.sessions['s']
+        await async_wait_until(lambda: live.task is not None and live.task.done(), what='drain paused')
+        assert executed == []
+        assert _statuses(db)[head_id] == ('unknown', None)
     finally:
         store.close_all_db_handles()
 

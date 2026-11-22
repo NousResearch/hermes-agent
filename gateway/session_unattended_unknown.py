@@ -10,6 +10,11 @@ notices (a Bot Chat sat ten hours behind one).
 Such a row settles through the same fenced resolution a person's Discard uses
 (``admissions.resolve_unknown``): terminal ``interrupted``, never requeued or replayed, with a
 Hermes transcript notice committed in the same transaction. No second recovery store.
+
+A person's lost turn pauses the FIFO, but only while nobody has typed past it: their own later
+input is the signal that the turn will not be replayed (its side effects are unprovable either
+way), so it settles the same way and their newer input runs instead of waiting behind a turn that
+can never resume. An ``unknown`` row with no follower is still left for the person to resolve.
 """
 from __future__ import annotations
 
@@ -78,6 +83,47 @@ async def settle_unattended_unknown(authority, ref) -> bool:
                                                      notice=AUTOMATION_INTERRUPTED_NOTICE)
         except AuthorityRefusal as exc:
             logger.warning('Lost automation admission %s left unknown: %s', row['admission_id'], exc.reason)
+            continue
+        settled = True
+    return settled
+
+
+def _superseded_unknown(records):
+    """Attended ``unknown`` rows a LATER attended input of the same session already answers.
+
+    Only the person who sent a lost turn may decide to send it again, so an ``unknown`` row with
+    nothing behind it stays theirs to resolve. A row with a person's own input queued after it is
+    already answered by that input: they typed past it, and holding the FIFO in front of the newer
+    message only costs them a reply. An unattended follower (a cron run, a process completion) is
+    not that signal and never ends a person's pause."""
+    from gateway.session_authority import admission_row
+    rows = [admission_row(record) for record in records]
+    followers = [row['seq'] for row in rows if row['status'] == 'queued' and not is_unattended(row)]
+    if not followers:
+        return []
+    newest = max(followers)
+    return [row for row in rows
+            if row['status'] == 'unknown' and row['seq'] < newest and not is_unattended(row)]
+
+
+async def settle_superseded_unknown(authority, ref) -> bool:
+    """The drain found an ``unknown`` head this session's own newer input already supersedes: settle
+    it through the owner's fenced resolution, the transition ``/discard`` commits, so the input the
+    person sent after the lost turn runs instead. True when any settled, so the drain re-reads its
+    FIFO instead of pausing."""
+    import asyncio
+
+    from gateway.session_persistence import authority_persistence
+    from persistence.core.errors import AuthorityRefusal
+    rows = await asyncio.to_thread(authority_persistence(authority).admissions.list, session_id=ref.session_id)
+    settled = False
+    for row in _superseded_unknown(rows):
+        try:
+            # No ``notice``: a person gets the store's discarded-turn copy (this turn did not
+            # complete, verify the effects before resending), and nothing restarted on this path.
+            await authority.resolve_unknown_as_owner(ref, row['admission_id'], row['generation'])
+        except AuthorityRefusal as exc:
+            logger.warning('Superseded admission %s left unknown: %s', row['admission_id'], exc.reason)
             continue
         settled = True
     return settled

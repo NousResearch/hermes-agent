@@ -72,7 +72,8 @@ without spending an attempt. Long form: `website/docs/developer-guide/gateway-in
 
 Canonical local CLI/TUI/Desktop sessions admit completion and watch events into the same durable
 FIFO as human input (private launch policy, `internal_notification` display kind); observers never
-own or consume those turns, and an interrupted started turn stays unknown and pauses its followers.
+own or consume those turns, and an interrupted started turn stays unknown and pauses its followers
+until that person's own next input settles it (an unattended follower never does).
 
 ## `/login` (off-turn, paired DM only)
 

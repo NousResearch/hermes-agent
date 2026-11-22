@@ -20,6 +20,14 @@ test('error page names the failure and carries a Reload button', () => {
   assert.match(html, /location\.reload\(\)/)
 })
 
+test('error page names the app its caller passes, and Hermes by default', () => {
+  assert.match(
+    buildRendererLoadErrorPage({ appName: 'Hermes Light' }),
+    /<h1>Hermes Light couldn.t start the desktop UI<\/h1>/
+  )
+  assert.match(buildRendererLoadErrorPage(), /<h1>Hermes couldn.t start the desktop UI<\/h1>/)
+})
+
 test('error page reload button targets the real renderer URL when provided', () => {
   const html = buildRendererLoadErrorPage({
     errorDescription: 'load failed',

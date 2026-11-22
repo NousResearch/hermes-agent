@@ -111,7 +111,14 @@ def _resolve_stt_language(
     if isinstance(stt_config, dict):
         candidates.append(stt_config.get("language"))
     candidates.append(os.getenv(LOCAL_STT_LANGUAGE_ENV))
-    return next((c.strip() for c in candidates if isinstance(c, str) and c.strip()), None)
+    language = next((c.strip() for c in candidates if isinstance(c, str) and c.strip()), None)
+    if language is None:
+        return None
+    aliases = {
+        "romanian": "ro", "română": "ro", "romana": "ro", "ro-ro": "ro", "ro-md": "ro",
+        "moldovan": "ro", "moldoveană": "ro", "moldoveana": "ro",
+    }
+    return aliases.get(language.casefold().replace("_", "-"), language)
 
 
 def _openai_audio_unavailable_reason() -> Optional[str]:

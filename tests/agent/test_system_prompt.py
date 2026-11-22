@@ -1017,3 +1017,22 @@ class TestSessionReadsThroughTheStorageInterface:
             assert agent._session_db.method_calls == []
         finally:
             handle.close()
+
+
+@pytest.mark.parametrize(
+    ("enabled", "language", "expected"),
+    ((True, "ro", True), (False, "ro", False), (True, "en", False)),
+)
+def test_reply_language_guidance_is_opt_in(enabled, language, expected, monkeypatch):
+    from agent import i18n
+    from agent.system_prompt import _guidance_parts
+
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {
+        "display": {"reply_in_language": enabled},
+    })
+    monkeypatch.setattr(i18n, "get_language", lambda: language)
+    with patch("agent.system_prompt._tool_guidance_block", return_value=""):
+        parts = _guidance_parts(_make_agent())
+
+    language_guidance = [part for part in parts if "Română (ro)" in part]
+    assert bool(language_guidance) is expected

@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from tools.transcription_tools import _resolve_stt_language
+from tools.transcription_local import _normalize_local_stt_language
 
 
 @pytest.fixture(autouse=True)
@@ -37,6 +38,11 @@ class TestResolveSttLanguage:
     def test_value_is_stripped(self):
         cfg = {"language": " ja "}
         assert _resolve_stt_language("local", cfg) == "ja"
+
+    def test_romanian_language_name_resolves_for_local_and_cloud_providers(self):
+        assert _normalize_local_stt_language("Romanian", {"ro"}) == "ro"
+        assert _normalize_local_stt_language("română", {"ro"}) == "ro"
+        assert _resolve_stt_language("groq", {"language": "Romanian"}) == "ro"
 
 
 class TestXaiNoForcedEnglish:

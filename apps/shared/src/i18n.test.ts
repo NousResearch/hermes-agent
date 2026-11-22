@@ -38,6 +38,15 @@ describe('adaptStringOverrides', () => {
     expect(mergeTranslations(base, adapted as never).menu.count(4)).toBe('4 Einträge')
   })
 
+  it('decodes a JSON string-array pack override against an array-valued base entry', () => {
+    const base = { composer: { placeholders: ['What are we building?', 'Give Hermes a task'] } }
+    const adapted = adaptStringOverrides(base, {
+      composer: { placeholders: '["Ce construim?", "Dă-i lui Hermes o sarcină"]' }
+    })
+
+    expect(adapted).toEqual({ composer: { placeholders: ['Ce construim?', 'Dă-i lui Hermes o sarcină'] } })
+  })
+
   it('keeps a function override as-is and a string over a string as-is', () => {
     const fn = (n: number) => `${n}!`
 

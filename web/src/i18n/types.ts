@@ -13,6 +13,7 @@ export type Locale =
   | "it"
   | "ga"
   | "pt"
+  | "ro"
   | "ru"
   | "hu"
   | "ar";

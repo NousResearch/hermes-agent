@@ -130,7 +130,7 @@ export function languageOptions(): LanguageOption[] {
   return options
 }
 
-const LOCALE_ALIASES: Record<string, BundledLocale> = {
+const LOCALE_ALIASES: Record<string, Locale> = {
   en: 'en',
   'en-us': 'en',
   en_us: 'en',
@@ -174,6 +174,13 @@ const LOCALE_ALIASES: Record<string, BundledLocale> = {
   'russian-russian': 'ru',
   русский: 'ru',
   руский: 'ru',
+  ro: 'ro',
+  'ro-ro': 'ro',
+  ro_ro: 'ro',
+  romanian: 'ro',
+  română: 'ro',
+  romana: 'ro',
+  moldovan: 'ro',
   fr: 'fr',
   'fr-fr': 'fr',
   fr_fr: 'fr',

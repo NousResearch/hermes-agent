@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # live set including overlay and pack languages.
 SUPPORTED_LANGUAGES: tuple[str, ...] = (
     "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
-    "af", "ko", "it", "ga", "pt", "ru", "hu", "ar",
+    "af", "ko", "it", "ga", "pt", "ro", "ru", "hu", "ar",
 )
 DEFAULT_LANGUAGE = "en"
 
@@ -57,6 +57,8 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "irish": "ga", "gaeilge": "ga", "ga-ie": "ga",
     "portuguese": "pt", "português": "pt", "portugues": "pt",
     "pt-pt": "pt", "pt-br": "pt", "brazilian": "pt", "brasileiro": "pt",
+    "romanian": "ro", "română": "ro", "romana": "ro", "ro-ro": "ro", "ro-md": "ro",
+    "moldovan": "ro", "moldoveană": "ro", "moldoveana": "ro",
     "russian": "ru", "русский": "ru", "ru-ru": "ru",
     "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
     "arabic": "ar", "العربية": "ar",

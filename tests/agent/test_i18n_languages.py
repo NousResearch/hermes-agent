@@ -41,6 +41,12 @@ def test_describe_language_precedence():
     assert describe_language("de", pack=None, overlay=True, surfaces=())["source"] == "bundled"
 
 
+def test_romanian_language_aliases_resolve_to_the_bundled_locale():
+    assert i18n.resolve_language_id("Romanian") == "ro"
+    assert i18n.resolve_language_id("Română") == "ro"
+    assert i18n.resolve_language_id("ro-RO") == "ro"
+
+
 def test_language_surfaces_report_each_layer(monkeypatch, tmp_path):
     """Bundled Korean has core + TUI strings and no Desktop catalog; a user overlay or a pack adds the
     surface it ships. ``i18n.languages`` carries this so the Desktop can leave out a language it would

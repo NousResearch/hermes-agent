@@ -582,9 +582,38 @@ def _identity_parts(agent: Any, ctx_len: Optional[int]) -> tuple[list[str], bool
     return ([_soul_content], True) if _soul_content else ([DEFAULT_AGENT_IDENTITY], False)
 
 
+def _reply_language_guidance() -> Optional[str]:
+    """Return the opt-in display-language instruction for a newly built session prompt."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+        display = config.get("display", {}) if isinstance(config, dict) else {}
+        if not isinstance(display, dict) or not is_truthy_value(display.get("reply_in_language"), default=False):
+            return None
+
+        from agent import i18n
+
+        language = i18n.get_language()
+        if language == i18n.DEFAULT_LANGUAGE:
+            return None
+        from agent.i18n_languages import BUNDLED_LANGUAGE_INFO
+
+        endonym = BUNDLED_LANGUAGE_INFO.get(language, (language, False))[0]
+        return (
+            f"Always reply to the user in {endonym} ({language}). Preserve code, command names, "
+            "product names, URLs, and quoted user content when appropriate."
+        )
+    except Exception:
+        logger.debug("could not resolve configured reply language", exc_info=True)
+        return None
+
+
 def _guidance_parts(agent: Any) -> list[str]:
     """Universal + tool-aware + model-gated guidance blocks, each gated by its config.yaml key."""
     parts: list[str] = []
+    if language_guidance := _reply_language_guidance():
+        parts.append(language_guidance)
     if agent.valid_tool_names:
         parts += [
             text for flag, text in (

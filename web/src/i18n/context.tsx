@@ -18,6 +18,7 @@ import { pt } from "./pt";
 import { ru } from "./ru";
 import { hu } from "./hu";
 import { ar } from "./ar";
+import { ro } from "./ro";
 
 const TRANSLATIONS: Record<Locale, Translations> = {
   en,
@@ -34,6 +35,7 @@ const TRANSLATIONS: Record<Locale, Translations> = {
   it,
   ga,
   pt,
+  ro,
   ru,
   hu,
   ar,

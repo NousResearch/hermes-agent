@@ -33,6 +33,14 @@ _LOCAL_LANGUAGE_ALIASES = {
     "繁体中文": "zh",
     "简体中文": "zh",
     "簡體中文": "zh",
+    "romanian": "ro",
+    "română": "ro",
+    "romana": "ro",
+    "moldovan": "ro",
+    "moldoveană": "ro",
+    "moldoveana": "ro",
+    "ro-ro": "ro",
+    "ro-md": "ro",
 }
 _THREE_LETTER_WHISPER_CODES = frozenset({"haw", "yue"})
 
@@ -45,7 +53,7 @@ def _normalize_local_stt_language(
         return None
     raw = language.strip()
     folded = raw.casefold().replace("_", "-")
-    candidate = _LOCAL_LANGUAGE_ALIASES.get(raw, folded.split("-", 1)[0])
+    candidate = _LOCAL_LANGUAGE_ALIASES.get(folded, folded.split("-", 1)[0])
     code_shape_is_valid = len(candidate) == 2 or candidate in _THREE_LETTER_WHISPER_CODES
     if not (candidate.isascii() and candidate.isalpha() and code_shape_is_valid):
         logger.warning("Local STT language %r is not a language code; using fallback", raw)

@@ -55,11 +55,23 @@ export function formatPositional(template: string, args: readonly unknown[]): st
  *  supplies a plain string, wrap the string into a positional formatter so
  *  the merged catalog keeps the base's call shape. Records recurse; every
  *  other shape passes through untouched (a string over a string, a function
- *  over a function, arrays wholesale). Packs come from YAML, which cannot
- *  express functions — this is the only bridge between the two. */
+ *  over a function, arrays wholesale). YAML packs encode arrays as JSON text;
+ *  when the English leaf is an array, decode a valid string-array override. */
 export function adaptStringOverrides(base: unknown, overrides: unknown): unknown {
   if (typeof base === 'function' && typeof overrides === 'string') {
     return (...args: unknown[]) => formatPositional(overrides, args)
+  }
+
+  if (Array.isArray(base) && typeof overrides === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(overrides)
+
+      if (Array.isArray(parsed) && parsed.every(value => typeof value === 'string')) {
+        return parsed
+      }
+    } catch {
+      // A regular string override is left unchanged below.
+    }
   }
 
   if (!isRecord(base) || !isRecord(overrides)) {
@@ -180,6 +192,7 @@ export const LOCALE_ENDONYMS = {
   ja: '日本語',
   ko: '한국어',
   pt: 'Português',
+  ro: 'Română',
   ru: 'Русский',
   tr: 'Türkçe',
   uk: 'Українська',

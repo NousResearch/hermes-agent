@@ -212,6 +212,7 @@ def _cli_config_defaults():
             "cli_rebuild_scrollback_on_redraw": False,
             "persist_prompts": True,  # one-line summary of resolved modal prompts into scrollback
             "skin": "default",
+            "reply_in_language": False,
         },
         "code_execution": {"timeout": 300, "max_tool_calls": 50},
         "auxiliary": {"vision": {"provider": "auto", "model": "", "base_url": "", "api_key": ""}},

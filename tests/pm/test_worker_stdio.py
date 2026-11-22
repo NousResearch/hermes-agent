@@ -96,7 +96,7 @@ def test_worker_progress_survives_a_non_utf8_stdio(tmp_path, isolated_python):
     }
     env = {**os.environ, "HERMES_HOME": str(tmp_path / "home"), "HERMES_RUNTIME_DIR": str(tmp_path / "tools")}
     completed = subprocess.run([str(isolated_python), "-I", "-c", script], input=json.dumps(request) + "\n",
-                               capture_output=True, encoding="utf-8", env=env, timeout=60)
+                               capture_output=True, encoding="utf-8", env=env, timeout=60, check=False)
     response = json.loads(completed.stdout)
     assert response.get("result") == "progress written", (response, completed.stderr)
     assert "\u2192 Preparing build tools\u2026" in completed.stderr

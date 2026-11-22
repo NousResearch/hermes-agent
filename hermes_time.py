@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import threading
-from datetime import datetime, timezone, tzinfo
+from datetime import UTC, datetime, tzinfo
 from typing import Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -151,7 +151,7 @@ def now() -> datetime:
 
 def format_timestamp(epoch: float, zone: Optional[tzinfo] = None) -> str:
     """ISO 8601 at second precision. UTC fields use Z, local fields retain their offset."""
-    value = datetime.fromtimestamp(epoch, timezone.utc if zone is None else zone)
+    value = datetime.fromtimestamp(epoch, UTC if zone is None else zone)
     text = value.isoformat(timespec="seconds")
     return text.removesuffix("+00:00") + "Z" if zone is None else text
 

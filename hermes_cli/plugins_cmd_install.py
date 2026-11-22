@@ -237,7 +237,7 @@ def _check_manifest_version(manifest: dict, plugin_name: str) -> None:
 _PROVIDER_PLUGINS_FOLDER = "model-providers"
 
 
-def _refuse_provider_plugins_folder_name(plugin_name: str, target: Path, prior: object, source: str) -> None:
+def _refuse_provider_plugins_folder_name(plugin_name: str, target: Path, prior: Optional[dict], source: str) -> None:
     """Refuse installing a plugin AS the provider-plugins folder (any letter case): every package
     inside it would load as a provider while the plugin reads as not enabled. Re-installing an
     existing install of that name from its recorded source (an update's re-clone) is left as it was."""

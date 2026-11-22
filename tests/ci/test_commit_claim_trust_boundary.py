@@ -380,7 +380,8 @@ _PLANTED = {"win32-x64": ("version-info-x64.json", "nested/HermesBundled-0.33.0-
                             ".Other-0.33.0-win-arm64.msix"),
             "darwin-arm64": ("metadata-macos-arm64.json", "nested/HermesBundled-0.33.0-mac-arm64.zip",
                              "Other-0.33.0-mac-arm64.dmg", "HermesBundled-0.33.0-mac-x64.dmg", "evil.blockmap",
-                             ".Other-0.33.0-mac-arm64.dmg", ".evil.blockmap"),
+                             ".Other-0.33.0-mac-arm64.dmg", ".evil.blockmap",
+                             "HermesBundled-0.33.0-mac-arm64.dmg.blockmap.blockmap"),
             "termux": ("metadata-termux-aarch64.json", "deb/nested/hermes-agent_0.33.0_aarch64.deb", "<deb symlink>",
                        "deb/.other_0.33.0_aarch64.deb")}
 

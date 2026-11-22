@@ -78,9 +78,9 @@ class _Home:
         self.root = root
         self.marker = root / "marker.txt"
 
-    def plugin(self, kind: str, *, manifest_name: str | None = None) -> str:
+    def plugin(self, kind: str, *, manifest_name: str | None = None, name: str | None = None) -> str:
         """Install a user plugin of *kind* (unique name per test so no earlier import is reused)."""
-        name = f"{kind}_{uuid.uuid4().hex[:8]}"
+        name = name or f"{kind}_{uuid.uuid4().hex[:8]}"
         plugin_dir = self.root / "plugins" / name
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "plugin.yaml").write_text(
@@ -216,6 +216,42 @@ def test_a_disabled_context_engine_falls_back_to_the_built_in_compressor(home, c
         assert _select_context_engine({"context": {"engine": name}}) is None
     assert f"Context engine '{name}' not found" in caplog.text
     assert home.ran() == []
+
+
+# ── A selection that names the built-in turns no user plugin on ───────────────
+# ``context.engine: compressor`` (also the default) and ``cron.provider`` set to the built-in ticker's
+# names never load a plugin, so a user folder that happens to share one of those names stays inert
+# in listings unless plugins.enabled names it.
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_a_user_engine_named_like_the_built_in_compressor_is_listed_without_running(home, configured):
+    home.plugin("context", name="compressor")
+    if configured:
+        home.config(kind="context", selected="compressor")
+    else:
+        home.config()  # context.engine left at its default
+
+    assert _row("context", "compressor") == ("compressor", "demo context plugin", False)
+    assert home.ran() == []
+
+
+@pytest.mark.parametrize("builtin", ["builtin", "in-process", "inprocess"])
+def test_a_user_cron_provider_named_like_the_built_in_ticker_is_listed_without_running(home, builtin):
+    home.plugin("cron", name=builtin)
+    home.config(kind="cron", selected=builtin)
+
+    assert _row("cron", builtin) == (builtin, "demo cron plugin", False)
+    assert home.ran() == []
+
+
+@pytest.mark.parametrize(("kind", "name"), [("context", "compressor"), ("cron", "builtin")])
+def test_a_plugin_named_like_the_built_in_still_runs_for_listing_when_enabled(home, kind, name):
+    home.plugin(kind, name=name)
+    home.config(kind=kind, selected=name, enabled=[name])
+
+    assert _row(kind, name) == (name, f"demo {kind} plugin", True)
+    assert home.ran() != []
 
 
 # ── Controls: what the operator turned on behaves as before ───────────────────

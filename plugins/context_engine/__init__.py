@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 _CONTEXT_ENGINE_PLUGINS_DIR = Path(__file__).parent
 # Synthetic parent package for user-installed engines (keeps them out of the bundled namespace).
 _USER_NAMESPACE = "_hermes_user_context_engine"
+# The ``context.engine`` value that keeps the built-in ContextCompressor and loads no plugin (the
+# check in ``agent.agent_init._select_context_engine``).
+_BUILTIN_ENGINE_NAMES = frozenset({"compressor"})
 
 
 def _is_context_engine_dir(path: Path) -> bool:
@@ -44,7 +47,7 @@ def discover_context_engines() -> list[tuple[str, str, bool]]:
     """Return ``[(name, description, is_available), ...]`` for every bundled and user engine. A user
     engine's code runs only when it is turned on (``context.engine`` or ``plugins.enabled``, not
     ``plugins.disabled``); any other is listed from its manifest as not available."""
-    choice = _loader.read_plugin_choice("context", "engine")
+    choice = _loader.read_plugin_choice("context", "engine", builtin=_BUILTIN_ENGINE_NAMES)
     return [(name, _loader.read_plugin_description(child),
              _loader.probe_availability(lambda c=child: _load_engine_from_dir(c)))
             if _is_bundled(child) or choice.allows_import(child, name)

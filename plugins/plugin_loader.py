@@ -163,9 +163,10 @@ class PluginChoice:
         return name == self.selected or bool(spellings & self.enabled)
 
 
-def read_plugin_choice(*selection_key: str) -> PluginChoice:
+def read_plugin_choice(*selection_key: str, builtin: frozenset = frozenset()) -> PluginChoice:
     """One read-only config read for a listing; *selection_key* is the category's config path
-    (``"memory", "provider"``), none when only the plugin lists matter."""
+    (``"memory", "provider"``), none when only the plugin lists matter. A selection in *builtin*
+    picks the category's built-in, which loads no plugin, so it selects nothing here."""
     try:
         from hermes_cli.config import cfg_get, load_config
 
@@ -176,7 +177,8 @@ def read_plugin_choice(*selection_key: str) -> PluginChoice:
         return PluginChoice()
     enabled, disabled = (frozenset(v for v in value if isinstance(v, str)) if isinstance(value, list)
                          else frozenset() for value in lists)
-    return PluginChoice(selected.strip() if isinstance(selected, str) else "", enabled, disabled)
+    selected = selected.strip() if isinstance(selected, str) else ""
+    return PluginChoice("" if selected in builtin else selected, enabled, disabled)
 
 
 def describe_without_import(name: str, plugin_dir: Path) -> tuple[str, str, bool]:

@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 _CRON_PLUGINS_DIR = Path(__file__).parent
 # Synthetic parent package for user-installed providers (keeps them out of the bundled namespace).
 _USER_NAMESPACE = "_hermes_user_cron"
+# The ``cron.provider`` values that keep the built-in ticker and load no plugin (the check in
+# ``cron.scheduler_provider.resolve_cron_scheduler``).
+_BUILTIN_PROVIDER_NAMES = frozenset({"", "builtin", "in-process", "inprocess"})
 
 
 def _is_cron_provider_dir(path: Path) -> bool:
@@ -60,7 +63,7 @@ def discover_cron_schedulers() -> list[tuple[str, str, bool]]:
     """Return ``[(name, description, is_available), ...]`` for all discovered providers. A user
     provider's code runs only when it is turned on (``cron.provider`` or ``plugins.enabled``, not
     ``plugins.disabled``); any other is listed from its manifest as not available."""
-    choice = _loader.read_plugin_choice("cron", "provider")
+    choice = _loader.read_plugin_choice("cron", "provider", builtin=_BUILTIN_PROVIDER_NAMES)
     return [(name, _loader.read_plugin_description(child),
              _loader.probe_availability(lambda c=child: _load_provider_from_dir(c)))
             if _is_bundled(child) or choice.allows_import(child, name)

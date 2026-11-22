@@ -34,6 +34,26 @@ _ROW_REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details", "c
 _PERSIST_AFTER_ADMISSION_INTERRUPT = "_persist_after_admission_interrupt"
 
 
+#: The ``turn_id`` its host stamps on the running turn's reply frames (tui_gateway/stream_segments.py), set on
+#: the agent for the turn's duration by the in-process turn (tui_gateway/prompt_turn.py, also in a compute-host
+#: child), the session authority's TurnRunner and a managed worker (the id its owner relays,
+#: agent/managed_worker.py). Each assistant/tool row the turn writes carries it as
+#: ``display_metadata.stream_turn_id``, so a viewer that drew the turn live can tell which stored rows are that
+#: turn before (or without) its completion receipt: a provider's tool-call id is not unique across turns.
+STREAM_TURN_ATTR = "_stream_turn_id"
+STREAM_TURN_METADATA_KEY = "stream_turn_id"
+
+
+def _stamp_stream_turn(agent, msg: dict, is_history: bool) -> None:
+    """Stamp a new assistant/tool row of the running turn with its stream turn id (``STREAM_TURN_ATTR``); a
+    history row the flush only marks durable belongs to an earlier turn and keeps what it has."""
+    turn_id = getattr(agent, STREAM_TURN_ATTR, None)
+    metadata = msg.get("display_metadata")
+    if (not is_history and isinstance(turn_id, str) and turn_id and msg.get("role") in ("assistant", "tool")
+            and (metadata is None or isinstance(metadata, dict))):
+        msg["display_metadata"] = {**(metadata or {}), STREAM_TURN_METADATA_KEY: turn_id}
+
+
 # `_DB_PERSISTED_MARKER` (agent.context_compressor) is the intrinsic "already written to SQLite" marker: an
 # id(msg) set can alias a freed dict's address onto a new message, a key on the dict cannot. The `_` prefix is
 # mandatory (wire sanitizers strip `_` keys). CONTRACT: the marker asserts the dict's CONTENT is durable as
@@ -318,6 +338,7 @@ def _db_flush_collect(agent, messages: list[dict], conversation_history: Optiona
             # context intact while transcript pollers omit unsolicited presentation.
             msg["display_kind"] = "hidden"
             msg["display_metadata"] = {**(msg.get("display_metadata") or {}), "notification_category": "diagnostic"}
+        _stamp_stream_turn(agent, msg, is_history)
         if msg.get("role") == "tool" and not msg.get(TOOL_CALL_UID):
             # A result whose call was flushed in an earlier batch: pair it with the uid that assistant row
             # minted (same-batch pairing happens inside the insert).

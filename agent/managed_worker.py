@@ -193,6 +193,23 @@ def activity_frame_interval(frame):
     return None
 
 
+_STREAM_TURN_ID = re.compile(r'[0-9a-f]{32}')  # tui_gateway.stream_segments.TurnSegments: uuid4().hex
+
+
+def bootstrap_stream_turn(frame):
+    """The presentation ``turn_id`` the owner minted for this execution (``stream_turn_v1`` on the
+    hydrated request) and stamps on the deltas it relays, or None from an owner that mints none. The
+    worker's rows carry it (agent/session_persistence.STREAM_TURN_ATTR), so a viewer that drew the
+    turn live can tell its stored rows before the receipt."""
+    asked = json.loads(frame['policy'].get('request_json') or '{}').get('stream_turn_v1')
+    if asked is None:
+        return None
+    if (not isinstance(asked, dict) or set(asked) != {'turn_id'} or not isinstance(asked['turn_id'], str)
+            or not _STREAM_TURN_ID.fullmatch(asked['turn_id'])):
+        raise ValueError('invalid_managed_worker_bootstrap')
+    return asked['turn_id']
+
+
 _INTERRUPTED = object()
 # The owner's control pipe closing under a live worker means the owner died (a closing owner
 # signals the worker itself). The agent is interrupted at once; cooperative tools get this long.
@@ -402,6 +419,7 @@ def execute(frame, channel):
     # The owner RPC below imports gateway/config modules (hermes_cli.config, providers,
     # hermes_cli.plugins) transitively; the policy must already be frozen when they load.
     bind_worker_policy(frame)
+    stream_turn = bootstrap_stream_turn(frame)
     from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
     scope = dict(frame['scope'])
     # This process serves exactly one turn of one profile: bind it as the runtime scope. The
@@ -458,6 +476,9 @@ def execute(frame, channel):
                 tool_complete_callback=lambda call_id, name, args, result: channel.send('tool.complete',
                                                                                          **tool_frame(call_id, name, args, result)))
             controls.agent = agent
+            # Every row this execution writes carries the turn id its relayed deltas carry.
+            from agent.session_persistence import STREAM_TURN_ATTR
+            setattr(agent, STREAM_TURN_ATTR, stream_turn)
             interval = activity_frame_interval(frame)
             if interval is not None:
                 from agent.memory_provider import spawn_context_thread

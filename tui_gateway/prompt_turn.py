@@ -1197,6 +1197,9 @@ def _run_prompt_submit(
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
             receipt_committed=terminal_callback is None)
+        # The rows this turn writes carry its stream identity (agent/session_persistence.STREAM_TURN_ATTR).
+        from agent.session_persistence import STREAM_TURN_ATTR
+        setattr(st.agent, STREAM_TURN_ATTR, segments.turn_id)
         st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None,
             notification_category=(display_metadata or {}).get("notification_category"))
         goal_followup = None
@@ -1245,6 +1248,8 @@ def _run_prompt_submit(
                     _release_hosted_room_turn_slot(session)
                     if session.get(SESSION_KEY) is segments:
                         session.pop(SESSION_KEY)
+                    if getattr(st.agent, STREAM_TURN_ATTR, None) == segments.turn_id:
+                        setattr(st.agent, STREAM_TURN_ATTR, None)
                 # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
                 # agent.session_id is re-read because compression may have rotated it (an
                 # accepted/finished pair whose id changed IS a rotation trace).

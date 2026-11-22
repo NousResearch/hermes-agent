@@ -17,6 +17,7 @@ import time
 from agent.managed_worker import ACTIVITY_FRAME, accept_result, activity_interval, encode_frame, read_frame
 from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
 from persistence.core.errors import AuthorityRefusal
+from tui_gateway.stream_segments import TurnSegments, claimed_segments, stamp_reply_frame
 
 # The interpreter only imports psutil before it introduces itself; a child silent this long
 # is wedged (loader/stdio stall), not slow.
@@ -60,7 +61,7 @@ def policy_if_managed(policy):
     return policy
 
 
-def _bootstrap(authority, ref, row, policy, scope, text=None):
+def _bootstrap(authority, ref, row, policy, scope, text=None, stream_turn=None):
     from gateway.session_ingress import row_turn_author
     from gateway.session_policy import route_launch_key
     from gateway.session_policy_credentials import recover_config_secrets
@@ -83,6 +84,11 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
     # This owner consumes the worker's ACTIVITY_FRAME, often enough for its wedge timeout.
     from gateway.run import _float_env
     request['activity_frames_v1'] = {'interval': activity_interval(_float_env("HERMES_AGENT_TIMEOUT", 1800))}
+    if stream_turn is not None:
+        # The presentation turn id this owner stamps on the deltas it relays; the worker writes it on
+        # every row of the turn (agent/managed_worker.bootstrap_stream_turn). Never the execution id,
+        # a private ledger key, nor the reservation secret.
+        request['stream_turn_v1'] = {'turn_id': stream_turn}
     config = _worker_config(authority, policy)
     hydrated = replace(policy, config_json=json.dumps(config), request_json=json.dumps(request),
                        terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
@@ -723,8 +729,12 @@ async def execute_managed(authority, ref, row, policy):
                     admission_id=row['admission_id'], process=process, principal_id=row['principal_id'], hello=hello,
                     worker_subject=owner_worker_subject()))
         worker.worker = (scope['pid'], scope['birth'])
+        # This execution's reply-frame cursor (tui_gateway/stream_segments.py): the one the claim minted
+        # and named on message.start (a fresh one from an owner that minted none). Its turn_id reaches
+        # the worker on the bootstrap.
+        segments = claimed_segments(authority, ref.session_id, row['generation']) or TurnSegments()
         # The child reads nothing else until the exact reservation has committed.
-        frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope, text)
+        frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope, text, segments.turn_id)
         worker.secrets.extend(v for v in (frame['api_key'], scope['secret']) if isinstance(v, str) and v)
         await asyncio.to_thread(worker.send, frame)
         worker.writer.start()
@@ -742,7 +752,8 @@ async def execute_managed(authority, ref, row, policy):
             if kind == 'ready' and set(frame) == {'type', 'pid'} and frame['pid'] == scope['pid']:
                 continue
             if kind == 'delta' and set(frame) == {'type', 'text'} and isinstance(frame['text'], str):
-                authority.publish_execution(ref.session_id, row['generation'], 'message.delta', {'text': frame['text']})
+                authority.publish_execution(ref.session_id, row['generation'], 'message.delta',
+                                            stamp_reply_frame(segments, 'message.delta', {'text': frame['text']}))
                 continue
             if publish_worker_tool_event(authority, ref.session_id, row['generation'], frame):
                 continue

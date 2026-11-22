@@ -78,3 +78,42 @@ def test_deltas_and_seals_carry_turn_segment_and_utf16_offset(monkeypatch):
     assert len(first) == len(second) == 1 and None not in first | second and first != second
     # A finished turn leaves no cursor behind, so a later non-turn emitter's frame stays unstamped.
     assert srv.stream_segments.SESSION_KEY not in session
+
+
+def test_committed_tool_round_has_its_stream_identity_before_completion(monkeypatch, tmp_path):
+    from agent.session_persistence import SessionPersistenceMixin
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import transcript_rows
+    from tests.fixtures.storage_seed import seed_session
+
+    committed = []
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(store, "session-key", "test")
+
+        def run_conversation(agent, prompt, stream_callback=None, conversation_history=None, **_kwargs):
+            agent.persistence = agent._session_db = store
+            agent._session_db_created = True
+            history = list(conversation_history or [])
+            messages = history + [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "Checking", "tool_calls": [
+                    {"id": "call_0", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "content": "ok", "tool_call_id": "call_0", "display_metadata": {"detail": "keep"}},
+            ]
+            assert stream_callback is not None
+            stream_callback("Checking")
+            agent.interim_assistant_callback("Checking", already_streamed=True)
+            assert SessionPersistenceMixin._flush_messages_to_session_db_unlocked(agent, messages, history)
+            committed.append(transcript_rows(store, "session-key")[-3:])
+            return {"final_response": "Done.", "messages": messages}
+
+        frames, _session = _submit_turns(monkeypatch, run_conversation, turns=2)
+
+    starts = [payload["turn_id"] for event, payload in frames if event == "message.start"]
+    assert len(set(starts)) == 2
+    for rows, turn in zip(committed, starts, strict=True):
+        assert [row["role"] for row in rows] == ["user", "assistant", "tool"]
+        assert "stream_turn_id" not in (rows[0]["display_metadata"] or {})
+        assert rows[1]["display_metadata"] == {"stream_turn_id": turn}
+        assert rows[2]["display_metadata"] == {"stream_turn_id": turn, "detail": "keep"}

@@ -205,6 +205,11 @@ export interface ClientSessionState {
   /** Newest row on screen when that message.start arrived: rows above it are
    *  earlier turns, even when an interim seal left them marked `interim`. */
   turnAnchorId?: null | string
+  /** The same row, armed only by this turn's own message.start and consumed by its completion
+   *  (cleared by every other settle): the completed receipt bubble carries it as
+   *  `ChatMessage.receiptTurnAnchorId`. Unlike `turnAnchorId` it never outlives its turn, so a
+   *  completion whose start this window never saw carries no boundary at all. Local, not wire. */
+  receiptTurnAnchorId?: null | string
   /** A blocking clarify prompt is waiting on the user for this session. Drives
    *  the sidebar "needs input" indicator; cleared when the turn resumes/ends. */
   needsInput: boolean

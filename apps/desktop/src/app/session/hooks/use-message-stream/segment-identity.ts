@@ -26,6 +26,14 @@ export interface SegmentCursor {
   end: number
 }
 
+/**
+ * The turn a live row the stream draws belongs to: the `turn_id` its message.start carried. A row
+ * keeps it so a transcript read can tell this turn's live copy from an adjacent one when the turn
+ * has no prompt on screen (transcript-receipt-turns). Unstamped starts (older backends) add nothing.
+ */
+export const streamTurnOf = (state: { streamTurnId?: null | string }): { streamTurnId?: string } =>
+  state.streamTurnId ? { streamTurnId: state.streamTurnId } : {}
+
 const nonNegativeInt = (value: unknown): null | number =>
   typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null
 

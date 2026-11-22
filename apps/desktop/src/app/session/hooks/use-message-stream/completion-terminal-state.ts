@@ -51,7 +51,8 @@ export function terminalCompletionState(
       pendingBranchGroup: null,
       streamId: null,
       turnStartedAt: null,
-      turnLive: false
+      turnLive: false,
+      receiptTurnAnchorId: null
     }
   }
 
@@ -68,7 +69,8 @@ export function terminalCompletionState(
       needsInput: false,
       interimBoundaryPending: false,
       turnStartedAt: null,
-      turnLive: false
+      turnLive: false,
+      receiptTurnAnchorId: null
     }
   }
 

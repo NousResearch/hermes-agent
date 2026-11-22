@@ -29,6 +29,15 @@ export interface TimelinePartMetadata {
   storedResultToolName?: string
   /** Durable source occurrence, even when several backend rows share a bubble. */
   sourceRowId?: number
+  /** A stored `tool-call` part's own source: the assistant row that made the call. */
+  sourceCallRowId?: number
+  /** The stream turn that wrote this stored part's row (`display_metadata.stream_turn_id`,
+   *  agent/session_persistence.py): the stored side of a live row's `streamTurnId`. */
+  storedTurnId?: string
+  /** The provider's own id of a stored call that hydration renamed (`withUniqueToolCallIds`)
+   *  because an earlier call in the same folded bubble used it: two rounds of one turn can both
+   *  call `call_0`. Only the live copy's pairing reads it, never paired across rows by itself. */
+  providerToolCallId?: string
   /** A clarify row's tie to the session's live request, set by the transcript re-arm
    *  (`restorePendingClarifyToolCall`): the id of the request it bound to this row, or `''` on every
    *  other open clarify row it saw. Only the row carrying the live request's id renders it. */
@@ -73,6 +82,15 @@ export type ChatMessage = {
   durableComplete?: boolean
   /** Exact gateway receipt; whole-turn coverage is never inferred from prose. */
   persistedTurn?: PersistedTurn
+  /** The `turn_id` of the streamed turn that drew this live row (its message.start stamp,
+   *  segment-identity.ts). Execution identity of a live copy whose turn has no on-screen prompt
+   *  (a backend-started turn); hydrated rows never carry it. */
+  streamTurnId?: string
+  /** Local only, never a wire identity: the id of the newest row on screen when this turn's own
+   *  message.start arrived (the session's `turnAnchorId`), carried onto the bubble its completion
+   *  receipt settled. Rows below it are this turn's, so a backend-started turn with no prompt on
+   *  screen and no stream turn id still has a provable start (transcript-receipt-turns). */
+  receiptTurnAnchorId?: string
   /** Whole-turn wall-clock seconds (message.start → message.complete),
    *  stamped by the desktop when it watched the turn run. Absent for
    *  messages hydrated from history — the backend doesn't persist it. */

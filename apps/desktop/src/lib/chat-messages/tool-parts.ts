@@ -1231,7 +1231,11 @@ export function withUniqueToolCallIds(messages: ChatMessage[]): ChatMessage[] {
       const uniqueId = `${id}-${message.id}-${index}`
       seen.add(uniqueId)
 
-      return { ...part, toolCallId: uniqueId } as ChatMessagePart
+      return {
+        ...part,
+        toolCallId: uniqueId,
+        ...(part.toolCallId ? { providerToolCallId: part.toolCallId } : {})
+      } as ChatMessagePart
     })
 
     return changed ? { ...message, parts } : message

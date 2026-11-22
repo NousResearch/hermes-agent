@@ -271,11 +271,25 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         """The turn's wire identity on its reply frames (tui_gateway/stream_segments.py), so a viewer
         upserts a re-sent delta or seal instead of painting a second copy (#144609). The same
         stamping rule as tui_gateway's ``_emit``, with one cursor per execution generation."""
-        from tui_gateway.stream_segments import TurnSegments, stamp_reply_frame
+        from tui_gateway.stream_segments import stamp_reply_frame
+        return stamp_reply_frame(self._turn_segments(generation), event_type, payload)
+
+    def _turn_segments(self, generation):
+        """The reply-frame cursor of execution ``generation``: the one its claim minted and named on
+        ``message.start``, else (an owner that minted none) one per generation, created on first use."""
+        from tui_gateway.stream_segments import TurnSegments, claimed_segments
+        owner = getattr(self, "_approval_owner", None)
+        if owner is not None and (claimed := claimed_segments(owner[0], owner[1], generation)) is not None:
+            return claimed
         segments = getattr(self, "_segments", None)
         if segments is None or segments[0] != generation:
             segments = self._segments = (generation, TurnSegments())
-        return stamp_reply_frame(segments[1], event_type, payload)
+        return segments[1]
+
+    def _stream_turn_id(self):
+        """The ``turn_id`` this execution's reply frames carry, or None off the authority's viewer stream."""
+        owner = getattr(self, "_approval_owner", None)
+        return self._turn_segments(owner[2]).turn_id if owner is not None else None
 
     def _publish_api_tool(self, event_type, call_id, tool_name, args, result=None):
         """The retained tool payload reaches the API observers of this exact admission only;
@@ -1136,10 +1150,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 # marker that follows a written reply on that reply, before transform/persistence.
                 agent._silence_marker_needs_reply = not silence_allowed(
                     ctx.persist_user_display_kind, ctx.reply_expected)
+                # The rows this turn writes carry the turn id its reply frames carry (session_persistence).
+                from agent.session_persistence import STREAM_TURN_ATTR
+                setattr(agent, STREAM_TURN_ATTR, self._stream_turn_id())
                 try:
                     result = agent.run_conversation(api_message, **kwargs)
                 finally:
                     agent._silence_marker_needs_reply = False
+                    setattr(agent, STREAM_TURN_ATTR, None)
             if captured is not None:
                 incoming = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
                 outgoing = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])

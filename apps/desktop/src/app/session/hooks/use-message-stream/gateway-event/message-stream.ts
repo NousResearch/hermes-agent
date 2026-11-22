@@ -221,6 +221,8 @@ function handleMessageStart(ctx: GatewayEventContext): boolean {
       // Rows on screen now are earlier turns (or this turn's prompt): an
       // interim seal on one of them no longer means its call is running.
       turnAnchorId: messages.at(-1)?.id ?? null,
+      // This start's own boundary for its completion receipt (transcript-receipt-turns).
+      receiptTurnAnchorId: messages.at(-1)?.id ?? null,
       busy: true,
       awaitingResponse: true,
       sawAssistantPayload: false,

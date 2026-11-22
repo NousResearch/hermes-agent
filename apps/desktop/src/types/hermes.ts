@@ -672,6 +672,8 @@ export type TimelineDisplayMetadata =
     }
   | { display_text: string }
   | { reactions: MessageReaction[] }
+  | { submission_id: string }
+  | { stream_turn_id: string }
   | { tool_result_metadata: ToolResultMetadata }
   | { error?: string; error_surface?: unknown }
 

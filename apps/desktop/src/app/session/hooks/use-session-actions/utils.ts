@@ -83,6 +83,7 @@ import {
 import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
+  matchPreviousResumeRows,
   transcriptRowIds
 } from './pending-turn-identity'
 import { reconcileOwnerApprovalMode } from './runtime-owner'
@@ -214,24 +215,12 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     return nextMessages
   }
 
-  const previousByRoleOrdinal = new Map<string, ChatMessage>()
-  const previousRoleCounts = new Map<string, number>()
-
-  for (const message of previousMessages) {
-    const ordinal = previousRoleCounts.get(message.role) ?? 0
-    previousRoleCounts.set(message.role, ordinal + 1)
-    previousByRoleOrdinal.set(`${message.role}:${ordinal}`, message)
-  }
-
-  const nextRoleCounts = new Map<string, number>()
+  const matchPrevious = matchPreviousResumeRows(previousMessages)
 
   return nextMessages.map(message => {
-    const ordinal = nextRoleCounts.get(message.role) ?? 0
-    nextRoleCounts.set(message.role, ordinal + 1)
+    const previous = matchPrevious(message)
 
-    const previous = previousByRoleOrdinal.get(`${message.role}:${ordinal}`)
-
-    if (!previous || conflictingTranscriptIdentity(previous, message)) {
+    if (!previous) {
       return message
     }
 

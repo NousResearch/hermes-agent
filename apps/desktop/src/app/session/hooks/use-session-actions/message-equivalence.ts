@@ -49,6 +49,11 @@ const COMPARED_FIELDS = [
   // Not painted, but the view's copy can seed session state again (resume
   // reads $messages), so a started queued turn must reach it.
   'queuedTurnStarted',
+  // Not painted either: the live row's turn identity, which a later transcript read pairs the
+  // stored rows of that turn by. A copy kept as "equivalent" without it would lose the pairing.
+  'streamTurnId',
+  // Not painted: the local start of a receipt turn with no prompt on screen, same reason.
+  'receiptTurnAnchorId',
   'reactions',
   'timestamp',
   'completedAt',
@@ -197,6 +202,8 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     displayDescriptorsDiffer(a, b) ||
     a.hidden !== b.hidden ||
     a.branchGroupId !== b.branchGroupId ||
+    a.streamTurnId !== b.streamTurnId ||
+    a.receiptTurnAnchorId !== b.receiptTurnAnchorId ||
     a.timestamp !== b.timestamp ||
     a.completedAt !== b.completedAt ||
     flagsDiffer(a, b) ||

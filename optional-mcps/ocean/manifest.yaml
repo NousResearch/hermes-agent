@@ -1,7 +1,7 @@
 manifest_version: 1
 
-name: ocean-security
-description: Query detected email threats, phishing reports, and security metrics from Ocean Security.
+name: ocean
+description: Query detected email threats, phishing reports, and security metrics from Ocean.
 source: https://docs.ocean.security/api-reference/mcp/overview
 
 transport:
@@ -13,7 +13,7 @@ auth:
 
 suggest:
   keywords:
-    - ocean security
+    - ocean mcp
   hosts:
     - ocean.security
 

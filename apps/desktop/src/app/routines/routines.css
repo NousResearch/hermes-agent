@@ -76,12 +76,13 @@
 }
 
 /* The agent a routine belongs to (1081:29517): a quiet tag, the agent's own name. */
+/* A block, not a flex box: an ellipsis only ends text that is the box's own inline content. It gives
+   a long name at most 9rem and never more than 45% of its row, so the routine's name keeps the rest. */
 .routines-agent-tag {
-  display: inline-flex;
-  max-width: 9rem;
+  display: inline-block;
+  max-width: min(9rem, 45%);
   height: 1rem;
   flex-shrink: 0;
-  align-items: center;
   overflow: hidden;
   padding-inline: 0.3125rem;
   border: 1px solid var(--portal-stroke-control);
@@ -91,6 +92,8 @@
   font-size: var(--portal-type-caption-size);
   font-weight: 400;
   letter-spacing: var(--portal-tracking-caption);
+  /* The 1rem box less its 1px strokes: one centred line. */
+  line-height: calc(1rem - 2px);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

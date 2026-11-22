@@ -284,6 +284,15 @@
   border-color: var(--portal-raw-ink-40);
 }
 
+/* A select's value is whatever the person named (an agent, a machine, a model), so it never draws
+   past its trigger: it gives way before the chevron and ends in an ellipsis; the open list shows
+   every name in full. */
+:root[data-shell='portal'] [data-slot='select-trigger'] > [data-slot='select-value'] {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ── Segmented control (856:3444) ─────────────────────────────────────────── */
 
 :root[data-shell='portal'] [data-page-surface] [data-slot='segmented-control'] {

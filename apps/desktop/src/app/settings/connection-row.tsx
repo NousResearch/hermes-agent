@@ -137,10 +137,12 @@ function PortalConnectionRow({ isCurrent, kindMeta, peerHint, ...actions }: Port
       action={<ConnectionManageMenu {...actions} />}
       description={description}
       title={
-        // The pills wrap under a long name.
+        // The pills wrap under a long name; the name keeps its icon and truncates.
         <span className="flex min-w-0 flex-wrap items-center gap-2">
-          <Icon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-          <span className="max-w-full truncate">{conn.label}</span>
+          <span className="flex max-w-full min-w-0 items-center gap-2">
+            <Icon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+            <span className="truncate">{conn.label}</span>
+          </span>
           {status && <ConnectionStatusBadge status={status} />}
           {isCurrent && <Pill tone="primary">{s.currentPill}</Pill>}
           {isPrimary && <Pill>{s.primaryPill}</Pill>}

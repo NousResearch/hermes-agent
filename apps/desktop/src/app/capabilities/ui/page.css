@@ -349,7 +349,8 @@
 
 .capability-header-scope [data-slot='select-trigger'] {
   height: var(--portal-chrome-button-size, 30px);
-  max-width: 16rem;
+  /* Room for "agent — machine (current)"; a longer pair truncates (portal-controls.css). */
+  max-width: min(24rem, 100%);
   gap: 6px;
   padding-inline: 10px;
   border: 0;

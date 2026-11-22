@@ -30,6 +30,7 @@ _FIXED = {
 }
 _SET_ENCODINGS = 2
 _CLIENT_CUT_TEXT = 6
+_EXT_CLIPBOARD_ACTION_CAPS = 1 << 24
 _FENCE = 248
 _SET_DESKTOP_SIZE = 251  # u8 type, pad, u16 width, u16 height, u8 nScreens, pad, then 16 bytes per screen
 
@@ -37,6 +38,20 @@ _SET_DESKTOP_SIZE = 251  # u8 type, pad, u16 width, u16 height, u8 nScreens, pad
 # the bridge agree (keep the two in sync). The length is client-declared (int32); without a cap a
 # watcher with a ticket but no lease could make the bridge buffer ~2 GiB waiting for a payload.
 _MAX_CUT_TEXT = 256 * 1024
+
+
+def _is_extended_clipboard_caps(msg: bytes) -> bool:
+    """True for RFB Extended Clipboard Caps negotiation (no clipboard payload; must pass in watch mode)."""
+    if len(msg) < 12 or msg[0] != _CLIENT_CUT_TEXT:
+        return False
+    length = int.from_bytes(msg[4:8], "big", signed=True)
+    if length >= 0:
+        return False
+    flags = int.from_bytes(msg[8:12], "big")
+    if not (flags & _EXT_CLIPBOARD_ACTION_CAPS):
+        return False
+    # Spec: Caps payload is 4-byte flags + one u32 max-size per advertised format bit (0..15).
+    return abs(length) == 4 + 4 * (flags & 0xFFFF).bit_count()
 
 
 class RfbClientFilter:
@@ -73,7 +88,7 @@ class RfbClientFilter:
                 break
             msg = bytes(self._buf[:length])
             del self._buf[:length]
-            if msg[0] in _INPUT_TYPES and not self._allow_input():
+            if msg[0] in _INPUT_TYPES and not self._allow_input() and not _is_extended_clipboard_caps(msg):
                 continue
             out += msg
         return bytes(out)

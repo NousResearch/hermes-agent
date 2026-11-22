@@ -391,14 +391,19 @@ def test_workflow_write_and_preflight_steps_replay_end_to_end(tmp_path: Path):
     controller_dir = channel_workspace / ".build/channel-controller/scripts/ci"
     controller_dir.mkdir(parents=True)
     shutil.copy2(ROOT / "scripts/ci/check_macos_notary_auth.py", controller_dir / "check_macos_notary_auth.py")
+    # The admitted checkout's own helper passes without probing, so only the controller's can fail here.
+    workspace_helper = channel_workspace / "scripts/ci/check_macos_notary_auth.py"
+    workspace_helper.parent.mkdir(parents=True)
+    workspace_helper.write_text("raise SystemExit(0)\n", encoding="utf-8")
     channel_401 = run_steps(
         pem_text=_synthetic_p8(),
         xcrun_rc=1,
         xcrun_stderr="Error: HTTP status code: 401. Unauthenticated.",
         cwd=channel_workspace,
     )
-    assert channel_401.returncode != 0
-    assert "::error::" in channel_401.stdout + channel_401.stderr
+    assert channel_401.returncode == 1, channel_401.stdout + channel_401.stderr
+    assert "HTTP 401" in channel_401.stdout + channel_401.stderr
+    assert xcrun_log.exists(), "expected the controller's helper to probe Apple, not the workspace's"
 
     # A release candidate's admitted commit can predate the helper; the controller checkout supplies it.
     release_workspace = tmp_path / "older-release-source"

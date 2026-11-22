@@ -262,6 +262,33 @@ def test_the_prune_still_rewrites_an_image_row_an_older_build_stored_with_its_pa
         db.close()
 
 
+def test_a_legacy_store_prune_hands_the_rewritten_row_digest_back_to_the_live_replacement(tmp_path: Path) -> None:
+    """A store handle that exposes ``rewrite_pruned_rows`` itself (no storage interface) stamps the new digest on
+    the row it was handed. That row is the text copy, so the live replacement must take the stamp from it, or the
+    next lease-less prune or micro-compaction reads this prune's own write as another writer's."""
+    from persistence.sqlite.conversation._store.prune_rewrite import rewrite_pruned_rows, rewritten_held_row_ids
+
+    db = open_persistence(profile_scope(home=tmp_path))
+    try:
+        agent, messages = _pruning_agent(db), _tool_history()
+        agent._flush_messages_to_session_db(messages, [])
+        holder = raw_holder(db)
+        legacy = SimpleNamespace(rewrite_pruned_rows=partial(rewrite_pruned_rows, holder))
+        compressor = agent.context_compressor
+        pruned = [dict(m) for m in messages]
+        retired = [i for i, m in enumerate(messages) if isinstance(m.get("content"), list)]
+        for i in retired:
+            pruned[i]["content"] = [{"type": "text", "text": "Image loaded into your context."},
+                                    {"type": "text", "text": "[image retired]"}]
+        assert compressor._rewrite_pruned_rows_in_place(legacy, _SID, messages, pruned, {}) == len(retired) >= 1
+        stored = transcript_rows(db, _SID)
+        assert all(stored[i]["content"] == _durable_content(pruned[i]["content"]) for i in retired)
+        assert all(isinstance(pruned[i]["content"], list) for i in retired)  # the live replacement keeps its parts
+        assert rewritten_held_row_ids(holder, _SID, [pruned[i] for i in retired]) == []
+    finally:
+        db.close()
+
+
 def test_a_turn_compacted_in_place_before_its_context_backfill_keeps_its_image(tmp_path: Path) -> None:
     """In-place preflight compaction stores the image turn, then the prologue backfills its plugin context into that
     row. The row holds text and the live dict owns that write: a later re-flush (the surrogate repair's, which drops

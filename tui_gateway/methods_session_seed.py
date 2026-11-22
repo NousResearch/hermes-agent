@@ -43,7 +43,8 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
             # path can retry cleanly on first submit.
             # Copy the whole parent history in bounded-chunk transactions — a branch seed can be hundreds of
             # rows, and per-row transactions were the write-amplification pattern removed in #23254.
-            rows = [{"role": msg.get("role", "user"), "content": msg.get("content"),
+            from session_rules.turns import _durable_content
+            rows = [{"role": msg.get("role", "user"), "content": _durable_content(msg.get("content")),
                      **{field: msg.get(field) for field in copy_fields}, **message_identity(msg)} for msg in history]
             batch = persistence.messages.append_batch(new_key, [_new_message(row) for row in rows], chunk_rows=500)
             for row, outcome in zip(rows, batch.outcomes):  # the row state the write gave each copied row

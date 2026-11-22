@@ -5,7 +5,7 @@ import hashlib
 
 import logging
 import re
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -38,6 +38,20 @@ _PERSIST_AFTER_ADMISSION_INTERRUPT = "_persist_after_admission_interrupt"
 # id(msg) set can alias a freed dict's address onto a new message, a key on the dict cannot. The `_` prefix is
 # mandatory (wire sanitizers strip `_` keys). CONTRACT: the marker asserts the dict's CONTENT is durable as
 # written — any in-place mutation that must persist MUST pop it (turn_finalizer, context_compressor).
+
+
+@contextmanager
+def durable_rows(messages):
+    """Project worker writes and hand back row stamps only after a successful write."""
+    from session_rules.durable import durable_row
+    from persistence.workers.vocabulary import row_annotations
+    from agent.runtime_session_store import apply_row_annotations
+
+    rows = [durable_row(message) for message in messages]
+    yield rows
+    copied = [(message, row) for message, row in zip(messages, rows) if message is not row]
+    if copied:
+        apply_row_annotations([message for message, _ in copied], row_annotations([row for _, row in copied]))
 
 
 def _safe_session_filename_component(session_id: str) -> str:

@@ -105,6 +105,18 @@ async def _compress_writer(request, monkeypatch, *, in_place):
     return db, raw_holder(db)._execute_write(write)[1]['target_session_id']
 
 
+@pytest.mark.asyncio
+async def test_gateway_append_projects_parts_without_mutating_live_content(served):  # health: allow F811 -- pytest injects the imported served fixture by parameter name
+    runner, root = served
+    _source, sid, db = await _gateway_session(runner, root)
+    live = {'role': 'user', 'content': _PARTS}
+    runner.session_store.append_to_transcript(sid, live)
+    row = raw_holder(db)._read_one(
+        "SELECT content FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 1", (sid,))
+    assert row['content'] == _durable_content(_PARTS)
+    assert live['content'] == _PARTS
+
+
 _WRITERS = {
     'retry_in_admission': lambda request, mp: _retry_writer(request, mp, under_authority=True),
     'retry_rewrite_transcript': lambda request, mp: _retry_writer(request, mp, under_authority=False),

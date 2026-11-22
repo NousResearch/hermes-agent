@@ -138,7 +138,7 @@ def test_turn_prologue_row_backfills_land_through_the_worker_like_direct(worker)
         parts = [{'role': 'user', 'content': [{'type': 'text', 'text': 'look'},
                                                {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,AA=='}}]}]
         append(sid, parts)
-        _append_multimodal_context(agent, parts[0], '', 'PLUGIN CONTEXT', preflight_compressed=False)
+        _append_multimodal_context(agent, parts[0], '', 'PLUGIN CONTEXT')
         durable[sid] = (sidecar, newest_user(sid)[0], owns_its_row(parts[0]))
     assert durable['owned'] == durable['direct'] == (('question', 'question\n\nPLUGIN CONTEXT'),
                                                      'look\n[screenshot]\nPLUGIN CONTEXT', True)
@@ -163,3 +163,41 @@ def test_a_row_rewrite_merges_display_metadata_through_the_worker_like_direct(wo
         stored[sid] = {k: v for k, v in meta.items() if k != REACTIONS_METADATA_KEY}
         assert [r['emoji'] for r in meta[REACTIONS_METADATA_KEY]] == ['👍']
     assert stored['owned'] == stored['direct'] == {'keep': 1, 'withheld_prompt': 'x'}
+
+
+@pytest.mark.parametrize('rotate', [False, True])
+def test_worker_generation_projects_a_copy_and_hands_ownership_back(worker, rotate):
+    from agent.conversation_compression_archive import commit_compaction
+    from agent.session_persistence import durable_rows
+    from persistence.sqlite.conversation._store.transcript_repair import transcript_row_snapshot
+    from session_rules.turns import _durable_content
+
+    persistence, store = worker
+    holder = persistence.holder()
+    parts = [{'type': 'text', 'text': 'look'},
+             {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,AA=='}}]
+    messages = [{'role': 'user', 'content': parts}]
+    if rotate:
+        assert store.try_acquire_compression_lock('owned', 'holder')
+        with durable_rows(messages) as rows:
+            store.publish_compression_child(parent_session_id='owned', child_session_id='child',
+                source='cli', messages=rows, compression_lock_holder='holder')
+    else:
+        commit_compaction(store, None, 'owned', messages, tail_count=0)
+    live = messages[0]
+    row = holder._read_one('SELECT * FROM messages WHERE id=?', (live['_row_id'],))
+    assert live['content'] == parts
+    assert row['content'] == _durable_content(parts)
+    assert live['_db_row_snapshot'] == transcript_row_snapshot(row)
+    assert live['message_uid'] == row['message_uid']
+
+
+def test_failed_worker_generation_does_not_mark_live_image_durable():
+    from agent.session_persistence import durable_rows
+
+    live = {'role': 'user', 'content': [{'type': 'text', 'text': 'look'}]}
+    with pytest.raises(RuntimeError, match='write failed'):
+        with durable_rows([live]) as rows:
+            rows[0]['_row_id'] = 99
+            raise RuntimeError('write failed')
+    assert '_row_id' not in live

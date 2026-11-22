@@ -293,12 +293,19 @@ class ProactivePruneMixin:
                     != {k: v for k, v in replacement.items() if k not in ignored}):
                 changes.append((original, replacement))
         try:
+            from session_rules.durable import durable_row
             if persistence is None:
-                return rewrite(session_id, changes, model_config_patch=model_config_patch)
+                # The replacement is written as the flush's text row and the live dict keeps its parts; the
+                # original stays as held, since it names the stored row and an older build's row may hold the
+                # parts. The store stamps the text copy, so the live replacement takes its stamps back.
+                from agent.session_persistence import durable_rows
+                with durable_rows([replacement for _original, replacement in changes]) as rows:
+                    return rewrite(session_id, [(original, row) for (original, _), row in zip(changes, rows)],
+                                   model_config_patch=model_config_patch)
             from agent.conversation_compression_archive import held_message
             from persistence.conversation.messages import NewMessage, PrunedRowChange
             result = persistence.messages.rewrite_pruned_rows(session_id, [
-                PrunedRowChange(held_message(original), NewMessage.from_live(replacement), NewMessage.from_live(original))
+                PrunedRowChange(held_message(original), NewMessage.from_live(durable_row(replacement)), NewMessage.from_live(original))
                 for original, replacement in changes], model_config_patch=model_config_patch)
         except PruneRowStale as exc:
             # A named row whose stored body changed is another writer's generation, which is exactly

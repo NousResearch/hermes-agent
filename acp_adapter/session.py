@@ -484,8 +484,9 @@ class SessionManager:
             # create/fork every row is active (== full replace), and archived rows survive.
             # Unconditional because an existence probe would fail OPEN on DB error and can
             # race a concurrent archive_and_compact. Still rolls back on mid-rewrite failure.
+            from session_rules.durable import durable_row
             result = persistence.messages.replace_transcript(
-                state.session_id, [_new_message(m) for m in state.history], ReplaceMode.PRESERVE_EXISTING_ARCHIVE)
+                state.session_id, [_new_message(durable_row(m)) for m in state.history], ReplaceMode.PRESERVE_EXISTING_ARCHIVE)
             _stamp_rows(state.history, result.rows)
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)

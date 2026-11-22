@@ -2771,17 +2771,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
         # CLI /branch semantics: create the child, then end the original as branched (child first, so
         # a failed create never leaves the source ended with no fork, #11030).
-        # ``_branched_from`` is the durable branch marker (same as CLI /branch): with the child created
-        # first, the timestamp fallback in _BRANCH_CHILD_SQL (child.started_at >= parent.ended_at) no
-        # longer holds, and an unmarked child would vanish from default session listings.
+        # The explicit marker keeps child-first forks visible without the legacy timestamp heuristic.
         await sessions.create(NewSession(
             session_id=fork_id, source="api_server", model=source.get("model"),
             system_prompt=source.get("system_prompt"), parent_session_id=source_id,
             lineage_kind=SessionLineageKind.BRANCH))
         await sessions.end(source_id, "branched")
+        from session_rules.durable import durable_row
         rows = await store.aio.messages.read_transcript(source_id)
         await store.aio.messages.replace_transcript(
-            fork_id, [NewMessage.from_live(row.as_wire_row()) for row in rows], ReplaceMode.DESTRUCTIVE)
+            fork_id, [NewMessage.from_live(durable_row(row.as_wire_row())) for row in rows], ReplaceMode.DESTRUCTIVE)
         title = body.get("title")
         if title is None:
             base = source.get("title") or "fork"

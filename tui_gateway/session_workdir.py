@@ -722,10 +722,12 @@ def _persist_branch_seed(session: dict) -> None:
         return
     from agent.message_metadata import message_identity
     from agent.transcript_repair import sync_flushed_message_markers
+    from session_rules.durable import durable_row
     with session["history_lock"]:  # message_identity stamps the live dicts
         live = list(session.get("history") or [])
         seed = [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS},
                  **message_identity(msg)} for msg in live]
+        seed = [durable_row(row) for row in seed]
     if not seed:
         return
     with _session_db(session) as db, _persistence_for(db) as persistence:

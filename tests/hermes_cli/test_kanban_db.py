@@ -1584,7 +1584,7 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
-    monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd.spawn, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
     assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
@@ -2040,7 +2040,7 @@ def test_archive_running_task_terminates_worker(kanban_home, monkeypatch):
         host = kb._claimer_id().split(":", 1)[0]
         kb.claim_task(conn, t, claimer=f"{host}:worker")
         # A verified spawn: an uncaptured fingerprint would (correctly) refuse the signal.
-        monkeypatch.setattr(kbd, "_process_fingerprint", lambda _pid: "boot:1|777")
+        monkeypatch.setattr(kbd.crash_sweep, "_process_fingerprint", lambda _pid: "boot:1|777")
         kbd._set_worker_pid(conn, t, 54321)
 
         monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)

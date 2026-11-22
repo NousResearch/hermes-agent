@@ -471,6 +471,7 @@ def _neutralize_kanban_memory_guard(request, monkeypatch):
     except Exception:
         return
     monkeypatch.setattr(_kbd_mod, "_system_memory_sample", dict, raising=False)
+    monkeypatch.setattr(_kbd_mod.concurrency, "_system_memory_sample", dict, raising=False)
 
 
 @pytest.fixture(autouse=True)

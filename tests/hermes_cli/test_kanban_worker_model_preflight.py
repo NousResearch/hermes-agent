@@ -24,7 +24,9 @@ def dispatch_profile(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.setattr(dispatch, "_memory_pressure_level", lambda: "normal")
+    monkeypatch.setattr(dispatch.tick, "_memory_pressure_level", lambda: "normal")
     monkeypatch.setattr(dispatch, "_restart_safe_worker_argv", lambda task, command: command)
+    monkeypatch.setattr(dispatch.spawn, "_restart_safe_worker_argv", lambda task, command: command)
     spawned = []
     monkeypatch.setattr("subprocess.Popen", lambda command, **kw: spawned.append(command) or SimpleNamespace(pid=424242))
     kb.create_board("work")

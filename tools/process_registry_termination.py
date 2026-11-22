@@ -9,6 +9,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from tools.environments.local import _BsdProc, _snapshot_descendants
 
 if TYPE_CHECKING:
     from tools.process_registry import ProcessSession
@@ -22,7 +23,9 @@ class ProcessTerminationMixin:
 
     @staticmethod
     def _proc_alive(proc) -> bool:
-        """True if a psutil.Process is running and not a zombie (already dead, just unreaped)."""
+        """True if a psutil.Process or ``_BsdProc`` is running and not a zombie (already dead, just unreaped)."""
+        if isinstance(proc, _BsdProc):
+            return proc.is_running()
         try:
             import psutil
             return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
@@ -72,7 +75,7 @@ class ProcessTerminationMixin:
         # Snapshot before signalling: once the parent exits, psutil can no longer
         # reliably find children that it failed to reap.
         try:
-            descendants = parent.children(recursive=True)
+            descendants = _snapshot_descendants(pid)
         except gone:
             descendants = []
 
@@ -122,7 +125,7 @@ class ProcessTerminationMixin:
         with suppress(gone):
             if cls._proc_alive(parent):
                 known = {proc.pid for proc in targets}
-                targets.extend(p for p in parent.children(recursive=True) if p.pid not in known)
+                targets.extend(p for p in _snapshot_descendants(pid) if p.pid not in known)
         for proc in targets:
             with suppress(gone):
                 if cls._proc_alive(proc):
@@ -133,8 +136,7 @@ class ProcessTerminationMixin:
     def _live_descendants(pid: int) -> list[int]:
         """PIDs of living non-zombie descendants of host PID ``pid`` (best-effort)."""
         try:
-            import psutil
-            children = psutil.Process(pid).children(recursive=True)
+            children = _snapshot_descendants(pid)
         except Exception:
             logger.debug("Could not list descendants of pid %s", pid, exc_info=True)
             return []

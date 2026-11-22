@@ -1,6 +1,8 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
 import contextlib
+import ctypes
+import functools
 import logging
 import ntpath
 import os
@@ -9,6 +11,7 @@ import re
 import shlex
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
@@ -16,6 +19,7 @@ import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
+from typing import NamedTuple
 
 from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment, _SHELL_ENV_NAME_RE
@@ -999,7 +1003,7 @@ def _wait_for_group_exit(proc, pgid: int, timeout: float) -> bool:
         except Exception:
             pass
         try:
-            os.killpg(pgid, 0)  # windows-footgun: ok — POSIX process-group alive probe
+            _killpg(pgid, 0)  # POSIX process-group alive probe
         except ProcessLookupError:
             return True
         except PermissionError:
@@ -1057,6 +1061,77 @@ def _leader_is_ours(pgid, expected_start) -> bool:
         return True
 
 
+@functools.cache
+def _libsystem():  # libproc and libc: both export from libSystem
+    return ctypes.CDLL(None, use_errno=True)
+
+
+def _signal(pid: int, sig: int) -> None:
+    """``os.kill`` through libc via ctypes, which releases the GIL: macOS blocks a signal to
+    a process that is mid-spawn until the spawn finishes, and ``os.kill``/``os.killpg``
+    would hold the GIL, freezing every gateway thread, the whole time."""
+    if _libsystem().kill(pid, sig) == -1:
+        raise OSError(err := ctypes.get_errno(), os.strerror(err))
+
+
+def _listpids(kind: int, arg: int) -> list:
+    """The PIDs ``proc_listpids`` reports for *kind* (a ``PROC_*_ONLY`` filter) and *arg*."""
+    pids = (ctypes.c_int * 4096)()
+    return pids[: max(_libsystem().proc_listpids(kind, arg, pids, ctypes.sizeof(pids)), 0) // 4]
+
+
+def _killpg(pgid: int, sig: int) -> None:
+    """``os.killpg``, through libc on macOS (see ``_signal``). A signal 0 probe is never
+    delivered, so it never waits."""
+    if sys.platform != "darwin" or sig == 0:
+        return os.killpg(pgid, sig)  # windows-footgun: ok — POSIX only (callers gate _IS_WINDOWS)
+    _signal(-pgid, sig)  # kill(-pgid) is killpg
+
+
+def _bsd_info(pid: int) -> tuple:
+    """``(ppid, (start sec, usec))`` from ``PROC_PIDTBSDINFO``; Nones if gone or a zombie."""
+    info = ctypes.create_string_buffer(136)  # sizeof(struct proc_bsdinfo)
+    if _libsystem().proc_pidinfo(pid, 3, ctypes.c_uint64(0), info, 136) != 136:  # arg is uint64_t
+        return None, None
+    return (*struct.unpack_from("I", info, 16), struct.unpack_from("QQ", info, 120))
+
+
+class _BsdProc(NamedTuple):
+    """The kill paths' subset of ``psutil.Process`` on macOS, PID-reuse safe by libproc start time."""
+
+    pid: int
+    start: tuple
+
+    def is_running(self) -> bool:
+        return _bsd_info(self.pid)[-1] == self.start
+
+    def send_signal(self, sig: int) -> None:
+        if self.is_running():
+            _signal(self.pid, sig)
+
+    terminate = functools.partialmethod(send_signal, signal.SIGTERM)
+    kill = functools.partialmethod(send_signal, signal.SIGKILL)  # windows-footgun: ok — macOS only
+
+
+def _snapshot_descendants(pid: int) -> list:
+    """Handles for *pid*'s descendants, parents first, taken before any signal: ``_BsdProc`` on
+    macOS, where psutil's ``KERN_PROC_*`` sysctls wait uninterruptibly, GIL held, on any process
+    mid-spawn (stdin on a writerless FIFO) and libproc does not; ``psutil.Process`` elsewhere."""
+    if sys.platform != "darwin":
+        import psutil
+
+        return psutil.Process(pid).children(recursive=True)
+    found, todo = [], [pid]
+    while todo:
+        parent = todo.pop()
+        for kid in _listpids(6, parent):  # PROC_PPID_ONLY
+            ppid, *_, start = _bsd_info(kid)
+            if ppid == parent:  # still ours: not exited and recycled since the listing
+                found.append(_BsdProc(kid, start))
+                todo.append(kid)
+    return found
+
+
 def _kill_process_group_posix(proc) -> None:
     """TERM the group, wait, KILL, then sweep setsid escapees. Descendants are
     snapshotted BEFORE the first signal — once the wrapper dies they reparent to
@@ -1078,15 +1153,13 @@ def _kill_process_group_posix(proc) -> None:
         # so we still reach escapees that are verifiably ours.
         descendants = []
         try:
-            import psutil
-            descendants = psutil.Process(proc.pid).children(recursive=True)
+            descendants = _snapshot_descendants(proc.pid)
         except Exception:
             pass
         _sweep_escaped_descendants(descendants, pgid)
         return
-    try:  # psutil children snapshot; empty on any failure (must never break the kill)
-        import psutil
-        descendants = psutil.Process(proc.pid).children(recursive=True)
+    try:  # descendant snapshot; empty on any failure (must never break the kill)
+        descendants = _snapshot_descendants(proc.pid)
     except Exception:
         descendants = []
     if pgid == os.getpgrp():
@@ -1095,13 +1168,13 @@ def _kill_process_group_posix(proc) -> None:
         _kill_known_pids(proc, descendants)
     else:
         try:
-            os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
+            _killpg(pgid, signal.SIGTERM)
             if not _wait_for_group_exit(proc, pgid, 1.0):
                 if not _leader_is_ours(pgid, expected_start):
                     # Leader exited during the grace window; do not escalate to
                     # SIGKILL on a possibly-recycled PGID.
                     return
-                os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
+                _killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
                 _wait_for_group_exit(proc, pgid, 2.0)
                 with contextlib.suppress(subprocess.TimeoutExpired, OSError):
                     proc.wait(timeout=0.2)
@@ -1368,7 +1441,7 @@ class LocalEnvironment(BaseEnvironment):
             # onto an unrelated process group. Comparison is drift-tolerant (#117505);
             # without a baseline keep the legacy best-effort behaviour.
             if pgid != os.getpgrp() and _leader_is_ours(pgid, getattr(proc, "_hermes_pgid_start", None)):
-                os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (_IS_WINDOWS returned above)
+                _killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (_IS_WINDOWS returned above)
         with contextlib.suppress(OSError):
             proc.kill()
 

@@ -67,12 +67,11 @@ def test_kill_with_surviving_descendant_keeps_session_running():
     kid.pid = 424243
     kid.is_running.return_value = True
     kid.status.return_value = "running"
-    parent = MagicMock()
-    parent.children.return_value = [kid]
     try:
         _, _, save = _paused_registry_calls()
         with patch.object(ProcessRegistry, "_host_pid_is_ours", return_value=True), \
-             patch("psutil.Process", return_value=parent):
+             patch("psutil.Process", return_value=MagicMock()), \
+             patch("tools.process_registry_termination._snapshot_descendants", return_value=[kid]):
             result = reg.kill_process(s.id)
     finally:
         patch.stopall()

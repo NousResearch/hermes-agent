@@ -15,6 +15,9 @@ keeps the legacy best-effort kill instead of refusing.
 
 import os
 import signal
+import subprocess
+import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -51,7 +54,7 @@ def killpg_calls(monkeypatch):
             raise ProcessLookupError
 
     monkeypatch.setattr(os, "getpgid", fake_getpgid)
-    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr("tools.environments.local._killpg", fake_killpg)
     return calls
 
 
@@ -90,6 +93,36 @@ def test_local_guard_unreadable_start_time_live_leader_is_best_effort(monkeypatc
 
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
     assert _leader_is_ours(67890, RECORDED) is True
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS posix_spawn wedge")
+def test_darwin_kill_path_survives_a_child_wedged_mid_spawn(tmp_path):
+    """A child whose posix_spawn opens a writerless FIFO (lldb `process launch -i <fifo>`)
+    blocks process-table sysctls and any signal to it. The process registry's tree kill must
+    snapshot it via libproc and abort the spawn by signalling its spawner first, never waiting on it."""
+    from tools.environments.local import _snapshot_descendants
+    from tools.process_registry import ProcessRegistry
+
+    os.mkfifo(fifo := tmp_path / "stdin")
+    # A regression blocks GIL-held, so nothing in-process can time out: the releaser bounds it.
+    releaser = subprocess.Popen(["sh", "-c", f"sleep 10; exec 3<>{fifo}"])
+    action = f"[(os.POSIX_SPAWN_OPEN, 0, {str(fifo)!r}, os.O_RDONLY, 0)]"
+    spawn = f"import os; os.posix_spawn('/bin/echo', ['echo'], {{}}, file_actions={action})"
+    proc = subprocess.Popen([sys.executable, "-c", spawn], start_new_session=True)
+    try:
+        start = time.monotonic()
+        while not (wedged := _snapshot_descendants(proc.pid)):
+            assert time.monotonic() - start < 5, "the spawner never forked"
+            time.sleep(0.01)
+        ProcessRegistry._terminate_host_pid(proc.pid)
+        assert time.monotonic() - start < 3
+        assert proc.wait(timeout=1) and not any(child.is_running() for child in wedged)
+    finally:  # open the FIFO, never signal: a still-wedged child would block the cleanup too
+        writer = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+        releaser.kill()
+        releaser.wait()
+        proc.wait()  # the spawn completes once the FIFO has a writer
+        os.close(writer)
 
 
 # --- stdio MCP orphan reaper ------------------------------------------------

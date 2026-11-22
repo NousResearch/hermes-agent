@@ -106,10 +106,29 @@
     todo: "Waiting on dependencies or unassigned",
     ready: "Dependencies satisfied; assign a profile to dispatch",
     running: "Claimed by a worker — in-flight",
-    blocked: "Worker asked for human input",
+    blocked: "On hold — each card's badge says who acts next",
     review: "Implementation complete — awaiting review",
     done: "Completed",
     archived: "Archived",
+  };
+  // Per-card copy for Blocked-column cards. The column subtitle cannot know
+  // which blocks actually await a human — `block_kind` does, so the truth
+  // rides on the card. `dependency`/`transient` are machine-owned (no human
+  // action); `needs_input` means a worker filed a question; untyped blocks
+  // were parked without a filed reason (failure breaker) or created in
+  // Blocked to defer dispatch (e.g. a delegation mirror card) — those may
+  // not be waiting on you at all.
+  const FALLBACK_BLOCK_KIND_BADGES = {
+    needs_input: { key: "blockNeedsInput", label: "Needs your input",
+      hint: "A worker asked a question. Open the card: the question is in the run summary (\"Final Result\" / Run history). Comment your answer, then Unblock." },
+    dependency: { key: "blockDependency", label: "Waiting on parent",
+      hint: "Blocked by an unfinished parent task; re-gates automatically when the parent is done. No human action needed." },
+    transient: { key: "blockTransient", label: "Waiting (transient)",
+      hint: "Blocked on a transient condition; eligible for automatic retry. No human action needed." },
+    capability: { key: "blockCapability", label: "Needs capability",
+      hint: "No assignee profile can currently do this task. Assign or configure one, then Unblock." },
+    untyped: { key: "blockUntyped", label: "Parked — no reason filed",
+      hint: "Blocked without a typed reason: parked by the failure breaker, or created in Blocked to defer dispatch (e.g. a delegation mirror). Check Run history — this may not be waiting on you." },
   };
   const FALLBACK_DESTRUCTIVE = {
     done: "Mark this task as done? The worker's claim is released and dependent children become ready.",
@@ -3172,6 +3191,9 @@
 
     const progress = t.progress;
     const needsAssignee = t.status === "ready" && !t.assignee;
+    const blockBadge = t.status === "blocked"
+      ? (FALLBACK_BLOCK_KIND_BADGES[t.block_kind] || FALLBACK_BLOCK_KIND_BADGES.untyped)
+      : null;
 
     return h("div", {
       ref: cardRef,
@@ -3247,6 +3269,14 @@
                   className: "hermes-kanban-needs-assignee",
                   title: tx(i18n, "needsAssigneeHint", "Dependencies are satisfied, but the dispatcher skips this task until you assign a profile."),
                 }, tx(i18n, "needsAssignee", "Needs assignee"))
+              : null,
+            blockBadge
+              ? h(Badge, {
+                  variant: "outline",
+                  className: cn("hermes-kanban-block-kind",
+                                "hermes-kanban-block-kind--" + (t.block_kind || "untyped")),
+                  title: tx(i18n, blockBadge.key + "Hint", blockBadge.hint),
+                }, tx(i18n, blockBadge.key, blockBadge.label))
               : null,
           ),
           h("div", { className: "hermes-kanban-card-title" },

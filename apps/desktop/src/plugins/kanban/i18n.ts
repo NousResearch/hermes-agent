@@ -108,7 +108,7 @@ type KanbanMessages = {
   evtClaimedWorker: string
   evtWorkerStarted: string
   evtCompleted: string
-  evtBlocked: string
+  evtBlocked: (kind: string | null) => string
   evtUnblocked: (col: string) => string
   evtReclaimed: string
   evtSpecified: string
@@ -126,6 +126,9 @@ type KanbanMessages = {
   /** #124391 — blocked-card detail: why it blocked and what it cost. */
   blockKindTip: (kind: string) => string
   blockReason: string
+  /** Untyped blocked cards: breaker parks and deferred-dispatch mirrors. */
+  blockParked: string
+  blockParkedTip: string
   blockRecurrences: string
   blockRecurrencesTip: string
   consecutiveFailures: string
@@ -240,7 +243,7 @@ export const en: KanbanMessages = {
     scheduled: { label: 'Scheduled', help: 'Waiting for a scheduled time to arrive.' },
     ready: { label: 'Ready', help: 'Dependencies satisfied — assign a profile and the dispatcher runs it.' },
     running: { label: 'Running', help: 'Claimed by a worker — an agent is on it. Set by the dispatcher.' },
-    blocked: { label: 'Blocked', help: 'The worker asked for human input.' },
+    blocked: { label: 'Blocked', help: 'On hold — the card chip names the kind; only “needs input” awaits you.' },
     review: { label: 'Review', help: 'A review agent is checking the work. Set by the dispatcher.' },
     done: { label: 'Done', help: 'Completed; dependent children become ready.' },
     archived: { label: 'Archived', help: 'Hidden from the default board view.' }
@@ -340,7 +343,16 @@ export const en: KanbanMessages = {
   evtClaimedWorker: 'claimed by a worker',
   evtWorkerStarted: 'worker started',
   evtCompleted: 'completed',
-  evtBlocked: 'blocked — needs human input',
+  evtBlocked: kind =>
+    kind === 'needs_input'
+      ? 'blocked — needs human input'
+      : kind === 'capability'
+        ? 'blocked — capability wall'
+        : kind === 'transient'
+          ? 'blocked — transient failure (retry-eligible)'
+          : kind === 'dependency'
+            ? 'blocked — waiting on a dependency'
+            : 'blocked — no reason filed (breaker park or deferred dispatch)',
   evtUnblocked: col => `unblocked${col ? ` → ${col}` : ' → Ready'}`,
   evtReclaimed: 'reclaimed — returned to the queue',
   evtSpecified: 'spec written by the triage agent',
@@ -363,6 +375,9 @@ export const en: KanbanMessages = {
           ? 'The worker failed on a transient error.'
           : 'The worker reported a dependency it must wait on.',
   blockReason: 'Block kind',
+  blockParked: 'parked',
+  blockParkedTip:
+    'Blocked without a filed reason: parked by the failure breaker, or created Blocked to defer dispatch (e.g. a delegation mirror). Not necessarily waiting on you.',
   blockRecurrences: 'Block recurrences',
   blockRecurrencesTip: 'Times this task re-blocked for the same reason after a human unblock.',
   consecutiveFailures: 'Consecutive failures',
@@ -472,7 +487,7 @@ const ja: KanbanMessages = {
     scheduled: { label: 'スケジュール', help: '予定時刻を待っています。' },
     ready: { label: 'Ready', help: '依存関係が解決済み — プロフィールを割り当てるとディスパッチャが実行します。' },
     running: { label: '実行中', help: 'ワーカーが取得済み — エージェントが作業中。ディスパッチャが設定します。' },
-    blocked: { label: 'ブロック', help: 'ワーカーが人間の入力を求めています。' },
+    blocked: { label: 'ブロック', help: '保留中 — カードのチップが種類を示します。「要入力」のみあなたを待っています。' },
     review: { label: 'レビュー', help: 'レビューエージェントが作業を確認中。ディスパッチャが設定します。' },
     done: { label: '完了', help: '完了。依存する子タスクが Ready になります。' },
     archived: { label: 'アーカイブ', help: 'デフォルトのボード表示から非表示。' }
@@ -571,7 +586,16 @@ const ja: KanbanMessages = {
   evtClaimedWorker: 'ワーカーが取得',
   evtWorkerStarted: 'ワーカー開始',
   evtCompleted: '完了',
-  evtBlocked: 'ブロック — 人間の入力が必要',
+  evtBlocked: kind =>
+    kind === 'needs_input'
+      ? 'ブロック — 人間の入力が必要'
+      : kind === 'capability'
+        ? 'ブロック — 能力の壁'
+        : kind === 'transient'
+          ? 'ブロック — 一時的な障害（再試行対象）'
+          : kind === 'dependency'
+            ? 'ブロック — 依存関係を待機中'
+            : 'ブロック — 理由未登録（ブレーカー待避またはディスパッチ保留）',
   evtUnblocked: col => `ブロック解除${col ? ` → ${col}` : ' → Ready'}`,
   evtReclaimed: '再取得 — キューに戻しました',
   evtSpecified: 'トリアージエージェントが仕様を作成',
@@ -594,6 +618,9 @@ const ja: KanbanMessages = {
           ? 'ワーカーが一時的なエラーで失敗しました。'
           : 'ワーカーが待機すべき依存関係を報告しました。',
   blockReason: 'ブロック種別',
+  blockParked: '保留中',
+  blockParkedTip:
+    '理由が登録されていないブロック：障害ブレーカーによる待避、またはディスパッチ保留のためにブロック状態で作成されました。あなたを待っているとは限りません。',
   blockRecurrences: 'ブロック回数',
   blockRecurrencesTip: '人間がブロック解除した後、同じ理由で再ブロックされた回数。',
   consecutiveFailures: '連続失敗',
@@ -703,7 +730,7 @@ const zh: KanbanMessages = {
     scheduled: { label: '已排期', help: '等待预定时间到来。' },
     ready: { label: '就绪', help: '依赖已满足 — 分配一个配置档，调度器即会运行它。' },
     running: { label: '运行中', help: '已被工作单元领取 — 有代理在处理。由调度器设置。' },
-    blocked: { label: '受阻', help: '工作单元需要人工输入。' },
+    blocked: { label: '受阻', help: '暂停 — 卡片标记注明类型；只有「needs input」在等你。' },
     review: { label: '审查', help: '审查代理正在检查工作。由调度器设置。' },
     done: { label: '完成', help: '已完成；依赖它的子任务变为就绪。' },
     archived: { label: '已归档', help: '从默认面板视图中隐藏。' }
@@ -801,7 +828,16 @@ const zh: KanbanMessages = {
   evtClaimedWorker: '被工作单元领取',
   evtWorkerStarted: '工作单元已启动',
   evtCompleted: '已完成',
-  evtBlocked: '受阻 — 需要人工输入',
+  evtBlocked: kind =>
+    kind === 'needs_input'
+      ? '受阻 — 需要人工输入'
+      : kind === 'capability'
+        ? '受阻 — 能力受限'
+        : kind === 'transient'
+          ? '受阻 — 临时故障（可重试）'
+          : kind === 'dependency'
+            ? '受阻 — 等待依赖'
+            : '受阻 — 未记录原因（熔断滞留或暂缓派发）',
   evtUnblocked: col => `已解除阻塞${col ? ` → ${col}` : ' → 就绪'}`,
   evtReclaimed: '已重新领取 — 已放回队列',
   evtSpecified: '分诊代理已撰写规格',
@@ -824,6 +860,8 @@ const zh: KanbanMessages = {
           ? '工作单元因临时性错误失败。'
           : '工作单元报告了需要等待的依赖。',
   blockReason: '阻塞类型',
+  blockParked: '已滞留',
+  blockParkedTip: '未记录原因的受阻：熔断器滞留，或以受阻状态创建以暂缓派发。未必在等待你。',
   blockRecurrences: '阻塞次数',
   blockRecurrencesTip: '人工解除阻塞后，该任务因同一原因再次阻塞的次数。',
   consecutiveFailures: '连续失败',
@@ -931,7 +969,7 @@ const zhHant: KanbanMessages = {
     scheduled: { label: '已排程', help: '等待預定時間到來。' },
     ready: { label: '就緒', help: '相依項目已滿足 — 指派一個設定檔，排程器便會執行它。' },
     running: { label: '執行中', help: '已被工作單元領取 — 有代理在處理。由排程器設定。' },
-    blocked: { label: '受阻', help: '工作單元需要人工輸入。' },
+    blocked: { label: '受阻', help: '暫停 — 卡片標記註明類型；只有「needs input」在等你。' },
     review: { label: '審查', help: '審查代理正在檢查工作。由排程器設定。' },
     done: { label: '完成', help: '已完成；相依它的子任務變為就緒。' },
     archived: { label: '已封存', help: '從預設面板檢視中隱藏。' }
@@ -1029,7 +1067,16 @@ const zhHant: KanbanMessages = {
   evtClaimedWorker: '被工作單元領取',
   evtWorkerStarted: '工作單元已啟動',
   evtCompleted: '已完成',
-  evtBlocked: '受阻 — 需要人工輸入',
+  evtBlocked: kind =>
+    kind === 'needs_input'
+      ? '受阻 — 需要人工輸入'
+      : kind === 'capability'
+        ? '受阻 — 能力受限'
+        : kind === 'transient'
+          ? '受阻 — 臨時故障（可重試）'
+          : kind === 'dependency'
+            ? '受阻 — 等待相依'
+            : '受阻 — 未記錄原因（熔斷滯留或暫緩派發）',
   evtUnblocked: col => `已解除阻擋${col ? ` → ${col}` : ' → 就緒'}`,
   evtReclaimed: '已重新領取 — 已放回佇列',
   evtSpecified: '分類代理已撰寫規格',
@@ -1052,6 +1099,8 @@ const zhHant: KanbanMessages = {
           ? '工作單元因暫時性錯誤失敗。'
           : '工作單元回報了需要等待的相依關係。',
   blockReason: '封鎖類型',
+  blockParked: '已滯留',
+  blockParkedTip: '未記錄原因的受阻：熔斷器滯留，或以受阻狀態建立以暫緩派發。未必在等待你。',
   blockRecurrences: '封鎖次數',
   blockRecurrencesTip: '人工解除封鎖後，該任務因同一原因再次封鎖的次數。',
   consecutiveFailures: '連續失敗',

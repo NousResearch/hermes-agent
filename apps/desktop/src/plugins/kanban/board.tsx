@@ -216,6 +216,16 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
           </span>
         </Tip>
       )}
+      {task.status === 'blocked' && !task.block_kind && (
+        // Untyped block: failure-breaker park or deferred-dispatch mirror.
+        // Muted, and worded so it does not masquerade as "needs your input".
+        <Tip label={k.blockParkedTip}>
+          <span className="inline-flex shrink-0 cursor-help items-center gap-1 text-(--ui-text-tertiary)">
+            <Codicon name="debug-breakpoint-data-unverified" size="0.7rem" />
+            {k.blockParked}
+          </span>
+        </Tip>
+      )}
       {unassignedReady && !fallback && (
         <Tip label={k.wontRunTip}>
           <span className="inline-flex shrink-0 cursor-help items-center gap-1 text-amber-500">

@@ -25,13 +25,14 @@ from agent.message_sanitization import (
     _sanitize_messages_media_markers,
 )
 
-# The live marker from the 2026-09-12 incident, and the fixed fallback spelling
-# older llama.cpp builds use when randomization is off.
+# The live marker from the 2026-09-12 incident, the fixed spelling older builds use,
+# and the b8799-era image alias (same tokenizer 400).
 RANDOM_MARKER = "<__media_CROZLhoWqzum1cQTzZQKMYA9gqWTHJ3E__>"
 FIXED_MARKER = "<__media__>"
+IMAGE_MARKER = "<__image__>"
 
 
-@pytest.mark.parametrize("marker", [RANDOM_MARKER, FIXED_MARKER])
+@pytest.mark.parametrize("marker", [RANDOM_MARKER, FIXED_MARKER, IMAGE_MARKER])
 def test_marker_is_removed_from_text(marker):
     out = _neutralize_media_markers(f"  media_marker: {marker}\n  model_alias: qwen-27b")
     assert marker not in out
@@ -72,7 +73,9 @@ def test_auxiliary_kwargs_builder_neutralizes_markers():
     ]
     kwargs = _build_call_kwargs("custom", "qwen-27b", messages, base_url="http://127.0.0.1:8080/v1")
     assert RANDOM_MARKER not in kwargs["messages"][1]["content"]
-    assert kwargs["messages"][0]["content"] == "dump props"
+    # call_llm is a public API: the caller's list must survive untouched.
+    assert messages[1]["content"] == f"media_marker: {RANDOM_MARKER}"
+    assert messages[0]["content"] == "dump props"
 
 
 def test_marker_inside_tool_call_arguments_is_neutralized():

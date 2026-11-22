@@ -36,7 +36,7 @@ from agent.error_classifier import (
 from agent.auxiliary_custom_credentials import (
     _normalize_api_key, declared_custom_credential_identity, declared_custom_key_for_base_url, fast_catalog_provider)
 from agent.errors import InvalidProviderResponseError
-from agent.message_sanitization import _sanitize_messages_media_markers
+from agent.message_sanitization import _media_marker_in_structure, _sanitize_messages_media_markers
 from agent.auxiliary_fallback_recovery import reapply_repairs
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
@@ -6530,8 +6530,13 @@ def _build_call_kwargs(
     # Aux calls (title generation, compression, session search) read the same transcript as the
     # main loop but assemble their kwargs here, bypassing assemble_api_request's sanitizer. A
     # llama.cpp media marker quoted in that history wedges the session with a non-retryable 400
-    # (#108760), so neutralize on this path too — in place, idempotent.
-    if isinstance(kwargs.get("messages"), list) and _sanitize_messages_media_markers(kwargs["messages"]):
+    # (#108760). Copy-on-hit: call_llm is a public API, so clone before rewriting — the
+    # caller's list (and any live history behind it) stays untouched.
+    _aux_msgs = kwargs["messages"]
+    if isinstance(_aux_msgs, list) and _media_marker_in_structure(_aux_msgs):
+        from agent.conversation_loop import _clone_message_for_send
+        kwargs["messages"] = [_clone_message_for_send(m) for m in _aux_msgs]
+        _sanitize_messages_media_markers(kwargs["messages"])
         logger.debug("Auxiliary call: neutralized llama.cpp media marker(s) in outgoing messages")
     if no_progress_timeout is not None:
         kwargs["no_progress_timeout"] = no_progress_timeout

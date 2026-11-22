@@ -37,9 +37,11 @@ _MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role", DB_ROW_
 # HTTP 400 "Failed to tokenize prompt" in ~0.2s — before the model runs, non-retryable,
 # and identical on every endpoint of that server, so failover cannot route around it.
 # A session poisons itself just by reading the server's own /props into a tool result.
-# ``<__media__>`` is the fixed spelling older builds use; current builds emit only
-# the randomized-suffix form — no other tag shape is known from llama.cpp.
-_MEDIA_MARKER_RE = re.compile(r'<__media(?:_[A-Za-z0-9_-]+)?__>')
+# ``<__media__>`` is the fixed spelling older builds use; ``<__image__>`` was the
+# tokenizer's image alias on the b8799-era builds (replaced by the media marker
+# before splitting — same 400). Limitation: a server pinned with LLAMA_MEDIA_MARKER
+# to arbitrary text is unknowable from here; the /props-dump vector is covered.
+_MEDIA_MARKER_RE = re.compile(r'<__(?:media|image)(?:_[A-Za-z0-9_-]+)?__>')
 
 
 def _sanitize_surrogates(text: str) -> str:
@@ -85,6 +87,21 @@ def _neutralize_media_markers(text: str) -> str:
     travel as structured ``image_url`` parts and the server inserts its own marker.
     """
     return _MEDIA_MARKER_RE.sub('[media-marker removed]', text)
+
+
+def _media_marker_in_structure(payload: Any) -> bool:
+    """True when any string leaf in nested dict/list ``payload`` carries a marker (early exit)."""
+    stack = [payload]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, str):
+            if _MEDIA_MARKER_RE.search(node):
+                return True
+        elif isinstance(node, dict):
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return False
 
 
 def _fix_str_field(container: Any, key: Any, fix: Callable[[str], str]) -> bool:

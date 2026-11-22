@@ -123,6 +123,32 @@ def test_unrelated_errors_never_refresh_xai_credentials(provider, status, messag
     assert not retry.codex_auth_retry_attempted
 
 
+def test_stale_oauth_adopts_the_matching_account_before_a_different_pool_account():
+    """A different pool account must not win the subject check ahead of this session's grant."""
+    agent = _Agent()
+    agent.api_key = "account-a-old"
+
+    def adopt_other_account(**_kwargs):
+        agent.api_key = "account-b"
+        agent.pool_rotations = getattr(agent, "pool_rotations", 0) + 1
+        return True, False
+
+    agent._recover_with_credential_pool = adopt_other_account
+
+    def adopt_matching(*, force):
+        agent.refreshes.append(force)
+        agent.api_key = "account-a-stored"
+        return True
+
+    agent._try_refresh_codex_client_credentials = adopt_matching
+    error = _WireError(403, "Forbidden", _STALE_BODY)
+
+    assert _recover(agent, error, TurnRetryState(), []) == (True, False)
+    assert agent.api_key == "account-a-stored"
+    assert agent.refreshes == [True]
+    assert getattr(agent, "pool_rotations", 0) == 0
+
+
 @pytest.mark.parametrize("body,expected_status", [
     pytest.param({"code": "personal-team-blocked:spending-limit", "error": _STALE_BODY["error"]},
                  "exhausted", id="explicit-billing"),

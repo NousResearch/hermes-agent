@@ -70,6 +70,22 @@ def _refresh_codex_credentials_after_auth_error(
     return True
 
 
+def recover_matching_xai_oauth_before_pool(
+    agent: Any, retry: Any, status_code: Optional[int], error_context: Any, classified_reason: Any,
+) -> bool:
+    """Adopt this session's xAI account before credential-pool rotation.
+
+    Pool rotation is the usual first auth recovery. For a stale xAI bearer that
+    order selects a different pool account, the subject check rejects it, and
+    the stored grant for the account that actually failed is never tried.
+    """
+    if not is_xai_stale_oauth_error(getattr(agent, "provider", ""), status_code, error_context):
+        return False
+    return _refresh_codex_credentials_after_auth_error(
+        agent, retry, status_code, error_context, classified_reason,
+    )
+
+
 def _ra():
     import run_agent
     return run_agent

@@ -10,6 +10,7 @@ import base64
 import copy
 import json
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -206,3 +207,34 @@ def test_adoption_moves_matching_snapshot_and_aux_keys_only(runtime, holder_rout
             assert runtime.exchanges == []
     finally:
         auxiliary_client._RUNTIME_MAIN_CONTEXT.reset(context_token)
+
+
+def test_account_check_runs_again_after_the_refresh_lock_is_held(runtime, monkeypatch):
+    """A login that lands as the lock is taken must not have its grant exchanged."""
+    now = time.time()
+    old_token = _jwt("account-a", now - 3600)
+    other_token = _jwt("account-b", now + 3600, generation="other")
+    runtime.refreshed["token"] = _jwt("account-b", now + 7200, generation="refreshed")
+    agent = runtime.build(old_token)
+    _store_grant(runtime.home, old_token)
+
+    from hermes_cli import auth as auth_mod
+
+    entries = {"n": 0}
+    real_lock = auth_mod._auth_store_lock
+
+    @contextmanager
+    def counting_lock(*args, **kwargs):
+        entries["n"] += 1
+        # The second acquisition is the in-lock re-read. Swapping here is the
+        # login that arrives only once the refresh lock is held.
+        if entries["n"] == 2:
+            _store_grant(runtime.home, other_token)
+        with real_lock(*args, **kwargs):
+            yield
+
+    monkeypatch.setattr(auth_mod, "_auth_store_lock", counting_lock)
+
+    assert agent._try_refresh_codex_client_credentials(force=True) is False
+    assert runtime.exchanges == []
+    assert agent.api_key == old_token

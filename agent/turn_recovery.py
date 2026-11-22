@@ -649,7 +649,7 @@ def recover_after_classification(
     """One-shot recovery chain that runs AFTER ``classify_api_error`` and before the
     generic retry path. Order is load-bearing (each branch may ``return`` early):
     welcome-tier repair → credit-limited 402 output-cap clamp → ``reasoning.context`` opt-out → Nous paid-entitlement refresh →
-    Codex stale-reasoning strip on 401 ``token_expired`` → credential-pool rotation → image shrink → multimodal-tool-content strip → corrupt-image
+    Codex stale-reasoning strip on 401 ``token_expired`` → matching xAI account (before the pool) → credential-pool rotation → image shrink → multimodal-tool-content strip → corrupt-image
     strip → Anthropic OAuth 1M-beta disable → per-provider 401 credential refresh →
     format-recovery strips.
     Returns ``(retry_now, recovered_with_pool)``; the latter feeds the Nous rate-limit guard."""
@@ -685,6 +685,12 @@ def recover_after_classification(
         if _try_refresh_nous_paid_entitlement_credentials(agent):
             _vlines(agent, "🔐 Nous paid access verified — refreshed runtime credentials and retrying request...")
             return True, False
+
+    from agent.credential_auth_recovery import recover_matching_xai_oauth_before_pool
+    if recover_matching_xai_oauth_before_pool(
+        agent, _retry, status_code, error_context, classified.reason,
+    ):
+        return True, False
 
     recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
         status_code=status_code, has_retried_429=_retry.has_retried_429,

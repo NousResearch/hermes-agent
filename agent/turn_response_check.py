@@ -269,17 +269,33 @@ def retry_invalid_response(
 
     # Codex reports quota exhaustion as HTTP 200 ``status=failed`` — the SDK never raises, so the
     # exception path's credential-pool rotation never sees it. Same-provider recovery for the
-    # pool-recoverable reasons FIRST (a healthy sibling account beats burning cross-provider
+    # pool-recoverable reasons (a healthy sibling account beats burning cross-provider
     # fallback); content-policy and other failures keep the fallback/retry path (#24159).
+    # An SSE ``response.failed`` frame is this same soft failure. Its stale xAI bearer has to
+    # take the singleton path first: the pool runs ahead of it otherwise, and a different
+    # account fails the subject check before the matching grant is tried.
     _soft, _soft_ctx = classify_codex_soft_failure(agent, response)
-    if _soft is not None and (_soft.reason in (FailoverReason.rate_limit, FailoverReason.billing) or _soft.is_auth):
-        _recovered, _retry.has_retried_429 = agent._recover_with_credential_pool(
-            status_code=None, has_retried_429=_retry.has_retried_429, classified_reason=_soft.reason,
-            error_context=_soft_ctx, billing_unverified=_soft.billing_unverified,
+    if _soft is not None:
+        from agent.credential_auth_recovery import (
+            is_xai_stale_oauth_error, recover_matching_xai_oauth_before_pool,
         )
-        if _recovered:
-            agent._buffer_diagnostic_status(f"🔄 Codex soft failure ({_soft.reason.value}) — switched to the next pool credential, retrying...")
+        stale_xai = is_xai_stale_oauth_error(getattr(agent, "provider", "") or "", None, _soft_ctx)
+        if stale_xai and recover_matching_xai_oauth_before_pool(
+            agent, _retry, None, _soft_ctx, _soft.reason,
+        ):
             return _verdict("continue")
+        if (
+            _soft.reason in (FailoverReason.rate_limit, FailoverReason.billing)
+            or _soft.is_auth
+            or stale_xai
+        ):
+            _recovered, _retry.has_retried_429 = agent._recover_with_credential_pool(
+                status_code=None, has_retried_429=_retry.has_retried_429, classified_reason=_soft.reason,
+                error_context=_soft_ctx, billing_unverified=_soft.billing_unverified,
+            )
+            if _recovered:
+                agent._buffer_diagnostic_status(f"🔄 Codex soft failure ({_soft.reason.value}) — switched to the next pool credential, retrying...")
+                return _verdict("continue")
     retry_count += 1
 
     # Eager fallback: empty/malformed responses often mean rate limiting.

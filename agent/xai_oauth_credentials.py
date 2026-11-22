@@ -44,23 +44,32 @@ def _xai_oauth_route_is_trusted(base_url: Any) -> bool:
 
 
 def _resolve_xai_oauth_recovery_credentials(old_key: str, *, force: bool) -> dict[str, Any] | None:
-    from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
+    from hermes_cli.auth import _auth_store_lock, resolve_xai_oauth_runtime_credentials
+    from hermes_cli.auth_constants import AUTH_LOCK_TIMEOUT_SECONDS
+    from utils import env_float
 
+    # Hold the refresh lock across the account check and the exchange. Checking
+    # first, then locking, lets a login replace the singleton in between and the
+    # force-refresh POST rotates that other account's grant.
+    timeout = max(
+        float(AUTH_LOCK_TIMEOUT_SECONDS),
+        env_float("HERMES_XAI_REFRESH_TIMEOUT_SECONDS", 20) + 5.0,
+    )
     try:
-        stored = resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False)
-        stored_key = stored.get("api_key")
-        if stored_key != old_key:
-            if not _same_xai_oauth_account(old_key, stored_key):
+        with _auth_store_lock(timeout_seconds=timeout):
+            stored = resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False)
+            stored_key = stored.get("api_key")
+            if stored_key != old_key and not _same_xai_oauth_account(old_key, stored_key):
                 return None
-            if _xai_oauth_token_is_usable(stored_key):
+            if stored_key != old_key and _xai_oauth_token_is_usable(stored_key):
                 # A sibling already rotated the grant; do not consume its single-use refresh token again.
                 return stored
-        refreshed = resolve_xai_oauth_runtime_credentials(force_refresh=force)
-    except (AuthError, OSError, ValueError, HTTPError) as exc:
+            refreshed = resolve_xai_oauth_runtime_credentials(force_refresh=force)
+    except (AuthError, OSError, ValueError, HTTPError, TimeoutError) as exc:
         logger.debug("xAI OAuth credential recovery failed (%s)", type(exc).__name__)
         return None
-    # A login can replace the singleton between our read and the resolver's locked refresh.
-    # Keep the original opaque-token refresh path, but never move a known JWT identity to another account.
+    # The token endpoint can still hand back another account. Keep the original
+    # opaque-token refresh path, but never move a known JWT identity onto it.
     if _same_xai_oauth_account(old_key, old_key) and not (
         _same_xai_oauth_account(old_key, refreshed.get("api_key"))
         and _xai_oauth_token_is_usable(refreshed.get("api_key"))

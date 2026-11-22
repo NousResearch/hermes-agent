@@ -134,7 +134,6 @@ def _replace_pool_account(home: Path) -> None:
                  None, id="static-provider"),
     pytest.param("account-a", {"requested_provider": "custom:private-xai"}, None, id="custom-requested-provider"),
     pytest.param("account-a", {}, _empty_auth, id="missing-auth"),
-    pytest.param("account-a", {}, _replace_pool_account, id="pool-other-account"),
 ])
 def test_xai_override_preserves_unowned_or_unavailable_credentials(
     tmp_path, monkeypatch, store_account, override_changes, mutate_auth,
@@ -156,3 +155,34 @@ def test_xai_override_preserves_unowned_or_unavailable_credentials(
         key: value for key, value in snapshot.items() if key != "model"
     }
     assert runner._session_model_overrides["session"] == snapshot
+
+
+def test_pool_other_account_still_adopts_the_matching_singleton(tmp_path, monkeypatch):
+    """The credential pool is ahead of the singleton in the runtime ladder.
+
+    A different pool account must not fail the subject check and leave the
+    session on the stale bearer for the account the singleton still holds.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    home = tmp_path / "profile"
+    matching = _token("account-a", 1)
+    _write_auth(home, matching)
+    _replace_pool_account(home)
+    previous_pool = object()
+    override = {**_override(_token("account-a", 0)), "credential_pool": previous_pool}
+    runner = _runner({"session": override})
+
+    with _profile_runtime_scope(home):
+        model, runtime = runner._resolve_session_agent_runtime(session_key="session")
+
+    assert model == "grok-selected"
+    assert runtime["api_key"] == matching
+    assert runtime["api_key"] != _token("account-b", 1)
+    assert runtime["credential_pool"] is previous_pool
+    assert runtime["provider"] == runtime["requested_provider"] == "xai-oauth"
+    assert runtime["api_mode"] == "codex_responses"
+    assert runtime["base_url"] == _XAI_URL
+    assert runtime["request_overrides"] == {"store": False}
+    assert runtime["capabilities"] == {"vision": True}
+    assert runtime["max_tokens"] == 1234
+    assert _request_authorization(runtime, model) == f"Bearer {matching}"

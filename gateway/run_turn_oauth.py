@@ -15,9 +15,11 @@ logger = logging.getLogger("gateway.run")
 def refresh_xai_session_override(override: dict) -> None:
     """Refresh a managed xAI bearer without changing the session's account or endpoint.
 
-    A /model snapshot otherwise bypasses provider resolution on every turn. Read the
-    singleton first so an explicit credential from another account cannot refresh or
-    adopt that grant. The live provider resolver then supplies a coherent bearer/pool.
+    A /model snapshot otherwise bypasses provider resolution on every turn. The
+    runtime ladder tries the credential pool before the OAuth singleton, so a
+    different pool account fails the subject check and hides the stored grant
+    for this session. Read the singleton first and keep it when the pool does
+    not match. The resolver's pool is attached only for that same account.
     """
     old_key = override.get("api_key")
     if (
@@ -33,7 +35,8 @@ def refresh_xai_session_override(override: dict) -> None:
 
     try:
         singleton = resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False)
-        if not _same_xai_oauth_account(old_key, singleton.get("api_key")):
+        singleton_key = singleton.get("api_key")
+        if not _same_xai_oauth_account(old_key, singleton_key):
             return
         runtime = _resolve_runtime_agent_kwargs_for_provider(
             "xai-oauth", target_model=override.get("model") or None,
@@ -45,6 +48,17 @@ def refresh_xai_session_override(override: dict) -> None:
         return
 
     fresh_key = runtime.get("api_key")
+    pool = runtime.get("credential_pool")
+    if not (_same_xai_oauth_account(old_key, fresh_key) and _xai_oauth_token_is_usable(fresh_key)):
+        # The pool selected another account. Adopt the matching singleton instead
+        # of failing closed, and do not install that other account's pool.
+        if (
+            not _xai_oauth_token_is_usable(singleton_key)
+            or str(singleton_key or "").strip() == str(old_key or "").strip()
+        ):
+            return
+        fresh_key = singleton_key
+        pool = override.get("credential_pool")
     if (
         runtime.get("provider") != "xai-oauth"
         or runtime.get("requested_provider") not in (None, "", "xai-oauth")
@@ -55,4 +69,4 @@ def refresh_xai_session_override(override: dict) -> None:
     ):
         return
     # Clearing an absent pool is intentional: never pair the new bearer with an old pool.
-    override.update(api_key=fresh_key, credential_pool=runtime.get("credential_pool"))
+    override.update(api_key=fresh_key, credential_pool=pool)

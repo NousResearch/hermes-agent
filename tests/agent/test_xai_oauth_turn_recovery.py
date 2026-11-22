@@ -103,3 +103,71 @@ def test_full_turn_catches_up_once_without_rewriting_the_request(tmp_path, monke
         agent.close()
         for client in transports:
             client.close()
+
+
+def _failed_oauth_stream() -> bytes:
+    """HTTP 200 SSE whose terminal frame is ``response.failed`` for a stale bearer."""
+    failed = {
+        "id": "response-failed", "object": "response", "created_at": 1, "status": "failed",
+        "model": "grok-fixture", "output": [],
+        "error": {
+            "code": "unauthenticated:bad-credentials",
+            "message": "The OAuth2 access token could not be validated.",
+        },
+    }
+    event = {"type": "response.failed", "response": failed}
+    return f"event: response.failed\ndata: {json.dumps(event)}\n\n".encode()
+
+
+def test_response_failed_frame_reaches_singleton_recovery(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    now = time.time()
+    old_token = _token("expired", now - 3600)
+    current_token = _token("rotated", now + 7200)
+    requests, transports, exchanges = [], [], []
+
+    def respond(request):
+        requests.append(request.headers["Authorization"])
+        assert len(requests) <= 2, "one rejected-bearer recovery must not become an unbounded retry loop"
+        if len(requests) == 1:
+            return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=_failed_oauth_stream())
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=_successful_stream())
+
+    def transport(*_args, **_kwargs):
+        client = httpx.Client(transport=httpx.MockTransport(respond))
+        transports.append(client)
+        return client
+
+    def exchange(*args, **_kwargs):
+        exchanges.append(args)
+        raise AssertionError("a stored live token must be adopted without refreshing its grant")
+
+    monkeypatch.setattr(ClientLifecycleMixin, "_build_keepalive_http_client", staticmethod(transport))
+    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", exchange)
+    agent = AIAgent(
+        model="grok-fixture", provider="xai-oauth", api_mode="codex_responses",
+        base_url="https://api.x.ai/v1", api_key=old_token, quiet_mode=True, max_iterations=3,
+        enabled_toolsets=[], disabled_toolsets=["all"], skip_context_files=True,
+        skip_memory=True, skip_background_review=True,
+    )
+    (home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {"xai-oauth": {"tokens": {
+            "access_token": current_token, "refresh_token": "synthetic-current-refresh",
+        }}},
+    }), encoding="utf-8")
+
+    try:
+        result = agent.run_conversation("Please reply.", system_message="Keep this system instruction unchanged.")
+        assert requests == [f"Bearer {old_token}", f"Bearer {current_token}"]
+        assert exchanges == []
+        assert agent.api_key == current_token
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered."
+    finally:
+        agent.close()
+        for client in transports:
+            client.close()

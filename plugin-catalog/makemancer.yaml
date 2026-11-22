@@ -1,0 +1,27 @@
+name: makemancer
+repo: https://github.com/makemancer/makemancer-marketplace
+sha: 3657c1c60776350be0f9b7fa834196d3b2e2f1bc
+subdir: plugins/makemancer
+description: >-
+  Generate and edit images, video clips, voiceovers, music and sound effects from chat
+  through the hosted Makemancer Streamable HTTP MCP server, plus 21 workflow skills
+  (images, video, voice, music, sound effects, product photoshoots, films, editing).
+  Portable Agent Plugins v1 package (mcp.json + skills/), no plugin code. Requires a
+  Makemancer account and browser OAuth consent (add the server with auth: oauth, then
+  hermes mcp login makemancer); no API key or client secret is stored in the plugin.
+  Disclosure — hosted-only connector; your prompts, settings and any media you upload or
+  link go to makemancer.com, which sends generation requests to third-party model
+  providers and stores results in your Makemancer library; each generation spends credits
+  from your Makemancer balance; the skills pass an optional skills_used field (skill names
+  only) that you can decline.
+maintainer: makemancer
+tier: community
+category: tools
+docs_url: https://makemancer.com/connect
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

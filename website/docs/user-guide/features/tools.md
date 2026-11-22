@@ -91,13 +91,18 @@ terminal:
 
 ### Shell startup files and non-interactive commands
 
-Agent terminal calls run your shell **non-interactively** — there is no TTY and no human at the prompt. Heavy or interactive shell initialisation that you never notice in a normal terminal can break or badly slow every command the agent runs:
+Shell startup depends on the execution path. For the **local** backend:
+
+- **Foreground commands** run non-interactive Bash (`bash -c`, with `-l` for session initialization or login-shell fallback). Initialization also sources the configured `terminal.shell_init_files` to populate the session snapshot. Without an explicit list, `terminal.auto_source_bashrc` defaults to sourcing existing `.profile`, `.bash_profile`, and `.bashrc` files on POSIX.
+- **Background commands** (`background: true`) start a login **and interactive** shell with `-lic`, for both pipe and PTY execution. On POSIX, Hermes uses a supported `$SHELL` or falls back to Bash; on Windows it uses Git Bash. With Zsh, this normally reads both `.zprofile` and `.zshrc` for each spawn.
+
+An interactive shell flag does not mean a human is present: background pipe execution has no TTY, while `pty: true` provides a pseudo-terminal for the agent. Heavy or interactive shell initialisation can therefore break or badly slow agent commands:
 
 - **Slow init (`nvm`, version managers, network-touching prompts):** the classic `nvm.sh` sourcing adds noticeable latency to *every* shell start, and the agent starts many shells. Multi-second rc files turn a quick `git status` into a timeout risk.
-- **TTY-expecting blocks:** anything in `.bashrc`/`.zshrc` that prompts, runs `tmux`/`screen` attach, calls `read`, or prints a menu will hang a non-interactive shell — the command appears to run forever and then times out.
+- **TTY-expecting blocks:** startup code that prompts, runs `tmux`/`screen` attach, or calls `read` can fail or wait for input the agent never supplies.
 - **Unconditional output:** rc files that `echo` banners pollute every command's output the agent has to parse.
 
-The fix is the standard guard most distros already ship at the top of `.bashrc` — return early when the shell is non-interactive, and keep anything heavy or interactive below it:
+For non-interactive foreground initialization, the standard `.bashrc` guard skips interactive-only setup. It does **not** skip setup for background commands launched with `-i`:
 
 ```bash
 # ~/.bashrc — keep this guard near the top
@@ -111,7 +116,9 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 ```
 
-Zsh users: put login-only setup in `.zprofile` and interactive-only setup in `.zshrc`; keep `.zshenv` minimal, since it runs for every shell including non-interactive ones. If the agent genuinely needs a tool that only your rc file puts on `PATH`, export the `PATH` change *above* the guard (path exports are cheap) or symlink the binary into `~/.local/bin`.
+Keep essential `PATH` exports cheap and available before the guard. For background commands, keep login and interactive startup files fast and quiet too; a check such as `[ -t 0 ] && [ -t 1 ]` can restrict terminal-dependent setup to TTYs, but it still passes for agent commands using a PTY. Avoid automatically prompting or attaching sessions in startup files used by the agent.
+
+Zsh users: moving setup from `.zshrc` to `.zprofile` does not avoid it for local background commands, because `-lic` reads both. Keep `.zshenv` minimal as well, since it is read even by non-interactive Zsh shells. Foreground execution still uses Bash, so Zsh-only `PATH` setup is not a substitute for making tools available to that path.
 
 If agent terminal commands hang or time out immediately after working in your own terminal, your shell init is the first suspect.
 

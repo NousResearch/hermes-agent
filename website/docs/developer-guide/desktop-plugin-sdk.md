@@ -320,6 +320,12 @@ ctx.registerMany([
 `codicon` is a [VS Code codicon](https://microsoft.github.io/vscode-codicons/dist/codicon.html)
 id. Navigate to a route from anywhere with `host.navigate('/my-page')`.
 
+`host.revealFileInTree(absolutePath)` opens the file-browser pane and requests
+selection of that path in the active workspace tree. The tree expands ancestor
+folders and ignores paths outside its current workspace cwd. This is a reveal
+request, not an arbitrary-file read or a workspace switch; it does not establish
+that a path exists on the connected machine.
+
 ### Status bar and title bar
 
 Status-bar items render into the left or right cluster of the bottom bar.

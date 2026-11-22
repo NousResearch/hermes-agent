@@ -56,3 +56,32 @@ def test_lastindex_counts_a_lookahead_group_as_closing_where_the_lookahead_runs(
                    r"(?:(a)|(b))+(?=(c))", r"(a)(?=b|(c))"):
         for subject in ("ab", "abc", "bac", "aac", "ac"):
             assert view(hre.search(source, subject)) == view(std.search(source, subject)), (source, subject)
+
+
+def test_build_all_reaches_every_live_pattern_even_equal_ones():
+    hre.purge()
+    gc.collect()
+    first = hre.compile(r"[\w.-]{1000}" * 4)
+    hre.purge()  # the next compile makes a second, equal Pattern
+    second = hre.compile(r"[\w.-]{1000}" * 4)
+    assert first == second and first is not second
+    failures = hre.build_all()
+    assert sorted(id(p) for p, _ in failures) == sorted((id(first), id(second)))
+    hre.purge()
+    first = second = failures = None
+    gc.collect()
+
+
+def test_build_all_wide_checks_a_wide_form_that_matching_already_built():
+    from hermes_re import _engine
+    source, real = r"\babc[a-z]*?\b", _engine.MAX_MEM
+    hre.purge()
+    _engine.MAX_MEM = 20_000  # room for the cheap programs, not for the exact one with the Unicode `\w` class
+    try:
+        compiled = hre.compile(source)
+        assert compiled.search("\u2014abc\u2014").span() == (1, 4)  # builds the wide form; its cheap runner suffices
+        failures = [("too large" in e.msg) for p, e in hre.build_all(wide=True) if p is compiled]
+        assert failures == [True]  # as when nothing had matched yet
+    finally:
+        _engine.MAX_MEM = real
+        hre.purge()

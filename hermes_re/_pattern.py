@@ -48,7 +48,9 @@ from ._subject import DIRECT, UTF8, WINDOW, held, subject, window
 from ._template import template as _template
 
 _LAZY = frozenset(("_anchors", "_edge", "_rx"))  # slots filled by the build
-_live = weakref.WeakSet()  # every Pattern alive: the compile cache's and the ones modules hold
+# Every Pattern alive (the compile cache's and the ones modules hold), keyed by identity: equal
+# Patterns (the same source compiled again after ``purge``) are separate objects with programs of their own.
+_live = weakref.WeakValueDictionary()
 _parked = []  # programs inherited through fork(): kept alive, never used, never freed
 _fork_hook = []  # holds one item once ``_after_fork`` is registered with the interpreter
 
@@ -57,10 +59,10 @@ def live() -> list:
     """Every Pattern object alive now."""
     for _ in range(8):  # another thread creating a Pattern can interrupt the iteration
         try:
-            return list(_live)
+            return list(_live.values())
         except RuntimeError:
             continue
-    return list(_live)
+    return list(_live.values())
 
 
 def _iterate(scan, unanchored, data, direct, start, end):
@@ -149,7 +151,7 @@ class _Narrow:
 
 class Pattern:
     __slots__ = ("__weakref__", "_anchors", "_built", "_cost", "_edge", "_form", "_is_str", "_key", "_nonb",
-                 "_ranks", "_rx", "_special", "_wide", "_wide_text", "flags", "groupindex", "groups", "pattern")
+                 "_ranks", "_rx", "_special", "_wide", "_wide_built", "_wide_text", "flags", "groupindex", "groups", "pattern")
     __class_getitem__ = classmethod(types.GenericAlias)
 
     def __init__(self, pattern, flags):
@@ -171,9 +173,10 @@ class Pattern:
             if wide == text:
                 wide = None
         self._wide = self._wide_text = wide  # ``_wide`` stays text until a non-ASCII subject
+        self._wide_built = None  # the Form ``_wide`` was built from; None while text or after the fall-back
         self._nonb = is_str and "\\B" in text
         self._special = form.plan is not None or wide is not None or self._nonb
-        _live.add(self)
+        _live[id(self)] = self
 
     def _build(self) -> None:
         """Build the RE2 programs. Raises ``error`` when RE2 refuses one (the memory budget),
@@ -209,19 +212,21 @@ class Pattern:
         if not self._built:
             self._build()
         self._form.verify()
-        text = self._wide
-        if wide and text.__class__ is str:
-            form = self._wide_form(text)
+        if not wide or self._wide_text is None:
+            return
+        form = self._wide_built
+        if form is None:  # not built yet, or matching fell back to the ASCII `\\b`: build it here, or raise why not
+            form = self._wide_form(self._wide_text)
             form.rescue = None
-            built = form.build()
-            form.verify()
-            self._wide = built
+            self._wide = form.build()
+            self._wide_built = form
+        form.verify()
 
     def _unbuild(self) -> list:
         """Forget the programs (they are built again on next use); returns them."""
         self._built = False
         dropped = [] if self._wide.__class__ is str else [self._wide]
-        self._wide, self._cost = self._wide_text, 0
+        self._wide, self._wide_built, self._cost = self._wide_text, None, 0
         for slot in (Pattern._edge, Pattern._rx):  # the slot itself: ``getattr`` would build an empty one
             try:
                 dropped.append(slot.__get__(self))
@@ -252,11 +257,12 @@ class Pattern:
         if wide is None or mode == DIRECT:
             return self._edge, self._rx
         if wide.__class__ is str:
+            form = self._wide_form(wide)
             try:
-                wide = self._wide_form(wide).build()
+                wide = form.build()
             except error:  # not plannable, or too large for RE2 with the Unicode classes: `\\b` stays ASCII
-                wide = (self._edge, self._rx)
-            self._wide = wide
+                wide, form = (self._edge, self._rx), None
+            self._wide, self._wide_built = wide, form
         return wide
 
     def __repr__(self):

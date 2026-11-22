@@ -426,12 +426,21 @@ def _session_list_by_title(rid, persistence, title_lookup: str) -> dict:
             # still hide. Re-fetch by ID: title has no DB-level UNIQUE, so a title re-query could grab a
             # different (still-archived) duplicate row.
             row = _row_of(persistence.sessions.get(row["id"]))
-    if not row or row.get("archived") or _denied_source(row):
+    from tools.bot_mode_probe import BOT_CHAT_TITLE
+    source_norm = (row.get("source") or "").strip().lower() if row else ""
+    denied = _denied_source(row) and not (title_lookup == BOT_CHAT_TITLE and source_norm == "oneshot") if row else True
+    if not row or row.get("archived") or denied:
         return _ok(rid, {"sessions": []})
     tip = row["id"]
     with contextlib.suppress(Exception):
+        bindings = getattr(persistence, "bindings", None)
+        if bindings is not None and hasattr(bindings, "receipt"):
+            candidate = bindings.receipt(row["id"]).current_target
+            if candidate and candidate != row["id"] and persistence.sessions.get(candidate) is not None:
+                tip = candidate
+    with contextlib.suppress(Exception):
         # Real compression continuation only: the resolver's unmarked-child fallback could redirect Bot Chat.
-        tip = persistence.lineage.tip(row["id"]) or row["id"]
+        tip = persistence.lineage.tip(tip) or tip
     tip_row = (_row_of(persistence.sessions.get(tip)) or row) if tip != row["id"] else row
     return _ok(rid, {"sessions": [_session_row_summary(row, tip_row=tip_row, resolved_id=tip,
                                                        persistence=persistence)]})

@@ -281,7 +281,17 @@ def _read_bot_sessions(holder, subject, operator, rule):
     # mid-poll) refuses rather than reopening a writer into a home that is being deleted.
     with holder._read_ctx(reopen=False) as conn:
         def summary(root):
-            tip = _compression_tip_on(holder, conn, root['id'])
+            tip_base = root['id']
+            try:
+                from ._store.local import POLICY_PREFIX
+                meta = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + tip_base,)).fetchone()
+                if meta and meta[0]:
+                    candidate = (json.loads(meta[0]).get('entry') or {}).get('session_id')
+                    if candidate and candidate != tip_base and conn.execute('SELECT 1 FROM sessions WHERE id=?', (candidate,)).fetchone():
+                        tip_base = candidate
+            except Exception:
+                pass
+            tip = _compression_tip_on(holder, conn, tip_base)
             target = conn.execute('SELECT * FROM sessions WHERE id=?', (tip,)).fetchone() or root
             message = conn.execute(
                 "SELECT content FROM messages WHERE session_id=? AND active=1 "
@@ -306,6 +316,7 @@ def _read_bot_sessions(holder, subject, operator, rule):
         latest = conn.execute(
             f"SELECT * FROM sessions WHERE {owner_filter}{_LOCAL_CHAT} AND archived=0 AND hidden=0 "
             f"AND COALESCE(source,'') NOT IN ({hidden_sources}) "
+            "AND NOT (COALESCE(source,'')='cron' AND COALESCE(message_count,0)=0) "
             "ORDER BY COALESCE(last_activity_at,started_at) DESC LIMIT 1",
             (*owner_params, LEGACY_PREFIX, *INTERNAL_LISTING_SOURCES)).fetchone()
         if latest and fields['canonical_session'] and latest['id'] == canonical['id']:

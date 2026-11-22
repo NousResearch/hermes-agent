@@ -147,6 +147,18 @@ def _display_count_field(persistence, session_id) -> dict:
         return {}
 
 
+def _resolve_canonical_tip(persistence, session_id: str) -> str:
+    """Active physical segment for canonical *session_id*: follow a local receipt's ``current_target``
+    (covers reset continuations such as compression-exhaustion auto-reset) and then compression tip."""
+    target = session_id
+    bindings = getattr(persistence, "bindings", None)
+    if bindings is not None and hasattr(bindings, "receipt"):
+        candidate = _try(lambda: bindings.receipt(session_id).current_target, None)
+        if candidate and candidate != session_id and _try(lambda: persistence.sessions.get(candidate), None) is not None:
+            target = candidate
+    return _try(lambda: persistence.lineage.tip(target), None) or target
+
+
 def _canonical_session_row(persistence, profile_path):
     """Summary of the profile's canonical "Bot Chat" row (identity is the NAME), or None.
     Lineages via ``get_compression_tip`` (NOT the resume walker's unmarked-child fallback);
@@ -161,7 +173,10 @@ def _canonical_session_row(persistence, profile_path):
     try:
         row = persistence.sessions.get_by_title("Bot Chat")
         session_id = str(getattr(row, "session_id", "") or "").strip()
-        if not session_id or _denied_source({"source": row.source}):
+        source = (getattr(row, "source", "") or "").strip().lower()
+        # A canonical "Bot Chat" created via one-shot CLI/peer delivery (source='oneshot') is still a
+        # real Bot Chat; only true worker sources (tool, kanban, subagent) count as absent.
+        if not session_id or (_denied_source({"source": row.source}) and source != "oneshot"):
             return None
         # Archived = retired (absent), except accidental reaper archives: resurrect those.
         # An archived canonical row usually means the user deliberately retired it — report absent. But the
@@ -171,7 +186,7 @@ def _canonical_session_row(persistence, profile_path):
         # real predicate through unarchive_recoverable_session on a short-lived writable handle.
         if row.archived and not _resurrect_recoverable_canonical(persistence, profile_path, session_id):
             return None
-        tip = _try(lambda: persistence.lineage.tip(session_id), None) or session_id
+        tip = _resolve_canonical_tip(persistence, session_id)
         tip_row = persistence.sessions.get(tip) or row
         started = row.started_at or 0
         return {
@@ -200,13 +215,17 @@ def _latest_profile_session_rows(persistence):
     try:
         human = worker = None
         for entry in persistence.sessions.list_sessions(
-                SessionQuery(order=SessionOrder.LAST_ACTIVE), SessionWindow(limit=20), compact_rows=True):
+                SessionQuery(order=SessionOrder.LAST_ACTIVE), SessionWindow(limit=50), compact_rows=True):
             s = entry.session
+            source_norm = (s.source or "").strip().lower()
             title, last_active = s.title or "", entry.last_active or s.started_at or 0
             if _denied_source({"source": s.source}):
                 if worker is None:
-                    worker = {"id": s.session_id, "source": (s.source or "").strip().lower(),
+                    worker = {"id": s.session_id, "source": source_norm,
                               "title": title, "last_active": last_active}
+            elif source_norm == "cron" and not (s.message_count or 0):
+                # Silent/empty periodic monitor crons must not hijack last_session.
+                continue
             elif human is None:  # rosters want "where the conversation IS": prefer the newest text
                 human = {"id": s.session_id, "title": title,
                          "preview": _latest_message_preview(persistence, s.session_id) or entry.preview,

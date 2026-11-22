@@ -96,4 +96,17 @@ describe('the durable room record reaches plugin storage', () => {
     expect(stored(room).Mixed.engine).toBe('desktop')
     expect(stored(room).Held).toEqual(HELD_GROUP_ROOM)
   })
+
+  it("without the tombstone another room's running disband left", async () => {
+    const room = await loadRoom()
+    seed(room)
+    room.chat.updateGroupChat('Busy', r => ({ ...r, members: [], running: true }), { sync: false })
+    room.chat.updateGroupChat('Gone', r => ({ ...r, members: [] }), { sync: false })
+
+    await room.view.disbandGroupChat('Busy', [])
+    expect(room.chat.$groupChats.get().Busy?.tombstone).toBe(true)
+    await room.view.disbandGroupChat('Gone', [])
+
+    expect(Object.keys(stored(room)).sort()).toEqual(['Held', 'Mixed', 'Plain'])
+  })
 })

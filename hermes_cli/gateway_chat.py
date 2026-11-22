@@ -158,6 +158,22 @@ async def _resume_latest(client, args):
                                  "or list sessions with `hermes sessions list`.") from None
 
 
+def _read_launch_image(image):
+    import base64
+
+    path = Path(image).expanduser()
+    return path.name, base64.b64encode(path.read_bytes()).decode("ascii")
+
+
+async def _launch_attachment_options(client, session_id, image):
+    if not image:
+        return {}
+    filename, content = await asyncio.to_thread(_read_launch_image, image)
+    uploaded = await client.rpc("image.attach_bytes", session_id=session_id,
+                                filename=filename, content_base64=content)
+    return {"attachments": [{"path": uploaded["path"], "mime": uploaded["mime"]}]}
+
+
 async def run_gateway_chat(args, emitter=None):
     from hermes_cli.gateway_chat_view import GatewayChatView
     query = getattr(args, "query", None) or getattr(args, "q", None)
@@ -242,15 +258,8 @@ async def run_gateway_chat(args, emitter=None):
                 merged = isinstance(metadata, dict) and metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY)
                 if row.get("role") in {"user", "assistant"} and isinstance(row.get("content"), str) and not merged:
                     print(f"{row['role']}: {row['content']}")
-        attachments = []
-        if image := getattr(args, "image", None):
-            import base64
-            path = Path(image).expanduser()
-            data = await asyncio.to_thread(path.read_bytes)
-            uploaded = await client.rpc("image.attach_bytes", session_id=view.session_id,
-                                        filename=path.name, content_base64=base64.b64encode(data).decode("ascii"))
-            attachments.append({"path": uploaded["path"], "mime": uploaded["mime"]})
-        return await view.run(query, oneshot=oneshot, **({"attachments": attachments} if attachments else {}))
+        attachment_options = await _launch_attachment_options(client, view.session_id, getattr(args, "image", None))
+        return await view.run(query, oneshot=oneshot, **attachment_options)
 
 
 _RESUME_POLICY_MISMATCH = "Resume retains gateway session policy; creation overrides are unsupported on resume."

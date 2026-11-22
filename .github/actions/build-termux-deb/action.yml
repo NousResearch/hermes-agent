@@ -118,7 +118,8 @@ runs:
           bash scripts/termux/build_builder_image.sh --no-push | tee termux-build/.builder-image.log
         else
           # Pre-PR commit checkout: reuse a published GHCR image if present,
-          # else build and smoke a job-local image without logging into or pushing to GHCR.
+          # otherwise fall back to the checkout's digest-pinned base image
+          # (which termux_build.sh pulls, inspects for RepoDigests, and provisions).
           digest="$(python3 -c 'import sys; sys.path.insert(0, "."); from pm.lock import termux_docker_digest; print(termux_docker_digest())')"
           base="termux/termux-docker@${digest}"
           dockerfile="scripts/termux/termux-builder.Dockerfile"
@@ -128,16 +129,7 @@ runs:
           if docker manifest inspect "$published" >/dev/null 2>&1; then
             printf 'builder image already published: %s\n%s\n' "$published" "$published" | tee termux-build/.builder-image.log
           else
-            local_img="hermes-termux-builder-local:${short}"
-            docker build -f "$dockerfile" --build-arg "BASE=${base}" -t "$local_img" scripts/termux
-            docker run --rm --platform linux/arm64 "$local_img" /data/data/com.termux/files/usr/bin/bash -c '
-              export PREFIX=/data/data/com.termux/files/usr
-              for tool in clang rustc cargo make; do
-                command -v "$tool" >/dev/null 2>&1 || { echo "smoke FAIL: $tool"; exit 1; }
-              done
-              echo "builder image smoke OK"
-            '
-            printf 'built locally (push disabled): %s\n%s\n' "$local_img" "$local_img" | tee termux-build/.builder-image.log
+            printf 'builder image not published (push disabled); falling back to base: %s\n%s\n' "$base" "$base" | tee termux-build/.builder-image.log
           fi
         fi
         img="$(tail -n1 termux-build/.builder-image.log)"

@@ -230,6 +230,14 @@
   display: grid;
 }
 
+/* A row that can speak holds an example of up to two lines inside the same 65px as a resting row
+   (Capabilities / Information row 18811:5635), so a long example does not make its row the tall one. */
+:root[data-shell='portal'] .discovery-welcome-place:has([data-example]) {
+  /* token-exempt: Figma's 65px row */
+  min-block-size: 4.0625rem;
+  padding-block: 0.25rem;
+}
+
 /* The line and the example share one cell; the one not speaking keeps its room, unseen. */
 :root[data-shell='portal'] .discovery-welcome-place-line {
   grid-area: 1 / 1;

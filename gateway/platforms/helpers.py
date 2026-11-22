@@ -598,13 +598,12 @@ def convert_table_to_bullets(text: str) -> str:
         return text
     lines = text.split('\n')
     out: list[str] = []
-    in_fence = False
+    opener = None
     i = 0
     while i < len(lines):
         line = lines[i]
-        is_fence_line = is_fence_delimiter(line.lstrip())
-        in_fence ^= is_fence_line
-        if not (in_fence or is_fence_line) and '|' in line and i + 1 < len(lines) \
+        was_open, opener = opener, fence_step(line.lstrip(), opener)
+        if was_open is None and opener is None and '|' in line and i + 1 < len(lines) \
                 and TABLE_SEPARATOR_RE.match(lines[i + 1]):
             j = i + 2
             while j < len(lines) and is_table_row(lines[j]):
@@ -799,9 +798,40 @@ def is_fence_delimiter(line: str) -> bool:
     return line.startswith('```') and '`' not in line.lstrip('`')
 
 
+_FENCE_RUN_RE = re.compile(r"`{3,}")
+
+
+def fence_step(line: str, opener: Optional[str]) -> Optional[str]:
+    """Fence state after *line*: the open fence (backtick run + language tag) or None outside one.
+    CommonMark closing rule: only a backtick run at least as long as the opener's, followed by
+    nothing but whitespace, closes it, so a ```bash line inside a ````markdown block is content."""
+    run = _FENCE_RUN_RE.match(line)
+    if not run:
+        return opener
+    rest = line[run.end():]
+    if opener is None:
+        return run.group() + (rest.split() or [""])[0] if is_fence_delimiter(line) else None
+    return None if len(run.group()) >= len(fence_run(opener)) and not rest.strip() else opener
+
+
+def fence_run(opener: str) -> str:
+    """The backtick run of an open fence from :func:`fence_step` (what closes it)."""
+    return _FENCE_RUN_RE.match(opener).group()
+
+
+def fence_opener_after(text: str, opener: Optional[str] = None) -> Optional[str]:
+    """Open fence (see :func:`fence_step`) after walking *text* from state *opener*."""
+    for line in text.split("\n"):
+        opener = fence_step(line.strip(), opener)
+    return opener
+
+
 def text_has_unclosed_fence(text: str) -> bool:
     """Return True when *text* ends inside an unclosed ``` code fence."""
-    return sum(is_fence_delimiter(line) for line in text.split('\n')) % 2 == 1
+    opener = None
+    for line in text.split('\n'):
+        opener = fence_step(line, opener)
+    return opener is not None
 
 
 def text_ends_with_table_row(text: str) -> bool:
@@ -861,7 +891,7 @@ def split_markdown_atoms(text: str) -> list[str]:
     (consecutive ``|...|`` lines) and paragraphs. Blank lines belong to no atom."""
     atoms: list[str] = []
     current_lines: list[str] = []
-    in_fence = False
+    opener = None
 
     def _flush_current() -> None:
         if current_lines:
@@ -871,14 +901,14 @@ def split_markdown_atoms(text: str) -> list[str]:
             current_lines.clear()
 
     for line in text.split('\n'):
-        if in_fence:
+        if opener is not None:
             current_lines.append(line)
-            if is_fence_delimiter(line):
-                in_fence = False
+            opener = fence_step(line, opener)
+            if opener is None:
                 _flush_current()
-        elif is_fence_delimiter(line):
+        elif (opened := fence_step(line, None)) is not None:
             _flush_current()
-            in_fence = True
+            opener = opened
             current_lines.append(line)
         elif line.strip() == '':
             _flush_current()
@@ -923,12 +953,11 @@ def balance_fences_across_chunks(chunks: list[str]) -> list[str]:
     if len(chunks) <= 1:
         return chunks
     out: list[str] = []
-    carry_lang = None
+    carry: Optional[str] = None
     for chunk in chunks:
-        body = f"```{carry_lang}\n{chunk}" if carry_lang is not None else chunk
-        in_code, lang = fence_state_after(chunk, carry_lang is not None, carry_lang or "")
-        carry_lang = lang if in_code else None
-        out.append(body + "\n```" if in_code else body)
+        body = f"{carry}\n{chunk}" if carry is not None else chunk
+        carry = fence_opener_after(chunk, carry)
+        out.append(body + "\n" + fence_run(carry) if carry is not None else body)
     return out
 
 
@@ -995,13 +1024,10 @@ def table_header_to_repeat(chunk: str, rest: str, max_units: int, len_fn=len):
 
 
 def fence_state_after(text: str, in_code: bool = False, lang: str = "") -> tuple[bool, str]:
-    """Walk ``text`` line by line toggling on ``` lines; return the final (in_code, lang)."""
-    for line in text.split("\n"):
-        stripped = line.strip()
-        if is_fence_delimiter(stripped):
-            tag = stripped[3:].split()
-            in_code, lang = (False, "") if in_code else (True, tag[0] if tag else "")
-    return in_code, lang
+    """Final ``(in_code, lang)`` after walking ``text`` (:func:`fence_step` rules; a carried-in
+    fence is a plain ```)."""
+    opener = fence_opener_after(text, f"```{lang}" if in_code else None)
+    return (False, "") if opener is None else (True, opener[len(fence_run(opener)):])
 
 
 def greedy_pack_blocks(blocks, max_length, len_fn=None, sep="\n\n", overflow=None):

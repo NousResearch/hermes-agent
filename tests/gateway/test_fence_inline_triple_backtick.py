@@ -23,3 +23,17 @@ def test_paragraph_chunker_splits_prose_after_inline_triple_backticks():
     # A real fence still stays indivisible.
     fenced = "```python\n" + "x = 1\n" * 20 + "```"
     assert split_text_fence_aware(fenced, 32) == [fenced]
+
+
+def test_longer_outer_fence_is_closed_only_by_a_run_as_long():
+    """A ```python block inside a ````markdown block is content: its ``` close must not end the
+    outer fence, and a split inside it reopens and closes with the outer run (CommonMark)."""
+    inner = "\n".join(f"print({i})" for i in range(60))
+    text = f"Save as README.md:\n\n````markdown\n# Tool\n\n```python\n{inner}\n```\n\nDone.\n````\n\nAfter **prose**."
+    chunks = BasePlatformAdapter.truncate_message(text, 300)
+    assert len(chunks) > 2
+    for chunk in chunks[:-1]:
+        assert chunk.rsplit("\n", 1)[-1].startswith("```` ("), chunk[-30:]
+    for chunk in chunks[1:]:
+        assert chunk.startswith("````markdown\n"), chunk[:30]
+    assert chunks[-1].count("````") == 2 and "After **prose**." in chunks[-1]

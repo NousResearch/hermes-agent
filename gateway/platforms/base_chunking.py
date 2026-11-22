@@ -3,7 +3,7 @@
 from typing import Callable, Optional
 
 from gateway.platforms.helpers import (
-    fence_state_after, table_header_to_repeat, table_rollback_point, table_row_start)
+    fence_opener_after, fence_run, table_header_to_repeat, table_rollback_point, table_row_start)
 
 
 def _open_link_bracket(text: str) -> int:
@@ -47,13 +47,13 @@ def chunk_markdown_message(content: str, max_length: int = 4096,
     if _len(content) <= max_length:
         return [content]
     INDICATOR_RESERVE = 12   # room for " (XXX/XXX)" once MarkdownV2-escaped to " \(XXX/XXX\)"
-    FENCE_CLOSE = "\n```"
     chunks: list[str] = []
     remaining = content
-    carry_lang: Optional[str] = None  # language tag ("" ok) when previous chunk ended mid-fence
+    carry: Optional[str] = None  # open fence (run + language tag) when previous chunk ended mid-fence
     carry_header: Optional[str] = None  # table header + separator when it ended mid-table
     while remaining:
-        prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
+        prefix = f"{carry}\n" if carry is not None else ""
+        FENCE_CLOSE = "\n" + (fence_run(carry) if carry is not None else "```")
         if carry_header:
             prefix = f"{carry_header}\n"
         # Body budget after prefix/fence/indicator; floored so a tiny max_length can't stall.
@@ -63,7 +63,7 @@ def chunk_markdown_message(content: str, max_length: int = 4096,
         # Remainder fits in one final chunk; close a reopened fence if still open.
         if _len(prefix) + _len(remaining) <= max_length - INDICATOR_RESERVE:
             final_chunk = prefix + remaining
-            if carry_lang is not None and fence_state_after(remaining, True, carry_lang)[0]:
+            if carry is not None and fence_opener_after(remaining, carry) is not None:
                 final_chunk += FENCE_CLOSE
             chunks.append(final_chunk)
             break
@@ -112,7 +112,7 @@ def chunk_markdown_message(content: str, max_length: int = 4096,
         # Pipe tables: move a split that lands mid-table to before the header when the
         # whole table fits a fresh chunk; a larger table splits between rows and the next
         # chunk repeats its header (``carry_header``). Fenced pipes are not tables.
-        if not fence_state_after(remaining[:split_at], carry_lang is not None, carry_lang or "")[0]:
+        if fence_opener_after(remaining[:split_at], carry) is None:
             # A continuation chunk's header lives only in ``prefix``; let the row check see it.
             if carry_header:
                 row_start = table_row_start(prefix + remaining, len(prefix) + split_at) - len(prefix)
@@ -125,11 +125,10 @@ def chunk_markdown_message(content: str, max_length: int = 4096,
         remaining = remaining[split_at:].lstrip()
         full_chunk = prefix + chunk_body
         # Walk only chunk_body (not the prepended prefix) for the fence state.
-        in_code, lang = fence_state_after(chunk_body, carry_lang is not None, carry_lang or "")
-        carry_lang = lang if in_code else None
-        carry_header = None if in_code else table_header_to_repeat(full_chunk, remaining, max_length // 4, _len)
-        # Close the orphaned fence so the chunk stands alone.
-        chunks.append(full_chunk + FENCE_CLOSE if in_code else full_chunk)
+        carry = fence_opener_after(chunk_body, carry)
+        carry_header = None if carry is not None else table_header_to_repeat(full_chunk, remaining, max_length // 4, _len)
+        # Close the orphaned fence (with its own backtick run) so the chunk stands alone.
+        chunks.append(full_chunk + "\n" + fence_run(carry) if carry is not None else full_chunk)
     if len(chunks) > 1:
         chunks = [f"{chunk} ({i + 1}/{len(chunks)})" for i, chunk in enumerate(chunks)]
     return chunks

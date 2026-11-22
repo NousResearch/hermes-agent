@@ -642,7 +642,7 @@ def test_stable_release_the_updater_refuses_is_held_not_offered(
     # --version consumes this status too, and checks rollback before the behind count.
     with monkeypatch.context() as version:
         version.setattr("hermes_cli.source_check.check_for_updates", lambda **kw: held_status)
-        _startup_fast.print_fast_version_info()
+        _startup_fast.print_fast_version_info(check_updates=True)
     assert "moves back to it" not in capsys.readouterr().out
     assert held_status["rollback"] is False
 

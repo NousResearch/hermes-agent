@@ -50,7 +50,7 @@ import { responseMessageRole, ResponseMessages } from './response-group'
 import { holdSessionSwitching } from './session-switching'
 import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
 import { useMessagesBelow } from './use-messages-below'
-import { useStickyPromptClip } from './use-sticky-prompt-clip'
+import { STICKY_PROMPT_CLIP_REMEASURE, useStickyPromptClip } from './use-sticky-prompt-clip'
 import { useTimelineReveal } from './use-timeline-reveal'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
@@ -948,6 +948,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         !hasTranscriptTextSelection(el)
       ) {
         el.scrollTop = threadScrollTargetTop(THREAD_SCROLL_BOTTOM, nextResizeMetrics)
+        // This observer runs after the sticky-prompt clip measured this frame;
+        // re-pinning moved the transcript, so let the clip catch up before paint.
+        el.dispatchEvent(new Event(STICKY_PROMPT_CLIP_REMEASURE))
       }
 
       previousResizeMetrics = nextResizeMetrics

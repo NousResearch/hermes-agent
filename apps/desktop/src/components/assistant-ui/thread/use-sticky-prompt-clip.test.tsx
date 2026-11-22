@@ -1,7 +1,7 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
-import { useStickyPromptClip } from './use-sticky-prompt-clip'
+import { STICKY_PROMPT_CLIP_REMEASURE, useStickyPromptClip } from './use-sticky-prompt-clip'
 
 const rect = (top: number, height: number) => ({ top, bottom: top + height, height }) as DOMRect
 
@@ -148,7 +148,7 @@ it('clips only visible covered siblings, follows resize, and releases styles and
 })
 
 const stubObservers = () => {
-  const resize: { current: ResizeObserverCallback } = { current: () => {} }
+  const resize: { current: ResizeObserverCallback; observed: Set<Element> } = { current: () => {}, observed: new Set() }
   vi.stubGlobal(
     'IntersectionObserver',
     class {
@@ -163,8 +163,12 @@ const stubObservers = () => {
       constructor(callback: ResizeObserverCallback) {
         resize.current = callback
       }
-      observe() {}
-      unobserve() {}
+      observe(target: Element) {
+        resize.observed.add(target)
+      }
+      unobserve(target: Element) {
+        resize.observed.delete(target)
+      }
       disconnect() {}
     }
   )
@@ -260,8 +264,78 @@ it('refreshes visible turns from outer boxes when the viewport itself resizes', 
   })
   expect(reply.hasAttribute('data-sticky-prompt-clip')).toBe(false)
 
+  expect(resize.observed.has(viewport)).toBe(true)
+
   viewportRect.mockReturnValue(rect(0, 400))
   turnRect.mockReturnValue(rect(-50, 900))
   act(() => resize.current([{ target: viewport } as unknown as ResizeObserverEntry], {} as ResizeObserver))
   expect(reply.style.getPropertyValue('--sticky-prompt-clip')).toBe('115px')
+})
+
+// At the bottom of a fixed-height viewport, collapsing a tall last turn clamps
+// scrollTop and brings an earlier turn into view. Only content boxes resize,
+// so the clamp (not a viewport entry) must trigger the visibility refresh.
+it('refreshes visible turns when a content resize clamps scrollTop', () => {
+  const viewport = window.document.createElement('div')
+  const content = makeRow(viewport)
+  vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(rect(0, 400))
+
+  const turn = makeRow(content, 'aui_message-group')
+  const prompt = makeRow(turn, 'aui_user-message-root')
+  prompt.style.position = 'sticky'
+  prompt.style.top = '5px'
+  const reply = makeRow(turn)
+  const last = makeRow(content, 'aui_message-group')
+  const turnRect = vi.spyOn(turn, 'getBoundingClientRect').mockReturnValue(rect(-900, 800))
+  vi.spyOn(last, 'getBoundingClientRect').mockReturnValue(rect(-100, 2000))
+  vi.spyOn(prompt, 'getBoundingClientRect').mockReturnValue(rect(5, 60))
+  vi.spyOn(reply, 'getBoundingClientRect').mockReturnValue(rect(-50, 300))
+  viewport.scrollTop = 900
+  const resize = stubObservers()
+
+  renderHook(props => useStickyPromptClip(props), {
+    initialProps: { scrollRef: { current: viewport }, contentRef: { current: content }, paneVisible: true, rows: 'r' }
+  })
+  expect(reply.hasAttribute('data-sticky-prompt-clip')).toBe(false)
+
+  // The last turn collapses; the browser clamps scrollTop and the earlier turn
+  // reaches the top edge. Only the turn and content boxes report a resize.
+  viewport.scrollTop = 50
+  turnRect.mockReturnValue(rect(-50, 800))
+  act(() => resize.current([{ target: content } as unknown as ResizeObserverEntry], {} as ResizeObserver))
+  expect(reply.style.getPropertyValue('--sticky-prompt-clip')).toBe('115px')
+})
+
+// While a turn streams, list.tsx's bottom-follow ResizeObserver runs after the
+// clip measured and re-pins scrollTop. Its synchronous remeasure event must
+// move the clip to the final position before paint, without an animation frame.
+it('re-measures synchronously when bottom-follow re-pins the transcript', () => {
+  const viewport = window.document.createElement('div')
+  const content = makeRow(viewport)
+  vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(rect(0, 400))
+
+  const turn = makeRow(content, 'aui_message-group')
+  const prompt = makeRow(turn, 'aui_user-message-root')
+  prompt.style.position = 'sticky'
+  prompt.style.top = '5px'
+  const reply = makeRow(turn)
+  vi.spyOn(turn, 'getBoundingClientRect').mockReturnValue(rect(-50, 900))
+  vi.spyOn(prompt, 'getBoundingClientRect').mockReturnValue(rect(5, 60))
+  const replyRect = vi.spyOn(reply, 'getBoundingClientRect').mockReturnValue(rect(-50, 300))
+  stubObservers()
+
+  const { rerender } = renderHook(props => useStickyPromptClip(props), {
+    initialProps: { scrollRef: { current: viewport }, contentRef: { current: content }, paneVisible: true, rows: 'r' }
+  })
+  expect(reply.style.getPropertyValue('--sticky-prompt-clip')).toBe('115px')
+
+  // Bottom-follow moved the transcript up by 40px after the clip measured.
+  replyRect.mockReturnValue(rect(-90, 300))
+  act(() => viewport.dispatchEvent(new Event(STICKY_PROMPT_CLIP_REMEASURE)))
+  expect(reply.style.getPropertyValue('--sticky-prompt-clip')).toBe('155px')
+
+  rerender({ scrollRef: { current: viewport }, contentRef: { current: content }, paneVisible: false, rows: 'r' })
+  replyRect.mockReturnValue(rect(-120, 300))
+  act(() => viewport.dispatchEvent(new Event(STICKY_PROMPT_CLIP_REMEASURE)))
+  expect(reply.hasAttribute('data-sticky-prompt-clip')).toBe(false)
 })

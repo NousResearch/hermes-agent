@@ -8,6 +8,13 @@ const PROMPT = '[data-slot="aui_user-message-root"]'
 // descendant on each write. See the @property block there before changing it.
 const CLIP = '--sticky-prompt-clip'
 
+/**
+ * Dispatched synchronously on the scroll viewport by code that writes its
+ * scrollTop from a later ResizeObserver (bottom-follow while streaming). The
+ * scroll event would only re-measure on the next frame, after a stale paint.
+ */
+export const STICKY_PROMPT_CLIP_REMEASURE = 'sticky-prompt-clip:remeasure'
+
 interface StickyPromptClipOptions {
   contentRef: RefObject<HTMLElement | null>
   scrollRef: RefObject<HTMLElement | null>
@@ -51,9 +58,11 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
   const visible = new Set<HTMLElement>()
   const clipped = new Set<HTMLElement>()
   let frame = 0
+  let measuredScrollTop = viewport.scrollTop
 
   const measure = () => {
     frame = 0
+    measuredScrollTop = viewport.scrollTop
     const viewportTop = viewport.getBoundingClientRect().top
     const next = new Map<HTMLElement, number>()
     let activePrompt: HTMLElement | null = null
@@ -181,12 +190,14 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
   // when the viewport itself resizes: the browser clamps scrollTop, the
   // content moves under a clip still sized for the old position, and for one
   // painted frame a band below the pinned card hid the transcript. A viewport
-  // resize can also bring a turn into view before IntersectionObserver
-  // delivers it, so refresh visibility from outer boxes first.
+  // resize, or a content resize that clamps scrollTop (collapsing the last
+  // turn at the bottom), can also bring a turn into view before
+  // IntersectionObserver delivers it, so refresh visibility from outer boxes
+  // first.
   const sizes: ResizeObserver = new ResizeObserver(entries => {
     cancelAnimationFrame(frame)
 
-    if (entries.some(entry => entry.target === viewport)) {
+    if (viewport.scrollTop !== measuredScrollTop || entries.some(entry => entry.target === viewport)) {
       refreshVisible()
     }
 
@@ -248,14 +259,22 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
     measure()
   }
 
+  const remeasure = () => {
+    cancelAnimationFrame(frame)
+    refreshVisible()
+    measure()
+  }
+
   sizes.observe(viewport)
   sizes.observe(content)
   viewport.addEventListener('scroll', schedule, { passive: true })
+  viewport.addEventListener(STICKY_PROMPT_CLIP_REMEASURE, remeasure)
 
   const dispose = () => {
     intersections.disconnect()
     sizes.disconnect()
     viewport.removeEventListener('scroll', schedule)
+    viewport.removeEventListener(STICKY_PROMPT_CLIP_REMEASURE, remeasure)
     cancelAnimationFrame(frame)
 
     for (const element of clipped) {

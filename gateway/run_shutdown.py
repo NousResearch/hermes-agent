@@ -1344,7 +1344,6 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         # write-off-loop let two completing sessions rewrite each other's stale snapshot.
         await asyncio.to_thread(clear_restart_failure_count, path, session_key)
 
-    # Restart orchestration
     @staticmethod
     def _restart_watcher_env() -> dict:
         """Watcher env minus ``_HERMES_GATEWAY`` (else the CLI's self-restart guard refuses; gateway stays down).
@@ -1356,7 +1355,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         """
         from gateway.config_loader import drop_bridged_env
         from hermes_constants import get_default_hermes_root, get_hermes_home
-        from tools.environments.local import gateway_child_env, host_gateway_child_env
+        from tools.environments.local import host_gateway_child_env
+        from tools.environments.local_gateway_env import gateway_child_env
 
         home = get_hermes_home()
         try:

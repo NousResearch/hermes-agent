@@ -38,7 +38,7 @@ import sys
 import types
 import weakref
 
-from . import _budget, _comments, _edge_bound, _engine
+from . import _budget, _comments, _edge_bound, _edge_plan, _engine
 from ._edge_run import step
 from ._errors import error
 from ._flags import RegexFlag, checked
@@ -47,7 +47,7 @@ from ._match import Match
 from ._offsets import Offsets
 from ._subject import DIRECT, UTF8, WINDOW, held, subject, window
 from ._template import template as _template
-from ._validate import stdlib_syntax
+from ._validate import check, stdlib_syntax
 
 _LAZY = frozenset(("_anchors", "_edge", "_rx"))  # slots filled by the build
 # Every Pattern alive (the compile cache's and the ones modules hold), keyed by identity: equal
@@ -142,6 +142,8 @@ class Pattern:
             text, engine_flags = pattern.decode("latin-1"), int(flags) | 256
         text = _comments.strip(text, pattern)[0]
         stdlib_syntax(text, not is_str, pattern)  # raises ``error`` where stdlib does
+        if _edge_plan.wanted(text):  # what the guard rewrite would hide (``_validate.check``)
+            check(text, not is_str, pattern, True)
         form = self._form = Form(pattern, text, engine_flags, not is_str, True, weakref.ref(self))  # raises ``error``
         self.groups, self.groupindex = form.groups, form.groupindex
         wide = None

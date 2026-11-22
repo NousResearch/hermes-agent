@@ -45,3 +45,24 @@ def test_what_stdlib_accepts_still_compiles_and_matches():
                             (r"(?s-i:.)a", "\na"), (r"(?P<n>a)(?=b)", "ab"), (r"(?<=x)a", "xa")):
         ref = std.search(source, subject)
         assert ref is not None and [m.span() for m in hre.finditer(source, subject)][:1] == [ref.span()], source
+
+
+# Edge-guard shapes around malformed atoms: the guard rewrite turns a guard's body into a class or
+# a neighbour test, which must not make syntax stdlib refuses runnable (`(?<!*)a` is not `[^*]a`).
+_ATOMS = ["", "*", "+", "?", "*?", "{2}", "{", "{,}", "{1,2}", "{2,1}", "a", "a**", "a*+", "[", "]", "[a", "[]", "[^]",
+          "\\", "\\q", "\\x", "\\x4", "\\u12", "\\N", "\\c", "()", "(", ")", "(?", "\\1", "|", "a|", "^*", "$?",
+          "\\b*", "\\A+", "[a-", "[z-a]", "[a-\\d]", "(?P<1>a)", "(?P=n)", "a{,}", "(?x)", "\\pL", "]*"]
+_GUARDS = ["(?<={})", "(?<!{})", "(?={})", "(?!{})"]
+_SHAPES = ["{g}a", "a{g}", "b|{g}a", "a{g}|b", "({g}a)", "{g}a|b{g}", "{g}*a", "x{g}y"]
+
+
+@pytest.mark.parametrize("guard", _GUARDS)
+def test_a_guard_stdlib_refuses_is_refused(guard):
+    accepted = []
+    for atom, shape in itertools.product(_ATOMS, _SHAPES):
+        source = shape.format(g=guard.format(atom))
+        for flags in (0, std.IGNORECASE):
+            refused = outcome(lambda: std.compile(source, flags)) == "raises error"
+            if refused and outcome(lambda: hre.compile(source, flags)) != "raises error":
+                accepted.append((source, int(flags)))
+    assert accepted == []

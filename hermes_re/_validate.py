@@ -51,18 +51,21 @@ _LACKING = (
     ("?#", "comment group in a rewritten source"),
 )
 
+_LOOKS = ("?=", "?!", "?<=", "?<!")
+
 
 class _Walk:
     """The scan state: position, open groups, capture groups seen, and the repeat bookkeeping."""
-    __slots__ = ("before", "i", "latin1", "lone", "most", "n", "names", "ncap", "original", "p", "prod", "seen",
-                 "stack")
+    __slots__ = ("before", "i", "latin1", "lone", "looks", "most", "n", "names", "ncap", "original", "p", "prod",
+                 "seen", "stack")
 
-    def __init__(self, text: str, latin1: bool, original):
+    def __init__(self, text: str, latin1: bool, original, looks: bool = False):
         self.p, self.n, self.i, self.latin1, self.original = text, len(text), 0, latin1, original
-        self.before = _NOTHING
+        self.before, self.looks = _NOTHING, looks
         # A lone surrogate cannot be encoded for RE2. Inside a bracket class the class translator
-        # writes it as an escape (it then never matches); anywhere else it is refused.
-        self.lone = not latin1 and not text.isascii() and has_surrogate(text)
+        # writes it as an escape (it then never matches); anywhere else it is refused. Not judged
+        # when reading lookarounds: an edge guard turns its character into a class member.
+        self.lone = not latin1 and not looks and not text.isascii() and has_surrogate(text)
         self.stack = []     # per open group: the largest repeat product outside it so far
         self.most = 1       # largest product of nested repeat counts in the current group
         self.prod = 1       # the same for the atom just read
@@ -203,6 +206,8 @@ def _open(w: _Walk) -> None:
         w.push(i + 3)
     elif p.startswith("?P<", i + 1):
         _named(w, i + 4)
+    elif w.looks and p.startswith(_LOOKS, i + 1):  # a lookaround read as a group: its body is checked
+        w.push(i + (4 if p.startswith("?<", i + 1) else 3))
     else:
         for token, message in _LACKING:
             if p.startswith(token, i + 1):
@@ -276,10 +281,15 @@ _HANDLERS = {"\\": _escape, "[": _class, "(": _open, ")": _close, "*": _repeat, 
              "{": _repeat, "|": _bar, "^": _anchor, "$": _anchor}
 
 
-def check(text: str, latin1: bool, original):
+def check(text: str, latin1: bool, original, looks: bool = False):
     """``(capture groups, ((name, number), ...))`` for the Python-dialect ``text``, or ``error``
-    (carrying ``original``, the caller's pattern) for syntax RE2 cannot run."""
-    w = _Walk(text, latin1, original)
+    (carrying ``original``, the caller's pattern) for syntax RE2 cannot run.
+
+    ``looks``: read lookarounds as groups instead of refusing them. The edge planner rewrites a
+    guard's body into a class or a neighbour test, where a malformed atom (``(?<!*)``, a bad
+    escape) would turn into something runnable; a source with guards is therefore read once
+    this way BEFORE the rewrite, so the syntax stdlib refuses inside a guard is refused too."""
+    w = _Walk(text, latin1, original, looks)
     handlers, n = _HANDLERS, w.n
     if w.lone:
         handlers = dict(handlers)

@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 import pytest
 
 from tests.ci.desktop_release_roles import (
@@ -95,20 +95,28 @@ def test_darwin_legs_verify_notary_credentials_after_writing_key_and_before_buil
 def test_validate_p8_pem_accepts_pkcs8_and_rejects_malformed_keys():
     from scripts.ci.check_macos_notary_auth import validate_p8_pem
 
-    disposable = ec.generate_private_key(ec.SECP256R1()).private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption(),
-    )
-    assert validate_p8_pem(disposable.decode("ascii")) is None
+    def pkcs8(key) -> str:
+        return key.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption(),
+        ).decode("ascii")
+
+    assert validate_p8_pem(pkcs8(ec.generate_private_key(ec.SECP256R1()))) is None
     assert validate_p8_pem(_synthetic_p8()) is None
     assert validate_p8_pem(_synthetic_p8(newline="\r\n")) is None
 
     # A lost body line still decodes as base64 and still starts with the SEQUENCE tag.
     lost_line = _synthetic_p8().splitlines()
     del lost_line[2]
-    fields = _der(0x02, b"\x00") + _der(0x30, b"") + _der(0x04, b"\x00")
+    # Each envelope below breaks one rule of an otherwise well-formed P-256 PrivateKeyInfo.
+    p256 = _der(0x30, bytes.fromhex("06072a8648ce3d0201 06082a8648ce3d030107"))
+    fields = _der(0x02, b"\x00") + p256 + _der(0x04, b"\x00")
     for bad in (
         "\n".join(lost_line),
-        _pem(_der(0x30, _der(0x04, b"\x00" * 40))),
+        # The wrong key in the secret: well-formed PKCS#8, but RSA (a Developer ID key, say) or P-384.
+        pkcs8(rsa.generate_private_key(public_exponent=65537, key_size=2048)),
+        pkcs8(ec.generate_private_key(ec.SECP384R1())),
+        _pem(_der(0x30, _der(0x02, b"\x00") + _der(0x30, b"") + _der(0x04, b"\x00"))),
+        _pem(_der(0x30, _der(0x02, b"\x00") + p256 + _der(0x02, b"\x00"))),
         _pem(_der(0x31, fields)),
         _pem(_der(0x30, fields) + b"\x00"),
         _pem(_der(0x30, fields[:-2] + b"\x02\x00")),

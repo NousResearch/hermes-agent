@@ -23,6 +23,8 @@ import sys
 
 _PEM_BEGIN = "-----BEGIN " + "PRIVATE KEY-----"
 _PEM_END = "-----END " + "PRIVATE KEY-----"
+# AlgorithmIdentifier contents: OID id-ecPublicKey (1.2.840.10045.2.1), OID prime256v1 (1.2.840.10045.3.1.7).
+_P256_ALGORITHM = bytes.fromhex("06072a8648ce3d0201 06082a8648ce3d030107")
 _PEM_BLOCK_RE = re.compile(
     r"-----BEGIN [A-Z0-9 ]+-----.*?-----END [A-Z0-9 ]+-----",
     re.DOTALL,
@@ -85,19 +87,22 @@ def _der_element(der: bytes, pos: int) -> tuple[int, int, int]:
     return tag, pos, pos + length
 
 
-def _is_pkcs8_private_key_info(der: bytes) -> bool:
-    """SEQUENCE { INTEGER version, SEQUENCE algorithm, OCTET STRING privateKey, ... } filling *der* exactly."""
+def _is_p256_pkcs8(der: bytes) -> bool:
+    """PKCS#8 PrivateKeyInfo for an EC P-256 key (App Store Connect's ES256), filling *der* exactly.
+
+    SEQUENCE { INTEGER version, SEQUENCE { id-ecPublicKey, prime256v1 }, OCTET STRING privateKey, ... }
+    """
     try:
         tag, pos, end = _der_element(der, 0)
         if tag != 0x30 or end != len(der):
             return False
-        tags = []
-        while pos < end and len(tags) < 3:
-            child, _start, pos = _der_element(der, pos)
-            tags.append(child)
+        fields = []
+        while pos < end and len(fields) < 3:
+            child, start, pos = _der_element(der, pos)
+            fields.append((child, der[start:pos]))
     except ValueError:
         return False
-    return tags == [0x02, 0x30, 0x04]
+    return [child for child, _ in fields] == [0x02, 0x30, 0x04] and fields[1][1] == _P256_ALGORITHM
 
 
 def validate_p8_pem(pem_text: str) -> str | None:
@@ -121,8 +126,8 @@ def validate_p8_pem(pem_text: str) -> str | None:
         der = base64.b64decode("".join(body_lines), validate=True)
     except (binascii.Error, ValueError):
         return "App Store Connect .p8 key file contains invalid base64 PEM data"
-    if not _is_pkcs8_private_key_info(der):
-        return "App Store Connect .p8 key file does not contain a complete DER-encoded PKCS#8 key"
+    if not _is_p256_pkcs8(der):
+        return "App Store Connect .p8 key file does not contain a complete PKCS#8 EC P-256 private key"
     return None
 
 

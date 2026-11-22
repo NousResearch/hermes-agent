@@ -302,6 +302,24 @@ def test_disabled_project_plugin_is_not_listed_or_served(dash, project_plugin, d
     assert not project_plugin.exists()
 
 
+@pytest.mark.parametrize("enabled_as", ["hermes-mobile", "mobile"])
+def test_project_plugin_cannot_take_a_user_plugins_dashboard_name(dash, tmp_path, monkeypatch, enabled_as):
+    """A project plugin (opt-in, ships with the CWD) whose directory is a user plugin's dashboard name
+    does not displace that plugin: user and bundled entries still outrank the project source."""
+    imported = _install(dash.home, "hermes-mobile", "mobile", yaml_name="hermes-mobile")
+    repo = tmp_path / "repo"
+    project_imported = _install(repo / ".hermes", "mobile", "mobile")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "1")
+    _plugins(dash.home, enabled=[enabled_as])
+    dash.start()
+
+    assert imported.exists()
+    assert dash.ping("mobile").json() == {"pong": "hermes-mobile"}
+    assert dash.listed()["mobile"]["source"] == "user"
+    assert not project_imported.exists()
+
+
 def test_project_plugin_without_a_disabled_entry_is_listed_as_before(dash, project_plugin):
     """Control: no enable entry is needed for a project plugin; its files are served, its Python never runs."""
     _plugins(dash.home)

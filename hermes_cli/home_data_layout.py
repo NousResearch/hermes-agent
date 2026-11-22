@@ -41,6 +41,7 @@ HOME_ENV_FILES = (".env", ".op.env")
 CREDENTIAL_STORE_DIRS = (
     "mcp-tokens", "vault", "pairing", "platforms/pairing",
     "whatsapp/session", "platforms/whatsapp/session", "matrix/store", "platforms/matrix/store",
+    "backend_migration",  # a backend migration's backups: the copy of .env, a hand-started backend's environment
 )
 # Home subpaths the agent must not rewrite with generic file tools or destroy from the shell without a
 # prompt. Session transcripts (state.db, sessions/) are application-owned state whose rewrite can

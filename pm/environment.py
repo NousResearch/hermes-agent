@@ -258,6 +258,24 @@ def _base_environment(env: Mapping[str, str] | None = None) -> dict[str, str]:
     return base
 
 
+def _same_executable(candidate: Path, pinned: Path) -> bool:
+    left, right = candidate.resolve(), pinned.resolve()
+    if left == right:
+        return True
+    try:
+        if left.samefile(right):
+            return True
+        if not (left.is_file() and right.is_file()) or left.stat().st_size != right.stat().st_size:
+            return False
+        with left.open("rb") as first, right.open("rb") as second:
+            while chunk := first.read(65536):
+                if chunk != second.read(len(chunk)):
+                    return False
+            return not second.read(1)
+    except OSError:
+        return False
+
+
 def managed_environment(destination: Path, *, python: Path | None = None,
                         cache: Path | None = None, env: Mapping[str, str] | None = None,
                         offline: bool = False, explicit: bool = False,
@@ -271,8 +289,8 @@ def managed_environment(destination: Path, *, python: Path | None = None,
     uv, pinned_python = tools
     python = pinned_python if python is None else python.absolute()
     build_env = _base_environment(env)
-    if python.resolve() == pinned_python.resolve():
-        # Only our interpreter: a separately selected one (e.g. Nix) keeps its own sysconfig.
+    if _same_executable(python, pinned_python):
+        # Staged copies (bundle payloads) share our interpreter's sysconfig; foreign ones (e.g. Nix) keep theirs.
         from pm.build_compilers import pinned_build_defaults
 
         for key, value in pinned_build_defaults(python, build_env).items():

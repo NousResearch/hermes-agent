@@ -158,12 +158,12 @@ def worker_billing_route(holder, conn, session_id, payload):
 def worker_api_content(holder, conn, session_id, payload):
     if set(payload) != {'content', 'api_content'} or not isinstance(payload['api_content'], str):
         raise AuthorityRefusal('invalid_params')
+    from ..conversation._store.api_content import _sidecar_bytes
     from ..conversation._store.messages import _encode_content
-    from ..conversation._store.messages_sql import _scrub_surrogates
     value = conn.execute(
         "UPDATE messages SET api_content=? WHERE id=(SELECT id FROM messages WHERE session_id=? "
         "AND role='user' AND active=1 ORDER BY id DESC LIMIT 1) AND content IS ?",
-        (_scrub_surrogates(payload['api_content']), session_id, _encode_content(payload['content']))).rowcount
+        (_sidecar_bytes(payload['api_content']), session_id, _encode_content(payload['content']))).rowcount
     return {'value': value}
 
 
@@ -178,11 +178,11 @@ def worker_message_api_content(holder, conn, session_id, payload):
     """Row-addressed sidecar backfill, same guards as the store's ``set_message_api_content``."""
     if set(payload) != {'row_id', 'content', 'api_content'} or not isinstance(payload['api_content'], str):
         raise AuthorityRefusal('invalid_params')
+    from ..conversation._store.api_content import _sidecar_bytes
     from ..conversation._store.messages import _encode_content
-    from ..conversation._store.messages_sql import _scrub_surrogates
     return {'value': conn.execute(
         "UPDATE messages SET api_content=? WHERE id=? AND session_id=? AND role='user' AND active=1 AND content IS ?",
-        (_scrub_surrogates(payload['api_content']), _row_id(payload), session_id,
+        (_sidecar_bytes(payload['api_content']), _row_id(payload), session_id,
          _encode_content(payload['content']))).rowcount}
 
 

@@ -2,7 +2,7 @@
 
 A stored transcript and a plugin's copy of the conversation are both read back long after the
 turn that produced them, so a user's ``security.redact_secrets`` preference must not decide
-whether they were masked. Both callers use the redactor the log path and the request-dump path
+whether they were masked. Every caller uses the redactor the log path and the request-dump path
 already run, and nothing here re-implements a pattern: a second list would drift from the first,
 which is the failure this module exists to prevent.
 

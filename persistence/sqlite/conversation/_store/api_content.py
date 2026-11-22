@@ -6,6 +6,19 @@ from typing import Any
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite.conversation._store.messages import _encode_content
 
+def _sidecar_bytes(api_content: str) -> str:
+    """The value bound for the sidecar column: masked, then surrogate-scrubbed.
+
+    ``api_content`` is the provider-facing copy of a user message, and it reaches the
+    column through a bare ``UPDATE`` here rather than through the insert funnel
+    (``_message_row_params``), so the masking the funnel applies does not happen on
+    this path by itself. Same redactor, forced: a stored sidecar outlives the process
+    that received it and is replayed into the next request.
+    """
+    from persistence.conversation.durable_redaction import redact_message_text
+    from persistence.sqlite.conversation._store.messages_sql import _scrub_surrogates
+    return _scrub_surrogates(redact_message_text(api_content))
+
 
 def set_latest_user_api_content(holder: StoreHolder, session_id: str, content: Any, api_content: str) -> int:
     """Backfill the ``api_content`` sidecar onto the newest ACTIVE user row (0/1 rows). Preflight compaction
@@ -24,12 +37,11 @@ def set_latest_user_api_content(holder: StoreHolder, session_id: str, content: A
     :meth:`_insert_message_rows`), use :meth:`set_message_api_content`
     instead — it addresses the exact row and cannot land on a neighbour.
     """
-    from persistence.sqlite.conversation._store.messages_sql import _scrub_surrogates
     return holder._write_rowcount(
         "UPDATE messages SET api_content = ? WHERE id = (SELECT id FROM messages "
         "WHERE session_id = ? AND role = 'user' AND active = 1 ORDER BY id DESC LIMIT 1"
         ") AND content IS ?",
-        (_scrub_surrogates(api_content), session_id, _encode_content(content)))
+        (_sidecar_bytes(api_content), session_id, _encode_content(content)))
 
 
 def set_message_api_content(
@@ -52,10 +64,9 @@ def set_message_api_content(
     row the compaction archived, or one a racing rewrite changed, is left
     untouched.
     """
-    from persistence.sqlite.conversation._store.messages_sql import _scrub_surrogates
     if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
         return 0
     return holder._write_rowcount(
         "UPDATE messages SET api_content = ? WHERE id = ? AND session_id = ? "
         "AND role = 'user' AND active = 1 AND content IS ?",
-        (_scrub_surrogates(api_content), row_id, session_id, _encode_content(content)))
+        (_sidecar_bytes(api_content), row_id, session_id, _encode_content(content)))

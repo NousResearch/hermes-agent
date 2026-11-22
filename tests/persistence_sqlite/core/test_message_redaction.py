@@ -17,6 +17,8 @@ import sqlite3
 import pytest
 
 from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 # Invented credentials in the shape of real ones — never a live value.
 FAKE_GITHUB = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
@@ -101,3 +103,76 @@ def test_multimodal_parts_keep_their_shape(db):
     _, stored = _stored(db_path, "user")
     assert FAKE_GITHUB not in stored
     assert "image/png;base64,iVBORw0KGgo=" in stored, "the image part was rewritten"
+
+
+# --- the sidecar writers -------------------------------------------------
+#
+# ``api_content`` is the provider-facing copy of a user message. It reaches the
+# column through a bare ``UPDATE`` in ``_store/api_content.py`` (and again in the
+# worker-authority duplicate in ``workers/_lifecycle.py``), never through
+# ``_message_row_params``, so masking on the insert path alone leaves this door
+# open. Probed before the fix: the sidecar landed verbatim.
+
+SIDECAR_CONTENT = "deploy with the token please"
+SIDECAR_TEXT = f"deploy with the token {FAKE_GITHUB} please"
+
+
+def _sidecar(db_path, row_id):
+    con = sqlite3.connect(db_path)
+    try:
+        return con.execute("SELECT api_content FROM messages WHERE id = ?", (row_id,)).fetchone()[0]
+    finally:
+        con.close()
+
+
+@pytest.fixture()
+def store(tmp_path):
+    s = open_persistence(profile_scope(home=tmp_path))
+    seed_session(s, "s1", "cli")
+    yield s, next(tmp_path.rglob("*.db"))
+    s.close()
+
+
+def test_row_addressed_sidecar_is_stored_redacted(store):
+    s, db_path = store
+    [row_id] = seed_messages(s, "s1", {"role": "user", "content": SIDECAR_CONTENT})
+
+    assert s.messages.set_message_api_content("s1", row_id, SIDECAR_CONTENT, SIDECAR_TEXT)
+
+    stored = _sidecar(db_path, row_id)
+    assert stored is not None, "the sidecar was not written at all"
+    assert FAKE_GITHUB not in stored, "a credential reached the sidecar verbatim"
+    assert stored.startswith("deploy with the token ") and stored.endswith(" please")
+
+
+def test_positional_sidecar_is_stored_redacted(store):
+    s, db_path = store
+    [row_id] = seed_messages(s, "s1", {"role": "user", "content": SIDECAR_CONTENT})
+
+    assert s.messages.set_latest_user_api_content("s1", SIDECAR_CONTENT, SIDECAR_TEXT)
+
+    stored = _sidecar(db_path, row_id)
+    assert stored is not None
+    assert FAKE_GITHUB not in stored, "a credential reached the sidecar verbatim"
+
+
+def test_worker_sidecar_handlers_store_redacted_text(store):
+    """The worker-authority path keeps its own copy of the SQL; it must mask too."""
+    s, db_path = store
+    [row_id] = seed_messages(s, "s1", {"role": "user", "content": SIDECAR_CONTENT})
+    from persistence.sqlite.workers._lifecycle import worker_api_content, worker_message_api_content
+
+    con = sqlite3.connect(db_path)
+    try:
+        addressed = worker_message_api_content(
+            None, con, "s1", {"row_id": row_id, "content": SIDECAR_CONTENT, "api_content": SIDECAR_TEXT})
+        assert addressed["value"] == 1
+        positional = worker_api_content(
+            None, con, "s1", {"content": SIDECAR_CONTENT, "api_content": SIDECAR_TEXT})
+        assert positional["value"] == 1
+        con.commit()
+    finally:
+        con.close()
+
+    stored = _sidecar(db_path, row_id)
+    assert FAKE_GITHUB not in stored, "a credential reached the sidecar verbatim through the worker path"

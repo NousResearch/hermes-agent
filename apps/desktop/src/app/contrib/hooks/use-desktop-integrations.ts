@@ -5,7 +5,7 @@ import { resumeAccountConnect } from '@/app/capabilities/connectors/data/deep-li
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
-import { commandFocusedTerminal } from '@/app/right-sidebar/terminal/terminal-context-menu'
+import { commandFocusedTerminal, wordEraseFocusedTerminal } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { openConnectionDoneLink } from '@/components/assistant-ui/connector-tool'
 import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
 import { getSession } from '@/hermes'
@@ -14,6 +14,7 @@ import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { announceNewSessionDraftKey } from '@/store/composer'
 import { recordAction } from '@/store/desktop-metrics'
+import { onKeptRouteOpened } from '@/store/gateway-kept-routes'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { startMcpHealthChecker, stopMcpHealthChecker } from '@/store/mcp-health'
 import {
@@ -27,13 +28,16 @@ import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { openFolderAsProject } from '@/store/projects'
 import {
   $selectedStoredSessionId,
+  forgetSessionOwnerHintsForSession,
   getRememberedRoute,
   getRememberedSessionId,
   resolveComposerSessionKey,
   sessionBelongsToProfile,
   sessionMatchesStoredId,
+  sessionOwnerRouteFromRow,
   setRememberedRoute,
-  setRememberedSessionId
+  setRememberedSessionId,
+  setSessionOwnerHint
 } from '@/store/session'
 import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { onSessionsChanged } from '@/store/session-sync'
@@ -46,6 +50,9 @@ import { requestComposerFocus, requestComposerInsert } from '../../chat/composer
 import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '../../routes'
 
 import { resolveRememberedSessionId } from './remembered-session'
+
+// Trailing window that folds a burst of kept-route opens into one list refresh.
+const KEPT_ROUTE_REFRESH_COALESCE_MS = 400
 
 type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'parent_session_id' | 'profile' | 'source'>
 
@@ -183,6 +190,29 @@ export function useDesktopIntegrations({
         // synchronous there; an unlisted id resolves by id below.
         const rowFor = (id: string) => sessions.find(session => sessionMatchesStoredId(session, id))
 
+        // The same owner hygiene the click path (openStoredSession) applies to
+        // a list row: an untagged row is owned by the ambient backend, so a
+        // stale explicit hint (older builds persisted `local` for legacy
+        // primary-SSH rows) must not survive into the pathname-driven resume —
+        // it would dial the Mac backend for a remote session and die with
+        // "session not found" (#97809). A connection-tagged row pins its exact
+        // route instead, exactly as a clicked row does.
+        const repairOwnerHintsForRestore = (id: string) => {
+          const row = rowFor(id)
+
+          if (!row) {
+            return
+          }
+
+          const ownerRoute = sessionOwnerRouteFromRow(row)
+
+          if (ownerRoute) {
+            setSessionOwnerHint(id, ownerRoute)
+          } else {
+            forgetSessionOwnerHintsForSession(id)
+          }
+        }
+
         const restorableRouteSession = routeSession && rowFor(routeSession)?.source !== 'subagent' ? routeSession : null
 
         if (
@@ -194,6 +224,10 @@ export function useDesktopIntegrations({
           // The user may have started typing on the fresh chat while the
           // backend was still coming up; the composer moves that draft onto
           // the restored session when its scope swaps (#114122).
+          if (routeSession) {
+            repairOwnerHintsForRestore(routeSession)
+          }
+
           announceNewSessionDraftKey(routeSession && resolveComposerSessionKey(routeSession, sessions))
           navigate(route, { replace: true })
 
@@ -210,6 +244,7 @@ export function useDesktopIntegrations({
           // Fast path: a listed, non-delegate row restores directly, exactly
           // as before — no by-id fetch on the common cold start.
           if (rowFor(last)?.source !== 'subagent' && sessionBelongsToProfile(sessions, last, activeProfile)) {
+            repairOwnerHintsForRestore(last)
             announceNewSessionDraftKey(resolveComposerSessionKey(last, sessions))
             navigate(sessionRoute(last), { replace: true })
 
@@ -229,6 +264,7 @@ export function useDesktopIntegrations({
                 return
               }
 
+              repairOwnerHintsForRestore(remembered)
               announceNewSessionDraftKey(resolveComposerSessionKey(remembered, sessions))
               setRememberedSessionId(remembered, activeProfile)
               navigate(sessionRoute(remembered), { replace: true })
@@ -478,9 +514,17 @@ export function useDesktopIntegrations({
   // OS-standard window close, esp. secondary windows). The Win/Linux keyboard
   // path is the `view.closeTab` keybind (use-keybinds), sharing closeActiveTab.
   useEffect(() => {
-    const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(
-      () => void closeActiveTab(id => navigate(sessionRoute(id)))
-    )
+    const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(() => {
+      // A focused user terminal owns the chord as the shell's word erase: main
+      // claimed the keystroke (before-input-event), so re-deliver the ^W byte
+      // to the PTY instead of closing the pane and killing the shell (#65457).
+      // Read-only agent mirrors and everything else keep the close meaning.
+      if (wordEraseFocusedTerminal()) {
+        return
+      }
+
+      void closeActiveTab(id => navigate(sessionRoute(id)))
+    })
 
     return () => unsubscribe?.()
   }, [navigate])
@@ -520,5 +564,22 @@ export function useDesktopIntegrations({
     }
 
     return onSessionsChanged(() => void refreshSessions())
+  }, [refreshSessions])
+
+  // A gateway that connects after the list was drawn adds its rows to it.
+  // Kept-route opens (launch dials and reconnects alike) share one trailing
+  // timer, so opens less than KEPT_ROUTE_REFRESH_COALESCE_MS apart pull once.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const off = onKeptRouteOpened(() => {
+      clearTimeout(timer)
+      timer = setTimeout(() => void refreshSessions(), KEPT_ROUTE_REFRESH_COALESCE_MS)
+    })
+
+    return () => {
+      off()
+      clearTimeout(timer)
+    }
   }, [refreshSessions])
 }

@@ -26,11 +26,11 @@ _MIN_PLAUSIBLE, _MAX_PLAUSIBLE = 64, 32_768
 _EMA_ALPHA = 0.5
 
 _image_cost_var: ContextVar[Optional[int]] = ContextVar("hermes_image_token_cost", default=None)
-_LEARNED: Dict[str, int] = {}
+_LEARNED: dict[str, int] = {}
 _LOADED = False
 # Routed profiles (multiplexed gateway) keep their own table, loaded from THEIR cache file: the
 # module slot above is the launch profile's and would otherwise be persisted into every home.
-_LEARNED_BY_HOME: Dict[str, Dict[str, int]] = {}
+_LEARNED_BY_HOME: dict[str, dict[str, int]] = {}
 
 
 def _cache_path():
@@ -45,14 +45,14 @@ def _key(model: Any, base_url: Any) -> str:
     return f"{model or ''}@{base_url_hostname(base_url or '') or ''}"
 
 
-def _read_cache() -> Dict[str, int]:
+def _read_cache() -> dict[str, int]:
     from agent.model_metadata import _load_json_dict
 
     return {k: v for k, v in _load_json_dict(_cache_path()).items()
             if isinstance(v, int) and _MIN_PLAUSIBLE <= v <= _MAX_PLAUSIBLE}
 
 
-def _table() -> Dict[str, int]:
+def _table() -> dict[str, int]:
     """The active profile's learned table, loaded lazily from its cache file."""
     global _LOADED
     from hermes_constants import get_hermes_home_override, hermes_home_key
@@ -94,13 +94,13 @@ def bind_image_token_cost(agent: Any) -> None:
     _image_cost_var.set(learned_image_token_cost(getattr(agent, "model", None), getattr(agent, "base_url", None)))
 
 
-def count_images(messages: List[Dict[str, Any]]) -> int:
+def count_images(messages: list[dict[str, Any]]) -> int:
     from agent.model_metadata import _count_image_tokens
 
     return sum(_count_image_tokens(m, 1) for m in messages if isinstance(m, dict))
 
 
-def calibrate_from_usage(agent: Any, messages: List[Dict[str, Any]], prompt_tokens: Any) -> Optional[int]:
+def calibrate_from_usage(agent: Any, messages: list[dict[str, Any]], prompt_tokens: Any) -> Optional[int]:
     """Learn the per-image cost from the response that just priced ``messages``.
 
     Requires the PREVIOUS anchor (real count of the prior request) to still match: the residual

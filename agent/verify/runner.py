@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent.verify.recipes import Recipe
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 
 DEFAULT_PHASE_TIMEOUT = 600.0
 DEFAULT_READY_TIMEOUT = 60.0
@@ -96,7 +97,7 @@ def _run_phase_command(
 ) -> PhaseResult:
     started = time.monotonic()
     try:
-        proc = subprocess.run(command, cwd=str(root), timeout=timeout, **_SUBPROCESS_KW)
+        proc = subprocess.run(command, cwd=str(root), timeout=timeout, **_SUBPROCESS_KW, check=False)
         output, exit_code, timed_out = proc.stdout or "", proc.returncode, False
     except subprocess.TimeoutExpired as exc:
         raw = exc.output
@@ -137,6 +138,10 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
             pgid = getpgid(proc.pid)
         except (ProcessLookupError, PermissionError):
             pass
+    if pgid is not None and pgid != proc.pid:
+        # The child does not lead its own group, so it shares ours: killpg would
+        # signal the whole runner process tree. Signal the direct child only.
+        pgid = None
 
     def stop(sig: int, fallback: Callable[[], None]) -> None:
         if pgid is not None:
@@ -168,13 +173,16 @@ def _run_start_phase(
     port = port_override or recipe.port or 8000
     url = f"http://127.0.0.1:{port}{recipe.readiness_path}"
     started = time.monotonic()
-    # start_new_session: own process group for clean teardown.
-    proc = subprocess.Popen(recipe.start, cwd=str(root), start_new_session=True, **_SUBPROCESS_KW)
+    # Owned: the app leads its own group (clean group teardown below) and that group dies with this
+    # process if it is killed mid-poll, instead of leaving the dev server running on the port.
+    proc = spawn_owned(recipe.start, purpose="verify-app", cwd=str(root), **_SUBPROCESS_KW)
     output = ""
     try:
         ready, status, error = _poll_readiness(url, ready_timeout)
     finally:
         _terminate_process_group(proc)
+        if proc.poll() is not None:
+            release_process_group_once_empty(proc.pid, proc=proc)
         try:
             output = proc.stdout.read() or "" if proc.stdout is not None else ""
         except (OSError, ValueError):
@@ -194,6 +202,7 @@ def _compose_live_state_reason(root: Path) -> str | None:
         result = subprocess.run(
             ["docker", "compose", "ps", "--status", "running", "--format", "{{.Name}}"],
             cwd=root, capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+            check=False,
         )
     except FileNotFoundError:
         return None

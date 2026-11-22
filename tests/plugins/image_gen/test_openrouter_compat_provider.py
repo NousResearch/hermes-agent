@@ -442,7 +442,7 @@ class TestImageApiSurface:
         import plugins.image_gen.openrouter as mod
 
         mod._CATALOG_CACHE.clear()
-        monkeypatch.setattr(mod, "_load_image_gen_config", lambda: {})
+        monkeypatch.setattr(mod, "_load_image_gen_config", dict)
         for knob in ("QUALITY", "BACKGROUND", "RESOLUTION", "SEED", "N",
                      "ASPECT_RATIO", "TIMEOUT", "SURFACE"):
             monkeypatch.delenv(f"OPENROUTER_IMAGE_API_{knob}", raising=False)
@@ -611,6 +611,27 @@ class TestImageApiSurface:
         )
         assert payload["n"] == 6
         assert any("cap of 6" in n for n in notes)
+
+    def test_grok_imagine_2_knobs_follow_its_catalog_entry(self):
+        """``GET /images/models`` gives x-ai/grok-imagine-image-2.0 quality low|medium, 1K/2K and
+        the exotic ratios; anything else would be silently ignored upstream."""
+        from plugins.image_gen.openrouter import _build_image_api_payload
+
+        payload, notes = _build_image_api_payload(
+            model_id="x-ai/grok-imagine-image-2.0", prompt="p", semantic_aspect="portrait",
+            references=[], config_key="openrouter",
+            kwargs={"quality": "high", "resolution": "2K", "aspect_ratio_exact": "9:19.5"},
+        )
+        assert "quality" not in payload
+        assert any("quality" in n for n in notes)
+        assert payload["resolution"] == "2K"
+        assert payload["aspect_ratio"] == "9:19.5"
+
+        payload, _ = _build_image_api_payload(
+            model_id="x-ai/grok-imagine-image-2.0", prompt="p", semantic_aspect="square",
+            references=[], config_key="openrouter", kwargs={"quality": "medium"},
+        )
+        assert payload["quality"] == "medium"
 
     def test_unknown_model_omits_the_aspect_ratio(self):
         """An out-of-enum ratio is a hard 400, so never guess one."""
@@ -788,8 +809,10 @@ class TestImageApiSurface:
         from plugins.image_gen.openrouter import _IMAGE_API_MODELS, _build_providers
 
         by_name = {p.name: p for p in _build_providers()}
-        openrouter_ids = {m["id"] for m in by_name["openrouter"].list_models()}
-        nous_ids = {m["id"] for m in by_name["nous"].list_models()}
+        # The tables' contract, not OpenRouter's live catalog: offline, list_models serves them.
+        with patch("requests.get", side_effect=OSError("offline")):
+            openrouter_ids = {m["id"] for m in by_name["openrouter"].list_models()}
+            nous_ids = {m["id"] for m in by_name["nous"].list_models()}
         assert set(_IMAGE_API_MODELS) <= openrouter_ids
         assert not (set(_IMAGE_API_MODELS) & nous_ids)
 

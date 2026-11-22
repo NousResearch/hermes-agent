@@ -357,9 +357,8 @@ class TestSensitivePathCheck:
     """Verify that _check_sensitive_path blocks writes to protected locations."""
 
     def test_hermes_config_blocked_for_write_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         fake_config = tmp_path / "config.yaml"
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", str(fake_config))
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
 
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
@@ -369,8 +368,7 @@ class TestSensitivePathCheck:
 
 
     def test_system_path_still_blocked(self, monkeypatch):
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/some/other/path")
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._get_hermes_config_resolved", lambda: "/some/other/path")
 
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool("/etc/passwd", "evil"))
@@ -393,8 +391,7 @@ class TestSensitivePathCheck:
 
     @patch("tools.file_tools._get_file_ops")
     def test_normal_file_not_blocked(self, mock_get, monkeypatch):
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/home/user/.hermes/config.yaml")
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._get_hermes_config_resolved", lambda: "/home/user/.hermes/config.yaml")
         mock_ops = MagicMock()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/other.txt", "bytes": 5}
@@ -918,6 +915,20 @@ class TestSSHConfigWriteGate:
         assert "single-query" in result["error"]
         assert not ssh_config.exists()
 
+    def test_relative_path_is_gated_from_the_task_cwd_not_the_process_cwd(self, ssh_config, tmp_path,
+                                                                           monkeypatch):
+        """A gateway-hosted turn's workspace is not the process cwd: the gate must judge the path
+        the write will actually land on, or a relative spelling skips approval."""
+        ws, elsewhere = tmp_path / "ws", tmp_path / "elsewhere"
+        for d in (ws, elsewhere, ssh_config.parent):
+            d.mkdir()
+        (ws / "sshdir").symlink_to(ssh_config.parent, target_is_directory=True)
+        monkeypatch.setenv("TERMINAL_CWD", str(ws))
+        monkeypatch.chdir(elsewhere)
+        from tools.file_tools_write_guards import _check_approval_required_write
+
+        assert "BLOCKED" in (_check_approval_required_write(["sshdir/config"], "ssh-gate-task") or "")
+
 
 class TestSecretFileReadRedaction:
     """#110567: read_file / search_files must classify the RESOLVED path and run the
@@ -947,7 +958,7 @@ class TestSecretFileReadRedaction:
     @pytest.fixture
     def hermes_home(self, tmp_path, monkeypatch):
         """A Hermes home with no ``.hermes`` segment, like ``%LOCALAPPDATA%\\hermes``."""
-        import agent.file_safety as file_safety
+        from agent import file_safety
 
         home = tmp_path / "hermes"
         home.mkdir()

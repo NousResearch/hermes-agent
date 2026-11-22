@@ -20,11 +20,11 @@ import pytest
 
 pytest.importorskip("botocore")
 
-from tests.e2e.core._pending_fixes import known_gate  # noqa: E402
-from tests.e2e.core.providers._native_helpers import (  # noqa: E402
+from tests.e2e.core._pending_fixes import known_gate
+from tests.e2e.core.providers._native_helpers import (
     ChatResult, KnownSymptom, NativeHome, latest_session, make_home, messages, run_chat, session_ids, tool_calls_of,
 )
-from tests.fakes.providers.bedrock_converse import (  # noqa: E402
+from tests.fakes.providers.bedrock_converse import (
     ACCESS_KEY, REGION, SECRET_KEY, FakeBedrock, Reasoning, Text, ToolUse, Turn, seq,
 )
 

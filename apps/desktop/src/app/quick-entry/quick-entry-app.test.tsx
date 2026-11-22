@@ -23,6 +23,7 @@ describe('QuickEntryApp', () => {
 
           return vi.fn()
         }),
+        onLateResult: vi.fn(() => vi.fn()),
         submit: vi.fn()
       }
     } as never

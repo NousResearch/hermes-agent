@@ -16,10 +16,10 @@
  *
  * Import the module to get the server as a library (the Playwright E2E
  * suite). Run the file directly to also write an isolated mock config and
- * launch the built Electron app against it (`npm run dev:mock`).
+ * launch the built Electron app against it (`pnpm run dev:mock`).
  */
 
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
 import type { ServerResponse } from 'node:http'
@@ -29,12 +29,21 @@ import { pathToFileURL } from 'node:url'
 
 import { z } from 'zod'
 
+import { resolveElectronBinary } from '../../apps/desktop/e2e/electron-binary.ts'
+
 import { writeEnvFile, writeMockProviderConfig } from './mock-provider-config.ts'
 
 /** A canned assistant reply used for every chat completion request. */
 export const MOCK_REPLY = 'Hello from the mock inference server! The full boot chain is working.'
 
 export interface MockServerOptions {
+  /**
+   * Group-room scripts kept out of the visible message: when a member's turn prompt
+   * contains a key, its value (E2E_SAY / E2E_TOOL / E2E_FAIL tokens) is scripted as
+   * if the user had typed it, so a screenshot shows a natural sentence.
+   */
+  groupScripts?: Record<string, string>
+
   /** Choose distinct replies from the latest input without replaying history. */
   replyForPrompt?: (prompt: string) => string
 
@@ -55,6 +64,20 @@ verificationWritePath?: string
  * handle's `path` to let the test decide when the process exits.
  */
 backgroundReleasePath?: string
+/**
+ * Spawn the E2E_SIDEBAR_CROSS background process without `notify_on_complete`
+ * (default: notify). A silent process sends no completion event, so the only
+ * thing that can clear its sidebar state is a backend read.
+ */
+backgroundSilent?: boolean
+
+/**
+ * Port to bind (default: any free port). An install/update journey runs its
+ * phases in separate CI steps, and each step's mock dies with that step while
+ * the detached gateway survives with the provider URL it read at boot; the
+ * next step rebinds the same port so that URL keeps answering.
+ */
+port?: number
 }
 
 export interface MockServer {
@@ -236,7 +259,7 @@ function sidebarCrossBgCommand(releasePath?: string): string {
   ].join(' && ')
 }
 
-function sidebarCrossScript(releasePath?: string): ScriptedTurn[] {
+function sidebarCrossScript(releasePath?: string, silent = false): ScriptedTurn[] {
   return [
     {
       text: 'Starting a long background task and delegating work.',
@@ -246,7 +269,7 @@ function sidebarCrossScript(releasePath?: string): ScriptedTurn[] {
           args: {
             command: sidebarCrossBgCommand(releasePath),
             background: true,
-            notify_on_complete: true,
+            notify_on_complete: !silent,
           },
         },
         {
@@ -509,6 +532,39 @@ export function groupScriptedLine(userText: string, history: string[] = []): str
 }
 
 /**
+ * Per-speaker tool call or failure for group rooms, addressed like `E2E_SAY`.
+ * `E2E_TOOL(<handle>)[<tool>:<command>]` makes that member's first completion
+ * of the turn call `<tool>` with `{ command }`; once the tool result follows
+ * the turn prompt it falls through to `groupScriptedLine`.
+ * `E2E_FAIL(<handle>)` makes that member's completions answer HTTP 401.
+ */
+export function groupScriptedAction(userText: string, messages: any[]): 'fail' | ScriptedTurn | null {
+  const viewer = /You are @([a-z0-9][a-z0-9._-]*)/i.exec(userText)?.[1]?.toLowerCase()
+
+  if (!viewer) {
+    return null
+  }
+
+  if ([...userText.matchAll(/E2E_FAIL\(([a-z0-9][a-z0-9._-]*)\)/gi)].some(match => match[1].toLowerCase() === viewer)) {
+    return 'fail'
+  }
+
+  const lastUser = messages.map(message => message?.role).lastIndexOf('user')
+
+  if (messages.slice(lastUser + 1).some(message => message?.role === 'tool')) {
+    return null
+  }
+
+  for (const match of userText.matchAll(/E2E_TOOL\(([a-z0-9][a-z0-9._-]*)\)\[([a-z_][a-z0-9_]*):([^\]]*)\]/gi)) {
+    if (match[1].toLowerCase() === viewer) {
+      return { text: '', toolCalls: [{ name: match[2], args: { command: match[3] } }] }
+    }
+  }
+
+  return null
+}
+
+/**
  * One scripted tool call driven by the user's own text, for specs that need the
  * agent to exercise a REAL tool once (e.g. Bot Mode's `message_agent`):
  * `E2E_CALL(message_agent)[{"target":"scribe","message":"ping"}]`. The first
@@ -612,6 +668,42 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
     const heldStreamReleased = new Promise<void>(resolveRelease => {
       releaseHeldStream = resolveRelease
     })
+
+    // Group-room scripts (E2E_SAY / E2E_TOOL / E2E_FAIL); true when this completion was one.
+    const answerGroupScript = (res: ServerResponse, model: string, stream: boolean, userText: string, messages: any[], hold: boolean): boolean => {
+      const groupAction = groupScriptedAction(userText, messages)
+
+      if (groupAction === 'fail') {
+        // 401, not 5xx: the agent retries a 5xx with backoff for minutes, a 401 ends the turn.
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: { code: 'invalid_api_key', message: 'E2E_FAIL: the mock refused this member on purpose', type: 'invalid_request_error' } }))
+
+        return true
+      }
+
+      const groupLine = groupScriptedLine(
+        userText,
+        messages.flatMap(m => (m?.role === 'user' && typeof m?.content === 'string' ? [m.content] : [])),
+      )
+
+      const groupTurn = groupAction ?? (groupLine === null ? null : { text: groupLine })
+
+      if (groupTurn === null) {
+        return false
+      }
+
+      const respond = () => (stream ? streamScriptedTurn(res, model, groupTurn) : nonStreamingScriptedTurn(res, model, groupTurn))
+
+      if (hold) {
+        heldCompletionCount++
+        resolveHeldStreamStarted?.()
+        void heldStreamReleased.then(respond)
+      } else {
+        respond()
+      }
+
+      return true
+    }
 
     const server = http.createServer((req, res) => {
       // CORS headers — the Electron renderer doesn't need them, but they
@@ -884,7 +976,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           }
 
           if (isSidebarCrossTrigger) {
-            const script = sidebarCrossScript(options.backgroundReleasePath)
+            const script = sidebarCrossScript(options.backgroundReleasePath, options.backgroundSilent)
             const turn = script[_sidebarCrossIndex] ?? script[script.length - 1]
             _sidebarCrossIndex++
 
@@ -935,18 +1027,9 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             return
           }
 
-          const groupLine = groupScriptedLine(
-            userText,
-            messages.flatMap(m => (m?.role === 'user' && typeof m?.content === 'string' ? [m.content] : [])),
-          )
+          const scriptedText = [userText, ...Object.entries(options.groupScripts ?? {}).filter(([key]) => userText.includes(key)).map(([, script]) => script)].join(' ')
 
-          if (groupLine !== null) {
-            if (stream) {
-              streamTextResponse(res, model, groupLine)
-            } else {
-              nonStreamingTextResponse(res, model, groupLine)
-            }
-
+          if (answerGroupScript(res, model, stream, scriptedText, messages, holdThisCompletion)) {
             return
           }
 
@@ -994,7 +1077,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
 
     server.on('error', reject)
 
-    server.listen(0, '127.0.0.1', () => {
+    server.listen(options.port ?? 0, '127.0.0.1', () => {
       const addr = server.address()
 
       if (addr === null || typeof addr === 'string') {
@@ -1376,17 +1459,6 @@ function createDevSandbox(): DevSandbox {
   }
 }
 
-/** Resolve the Electron binary: the repo's own install, then PATH. */
-function findElectron(repoRoot: string): string {
-  const local = nodePath.join(repoRoot, 'node_modules', 'electron', 'dist', 'electron')
-
-  if (fs.existsSync(local)) {return local}
-  const r = spawnSync('which', ['electron'], { encoding: 'utf8' })
-
-  if (r.status === 0 && r.stdout.trim()) {return r.stdout.trim()}
-  throw new Error('Electron binary not found. Run "npm install" from the repo root.')
-}
-
 /** Fail fast with a clear message when the desktop dist/ is missing. */
 function assertDistBuilt(desktopRoot: string): void {
   const electronMain = nodePath.join(desktopRoot, 'dist', 'electron-main.mjs')
@@ -1394,7 +1466,7 @@ function assertDistBuilt(desktopRoot: string): void {
 
   if (!fs.existsSync(electronMain) || !fs.existsSync(indexHtml)) {
     throw new Error(
-      `Desktop dist not built. Run 'cd apps/desktop && npm run build' first.\n` +
+      `Desktop dist not built. Run 'cd apps/desktop && pnpm run build' first.\n` +
         `Missing: ${electronMain}`,
     )
   }
@@ -1416,7 +1488,7 @@ async function runDevLaunch(): Promise<void> {
   writeEnvFile(sandbox.hermesHome)
   console.log(`  HERMES_HOME: ${sandbox.hermesHome}`)
 
-  const electronBin = findElectron(repoRoot)
+  const electronBin = resolveElectronBinary([desktopRoot, repoRoot])
 
   const env: Record<string, string> = {
     ...process.env,

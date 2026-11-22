@@ -1,0 +1,80 @@
+{
+  "fixtureVersion": 1,
+  "name": "chain-order-without-group",
+  "description": "Proves rule-0, rule-2: With no mapped group the chain is global, tenant, principal, agent, profile; each lower level overrides the one above it.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "a": "g",
+        "b": "g",
+        "c": "g",
+        "d": "g",
+        "e": "g"
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {
+        "b": "t",
+        "c": "t",
+        "d": "t",
+        "e": "t"
+      },
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {
+        "c": "p",
+        "d": "p",
+        "e": "p"
+      },
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {
+        "d": "a",
+        "e": "a"
+      },
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "e": "pr"
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "a": "g",
+      "b": "t",
+      "c": "p",
+      "d": "a",
+      "e": "pr"
+    },
+    "provenance": {
+      "a": "global",
+      "b": "tenant",
+      "c": "principal",
+      "d": "agent",
+      "e": "profile"
+    },
+    "locks": []
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "e",
+      "value": "x",
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

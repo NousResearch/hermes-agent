@@ -2,13 +2,15 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { HermesConnection } from '@/global'
 import {
   $realProfilePromptClaim,
   $realProfilePromptDismissed,
   $realProfilePromptMuted
 } from '@/store/real-profile-consent'
+import { $connection } from '@/store/session'
 
-import { RealProfileConsentDialog } from './real-profile-consent-dialog'
+import { RealProfileConsentDialog, shouldOfferRealProfilePrompt } from './real-profile-consent-dialog'
 
 const mocks = vi.hoisted(() => ({
   cache: vi.fn(),
@@ -61,6 +63,46 @@ vi.mock('../../hooks/use-config-record', () => ({
   useHermesConfigRecord: () => ({ data: mocks.loadedConfig })
 }))
 
+const localConnection = { mode: 'local' } as HermesConnection
+const remoteConnection = { mode: 'remote', remoteKind: 'ssh' } as HermesConnection
+
+const openGate = {
+  claim: 'tab-1',
+  configLoaded: true,
+  connection: localConnection,
+  dismissed: false,
+  enabled: false,
+  muted: false,
+  tabId: 'tab-1'
+}
+
+describe('shouldOfferRealProfilePrompt', () => {
+  it('offers the prompt for a local backend with the feature off', () => {
+    expect(shouldOfferRealProfilePrompt(openGate)).toBe(true)
+  })
+
+  it('never offers it for a remote backend (#119398)', () => {
+    for (const remoteKind of ['ssh', 'url', 'cloud'] as const) {
+      expect(
+        shouldOfferRealProfilePrompt({ ...openGate, connection: { mode: 'remote', remoteKind } as HermesConnection })
+      ).toBe(false)
+    }
+  })
+
+  it('fails closed while the connection is unresolved', () => {
+    expect(shouldOfferRealProfilePrompt({ ...openGate, connection: null })).toBe(false)
+    expect(shouldOfferRealProfilePrompt({ ...openGate, connection: {} as HermesConnection })).toBe(false)
+  })
+
+  it('keeps the existing gates', () => {
+    expect(shouldOfferRealProfilePrompt({ ...openGate, configLoaded: false })).toBe(false)
+    expect(shouldOfferRealProfilePrompt({ ...openGate, enabled: true })).toBe(false)
+    expect(shouldOfferRealProfilePrompt({ ...openGate, dismissed: true })).toBe(false)
+    expect(shouldOfferRealProfilePrompt({ ...openGate, muted: true })).toBe(false)
+    expect(shouldOfferRealProfilePrompt({ ...openGate, claim: 'tab-2' })).toBe(false)
+  })
+})
+
 describe('RealProfileConsentDialog', () => {
   beforeEach(() => {
     mocks.loadedConfig = { browser: { allow_private_urls: false }, model: { provider: 'nous' } }
@@ -68,6 +110,7 @@ describe('RealProfileConsentDialog', () => {
     $realProfilePromptDismissed.set(false)
     $realProfilePromptMuted.set(false)
     $realProfilePromptClaim.set(null)
+    $connection.set(localConnection)
   })
 
   afterEach(() => {
@@ -100,6 +143,14 @@ describe('RealProfileConsentDialog', () => {
     render(<RealProfileConsentDialog tabId="tab-1" />)
 
     expect(screen.queryByText(promptCopy.title)).toBeNull()
+  })
+
+  it('does not show, or write, for a remote backend (#119398)', () => {
+    $connection.set(remoteConnection)
+    render(<RealProfileConsentDialog tabId="tab-1" />)
+
+    expect(screen.queryByText(promptCopy.title)).toBeNull()
+    expect(mocks.save).not.toHaveBeenCalled()
   })
 
   it('does not show before the config record loads', () => {

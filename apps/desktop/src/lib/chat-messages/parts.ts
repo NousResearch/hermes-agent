@@ -10,6 +10,108 @@ export function reasoningPart(text: string, timestamp?: number): ChatMessagePart
   return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}) }
 }
 
+/** Extract display text from a provider reasoning-details envelope. */
+export function reasoningTextFromDetails(details: unknown): string {
+  let blocks = details
+
+  if (typeof blocks === 'string') {
+    const trimmed = blocks.trim()
+
+    // Some persisted rows contain plain reasoning text rather than a JSON envelope.
+    if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) {
+      return trimmed
+    }
+
+    try {
+      blocks = JSON.parse(trimmed) as unknown
+    } catch {
+      // A malformed structured envelope is replay metadata, not display text.
+      return ''
+    }
+  }
+
+  const text: string[] = []
+
+  const push = (value: unknown) => {
+    if (typeof value !== 'string') {
+      return
+    }
+
+    const prose = value.trim()
+
+    if (prose && !text.includes(prose)) {
+      text.push(prose)
+    }
+  }
+
+  // Nested carrier internals: only genuinely readable reasoning kinds. A
+  // native `.native_assistant` carrier wraps signed thinking plus the public
+  // answer inside `messages[].content[]`; its `text` blocks are the answer, not
+  // reasoning, and signatures/projections/data are opaque replay fields.
+  const walkNested = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        walkNested(item)
+      }
+
+      return
+    }
+
+    if (!node || typeof node !== 'object') {
+      return
+    }
+
+    const record = node as Record<string, unknown>
+    const kind = typeof record.type === 'string' ? record.type : ''
+
+    if (kind === 'reasoning.summary') {
+      push(record.summary)
+    } else if (kind === 'reasoning.text') {
+      push(record.text)
+    } else if (typeof record.thinking === 'string') {
+      push(record.thinking)
+    }
+
+    for (const [key, value] of Object.entries(record)) {
+      if (key === 'signature' || key === 'projection' || key === 'data' || key === 'type') {
+        continue
+      }
+
+      if (value && typeof value === 'object') {
+        walkNested(value)
+      }
+    }
+  }
+
+  for (const block of Array.isArray(blocks) ? blocks : [blocks]) {
+    if (typeof block === 'string') {
+      push(block)
+
+      continue
+    }
+
+    if (!block || typeof block !== 'object') {
+      continue
+    }
+
+    // Top-level blocks are provider reasoning-detail entries; recognized
+    // prose fields (summary, thinking, content, text) are display text.
+    const record = block as Record<string, unknown>
+
+    const value = [record.summary, record.thinking, record.content, record.text].find(
+      candidate => typeof candidate === 'string' && candidate.trim()
+    )
+
+    push(value)
+
+    // A provider-native replay carrier keeps readable reasoning only in
+    // nested blocks, never in its own opaque fields.
+    walkNested(block)
+  }
+
+  return text.join('\n\n').trim()
+}
+
 /**
  * Known deliverable file extensions — mirrors the Python-side
  * `MEDIA_DELIVERY_EXTS` in `gateway/platforms/base.py` so the two surfaces
@@ -168,21 +270,16 @@ function mediaLink(value: string): string | null {
     ? { path: unquoteMediaPath(raw), punctuation: '' }
     : splitTrailingPunctuation(unquoteMediaPath(raw))
 
-  return isPlausibleMediaPath(path)
-    ? `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})${punctuation}`
-    : null
+  return isPlausibleMediaPath(path) ? `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})${punctuation}` : null
 }
 
 export function renderMediaTags(text: string): string {
   return text
-    .replace(
-      MEDIA_LINE_RE,
-      (match, lead: string, value: string, trailer: string) => {
-        const link = mediaLink(value)
+    .replace(MEDIA_LINE_RE, (match, lead: string, value: string, trailer: string) => {
+      const link = mediaLink(value)
 
-        return link ? `${lead}${link}${trailer}` : match
-      }
-    )
+      return link ? `${lead}${link}${trailer}` : match
+    })
     .replace(MEDIA_TAG_RE, (match, value: string) => mediaLink(value) ?? match)
 }
 
@@ -205,15 +302,37 @@ export function mediaTagValues(text: string): string[] {
     })
 }
 
+/** A reply part with its MEDIA tags rendered; the raw text rides along as `mediaSource`,
+ *  as on a streamed part, so a later delta or a live row adopting it re-renders from the source. */
 export function assistantTextPart(text: string, timestamp?: number): ChatMessagePart {
-  return textPart(renderMediaTags(text), timestamp)
+  const rendered = renderMediaTags(text)
+
+  return rendered === text ? textPart(text, timestamp) : { ...textPart(rendered, timestamp), mediaSource: text }
 }
 
-export function chatMessageText(message: ChatMessage): string {
-  return message.parts
+export function partsText(parts: ChatMessagePart[]): string {
+  return parts
     .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
     .map(part => part.text)
     .join('')
+}
+
+/** The bubble's last non-empty text part, trimmed. A hydrated tool-call turn
+ *  folds several messages into one bubble; this is the newest of them. */
+export function lastTextPartText(message: ChatMessage): string {
+  for (let index = message.parts.length - 1; index >= 0; index -= 1) {
+    const part = message.parts[index]
+
+    if (part.type === 'text' && part.text.trim()) {
+      return part.text.trim()
+    }
+  }
+
+  return ''
+}
+
+export function chatMessageText(message: ChatMessage): string {
+  return partsText(message.parts)
 }
 
 export interface UnspokenTurnSpeech {
@@ -368,12 +487,7 @@ export function mergeFinalAssistantText(
 
   const dedupeReference = normalizeWs(finalText)
 
-  const streamedText = normalizeWs(
-    parts
-      .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
-      .map(part => part.text)
-      .join('')
-  )
+  const streamedText = normalizeWs(partsText(parts))
 
   // An authoritative final that is exactly the concatenation of streamed text
   // confirms the content without erasing text↔reasoning activity boundaries.
@@ -389,10 +503,7 @@ export function mergeFinalAssistantText(
   if (lastToolIndex >= 0) {
     const earlier = parts.slice(0, lastToolIndex + 1)
 
-    const earlierText = earlier
-      .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
-      .map(part => part.text)
-      .join('')
+    const earlierText = partsText(earlier)
 
     // Some terminal frames carry cumulative text. Strip only an exact prefix;
     // fuzzy similarity is not proof that two assistant messages are the same.
@@ -524,11 +635,59 @@ export function appendReasoningPart(parts: ChatMessagePart[], delta: string, tim
   return appendStreamPart(parts, 'reasoning', delta, timestamp).parts
 }
 
-export function appendAssistantTextPart(
+/**
+ * `delta` less what the tail part's adopted stored reply already shows, and the
+ * parts after that. A stamped delta is placed by its segment `offset`, so a
+ * chunk past one the reconnect lost is still recognised as covered; an
+ * unstamped one is matched against the covered raw text.
+ */
+function consumeStoredTail(
   parts: ChatMessagePart[],
   delta: string,
-  timestamp?: number
+  offset?: number
+): { delta: string; parts: ChatMessagePart[] } {
+  const tail = parts.at(-1)
+
+  if (tail?.type !== 'text' || !tail.storedTail) {
+    return { delta, parts }
+  }
+
+  const { storedTail: covered, ...plain } = tail
+  const keep = (text: string) => [...parts.slice(0, -1), text ? { ...tail, storedTail: { ...covered, text } } : plain]
+
+  if (offset !== undefined) {
+    const left = covered.end - (offset + delta.length)
+
+    return {
+      delta: delta.slice(Math.max(0, covered.end - offset)),
+      parts: keep(left > 0 ? covered.text.slice(-left) : '')
+    }
+  }
+
+  const rest = covered.text.startsWith(delta) ? covered.text.slice(delta.length) : ''
+
+  // A delta that diverges from the stored reply is new text: it applies whole.
+  const unseen = covered.text.startsWith(delta)
+    ? ''
+    : delta.startsWith(covered.text)
+      ? delta.slice(covered.text.length)
+      : delta
+
+  return { delta: unseen, parts: keep(rest) }
+}
+
+export function appendAssistantTextPart(
+  streamParts: ChatMessagePart[],
+  streamDelta: string,
+  timestamp?: number,
+  offset?: number
 ): ChatMessagePart[] {
+  const { delta, parts } = consumeStoredTail(streamParts, streamDelta, offset)
+
+  if (!delta) {
+    return parts
+  }
+
   const { index, parts: next } = appendStreamPart(parts, 'text', delta, timestamp)
   const part = next[index]
 
@@ -551,12 +710,4 @@ export function appendAssistantTextPart(
   next[index] = rendered === source ? { ...part, text: source } : { ...part, mediaSource: source, text: rendered }
 
   return next
-}
-
-/** True when a visible user message follows `messageId` — the reader has moved
- *  on, so a question card at `messageId` counts as answered. */
-export function answeredAfter(messages: ChatMessage[], messageId: string): boolean {
-  const at = messages.findIndex(message => message.id === messageId)
-
-  return at !== -1 && messages.slice(at + 1).some(message => message.role === 'user' && !message.hidden)
 }

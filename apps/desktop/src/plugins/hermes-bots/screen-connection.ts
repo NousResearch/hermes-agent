@@ -13,6 +13,7 @@
 import { host, resolveSiblingWsUrl } from '@hermes/plugin-sdk'
 import type { DisplayLease, PluginProfileRoute, RpcEvent } from '@hermes/plugin-sdk'
 
+import { retainRouteSocket } from './route-lease'
 import { resolveBotConnectionRoute } from './routing'
 import type { RosterRow } from './types'
 
@@ -121,7 +122,16 @@ export function displayRequest<T>(bot: RosterRow, method: string, params: Record
     return Promise.reject(new Error(`Bot ${bot.name} has no connection owner`))
   }
 
-  return host.requestProfile<T>(route, method, params)
+  // display.* handlers are @_profile_scoped: without an explicit `profile` the
+  // gateway answers for the LAUNCH home, so every bot pane streams :20 (#120966).
+  // Dedicated secondaries forward params unchanged (only shared-primary routes
+  // get `profile` injected downstream), so scope here, at the one choke point
+  // every Bot Screen RPC flows through. The route owns the identity: a caller
+  // param never overrides it. (Inline `targetProfile || profile` like the other
+  // call sites, so partial `./routing` mocks keep working.)
+  const profile = typeof route === 'string' ? route : route.targetProfile || route.profile
+
+  return host.requestProfile<T>(route, method, { ...params, profile })
 }
 
 /**
@@ -132,21 +142,9 @@ export function displayRequest<T>(bot: RosterRow, method: string, params: Record
  * routes, which never close) get a no-op release.
  */
 export async function retainBotScreen(bot: RosterRow): Promise<() => void> {
-  const noop = () => undefined
-
   const route = botScreenRoute(bot)
 
-  if (typeof host.retainProfile !== 'function' || route === null) {
-    return noop
-  }
-
-  try {
-    const release = await host.retainProfile(route)
-
-    return typeof release === 'function' ? release : noop
-  } catch {
-    return noop
-  }
+  return (route === null ? null : await retainRouteSocket(route)) ?? (() => undefined)
 }
 
 /**
@@ -168,7 +166,7 @@ export async function resolveScreenWsUrl(bot: RosterRow, ticket: string): Promis
   // dropped rather than spending a second one-shot ticket.
   const url = new URL(
     await resolveSiblingWsUrl(
-      { connectionId: route?.connectionId ?? null, profile: route?.profile ?? bot.name },
+      { connectionId: route?.connectionId ?? null, profile: route?.targetProfile ?? route?.profile ?? bot.name },
       '/api/display/ws',
       {
         stripGatewayCredential: true

@@ -38,6 +38,36 @@ export function isMissingRestEndpoint(error: unknown): boolean {
   )
 }
 
+/** Narrow twin of isMissingRestEndpoint for routes with path params: only a
+ *  backend catch-all verdict (or the Electron HTML guard) proves the ROUTE is
+ *  absent; a handler's own 404 (unknown session/profile) never matches. Two
+ *  catch-alls exist: `hermes dashboard` answers unmatched `/api/*` with
+ *  "No such API endpoint", and headless `hermes serve` (what Desktop's SSH
+ *  remotes launch) answers every unmatched GET with its fixed "web UI disabled"
+ *  body. A bare `{"detail":"Not Found"}` is not a route verdict. */
+export function isUnroutedRestPath(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return (
+    /no such api endpoint|endpoint is likely missing/i.test(message) ||
+    /(?:^\s*|error:\s*)404:.*headless backend \(hermes serve\): web ui disabled/i.test(message)
+  )
+}
+
+/** True when the backend refused a request because it owns the profile and the
+ *  call is offline-only maintenance (`web_server_sessions.py::_with_session_maintenance`
+ *  → HTTP 409 "Exclusive maintenance refused"). The refusal is the steady state
+ *  for as long as that gateway runs, so callers treat it as terminal, not
+ *  transient. Only the anchored `409: {...}` status marker — bare, or wrapped as
+ *  "Error invoking remote method 'hermes:api': Error: 409: …" by the IPC bridge —
+ *  counts; a `409` token inside a message body ("Query returned 409 rows", "4096")
+ *  never does. */
+export function isOfflineMaintenance(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /(?:^\s*|error:\s*)409:/i.test(message)
+}
+
 /** True when a prompt response raced a backend-side timeout / completion. */
 export function isMissingPendingPromptRequest(error: unknown, key: string): boolean {
   const message = error instanceof Error ? error.message : String(error)

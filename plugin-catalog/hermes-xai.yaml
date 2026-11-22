@@ -1,0 +1,30 @@
+name: hermes-xai
+repo: https://github.com/Julientalbot/hermes-xai
+sha: 8fd9bf8ecef1f8e9cb2cb7921fc86527acd9ede3
+version: "0.1.0"
+description: >-
+  The xAI API surfaces core does not cover, nothing it already ships (provider, x_search, web search,
+  TTS, STT and Imagine stay in core). Voice module: full-duplex Grok Voice (grok-voice-latest) in the
+  Desktop composer, built like core's GPT-Live mode; the voice model hands real work to Hermes as a
+  normal turn on the open chat (surface voice-live) and reads the result aloud; the backend mints a
+  300 s xAI client secret so XAI_API_KEY never reaches the renderer. Collections module: one read-only
+  tool, xai_collections_search, over documents the user already indexed in xAI Collections
+  (GET /v1/collections, POST /v1/documents/search). Disclosure — the voice button captures microphone
+  audio and streams it to api.x.ai over a WebSocket; the backend calls api.x.ai once per call with
+  XAI_API_KEY (read through agent.secret_scope) to mint the secret; delegated requests run as normal
+  Hermes turns with the profile's full toolset and approvals, and their final text (up to 3000
+  characters) plus the last spoken turns are sent back to xAI. Each xai_collections_search call sends
+  the query to api.x.ai with XAI_API_KEY and returns passages into the conversation. Nothing is
+  uploaded, stored or deleted and no telemetry is emitted; xAI bills on the user's key.
+maintainer: Julientalbot
+tier: community
+category: voice
+docs_url: https://github.com/Julientalbot/hermes-xai/blob/8fd9bf8ecef1f8e9cb2cb7921fc86527acd9ede3/README.md
+requires_hermes: ">=0.21.5"
+platforms: []
+capabilities:
+  provides_tools: [xai_collections_search]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - XAI_API_KEY

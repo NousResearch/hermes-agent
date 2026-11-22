@@ -18,11 +18,11 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     import tools.skill_usage as usage
-    import agent.curator as curator
+    from agent import curator
     import agent.curator_backup as cb
     for m in (usage, cb, curator):
         importlib.reload(m)
-    monkeypatch.setattr(curator, "_load_config", lambda: {})
+    monkeypatch.setattr(curator, "_load_config", dict)
     monkeypatch.setattr(curator, "_run_llm_review", lambda prompt: "llm-stub")
     yield {"home": home, "curator": curator, "cb": cb}
     for t in threading.enumerate():
@@ -56,7 +56,7 @@ def test_prune_only_pass_takes_no_snapshot_but_still_ages_old_ones_out(env, monk
 
 
 def test_only_one_process_claims_a_due_pass(env, monkeypatch):
-    curator, home = env["curator"], env["home"]
+    curator = env["curator"]
     monkeypatch.setattr(curator, "should_run_now", lambda now=None: True)
     started, release = threading.Event(), threading.Event()
     runs = []

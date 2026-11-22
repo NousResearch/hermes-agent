@@ -59,6 +59,59 @@ class TestLaunchServicesHttpsHandler:
         assert bc._launchservices_https_handler(dump) == "com.microsoft.edgemac"
 
 
+class _FakeKey(str):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+class _FakeWinreg:
+    """``winreg`` stand-in: ``values`` maps an https association subkey to its ProgId value;
+    a subkey mapped to None exists but has no ProgId (``QueryValueEx`` raises WinError 2)."""
+    HKEY_CURRENT_USER = 0
+
+    def __init__(self, values):
+        self.values = values
+
+    def OpenKey(self, _root, path):
+        sub = path.split("\\https\\", 1)[1]
+        if sub not in self.values:
+            raise FileNotFoundError(path)
+        return _FakeKey(sub)
+
+    def QueryValueEx(self, sub, _name):
+        if self.values[sub] is None:
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+        return self.values[sub], 1
+
+    def CloseKey(self, _key):
+        pass
+
+
+class TestDetectDefaultWindows:
+    def test_shell_association_wins_over_stale_legacy_userchoice(self):
+        stale = _FakeWinreg({"UserChoice": "VivaldiHTM.ABC"})
+        with patch.object(bc, "_windows_shell_progid", return_value="ChromeHTML", create=True), \
+                patch.dict("sys.modules", {"winreg": stale}):
+            assert bc._detect_default_windows() == "chrome"
+        with patch.object(bc, "_windows_shell_progid", return_value="ChromeBHTML", create=True):
+            assert bc._detect_default_windows() == bc.UNSUPPORTED_CHANNEL
+
+    @pytest.mark.parametrize("values,expected", [
+        # 25H2: Settings writes only UserChoiceLatest\ProgId; legacy key exists without a value.
+        ({"UserChoiceLatest\\ProgId": "MSEdgeHTM", "UserChoice": None}, "edge"),
+        ({"UserChoiceLatest\\ProgId": "ChromeHTML", "UserChoice": "MSEdgeHTM"}, "chrome"),
+        ({"UserChoice": "BraveHTML"}, "brave"),  # pre-25H2
+        ({"UserChoice": "FirefoxURL-308046B0AF4A39CB"}, None),
+    ])
+    def test_registry_fallback_prefers_userchoicelatest(self, values, expected):
+        with patch.object(bc, "_windows_shell_progid", return_value=None, create=True), \
+                patch.dict("sys.modules", {"winreg": _FakeWinreg(values)}):
+            assert bc._detect_default_windows() == expected
+
+
 class TestDetectDefaultDarwin:
     def _run_with(self, dump: str):
         class _Proc:

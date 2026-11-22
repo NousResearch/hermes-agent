@@ -183,6 +183,13 @@ def read_plugin_choice(*selection_key: str, builtin: frozenset = frozenset()) ->
     return PluginChoice("" if selected in builtin else selected, enabled, disabled)
 
 
+def list_category(dirs, choice: PluginChoice, is_bundled: Callable, load: Callable) -> list[tuple[str, str, bool]]:
+    """Listing rows: a bundled or turned-on plugin is loaded and probed, any other described from its manifest."""
+    return [(name, read_plugin_description(child), probe_availability(lambda c=child: load(c)))
+            if is_bundled(child) or choice.allows_import(child, name) else describe_without_import(name, child)
+            for name, child in dirs]
+
+
 def describe_without_import(name: str, plugin_dir: Path) -> tuple[str, str, bool]:
     """A listing row for a user plugin that is not turned on: manifest description, not available."""
     return name, read_plugin_description(plugin_dir), False

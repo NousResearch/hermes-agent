@@ -64,11 +64,7 @@ def discover_cron_schedulers() -> list[tuple[str, str, bool]]:
     provider's code runs only when it is turned on (``cron.provider`` or ``plugins.enabled``, not
     ``plugins.disabled``); any other is listed from its manifest as not available."""
     choice = _loader.read_plugin_choice("cron", "provider", builtin=_BUILTIN_PROVIDER_NAMES)
-    return [(name, _loader.read_plugin_description(child),
-             _loader.probe_availability(lambda c=child: _load_provider_from_dir(c)))
-            if _is_bundled(child) or choice.allows_import(child, name)
-            else _loader.describe_without_import(name, child)
-            for name, child in _iter_provider_dirs()]
+    return _loader.list_category(_iter_provider_dirs(), choice, _is_bundled, _load_provider_from_dir)
 
 
 def _is_bundled(provider_dir: Path) -> bool:

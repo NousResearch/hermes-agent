@@ -48,11 +48,7 @@ def discover_context_engines() -> list[tuple[str, str, bool]]:
     engine's code runs only when it is turned on (``context.engine`` or ``plugins.enabled``, not
     ``plugins.disabled``); any other is listed from its manifest as not available."""
     choice = _loader.read_plugin_choice("context", "engine", builtin=_BUILTIN_ENGINE_NAMES)
-    return [(name, _loader.read_plugin_description(child),
-             _loader.probe_availability(lambda c=child: _load_engine_from_dir(c)))
-            if _is_bundled(child) or choice.allows_import(child, name)
-            else _loader.describe_without_import(name, child)
-            for name, child in _iter_engine_dirs()]
+    return _loader.list_category(_iter_engine_dirs(), choice, _is_bundled, _load_engine_from_dir)
 
 
 def _is_bundled(engine_dir: Path) -> bool:

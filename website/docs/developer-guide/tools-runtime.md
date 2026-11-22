@@ -237,6 +237,8 @@ rollback of side effects already performed.
 Hard-exit teardown dispatches identity-verified group KILLs without TERM or grace. Docker
 control calls run concurrently under the shared hard-exit budget instead of serializing
 one control round trip per foreground command.
+Namespace PID and signal control execs do not forward workload environment variables or
+resolve profile secrets, so teardown also works outside any profile scope.
 
 `tools/process_registry_adoption.py` owns local and sandbox foreground adoption as registry
 methods. Docker's exec wrapper removes its ownership record after the child exits, without

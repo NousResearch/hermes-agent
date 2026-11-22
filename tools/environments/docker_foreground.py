@@ -5,6 +5,8 @@ import shlex
 import uuid
 from dataclasses import dataclass, field
 
+from tools.environments.remote_common import bash_argv, run_capture
+
 @dataclass
 class DockerForeground:
     env: object
@@ -28,14 +30,9 @@ class DockerForeground:
                 f"rm -rf -- {q(self.directory)} 2>/dev/null; exit \"$rc\"")
 
     def control(self, command: str, *, timeout: float = 10) -> dict:
-        proc = self.env._run_bash_untracked(command, timeout=timeout)
-        try:
-            stdout, _ = proc.communicate(timeout=timeout)
-            return {"output": stdout or "", "returncode": proc.returncode}
-        except BaseException:
-            proc.kill()
-            proc.wait()
-            raise
+        result = run_capture([self.env._docker_exe, "exec", "-w", "/",
+                              self.env._container_id, *bash_argv(command)], timeout=timeout)
+        return {"output": result.stdout or "", "returncode": result.returncode}
 
     def pid(self) -> int:
         result = self.control(f"cat {shlex.quote(self.directory + '/pid')}")

@@ -430,3 +430,57 @@ def test_staged_hint_keeps_command_for_chat_gateway_platform(hermes_home, monkey
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
     r = _stage_one_memory_write()
     assert "/memory pending" in r["message"], r["message"]
+
+
+# ---------------------------------------------------------------------------
+# A pending record that could not be written must not be reported as staged
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def pending_write_fails(hermes_home, monkeypatch):
+    """Gate on for both subsystems, and the pending-record write raising like a full disk."""
+    from tools import write_approval as wa
+    _set_approval("memory", True)
+    _set_approval("skills", True)
+
+    def _disk_full(*_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(wa, "atomic_json_write", _disk_full)
+    return wa
+
+
+def _assert_not_reported_as_staged(raw, wa, subsystem):
+    result = json.loads(raw)
+    assert not result.get("success"), result
+    assert not result.get("staged"), result
+    assert "pending_id" not in result, result
+    assert result.get("error"), result
+    assert wa.pending_count(subsystem) == 0
+
+
+def test_stage_write_raises_when_the_record_cannot_be_persisted(pending_write_fails):
+    with pytest.raises(OSError):
+        pending_write_fails.stage_write(
+            "memory", {"action": "add", "target": "memory", "content": "x"}, summary="x", origin="foreground")
+
+
+def test_memory_write_is_not_reported_staged_when_persisting_fails(pending_write_fails):
+    from tools.memory_tool import MemoryStore, memory_tool
+    store = MemoryStore(); store.load_from_disk()
+    raw = memory_tool("add", "memory", "remember the launch date", store=store)
+    _assert_not_reported_as_staged(raw, pending_write_fails, "memory")
+    assert not any("launch date" in e for e in store.memory_entries)
+
+
+def test_skill_write_is_not_reported_staged_when_persisting_fails(pending_write_fails):
+    from tools.skill_manager_tool import skill_manage
+    raw = skill_manage("create", "probe-skill", content="---\nname: probe-skill\n---\nbody")
+    _assert_not_reported_as_staged(raw, pending_write_fails, "skills")
+
+
+def test_skill_batch_is_not_reported_staged_when_persisting_fails(pending_write_fails):
+    from tools.skill_manager_tool import skill_manage
+    raw = skill_manage("batch", "probe-skill", operations=[
+        {"action": "create", "name": "probe-skill", "content": "---\nname: probe-skill\n---\nbody"}])
+    _assert_not_reported_as_staged(raw, pending_write_fails, "skills")

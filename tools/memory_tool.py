@@ -96,8 +96,12 @@ def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[
         return tool_error(decision.message, success=False)
     if (unmatched := _pin_matched_entries(store, payload)) is not None:
         return unmatched
+    try:
+        record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
+    except OSError:
+        return tool_error("Could not save the pending approval request, so nothing was staged and "
+                          "memory is unchanged. Try again later.", success=False)
     FAILURE_CLASS.set("staged")
-    record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"], "message": decision.message},
                       ensure_ascii=False)
 

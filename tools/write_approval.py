@@ -77,8 +77,8 @@ def _pending_files(subsystem: str) -> list:
 def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin: str) -> dict[str, Any]:
     """Persist a pending write and return its record (``id`` + metadata). ``payload`` is the exact
     kwargs to replay the write on approval; ``origin`` is ``foreground`` or ``background_review``.
-    Best-effort: on disk failure it logs and still returns a record — the write is lost, which is
-    the safe failure for an approval gate (nothing silently committed)."""
+    Raises ``OSError`` when the record cannot be written: a returned id must name a record that
+    exists, so callers report the failure instead of telling the model a proposal is waiting."""
     pid = uuid.uuid4().hex[:8]
     record = {
         "id": pid, "subsystem": subsystem, "action": payload.get("action", ""),
@@ -87,8 +87,9 @@ def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin
     }
     try:
         atomic_json_write(_pending_path(subsystem, pid), record)
-    except Exception as e:  # pragma: no cover - disk failure path
-        logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
+    except OSError:
+        logger.error("Failed to stage pending %s write", subsystem, exc_info=True)
+        raise
     return record
 
 

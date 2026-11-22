@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -238,13 +239,17 @@ def test_commit_claim_staging_runs_on_fresh_controller_only_jobs_without_builder
                    if str(step.get("uses", "")).startswith("actions/upload-artifact@")]
         assert len(uploads) == 1, build_name
         upload = uploads[0]
+        assert upload.get("id") == "commit_artifact", build_name
         assert gate(upload["if"], claim, needs, job_if=False)
         assert not gate(upload["if"], _candidate_dispatch("v0.33.0"), needs, job_if=False)
         assert not gate(upload["if"], DOWNLOADABLE_DISPATCHES["commit"], needs, job_if=False)
         assert "version-info" not in str(upload["with"]["path"])
         assert upload["with"]["if-no-files-found"] == "error"
+        assert int(upload["with"]["retention-days"]) >= 7
+        assert (build_job.get("outputs") or {}).get("commit-artifact-id") == "${{ steps.commit_artifact.outputs.artifact-id }}", build_name
 
-        # Fresh controller-only staging job depends on validate + build leg, checks out only github.sha.
+        # Fresh controller-only staging job depends on validate + build leg, checks out only github.sha,
+        # and downloads by the producing job's artifact ID (surviving re-run failed jobs on later attempts).
         stager_name = stagers[target]
         stager = jobs[stager_name]
         assert needs_of(stager) == ["validate", build_name], (stager_name, stager.get("needs"))
@@ -255,14 +260,33 @@ def test_commit_claim_staging_runs_on_fresh_controller_only_jobs_without_builder
         assert checkouts[0]["with"]["ref"] == "${{ github.sha }}", stager_name
         assert checkouts[0]["with"]["persist-credentials"] in (False, "false"), stager_name
         assert "validate.outputs.sha" not in json.dumps(checkouts[0]), stager_name
-        (download,) = [step for step in stager["steps"]
-                       if str(step.get("uses", "")).startswith("actions/download-artifact@")]
-        expected_name = (
-            "commit-claim-termux-${{ github.run_id }}-${{ github.run_attempt }}"
-            if target == "termux"
-            else "commit-claim-${{ env.TARGET }}-${{ github.run_id }}-${{ github.run_attempt }}"
+        assert (stager.get("env") or {}).get("COMMIT_ARTIFACT_ID") == f"${{{{ needs.{build_name}.outputs.commit-artifact-id }}}}", stager_name
+        download_idx, download = next(
+            (idx, step) for idx, step in enumerate(stager["steps"])
+            if str(step.get("uses", "")).startswith("actions/download-artifact@")
         )
-        assert download["with"]["name"] == expected_name, (stager_name, download["with"])
+        guard_idx, guard = next(
+            (idx, step) for idx, step in enumerate(stager["steps"])
+            if step.get("name") == "Require one numeric commit-claim artifact ID"
+        )
+        assert guard_idx < download_idx, (stager_name, guard_idx, download_idx)
+        for bad_id in ("", "0", "-1", "12,34", "abc", " 42 "):
+            res = subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", guard["run"]],
+                env={**os.environ, "COMMIT_ARTIFACT_ID": bad_id},
+                capture_output=True, text=True, timeout=15, check=False,
+            )
+            assert res.returncode != 0, (stager_name, bad_id)
+        for good_id in ("1", "987654321"):
+            res = subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", guard["run"]],
+                env={**os.environ, "COMMIT_ARTIFACT_ID": good_id},
+                capture_output=True, text=True, timeout=15, check=False,
+            )
+            assert res.returncode == 0, (stager_name, good_id, res.stderr)
+        assert download["with"]["artifact-ids"] == "${{ env.COMMIT_ARTIFACT_ID }}", (stager_name, download["with"])
+        assert download["with"].get("merge-multiple") in (True, "true"), (stager_name, download["with"])
+        assert "name" not in download["with"] and "run_attempt" not in json.dumps(download), (stager_name, download)
 
 
 @pytest.mark.parametrize("legacy", ["true", "false"])
@@ -333,7 +357,9 @@ def test_untrusted_commit_legs_disable_persisted_credentials_and_strip_write_sco
 
 @pytest.mark.parametrize("legacy_script", [False, True])
 def test_build_termux_deb_action_never_saves_caches_or_pushes_ghcr_in_commit_mode(tmp_path, legacy_script):
-    """The shared Termux composite action respects save-caches=false and push-builder-image=false."""
+    """The shared Termux composite action respects save-caches=false and falls back to the pinned base on GHCR miss."""
+    from pm.lock import termux_docker_digest
+
     action = load(ROOT / ".github/actions/build-termux-deb/action.yml")
     steps = action["runs"]["steps"]
     save_steps = [s for s in steps if str(s.get("uses", "")).startswith("actions/cache/save")]
@@ -344,47 +370,106 @@ def test_build_termux_deb_action_never_saves_caches_or_pushes_ghcr_in_commit_mod
 
     push_step = next(s for s in steps if s.get("id") == "builder_image_push")
     local_step = next(s for s in steps if s.get("id") == "builder_image_local")
+    wheelhouse_step = next(s for s in steps if s.get("name") == "Build the wheelhouse")
     assert not gate(push_step["if"], {"push-builder-image": "false"}, {}, job_if=False)
     assert gate(push_step["if"], {"push-builder-image": "true"}, {}, job_if=False)
     assert gate(local_step["if"], {"push-builder-image": "false"}, {}, job_if=False)
     assert not gate(local_step["if"], {"push-builder-image": "true"}, {}, job_if=False)
     assert "GITHUB_TOKEN" not in (local_step.get("env") or {})
 
-    # Replay builder_image_local on both current and pre-PR build_builder_image.sh trees.
+    # Replay builder_image_local -> Build the wheelhouse (real termux_build.sh) on a GHCR miss
+    # for both current and pre-PR checkouts, verifying docker pull + RepoDigests inspection succeed.
     repo = tmp_path / "repo"
     scripts_dir = repo / "scripts/termux"
     scripts_dir.mkdir(parents=True)
-    shutil.copy2(ROOT / "scripts/termux/termux-builder.Dockerfile", scripts_dir / "termux-builder.Dockerfile")
+    for name in ("termux-builder.Dockerfile", "termux_build.sh", "build_config.sh", "deb_version.py"):
+        shutil.copy2(ROOT / "scripts/termux" / name, scripts_dir / name)
     if legacy_script:
         (scripts_dir / "build_builder_image.sh").write_text("#!/usr/bin/env bash\necho 'legacy script should not run' >&2; exit 88\n", encoding="utf-8")
     else:
         shutil.copy2(ROOT / "scripts/termux/build_builder_image.sh", scripts_dir / "build_builder_image.sh")
     shutil.copytree(ROOT / "pm", repo / "pm", ignore=shutil.ignore_patterns("__pycache__"))
+    (repo / "scripts/bundles").mkdir(parents=True, exist_ok=True)
+    (repo / "scripts/bundles/payload.py").write_text(
+        "from pathlib import Path\n"
+        "def snapshot(repo, ref, dest):\n"
+        "    dest.mkdir(parents=True, exist_ok=True)\n"
+        "    (dest / 'pyproject.toml').write_text('[project]\\nname=\"x\"\\nversion=\"0.33.0\"\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    (scripts_dir / "wheelhouse_cache.py").write_text(
+        "import os, sys\n"
+        "with open(os.environ['CACHE_LOG'], 'a', encoding='utf-8') as f: f.write(' '.join(sys.argv[1:]) + '\\n')\n",
+        encoding="utf-8",
+    )
+    (repo / "termux-build/payload/python/data/data/com.termux/files/usr/bin").mkdir(parents=True)
+    (repo / "termux-build/payload/python/data/data/com.termux/files/usr/bin/python3.14").write_text("", encoding="utf-8")
+    (repo / "pyproject.toml").write_text('[project]\nname="x"\nversion="0.33.0"\n', encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@e"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "pyproject.toml"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    head_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+
     tools = tmp_path / "tools"
     tools.mkdir()
     (tools / "python3").symlink_to(sys.executable)
+    uname_stub = tools / "uname"
+    uname_stub.write_text("#!/usr/bin/env bash\necho aarch64\n", encoding="utf-8")
+    uname_stub.chmod(0o755)
     docker_log = tmp_path / "docker.log"
+    cache_log = tmp_path / "cache.log"
+    expected_base = f"termux/termux-docker@{termux_docker_digest()}"
     docker_stub = tools / "docker"
     docker_stub.write_text(
         "#!/usr/bin/env bash\n"
         "printf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\n"
-        "case \"$1 $2\" in\n"
-        "  'manifest inspect') exit 1 ;;\n"
-        "  'build '*) exit 0 ;;\n"
-        "  'run '*) echo 'builder image smoke OK'; exit 0 ;;\n"
-        "  'login '*|'push '*) echo \"FORBIDDEN docker $1\" >&2; exit 99 ;;\n"
+        "case \"$1\" in\n"
+        "  manifest) exit 1 ;;\n"
+        "  pull)\n"
+        "    [[ \"$2\" == *@sha256:* ]] || { echo \"cannot pull local image $2\" >&2; exit 1; }\n"
+        "    exit 0 ;;\n"
+        "  image)\n"
+        "    # Only registry-pulled digest images carry RepoDigests[0].\n"
+        "    img=\"${@: -1}\"\n"
+        "    [[ \"$img\" == *@sha256:* ]] || { echo \"no RepoDigests for $img\" >&2; exit 1; }\n"
+        "    printf '%s\\n' \"$img\"\n"
+        "    exit 0 ;;\n"
+        "  build|login|push) echo \"FORBIDDEN docker $1\" >&2; exit 99 ;;\n"
         "  *) exit 1 ;;\n"
         "esac\n",
         encoding="utf-8",
     )
     docker_stub.chmod(0o755)
-    replay = {**local_step, "env": {**local_step.get("env", {}),
-                                    "DOCKER_LOG": str(docker_log),
-                                    "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}"}}
-    out = workflow_steps.outputs(replay, {"github": {"repository_owner": "NousResearch"}}, cwd=repo)
-    assert out["image"].startswith("hermes-termux-builder-local:"), out
+    base_env = {"DOCKER_LOG": str(docker_log), "CACHE_LOG": str(cache_log),
+                "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}"}
+    out = workflow_steps.outputs(
+        {**local_step, "env": {**local_step.get("env", {}), **base_env}},
+        {"github": {"repository_owner": "NousResearch"}},
+        cwd=repo,
+    )
+    assert out["image"] == expected_base, out
+
+    # Now feed builder_image_local's output straight into Build the wheelhouse (commit mode).
+    wh_ctx = {
+        "inputs": {"build-mode": "commit"},
+        "steps": {"builder_image_push": {"outputs": {}}, "builder_image_local": {"outputs": {"image": out["image"]}}},
+    }
+    wh_env = {
+        **wheelhouse_step.get("env", {}), **base_env,
+        "HERMES_PAYLOAD_TAG": COMMIT_TAG,
+        "HERMES_BUILD_COMMIT": head_sha,
+        "HERMES_RELEASE_COMMIT": head_sha,
+        "LEGACY_COMMIT_BUILD": "true" if legacy_script else "false",
+    }
+    workflow_steps.outputs({**wheelhouse_step, "env": wh_env}, wh_ctx, cwd=repo)
+
     calls = docker_log.read_text(encoding="utf-8").splitlines()
-    assert not any(c.startswith(("login ", "push ")) for c in calls), calls
+    assert f"pull {expected_base}" in calls, calls
+    assert any(c.startswith("image inspect ") and expected_base in c for c in calls), calls
+    assert not any(c.startswith(("build ", "login ", "push ")) for c in calls), calls
+    assert expected_base in cache_log.read_text(encoding="utf-8")
 
 
 def test_every_cache_save_step_skips_commit_and_channel_claims():

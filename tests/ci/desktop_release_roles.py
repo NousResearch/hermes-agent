@@ -130,7 +130,7 @@ def commit_claim_stagers(jobs: dict) -> dict[str, str]:
     for name, job in jobs.items():
         downloads = [step for step in job.get("steps", [])
                      if str(step.get("uses", "")).startswith("actions/download-artifact@")
-                     and str((step.get("with") or {}).get("name", "")).startswith("commit-claim-")]
+                     and (step.get("with") or {}).get("artifact-ids") == "${{ env.COMMIT_ARTIFACT_ID }}"]
         if not downloads:
             continue
         env_target = (job.get("env") or {}).get("TARGET")

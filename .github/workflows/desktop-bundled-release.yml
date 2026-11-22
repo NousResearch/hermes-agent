@@ -39,8 +39,8 @@ name: Desktop Bundled Release
 # feed promotion and channel-head advancement for both stable and canary on
 # package acceptance and artifact publication. No GitHub job artifacts carry
 # release or canary files; commit claims transfer only their built packages via
-# 1-day job artifacts to fresh controller-only staging runners so unreviewed
-# commit code never owns recording or R2 staging. Non-publishing tag builds leave output on the runner.
+# 7-day job artifacts (by producing artifact ID) to fresh controller-only staging
+# runners so unreviewed commit code never owns recording or R2 staging. Non-publishing tag builds leave output on the runner.
 # Commit builds stage under releases/commit/<sha>/ and write a run summary.
 # They never publish a release, updater feed, Store submission, or APT channel.
 # Admitted channel requests reuse those native build/smoke legs with read-only
@@ -725,6 +725,7 @@ jobs:
       - name: Upload commit claim artifacts for staging
         # Commit claims record and stage on a fresh controller-only runner so unreviewed
         # build code can never tamper with controller scripts or spoof sidecar metadata.
+        id: commit_artifact
         if: inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -733,7 +734,7 @@ jobs:
             apps/desktop/release/*.msix
             !apps/desktop/release/Store-*.msix
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
   build-win32-arm64-release:
     name: bundled win32-arm64
@@ -771,6 +772,8 @@ jobs:
       contents: read
       id-token: write
     timeout-minutes: 900
+    outputs:
+      commit-artifact-id: ${{ steps.commit_artifact.outputs.artifact-id }}
     strategy: *win32-strategy
     env: *win32-env
     steps: *win32-steps
@@ -790,6 +793,8 @@ jobs:
       contents: read
       id-token: write
     timeout-minutes: 900
+    outputs:
+      commit-artifact-id: ${{ steps.commit_artifact.outputs.artifact-id }}
     strategy: *win32-strategy-arm64
     env: *win32-env
     steps: *win32-steps
@@ -810,6 +815,7 @@ jobs:
     timeout-minutes: 15
     env:
       TARGET: win32-x64
+      COMMIT_ARTIFACT_ID: ${{ needs.build-win32-x64-commit.outputs.commit-artifact-id }}
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
@@ -829,10 +835,18 @@ jobs:
           cache-python: false
           cache-node: false
           save-tools-cache: false
+      - name: Require one numeric commit-claim artifact ID
+        shell: bash
+        run: |
+          if [[ ! "${COMMIT_ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::expected one positive numeric commit-claim artifact ID, got '${COMMIT_ARTIFACT_ID:-}'"
+            exit 1
+          fi
       - name: Download commit claim artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: commit-claim-${{ env.TARGET }}-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-ids: ${{ env.COMMIT_ARTIFACT_ID }}
+          merge-multiple: true
           path: staged-artifacts
       - name: Record and stage commit claim Windows packages to R2
         shell: bash
@@ -867,6 +881,7 @@ jobs:
     timeout-minutes: 15
     env:
       TARGET: win32-arm64
+      COMMIT_ARTIFACT_ID: ${{ needs.build-win32-arm64-commit.outputs.commit-artifact-id }}
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
@@ -1292,6 +1307,7 @@ jobs:
           fi
 
       - name: Upload commit claim artifacts for staging
+        id: commit_artifact
         if: inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -1301,7 +1317,7 @@ jobs:
             apps/desktop/release/*.zip
             apps/desktop/release/*.blockmap
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
   build-darwin-arm64-commit:
     name: bundled darwin-arm64 (commit)
@@ -1317,6 +1333,8 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 360
+    outputs:
+      commit-artifact-id: ${{ steps.commit_artifact.outputs.artifact-id }}
     strategy: *darwin-strategy
     env: *darwin-env
     steps: *darwin-steps
@@ -1337,6 +1355,7 @@ jobs:
     timeout-minutes: 15
     env:
       TARGET: darwin-arm64
+      COMMIT_ARTIFACT_ID: ${{ needs.build-darwin-arm64-commit.outputs.commit-artifact-id }}
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
@@ -1356,10 +1375,18 @@ jobs:
           cache-python: false
           cache-node: false
           save-tools-cache: false
+      - name: Require one numeric commit-claim artifact ID
+        shell: bash
+        run: |
+          if [[ ! "${COMMIT_ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::expected one positive numeric commit-claim artifact ID, got '${COMMIT_ARTIFACT_ID:-}'"
+            exit 1
+          fi
       - name: Download commit claim artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: commit-claim-${{ env.TARGET }}-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-ids: ${{ env.COMMIT_ARTIFACT_ID }}
+          merge-multiple: true
           path: staged-artifacts
       - name: Record and stage commit claim macOS packages to R2
         shell: bash
@@ -2209,6 +2236,8 @@ jobs:
       contents: read
       packages: read
     timeout-minutes: 90
+    outputs:
+      commit-artifact-id: ${{ steps.commit_artifact.outputs.artifact-id }}
     env:
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
@@ -2267,13 +2296,14 @@ jobs:
             --name termux --root "$root" --include 'deb/*.deb'
 
       - name: Upload commit claim artifacts for staging
+        id: commit_artifact
         if: inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: commit-claim-termux-${{ github.run_id }}-${{ github.run_attempt }}
           path: termux-build/deb/*.deb
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
   stage-commit-termux:
     name: stage termux commit claim
@@ -2291,6 +2321,7 @@ jobs:
       contents: read
     timeout-minutes: 15
     env:
+      COMMIT_ARTIFACT_ID: ${{ needs.termux-deb-commit.outputs.commit-artifact-id }}
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
@@ -2310,10 +2341,18 @@ jobs:
           cache-python: false
           cache-node: false
           save-tools-cache: false
+      - name: Require one numeric commit-claim artifact ID
+        shell: bash
+        run: |
+          if [[ ! "${COMMIT_ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::expected one positive numeric commit-claim artifact ID, got '${COMMIT_ARTIFACT_ID:-}'"
+            exit 1
+          fi
       - name: Download commit claim artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: commit-claim-termux-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-ids: ${{ env.COMMIT_ARTIFACT_ID }}
+          merge-multiple: true
           path: staged-artifacts/deb
       - name: Record and stage commit claim Termux package to R2
         shell: bash

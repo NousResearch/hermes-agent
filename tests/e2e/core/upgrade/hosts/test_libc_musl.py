@@ -81,6 +81,23 @@ done
 """
 
 
+def _object_stores(objects: Path) -> list[Path]:
+    """``objects`` and every object store it borrows from through ``info/alternates``, transitively."""
+    stores: list[Path] = []
+    pending = [objects.resolve()]
+    while pending:
+        store = pending.pop()
+        if store in stores:
+            continue
+        stores.append(store)
+        alternates = store / "info" / "alternates"
+        if alternates.is_file():
+            for line in alternates.read_text(encoding="utf-8").splitlines():
+                if line.strip() and not line.startswith("#"):
+                    pending.append((store / line.strip()).resolve())
+    return stores
+
+
 @pytest.fixture(scope="module")
 def alpine_install(tmp_path_factory):
     root = tmp_path_factory.mktemp("musl")
@@ -88,12 +105,15 @@ def alpine_install(tmp_path_factory):
     work = root / "work"
     work.mkdir()
     shutil.copy(H.WORKTREE / "scripts" / "install.sh", work / "install.sh")
-    # The --shared origin borrows objects from this checkout's object store: mount it too.
+    # The --shared origin borrows objects from this checkout's object store, which can itself borrow
+    # from further stores through objects/info/alternates (a CI runner's git mirror): mount them all.
     objects = Path(I.git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=H.WORKTREE)) / "objects"
+    stores = _object_stores(objects)
     pull = subprocess.run(["docker", "pull", "-q", IMAGE], capture_output=True, text=True, timeout=600, check=False)
     assert pull.returncode == 0, f"docker pull {IMAGE} failed (network?):\n{pull.stderr[-2000:]}"
+    mounts = [arg for store in stores for arg in ("-v", f"{store}:{store}:ro")]
     argv = ["docker", "run", "--rm", "-e", f"ORIGIN={origin}", "-e", "HERMES_INSTALL_CHANNEL=main",
-            "-v", f"{origin}:{origin}:ro", "-v", f"{objects}:{objects}:ro", "-v", f"{work}:/work:ro",
+            "-v", f"{origin}:{origin}:ro", *mounts, "-v", f"{work}:/work:ro",
             IMAGE, "sh", "-c", SCRIPT]
     cp = subprocess.run(argv, capture_output=True, text=True, timeout=1800, check=False)
     assert cp.returncode != 90, "harness: apk could not install the host packages in the container:\n" + I.describe(cp)

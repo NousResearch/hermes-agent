@@ -1,15 +1,7 @@
 name: agentiker-code-intel
 repo: https://github.com/IVRZ-da/agentiker-code-intel
 sha: 44adf76c1e4b9649333f24011f3972e8a1999405
-description: >-
-  AST-aware code intelligence for the local repository: symbol outlines and
-  structural search (tree-sitter), ast-grep pattern queries, LSP
-  go-to-definition and find-all-references, call graphs and dependency
-  analysis, plus safe cross-file refactoring (rename, replace body, insert,
-  move, delete) for 9 languages. Ships 7 namespace dispatchers with an op
-  parameter instead of 70 individual tools, so the schema cost per turn stays
-  small. Works fully offline; LSP servers are optional and only installed when
-  the user opts in, otherwise the tools fall back to AST analysis.
+description: "AST-aware code intelligence for the local repository: symbol outlines and structural search (tree-sitter), ast-grep pattern queries, LSP go-to-definition and find-all-references, call graphs and dependency analysis, plus safe cross-file refactoring (rename, replace body, insert, move, delete) for 9 languages. Ships 7 namespace dispatchers with an op parameter instead of 70 individual tools, so the schema cost per turn stays small. Works fully offline; LSP servers are optional and only installed when the user opts in, otherwise the tools fall back to AST analysis. Disclosure — the edit tools rewrite source files in place (keeping `.bak` backups) after a dry-run preview, refusing the same protected paths as Hermes' own write tools; setting `CODE_INTEL_LSP_AUTO_INSTALL=1` lets it install missing language servers globally with npm, pip, go or rustup; it adds a short code-intelligence section to the system prompt and logs each of its tool calls (tool, op, session id) to a local usage file."
 maintainer: IVRZ-da
 tier: community
 category: tools

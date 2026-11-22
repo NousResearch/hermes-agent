@@ -25,10 +25,10 @@ import pytest
 
 from agent.proxy_sources import iron_proxy as ip
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.skipif(
     os.environ.get("HERMES_RUN_E2E", "0") != "1",
     reason="E2E proxy test — set HERMES_RUN_E2E=1 to run (requires network + curl + openssl)",
-)
+), pytest.mark.allow_network]  # install_iron_proxy() downloads the pinned PM binary
 
 
 @pytest.fixture
@@ -84,6 +84,15 @@ class _Capture(BaseHTTPRequestHandler):
     def log_message(self, *args, **kwargs):
         return
 
+    do_PROPFIND = do_GET
+
+
+def _curl_method_via_tunnel(tunnel_port: int, upstream_port: int, method: str, bearer: str) -> str:
+    argv = ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "10", "-X", method,
+            "--proxytunnel", "-x", f"http://127.0.0.1:{tunnel_port}", "-H", "Authorization: Bearer " + bearer,
+            f"http://127.0.0.1:{upstream_port}/"]
+    return subprocess.run(argv, check=False, capture_output=True, text=True, encoding="utf-8").stdout.strip()
+
 
 def _curl_via_tunnel(tunnel_port: int, upstream_port: int, token: Optional[str]) -> str:
     argv = ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "10",
@@ -135,6 +144,10 @@ def test_tunnel_swaps_secret_and_still_requires_token(hermes_home, monkeypatch):
         hits_before = _Capture.hits
         assert _curl_via_tunnel(tunnel_port, upstream_port, None) != "200"
         assert _Capture.hits == hits_before, "untokened request must not reach upstream"
+
+        # A verb the secrets rule does not list must not carry a sandbox-supplied key upstream.
+        assert _curl_method_via_tunnel(tunnel_port, upstream_port, "PROPFIND", "sandbox-own-key") != "200"
+        assert _Capture.hits == hits_before, "unlisted verb with a self-supplied key must not reach upstream"
     finally:
         try:
             ip.stop_proxy()

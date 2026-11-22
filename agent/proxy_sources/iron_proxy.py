@@ -25,6 +25,7 @@ import urllib.error
 import urllib.request
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -39,10 +40,10 @@ _STARTUP_GRACE_SECONDS = 5
 # setup (0600 at <proxy>/management.token), injected under this env name; empty => daemon refuses to start.
 _MGMT_API_KEY_ENV = "HERMES_IRON_PROXY_MGMT_KEY"
 _MGMT_PORT_OFFSET = 2  # tunnel_port is CONNECT/MITM, +1 is plain-HTTP forward, +2 is management
-# The methods we require a proxy token for.  CONNECT (the tunnel handshake, which never carries the
-# token) is left out; v0.39 rules cannot express "all but CONNECT" (an empty list or ["*"] means all),
-# so a verb outside this tuple skips ``require`` on a mapped host.  The real secret is never injected
-# for it, but a self-supplied credential can reach the upstream.
+# The methods we require a proxy token for on a mapped host.  CONNECT (the tunnel handshake, which
+# never carries the token) is left out; v0.39 rules cannot express "all but CONNECT" (an empty list or
+# ["*"] means all), so the allowlist admits ONLY these plus CONNECT on mapped hosts: any other verb is
+# refused there instead of skipping ``require`` and carrying a self-supplied credential upstream.
 _SECRET_RULE_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE")
 _MGMT_RELOAD_TIMEOUT = 15
 
@@ -435,6 +436,23 @@ def _detect_docker_bridge_ip() -> Optional[str]:
     return str(addr)
 
 
+def _host_glob_matches(pattern: str, host: str) -> bool:
+    """iron-proxy v0.39 ``hostmatch.MatchGlob``: ``*`` is every host, ``*.x`` is ``x`` and any subdomain."""
+    if pattern == "*":
+        return True
+    if pattern.startswith("*."):
+        return host == pattern[2:] or host.endswith(pattern[1:])
+    return fnmatchcase(host, pattern)
+
+
+def _reaches_mapped_host(host: str, mapped: list[str]) -> bool:
+    """True when ``host`` may admit a request to a mapped host.  Two free-form globs (anything beyond a
+    leading ``*.``) can overlap without either matching the other, so those count as reaching."""
+    def free(p: str) -> bool:
+        return any(c in p.removeprefix("*.") for c in "*?[")
+    return any(free(host) or free(m) or _host_glob_matches(host, m) or _host_glob_matches(m, host) for m in mapped)
+
+
 def build_proxy_config(
     *, mappings: list[TokenMapping], ca_cert: Path, ca_key: Path, tunnel_port: int = _DEFAULT_TUNNEL_PORT, audit_log: Optional[Path] = None,
     allowed_hosts: Optional[list[str]] = None, upstream_deny_cidrs: Optional[list[str]] = None, http_listen: Optional[list[str]] = None,
@@ -443,9 +461,16 @@ def build_proxy_config(
     the sandbox never sees them.  ``upstream_deny_cidrs=None`` = default SSRF deny list, ``[]`` opts out.
     ``audit_log`` is forward-compat only (v0.39 rejects ``audit_path``)."""
     hosts: list[str] = list(allowed_hosts or _DEFAULT_ALLOWED_HOSTS)
-    for h in (h for m in mappings for h in m.upstream_hosts):
+    mapped = [h for m in mappings for h in m.upstream_hosts]
+    for h in mapped:
         if h not in hosts:
             hosts.append(h)
+    # A flat ``domains`` entry admits every method.  Any host that can reach a mapped host (equal, or a
+    # glob either way, ``*`` included) becomes a method-limited rule instead, so a verb the secrets rule
+    # does not cover is refused here rather than reaching the upstream with ``require`` skipped.
+    limited = [h for h in hosts if _reaches_mapped_host(h, mapped)]
+    allow_rules = [{"host": h, "methods": [*_SECRET_RULE_METHODS, "CONNECT"]} for h in limited]
+    hosts = [h for h in hosts if h not in limited]
     deny_cidrs = list(_DEFAULT_UPSTREAM_DENY_CIDRS if upstream_deny_cidrs is None else upstream_deny_cidrs)
     # Query scan covers ``?key=<token>`` SDKs; body inspection deliberately off.  ``require`` fails
     # closed: an allowlisted-host request WITHOUT the proxy token is rejected, so a real key sent
@@ -480,7 +505,8 @@ def build_proxy_config(
         # Loopback only: sandboxes must never reach the management surface.
         "management": {"listen": f"127.0.0.1:{tunnel_port + _MGMT_PORT_OFFSET}", "api_key_env": _MGMT_API_KEY_ENV},
         "tls": {"ca_cert": str(ca_cert), "ca_key": str(ca_key), "cert_cache_size": 1000, "leaf_cert_expiry_hours": 168},
-        "transforms": [{"name": "allowlist", "config": {"domains": hosts}}, {"name": "secrets", "config": {"secrets": secrets_rules}}],
+        "transforms": [{"name": "allowlist", "config": {"domains": hosts, "rules": allow_rules}},
+                       {"name": "secrets", "config": {"secrets": secrets_rules}}],
         "log": {"level": "info"},
     }
 

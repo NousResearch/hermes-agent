@@ -95,10 +95,27 @@ def test_build_proxy_config_custom_allowed_hosts(tmp_path):
         ca_key=tmp_path / "ca.key",
         allowed_hosts=["custom-host.test"],
     )
-    domains = cfg["transforms"][0]["config"]["domains"]
-    # Custom allowed_hosts wins as the base; mapping's hosts get appended.
-    assert "custom-host.test" in domains
-    assert "openrouter.ai" in domains  # comes from the mapping
+    allow = cfg["transforms"][0]["config"]
+    # Custom allowed_hosts wins as the base; the mapping's hosts are still admitted, as rules.
+    assert "custom-host.test" in allow["domains"]
+    assert "openrouter.ai" in {r["host"] for r in allow["rules"]}
+
+
+def test_mapped_hosts_admit_only_methods_the_secret_rule_requires_a_token_for(tmp_path):
+    """A flat ``domains`` entry admits every verb, so a verb outside the secrets rule would reach a
+    mapped upstream with ``require`` skipped.  Every allowlist entry that can reach a mapped host,
+    including ``*`` and a ``*.`` glob that covers the bare domain, admits only the token-checked
+    methods plus the CONNECT handshake; unrelated hosts keep every method."""
+    m = ip.TokenMapping(proxy_token=ip.mint_proxy_token("t"), real_env_name="OPENAI_API_KEY",
+                        upstream_hosts=("example.com",))
+    cfg = ip.build_proxy_config(mappings=[m], ca_cert=tmp_path / "ca.crt", ca_key=tmp_path / "ca.key",
+                                allowed_hosts=["*", "*.example.com", "unrelated.test"])
+    allow = cfg["transforms"][0]["config"]
+    secret_methods = {meth for s in cfg["transforms"][1]["config"]["secrets"] for r in s["rules"] for meth in r["methods"]}
+    assert allow["domains"] == ["unrelated.test"]
+    assert {r["host"] for r in allow["rules"]} == {"*", "*.example.com", "example.com"}
+    for rule in allow["rules"]:
+        assert set(rule["methods"]) == secret_methods | {"CONNECT"}
 
 
 # ---------------------------------------------------------------------------

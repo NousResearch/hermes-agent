@@ -693,6 +693,14 @@ def _dashboard_name_taken(name: Any, plugin_dir: Path, spellings: frozenset, own
     return bool(others)
 
 
+def _own_spellings(plugin_dir: Path, spellings: set, owners: _PluginNameOwners) -> frozenset:
+    """The names that may turn this plugin on: its directory name, and each other spelling (its ``plugin.yaml``
+    name) that no other installed plugin answers to. The loader gives such a name to the other plugin
+    (``resolve_manifest_winners`` skips the other directory), so it must not grant this one consent either; every
+    declared spelling still counts for ``plugins.disabled``."""
+    return frozenset(s for s in spellings if s == plugin_dir.name or not owners.others(s, plugin_dir))
+
+
 def _discover_dashboard_plugins(search_dirs: Optional[list] = None) -> list:
     """Scan ``<plugins root>/*/dashboard/manifest.json`` across user, bundled and (opt-in)
     project plugin sources — same three sources as ``hermes_cli.plugins`` — or ``search_dirs``.
@@ -726,11 +734,12 @@ def _discover_dashboard_plugins(search_dirs: Optional[list] = None) -> list:
                 if name in seen_names:
                     continue
                 spellings = frozenset(plugin_spellings(child, child.name))
-                if _dashboard_name_taken(name, child, spellings, owners):
+                owned = _own_spellings(child, spellings, owners)
+                if _dashboard_name_taken(name, child, owned, owners):
                     continue
                 seen_names.add(name)
                 entry = _dashboard_plugin_entry(data, name, child / "dashboard", source)
-                plugins.append({**entry, "_key": child.name, "_spellings": spellings})
+                plugins.append({**entry, "_key": child.name, "_spellings": spellings, "_owned": owned})
             except OSError as exc:
                 _log.warning("Skipping unreadable dashboard plugin %s: %s", manifest_file, exc)
                 continue
@@ -947,16 +956,17 @@ def _plugin_api_mount_skip_reason(plugin: dict[str, Any], enabled_set: set, disa
     disable; project plugins (``./.hermes/plugins/``) ship with the CWD and are
     attacker-controlled when opening a malicious repo — never auto-imported (GHSA-5qr3-c538-wm9j).
 
-    A user plugin answers to every name the plugin loader accepts for it (``_spellings`` from
-    discovery: directory, key, ``plugin.yaml`` name) as well as its dashboard name, which discovery
-    only registers when no other installed plugin has that name. A project plugin needs no enable
-    entry, but a disabled one stays off like any other.
+    ``plugins.disabled`` matches every name the plugin declares (``_spellings`` from discovery:
+    directory, key, ``plugin.yaml`` name); ``plugins.enabled`` only the ones no other installed plugin
+    answers to (``_owned``). Both also match its dashboard name, which discovery only registers when no
+    other installed plugin has that name. A project plugin needs no enable entry, but a disabled one
+    stays off like any other.
     """
     source, plugin_name = plugin.get("source"), plugin.get("name", "")
     names = {plugin_name, *plugin.get("_spellings", ())} if source in ("user", "project") else {plugin_name}
     if source in ("user", "bundled", "project") and names & disabled_set:
         return "explicitly disabled"
-    if source == "user" and not names & enabled_set:
+    if source == "user" and not {plugin_name, *plugin.get("_owned", ())} & enabled_set:
         return "not in plugins.enabled"
     return None
 

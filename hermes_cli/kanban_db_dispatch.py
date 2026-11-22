@@ -1594,7 +1594,7 @@ def check_respawn_guard(
     latest_run = conn.execute(
         "SELECT outcome, ended_at, metadata FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",  # runs end on whole seconds: the later insert wins a tie
         (task_id,),
     ).fetchone()
     infrastructure = (latest_run is not None and latest_run["outcome"] == "spawn_failed"

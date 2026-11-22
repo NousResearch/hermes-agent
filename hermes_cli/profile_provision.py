@@ -66,7 +66,7 @@ class ProfileCreateRequest:
     quiet: bool = True                 # bundled-skill seeding prints its own failures when False
     # Bot-page defaults (see module docstring); every surface exposes both opt-outs.
     mirror_credentials: bool = True    # launch .env keys / voice / model (and auth.json unless shared)
-    share_auth: bool = True            # read the root's auth.json instead of copying one (root source only)
+    share_auth: bool = True            # read the root's auth.json instead of copying one (source reads the root's)
     model: str = ""                    # explicit model pin (with provider)
     provider: str = ""
     model_validate_in: Optional[Path] = None  # home whose catalog vouches for the pick (default: the profile)
@@ -506,10 +506,11 @@ def _logins_home(home: Optional[Path]) -> Path:
 def mirror_launch_credentials(path: Path, mirrored: dict[str, Any], *, share_auth: bool = False,
                               clone_channels: bool = False, auth_home: Optional[Path] = None) -> tuple[str, ...]:
     """Copy the launch profile's .env / auth.json / voice sections into a new profile, recording each
-    item in ``mirrored`` (best-effort per item). ``share_auth`` skips the auth copy when the launch
-    profile is the root: the new profile then reads the root's auth.json, i.e. the launch logins. From a
-    named launch profile that fallback would pair its keys with the root's logins, so its auth is copied.
-    ``auth_home`` (a clone's source) stands in for the launch profile as the auth.json source.
+    item in ``mirrored`` (best-effort per item). ``auth_home`` (default: the launch profile) is the
+    auth.json source; ``provision_profile`` passes ``_logins_home(...)``, the store the new profile's
+    source signs in with. ``share_auth`` skips the copy
+    when that is the root, so the new profile reads the root's auth.json; a named source's own
+    auth.json is copied instead, so its keys stay paired with its logins.
     Returns the providers whose single-use logins were left out of a copy (read from the root instead)."""
     from hermes_constants import get_hermes_home
     launch_home = get_hermes_home()

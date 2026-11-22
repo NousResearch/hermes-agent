@@ -65,12 +65,12 @@ def test_scan_maps_connectors(tmp_path):
     for d in (a, b):
         d.mkdir()
     (a / "status").write_text("connected\n")
-    (a / "edid").write_bytes(_edid("ACI", "TEST MONITOR"))
+    (a / "edid").write_bytes(_edid("XYZ", "TEST MONITOR"))
     (b / "status").write_text("disconnected\n")
     (b / "edid").write_bytes(b"")
     rows = go.scan(tmp_path)
     assert rows == [
-        {"connector": "DP-1", "status": "connected", "manufacturer": "ACI", "name": "TEST MONITOR"},
+        {"connector": "DP-1", "status": "connected", "manufacturer": "XYZ", "name": "TEST MONITOR"},
         {"connector": "HDMI-A-1", "status": "disconnected"},
     ]
 

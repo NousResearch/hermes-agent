@@ -199,3 +199,45 @@ class TestScannerHolds:
 
         with pytest.raises(PermissionError):
             self._stage(tmp_path)
+
+
+def test_pnpm_verify_probes_in_entry_dir_not_callers_cwd(tmp_path, monkeypatch):
+    """#158773: pnpm 12 inspects the nearest package.json from cwd even on
+    `--version`, failing with ERR_PNPM_OTHER_PM_EXPECTED inside an npm-pinned
+    project. verify() must run the probe in the staged entry directory."""
+    import subprocess
+
+    from pm import packages as pm_packages
+    from pm.filesystem import native
+    from pm.store import current_target
+
+    package = get_package("pnpm")
+    target = current_target()
+    entry = tmp_path / "staged-pnpm"
+    entry.mkdir()
+    binary = package.binary(entry, target)
+    assert binary is not None
+    binary.write_bytes(b"#!/bin/sh\n")
+    (entry / "package.json").write_text('{"name": "@pnpm/exe"}', encoding="utf-8")
+
+    caller_project = tmp_path / "npm-project"
+    caller_project.mkdir()
+    (caller_project / "package.json").write_text(
+        json.dumps({"name": "p", "packageManager": "npm@10.9.2"}),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(caller_project)
+    monkeypatch.setattr(package, "_probe_env", dict)
+
+    observed: list[tuple[list[str], str | None]] = []
+
+    def fake_run(cmd, **kwargs):
+        observed.append((list(cmd), kwargs.get("cwd")))
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"12.0.0\n", stderr=b"")
+
+    monkeypatch.setattr(pm_packages.subprocess, "run", fake_run)
+
+    assert package.probe_cwd is True
+    assert package.verify(entry, target) == ""
+    assert observed == [([native(binary), "--version"], native(binary.parent))]
+

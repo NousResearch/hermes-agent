@@ -73,7 +73,8 @@ class BinaryPackage(Package):
     # rejects the GNU double-dash form (ffmpeg's BtbN autobuild) overrides.
     probe_args: list[str] = ["--version"]
     # Run the probe with cwd=binary.parent: dlopen'd backends (llama.cpp's
-    # cudart) resolve their shared libraries from the working directory.
+    # cudart) resolve their shared libraries from the working directory, and
+    # workspace-aware CLIs (pnpm 12) must not inspect the caller's project.
     probe_cwd = False
 
     def _rel(self, target: str) -> Optional[str]:
@@ -807,6 +808,10 @@ class Pnpm(BinaryPackage):
     deps = ("node",)
     binary_rel = {"win32": "pnpm.exe", "posix": "pnpm"}
     flatten = False
+    # pnpm 12 reads the nearest package.json from cwd even for `--version` and
+    # exits 1 (ERR_PNPM_OTHER_PM_EXPECTED) when a caller's project pins npm.
+    # Probing inside the staged entry avoids inheriting the caller's workspace.
+    probe_cwd = True
     # pnpm names its Termux build after the OS, not the libc: a bionic-linked executable.
     exe_platforms = {"linux-arm64-bionic": "android-arm64"}
     on_demand = {"linux-arm64-bionic": "the Termux .deb ships a prebuilt TUI; `hermes dashboard` fetches pnpm to build the web UI"}

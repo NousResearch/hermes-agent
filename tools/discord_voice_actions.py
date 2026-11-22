@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""``discord_voice``: let the agent join, leave, or inspect a Discord voice channel itself.
+"""Voice actions of the ``discord`` tool: let the agent join, leave, or inspect a Discord voice channel.
+
+``tools/discord_tool.py`` exposes them as ``voice_join`` / ``voice_leave`` / ``voice_status``.
+Unlike its REST actions they need the live in-process gateway, not the bot token.
 
 It reaches the in-process gateway runner through
 ``gateway.run._gateway_runner_ref`` (the same pattern ``send_message`` uses) and runs the SAME
@@ -21,7 +24,7 @@ from dataclasses import replace
 from typing import Optional
 
 from agent.secret_scope import get_secret
-from tools.registry import registry, tool_error, tool_result
+from tools.registry import tool_error, tool_result
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +154,8 @@ async def _do(runner, adapter, source, action: str, home: str = "") -> dict:
     return {"success": was_in, "action": "leave", "message": message}
 
 
-def discord_voice(action: str) -> str:
+def voice_action(action: str) -> str:
+    """Run ``join`` | ``leave`` | ``status`` and return the tool-result JSON string."""
     action = (action or "").strip().lower()
     if action not in _ACTIONS:
         return tool_error(f"Unknown action: {action!r}", available_actions=list(_ACTIONS))
@@ -160,7 +164,7 @@ def discord_voice(action: str) -> str:
         return tool_error("No live gateway in this process; voice control only works from a gateway chat turn.")
     source = _session_source()
     if source is None:
-        return tool_error("discord_voice only works in a Discord chat turn from an allowed user.")
+        return tool_error("Discord voice actions only work in a Discord chat turn from an allowed user.")
     adapter = _adapter_for(runner, source)
     if adapter is None or not hasattr(adapter, "join_voice_channel"):
         return tool_error("No live Discord adapter with voice support.")
@@ -172,13 +176,13 @@ def discord_voice(action: str) -> str:
         return tool_error("Gateway event loop is not running.")
     try:
         if asyncio.get_running_loop() is loop:
-            return tool_error("discord_voice cannot block the gateway loop it needs.")
+            return tool_error("Discord voice actions cannot block the gateway loop they need.")
     except RuntimeError:
         pass
     home = (get_secret("DISCORD_HOME_CHANNEL", "") or "").strip() if action == "join" else ""
     from agent.async_utils import safe_schedule_threadsafe
     fut = safe_schedule_threadsafe(_do(runner, adapter, source, action, home), loop, logger=logger,
-                                   log_message="discord_voice: failed to schedule on gateway loop")
+                                   log_message="discord voice: failed to schedule on gateway loop")
     if fut is None:
         return tool_error("Could not schedule the voice action on the gateway loop.")
     # Anything else the helper raises propagates to the registry's dispatch boundary, which logs
@@ -187,7 +191,7 @@ def discord_voice(action: str) -> str:
         result = fut.result(timeout=_TIMEOUT_S)
     except TimeoutError:
         fut.cancel()  # best effort: stops a join/leave still awaiting; a completed step is not undone
-        logger.warning("discord_voice %s timed out after %ss", action, _TIMEOUT_S)
+        logger.warning("discord voice %s timed out after %ss", action, _TIMEOUT_S)
         return tool_error(f"Voice {action} timed out after {_TIMEOUT_S}s.")
     except CancelledError:  # the gateway loop shut down underneath the action
         return tool_error(f"Voice {action} was cancelled (gateway shutting down).")
@@ -196,7 +200,7 @@ def discord_voice(action: str) -> str:
     return tool_result(result)
 
 
-def check_discord_voice_requirements() -> bool:
+def voice_available() -> bool:
     """Offered when this process has a gateway runner with a Discord adapter; each call re-checks the live turn."""
     runner = _runner()
     if runner is None:
@@ -205,26 +209,3 @@ def check_discord_voice_requirements() -> bool:
     return any(Platform.DISCORD in (m or {}) for m in
                [getattr(runner, "adapters", None), *((getattr(runner, "_profile_adapters", None) or {}).values())])
 
-
-DISCORD_VOICE_SCHEMA = {
-    "name": "discord_voice",
-    "description": (
-        "Join, leave, or check your own Discord voice-channel presence (runs the same join/leave code as "
-        "/voice join and /voice leave). 'join' joins the voice channel the requesting user is currently "
-        "in and binds it to this text chat, or to the home channel from a DM (spoken replies on). 'leave' "
-        "asks the voice client to disconnect, turns voice replies off and stops listening (only when you are "
-        "in voice in that server; otherwise it changes nothing). 'status' "
-        "reports whether you are connected, where, and who is there. "
-        "Use when the user asks you to join/leave voice or hang up."),
-    "parameters": {
-        "type": "object",
-        "properties": {"action": {"type": "string", "enum": list(_ACTIONS),
-                                  "description": "join | leave | status"}},
-        "required": ["action"],
-    },
-}
-
-registry.register(
-    name="discord_voice", toolset="discord", schema=DISCORD_VOICE_SCHEMA,
-    handler=lambda args, **kw: discord_voice(args.get("action", "")),
-    check_fn=check_discord_voice_requirements, emoji="🎙️")

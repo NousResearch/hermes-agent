@@ -1,4 +1,4 @@
-"""The agent's ``discord_voice`` tool drives the same join/leave paths as /voice."""
+"""The ``discord`` tool's voice_join/voice_leave/voice_status actions drive the same paths as /voice."""
 
 import asyncio
 import json
@@ -66,9 +66,9 @@ def _bind(user=USER, platform="discord", chat=TEXT, scope=str(GUILD), cron="", c
 
 
 def _call(runner, action):
-    import tools.discord_voice_tool as tool
+    import tools.discord_voice_actions as tool
     with patch("gateway.run._gateway_runner_ref", lambda: runner):
-        return json.loads(tool.discord_voice(action))
+        return json.loads(tool.voice_action(action))
 
 
 def test_leave_uses_shared_path_and_clears_state(runner):
@@ -129,11 +129,11 @@ def test_non_discord_or_cron_refused(runner, kw):
 
 
 def test_no_gateway_refused():
-    import tools.discord_voice_tool as tool
+    import tools.discord_voice_actions as tool
     with patch("gateway.run._gateway_runner_ref", lambda: None):
-        out = json.loads(tool.discord_voice("leave"))
+        out = json.loads(tool.voice_action("leave"))
     assert "error" in out
-    assert tool.check_discord_voice_requirements() is False
+    assert tool.voice_available() is False
 
 
 def test_status_reports_connection(runner):
@@ -252,7 +252,7 @@ def test_server_channel_never_falls_back_to_another_server(runner):
 
 def test_server_channel_without_guild_id_never_joins_the_home_server(runner, monkeypatch):
     """The DM home-channel fallback is for DMs only; a group session with no guild id is refused."""
-    import tools.discord_voice_tool as tool
+    import tools.discord_voice_actions as tool
     adapter = _adapter(connected=False)
     runner.adapters[Platform.DISCORD] = adapter
     fallback = MagicMock()
@@ -311,7 +311,7 @@ def test_failed_join_with_older_connection_is_not_success(runner):
 
 
 def test_timeout_cancels_the_pending_action(runner, monkeypatch):
-    import tools.discord_voice_tool as tool
+    import tools.discord_voice_actions as tool
     started, cancelled = threading.Event(), threading.Event()
 
     async def _hang(source, guild_id):
@@ -337,11 +337,63 @@ def test_timeout_cancels_the_pending_action(runner, monkeypatch):
 
 
 def test_unknown_action():
-    import tools.discord_voice_tool as tool
-    assert "error" in json.loads(tool.discord_voice("dance"))
+    import tools.discord_voice_actions as tool
+    assert "error" in json.loads(tool.voice_action("dance"))
 
 
-def test_tool_registered_in_discord_toolset():
-    import tools.discord_voice_tool
-    from toolsets import resolve_toolset
-    assert "discord_voice" in resolve_toolset("discord")
+def _discord_tool_call(runner, action):
+    """Call through the real ``discord`` tool handler (what the model's tool call reaches)."""
+    from tools.registry import registry
+    with patch("gateway.run._gateway_runner_ref", lambda: runner):
+        return json.loads(registry.dispatch("discord", {"action": action}))
+
+
+@pytest.mark.parametrize("action", ["voice_join", "voice_leave", "voice_status"])
+def test_voice_actions_are_core_discord_actions(action):
+    from tools.discord_tool import _ACTIONS, _CORE_ACTIONS, _ADMIN_ACTIONS
+    assert action in _ACTIONS and action in _CORE_ACTIONS and action not in _ADMIN_ACTIONS
+
+
+def test_no_separate_discord_voice_tool_registered():
+    import tools.discord_tool  # noqa: F401
+    from tools.registry import registry
+    assert registry.get_entry("discord_voice") is None
+
+
+def test_discord_tool_join_and_status_reach_the_voice_path(runner, monkeypatch):
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+    adapter = _adapter(connected=False)
+    runner.adapters[Platform.DISCORD] = adapter
+    tokens = _bind()
+    try:
+        with patch.object(type(runner), "_voice_channel_join_for_source",
+                          AsyncMock(return_value="joined")):
+            joined = _discord_tool_call(runner, "voice_join")
+        status = _discord_tool_call(runner, "voice_status")
+    finally:
+        clear_session_vars(tokens)
+    assert joined["action"] == "join" and "error" not in joined
+    assert "connected" in status
+
+
+def test_discord_tool_voice_action_refused_outside_discord_turn(runner, monkeypatch):
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+    runner.adapters[Platform.DISCORD] = _adapter()
+    out = _discord_tool_call(runner, "voice_join")  # no session vars bound
+    assert "only work in a Discord chat turn" in out["error"]
+
+
+def test_voice_actions_hidden_without_a_gateway(monkeypatch):
+    from tools.discord_tool import _available_actions
+    caps = {"detected": True, "has_members_intent": True, "has_message_content": True}
+    with patch("tools.discord_tool.voice_available", return_value=False):
+        assert not {"voice_join", "voice_leave", "voice_status"} & set(_available_actions(caps, None))
+    with patch("tools.discord_tool.voice_available", return_value=True):
+        assert {"voice_join", "voice_leave", "voice_status"} <= set(_available_actions(caps, None))
+
+
+def test_voice_actions_follow_the_server_actions_allowlist(monkeypatch):
+    from tools.discord_tool import _available_actions
+    caps = {"detected": True, "has_members_intent": True, "has_message_content": True}
+    with patch("tools.discord_tool.voice_available", return_value=True):
+        assert _available_actions(caps, ["fetch_messages", "voice_status"]) == ["fetch_messages", "voice_status"]

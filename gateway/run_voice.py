@@ -150,7 +150,7 @@ class GatewayVoiceMixin:
 
     async def _voice_channel_join_for_source(self, source: SessionSource, guild_id: Optional[int]) -> str:
         """Join the voice channel ``source.user_id`` is in and bind it to ``source``'s text chat.
-        Shared by ``/voice join`` and the agent's ``discord_voice`` tool."""
+        Shared by ``/voice join`` and the ``discord`` tool's ``voice_join`` action."""
         adapter = self._delivery_adapter_for(source)
         if not hasattr(adapter, "join_voice_channel"):
             return t("gateway.voice.channel_unsupported")
@@ -199,7 +199,7 @@ class GatewayVoiceMixin:
 
     async def _voice_channel_leave_for_source(self, source: SessionSource, guild_id: Optional[int]) -> str:
         """Leave the guild's voice channel, set ``source``'s voice mode off and drop the voice input
-        callback. Shared by ``/voice leave`` and the ``discord_voice`` tool."""
+        callback. Shared by ``/voice leave`` and the ``discord`` tool's ``voice_leave`` action."""
         adapter = self._delivery_adapter_for(source)
         if not (guild_id and hasattr(adapter, "leave_voice_channel")
                 and hasattr(adapter, "is_in_voice_channel")

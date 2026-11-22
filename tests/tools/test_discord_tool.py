@@ -430,7 +430,8 @@ class TestNonBlockingCapabilityDetection:
         assert mock_thread.call_count == 1
         assert schema is not None
         actions = set(schema["parameters"]["properties"]["action"]["enum"])
-        assert actions == set(_CORE_ACTIONS.keys())  # permissive default
+        # permissive default; voice actions need a live gateway, which this test process lacks
+        assert actions == {a for a in _CORE_ACTIONS if not a.startswith("voice_")}
 
     @patch("tools.discord_tool._discord_request")
     def test_cache_is_keyed_by_token(self, mock_req):
@@ -524,7 +525,15 @@ class TestConfigAllowlist:
 class TestAvailableActions:
     def test_all_available_when_unrestricted(self):
         caps = {"detected": True, "has_members_intent": True, "has_message_content": True}
-        assert _available_actions(caps, None) == list(_ACTIONS.keys())
+        with patch("tools.discord_tool.voice_available", return_value=True):
+            assert _available_actions(caps, None) == list(_ACTIONS.keys())
+
+    def test_voice_actions_hidden_without_a_gateway(self):
+        caps = {"detected": True, "has_members_intent": True, "has_message_content": True}
+        with patch("tools.discord_tool.voice_available", return_value=False):
+            actions = _available_actions(caps, None)
+        assert not {a for a in actions if a.startswith("voice_")}
+        assert actions == [a for a in _ACTIONS if not a.startswith("voice_")]
 
     def test_no_members_intent_hides_member_actions(self):
         caps = {"detected": True, "has_members_intent": False, "has_message_content": True}

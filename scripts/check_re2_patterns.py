@@ -32,6 +32,7 @@ import importlib
 import json
 import random
 import re as stdlib_re
+from re import _parser  # stdlib's own parse tree: what a pattern names once comments are gone
 import signal
 import subprocess
 import sys
@@ -55,9 +56,6 @@ ROOT = _repo_root()
 FUNCS = {"compile": 1, "search": 2, "match": 2, "fullmatch": 2, "findall": 2, "finditer": 2, "split": 3, "sub": 4, "subn": 4}
 FLAGS = {"I": 2, "IGNORECASE": 2, "M": 8, "MULTILINE": 8, "S": 16, "DOTALL": 16, "A": 256, "ASCII": 256, "U": 32,
          "UNICODE": 32, "X": 64, "VERBOSE": 64, "L": 4, "LOCALE": 4, "DEBUG": 128, "NOFLAG": 0}
-# \uD800..\uDFFF or \U0000D800..\U0000DFFF after an even run of backslashes: the escape a raw pattern spells a lone
-# surrogate with (its source text is ASCII, so the character check below never sees it)
-ESCAPED_SURROGATE = stdlib_re.compile(r"(?<!\\)(?:\\\\)*\\(?:u|U0000)[dD][89a-fA-F][0-9a-fA-F]{2}")
 WAIVER = "# re2: reviewed --"
 EXTRA = " \n\t-_.,:;/|@=\"'()aZ09\u00e9\u00df\u0436\u65e5\u017f\u0130"
 SAMPLES = 160
@@ -178,6 +176,38 @@ def differs(facade, pattern, flags, fn, repl):
     return _within_deadline(lambda: _compare(call, old, new, texts))
 
 
+def _surrogate_code(value) -> bool:
+    return isinstance(value, int) and 0xD800 <= value <= 0xDFFF
+
+
+def _names_surrogate(items) -> bool:
+    """Whether stdlib's parse tree has a surrogate literal or range end; comments and verbose text are already gone."""
+    for op, av in items:
+        if op in (_parser.LITERAL, _parser.NOT_LITERAL) and _surrogate_code(av):
+            return True
+        if op == _parser.RANGE and any(_surrogate_code(end) for end in av):
+            return True
+        if op == _parser.IN and _names_surrogate(av):
+            return True
+        nested = av if isinstance(av, (tuple, list)) else ()
+        for part in nested:
+            if isinstance(part, _parser.SubPattern) and _names_surrogate(part):
+                return True
+            if isinstance(part, (tuple, list)) and any(isinstance(x, _parser.SubPattern) and _names_surrogate(x)
+                                                      for x in part):
+                return True
+    return False
+
+
+def names_surrogate(pattern: str, flags: int) -> bool:
+    """A lone surrogate written as a character or an escape: stdlib matches one in a subject, hermes_re never does.
+    Read through stdlib's own parser, so text inside a `(?#...)` comment does not count."""
+    try:
+        return _names_surrogate(_parser.parse(pattern, flags & ~stdlib_re.DEBUG))  # DEBUG would print the tree
+    except (stdlib_re.error, ValueError, RecursionError, OverflowError):
+        return False
+
+
 def keyword(node, name):
     return next((k.value for k in node.keywords if k.arg == name), None)
 
@@ -191,10 +221,8 @@ def classify(facade, node, fn, pattern):
     flags = flag_value(flag_node)
     note = "" if flags is not None else " (flags not a literal: checked with flags=0)"
     flags = flags or 0
-    if isinstance(pattern, str) and any("\ud800" <= c <= "\udfff" for c in pattern):
-        return "SURROGATE", "lone surrogate in the pattern"
-    if isinstance(pattern, str) and ESCAPED_SURROGATE.search(pattern):
-        return "SURROGATE", "escaped lone surrogate in the pattern"
+    if isinstance(pattern, str) and names_surrogate(pattern, flags):
+        return "SURROGATE", "the pattern names a lone surrogate"
     try:
         facade.build(pattern, flags)
     except Exception as exc:  # health: allow BLE001 -- every way a pattern fails to build is reported as a finding

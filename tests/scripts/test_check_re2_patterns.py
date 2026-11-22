@@ -88,6 +88,12 @@ def test_escaped_backslash_before_u_is_not_a_surrogate(tmp_path):
     assert _gate(tmp_path, "import hermes_re as re\nre.compile(r'\\\\ud800')\n")[0] == 0
 
 
+def test_a_surrogate_escape_inside_a_comment_group_is_not_a_finding(tmp_path):
+    # both engines drop the comment and match "a"
+    code, out = _gate(tmp_path, "import hermes_re as re\nre.compile(r'a(?# ignore \\ud800)')\n")
+    assert code == 0, out
+
+
 _SHADOWED = (
     "import hermes_re as re\n\n\n"
     "def helper():\n"

@@ -69,6 +69,7 @@ def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original
                 moa_config.get("degraded_reference_policy") or "loud"
             ),
             agent=agent,
+            reference_tools=bool(moa_config.get("reference_tools")),
         )
         if not _moa_context:
             return

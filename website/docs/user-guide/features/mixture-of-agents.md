@@ -56,7 +56,7 @@ To **switch** to a MoA preset for the rest of the session, select it from the mo
 For each main model call when provider `moa` is selected, Hermes:
 
 1. resolves the selected preset by name;
-2. runs the configured reference models without tool schemas (they receive only the conversation's user/assistant text — not the Hermes system prompt or tool-call transcript — so reference calls stay cheap and avoid strict-provider rejections);
+2. runs the configured reference models without tool schemas (they receive only the conversation's user/assistant text — not the Hermes system prompt or tool-call transcript — so reference calls stay cheap and avoid strict-provider rejections). A preset can opt into giving its advisors the three read-only tools described below;
 3. appends the reference outputs as private context for the aggregator;
 4. calls the configured aggregator with the normal Hermes tool schema;
 5. treats the aggregator response as the real model response;
@@ -95,6 +95,9 @@ moa:
       # reference_temperature: 0.6
       # aggregator_temperature: 0.4
 
+      # Optional: let advisors read the machine before advising (off by default).
+      # reference_tools: true
+
       enabled: true
 ```
 
@@ -110,6 +113,63 @@ MoA uses provider-owned output limits. Preset and per-slot output-token cap
 settings are no longer supported. Provider defaults vary; omission does not
 always mean the model maximum. Native protocols that require an output limit
 receive an internal value from Hermes.
+
+### Read-only tools for advisors
+
+By default an advisor sees only a flattened view of the conversation: text turns,
+tool calls rendered inline, and truncated tool results. When the answer hinges on
+material that view does not carry — the file under discussion, a screenshot, a
+directory listing — the advisor guesses about a file it never opened.
+
+`reference_tools: true` gives the preset's advisors three read-only tools:
+
+| Tool | What it does |
+|---|---|
+| `read_file` | Reads a text file with line numbers and pagination. Documents (PDF, Office, notebooks, OpenDocument, SQLite) are extracted to text; images are refused here. |
+| `list_dir` | Lists a directory's entries with kind and size. |
+| `view_image` | Looks at an image file (screenshot, photo, diagram, chart) through the auxiliary vision model and returns a description. |
+
+The advisor chooses when to look and how much to read. It never gets a write path:
+any tool name outside these three is refused, so an advisor cannot change state
+even when it emits a plausible `write_file` or shell call.
+
+Four limits bound a tool-using advisor:
+
+- **Rounds** — at most 3 tool rounds, then the tools are withdrawn and the model
+  answers with what it has.
+- **Output budget** — 40,000 characters of tool output per advisor, 8,000 per
+  call; a truncated result tells the model to narrow its read with `offset`/`limit`.
+- **Deadline** — the advisor's own `reference_timeout`. Once it passes, the next
+  round runs with the tools withdrawn, so a slow reader still produces advice.
+- **Guards** — `read_file` is the acting agent's own reader, so the credential-store
+  denylist, the `.env` block, device-path guards and document extraction all apply
+  unchanged. Reading `auth.json`, a `.env` file or an internal Hermes store returns
+  an access-denied message, never content.
+
+Every tool round's usage and cost is summed into the advisor's accounting, so cost
+reporting and traces stay accurate.
+
+A provider that rejects tool schemas on the advisory call does not lose the advice:
+that advisor falls back to one plain call — exactly the pre-`reference_tools`
+behaviour. Fail-open is deliberate: an advisor that cannot use tools is still an
+advisor.
+
+The flag is off by default because each tool round is another model call per
+advisor, so it multiplies advisor spend on turns where the advisor actually reads
+something. It applies to every MoA path, `/moa` included:
+
+```yaml
+moa:
+  presets:
+    default:
+      reference_models:
+        - provider: openrouter
+          model: deepseek/deepseek-v4.1-flash
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+      reference_tools: true
+```
 
 ### Advisor cadence with `fanout`
 
@@ -242,7 +302,7 @@ MoA is built so the **main conversation's prompt cache is never broken**. Select
 
 Both internal call types cache normally:
 
-- **Reference models** receive a trimmed, deterministic view of the conversation (system prompt and tool transcript stripped — see the loop above). Because that view is a stable function of the stable history, a reference model's prompt prefix repeats across iterations and caches normally. References are short advisory calls with no tools.
+- **Reference models** receive a trimmed, deterministic view of the conversation (system prompt and tool transcript stripped — see the loop above). Because that view is a stable function of the stable history, a reference model's prompt prefix repeats across iterations and caches normally. References are short advisory calls; without `reference_tools` they carry no tools at all.
 - **The aggregator** is the acting model. The reference outputs are appended as their *own* trailing user message of private guidance — never merged into your message. Because that block sits at the tail — below the entire stable prefix (system prompt + your message + prior tool history) — it does not invalidate any cached prefix: every request in a tool loop is a byte-identical extension of the previous one minus its guidance block, so the aggregator gets a cache hit on everything above the injection and only the freshly appended tail is new. That is exactly how every normal turn behaves, where each new user message is also uncached tail tokens. Aggregators on the Anthropic Messages, Bedrock Converse or native Gemini wire merge the two adjacent user turns into one message, but as separate content blocks: your message's block is byte-identical to the one later iterations replay, and the guidance block follows it, so the cached prefix still runs through your message.
 
   On the OpenAI-compatible wire the request ends `user(your message), user(guidance)` on the first iteration of a turn. A few chat templates that enforce strict user/assistant alternation (llama.cpp and vLLM Jinja templates, some OpenRouter routes) reject that with a 400 such as `Conversation roles must alternate`. Hermes recovers on its own: it retries that one request with the two adjacent user messages merged, remembers that aggregator destination (endpoint + model) for the rest of the session so later turns are merged up front, and leaves every other destination on the split, cache-stable shape. The merge is applied only where a destination demanded it, because merging everywhere would reintroduce the prefix divergence described above.

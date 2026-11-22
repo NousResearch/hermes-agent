@@ -83,6 +83,7 @@ async function createWithMini({ rows, onCreated }: Awaited<ReturnType<typeof ope
 it('seats a named profile from another computer on that gateway, pinned to that profile', async () => {
   const coder = { ...MINI, room_link: { ...MINI.room_link, profile: 'coder', catalog: { ...MINI.room_link.catalog,
     execution_policy: { ...MINI.room_link.catalog.execution_policy, target_profile: 'coder' } } } }
+
   gateways(undefined, (method, params) => method === 'groups.capabilities' && params.profile === 'coder' ? coder
     : method === 'groups.peer.invite' ? { ...peerInvitation('grant-for-coder'), target_profile: 'coder', catalog: coder.room_link.catalog }
       : mini()(method, params))
@@ -423,7 +424,7 @@ it.each(['owner', 'lender'])('keeps the draft and a working Retry after a failed
 
 it.each(Object.keys(CANONICAL_GROUP_LOCALES) as (keyof typeof CANONICAL_GROUP_LOCALES)[])('calls a duplicate-member refusal a group chat (%s)', language => {
   const terms = { en: 'group chat', ja: 'グループチャット', zh: '群聊', 'zh-hant': '群組聊天', ar: 'محادثة المجموعة',
-    ru: 'группового чата', fr: 'discussion de groupe', de: 'Gruppenchat', es: 'chat de grupo' }
+    ru: 'группового чата', fr: 'discussion de groupe', de: 'Gruppenchat', es: 'chat de grupo', pt: 'chat de grupo' }
 
   const message = canonicalGroupCreateError({ canonicalGroupProblem: 'duplicateMember' }, CANONICAL_GROUP_LOCALES[language])
   expect(message).toContain(terms[language])

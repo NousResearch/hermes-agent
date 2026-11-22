@@ -35,6 +35,13 @@ describe('desktop i18n languages', () => {
     expect(normalizeLocale('ES-419')).toBe('es')
     expect(normalizeLocale(' es_mx ')).toBe('es')
     expect(normalizeLocale('Español')).toBe('es')
+    expect(normalizeLocale('pt')).toBe('pt')
+    expect(normalizeLocale('PT-BR')).toBe('pt')
+    expect(normalizeLocale(' pt_br ')).toBe('pt')
+    expect(normalizeLocale('pt-PT')).toBe('pt')
+    expect(normalizeLocale('pt_br ')).toBe('pt')
+    expect(normalizeLocale('Portuguese')).toBe('pt')
+    expect(normalizeLocale('Português')).toBe('pt')
   })
 
   it('falls back to English for empty or unsupported values', () => {
@@ -49,6 +56,9 @@ describe('desktop i18n languages', () => {
     expect(isSupportedLocaleValue('ja-JP')).toBe(true)
     expect(isSupportedLocaleValue('ru-RU')).toBe(true)
     expect(isSupportedLocaleValue('de-DE')).toBe(true)
+    expect(isSupportedLocaleValue('pt-BR')).toBe(true)
+    expect(isSupportedLocaleValue('pt-pt')).toBe(true)
+    expect(isSupportedLocaleValue('pt-XX')).toBe(false)
     expect(isSupportedLocaleValue('it')).toBe(false)
     expect(isLocale('zh-CN')).toBe(false)
     expect(isLocale('zh')).toBe(true)
@@ -59,6 +69,8 @@ describe('desktop i18n languages', () => {
     expect(isLocale('fr')).toBe(true)
     expect(isLocale('de')).toBe(true)
     expect(isLocale('es')).toBe(true)
+    expect(isLocale('pt')).toBe(true)
+    expect(isLocale('pt-BR')).toBe(false)
   })
 
   it('round-trips every picker option through its display.language value to a registered catalog', () => {
@@ -68,5 +80,12 @@ describe('desktop i18n languages', () => {
     }
 
     expect(Object.keys(TRANSLATIONS).sort()).toEqual(LOCALE_OPTIONS.map(option => option.id).sort())
+  })
+
+  it('persists pt with its exact config value (pt, not pt-BR)', () => {
+    const option = LOCALE_OPTIONS.find(locale => locale.id === 'pt')
+    expect(option?.configValue).toBe('pt')
+    expect(normalizeLocale(option?.configValue)).toBe('pt')
+    expect(normalizeLocale('pt-BR')).toBe(option?.configValue)
   })
 })

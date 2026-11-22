@@ -90,6 +90,17 @@ export const ROSTER_CHROME = {
     currentGateway: "Pasarela actual",
     hidden: "Ocultos"
   },
+'pt': {
+    title: "Bots",
+    toastsOn: "Avisos de atividade ativados — clique para silenciá-los",
+    toastsOff: "Avisos de atividade desativados — clique para ativá-los",
+    newMenu: "Novo…",
+    filter: "Filtrar a lista",
+    filtersActive: count => `Filtrar a lista, ${count} ${count === 1 ? 'ativo' : 'ativos'}`,
+    allGateways: "Todas as gateways",
+    currentGateway: "Gateway atual",
+    hidden: "Ocultos"
+},
   'ru': {
     title: "Боты",
     toastsOn: "Уведомления об активности включены — нажмите, чтобы отключить",

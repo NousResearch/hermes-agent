@@ -1,0 +1,23 @@
+name: nord-theme
+title: Nord Theme
+repo: https://github.com/Audiofool934/hermes-nord-theme
+sha: d7cd1cd84e04b12a0e4cc242a2703a25c8447233
+description: "Unofficial Nord theme for Hermes Desktop with hand-tuned Polar Night (dark) and Snow Storm (light) palettes, Nord terminal colors, Nord code-block syntax colors, and Aurora status colors. Scoped to its own theme; other themes are untouched. Disclosure — its stylesheet recolors Desktop surfaces, code-block syntax colors, status colors, selection and inline code only while Nord is selected, and it switches the active theme to Nord once on first enable; no network calls, file reads or shell commands."
+maintainer: Audiofool934
+tier: community
+category: desktop
+docs_url: https://github.com/Audiofool934/hermes-nord-theme#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/Audiofool934/hermes-nord-theme/d7cd1cd84e04b12a0e4cc242a2703a25c8447233/docs/dark.png
+screenshots:
+  - https://raw.githubusercontent.com/Audiofool934/hermes-nord-theme/d7cd1cd84e04b12a0e4cc242a2703a25c8447233/docs/dark.png
+  - https://raw.githubusercontent.com/Audiofool934/hermes-nord-theme/d7cd1cd84e04b12a0e4cc242a2703a25c8447233/docs/light.png
+  - https://raw.githubusercontent.com/Audiofool934/hermes-nord-theme/d7cd1cd84e04b12a0e4cc242a2703a25c8447233/docs/code-dark.png
+  - https://raw.githubusercontent.com/Audiofool934/hermes-nord-theme/d7cd1cd84e04b12a0e4cc242a2703a25c8447233/docs/code-light.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.22.4"

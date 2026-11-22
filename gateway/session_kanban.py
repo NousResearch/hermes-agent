@@ -1,5 +1,6 @@
 """Trusted dispatcher claims enter the ordinary owner's durable admission queue."""
 import asyncio
+import contextlib
 from contextlib import closing
 from dataclasses import asdict, replace
 import threading
@@ -7,22 +8,21 @@ import json
 from pathlib import Path
 import sqlite3
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 def build_kanban_policy(connection, params, config):
     from hermes_cli import kanban_db as kb
     from hermes_cli.profiles import resolve_profile_env
-    from gateway.session_policy import build_policy
     authority, actor = connection.authority, connection.actor
     if not connection.native_owner or 'session:create' not in actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     if actor.profile_id != authority.profile_id:
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
     if (set(params) not in ({'board', 'task_id', 'run_id', 'claim_lock'}, {'board', 'task_id', 'run_id', 'claim_lock', 'db'})
             or any(not isinstance(params[k], str) or not params[k] for k in ('board', 'task_id', 'claim_lock'))
             or type(params['run_id']) is not int):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     try:
         board = kb._require_slug(params['board'])
         path = Path(params['db']).resolve(strict=True) if 'db' in params else kb.kanban_db_path(board=board).resolve()
@@ -33,30 +33,23 @@ def build_kanban_policy(connection, params, config):
             if (task is None or run is None or task.status != 'running' or run['status'] != 'running'
                     or task.current_run_id != params['run_id'] or run['task_id'] != task.id
                     or task.claim_lock != params['claim_lock'] or run['claim_lock'] != task.claim_lock):
-                raise RuntimeStoreError('stale_kanban_claim')
+                raise AuthorityRefusal('stale_kanban_claim')
             if Path(resolve_profile_env(task.assignee)).resolve() != Path(authority.profile_id).resolve():
-                raise RuntimeStoreError('profile_mismatch')
+                raise AuthorityRefusal('profile_mismatch')
             bound = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='owner_admitted' ORDER BY id DESC LIMIT 1",
                                  (task.id, task.current_run_id)).fetchone()
             if bound and json.loads(bound[0])['request_id'] != 'kanban:' + json.dumps([board, task.id, task.current_run_id], separators=(',', ':')):
-                raise RuntimeStoreError('stale_kanban_claim')
+                raise AuthorityRefusal('stale_kanban_claim')
             context = kb.build_worker_context(conn, task.id)
             skills = list(task.skills or ())
             if kb._retry_status_for_run(conn, task.id, task.current_run_id) == 'review':
                 # Same rule as the dispatcher's review lane: the reviewer always loads sdlc-review.
                 skills = list(dict.fromkeys([*skills, 'sdlc-review']))
     except (ValueError, OSError, sqlite3.Error) as exc:
-        raise RuntimeStoreError('invalid_kanban_claim') from exc
+        raise AuthorityRefusal('invalid_kanban_claim') from exc
     cwd = task.workspace_path
-    params_policy = {'source': 'cli', 'cwd': cwd}
-    for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', task.reasoning_effort)):
-        if value:
-            params_policy[name] = value
     private = {}
-    policy = build_policy(params_policy, config, private_secrets=private)
-    if policy.model is None:
-        from gateway.run import _resolve_gateway_model
-        policy = replace(policy, model=_resolve_gateway_model(policy.config()))
+    policy = kanban_launch_policy(task, cwd, config, private)
     context = dict(params, workspace=cwd, branch=task.branch_name, tenant=task.tenant,
         profile=task.assignee, workspaces_root=str(kb.workspaces_root(board=board).resolve()),
         skills=skills, goal_mode=task.goal_mode, goal_max_turns=task.goal_max_turns,
@@ -69,31 +62,53 @@ def build_kanban_policy(connection, params, config):
                    request_json=json.dumps(request, sort_keys=True), kanban_json=json.dumps(context)), private
 
 
+def kanban_launch_policy(task, cwd, config, private=None):
+    """The launch policy a claimed card runs, its model resolved by ``task_model`` (shared with the
+    dispatcher's pre-spawn refusal). Refuses ``invalid_params`` (field ``model``) only when nothing
+    can name one, before a receipt or a worker exists."""
+    from gateway.session_policy import build_policy
+    from hermes_cli.kanban_worker_preflight import missing_model_detail, task_model
+    params = {'source': 'cli', 'cwd': cwd}
+    for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', task.reasoning_effort)):
+        if value:
+            params[name] = value
+    policy = build_policy(params, config, private_secrets={} if private is None else private)
+    if policy.model is None:
+        model, unresolved = task_model(task, config)
+        if unresolved:
+            from hermes_constants import get_hermes_home
+            raise AuthorityRefusal('invalid_params', field='model', detail=missing_model_detail(task.assignee, get_hermes_home()))
+        policy = replace(policy, model=model)
+    return policy
+
+
 async def run_task(connection, params):
     if not connection.native_owner or 'session:create' not in connection.actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     from gateway.run import _load_gateway_config
     from gateway.session_local import create_local_session
     from gateway.session_contract import Submission
-    from gateway.session_local_recovery import local_identity
-    from hermes_state_local import local_receipt
+    from persistence.authority.bindings import local_session_id
+    from gateway.session_persistence import authority_persistence
     from gateway.session_policy import restore_policy
+    from persistence_assembly import store_location
     authority = connection.authority
+    store = authority_persistence(authority)
     # Resolved off-loop up front: no await separates the saved-claim check from session
     # creation. The Kanban claim check and its marker share one off-loop transaction; a
     # concurrent retry of the same attempt meets that marker (same session) or a stale claim.
-    owner_db = str(await asyncio.to_thread(Path(authority.db.db_path).resolve))
+    owner_db = str(await asyncio.to_thread((store_location(store.scope) or store.scope.profile_dir).resolve))
     # The dispatcher attempt is the durable request identity, including after the
     # task closes. Retry checks the saved claim, never reinterprets updated cards.
     request_id = 'kanban:' + json.dumps([params.get('board'), params.get('task_id'), params.get('run_id')], separators=(',', ':'))
-    sid = local_identity(authority.profile_id, connection.actor.subject, request_id)
-    saved = local_receipt(authority.db, sid) if authority.db.get_session(sid) is not None else None
-    if saved:
-        policy = restore_policy(saved['policy'])
+    sid = local_session_id(authority.profile_id, connection.actor.subject, request_id)
+    saved = store.bindings.receipt(sid) if store.sessions.get(sid) is not None else None
+    if saved is not None:
+        policy = restore_policy(saved.policy)
         context = json.loads(policy.kanban_json or '{}')
         if (not connection.native_owner or set(params) not in ({'board', 'task_id', 'run_id', 'claim_lock'}, {'board', 'task_id', 'run_id', 'claim_lock', 'db'})
                 or any(params[k] != context.get(k) for k in params)):
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         from gateway.session_local_recovery import restore_local_session
         ref = restore_local_session(authority, sid)
     else:
@@ -104,6 +119,7 @@ async def run_task(connection, params):
     from hermes_cli import kanban_db as kb
     import os
     import psutil
+    from hermes_cli.process_identity import worker_birth
     context = json.loads(policy.kanban_json)
 
     def admit_claim():
@@ -117,20 +133,35 @@ async def run_task(connection, params):
                                   (params['task_id'], params['run_id'])).fetchone()
             if marker:
                 if json.loads(marker[0])['session_id'] != ref.session_id:
-                    raise RuntimeStoreError('stale_kanban_claim')
+                    raise AuthorityRefusal('stale_kanban_claim')
             else:
                 task = kb.get_task(conn, params['task_id'])
                 if not (task and task.status == 'running' and task.current_run_id == params['run_id'] and task.claim_lock == params['claim_lock']):
-                    raise RuntimeStoreError('stale_kanban_claim')
+                    raise AuthorityRefusal('stale_kanban_claim')
                 kb._append_event(conn, task.id, 'owner_admitted',
                     {'db': owner_db, 'session_id': ref.session_id,
-                     'request_id': request_id, 'pid': os.getpid(), 'birth': psutil.Process().create_time()},
+                     'request_id': request_id, 'pid': os.getpid(), 'birth': worker_birth(psutil.Process())},
                     run_id=task.current_run_id)
     from gateway.session_runtime_workers import tracked_write
     await tracked_write(authority, admit_claim)
     await connection.resume(ref, {})
-    receipt = await authority.submit(connection.actor, Submission(request_id, ref,
-        {'text': f'work kanban task {params["task_id"]}'}, 'queue'))
+    # Finite like the `chat -q` worker it replaced: nobody can answer an approval or clarify in a
+    # card (approvals.single_query_mode applies). Never unattended: that is `-z`'s auto-approval.
+    # A retry of an attempt admitted before cards were finite resubmits its committed payload,
+    # so the store returns the original receipt instead of admission_conflict.
+    committed = None if saved is None else await asyncio.to_thread(store.admissions.find,
+        principal_id=connection.actor.subject, session_id=ref.session_id, request_id=request_id)
+    payload: dict = {'text': f'work kanban task {params["task_id"]}'}
+    if committed is None or 'finite' in committed.payload:
+        payload['finite'] = True
+    # The dispatcher's trusted producer marker (#134889 KB-8): nobody waits on a card attempt, so one
+    # lost across an owner restart settles interrupted instead of pausing the card session. An
+    # attempt main committed without it resubmits unmarked (same digest, original receipt).
+    card = None
+    if committed is None or 'kanban_card_v1' in committed.payload:
+        card = {'board': context.get('board'), 'task_id': params['task_id'], 'run_id': params['run_id']}
+    receipt = await authority.submit(connection.actor, Submission(request_id, ref, payload, 'queue'),
+                                     _kanban_card=card)
     return {'session_id': ref.session_id, 'receipt': asdict(receipt)}
 
 
@@ -164,7 +195,7 @@ def bind_worker_context(frame):
             task = kb.get_task(conn, context['task_id'])
             if (task is None or task.status != 'running' or task.current_run_id != context['run_id']
                     or task.claim_lock != context['claim_lock']):
-                raise RuntimeStoreError('stale_kanban_claim')
+                raise AuthorityRefusal('stale_kanban_claim')
             # The dispatcher's spawned worker stays the run's pid (reclaim, timeout and operator
             # kills target it; ``_watch_submitter`` ties this interpreter's life to it). The bound
             # interpreter is recorded beside it so a sweep can tell when the attempt is truly gone.
@@ -217,19 +248,55 @@ def run_worker_turns(agent, frame, history):
         return _run_worker_turns(agent, frame, history)
 
 
+@contextlib.contextmanager
+def _worker_workspace(frame):
+    """A managed worker's chat turn in its session's workspace, as the in-process turn runner binds it
+    (#140665): the session id as the terminal task id, the route as the session key (persistent Docker
+    keys the workspace container from it) and the frozen cwd as the session's mount. Yields the task
+    id, or None for a frame with no session scope (nothing is bound then)."""
+    session_id = (frame.get('scope') or {}).get('session_id')
+    if not session_id:
+        yield None
+        return
+    from gateway.session_authorities import served_profile_name
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from gateway.session_policy import bind_turn_workspace, restore_policy
+    from session_keys import profile_from_session_key
+    policy = restore_policy(frame['policy'])
+    route = frame.get('route') or session_id
+    # The profile its in-process turns bind, so persistent Docker keys the container they and the
+    # session's side agents use (#140665): a served secondary's name, which its routes carry
+    # (``agent:<name>:``); none for the launch home, whatever its name (``hermes -p beta gateway``
+    # keys ``agent:main:``, and only the default profile runs the multiplexer).
+    profile = served_profile_name(frame.get('home'))
+    tokens = set_session_vars(session_key=route, session_id=session_id,
+                              profile=profile if profile_from_session_key(route) == profile else '')
+    try:
+        bind_turn_workspace(policy, session_id)
+        yield session_id
+    finally:
+        clear_session_vars(tokens)
+
+
 def _run_worker_turns(agent, frame, history):
     context = json.loads(frame['policy'].get('kanban_json') or 'null')
     if context is None:
         from gateway.session_display import worker_display_kwargs
         author = frame.get('turn_author')
-        return agent.run_conversation(frame['text'], conversation_history=history, **worker_display_kwargs(),
-                                      **({'turn_author': author} if author is not None else {}))
+        with _worker_workspace(frame) as task_id:
+            return agent.run_conversation(frame['text'], conversation_history=history, **worker_display_kwargs(),
+                                          **({'task_id': task_id} if task_id else {}),
+                                          **({'turn_author': author} if author is not None else {}))
     from hermes_cli.turn_exit import credential_failure_flags, turn_exit_code
     code, last_output = 1, ''
     try:
         result = _run_task_turns(agent, frame, history, context)
         code = turn_exit_code(result, kanban_worker=True)
-        last_output = str(result.get('final_response') or '')[-500:] if isinstance(result, dict) else ''
+        if isinstance(result, dict):
+            # Redact before the tail cut: a cut through a PEM header or a token prefix
+            # leaves a body the redactor no longer recognises.
+            from hermes_cli import kanban_db as kb
+            last_output = kb.redact_review_value(str(result.get('final_response') or ''))[-500:]
         return result
     except Exception as exc:
         code = turn_exit_code(None, kanban_worker=True, **credential_failure_flags(exc))
@@ -260,6 +327,33 @@ def _record_worker_result(context, code, last_output):
             kb._append_event(conn, context['task_id'], 'worker_result',
                 {'pid': os.getpid(), 'claim_lock': context['claim_lock'], 'exit_code': code,
                  'last_output': last_output}, run_id=context['run_id'])
+
+
+def record_worker_loss(policy, reason, *, pid=None, bound=False):
+    """Append a run-scoped ``worker_lost`` event for this attempt to the card's board.
+
+    Dropped when the card has moved past the run (it says nothing about the current attempt).
+    Never raises: the caller's own loss handling must not depend on the board write.
+    """
+    try:
+        context = json.loads(policy.kanban_json or 'null')
+        if not context:
+            return
+        from hermes_cli.kanban_db_connect import connect_closing
+        from hermes_cli import kanban_db as kb
+        run_id = int(context['run_id'])
+        with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
+            row = conn.execute('SELECT status, current_run_id FROM tasks WHERE id=?',
+                               (context['task_id'],)).fetchone()
+            if row is None or row[0] != 'running' or row[1] != run_id:
+                return
+            kb._append_event(conn, context['task_id'], 'worker_lost',
+                             {'reason': str(reason)[:200], 'claim_lock': context['claim_lock'],
+                              'run_id': run_id, 'pid': pid, 'bound': bool(bound)},
+                             run_id=run_id)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception('kanban worker_lost record failed')
 
 
 def _bound_worker_matches(conn, context):
@@ -298,19 +392,35 @@ def worker_exit_code(path, params):
     return worker_result(path, params).get('exit_code', 1)
 
 
+# Who wrote a card attempt's prompts: the dispatcher, never the operator, so memory providers do not
+# file "work kanban task t_..." and the worker's progress notes as the human's own turns (#137406).
+# Not a ``bot:<profile>`` id: a Bot Mode profile named ``kanban`` would share its memory key.
+KANBAN_TURN_AUTHOR = {'id': 'kanban:dispatcher', 'name': 'Kanban dispatcher', 'is_bot': True}
+
+
+def _stored_conversation(agent):
+    """The agent's stored conversation: read through its storage interface handle when it holds one on
+    its own store, else from its store (a managed worker's client store)."""
+    from agent.agent_init_session import agent_interface
+    store = agent_interface(agent)
+    if store is None:
+        return agent._session_db.get_messages_as_conversation(agent.session_id)
+    return [message.as_openai_message() for message in store.messages.read_conversation(agent.session_id)]
+
+
 def _run_task_turns(agent, frame, history, context):
     from agent.skill_commands import build_preloaded_skills_prompt
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
     if missing and not loaded:
         raise ValueError('kanban_skills_unavailable')
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
-    result = agent.run_conversation(prompt, conversation_history=history)
+    result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR)
 
     def recover(nudge):
         nonlocal result
         prior = result.get('messages') if isinstance(result, dict) else None
-        result = agent.run_conversation(nudge, conversation_history=prior or
-                                        agent._session_db.get_messages_as_conversation(agent.session_id))
+        result = agent.run_conversation(nudge, conversation_history=prior or _stored_conversation(agent),
+                                        turn_author=KANBAN_TURN_AUTHOR)
     # Same in-place retry as the one-shot CLI worker (agent/kanban_turn_recovery.py), but the
     # carrier is this frame's bound claim, never the owner process's environment.
     from agent.kanban_turn_recovery import recover_failed_kanban_turns
@@ -332,7 +442,8 @@ def _run_task_turns(agent, frame, history, context):
             kb.block_task(conn, context['task_id'], reason=reason, expected_run_id=context['run_id'])
     def turn(prompt):
         nonlocal result
-        result = agent.run_conversation(prompt, conversation_history=agent._session_db.get_messages_as_conversation(agent.session_id))
+        result = agent.run_conversation(prompt, conversation_history=_stored_conversation(agent),
+                                        turn_author=KANBAN_TURN_AUTHOR)
         return result.get('final_response', '')
     run_kanban_goal_loop(task_id=context['task_id'], goal_text=context['goal_text'], run_turn=turn,
         task_status_fn=status, block_fn=block, max_turns=context['goal_max_turns'] or DEFAULT_MAX_TURNS,

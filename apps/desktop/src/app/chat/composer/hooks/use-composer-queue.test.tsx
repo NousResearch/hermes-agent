@@ -16,7 +16,10 @@ import {
   simulateComposerQueueReloadForTests
 } from '@/store/composer-queue'
 import { $notifications, clearNotifications } from '@/store/notifications'
-import { $connection, setSessionsLoading } from '@/store/session'
+import { endReplyPause, markReplyPaused } from '@/store/paused-replies'
+import { reconcilePendingSubmissions } from '@/store/pending-submissions'
+import { $connection, $sessions, setSessionsLoading } from '@/store/session'
+import type { SessionInfo } from '@/types/hermes'
 
 import type { QueueEditState } from '../composer-utils'
 import type { ChatBarProps } from '../types'
@@ -31,8 +34,27 @@ import { useComposerQueue } from './use-composer-queue'
 
 const SESSION_KEY = 'stored-session-queue-hook'
 
+/** A reply the test settles by hand. */
+function deferred() {
+  let resolve!: (value: unknown) => void
+  let reject!: (reason: unknown) => void
+
+  const promise = new Promise<unknown>((onResolve, onReject) => {
+    resolve = onResolve
+    reject = onReject
+  })
+
+  return { promise, reject, resolve }
+}
+
 function renderQueueHook(
-  overrides: { busy?: boolean; draft?: string; onCancel?: () => void; onSteer?: ChatBarProps['onSteer'] } = {}
+  overrides: {
+    busy?: boolean
+    draft?: string
+    onCancel?: () => void
+    onSteer?: ChatBarProps['onSteer']
+    replaceServerQueued?: (admissionId: string, text: string, submissionId: string) => Promise<unknown>
+  } = {}
 ) {
   const onSubmit = vi.fn<ChatBarProps['onSubmit']>(async () => true)
   const onCancel = overrides.onCancel ?? vi.fn()
@@ -59,6 +81,7 @@ function renderQueueHook(
         onSubmit,
         queueEditRef,
         queueSessionKey: SESSION_KEY,
+        replaceServerQueued: overrides.replaceServerQueued,
         sessionId: 'rt-session-queue-hook'
       }),
     { initialProps: { busy: overrides.busy ?? false } }
@@ -226,6 +249,205 @@ describe('useComposerQueue park integration', () => {
 
     expect(onSubmit).not.toHaveBeenCalled()
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+  })
+
+  it('holds the queue while the reply is paused for an automatic continuation, then drains it', async () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'after the continuation' })
+    markReplyPaused(SESSION_KEY)
+
+    try {
+      const { onSubmit } = renderQueueHook()
+
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(onSubmit).not.toHaveBeenCalled()
+
+      act(() => endReplyPause(SESSION_KEY))
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    } finally {
+      endReplyPause(SESSION_KEY)
+    }
+  })
+
+  // The composer's key is the chat's lineage root; a compressed chat's pause is marked under the id its
+  // runtime shows (the compression tip).
+  it('holds a compressed chat\'s queue while its reply is paused under its tip id', async () => {
+    $sessions.set([{ _lineage_root_id: SESSION_KEY, id: 'compression-tip' } as SessionInfo])
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'after the continuation' })
+    markReplyPaused('compression-tip')
+
+    try {
+      const { onSubmit } = renderQueueHook()
+
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(onSubmit).not.toHaveBeenCalled()
+
+      act(() => endReplyPause('compression-tip'))
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    } finally {
+      endReplyPause('compression-tip')
+      $sessions.set([])
+    }
+  })
+
+  // A gateway-owned queue would admit the send into the owner's FIFO at once and
+  // draw it in the thread as the next turn's prompt: a visible row between the
+  // paused reply and its continuation, so the reply read "Response stopped".
+  it('keeps a send made while the reply is paused in the local queue, then sends it after the pause', async () => {
+    $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as HermesConnection)
+    markReplyPaused(SESSION_KEY)
+
+    try {
+      const { draftRef, hook, onSubmit } = renderQueueHook({ draft: 'after the continuation' })
+
+      await act(async () => {
+        await hook.result.current.queueCurrentDraft()
+      })
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(getQueuedPrompts(SESSION_KEY).map(entry => [entry.text, entry.serverStatus])).toEqual([
+        ['after the continuation', undefined]
+      ])
+      expect(draftRef.current).toBe('')
+
+      act(() => endReplyPause(SESSION_KEY))
+
+      await waitFor(() =>
+        expect(onSubmit).toHaveBeenCalledWith(
+          'after the continuation',
+          expect.objectContaining({ fromQueue: true, storedSessionId: SESSION_KEY })
+        )
+      )
+    } finally {
+      endReplyPause(SESSION_KEY)
+      $connection.set(null)
+    }
+  })
+
+  it('does not deliver a held message into the running continuation on a second Enter', async () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'after the continuation' })
+    markReplyPaused(SESSION_KEY)
+    const onSteer = vi.fn(async () => true)
+    const onCancel = vi.fn()
+
+    try {
+      const { hook, onSubmit } = renderQueueHook({ busy: true, onCancel, onSteer })
+      const [head] = getQueuedPrompts(SESSION_KEY)
+
+      await act(async () => {
+        await hook.result.current.deliverQueuedNow(head.id)
+        await hook.result.current.drainNextQueued()
+      })
+
+      expect(onSteer).not.toHaveBeenCalled()
+      expect(onCancel).not.toHaveBeenCalled()
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+    } finally {
+      endReplyPause(SESSION_KEY)
+    }
+  })
+
+  // The queue panel's row buttons call sendQueuedNow / steerQueuedNow themselves (queue-slot.tsx).
+  it.each([
+    ['while the reply waits for its continuation', false],
+    ['while the continuation runs', true]
+  ])("holds a queued row against the panel's send and steer buttons %s", async (_phase, busy) => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'after the continuation' })
+    markReplyPaused(SESSION_KEY)
+    const onSteer = vi.fn(async () => true)
+    const onCancel = vi.fn()
+
+    try {
+      const { hook, onSubmit } = renderQueueHook({ busy, onCancel, onSteer })
+      const [head] = getQueuedPrompts(SESSION_KEY)
+
+      await act(async () => {
+        expect(await hook.result.current.sendQueuedNow(head.id)).toBe(false)
+        expect(await hook.result.current.steerQueuedNow(head.id)).toBe(false)
+      })
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(onCancel).not.toHaveBeenCalled()
+      expect(onSteer).not.toHaveBeenCalled()
+      expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+
+      // Once the pause is over the queue drains by itself.
+      act(() => endReplyPause(SESSION_KEY))
+      hook.rerender({ busy: false })
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+      expect(onCancel).not.toHaveBeenCalled()
+    } finally {
+      endReplyPause(SESSION_KEY)
+    }
+  })
+
+  // The actions ask the store as they run: the panel can still hold the pair it was handed before the reply paused.
+  it('holds a queued row against send and steer actions handed out before the reply paused', async () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'after the continuation' })
+    const onSteer = vi.fn(async () => true)
+    const onCancel = vi.fn()
+
+    try {
+      const { hook, onSubmit } = renderQueueHook({ busy: true, onCancel, onSteer })
+      const [head] = getQueuedPrompts(SESSION_KEY)
+      const { sendQueuedNow, steerQueuedNow } = hook.result.current
+
+      act(() => markReplyPaused(SESSION_KEY))
+
+      await act(async () => {
+        expect(await sendQueuedNow(head.id)).toBe(false)
+        expect(await steerQueuedNow(head.id)).toBe(false)
+      })
+
+      expect(onCancel).not.toHaveBeenCalled()
+      expect(onSteer).not.toHaveBeenCalled()
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+    } finally {
+      endReplyPause(SESSION_KEY)
+    }
+  })
+
+  // A second Enter falls back to send-now's interrupt when its steer is refused. The reply can pause while that
+  // steer is still being answered, and the interrupt would then stop the continuation.
+  it('does not interrupt the continuation when a steer asked before the pause is refused', async () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'after the continuation' })!
+
+    let answer: (accepted: boolean) => void = () => {}
+
+    const onSteer = vi.fn(() => new Promise<boolean>(resolve => (answer = resolve)))
+    const onCancel = vi.fn()
+
+    try {
+      const { hook, onSubmit } = renderQueueHook({ busy: true, onCancel, onSteer })
+
+      let delivered: Promise<unknown> = Promise.resolve()
+
+      await act(async () => {
+        delivered = hook.result.current.deliverQueuedNow(entry.id)
+        await Promise.resolve()
+      })
+      expect(onSteer).toHaveBeenCalledTimes(1)
+
+      act(() => markReplyPaused(SESSION_KEY))
+
+      await act(async () => {
+        answer(false)
+        expect(await delivered).toBe(false)
+      })
+
+      expect(onCancel).not.toHaveBeenCalled()
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(getQueuedPrompts(SESSION_KEY).map(queued => queued.id)).toEqual([entry.id])
+    } finally {
+      endReplyPause(SESSION_KEY)
+    }
   })
 
   it('drainNextQueued sends a parked entry and lifts the park (manual resume)', async () => {
@@ -494,5 +716,234 @@ describe('useComposerQueue park integration', () => {
     expect(onSubmit).not.toHaveBeenCalled()
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
     expect($notifications.get().some(n => n.message.includes('Re-select the lines'))).toBe(true)
+  })
+})
+
+describe('useComposerQueue scope', () => {
+  afterEach(() => {
+    cleanup()
+    window.localStorage.clear()
+    $queuedPromptsBySession.set({})
+  })
+
+  it('leaving a session for a new chat does not move its queue there (#139190)', () => {
+    enqueueQueuedPrompt('session-a', { attachments: [], text: 'for A' })
+
+    type Scope = { activeQueueSessionKey: string; queueSessionKey: null | string; sessionId: null | string }
+
+    const hook = renderHook(
+      (scope: Scope) =>
+        useComposerQueue({
+          ...scope,
+          attachments: [],
+          busy: true,
+          clearDraft: () => undefined,
+          draftRef: { current: '' },
+          focusInput: () => undefined,
+          loadIntoComposer: () => undefined,
+          onCancel: vi.fn(),
+          onSteer: undefined,
+          onSubmit: vi.fn(async () => true),
+          queueEditRef: { current: null }
+        }),
+      { initialProps: { activeQueueSessionKey: 'session-a', queueSessionKey: 'session-a', sessionId: 'session-a' } as Scope }
+    )
+
+    expect(hook.result.current.queuedPrompts.map(entry => entry.text)).toEqual(['for A'])
+    hook.rerender({ activeQueueSessionKey: '__new__:fresh', queueSessionKey: null, sessionId: null })
+
+    expect(hook.result.current.queuedPrompts).toEqual([])
+    expect(getQueuedPrompts('session-a').map(entry => entry.text)).toEqual(['for A'])
+  })
+
+  // RT-35: a server-queued row is an admission in the owner's FIFO. Saving its edit asks the owner
+  // to replace it; the owner's pending fanout then repaints the card (no client-side edit).
+  it('saving an edit of a server-queued row replaces its admission at the owner', async () => {
+    reconcilePendingSubmissions(SESSION_KEY, [
+      { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
+    ])
+    const replaceServerQueued = vi.fn(async () => ({}))
+    const { draftRef, hook } = renderQueueHook({ busy: true, draft: 'my draft', replaceServerQueued })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    expect(draftRef.current).toBe('old words')
+    draftRef.current = 'new words'
+    act(() => {
+      expect(hook.result.current.exitQueuedEdit('save')).toBe(true)
+    })
+
+    expect(replaceServerQueued).toHaveBeenCalledWith('adm-1', 'new words', expect.any(String))
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['old words'])
+    // The pre-edit draft comes back once the owner accepted the replacement.
+    await waitFor(() => expect(draftRef.current).toBe('my draft'))
+    expect(hook.result.current.queueEdit).toBeNull()
+  })
+
+  it('a refused replacement keeps the edited text as an unsent draft and says why', async () => {
+    reconcilePendingSubmissions(SESSION_KEY, [
+      { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
+    ])
+    clearNotifications()
+
+    const replaceServerQueued = vi.fn(async () => {
+      throw Object.assign(new Error('admission_started'), { data: { reason: 'admission_started' } })
+    })
+
+    const { draftRef, hook } = renderQueueHook({ busy: true, draft: 'my draft', replaceServerQueued })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    draftRef.current = 'new words'
+    act(() => {
+      expect(hook.result.current.exitQueuedEdit('save')).toBe(true)
+    })
+
+    await waitFor(() => expect(hook.result.current.queueEdit).toBeNull())
+    // Nothing typed is lost: the edit, then the draft it interrupted.
+    expect(draftRef.current).toBe('new words\n\nmy draft')
+    expect($notifications.get().some(n => n.kind === 'warning')).toBe(true)
+  })
+
+  // Review: the composer stays editable while the owner answers a Save. That answer settles only the
+  // save it belongs to and never overwrites text typed since.
+  it.each([
+    ['accepted', true],
+    ['refused', false]
+  ])('a %s Save reply keeps the text typed after Save', async (_label, accepted) => {
+    reconcilePendingSubmissions(SESSION_KEY, [
+      { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
+    ])
+    const reply = deferred()
+    const { draftRef, hook } = renderQueueHook({ busy: true, draft: 'my draft', replaceServerQueued: () => reply.promise })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    draftRef.current = 'new words'
+    act(() => {
+      hook.result.current.exitQueuedEdit('save')
+    })
+    draftRef.current = 'typed after save'
+    await act(async () => (accepted ? reply.resolve({}) : reply.reject({ data: { reason: 'admission_started' } })))
+
+    expect(hook.result.current.queueEdit).toBeNull()
+    expect(draftRef.current).toBe('typed after save\n\nmy draft')
+  })
+
+  // Review: a reply lost in transport leaves the outcome unknown (the owner may have committed the
+  // replacement). The edit stays open under the same identity, so Save retries prompt.replace_queued
+  // with it (the owner replays a committed one) instead of turning the text into a fresh send.
+  it('an unconfirmed Save keeps the edit open and retries under the same identity', async () => {
+    reconcilePendingSubmissions(SESSION_KEY, [
+      { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
+    ])
+    clearNotifications()
+    const replies = [deferred(), deferred(), deferred()]
+    const replaceServerQueued = vi.fn((_admissionId: string, _text: string, _submissionId: string) =>
+      replies[replaceServerQueued.mock.calls.length - 1]!.promise)
+    const { draftRef, hook } = renderQueueHook({ busy: true, draft: 'my draft', replaceServerQueued })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    draftRef.current = 'new words'
+    act(() => {
+      hook.result.current.exitQueuedEdit('save')
+    })
+    await act(async () => replies[0]!.reject(new Error('Hermes gateway is not connected')))
+
+    expect(hook.result.current.queueEdit?.entryId).toBe('adm-1')
+    expect(draftRef.current).toBe('new words')
+    expect($notifications.get().some(n => n.kind === 'warning')).toBe(true)
+
+    // The replacement committed: the owner's snapshot lists it, and the old row is gone. The edit
+    // stays open (no plain draft a later Enter would send again).
+    act(() =>
+      reconcilePendingSubmissions(SESSION_KEY, [{ admission_id: 'adm-2', status: 'queued', user: 'new words' }])
+    )
+    expect(hook.result.current.queueEdit?.entryId).toBe('adm-1')
+
+    act(() => {
+      expect(hook.result.current.exitQueuedEdit('save')).toBe(true)
+    })
+    const [first, second] = replaceServerQueued.mock.calls
+    expect(second).toEqual(['adm-1', 'new words', first![2]])
+    await act(async () => replies[1]!.resolve({ admission_id: 'adm-2' }))
+
+    expect(hook.result.current.queueEdit).toBeNull()
+    expect(draftRef.current).toBe('my draft')
+  })
+
+  it('a changed edit after an unconfirmed Save is a new identity', async () => {
+    reconcilePendingSubmissions(SESSION_KEY, [
+      { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
+    ])
+    const replaceServerQueued = vi.fn(async (_admissionId: string, _text: string, _submissionId: string) => {
+      throw new Error('socket closed')
+    })
+    const { draftRef, hook } = renderQueueHook({ busy: true, replaceServerQueued })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    draftRef.current = 'new words'
+    await act(async () => {
+      hook.result.current.exitQueuedEdit('save')
+    })
+    draftRef.current = 'other words'
+    await act(async () => {
+      hook.result.current.exitQueuedEdit('save')
+    })
+
+    expect(replaceServerQueued).toHaveBeenCalledTimes(2)
+    const [first, second] = replaceServerQueued.mock.calls
+    expect(second![1]).toBe('other words')
+    expect(second![2]).not.toBe(first![2])
+  })
+
+  it('a Save reply for an edit that was cancelled and reopened leaves the reopened edit alone', async () => {
+    reconcilePendingSubmissions(SESSION_KEY, [
+      { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
+    ])
+    const reply = deferred()
+    const { draftRef, hook } = renderQueueHook({ busy: true, draft: 'my draft', replaceServerQueued: () => reply.promise })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    draftRef.current = 'new words'
+    act(() => {
+      hook.result.current.exitQueuedEdit('save')
+    })
+    act(() => {
+      hook.result.current.exitQueuedEdit('cancel')
+    })
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    draftRef.current = 'reopened edit'
+    await act(async () => reply.resolve({}))
+
+    expect(hook.result.current.queueEdit?.entryId).toBe('adm-1')
+    expect(draftRef.current).toBe('reopened edit')
+  })
+
+  it('a started-row snapshot arriving mid-edit keeps the edit as a draft', () => {
+    reconcilePendingSubmissions(SESSION_KEY, [
+      { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
+    ])
+    clearNotifications()
+    const replaceServerQueued = vi.fn(async () => ({}))
+    const { draftRef, hook } = renderQueueHook({ busy: true, replaceServerQueued })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    draftRef.current = 'half-typed edit'
+    // The owner claimed the row: the next pending snapshot carries it as started.
+    act(() =>
+      reconcilePendingSubmissions(SESSION_KEY, [{ admission_id: 'adm-1', status: 'started', user: 'old words' }])
+    )
+
+    expect(hook.result.current.queueEdit).toBeNull()
+    expect(draftRef.current).toBe('half-typed edit')
+    expect(replaceServerQueued).not.toHaveBeenCalled()
+    expect($notifications.get().some(n => n.kind === 'warning')).toBe(true)
+  })
+
+  it('a server-queued row whose owner serves no replace stays read-only', () => {
+    reconcilePendingSubmissions(SESSION_KEY, [{ admission_id: 'adm-1', status: 'queued', user: 'old words' }])
+    const { hook } = renderQueueHook({ busy: true, replaceServerQueued: vi.fn(async () => ({})) })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+
+    expect(hook.result.current.queueEdit).toBeNull()
   })
 })

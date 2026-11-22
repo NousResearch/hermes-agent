@@ -64,6 +64,7 @@ class TestResolutionOrder:
     
     def test_source_profile_wins_over_routing(self, mock_runner, discord_source):
         """source.profile should be used even if routing would match."""
+        mock_runner.config.multiplex_profiles = False  # single-profile gateway: launch-home fallback
         discord_source.profile = "from-source"
         
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="active"):
@@ -84,6 +85,7 @@ class TestMissingProfileWarning:
     
     def test_nonexistent_profile_warning(self, mock_runner, discord_source, caplog):
         """When source.profile points to a nonexistent profile, log a WARNING."""
+        mock_runner.config.multiplex_profiles = False  # single-profile gateway: launch-home fallback
         discord_source.profile = "nonexistent"
         
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="active"):
@@ -113,6 +115,7 @@ class TestExceptionHandling:
     
     def test_get_profile_dir_exception_logs_warning(self, mock_runner, discord_source, caplog):
         """When get_profile_dir raises an exception, log a WARNING with context."""
+        mock_runner.config.multiplex_profiles = False  # single-profile gateway: launch-home fallback
         discord_source.profile = "bad-profile"
         
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="active"):
@@ -243,10 +246,13 @@ class TestGatewayRunnerInjection:
 
     @pytest.mark.asyncio
     async def test_real_signal_factory_routes_inbound_group_event(self, monkeypatch):
-        """A factory-built (built-in) Signal adapter resolves profile_routes
-        for a real inbound envelope — fails on main where the Signal branch
-        returned a bare ``SignalAdapter(config)`` with no runner."""
+        """A factory-built Signal adapter (bundled plugin, via the registry) resolves
+        profile_routes for a real inbound envelope — the original bug was a bare
+        ``SignalAdapter(config)`` with no runner."""
         from gateway.config import PlatformConfig
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()  # the gateway does this at startup; Signal is a plugin platform now
 
         group_id = "test-signal-route"
         monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", group_id)

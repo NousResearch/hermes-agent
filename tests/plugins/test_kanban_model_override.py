@@ -132,10 +132,10 @@ def test_spawn_resolves_claimed_task_policy(
     expected_model, expected_provider, expected_reasoning,
 ):
     """The worker passes identity, while the owner reads overrides from SQLite."""
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_kanban import build_kanban_policy
     from hermes_cli import kanban_worker_client
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     profile = kanban_home / "profiles" / "elias"
     profile.mkdir(parents=True)
@@ -157,7 +157,7 @@ def test_spawn_resolves_claimed_task_policy(
     kbd._default_spawn(task, str(workspace))
     assert captured["cmd"] == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
     assert captured["env"]["HERMES_HOME"] == str(profile)
-    actor = Principal("owner", str(profile), frozenset({"session:create"}), "transport")
+    actor = SessionActor("owner", str(profile), frozenset({"session:create"}), "transport")
     connection = SimpleNamespace(
         authority=SimpleNamespace(profile_id=str(profile)), actor=actor, native_owner=True)
     config = {"model": {"default": "profile-model", "provider": "custom"},
@@ -179,9 +179,9 @@ def test_spawn_resolves_claimed_task_policy(
         assert (context["task_id"], context["run_id"], context["claim_lock"]) == (
             task.id, task.current_run_id, task.claim_lock)
         # A worker cannot replace trusted settings or reuse another claim.
-        with pytest.raises(RuntimeStoreError, match="invalid_params"):
+        with pytest.raises(AuthorityRefusal, match="invalid_params"):
             build_kanban_policy(connection, params | {"model": "forged"}, config)
-        with pytest.raises(RuntimeStoreError, match="invalid_kanban_claim"):
+        with pytest.raises(AuthorityRefusal, match="invalid_kanban_claim"):
             build_kanban_policy(connection, params | {"claim_lock": "forged"}, config)
         assert json.dumps(config, sort_keys=True) == original_config
         captured["resolved"] = True

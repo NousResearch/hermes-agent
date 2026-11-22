@@ -6,9 +6,9 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
-from gateway.session_authority import SessionAuthority, initialize_session_authority
-from gateway.session_contract import Principal
-from hermes_state_runtime import RuntimeStoreError, get_session_admission, list_session_admissions
+from gateway.session_authority import SessionAuthority, admission_row, initialize_session_authority
+from gateway.session_contract import SessionActor
+from persistence.core.errors import AuthorityRefusal
 
 
 async def _authority(tmp_path, monkeypatch):
@@ -16,12 +16,7 @@ async def _authority(tmp_path, monkeypatch):
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
     monkeypatch.setattr('gateway.session_bot._watch_reply', lambda *args: None)
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
-    from hermes_state import SessionDB
-    db = SessionDB(tmp_path / 'state.db')
-    runner.session_store._db = db
-    runner._session_db = db
-    authority = await initialize_session_authority(runner, profile_id='default', instance_id='category-fixture',
-                                                  db=db)
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='category-fixture')
     return runner, authority
 
 
@@ -43,7 +38,7 @@ async def test_bot_category_is_committed_restored_and_part_of_retry_identity(tmp
     from gateway.session_local_title import title_new_session
     from gateway.session_automation import restore_local_automation
     _runner, authority = await _authority(tmp_path, monkeypatch)
-    actor = Principal('test-owner', 'default', frozenset({'session:create', 'session:submit', 'session:read'}), 'fixture')
+    actor = SessionActor('test-owner', 'default', frozenset({'session:create', 'session:submit', 'session:read'}), 'fixture')
     try:
         ref = create_local_session(authority, actor, dict(request_id='bot', source='gui', model='fixture', toolsets=[]))
         title_new_session(authority, ref, 'Bot Chat')
@@ -61,7 +56,7 @@ async def test_bot_category_is_committed_restored_and_part_of_retry_identity(tmp
         repeated = dict(id=replay['delivery_id'], profile='default', message=replay['message'],
                         notification_category=replay.get('notification_category', 'result'))
         assert (await deliver(connection, repeated))['admission_id'] == first['admission_id']
-        row = get_session_admission(authority.db, admission_id=first['admission_id'])
+        row = admission_row(authority.persistence.admissions.get(admission_id=first['admission_id']))
         assert row is not None
         descriptor = row['payload']['local_automation_v1']
         restored = restore_local_automation(authority, ref, row)
@@ -73,11 +68,11 @@ async def test_bot_category_is_committed_restored_and_part_of_retry_identity(tmp
             assert 'notification_category' not in restored.metadata
             # Omitted default retains the old request fingerprint.
             assert (await deliver(connection, {k: v for k, v in params.items() if k != 'notification_category'}))['admission_id'] == first['admission_id']
-        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        with pytest.raises(AuthorityRefusal, match='admission_conflict'):
             await deliver(connection, {**params, 'notification_category': 'result' if category == 'diagnostic' else 'diagnostic'})
-        assert len(list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)) == 1
+        assert len(authority.persistence.admissions.list(session_id=ref.session_id, pending_only=False)) == 1
     finally:
-        authority.db.close()
+        authority.runner.session_store.close_all_db_handles()
 
 
 @pytest.mark.asyncio
@@ -85,14 +80,14 @@ async def test_bot_category_is_committed_restored_and_part_of_retry_identity(tmp
 async def test_bot_invalid_category_refuses_before_admission(tmp_path, monkeypatch, category):
     from gateway.session_bot import deliver
     _runner, authority = await _authority(tmp_path, monkeypatch)
-    actor = Principal('test-owner', 'default', frozenset({'session:submit'}), 'fixture')
+    actor = SessionActor('test-owner', 'default', frozenset({'session:submit'}), 'fixture')
     try:
-        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        with pytest.raises(AuthorityRefusal, match='invalid_params'):
             await deliver(SimpleNamespace(authority=authority, actor=actor),
                           dict(id='a' * 32, profile='default', message='notice', notification_category=category))
-        assert authority.db.get_session_by_title('Bot Chat') is None
+        assert authority.persistence.sessions.get_by_title('Bot Chat') is None
     finally:
-        authority.db.close()
+        authority.runner.session_store.close_all_db_handles()
 
 
 @pytest.mark.asyncio
@@ -109,7 +104,7 @@ async def test_display_kind_is_a_closed_producer_set(tmp_path, monkeypatch):
     for bad in ({'display_kind': 'hidden', 'display_text': 'x'}, {'display_kind': 'process_complete'},
                 {'display_text': 'x'}, {'display_kind': 'process_complete', 'display_text': ''},
                 {'display_kind': 'process_complete', 'display_text': 'x' * 2001}):
-        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        with pytest.raises(AuthorityRefusal, match='invalid_params'):
             automation_display_metadata(bad)
 
 
@@ -137,7 +132,7 @@ async def test_native_automation_category_roundtrip(tmp_path, monkeypatch, categ
                       'notification_origin': 'process_registry_synthetic',
                       'original_trigger_message_id': 'producer-context'})
         receipt = await authority.admit_automation(adapter, event, 'notice')
-        row = get_session_admission(authority.db, admission_id=receipt.admission_id)
+        row = admission_row(authority.persistence.admissions.get(admission_id=receipt.admission_id))
         assert row is not None
         descriptor = row['payload']['native_text_v1']['automation']
         restored = restore_native(row['payload'], runner)
@@ -151,4 +146,101 @@ async def test_native_automation_category_roundtrip(tmp_path, monkeypatch, categ
             event.metadata.pop('notification_category')
             assert (await authority.admit_automation(adapter, event, 'notice')).admission_id == receipt.admission_id
     finally:
-        authority.db.close()
+        authority.runner.session_store.close_all_db_handles()
+
+
+_SOURCE = dict(chat_id='42', chat_type='dm', user_id='42', user_name='human')
+
+
+async def _native_owner(tmp_path, monkeypatch, human_message_id, fields=_SOURCE, **config):
+    from gateway.session_ingress_context import native_callback, register_transport_home
+    from plugins.platforms.discord.adapter import DiscordAdapter
+    runner, authority = await _authority(tmp_path, monkeypatch)
+    vars(runner.session_store.config).update(config)
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token='***', typing_indicator=False))
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner._wire_adapter_handlers(adapter)
+    register_transport_home(runner, None, tmp_path)
+    monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
+    source = adapter.build_source(**fields)
+    # The committed human turn keeps its platform reply anchor on the source.
+    human = MessageEvent(text='human', source=adapter.build_source(**fields, message_id=human_message_id),
+                         message_id=human_message_id)
+    with native_callback(runner, human, tmp_path):
+        await authority.admit_native(human)
+    route = runner.session_store._generate_session_key(source)
+    metadata = {'gateway_session_key': route, 'gateway_session_id': runner.session_store.peek_session_id(route)}
+    return runner, authority, adapter, source, metadata
+
+
+@pytest.mark.asyncio
+async def test_native_completion_wake_admits_when_source_differs_only_by_message_id(tmp_path, monkeypatch):
+    """A synthetic wake clears ``message_id`` (#52694/#123097) while the committed human
+    envelope keeps it; the admission must still match the route and drop the stale anchor."""
+    from gateway.session_envelope import restore_native
+    runner, authority, adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        assert source.message_id is None
+        event = MessageEvent(text='notice', source=source, internal=True, metadata=dict(metadata))
+        receipt = await authority.admit_automation(adapter, event, 'notice')
+        row = admission_row(authority.persistence.admissions.get(admission_id=receipt.admission_id))
+        assert row is not None
+        envelope = row['payload']['native_text_v1']
+        assert 'message_id' not in envelope['source']
+        assert restore_native(row['payload'], runner).source.message_id is None
+        assert (await authority.admit_automation(adapter, event, 'notice')).admission_id == receipt.admission_id
+        owner = authority.logical_owner(metadata['gateway_session_id'])
+        automation = [r for r in authority.persistence.admissions.list(session_id=owner, pending_only=False)
+                      if (r.payload.get('native_text_v1') or {}).get('automation')]
+        assert len(automation) == 1
+    finally:
+        authority.runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_native_completion_wake_refuses_another_route(tmp_path, monkeypatch):
+    _runner, authority, adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        drifted = adapter.build_source(**_SOURCE, thread_id='7')
+        event = MessageEvent(text='notice', source=drifted, internal=True, metadata=dict(metadata))
+        with pytest.raises(AuthorityRefusal, match='admission_conflict'):
+            await authority.admit_automation(adapter, event, 'notice')
+    finally:
+        authority.runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_native_completion_wake_refuses_another_adapter(tmp_path, monkeypatch):
+    from plugins.platforms.discord.adapter import DiscordAdapter
+    _runner, authority, _adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        stranger = DiscordAdapter(PlatformConfig(enabled=True, token='***', typing_indicator=False))
+        event = MessageEvent(text='notice', source=source, internal=True, metadata=dict(metadata))
+        with pytest.raises(AuthorityRefusal, match='admission_conflict'):
+            await authority.admit_automation(stranger, event, 'notice')
+    finally:
+        authority.runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_refused_watch_wake_logs_the_refusal_code(tmp_path, monkeypatch, caplog):
+    """A refused wake used to requeue silently; the refusal code is what diagnoses it (#138940)."""
+    import logging
+    from gateway.session_identity import replace_source
+    from gateway.wake import WakeNotAccepted
+    runner, authority, _adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human')
+    try:
+        route = metadata['gateway_session_key']
+        # Point the routing entry at another thread: the wake's source no longer names its route.
+        runner.session_store._entries[route].origin = replace_source(source, thread_id='7')
+        evt = {'type': 'completion', 'session_id': 'proc_x', 'session_key': route, 'platform': 'discord',
+               'chat_id': '42', 'chat_type': 'dm', 'exit_code': 0, 'output': 'done', 'started_at': 1.0,
+               'parent_session_id': metadata['gateway_session_id']}
+        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+            with pytest.raises(WakeNotAccepted):
+                await runner._inject_watch_notification('[done]', evt, raise_not_accepted=True)
+        assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
+                and 'not admitted' in r.getMessage()] == [
+            'Watch notification not admitted for discord chat=42: admission_conflict']
+    finally:
+        authority.runner.session_store.close_all_db_handles()

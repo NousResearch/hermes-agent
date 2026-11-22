@@ -11,6 +11,9 @@ class TestResizeObserver {
 
   observe(target: Element) {
     Object.defineProperty(target, 'scrollHeight', { configurable: true, value: 400 })
+    Object.defineProperty(target, 'clientWidth', { configurable: true, value: 200 })
+    Object.defineProperty(target, 'scrollWidth', { configurable: true, value: 400 })
+    Object.defineProperty(target, 'scrollLeft', { configurable: true, writable: true, value: 0 })
     this.callback([{ target } as ResizeObserverEntry], this as unknown as ResizeObserver)
   }
 
@@ -21,6 +24,7 @@ class TestResizeObserver {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  delete window.document.documentElement.dataset.hermesDesktopHost
 })
 
 describe('ExpandableBlock', () => {
@@ -39,5 +43,50 @@ describe('ExpandableBlock', () => {
     fireEvent.click(toggle)
 
     expect(screen.getByRole('button', { name: 'Collapse' }).getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('shows a non-blocking horizontal cue until a wide block reaches its end', () => {
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    vi.stubGlobal('ResizeObserver', TestResizeObserver)
+
+    render(
+      <ExpandableBlock>
+        <pre data-testid="content">{'wide line\n'.repeat(2)}</pre>
+      </ExpandableBlock>
+    )
+
+    const scroller = screen.getByTestId('content').parentElement!
+
+    expect(scroller.getAttribute('data-horizontal-overflow')).toBe('')
+    expect(
+      screen
+        .getByTestId('content')
+        .parentElement?.parentElement?.querySelector('[data-slot="expandable-horizontal-fade"]')
+    ).not.toBeNull()
+
+    scroller.scrollLeft = 200
+    fireEvent.scroll(scroller)
+
+    expect(
+      screen
+        .getByTestId('content')
+        .parentElement?.parentElement?.querySelector('[data-slot="expandable-horizontal-fade"]')
+    ).toBeNull()
+  })
+
+  // Native Desktop draws no sideways cue on a wide block, as on main.
+  it('draws no horizontal cue on a wide block in native Desktop', () => {
+    vi.stubGlobal('ResizeObserver', TestResizeObserver)
+
+    render(
+      <ExpandableBlock>
+        <pre data-testid="content">{'wide line\n'.repeat(2)}</pre>
+      </ExpandableBlock>
+    )
+
+    const block = screen.getByTestId('content').parentElement!
+
+    expect(block.hasAttribute('data-horizontal-overflow')).toBe(false)
+    expect(block.parentElement?.querySelector('[data-slot="expandable-horizontal-fade"]')).toBeNull()
   })
 })

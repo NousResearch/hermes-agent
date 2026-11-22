@@ -26,7 +26,7 @@ def _gateway_frames():
         # _admitted -> _publish_pending: the queued row (its public input text) before any claim.
         {"jsonrpc": "2.0", "method": "event", "params": {
             "type": "session.info", "session_id": SID, "payload": {
-                "running": False, "pending": [{"admission_id": "adm-9", "input_id": "x", "text": MODEL_TEXT}]}}},
+                "running": False, "pending": [{"admission_id": "adm-9", "status": "queued", "input_id": "x", "text": MODEL_TEXT}]}}},
         frame("message.start", {"display_kind": "process_complete", "display_text": DISPLAY, "text": MODEL_TEXT},
               generation=9, admission="adm-9"),
         frame("message.delta", {"text": "STEP13 notified "}, generation=9, admission="adm-9"),
@@ -180,3 +180,85 @@ def test_claim_stamp_carries_the_automation_card_on_message_start():
     assert admission_display(diagnostic)["notification_category"] == "diagnostic"
     assert admission_display({"text": "typed by the user"}) == {}
     assert admission_display({"text": "x", "local_automation_v1": {"identity": "i"}}) == {}
+
+
+def _delegation_completion(goal):
+    return {"type": "async_delegation", "delegation_id": "deleg_1", "parent_session_id": SID,
+            "goals": [goal], "results": [{"task_index": 0, "status": "completed", "summary": "Two nits.",
+                                           "api_calls": 3, "duration_seconds": 12}]}
+
+
+def _claim_card(evt, text):
+    """The ``message.start`` card the gateway publishes for this LOCAL completion's admission: the
+    producer's metadata, validated as ``snapshot_local_automation`` does, read back at the claim."""
+    from gateway.config import Platform
+    from gateway.run_notifications import _watch_notification_metadata
+    from gateway.session import SessionSource
+    from gateway.session_automation import admission_display, automation_display_metadata
+    metadata = _watch_notification_metadata(evt, SessionSource(platform=Platform.LOCAL, chat_id=SID))
+    descriptor = {"identity": "i", "owner": SID, "route": "r", "target": SID,
+                  **automation_display_metadata(metadata)}
+    return admission_display({"text": text, "local_automation_v1": descriptor})
+
+
+def test_idle_cli_shows_a_gateway_review_subagents_completion(capsys):
+    """``/review`` runs its reviewer as a gateway-side async delegation (#134889 M4/CLI-6). Its
+    completion turn must reach an idle classic CLI as main's ``◈ Subagent Task ...`` header plus the
+    streamed reply; a claim without the card was skipped and the result never shown."""
+    from tools.process_registry_notifications import format_process_notification
+    evt = _delegation_completion("Review the work just discussed")
+    text = format_process_notification(evt)
+    card = _claim_card(evt, text)
+    conn, client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        _play(conn, client, [frame("message.start", card, generation=9, admission="adm-9"),
+                             frame("message.delta", {"text": "Review: two nits."}, generation=9, admission="adm-9"),
+                             frame("message.complete", {"text": "Review: two nits.", "status": "complete"},
+                                   generation=9, admission="adm-9")])
+        cli._drain_process_notifications("cli-idle")
+        queued = cli._pending_input.get_nowait()
+        assert queued.display_kind == "async_delegation_complete"
+        assert queued.display_text == "Subagent Task Completed: Review the work just discussed"
+        assert str(queued) == text
+        for attr, value in {"_pending_resume_sessions": [], "_typed_voice_stop": lambda t: False,
+                            "handle_bang_shell": lambda t: False, "_turn_summary_begin": lambda: None,
+                            "_tui_after_turn": lambda: None, "_app": SimpleNamespace(invalidate=lambda: None),
+                            "chat": Mock()}.items():
+            setattr(cli, attr, value)
+        cli._tui_process_one_input(queued)
+        assert f"◈ {queued.display_text}" in capsys.readouterr().out
+        deltas = []
+        agent = GatewayAgent(connection=conn, session_id=SID, stream_delta_callback=deltas.append)
+        cli.conversation_history = []
+        cli._chat_stage_user_message(agent, queued)
+        result = agent.run_conversation(str(queued), conversation_history=[])
+        assert "prompt.submit" not in [method for method, _ in client.calls]
+        assert deltas == ["Review: two nits."] and result["final_response"] == "Review: two nits."
+    finally:
+        conn.close()
+
+
+def test_a_long_subagent_goal_still_admits_its_completion_card():
+    """The card's title is bounded by the admission's display-text limit: an over-long goal must not
+    turn the completion into an ``invalid_params`` refusal (a delivery that never lands)."""
+    card = _claim_card(_delegation_completion("audit " * 1000), "model text")
+    assert card["display_kind"] == "async_delegation_complete"
+    assert card["display_text"].startswith("Subagent Task Completed: audit")
+
+
+def test_idle_cli_prints_the_gateway_background_review_summary(capsys):
+    """``/refine`` promises "any memory/skill updates will be reported when done" (#134889 M3): the
+    gateway publishes the review's summary to the local session as ``review.summary`` after the turn
+    settled. An idle classic CLI prints it (main's ``display.review.summary_cli`` line) instead of
+    discarding it with the between-turn leftovers."""
+    conn, client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        _play(conn, client, [frame("review.summary", {"text": "💾 Self-improvement review: Memory updated"},
+                                   admission=None)])
+        cli._drain_process_notifications("cli-idle")
+        assert "  💾 Self-improvement review: Memory updated" in capsys.readouterr().out
+        assert cli._pending_input.empty()  # a report, not a turn
+    finally:
+        conn.close()

@@ -68,6 +68,8 @@ export interface GatewayEvent<K extends GatewayEventName = GatewayEventName> {
    * generation, spread onto the params beside `type`/`payload` (`gateway/session_events.py`). */
   authority_epoch?: number
   execution_generation?: number
+  /** The owner's admission id for the turn the frame belongs to (same stamp). */
+  admission_id?: string
   /** Session-scoped replay generation on canonical gateways. */
   replay_epoch?: string
   payload?: GatewayEventMap[K]

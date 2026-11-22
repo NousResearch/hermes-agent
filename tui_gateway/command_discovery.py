@@ -130,6 +130,7 @@ class _Catalog:
         self.canon: dict[str, str] = {}
         self.commands: dict[str, dict[str, str | None]] = {}
         self.cat_map: dict[str, list[list[str]]] = {}  # insertion order = category order
+        self.plugin_commands: dict[str, str] = {}  # every plugin command, also those a display row hides
 
     def add(self, key: str, desc: str, cat: str) -> None:
         self.canon[key.lower()] = key
@@ -173,9 +174,12 @@ def _catalog_plugin_commands(cat: _Catalog, module_loader) -> None:
         cat.cat_map.setdefault("Plugin commands", [])
     for pname, info in sorted(plugin_cmds.items()):
         key = f"/{pname}"
-        if not isinstance(info, dict) or key.lower() in cat.canon:
+        if not isinstance(info, dict):
             continue
-        cat.add(key, str(info.get("description") or "Plugin command"), "Plugin commands")
+        cat.plugin_commands[pname] = str(info.get("description") or "Plugin command")
+        if key.lower() in cat.canon:
+            continue
+        cat.add(key, cat.plugin_commands[pname], "Plugin commands")
         mode = info.get("argument_mode")
         if mode not in {"options", "text", "mixed"}:
             mode = "text" if str(info.get("args_hint") or "").strip() else None
@@ -195,14 +199,16 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict], module_loader) -> st
     collision_note = getattr(sc, "skill_command_collision_note", None)
     if collision_note is None:
         return ""
-    names = sorted(s["name"] for s in module_loader("tools.skills_tool")._find_all_skills())
+    names = sorted(s["name"] for s in module_loader("tools.skills_tool").find_all_skills())
     return "; ".join(filter(None, map(collision_note, names)))
 
 
 def command_catalog(load_cfg=None, module_loader=import_module, scope=None) -> dict:
     """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``
     (skills' message wins, then quick commands', then plugins'); only with no failure does it carry
-    the built-in-name collision notice for skills that have no ``/<name>`` (empty when none). Quick
+    the built-in-name collision notice for skills that have no ``/<name>`` (empty when none). A plugin
+    discovery failure is also ``plugin_discovery_error`` (empty when it worked), so a client can tell
+    "no plugin commands" from "plugin commands unknown" without parsing ``warning``. Quick
     command, plugin command and skill discovery are all home-keyed, so ``scope`` (a context manager
     binding the calling session's profile home and workspace) wraps every loader: project-local skills
     register for the repo the session is actually in (#114359), and a profile-routed palette never
@@ -213,7 +219,7 @@ def command_catalog(load_cfg=None, module_loader=import_module, scope=None) -> d
         load_cfg = load_config_readonly
     cat = _Catalog()
     _catalog_registry(cat, module_loader)
-    warning = ""
+    warning = plugin_error = ""
     skills: dict[str, dict] = {}
     # Each loader is a degrade boundary: user config, third-party plugin registration and skill
     # files can raise anything, and one failing source must never blank the whole palette.
@@ -227,6 +233,7 @@ def command_catalog(load_cfg=None, module_loader=import_module, scope=None) -> d
             _catalog_plugin_commands(cat, module_loader)
         except Exception as e:
             logger.debug("plugin command discovery failed", exc_info=True)
+            plugin_error = str(e) or type(e).__name__
             warning = warning or f"plugin command discovery unavailable: {e}"
         try:
             collision_note = _catalog_skills(cat, skills, module_loader)  # always runs: skills must list even when a loader failed
@@ -239,7 +246,8 @@ def command_catalog(load_cfg=None, module_loader=import_module, scope=None) -> d
         "canon": cat.canon,
         "commands": cat.commands,
         "categories": [{"name": c, "pairs": rows} for c, rows in cat.cat_map.items()],
-        "skills": skills, "skill_count": len(skills), "warning": warning}
+        "skills": skills, "skill_count": len(skills), "warning": warning, "plugin_discovery_error": plugin_error,
+        "plugin_commands": cat.plugin_commands}
 
 
 def slash_completions(text: str = "", scope=None) -> dict:

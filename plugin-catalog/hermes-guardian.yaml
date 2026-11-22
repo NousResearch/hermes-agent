@@ -1,0 +1,44 @@
+# Native plugin.yaml and catalog entry schemas differ: this nesting is intentional.
+name: hermes-guardian
+title: Hermes Guardian
+repo: "https://github.com/Oluseyix/hermes-guardian"
+sha: "bde45f63859985440c8ee4763e365073e659d4c1"
+version: "0.2.0"
+maintainer: "Oluseyix"
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+platforms: [linux, macos]
+readme: true
+description: >-
+  Deterministic allow/approve/block policies for Hermes tool calls, with read-only
+  Policy Lab regression simulation and operator-reviewed policy proposals. Exact tool-name
+  rules, explicit protected local paths, a deliberately limited shell grammar,
+  and payload-free persistent decision audits. Unknown tools default to block;
+  ambiguous recognized-tool arguments, invalid policy, and audit failures block.
+  Uses the public pre_tool_call hook and native Hermes approval directives.
+  Disclosure: reads its own settings through Hermes and filesystem metadata and
+  symlink targets for path comparisons; writes redacted JSONL under the active
+  profile's plugin-data/hermes-guardian directory. No protected file-content reads,
+  enforcement-hook network calls, subprocesses, model calls, credential storage, telemetry,
+  core overrides, or self-updater. The operator CLI optionally uses public ctx.llm
+  structured generation, sending instructions and policy paths to the configured
+  provider, which may charge; no separate key is required. Explicitly confirmed
+  activation uses ctx.set_config for atomic settings updates and stores private
+  policy backups. Offline generation is a limited exact-language template. Approval rules follow host YOLO/approvals-off and
+  unattended-mode settings; hard block rules do not ask for approval. A policy
+  hook, not a sandbox: intended for a trusted local POSIX backend and trusted
+  plugins that do not rewrite arguments after inspection.
+known_issues:
+  - "No project-scoped positive permissions or Git push approval: unsupported Git commands block. Offline generation is template-based; live provider inference remains unverified."
+  - "Simulation inspects current local path metadata; it does not prove final host authorization, audit availability or execution. Stop concurrent config editors during activation; storage failure can prevent rollback."
+  - "Remote/container path namespaces, hard-link/case/mount aliases and filesystem races are not secured."
+  - "Explicitly allowed tools outside the recognized file/terminal adapters receive tool-name checks only."
+  - "Other plugins can rewrite arguments after the hook; disabled or failed-to-load Guardian provides no protection."
+  - "The 16 MiB audit limit, write failure, partial trailing record or lock contention blocks calls until repaired or retried."
+  - "Audit records describe policy decisions, not execution or final human approval."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: []

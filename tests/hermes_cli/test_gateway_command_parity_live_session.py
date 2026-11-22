@@ -21,8 +21,9 @@ def test_sidecar_live_session_rpc_is_reported_broken_on_the_shared_gateway():
 
 
 def test_a_refused_subcommand_keeps_the_rest_of_the_command_routed():
-    """``/voice tts`` runs the owner's ``/voice`` handler (the session's voice state) and Ink no
-    longer names it refused, so the cell is the canonical route rather than a sidecar row."""
+    """``/voice tts`` refuses on the shared gateway; ``/voice on|off|status`` run the owner's per-session
+    ``/voice`` (slash.exec) and read its mode back (config.get). voice.toggle is the standalone
+    backend's route only."""
     import sys
     sys.path.insert(0, str(ROOT))
     from hermes_cli.commands import COMMAND_REGISTRY
@@ -32,4 +33,4 @@ def test_a_refused_subcommand_keeps_the_rest_of_the_command_routed():
     spec.loader.exec_module(gen)
     cmd = next(c for c in COMMAND_REGISTRY if c.name == "voice")
     cell = gen.ink_cell(cmd, gen.gateway_cell("voice"), gen._ink_commands(), gen._served_methods())
-    assert cell == "canonical route"
+    assert cell == "config.get, slash.exec; sidecar: voice.toggle; `tts` refused"

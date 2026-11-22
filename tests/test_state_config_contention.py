@@ -13,42 +13,26 @@ from threading import Event, Thread
 import pytest
 
 from hermes_cli import config
-from hermes_state_wal import apply_wal_with_fallback
+from sqlite_support import apply_wal_with_fallback
 from utils import atomic_yaml_write
-import hermes_state_wal as wal
+import sqlite_support
 
 
-def test_partial_config_import_cannot_invert_config_and_module_locks(tmp_path):
+def test_config_import_and_provider_env_catalog_never_read_config(tmp_path):
+    """Importing hermes_cli.config and building the provider part of OPTIONAL_ENV_VARS list no
+    providers through discovery (which reads config), so neither can take part in a config/WAL
+    lock-order cycle with a thread opening a database."""
     script = textwrap.dedent(
         """
         from pathlib import Path
-        from threading import Event, Thread
-        import os, sqlite3, sys
+        from threading import Thread
+        import os, sqlite3
 
         import providers
-        import hermes_state_wal as wal
+        import sqlite_support
 
-        partial_ready = Event()
-        opener_inside_resolve = Event()
-        importer_load_returned = Event()
-        original_resolve = wal.resolve_journal_mode
-
-        def controlled_list_providers():
-            module = sys.modules["hermes_cli.config"]
-            assert module.__spec__._initializing
-            assert hasattr(module, "_CONFIG_LOCK") and hasattr(module, "load_config")
-            partial_ready.set()
-            assert opener_inside_resolve.wait(5)
-            module.load_config()
-            importer_load_returned.set()
-            return []
-
-        def controlled_resolve():
-            opener_inside_resolve.set()
-            return original_resolve()
-
-        providers.list_providers = controlled_list_providers
-        wal.resolve_journal_mode = controlled_resolve
+        listed = []
+        providers.list_providers = lambda: listed.append(1) or []
         root = Path(os.environ["STATE_CONFIG_TEST_ROOT"]) / "cold-import"
         root.mkdir()
         os.environ["HOME"] = str(root)
@@ -61,22 +45,22 @@ def test_partial_config_import_cannot_invert_config_and_module_locks(tmp_path):
         def importer():
             import hermes_cli.config
             outcomes.append("import-returned")
+            assert "ANTHROPIC_API_KEY" in hermes_cli.config.OPTIONAL_ENV_VARS
+            outcomes.append("fill-returned")
 
         def opener():
             with sqlite3.connect(database) as connection:
-                outcomes.append(f"open:{wal.apply_wal_with_fallback(connection)}")
+                outcomes.append(f"open:{sqlite_support.apply_wal_with_fallback(connection)}")
 
-        importing = Thread(target=importer)
-        opening = Thread(target=opener)
-        importing.start()
-        assert partial_ready.wait(5)
-        opening.start()
-        importing.join(5)
-        opening.join(5)
-        assert importer_load_returned.is_set()
-        assert not importing.is_alive() and not opening.is_alive(), outcomes
-        assert "import-returned" in outcomes
+        threads = [Thread(target=importer), Thread(target=opener)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        assert not any(t.is_alive() for t in threads), outcomes
+        assert "import-returned" in outcomes and "fill-returned" in outcomes, outcomes
         assert any(value.startswith("open:") for value in outcomes)
+        assert listed == [], "the config import or the env catalog ran provider discovery"
         """
     )
     completed = subprocess.run(
@@ -110,7 +94,7 @@ def test_existing_database_does_not_wait_for_config_writer(
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr(wal, "is_sqlite_wal_reset_vulnerable", lambda: vulnerable)
+    monkeypatch.setattr(sqlite_support, "is_sqlite_wal_reset_vulnerable", lambda: vulnerable)
     config.save_config({"database": {"journal_mode": mode}, "marker": "before"})
     config.load_config_readonly()
     path = tmp_path / "existing.db"
@@ -175,26 +159,26 @@ def test_unestablished_or_strict_modes_still_wait_for_real_policy(tmp_path, monk
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr(wal, "is_sqlite_wal_reset_vulnerable", lambda: False)
+    monkeypatch.setattr(sqlite_support, "is_sqlite_wal_reset_vulnerable", lambda: False)
     config.save_config({"database": {"journal_mode": "wal"}})
     path = tmp_path / "policy.db"
     if state != "empty":
         with closing(sqlite3.connect(path)) as conn:
             conn.execute("CREATE TABLE existing (value TEXT)")
     if state == "unknown":
-        monkeypatch.setattr(wal, "_on_disk_journal_mode", lambda _conn: None)
+        monkeypatch.setattr(sqlite_support, "_on_disk_journal_mode", lambda _conn: None)
     resolving = Event()
-    original = wal.resolve_journal_mode
+    original = sqlite_support.resolve_journal_mode
 
     def resolve():
         resolving.set()
         return original()
 
-    monkeypatch.setattr(wal, "resolve_journal_mode", resolve)
+    monkeypatch.setattr(sqlite_support, "resolve_journal_mode", resolve)
 
     def opener():
         with closing(sqlite3.connect(path)) as conn:
-            return wal.apply_wal_with_fallback(conn, require_wal=state == "required_wal")
+            return sqlite_support.apply_wal_with_fallback(conn, require_wal=state == "required_wal")
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         with config._CONFIG_LOCK:
@@ -208,7 +192,7 @@ def test_deferred_mode_change_is_applied_after_writer_finishes(tmp_path, monkeyp
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr(wal, "is_sqlite_wal_reset_vulnerable", lambda: False)
+    monkeypatch.setattr(sqlite_support, "is_sqlite_wal_reset_vulnerable", lambda: False)
     config.save_config({"database": {"journal_mode": "wal"}})
     path = tmp_path / "deferred.db"
     with closing(sqlite3.connect(path)) as conn:
@@ -216,7 +200,7 @@ def test_deferred_mode_change_is_applied_after_writer_finishes(tmp_path, monkeyp
 
     def opener():
         with closing(sqlite3.connect(path)) as conn:
-            return wal.apply_wal_with_fallback(conn)
+            return sqlite_support.apply_wal_with_fallback(conn)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         with config._CONFIG_LOCK:

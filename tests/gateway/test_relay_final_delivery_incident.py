@@ -101,20 +101,25 @@ async def test_finalize_edit_success_still_reconciles_true():
 # Defect B: idle-ended relay session terminally drops completions
 # ---------------------------------------------------------------------------
 
-class _SessionDB:
+class _StoreHandle:
+    """A storage interface handle whose session row is fixed and whose sessions never compressed."""
+
     def __init__(self, row):
         self._row = row
+        self.aio = SimpleNamespace(sessions=SimpleNamespace(get=self._get), lineage=SimpleNamespace(tip=self._get_tip))
 
-    async def get_session(self, session_id):
-        return self._row
+    async def _get(self, session_id):
+        if self._row is None:
+            return None
+        return SimpleNamespace(**{"ended_at": None, "end_reason": None, "source": None, "model_config": {}, **self._row})
 
-    async def get_compression_tip(self, session_id):
+    async def _get_tip(self, session_id):
         return None
 
 
 def _classify_runner(row):
     runner = object.__new__(GatewayRunner)
-    runner._session_db = _SessionDB(row)
+    runner.session_store = SimpleNamespace(persistence=_StoreHandle(row))
     return runner
 
 

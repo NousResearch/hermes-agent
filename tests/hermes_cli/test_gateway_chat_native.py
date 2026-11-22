@@ -118,12 +118,15 @@ finally:
             def type_line(text):
                 # As the A/B harness types: main's prompt_toolkit drops an Enter in the same burst.
                 tmux("send-keys", "-t", "chat", "-l", text)
-                until(text, 10)
+                # The prompt's own echo, not the tty's: keys typed before the REPL takes the
+                # terminal echo raw onto the banner and their Enter is lost.
+                until(f"❯ {text}", 10)
                 time.sleep(1)  # health: allow HX013 -- main drops an Enter sent in the same burst as the text (probe_pty.py); the gap is the input timing
                 tmux("send-keys", "-t", "chat", "Enter")
 
             launch("--cli", "chat")
             first = until("Welcome to Hermes Agent")
+            until("❯ ")  # the banner prints before the prompt accepts input
             type_line("WS_SHARED")
             fresh = until("LOCAL_ACK_WS_SHARED")
             type_line("/title")

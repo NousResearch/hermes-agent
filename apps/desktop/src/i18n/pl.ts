@@ -1575,7 +1575,8 @@ export const plOverrides = {
       defaultDirTitle: 'Domyślny katalog projektu',
       defaultDirDesc:
         'Nowe sesje startują w tym folderze, chyba że wybierzesz inny. Pozostaw puste, aby użyć katalogu domowego.',
-      defaultDirUpdated: 'Zaktualizowano domyślny katalog projektu — rozpocznij nowy czat (Ctrl/⌘+N), aby zmiana weszła w życie',
+      defaultDirUpdated: shortcut =>
+        `Zaktualizowano domyślny katalog projektu — rozpocznij nowy czat${shortcut ? ` (${shortcut})` : ''}, aby zmiana weszła w życie`,
       defaultsTo: label => `Domyślnie: ${label}.`,
       change: 'Zmień',
       choose: 'Wybierz',
@@ -1769,8 +1770,6 @@ export const plOverrides = {
       toggleFailed: (name: string) => `Nie udało się przełączyć ${name}`,
       legacyBackend: 'Ten backend pochodzi sprzed przełączania wtyczek po kluczu — zaktualizuj Hermes, aby zarządzać nim tutaj.',
       portableBadge: 'przenośna',
-      catalogTitle: 'Katalog wtyczek',
-      catalogBrowse: 'Przeglądaj',
       catalogHide: 'Ukryj przeglądarkę katalogu',
       catalogHint:
         'Kliknij „+ Dodaj do tego agenta” przy dowolnej wtyczce — zweryfikowane pozycje instalują się w przypiętym commicie do wybranego profilu. Dołączone wtyczki agent+desktop oferują obie części.',
@@ -1831,8 +1830,6 @@ export const plOverrides = {
       actionFailed: 'Nie udało się wykonać operacji na umiejętności',
       actionLog: 'Dziennik operacji',
       alreadyInstalled: (name: string) => `"${name}" jest już zainstalowana`,
-      pickerTitle: 'Hub umiejętności',
-      pickerBrowse: 'Przeglądaj cały hub',
       pickerHide: 'Ukryj przeglądarkę huba',
       pickerHint: 'Kliknij „+ Dodaj do tego agenta” przy dowolnej umiejętności — zostanie zainstalowana i pojawi się na liście powyżej.',
       loadFailed: 'Nie udało się wczytać centrum umiejętności',
@@ -1869,6 +1866,11 @@ export const plOverrides = {
     importSuccess: nodes => `Wczytano mapę z ${nodes} ${nodes === 1 ? 'węzłem' : 'węzłami'}.`,
     importedBadge: 'zaimportowana mapa',
     resetToMine: 'Wróć do mojej mapy'
+  },
+  gatewayGroupOpen: {
+    opening: 'Otwieranie czatu grupowego…',
+    lookupFailed: 'Nie znaleziono tej grupy na bramce. Spróbuj ponownie.',
+    missing: 'Ten czat grupowy już nie istnieje.'
   },
   agents: {
     extendedTranscript: 'Rozszerzona transkrypcja',
@@ -2077,8 +2079,6 @@ export const plOverrides = {
       resume: 'Wznów',
       runNow: 'Uruchom teraz',
       memoryData: 'Dane pamięci',
-      memoryDataDesc: 'Wbudowane pliki pamięci wstrzykiwane do każdej sesji',
-      memoryProvider: name => `Aktywny dostawca: ${name}`,
       builtinMemory: 'wbudowany',
       memoryFile: 'Pamięć agenta (MEMORY.md)',
       userFile: 'Profil użytkownika (USER.md)',
@@ -2855,7 +2855,7 @@ export const plOverrides = {
 
   composer: {
     message: 'Wiadomość',
-    wakingProfile: profile => `Wybudzanie ${profile}…`,
+    wakingProfile: (profile: string) => `Wybudzanie ${profile}…`,
     placeholderStarting: 'Uruchamianie Hermesa...',
     placeholderReconnecting: 'Ponowne łączenie z Hermesem…',
     placeholderFollowUp: 'Wyślij kolejną wiadomość',
@@ -3039,43 +3039,6 @@ export const plOverrides = {
     snippetsDesc: 'Wybierz prompt startowy do wstawienia w polu redagowania.',
     dropFiles: 'Upuść pliki, aby je załączyć',
     dropSession: 'Upuść, aby powiązać tę rozmowę',
-    mcpSuggestions: {
-      label: server => `Dodaj ${server}`,
-      tip: keyword => `Sugerowane, bo padło „${keyword}” — kliknij, aby połączyć`,
-      connecting: server => `Łączenie z ${server}…`,
-      cancelTip: 'Kliknij, aby anulować',
-      added: server => `Dodano ${server}`,
-      addedTip: 'Połączono — jego narzędzia są gotowe w tej rozmowie',
-      connectFailed: server => `Nie udało się połączyć z ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `Użyj umiejętności: ${skill}`,
-      tip: skill => `Padło „${skill}” — kliknij, aby rozpocząć od tej umiejętności`,
-      done: skill => `Dodano /${skill}`,
-      doneTip: 'Umiejętność załaduje się po wysłaniu'
-    },
-    githubSuggestions: {
-      label: 'Skonfiguruj GitHub',
-      tip: 'GitHub działa tutaj przez umiejętności gh CLI — kliknij, aby połączyć konto',
-      done: 'Dodano /github-auth',
-      doneTip: 'Wyślij wiadomość, a agent przeprowadzi cię przez logowanie do GitHub'
-    },
-    repairSuggestions: {
-      label: server => `Połącz ponownie z ${server}`,
-      tip: server => `Wywołanie ${server} właśnie nie powiodło się — błąd połączenia`,
-      working: server => `Ponowne łączenie z ${server}…`,
-      workingTip: 'Kliknij, aby anulować',
-      done: server => `Ponownie połączono z ${server}`,
-      doneTip: 'Nowe poświadczenia są aktywne w tej rozmowie',
-      failed: server => `Nie udało się ponownie połączyć z ${server}`
-    },
-    cronSuggestions: {
-      label: 'Zaplanuj to',
-      tip: phrase => `„${phrase}” brzmi jak działanie cykliczne — uruchom to raczej według harmonogramu`,
-      prefix: 'Skonfiguruj to jako zaplanowane zadanie:',
-      done: 'Oznaczono do zaplanowania',
-      doneTip: 'Wyślij to, a agent utworzy zadanie'
-    },
     snippets: {
       codeReview: {
         label: 'Przegląd kodu',
@@ -3179,7 +3142,6 @@ export const plOverrides = {
       heartbeatEveryHours: hours => `co ${hours}g`,
       heartbeatEverySeconds: seconds => `co ${seconds}s`,
       heartbeatNext: time => `następny ${time}`,
-      heartbeatDueWaitingForIdle: 'gotowy — oczekiwanie na bezczynność',
       heartbeatActions: 'Akcje heartbeat',
       pauseHeartbeat: 'Wstrzymaj heartbeat',
       resumeHeartbeat: 'Wznów heartbeat',
@@ -3525,7 +3487,7 @@ export const plOverrides = {
     waiting: 'Oczekiwanie na logowanie…',
     finishingHeading: 'Kończenie logowania…',
     finishingBody: 'Zatwierdzono w przeglądarce. Pobieranie tokenów Twojego konta.',
-    signedInAs: email => `Zalogowano jako ${email}`,
+    signedInAs: (email: string) => `Zalogowano jako ${email}`,
     signedIn: 'Zalogowano.',
     completedBody: 'Twoje konto obsługuje teraz inferencję i narzędzia.',
     defaultModel: 'Model domyślny',
@@ -3989,7 +3951,6 @@ export const plOverrides = {
       errorOpenLogs: 'Otwórz logi',
       errorOpenLogsFailed: 'Nie udało się otworzyć folderu logów',
       errorOpenDesktopLogs: 'Otwórz logi aplikacji Desktop',
-      errorCopyDiagnostics: 'Kopiuj szczegóły błędu',
       errorSendDiagnostics: 'Wyślij diagnostykę',
       filesChanged: count => (count === 1 ? 'Zmieniono 1 plik' : count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 12 || count % 100 > 14) ? `Zmieniono ${count} pliki` : `Zmieniono ${count} plików`),
       reviewChanges: 'Przejrzyj',
@@ -4332,6 +4293,6 @@ export const plOverrides = {
       toggle: open => `${open ? 'Pokaż' : 'Ukryj'} panel boczny`
     }
   }
-} satisfies TranslationOverrides
+} as TranslationOverrides
 
 export const pl = defineLocale(plOverrides)

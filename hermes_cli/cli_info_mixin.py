@@ -13,11 +13,12 @@ import os
 import shutil
 import threading
 import time
+from typing import Any, NamedTuple
 
 from agent.i18n import t
 from hermes_constants import is_termux as _is_termux_environment
 from rich.markup import escape as _escape
-from utils import base_url_hostname, file_signature
+from utils import base_url_hostname
 
 from hermes_cli.cli_modal_mixin import _gated_confirm
 from hermes_cli.colors import Colors as _Colors
@@ -92,19 +93,46 @@ def _skill_line(item: dict) -> str:
     return f"    - {nm}: {desc}" if desc else f"    - {nm}"
 
 
+class BannerPlan(NamedTuple):
+    """What the welcome banner draws, shared by startup (``show_banner``) and ``/clear`` so the two
+    cannot drift apart."""
+    store: Any  # the gateway session store, or None off the gateway
+    inventory: dict | None  # a gateway session's tools: its snapshot, never this process's registry
+    ctx_len: int | None
+    banner_kw: dict | None  # build_welcome_banner's common kwargs; None → the compact banner
+
+
+def banner_plan(cli, console) -> BannerPlan:
+    """The welcome banner's plan. The compact banner (``banner_kw`` None) is for a narrow terminal,
+    ``display.compact``, or a gateway session with no snapshot yet."""
+    from agent.context_pin import agent_context_marker
+    from hermes_cli.gateway_tools_notify import gateway_store
+    store = gateway_store(cli)
+    inventory = store.banner_inventory() if store is not None else None
+    agent = getattr(cli, "agent", None)
+    compressor = getattr(agent, "context_compressor", None)
+    ctx_len = compressor.context_length if compressor is not None else None
+    if cli.compact or shutil.get_terminal_size().columns < 80 or (store is not None and inventory is None):
+        return BannerPlan(store, inventory, ctx_len, None)
+    return BannerPlan(store, inventory, ctx_len, dict(
+        console=console, model=cli.model, cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
+        enabled_toolsets=cli.enabled_toolsets, session_id=cli.session_id, context_length=ctx_len,
+        provider=cli.provider, context_marker=agent_context_marker(agent) if agent is not None else ""))
+
+
 class CLIInfoMixin:
     """Informational views and reload flows for the interactive CLI: banner, help, tools, usage,
     insights, MCP/skills reload, bang shell."""
 
-    def _show_gateway_banner(self, build_welcome_banner, inventory, banner_kw, cwd, ctx_len):
+    def _show_gateway_banner(self, build_welcome_banner, inventory, banner_kw):
         """Main's banner from the gateway session's snapshot (the TUI banner's data): the CLI
         enumerates nothing. The canonical id shows as main's 8-character label (display only)."""
         from hermes_cli.gateway_session_store import session_label
-        self._defer_tool_warnings = True
         build_welcome_banner(
             tools=inventory["tools"], get_toolset_for_tool=inventory["get_toolset_for_tool"],
             availability=inventory["availability"], skills_by_category=inventory["skills_by_category"],
-            **{**banner_kw, "cwd": inventory["cwd"] or cwd, "context_length": inventory["context_length"] or ctx_len,
+            **{**banner_kw, "cwd": inventory["cwd"] or banner_kw["cwd"],
+               "context_length": inventory["context_length"] or banner_kw["context_length"],
                "session_id": session_label(self.session_id)})
 
     def _print_gateway_tool_warnings(self, lines):
@@ -120,15 +148,11 @@ class CLIInfoMixin:
         from cli import _build_compact_banner, get_tool_definitions, logger
         from hermes_cli.banner import build_welcome_banner
         self.console.clear()
-        ctx_len = None
-        gateway_inventory = getattr(getattr(self, "_session_db", None), "banner_inventory", lambda: None)()
-        if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
-            ctx_len = self.agent.context_compressor.context_length
-        from agent.context_pin import is_context_pinned
-        ctx_pinned = is_context_pinned(ctx_len, getattr(getattr(self, "agent", None), "_config_context_length", None))
+        store, gateway_inventory, ctx_len, banner_kw = banner_plan(self, self.console)
+        on_gateway = store is not None  # its tools come from the gateway: never enumerated here
 
         # Auto-compact for narrow terminals — the full banner needs ~80 columns to avoid wrapping.
-        if self.compact or shutil.get_terminal_size().columns < 80:
+        if banner_kw is None:
             self._console_print(_build_compact_banner())
             self._show_status()
         else:
@@ -142,14 +166,9 @@ class CLIInfoMixin:
                 snapshot = load_banner_snapshot(self.enabled_toolsets)
             except Exception:
                 snapshot = None
-            cwd = os.getenv("TERMINAL_CWD", os.getcwd())  # where commands will execute
-            banner_kw = dict(
-                console=self.console, model=self.model, cwd=cwd,
-                enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
-                context_length=ctx_len, provider=self.provider, context_pinned=ctx_pinned)
 
             if gateway_inventory is not None:
-                self._show_gateway_banner(build_welcome_banner, gateway_inventory, banner_kw, cwd, ctx_len)
+                self._show_gateway_banner(build_welcome_banner, gateway_inventory, banner_kw)
             elif snapshot is not None:
                 self._defer_tool_warnings = True
                 toolset_map = snapshot["toolset_map"]
@@ -193,7 +212,7 @@ class CLIInfoMixin:
         # the background and let its output land above the prompt (patch_stdout-safe).
         if isinstance((gateway_inventory or {}).get("tool_availability_warnings"), list):
             self._print_gateway_tool_warnings(gateway_inventory["tool_availability_warnings"])
-        elif os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
+        elif not on_gateway and os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             if getattr(self, "_defer_tool_warnings", False):
                 threading.Thread(
                     target=self._show_tool_availability_warnings,
@@ -203,7 +222,8 @@ class CLIInfoMixin:
                 self._show_tool_availability_warnings()
 
         # Low context warning — tied to the runtime guard so guidance cannot drift.
-        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, is_local_endpoint
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        from agent.process_transport import is_local_server
         if ctx_len and ctx_len < MINIMUM_CONTEXT_LENGTH:
             self._console_print()
             self._console_print(f"[yellow]{t('cli.banner.context_too_low', tokens=f'{ctx_len:,}')}[/]")
@@ -218,7 +238,7 @@ class CLIInfoMixin:
                 fix = t("cli.banner.fix_ollama", tokens=str(MINIMUM_CONTEXT_LENGTH))
             elif _port == 1234:
                 fix = t("cli.banner.fix_lm_studio")
-            elif is_local_endpoint(base_url):  # llama.cpp / vLLM / any local server — not Ollama
+            elif is_local_server(base_url, getattr(self, "provider", None)):  # llama.cpp / vLLM / any local server — not Ollama
                 fix = t("cli.banner.fix_local_server",
                         tokens_k=str(MINIMUM_CONTEXT_LENGTH // 1000), tokens=str(MINIMUM_CONTEXT_LENGTH))
             else:
@@ -259,7 +279,9 @@ class CLIInfoMixin:
         except Exception:
             return False
         agent = getattr(self, "agent", None)
-        return model_supports_fast_mode(getattr(agent, "model", None) or getattr(self, "model", None))
+        def route(field):
+            return getattr(agent, field, None) or getattr(self, field, None)
+        return model_supports_fast_mode(route("model"), provider=route("provider"), base_url=route("base_url"))
 
     def _command_available(self, slash_command: str) -> bool:
         if slash_command == "/fast":
@@ -270,12 +292,12 @@ class CLIInfoMixin:
         """Display help. Bare /help shows categorized core commands with the skill list collapsed
         to one line; /help skills lists all skill commands; /help <query> filters by substring."""
         from cli import (
-            ChatConsole, _BOLD, _DIM, _RST, _accent_hex, _cprint, _ensure_skill_commands,
+            ChatConsole, _BOLD, _DIM, _RST, _accent_hex, _cprint, _session_skill_commands,
             _termux_example_image_path, get_skill_bundles)
         from hermes_cli.commands import COMMAND_REGISTRY, HELP_SESSION_SUBGROUPS
 
         arg = (arg or "").strip()
-        skill_commands = _ensure_skill_commands()
+        skill_commands = _session_skill_commands(self)
 
         def _row(cmd: str, desc: str, width: int = 15) -> None:
             ChatConsole().print(
@@ -284,8 +306,7 @@ class CLIInfoMixin:
         # /help skills — the full list, kept out of the default view so core commands don't
         # scroll off screen.
         if arg.lower() in ("skills", "skill"):
-            from agent.skill_commands import skill_command_collision_note
-            from tools.skills_tool import _find_all_skills
+            from hermes_cli import gateway_plugin_commands
             if skill_commands:
                 _cprint(f"\n  ⚡ {_BOLD}{t('cli.help.skill_commands')}{_RST} "
                         f"({t('cli.help.n_installed', count=str(len(skill_commands)))}):")
@@ -294,7 +315,7 @@ class CLIInfoMixin:
             else:
                 _cprint(f"\n  {t('cli.help.no_skill_commands')}")
             # Skills whose name is a built-in command never get a /<name> (agent.skill_commands guard).
-            for note in filter(None, (skill_command_collision_note(s["name"]) for s in _find_all_skills())):
+            for note in gateway_plugin_commands.skill_notes(self):
                 _cprint(f"    {_DIM}⚠ {note}{_RST}")
             _cprint("")
             return
@@ -493,6 +514,11 @@ class CLIInfoMixin:
         ``CommandDef`` entries declare ``busy_policy="dispatch"``; the classic CLI honours it here)."""
         return self._busy_inline_command(text, has_images, ("bg", "btw"))
 
+    def _should_handle_stop_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when /stop should be dispatched while the agent runs: its ``CommandDef`` declares
+        ``busy_policy="interrupt_then_dispatch"``, and queued it would only run after the turn it stops."""
+        return self._busy_inline_command(text, has_images, ("stop",))
+
     def handle_bang_shell(self, text: str) -> bool:
         """Run a ``!<command>`` submission. Returns True when it was handled.
 
@@ -602,6 +628,43 @@ class CLIInfoMixin:
             return
         self._show_usage()
 
+    def _account_usage_view(self) -> tuple[list[str], list[str], bool, Any]:
+        """``(plan-limit lines, Nous section lines, nous_route, Nous dollar model or None)`` for `/usage`, from
+        one Nous account read. On a gateway session the owner answers for the route the session runs
+        (``session.account_usage``): this process's provider/base_url pair is not that route once /model or a
+        fallback moved the provider (the launch base_url stays). Off the gateway, the CLI's own route."""
+        from agent.billing_links import is_nous_inference_route
+        from hermes_cli.gateway_client import GatewayClientError
+        from hermes_cli.gateway_side import connection_for
+        if (connection := connection_for(self)) is not None:
+            try:
+                view = connection.call("session.account_usage", session_id=self.session_id, timeout=25) or {}
+            except GatewayClientError:
+                return [], [], False, None  # a failed read says nothing about the route: no Nous CTA
+            from agent.billing_usage import usage_model_from_wire
+            return (list(view.get("lines") or []), list(view.get("nous_lines") or []), view.get("nous_route") is True,
+                    usage_model_from_wire(view.get("nous_usage")))
+        from agent.account_usage_nous import nous_usage_view
+        provider, base_url = self._agent_or_self("provider") or "", self._agent_or_self("base_url") or ""
+        nous_route = is_nous_inference_route(provider, base_url)
+        nous_lines, usage = nous_usage_view(nous_route=nous_route,
+                                            credits_state=getattr(self.agent, "_credits_state", None) if self.agent else None)
+        return self._local_account_limit_lines(), nous_lines, nous_route, usage
+
+    def _print_usage_account_blocks(self) -> bool:
+        """`/usage`'s account blocks: the active provider's limits, then the Nous section whenever Nous is
+        signed in (its own heading off a Nous route), then the `/topup` CTA on a Nous route only. True if
+        anything printed."""
+        lines, nous_lines, nous_route, usage = self._account_usage_view()
+        shown = self._print_account_limits(lines)
+        if not nous_route:
+            return self._print_account_limits(nous_lines) or shown
+        # The Nous route keeps main's two-bar balance block and its call to action.
+        if self._print_nous_balance(usage, nous_lines):
+            self._print_usage_cta()
+            return True
+        return shown
+
     def _agent_or_self(self, name: str):
         """Provider-ish attribute from the live agent, falling back to the CLI's own value."""
         return (getattr(self.agent, name, None) if self.agent else None) or getattr(self, name, None)
@@ -702,10 +765,7 @@ class CLIInfoMixin:
         def _credits_or(fallback: str) -> None:
             # Account limits (e.g. Codex subscription windows) need only the configured provider
             # plus on-disk credentials, so they render without a live agent too (#42904).
-            shown = self._print_account_limits()
-            if self._print_nous_credits_block():
-                self._print_usage_cta()
-            elif not shown:
+            if not self._print_usage_account_blocks():
                 print(fallback)
 
         if not self.agent:
@@ -752,16 +812,13 @@ class CLIInfoMixin:
         print(f"  {'─' * 40}")
         from agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(compressor) != "provider_usage" else ""
-        from agent.context_pin import context_pin_suffix
-        pin_suffix = context_pin_suffix(ctx_len, getattr(agent, '_config_context_length', None))
+        from agent.context_pin import agent_context_suffix
+        pin_suffix = agent_context_suffix(agent)  # " (pinned)" / " (fallback)"
         print(f"  {t('cli.usage.label_current_context'):<17} {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%){pin_suffix}")
         print(f"  {t('cli.usage.label_messages'):<17} {len(self.conversation_history)}")
         print(f"  {t('cli.usage.label_compressions'):<17} {compressor.compression_count}")
 
-        self._print_account_limits()
-
-        if self._print_nous_credits_block():
-            self._print_usage_cta()
+        self._print_usage_account_blocks()
 
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
@@ -770,33 +827,34 @@ class CLIInfoMixin:
         else:
             logging.getLogger().setLevel(logging.INFO)
 
-    def _print_account_limits(self) -> bool:
-        """Provider account limits block for `/usage`; True if anything printed.
-
-        Uses the live agent's route when present, else the CLI's own configured provider (the
-        TUI/Desktop slash-worker runs without an agent). Fetched off-thread with a hard timeout so
+    def _local_account_limit_lines(self) -> list[str]:
+        """This process's route's provider account limits: the live agent's, else the CLI's configured
+        provider (the TUI/Desktop slash-worker runs without an agent). Off-thread with a hard timeout so
         slow provider APIs don't hang the prompt; failures are non-fatal. Lazy import: pulls the
-        OpenAI SDK chain.
-        """
+        OpenAI SDK chain."""
         provider = self._agent_or_self("provider")
         if not provider:
-            return False
-        from agent.account_usage import fetch_account_usage, render_account_usage_lines
-        account_snapshot = None
+            return []
+        from agent.account_usage import account_limit_lines
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
             try:
-                account_snapshot = _pool.submit(
-                    fetch_account_usage, provider, base_url=self._agent_or_self("base_url"),
+                return _pool.submit(
+                    account_limit_lines, provider, base_url=self._agent_or_self("base_url"),
                     api_key=self._agent_or_self("api_key"),
                 ).result(timeout=10.0)
-            except (concurrent.futures.TimeoutError, Exception):
-                account_snapshot = None
-        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
-        if not account_lines:
+            except concurrent.futures.TimeoutError:
+                return []
+            except Exception:  # a provider's own fetch or render: /usage still prints the rest
+                logging.getLogger(__name__).debug("account limits for /usage failed", exc_info=True)
+                return []
+
+    def _print_account_limits(self, lines: list[str]) -> bool:
+        """The provider account limits block of `/usage`; True if anything printed."""
+        if not lines:
             return False
         print()
-        for line in account_lines:
-            print(line)
+        for line in lines:
+            print(f"  {line}")
         return True
 
     def _show_insights(self, command: str = "/insights"):
@@ -840,7 +898,7 @@ class CLIInfoMixin:
         cache** (the next message re-sends the full input prefix, expensive on long-context / high-reasoning
         models). See #1474.
         """
-        import hermes_yaml as _yaml
+        from hermes_cli.config_backend import config_version_or_none, read_config_doc
 
         now = time.monotonic()
         if now - self._last_config_check < CONFIG_WATCH_INTERVAL:
@@ -849,19 +907,15 @@ class CLIInfoMixin:
 
         from hermes_cli.config import get_config_path as _get_config_path
         cfg_path = _get_config_path()
-        if not cfg_path.exists():
-            return
-        try:
-            sig = file_signature(cfg_path.stat())
-        except OSError:
+        sig = config_version_or_none(cfg_path)
+        if sig is None:
             return
         if sig == self._config_sig:
             return  # unchanged — fast path
 
         self._config_sig = sig
         try:
-            with open(cfg_path, encoding="utf-8-sig") as f:
-                new_cfg = _yaml.safe_load(f) or {}
+            new_cfg = read_config_doc(cfg_path) or {}
         except Exception:
             return
 
@@ -1020,12 +1074,17 @@ class CLIInfoMixin:
         conversation_history, so message alternation stays intact.
         """
         try:
-            from agent.skill_commands import reload_skills
+            from hermes_cli.gateway_tools import process_view
             if not self._command_running:
                 print(t("cli.reload_skills.reloading"))
-            result = reload_skills()
-            from hermes_cli.gateway_tools import reload_gateway_skills
-            reload_gateway_skills()  # the gateway that runs the turn rescans too; main's lines use the CLI diff
+            view = process_view()
+            if view is not None:  # the gateway session's rescan (its plugin skills too): nothing is scanned here
+                result = (view.connection.call("skills.reload", session_id=view.session_id) or {}).get("result") or {}
+                from hermes_cli.gateway_plugin_commands import invalidate
+                invalidate(self)  # /help, completion and dispatch read the rescanned list
+            else:
+                from agent.skill_commands import reload_skills
+                result = reload_skills()
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])
             total = result.get("total", 0)

@@ -70,13 +70,13 @@ def _parent():
 
 
 def _fast_watchdog(monkeypatch, *, grace: float):
-    monkeypatch.setattr(delegate_tool, "_HEARTBEAT_INTERVAL", 0.01)
-    monkeypatch.setattr(delegate_tool, "_HEARTBEAT_STALE_CYCLES_IDLE", 2)
+    monkeypatch.setattr("tools.delegate_tool_child_run._HEARTBEAT_INTERVAL", 0.01)
+    monkeypatch.setattr("tools.delegate_tool_child_run._HEARTBEAT_STALE_CYCLES_IDLE", 2)
     # raising=False: on the unfixed base the constant does not exist yet, so the
     # assertions fail on BEHAVIOR (synthesized timeout vs. collected result).
-    monkeypatch.setattr(delegate_tool, "_STALE_RESULT_GRACE_SECONDS", grace, raising=False)
-    monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: None)
-    monkeypatch.setattr(delegate_tool, "_get_worktree_isolation", lambda: False)
+    monkeypatch.setattr("tools.delegate_tool_child_run._STALE_RESULT_GRACE_SECONDS", grace, raising=False)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_child_timeout", lambda: None)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_worktree_isolation", lambda: False)
 
 
 def _finish_soon(child: _Child, delay: float) -> threading.Timer:

@@ -1,0 +1,23 @@
+name: polytropos-router
+repo: https://github.com/Lil-Clanky/polytropos
+sha: 4264f5e6d3646df296405a98a4465113843b012e
+subdir: plugins/polytropos_router
+title: Polytropos router
+version: "0.1.1"
+image: https://raw.githubusercontent.com/Lil-Clanky/polytropos/4264f5e6d3646df296405a98a4465113843b012e/docs/images/banner.webp
+description: "Model provider polytropos-router with one model, auto. For each turn a short classifier call picks the simple or the complex route, and the router tries that route's models in order. A local Ollama model only gets the turn when the machine has memory to spare and the request fits its context window, otherwise the turn goes to free cloud models through FreeLLMAPI. Set it up with the polytropos plugin. Disclosure — sends each turn to the upstreams in its config, which are FreeLLMAPI and Ollama on 127.0.0.1 by default, or any other OpenAI-compatible URL the user adds; the classifier sends up to 2,000 characters of the last user message to the classifier model, FreeLLMAPI's auto model by default, also when the turn then runs locally; asks the Ollama API for its version and loaded models and unloads a local model when memory runs low; reads memory pressure with sysctl on macOS or /proc on Linux; fetches stack-canary's public results from raw.githubusercontent.com at most once a day; traces are off by default and never hold message text; reads upstream keys through agent.secret_scope; no telemetry."
+maintainer: Lil-Clanky
+tier: community
+category: models
+requires_hermes: ">=0.23.2"
+docs_url: https://github.com/Lil-Clanky/polytropos/blob/4264f5e6d3646df296405a98a4465113843b012e/README.md
+readme: true
+platforms: [macos, linux]
+known_issues:
+  - "Hermes needs FREELLMAPI_API_KEY for every turn on the router, also when all routes are local."
+  - "Has not been tried in a real Hermes home or on Linux yet. The end-to-end tests run Hermes v0.23.2 in a sandbox on macOS."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

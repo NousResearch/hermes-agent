@@ -88,6 +88,15 @@ def test_site_packages_follows_the_venv_python_not_the_caller(tmp_path):
         assert site_packages(venv).is_dir()
 
 
+def test_venv_python_version_reads_uv_version_info(tmp_path):
+    # uv and virtualenv record ``version_info``; Windows has no lib/python3.X to fall back to.
+    venv = tmp_path / "venv"
+    venv.mkdir()
+    (venv / "pyvenv.cfg").write_text("home = C:\\Python311\nversion_info = 3.11.9\n", encoding="utf-8")
+
+    assert venv_python_version(venv) == (3, 11)
+
+
 def test_venv_python_version_falls_back_to_the_lib_directory(tmp_path):
     venv = tmp_path / "venv"
     (venv / "lib" / "python3.12" / "site-packages").mkdir(parents=True)

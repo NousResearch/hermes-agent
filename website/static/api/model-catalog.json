@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-10-13T18:12:26Z",
+  "updated_at": "2026-11-19T11:17:17Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -12,6 +12,10 @@
         "note": "Descriptions drive picker badges. Live /api/v1/models filters curated ids by tool-calling support and free pricing. The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one."
       },
       "models": [
+        {
+          "id": "anthropic/claude-fable-5.2",
+          "description": ""
+        },
         {
           "id": "anthropic/claude-fable-5.1",
           "description": ""
@@ -57,6 +61,22 @@
           "description": ""
         },
         {
+          "id": "openai/gpt-6.2-astra",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-6.2-astra-pro",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-6.2-sol",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-6.2-sol-pro",
+          "description": ""
+        },
+        {
           "id": "openai/gpt-6-astra",
           "description": ""
         },
@@ -86,6 +106,10 @@
         },
         {
           "id": "openai/gpt-6.1-sol-pro",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-6.1-terra",
           "description": ""
         },
         {
@@ -153,6 +177,10 @@
           "description": ""
         },
         {
+          "id": "deepseek/deepseek-v4.1-flash-1017",
+          "description": "dated snapshot of v4.1-flash"
+        },
+        {
           "id": "deepseek/deepseek-v4-flash-0731",
           "description": "dated snapshot of v4-flash"
         },
@@ -174,7 +202,8 @@
         },
         {
           "id": "z-ai/glm-5.3",
-          "description": ""
+          "description": "default",
+          "default": true
         },
         {
           "id": "z-ai/glm-5.3-flash",
@@ -186,8 +215,7 @@
         },
         {
           "id": "z-ai/glm-5.2",
-          "description": "default",
-          "default": true
+          "description": ""
         },
         {
           "id": "xiaomi/mimo-v2.6-pro",
@@ -310,6 +338,9 @@
       },
       "models": [
         {
+          "id": "anthropic/claude-fable-5.2"
+        },
+        {
           "id": "anthropic/claude-fable-5.1"
         },
         {
@@ -337,6 +368,18 @@
           "id": "anthropic/claude-haiku-4.5"
         },
         {
+          "id": "openai/gpt-6.2-astra"
+        },
+        {
+          "id": "openai/gpt-6.2-astra-pro"
+        },
+        {
+          "id": "openai/gpt-6.2-sol"
+        },
+        {
+          "id": "openai/gpt-6.2-sol-pro"
+        },
+        {
           "id": "openai/gpt-6-astra"
         },
         {
@@ -359,6 +402,9 @@
         },
         {
           "id": "openai/gpt-6.1-sol-pro"
+        },
+        {
+          "id": "openai/gpt-6.1-terra"
         },
         {
           "id": "openai/gpt-6-sol"
@@ -409,6 +455,9 @@
           "id": "deepseek/deepseek-v4.1-flash"
         },
         {
+          "id": "deepseek/deepseek-v4.1-flash-1017"
+        },
+        {
           "id": "deepseek/deepseek-v4-flash-0731"
         },
         {
@@ -424,7 +473,8 @@
           "id": "minimax/minimax-m3"
         },
         {
-          "id": "z-ai/glm-5.3"
+          "id": "z-ai/glm-5.3",
+          "default": true
         },
         {
           "id": "z-ai/glm-5.3-flash"
@@ -433,8 +483,7 @@
           "id": "z-ai/glm-5.3-flashx"
         },
         {
-          "id": "z-ai/glm-5.2",
-          "default": true
+          "id": "z-ai/glm-5.2"
         },
         {
           "id": "xiaomi/mimo-v2.6-pro"

@@ -182,8 +182,16 @@ const NOTICE_DISPLAY_KINDS = [
   'auto_continue',
   'personality_switch',
   // Hermes closing a failed turn, not the model speaking.
-  'failed_turn'
+  'failed_turn',
+  // A safety-refused turn retained for display: the user's own message, shown
+  // greyed with a notice. Rendered through the system path, never a user bubble.
+  'content_refused'
 ] as const
+
+// agent/turn_failure_copy.py::CONTENT_REFUSED_DISPLAY_KIND. The retained turn
+// arrives as a single `user` row carrying the user's original message plus a
+// notice in display_metadata.content_refused (CONTENT_REFUSED_METADATA_KEY).
+const CONTENT_REFUSED_DISPLAY_KIND = 'content_refused'
 
 function isMachineNotice(displayKind: SessionMessage['display_kind']): boolean {
   return displayKind !== undefined && (NOTICE_DISPLAY_KINDS as readonly string[]).includes(displayKind)
@@ -205,6 +213,12 @@ function parseDisplayMetadata(metadata: SessionMessage['display_metadata']): nul
   return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
 }
 
+// A micro-compaction merge (`display_metadata.model_only`) is the model's copy of prompts whose originals
+// the history shows: the owner's resume snapshot keeps it as an undo target, and it is never painted.
+function isPainted(message: SessionMessage): boolean {
+  return parseDisplayMetadata(message.display_metadata)?.model_only !== true
+}
+
 // `agent/conversation_loop.py::_failed_turn_display_metadata`: the failed turn's error card,
 // kept on its boundary row so a reopened session shows it after the live frame is gone.
 function failedTurnError(
@@ -222,6 +236,36 @@ function failedTurnError(
   return { error, errorSurface }
 }
 
+// agent/turn_failure_copy.py::CONTENT_REFUSED_NOTICE, stored under
+// display_metadata.content_refused.notice. Absent on older backends — the
+// renderer falls back to an i18n string then.
+function contentRefusedNotice(metadata: SessionMessage['display_metadata']): string | undefined {
+  const refused = parseDisplayMetadata(metadata)?.content_refused
+
+  if (!refused || typeof refused !== 'object') {
+    return undefined
+  }
+
+  const notice = (refused as Record<string, unknown>).notice
+
+  return typeof notice === 'string' && notice.trim() ? notice : undefined
+}
+
+// The spreadable contentRefused field for a hydrated row: present only on a
+// retained safety-refused turn, carrying its notice when the backend supplied
+// one. Extracted so toChatMessages keeps its complexity within the ratchet.
+function contentRefusedField(
+  message: SessionMessage
+): { contentRefused: { notice?: string } } | Record<string, never> {
+  if (message.display_kind !== CONTENT_REFUSED_DISPLAY_KIND) {
+    return {}
+  }
+
+  const notice = contentRefusedNotice(message.display_metadata)
+
+  return { contentRefused: notice ? { notice } : {} }
+}
+
 function timelineTaskCount(metadata: SessionMessage['display_metadata']): number | undefined {
   const count = parseDisplayMetadata(metadata)?.task_count
 
@@ -234,8 +278,30 @@ function timelineDisplayText(metadata: SessionMessage['display_metadata']): stri
   return typeof text === 'string' && text.trim() ? text : undefined
 }
 
+function promptSubmission(message: SessionMessage): Pick<ChatMessage, 'submissionId'> {
+  const id = message.role === 'user' ? parseDisplayMetadata(message.display_metadata)?.submission_id : undefined
+
+  return typeof id === 'string' && id ? { submissionId: id } : {}
+}
+
 function messageInterrupted(metadata: SessionMessage['display_metadata']): boolean {
   return parseDisplayMetadata(metadata)?.interrupted === true
+}
+
+/** An assistant row read into the tool bubble before it. A reply stopped after a
+ *  tool round folds in here, and its row still says the reply was stopped. */
+function foldIntoToolBubble(
+  bubble: ChatMessage,
+  message: SessionMessage,
+  parts: ChatMessagePart[],
+  durableComplete: boolean | undefined
+): void {
+  bubble.parts = [...bubble.parts, ...parts]
+  bubble.durableComplete = durableComplete
+
+  if (messageInterrupted(message.display_metadata)) {
+    bubble.interrupted = true
+  }
 }
 
 function messageReactions(metadata: SessionMessage['display_metadata']): MessageReaction[] {
@@ -376,6 +442,52 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     return timestamps.length ? Math.min(...timestamps) : undefined
   }
 
+  // A stopped mark says the reply ended there. When the same reply goes on with no visible
+  // row between (a host plugin paused the turn to apply a grant and continued it with a hidden
+  // prompt), it was not stopped for the reader: the mark comes off. A visible user or system
+  // row (the user writing next, the "resumed interrupted turn" notice) keeps it.
+  let stoppedBubble: ChatMessage | null = null
+
+  /** `bubble` takes output that continues the reply, so a stopped bubble before it did not end there. */
+  const wentOn = (bubble: ChatMessage) => {
+    if (stoppedBubble) {
+      delete stoppedBubble.interrupted
+    }
+
+    stoppedBubble = bubble.interrupted ? bubble : null
+  }
+
+  /** A row drawn on its own: assistant output goes on with the reply, anything else stands between. */
+  const drawnRow = (bubble: ChatMessage) => {
+    if (bubble.role === 'assistant') {
+      wentOn(bubble)
+    } else {
+      stoppedBubble = null
+    }
+  }
+
+  /** A row that draws nothing stands between only when the reader would have seen it. */
+  const emptyRow = (message: SessionMessage) => {
+    if (message.display_kind !== 'hidden') {
+      stoppedBubble = null
+    }
+  }
+
+  /** The row goes on with the tool bubble; a stopped reply folded in brings its own mark. */
+  const foldContinuing = (
+    bubble: ChatMessage,
+    message: SessionMessage,
+    parts: ChatMessagePart[],
+    durableComplete: boolean | undefined
+  ) => {
+    wentOn(bubble)
+    foldIntoToolBubble(bubble, message, parts, durableComplete)
+
+    if (bubble.interrupted) {
+      stoppedBubble = bubble
+    }
+  }
+
   const appendPartsToActiveAssistant = (parts: ChatMessagePart[], timestamp?: number): boolean => {
     if (activeAssistantIndex === null) {
       return false
@@ -389,6 +501,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       return false
     }
 
+    wentOn(active)
     active.parts = [...active.parts, ...parts]
     active.durableComplete = false
     active.timestamp = earliestTimestamp(active.timestamp, timestamp, ...parts.map(part => part.timestamp))
@@ -412,12 +525,33 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         timestamp: pendingToolTimestamp
       })
       activeAssistantIndex = result.length - 1
+      wentOn(result[activeAssistantIndex])
     }
 
     clearPendingTools()
   }
 
-  messages.forEach((message, index) => {
+  // The empty row closing a turn stopped during its tool run draws nothing, but it is
+  // the turn's last stored row and the one that says it was stopped: the mark goes on
+  // the bubble that row closes, as a folded reply's does (foldIntoToolBubble).
+  const lendStoppedMark = (message: SessionMessage, index: number) => {
+    if (!messageInterrupted(message.display_metadata)) {
+      return
+    }
+
+    flushPendingTools(index)
+    const bubble = activeAssistantIndex === null ? undefined : result[activeAssistantIndex]
+
+    if (bubble?.role === 'assistant') {
+      bubble.interrupted = true
+      stoppedBubble = bubble
+    }
+  }
+
+  // `index` stays the stored row position (it keys tool-part and message ids), so skipped merges shift nothing.
+  const painted = messages.flatMap((message, index) => (isPainted(message) ? [{ index, message }] : []))
+
+  painted.forEach(({ message, index }) => {
     if (message.role === 'assistant') {
       nearestAssistant = message
     } else if (message.role === 'user' || message.role === 'system') {
@@ -536,9 +670,12 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     if (!parts.length && !extractedAttachmentRefs?.length) {
-      if (message.role !== 'assistant') {
+      if (message.role === 'assistant') {
+        lendStoppedMark(message, index)
+      } else {
         flushPendingTools(index)
         activeAssistantIndex = null
+        emptyRow(message)
       }
 
       return
@@ -557,7 +694,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     let pendingAbsorbedRows = 0
 
-    if (message.role === 'assistant') {
+    // A machine notice stored as an assistant row (the failed-turn boundary) is
+    // Hermes speaking: it must not join the tool-call reply it follows.
+    if (displayRole === 'assistant') {
       if (pendingToolParts.length) {
         if (!appendPartsToActiveAssistant(pendingToolParts, message.timestamp ?? pendingToolTimestamp)) {
           parts.unshift(...pendingToolParts)
@@ -576,8 +715,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       const activeHasToolCall = Boolean(activeAssistant?.parts.some(part => part.type === 'tool-call'))
 
       if (activeAssistant && (currentHasToolCall || activeHasToolCall)) {
-        activeAssistant.parts = [...activeAssistant.parts, ...parts]
-        activeAssistant.durableComplete = durableComplete
+        foldContinuing(activeAssistant, message, parts, durableComplete)
         activeAssistant.timestamp = earliestTimestamp(
           activeAssistant.timestamp,
           message.timestamp,
@@ -607,6 +745,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     const reactions = messageReactions(message.display_metadata)
+
+    const contentRefused = contentRefusedField(message)
+
     // Gateway resume names the durable row id `row_id`; the REST transcript
     // prefetch ships the same messages.id as a numeric `id`. Either one lets
     // reactions address this exact row later.
@@ -621,13 +762,16 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
+      ...promptSubmission(message),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
       ...(reactions.length ? { reactions } : {}),
       ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),
-      ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})
+      ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {}),
+      ...contentRefused
     })
 
     activeAssistantIndex = message.role === 'assistant' ? result.length - 1 : null
+    drawnRow(result[result.length - 1])
   })
   flushPendingTools(messages.length)
 
@@ -640,7 +784,11 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   return withUniqueToolCallIds(
     withoutGeneratedImageEchoes.filter(
       m =>
-        chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text') || m.attachmentRefs?.length || m.error
+        chatMessageText(m).trim() ||
+        m.parts.some(part => part.type !== 'text') ||
+        m.attachmentRefs?.length ||
+        m.error ||
+        m.contentRefused
     )
   )
 }

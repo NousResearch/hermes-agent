@@ -1,0 +1,24 @@
+name: nurse
+title: Hermes Nurse
+repo: https://github.com/Megumiiiiii/hermes-nurse
+sha: a830f7c8a71490c69368cf2071b85b4476e561b0
+version: "0.1.0"
+description: "Supervisor-aware service management for a Hermes host. Reads pm2 and systemd into one table, triages a failing service's own logs into a ranked diagnosis (OOM via SIGKILL/exit 137, port already in use, missing env var, crash loop measured as restarts per hour rather than uptime, bad exit code, dependency unreachable), and repairs it through one guarded surface. Disclosure — service_repair changes supervisor state: it restarts, starts, stops, reloads or resets a named pm2 process, or restarts, starts, stops or reset-fails a systemd user unit, behind an allowlist of verbs, a confirm plan-then-act step, a persisted per-service cooldown ledger, a refusal to restart a service already crash-looping, and a pre_tool_call hook that escalates every state-changing call to Hermes' own human-approval prompt. It shells out to `pm2` and `systemctl`/`journalctl` as the invoking user, so it can only act on services that user already controls; it reads their log files (including pm2's rotated siblings) and writes a small JSON snapshot and cooldown ledger under plugin-data/nurse. No network I/O, no credentials, no elevated privileges."
+maintainer: Megumiiiiii
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Megumiiiiii/hermes-nurse#readme
+readme: true
+platforms:
+  - linux
+capabilities:
+  provides_tools:
+    - service_list
+    - service_triage
+    - service_repair
+  provides_hooks:
+    - on_session_start
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

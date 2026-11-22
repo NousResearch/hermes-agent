@@ -19,20 +19,22 @@ import argparse
 import logging
 import os
 import re
+import sys
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_connection import GatewayConnection
+from hermes_cli.gateway_connection import RESUME_REFUSALS, GatewayConnection
 
 logger = logging.getLogger(__name__)
 
-# Read-only SessionDB methods main's CLI calls (served by the WAL reader).
+# Read-only SessionDB methods main's CLI calls (served by the storage interface reader).
 _READS = frozenset({
     "get_session", "get_session_title", "get_session_by_title", "resolve_resume_session_id",
     "get_messages_as_conversation", "get_resume_conversations", "assert_resume_safe",
     "is_kanban_owned_session", "list_sessions_rich", "search_sessions", "get_next_title_in_lineage",
     "get_handoff_state", "get_meta", "get_compression_tip", "resolve_session_by_title", "get_messages",
     "session_count", "sanitize_title", "session_yolo_enabled",
+    "get_session_model_config_value",
 })
 # Writes the gateway already performs itself (persistence, accounting, maintenance).
 _GATEWAY_OWNED = frozenset({
@@ -40,8 +42,8 @@ _GATEWAY_OWNED = frozenset({
     "update_session_model", "patch_session_model_config", "maybe_auto_archive",
     "maybe_auto_prune_and_vacuum", "set_meta", "update_token_counts", "close",
 })
-# Mutations the owner refuses without the execution generation they were read at (hermes_state_runtime).
-_GENERATION_FENCED = frozenset({"delete", "rewind", "reset", "branch", "model", "compress"})
+# Mutations the owner refuses without the execution generation they were read at.
+_GENERATION_FENCED = frozenset({"delete", "rewind", "reset", "branch", "model", "compress", "workspace"})
 _COUNTED_REPAIRS = frozenset({"prune_empty_ghost_sessions", "finalize_orphaned_compression_sessions"})
 # Launch options main's ``cli.main`` takes that are creation policy on the gateway session.
 _LAUNCH_POLICY = ("model", "provider", "toolsets", "reasoning", "api_key", "base_url", "max_turns",
@@ -57,16 +59,31 @@ def _zero(*_a, **_k):
 
 
 class GatewaySessionStore:
-    """Truthy while the gateway connection is usable (main's ``if self._session_db:`` guards)."""
+    """Truthy until the viewer's gateway connection is final (main's ``if self._session_db:`` guards);
+    a gateway hang-up stays truthy, and the next call redials."""
+
+    current: dict | None = None  # the opened session's snapshot; never ``__getattr__``'s refusal
+    # ``(prepared, abandon)`` while an owner-restart wait retries one open (``through_owner_restart``):
+    # one dict freezing the first attempt's request across retries, and the Ctrl+C poll.
+    retry: tuple | None = None
 
     def __init__(self, connection=None):
         self.connection = connection or GatewayConnection.shared()
         self.snapshots: dict[str, dict] = {}
         self.current: dict | None = None
         self._reader = None
+        self.persistence = None  # the storage interface reader ``_reader`` reads through
+        self._handles = None
+        self._create_parameters = None
 
     def __bool__(self):
-        return not self.connection.closed
+        return not self.connection.final
+
+    def close_reader(self):
+        """Release this viewer's SQLite handles before offline maintenance; keep its RPC store."""
+        if self._handles is not None:
+            self._handles.close()
+            self._handles = self._reader = self.persistence = None
 
     # -- reads -----------------------------------------------------------------------------
     def _db(self):
@@ -74,23 +91,35 @@ class GatewaySessionStore:
         first start, after the CLI's startup maintenance probe) is retried on the next read."""
         if self._reader is None:
             from hermes_constants import get_hermes_home
-            path = get_hermes_home() / "state.db"
-            if not path.exists():
+            from persistence_assembly import open_persistence_reader, profile_scope, store_location
+            home = get_hermes_home()
+            location = store_location(profile_scope(home=home))
+            if location is not None and not location.exists():
                 return None
+            from contextlib import ExitStack
+
+            handles = ExitStack()
             try:
-                from hermes_state import SessionDB
-                self._reader = SurfaceLabelReader(SessionDB(db_path=path, read_only=True))
+                store = handles.enter_context(open_persistence_reader(home))
+                store.ready()
             except Exception as exc:  # health: allow BLE001 -- reads find nothing; retried on the next read
+                handles.close()
                 logger.debug("read-only state.db unavailable: %s", exc)
+                return None
+            self._handles, self.persistence = handles, store
+            self._reader = SurfaceLabelReader(store)
         return self._reader
 
     def __getattr__(self, name):
         if name.startswith("__"):
             raise AttributeError(name)
         if name in _READS:
-            if name in {"sanitize_title", "session_yolo_enabled"}:
-                from hermes_state import SessionDB
-                return getattr(SessionDB, name)
+            if name == "sanitize_title":
+                from persistence.conversation.sessions import sanitize_title
+                return sanitize_title
+            if name == "session_yolo_enabled":
+                from persistence.conversation.sessions import session_yolo_enabled
+                return lambda session_meta: session_yolo_enabled((session_meta or {}).get("model_config"))
             db = self._db()
             if db is None:
                 return _noop
@@ -108,6 +137,16 @@ class GatewaySessionStore:
     def call(self, method, **params):
         return self.connection.call(method, **params)
 
+    def _retry_state(self):
+        """``(prepared, abandon)`` of the owner-restart wait this call runs in (``gateway_owner_restart.
+        through_owner_restart`` sets :attr:`retry`), else ``(None, None)``."""
+        retry = self.retry
+        return (None, None) if retry is None else retry
+
+    def _call(self, method, abandon, **params):
+        """:meth:`call`, polling ``abandon`` while it waits when one is given."""
+        return self.call(method, **params) if abandon is None else self.connection.call(method, abandon=abandon, **params)
+
     def _adopt(self, snapshot):
         sid = snapshot["stored_session_id"]
         self.snapshots[sid] = snapshot
@@ -115,61 +154,108 @@ class GatewaySessionStore:
         self.connection.state(sid).adopt_snapshot(snapshot)
         return sid
 
-    def attach(self, session_id):
-        """``session.resume`` once per session id this viewer uses (idempotent)."""
+    def attach(self, session_id, *, typed=False):
+        """``session.resume`` once per session id this viewer uses (idempotent), carrying this CLI's launch
+        key as the thin client does (``GatewayConnection.resume``, the reconnect's too). A session that does
+        not take the key (a keyed startup alias resuming a Desktop/TUI session) attaches as is. ``typed``
+        (only :meth:`open_session`'s startup resume, where the user typed ``--api-key`` for that session)
+        refuses it instead, as the thin client does."""
         if session_id in self.snapshots:
             return self.snapshots[session_id]
-        snapshot = self.call("session.resume", session_id=session_id)
+        snapshot = self.connection.resume(self.call, session_id, typed=typed)
         self._adopt(snapshot)
         return snapshot
 
     def open_session(self, cli, launch=None):
         """Create (or resume) the gateway session for this CLI and adopt its id. A resume target the
         gateway does not know is left as is: main's own "Session not found" path reports it."""
+        key = self.connection.launch_api_key = (launch or {}).get("api_key") or None
+        self.connection.launch_api_key_typed = key is not None and key == getattr(cli, "_typed_api_key", None)
         if getattr(cli, "_resumed", False):
             try:
-                return self._adopt(self.attach(cli.session_id))
+                snapshot = self.attach(cli.session_id, typed=self.connection.launch_api_key_typed)
             except GatewayClientError as exc:
-                if str(exc) in {"not_found", "permission_denied"}:
+                if str(exc) in RESUME_REFUSALS:
                     return None
                 raise
+            # The CLI sends a coding-posture toolset pick and an env-folded ignore_rules too; only a typed
+            # -t / --ignore-rules is checked.
+            _check_resume_launch({**(launch or {}), "toolsets": getattr(cli, "_typed_toolsets", None),
+                                  "ignore_rules": getattr(cli, "_explicit_ignore_rules", None) or None}, snapshot)
+            return self._adopt(snapshot)
         return self.create(launch)
 
     def create(self, launch=None, title=None, *, record_cwd=True):
         """``session.create`` with the launch policy (and ``title``: the owner's resolve -> create ->
         title step); adopts and returns the new session id. ``record_cwd=False`` (``/new``,
-        ``--create-if-missing``) leaves the row's cwd empty, as main's explicit creates did."""
-        from agent.session_source import CLI_FAMILY_SOURCES, session_source_for
+        ``--create-if-missing``) leaves the row's cwd empty, as main's explicit creates did.
+        Inside :attr:`retry` (an owner-restart wait) the first attempt's request, ``request_id``
+        included, is frozen and re-sent: the owner answers an exact retry with the session that
+        attempt committed, never a second one."""
+        prepared, abandon = self._retry_state()
+        params = prepared.get("params") if prepared is not None else None
+        if params is None:
+            params = self._create_params(launch, title, record_cwd)
+            if prepared is not None:
+                prepared["params"] = params
+        snapshot = self._call("session.create", abandon, **params)
+        warning = (snapshot.get("info") or {}).get("config_warning")
+        if warning:
+            print(f"Warning: {warning}", file=sys.stderr)
+        return self._adopt(snapshot)
+
+    def _create_params(self, launch, title, record_cwd):
+        from agent.session_source import CLI_FAMILY_SOURCES, create_surface, session_source_for
         params = _creation_policy(launch or {})
-        params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
+        params["cwd"] = _launch_cwd()
         # Main's row label: ``cli``, ``oneshot`` for a finite -q/-Q run, or an explicit --source.
-        params["source"] = session_source_for("cli")
+        params["source"] = create_surface(session_source_for("cli"))
         # Main's row stamp (run_agent._launch_cwd_for_session): this process's cwd (``-w`` never
         # chdirs, so the repo root), only for a CLI-family label on a local terminal backend.
         local = (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local")
         params["row_cwd"] = os.getcwd() if record_cwd and local and params["source"] in CLI_FAMILY_SOURCES else ""
         if title:
             params["title"] = title
-        snapshot = self.call("session.create", request_id=uuid.uuid4().hex, **params)
-        return self._adopt(snapshot)
+        params.update(self.client_env())
+        params["request_id"] = uuid.uuid4().hex
+        return params
+
+    def client_env(self):
+        """This shell's ``client_env`` when the gateway takes it (one ``runtime.describe`` per store)."""
+        from hermes_cli.gateway_chat import client_env_policy
+        if self._create_parameters is None:
+            described = self.call("runtime.describe")
+            contract = described.get("session_create") if isinstance(described, dict) else None
+            self._create_parameters = list((contract or {}).get("parameters") or [])
+        return client_env_policy(self._create_parameters)
 
     def branch(self, session_id, title=None):
         """``session.mutate branch``: the gateway forks the whole active transcript into a child it
-        attaches this viewer to; returns the child id (main's /branch then switches to it)."""
-        snapshot = self.call("session.resume", session_id=session_id)
-        payload = {"title": title} if title else {}
-        receipt = self.call("session.mutate", session_id=session_id, request_id=uuid.uuid4().hex,
-                            expected_revision=snapshot["revision"],
-                            expected_generation=snapshot["execution_generation"],
-                            operation="branch", payload=payload) or {}
-        child = receipt.get("branched_session_id")
-        if not child:
-            raise GatewayClientError("branch_failed")
+        attaches this viewer to; returns the child id (main's /branch then switches to it).
+        Inside :attr:`retry` the first attempt's request id and fenced revision (and the child once
+        named) are frozen: the owner replays an exact retry's receipt instead of forking a second child."""
+        prepared, abandon = self._retry_state()
+        prepared = {} if prepared is None else prepared
+        child = prepared.get("child")
+        if child is None:
+            mutate = prepared.get("mutate")
+            if mutate is None:
+                snapshot = self._call("session.resume", abandon, session_id=session_id)
+                mutate = prepared["mutate"] = {
+                    "session_id": session_id, "request_id": uuid.uuid4().hex,
+                    "expected_revision": snapshot["revision"],
+                    "expected_generation": snapshot["execution_generation"],
+                    "operation": "branch", "payload": {"title": title} if title else {}}
+            receipt = self._call("session.mutate", abandon, **mutate) or {}
+            child = receipt.get("branched_session_id")
+            if not child:
+                raise GatewayClientError("branch_failed")
+            prepared["child"] = child
         self._adopt(self.attach(child))
         return child
 
-    def _mutate(self, session_id, operation, payload):
-        snapshot = self.call("session.resume", session_id=session_id)
+    def _mutate(self, session_id, operation, payload, snapshot=None):
+        snapshot = snapshot or self.call("session.resume", session_id=session_id)
         fence = {}
         if operation in _GENERATION_FENCED:
             fence["expected_generation"] = snapshot["execution_generation"]
@@ -177,8 +263,13 @@ class GatewaySessionStore:
                          expected_revision=snapshot["revision"], operation=operation, payload=payload, **fence)
 
     def set_session_title(self, session_id, title):
+        snapshot = self.call("session.resume", session_id=session_id)
+        if snapshot["stored_session_id"] != session_id:
+            # A later compression segment answers with its owner's snapshot, but a rename is fenced on
+            # the row it names: send that row's own revision, or it is a revision_conflict forever.
+            snapshot = {**snapshot, "revision": self._row_revision(session_id, snapshot["revision"])}
         try:
-            self._mutate(session_id, "rename", {"title": title})
+            self._mutate(session_id, "rename", {"title": title}, snapshot)
         except GatewayClientError as exc:
             # The owner's SessionDB ValueError text never crosses the wire (bounded reason codes):
             # print main's "already in use" copy from the reader when another row holds the title.
@@ -194,29 +285,31 @@ class GatewaySessionStore:
         """Main's ``SessionDB.rewind_user_turn`` (``/undo N``, ``/retry``) as ``session.mutate rewind``.
         The user turn is located on the gateway's snapshot transcript (its rows carry ``row_id``),
         checked against the CLI's warm view exactly as main checks it, then rewound by that row id."""
-        from agent.context_compressor import history_before_user_originated_turn, retryable_user_text
-        from agent.message_content import flatten_message_text
-        from agent.session_persistence import _is_ephemeral_scaffolding
-        from hermes_state_rewind import (
-            _HISTORY_CHANGED, RewindOutcome, RewindTargetUnavailableError, _comparison_content, _user_indices)
+        from session_rules.turns import (
+            history_before_user_originated_turn, retryable_user_text, flatten_message_text,
+        )
+        from session_rules.turns import (
+            _is_ephemeral_scaffolding, HISTORY_CHANGED, comparison_content, user_indices,
+        )
+        from persistence.conversation.messages import RewindTargetUnavailable, UserTurnRewind
         snapshot = self.call("session.resume", session_id=session_id)
-        durable = list(snapshot.get("messages") or [])
-        durable_user = _user_indices(durable)
+        durable = [m for m in snapshot.get("messages") or [] if not m.get("archived")]  # the live rows
+        durable_user = user_indices(durable)
         if user_ordinal < 0:
             user_ordinal = max(len(durable_user) + user_ordinal, 0)
         if user_ordinal >= len(durable_user):
-            raise RewindTargetUnavailableError("target user message is no longer in session history")
+            raise RewindTargetUnavailable("target user message is no longer in session history")
         target = durable[durable_user[user_ordinal]]
         durable_prefix, live_view = history_before_user_originated_turn(durable, durable_user[user_ordinal])
         prefix = [{k: v for k, v in m.items() if k != "row_id"} for m in durable_prefix]
         if warm_history is not None:
             warm = [m for m in warm_history if not _is_ephemeral_scaffolding(m)]
-            warm_user = _user_indices(warm)
+            warm_user = user_indices(warm)
             if len(warm_user) != len(durable_user):
-                raise RuntimeError(_HISTORY_CHANGED)
+                raise RuntimeError(HISTORY_CHANGED)
             prefix, warm_live = history_before_user_originated_turn(warm, warm_user[user_ordinal])
-            if _comparison_content(live_view) != _comparison_content(warm_live):
-                raise RuntimeError(_HISTORY_CHANGED)
+            if comparison_content(live_view) != comparison_content(warm_live):
+                raise RuntimeError(HISTORY_CHANGED)
         live_text = retryable_user_text(live_view.get("content")) if require_retryable else None
         if not isinstance(target.get("row_id"), int):
             raise RuntimeError("rewind target has no durable row identity")
@@ -224,7 +317,7 @@ class GatewaySessionStore:
                             expected_revision=snapshot["revision"],
                             expected_generation=snapshot["execution_generation"],
                             operation="rewind", payload={"target_message_id": target["row_id"]}) or {}
-        return RewindOutcome(
+        return UserTurnRewind(
             prefix=prefix, live_view=live_view,
             live_text=live_text if live_text is not None else flatten_message_text(live_view.get("content")),
             rewound_count=int(receipt.get("rewound_count") or 0), turns_undone=len(durable_user) - user_ordinal)
@@ -234,25 +327,65 @@ class GatewaySessionStore:
         on the route), since approvals run there. The CLI's in-process flag stays main's display state."""
         self.call("config.set", session_id=session_id, key="yolo", value="1" if enabled else "0")
 
+    def _row_revision(self, session_id, default):
+        if self._db() is None:
+            return default
+        record = self.persistence.sessions.get(session_id)
+        return record.runtime_revision if record is not None else default
+
     def _title_holder(self, session_id, title):
-        db = self._db()
-        if db is None or not title:
+        if self._db() is None or not title:
             return None
-        with db._read_ctx() as conn:
-            row = conn.execute("SELECT id FROM sessions WHERE title = ? AND id != ?", (title, session_id)).fetchone()
-        return row[0] if row else None
+        return self.persistence.sessions.title_holder(title, excluding=session_id)
+
+    def _leave(self, session_id):
+        """Drop this viewer's subscription record and return its id. The connection's SessionState holds
+        the live id (a reconnect resubscribes under a new one); cleared, no later reconnect resumes it."""
+        state = self.connection.states.get(session_id)
+        subscription = state.subscription_id if state is not None else None
+        if state is not None:
+            state.subscription_id = None
+        return subscription
 
     def delete_session(self, session_id, sessions_dir=None):
         self.snapshots.pop(session_id, None)
-        self._mutate(session_id, "delete", {})
+        snapshot = self.call("session.resume", session_id=session_id)
+        # The owner answers and subscribes under the id it resolved the read to (a compression
+        # segment maps to its logical owner), and reuses a subscription this viewer already holds.
+        resolved = snapshot.get("session_id") or session_id
+        state = self.connection.states.get(resolved)
+        held = state is not None and state.subscription_id is not None
+        try:
+            self._mutate(session_id, "delete", {}, snapshot)
+        except GatewayClientError:
+            # Hand back only the attachment the read made, with a plain detach: an end_reason would
+            # run the owner's viewer close (fencing the session's delegations, ending it at idle).
+            if not held and snapshot.get("subscription_id"):
+                try:
+                    self.call("session.detach", session_id=resolved, subscription_id=snapshot["subscription_id"])
+                except GatewayClientError as exc:
+                    logger.debug("session.detach after a refused delete failed: %s", exc)
+            raise
+        self._leave(session_id)
         return True
 
     def end_session(self, session_id, reason=None):
         """Main's ``end_session(sid, reason)``: detach this viewer with ``end_reason``; the owner ends
         the idle local row with that reason once no viewer is left (``ended_at`` / ``end_reason``)."""
         snapshot = self.snapshots.pop(session_id, None)
-        subscription = (snapshot or {}).get("subscription_id")
-        if subscription and not self.connection.closed:
+        state = self.connection.states.get(session_id)
+        reachable = state is not None and state.subscription_id is not None and not self.connection.final
+        if reachable:
+            try:
+                # Hung up: redial first, so the detach names the subscription the reconnect resumed.
+                self.connection.start()
+                if state.gaps != state.attached_gaps:  # a replay gap retired it: re-attach, so the detach lands
+                    self.connection.reattach(session_id)
+            except GatewayClientError as exc:
+                logger.debug("redial for session.detach failed: %s", exc)
+                reachable = False
+        subscription = self._leave(session_id)
+        if subscription and reachable:
             params = {"end_reason": reason} if reason else {}
             try:
                 self.call("session.detach", session_id=session_id, subscription_id=subscription, **params)
@@ -264,16 +397,10 @@ class GatewaySessionStore:
     def delete_session_if_empty(self, session_id, sessions_dir=None):
         """Main's quit-immediately prune, as a gateway delete: only a row with no messages, no title
         and no children (checked on the read-only reader; the gateway deletes the lineage)."""
-        db = self._db()
-        if db is None:
+        if self._db() is None:
             return False
         try:
-            with db._read_ctx() as conn:
-                empty = conn.execute(
-                    "SELECT 1 FROM sessions WHERE id = ? AND title IS NULL"
-                    " AND NOT EXISTS (SELECT 1 FROM messages WHERE messages.session_id = sessions.id)"
-                    " AND NOT EXISTS (SELECT 1 FROM sessions child WHERE child.parent_session_id = sessions.id)",
-                    (session_id,)).fetchone()
+            empty = self.persistence.sessions.is_empty_candidate(session_id)
         except Exception as exc:  # health: allow BLE001 -- a failed probe keeps the row (never deletes on doubt)
             logger.debug("empty-session probe failed: %s", exc)
             return False
@@ -311,46 +438,186 @@ class GatewaySessionStore:
             "cwd": info.get("cwd"),
             # Main's startup lines under the banner, computed in the gateway (``source: cli`` only).
             "tool_availability_warnings": info.get("tool_availability_warnings"),
-            "browser_backend_notice": info.get("browser_backend_notice"),
         }
 
 
-# Interactive surfaces whose gateway rows are labelled ``local`` (``created_source`` keeps the surface;
-# gateway/session_a2a.storage_source). Producer labels (oneshot, tool, kanban, ...) are stored as is.
-_LOCAL_LABELLED = frozenset({"cli", "tui", "gui"})
+def _window(limit, offset):
+    """The listing window for ``limit``/``offset``: a negative limit is no limit, as SQL's ``LIMIT -1``."""
+    from persistence.conversation.sessions import SessionWindow
+    return SessionWindow(limit=None if limit is not None and limit < 0 else limit, offset=offset)
 
 
 class SurfaceLabelReader:
-    """A read-only ``SessionDB`` whose source-filtered listings read main's labels: ``source='cli'``
-    also matches a gateway row labelled ``local`` that the CLI created (``created_source='cli'``), so
-    main's /resume picker, /sessions, /history and bare ``-c`` find the sessions the CLI made."""
+    """Main's read-only ``SessionDB`` reads, served by a storage interface handle in their dict and list
+    shapes. Source-filtered listings read main's labels: ``source='cli'`` also matches a gateway row
+    labelled ``local`` that the CLI created (``created_source='cli'``), so main's /resume picker,
+    /sessions, /history and bare ``-c`` find the sessions the CLI made. The surface predicate runs in
+    the store, before LIMIT/OFFSET. The caller owns and closes ``store``.
+    """
 
-    def __init__(self, db):
-        self._wrapped = db
+    def __init__(self, store):
+        self.persistence = store
+        self._has_column = False
 
-    def __getattr__(self, name):
-        return getattr(self._wrapped, name)
+    def _has_created_source_column(self) -> bool:
+        """Read-only opens don't migrate, so ``created_source`` may be missing. Only "present" is
+        cached: a lock or I/O error is not proof of absence, and another connection may add it."""
+        if not self._has_column:
+            self._has_column = self.persistence.sessions.records_created_surface()
+        return self._has_column
 
-    def _labelled(self, method, requested, limit, offset, call):
+    def _expand(self, requested):
+        """``(live source labels, created_source labels)`` or None for a raw source filter.
+
+        Groups come from session_policy.SURFACES and STORED_AS_LOCAL: gui and desktop are one
+        conversation (the in-process agent is desktop, the managed worker creates with gui), acp
+        is stored local too, and tool/oneshot are not cli aliases. Live labels include the other
+        name of a gui/desktop pair, so a row that has not been peer-refreshed (``source='gui'``)
+        still matches ``--source desktop``.
+        """
+        from gateway.session_policy import SURFACE_GROUPS
         wanted = {requested} if isinstance(requested, str) else set(requested or ())
-        surfaces = wanted & _LOCAL_LABELLED
-        if not surfaces:
-            return call(requested, limit, offset)
-        # Over-fetch, then keep only the local rows those surfaces created (ordering is the reader's own).
-        rows = call(sorted(wanted | {"local"}), (limit + offset) * 3 + 50, 0)
-        kept = [row for row in rows if row.get("source") != "local" or row.get("created_source") in surfaces]
-        return kept[offset:offset + limit]
+        created = set()
+        live = set(wanted)
+        for name, group in SURFACE_GROUPS.items():
+            if name in wanted:
+                live |= group
+                created |= group
+        if not created or not self._has_created_source_column():
+            return None
+        return sorted(live | {"local"}), sorted(created)
 
+    def _labelled(self, requested, limit, offset, call):
+        expanded = self._expand(requested)
+        # No column (and so no gateway ``local`` rows yet): naming it would raise, and the caller
+        # swallows that into an empty page.
+        if expanded is None:
+            return call(requested, limit, offset, None)
+        live, surfaces = expanded
+        return call(live, limit, offset, surfaces)
+
+    # -- listings --------------------------------------------------------------------------
     def search_sessions(self, source=None, limit=20, offset=0, **kw):
-        return self._labelled("search_sessions", source, limit, offset,
-                              lambda src, lim, off: self._wrapped.search_sessions(source=src, limit=lim, offset=off, **kw))
+        return self._labelled(
+            source, limit, offset,
+            lambda src, lim, off, surfaces: self._search(src, lim, off, surfaces, **kw))
+
+    def _search(self, source, limit, offset, local_created_sources, *, workspace_key=None, skip_launch_stubs=False):
+        entries = self.persistence.sessions.search_sessions(
+            sources=([source] if isinstance(source, str) else list(source)) if source else None,
+            workspace_key=workspace_key, local_created_sources=local_created_sources,
+            skip_launch_stubs=skip_launch_stubs, window=_window(limit, offset))
+        return [{**entry.session.as_session_row(), "last_active": entry.last_active} for entry in entries]
 
     def list_sessions_rich(self, source=None, sources=None, limit=20, offset=0, **kw):
         requested = sources if sources else ([source] if source else None)
         if not requested:
-            return self._wrapped.list_sessions_rich(limit=limit, offset=offset, **kw)
-        return self._labelled("list_sessions_rich", requested, limit, offset,
-                              lambda src, lim, off: self._wrapped.list_sessions_rich(sources=src, limit=lim, offset=off, **kw))
+            return self._list(None, limit, offset, None, **kw)
+        return self._labelled(
+            requested, limit, offset,
+            lambda src, lim, off, surfaces: self._list(src, lim, off, surfaces, **kw))
+
+    def _list(self, sources, limit, offset, local_created_sources, *, exclude_sources=None,
+              order_by_last_active=False, search_query=None, compact_rows=False, **filters):
+        from persistence.conversation.sessions import SessionOrder, SessionQuery
+        query = SessionQuery(
+            sources=tuple(sources) if sources else None, exclude_sources=tuple(exclude_sources or ()),
+            order=SessionOrder.LAST_ACTIVE if order_by_last_active else SessionOrder.STARTED_AT,
+            search_text=search_query,
+            local_created_sources=tuple(local_created_sources) if local_created_sources else None, **filters)
+        entries = self.persistence.sessions.list_sessions(
+            query, _window(limit, offset), compact_rows=compact_rows)
+        return [entry.as_list_row() for entry in entries]
+
+    def session_count(self, source=None, sources=None, **kw):
+        expanded = self._expand(sources or source)
+        if expanded is None:
+            requested = [source] if source else sources
+            return self._count(requested, None, **kw)
+        live, surfaces = expanded
+        return self._count(live, surfaces, **kw)
+
+    def _count(self, sources, local_created_sources, *, exclude_sources=None, **filters):
+        from persistence.conversation.sessions import SessionCountQuery
+        return self.persistence.sessions.count_sessions(SessionCountQuery(
+            sources=tuple(sources) if sources else None, exclude_sources=tuple(exclude_sources or ()),
+            local_created_sources=tuple(local_created_sources) if local_created_sources else None, **filters))
+
+    # -- rows and titles -------------------------------------------------------------------
+    def get_session(self, session_id):
+        record = self.persistence.sessions.get(session_id)
+        return None if record is None else record.as_session_row()
+
+    def get_session_by_title(self, title):
+        record = self.persistence.sessions.get_by_title(title)
+        return None if record is None else record.as_session_row()
+
+    def get_session_title(self, session_id):
+        return self.persistence.sessions.get_title(session_id)
+
+    def resolve_session_by_title(self, title):
+        return self.persistence.sessions.resolve_by_title(title)
+
+    def get_next_title_in_lineage(self, base_title):
+        return self.persistence.sessions.next_title_in_lineage(base_title)
+
+    def is_kanban_owned_session(self, session_id):
+        return self.persistence.sessions.is_kanban_owned(session_id)
+
+    def get_session_model_config_value(self, session_id, key, default=None):
+        return self.persistence.sessions.get_model_config_value(session_id, key, default)
+
+    def get_meta(self, key):
+        return self.persistence.state_meta.get(key)
+
+    def get_handoff_state(self, session_id):
+        """``{"state", "platform", "error"}``, or None without a handoff record or when the read fails."""
+        state = self.persistence.coordination.get_handoff(session_id=session_id)
+        if state is None:
+            return None
+        return {"state": state.state.value, "platform": state.platform, "error": state.error}
+
+    # -- lineage and transcripts -----------------------------------------------------------
+    def resolve_resume_session_id(self, session_id):
+        return self.persistence.lineage.resolve_resume_target(session_id)
+
+    def get_compression_tip(self, session_id):
+        return self.persistence.lineage.tip(session_id)
+
+    def get_messages_as_conversation(self, session_id, include_ancestors=False, include_inactive=False,
+                                     repair_alternation=False, include_row_ids=False, include_compacted=False):
+        from persistence.conversation.messages import ConversationRequest
+        request = ConversationRequest(view=_transcript_view(include_inactive, include_compacted),
+                                      include_lineage=include_ancestors, repair_alternation=repair_alternation,
+                                      include_row_ids=include_row_ids)
+        return [message.as_openai_message() for message in self.persistence.messages.read_conversation(
+            session_id, request)]
+
+    def get_resume_conversations(self, session_id):
+        resume = self.persistence.messages.read_resume_conversations(session_id)
+        return ([message.as_openai_message() for message in resume.model],
+                [message.as_openai_message() for message in resume.display])
+
+    def assert_resume_safe(self, session_id, max_messages=None, *, tip_only=False):
+        if max_messages is None:
+            from storage_limits import resolved_max_resume_messages
+            max_messages = resolved_max_resume_messages()
+        return self.persistence.messages.assert_resume_safe(session_id, max_messages=max_messages, tip_only=tip_only)
+
+    def get_messages(self, session_id, include_inactive=False, include_compacted=False, limit=None, offset=0,
+                     latest=False, after_id=None, include_ancestors=False):
+        from persistence.conversation.messages import TranscriptRead
+        request = TranscriptRead(view=_transcript_view(include_inactive, include_compacted), limit=limit,
+                                 offset=offset, latest=latest, after_id=after_id, include_lineage=include_ancestors)
+        return [row.as_wire_row() for row in self.persistence.messages.read_transcript(session_id, request)]
+
+
+def _transcript_view(include_inactive, include_compacted):
+    """The transcript view main's ``include_inactive`` / ``include_compacted`` flags select."""
+    from persistence.conversation.messages import TranscriptView
+    if include_inactive:
+        return TranscriptView.ALL
+    return TranscriptView.DISPLAY if include_compacted else TranscriptView.ACTIVE
 
 
 _CANONICAL_LOCAL_ID = re.compile(r"^local-([0-9a-f]{8})[0-9a-f]{56}$")
@@ -372,12 +639,71 @@ def _creation_policy(launch):
         fields["toolsets"] = ",".join(str(item) for item in fields["toolsets"])
     policy = _requested_policy(argparse.Namespace(**fields, source=None))
     policy.pop("source", None)
-    if launch.get("run_budget") is not None:  # main's `--run-budget` (the thin client refuses it)
-        policy["run_budget"] = float(launch["run_budget"])
-    if launch.get("verbose"):  # main's `-v` (the thin client refuses it)
-        policy["verbose"] = True
+    policy.update(_classic_only_policy(launch))
     policy.update(env_launch_flags())
     return policy
+
+
+def _launch_cwd():
+    """``session.create``'s ``cwd``, a host folder the owner checks on its own host. TERMINAL_CWD is the
+    folder this CLI has selected (``-w``, ``/worktree new`` and ``/resume`` all move it). A local backend
+    sends it as is, as on main. A docker/ssh one sends it when it is a host directory or the recorded
+    ``-w`` tree (a vanished tree is then refused as on main, not swapped for the checkout); otherwise
+    it is a path inside the sandbox, so the launch dir is sent and the backend keeps its own cwd
+    (``terminal_uses_host_cwd``). A tree no longer selected (a later /resume moved away) never decides.
+    ``hermes -w`` records the tree in the imported ``cli`` module, ``python cli.py -w`` in ``__main__``."""
+    terminal_cwd = os.getenv("TERMINAL_CWD")
+    trees = (getattr(sys.modules.get(name), "_active_worktree", None) for name in ("cli", "__main__"))
+    recorded = {os.path.realpath(tree["path"]) for tree in trees if tree and tree.get("path")}
+    if terminal_cwd and os.path.realpath(terminal_cwd) in recorded:
+        return os.path.realpath(terminal_cwd)
+    local = (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local")
+    return os.path.realpath(terminal_cwd if terminal_cwd and (local or os.path.isdir(terminal_cwd)) else os.getcwd())
+
+
+def _classic_only_policy(launch):
+    """Main's `--run-budget` and `-v`, which the thin client refuses."""
+    policy = {}
+    if launch.get("run_budget") is not None:
+        policy["run_budget"] = float(launch["run_budget"])
+    if launch.get("verbose"):
+        policy["verbose"] = True
+    return policy
+
+
+# Flags a resume may only repeat (``toolsets`` arrives here only from an explicit ``-t``).
+_RESUME_CHECKED = _LAUNCH_POLICY
+
+
+def _check_resume_launch(launch, snapshot):
+    """Explicit launch flags on ``--resume`` / ``-c`` against the session's frozen route, as the thin
+    client checks them: the same flags again are fine, a different value is refused, never dropped."""
+    from hermes_cli.gateway_chat import check_resume_policy, resume_policy_error
+    fields = {key: launch.get(key) for key in _RESUME_CHECKED}
+    if isinstance(fields.get("toolsets"), (list, tuple)):
+        fields["toolsets"] = ",".join(str(item) for item in fields["toolsets"])
+    check_resume_policy(argparse.Namespace(**fields), snapshot)
+    frozen = ((snapshot.get("info") or {}).get("launch_request") or {})
+    differs = [key for key, value in _classic_only_policy(launch).items() if frozen.get(key) != value]
+    if differs:
+        raise resume_policy_error(differs)
+
+
+def move_cli_workspace(cli, wt_info):
+    """``/worktree new``: the session's tools run in the gateway under the cwd frozen in its policy, so
+    move that first (``session.mutate workspace``, Desktop's Move to project; a refusal raises before
+    anything moved). The moved session resumes in the tree, so it is recorded as a ``--tui -w`` tree is:
+    quit removes it when clean and a resume recreates it (N8). Then this process's cwd and TERMINAL_CWD
+    follow, so a later /new creates its session from the tree; a chdir OSError leaves both where they
+    were (the gateway session has moved by then)."""
+    from hermes_cli.gateway_automation import gateway_connection
+    cwd = wt_info["path"]
+    if gateway_connection(cli) is not None:
+        cli._session_db._mutate(cli.session_id, "workspace", {"cwd": cwd})
+        from hermes_cli.tui_worktree_resume import record_tui_worktree
+        record_tui_worktree(wt_info)
+    os.chdir(cwd)
+    os.environ["TERMINAL_CWD"] = cwd
 
 
 def session_store():
@@ -391,11 +717,13 @@ def create_titled_session(title):
     (``row_cwd`` ""). Returns the id, or None when the gateway refused (the caller prints main's
     "could not be created" copy)."""
     params = _creation_policy({})
-    params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
+    params["cwd"] = _launch_cwd()
     params["source"] = "cli"  # main's titled row is `cli` (hermes_cli.main._create_titled_session)
     params["row_cwd"] = ""
     try:
-        snapshot = session_store().call("session.create", request_id=uuid.uuid4().hex, title=title, **params)
+        store = session_store()
+        params.update(store.client_env())
+        snapshot = store.call("session.create", request_id=uuid.uuid4().hex, title=title, **params)
     except GatewayClientError as exc:
         logger.warning("Failed to create titled session %r on the gateway: %s", title, exc)
         return None

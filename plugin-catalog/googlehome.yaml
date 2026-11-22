@@ -1,0 +1,32 @@
+name: googlehome
+repo: https://github.com/karmsheel/google-home
+sha: 36917f2220f29142bf6e829df47d403b0d621ab4
+subdir: googlehome
+description: "Google Home / Nest speaker as the mouth of a Hermes profile: replies are cast over the Cast v2 protocol with zero third-party dependencies, voice arrives from the host microphone through Hermes STT, and one speaker keeps one conversation. Adds googlehome_speak, googlehome_notify, googlehome_status, googlehome_volume and googlehome_devices, a Desktop page with push-to-talk and speaker controls, and hermes googlehome CLI commands. Disclosure — talks to the Google Home / Nest speaker over the local network (Cast TLS port 8009 and mDNS) and serves each spoken reply as an MP3 from an unauthenticated media server on all interfaces, so devices on the same LAN can fetch recent reply clips; runs a token-gated loopback control API (proxied for Desktop through the dashboard) that can start agent turns without gateway pairing; and spawns PowerShell SAPI or edge-tts to synthesize speech."
+maintainer: karmsheel
+tier: community
+category: platform
+requires_hermes: ">=0.21.5"
+version: "0.4.1"
+title: Google Home
+docs_url: https://github.com/karmsheel/google-home#readme
+image: https://raw.githubusercontent.com/karmsheel/google-home/36917f2220f29142bf6e829df47d403b0d621ab4/assets/googlehome.jpg
+screenshots:
+  - https://raw.githubusercontent.com/karmsheel/google-home/36917f2220f29142bf6e829df47d403b0d621ab4/docs/screenshots/01-bridge.png
+  - https://raw.githubusercontent.com/karmsheel/google-home/36917f2220f29142bf6e829df47d403b0d621ab4/docs/screenshots/02-controls.png
+platforms: []
+known_issues:
+  - The speaker's own microphone cannot be used; voice input comes from the host machine's microphone through Hermes STT.
+  - Casting takes the speaker over and interrupts whatever it is already playing.
+capabilities:
+  provides_tools:
+    - googlehome_speak
+    - googlehome_notify
+    - googlehome_status
+    - googlehome_volume
+    - googlehome_devices
+  provides_hooks:
+    - post_llm_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

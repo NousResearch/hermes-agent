@@ -1,4 +1,5 @@
 import type { MessageCompletePayload, SubagentEventPayload, ToolLabel } from '@hermes/shared/gateway-events'
+import type { SessionInterruptResponse } from '@hermes/shared/gateway-types'
 
 import {
   REASONING_PULSE_MS,
@@ -7,9 +8,9 @@ import {
   STREAM_SCROLL_BATCH_MS,
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
-import type { SessionInterruptResponse } from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
+import { $turnOutcome, completionOutcome, errorOutcome } from '../lib/programStatus.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import {
@@ -124,6 +125,13 @@ const finalTail = (finalText: string, segments: Msg[]) => {
 
   return tail
 }
+
+// Whether the streamed tail is a segment of its own: only when the gateway's final text does not
+// already carry it — otherwise the tail IS the answer and flushing would move the tool shelf/trail
+// under it. Never without a final text (`rawText` is then the buffer, #16391), nor when a
+// transform_llm_output plugin rewrote the reply: the tail is the raw text the rewrite replaces.
+const keepsStreamedTail = (tail: string, completionText: null | string | undefined, transformed?: boolean | null) =>
+  Boolean(tail && completionText != null && !transformed && !completionText.includes(tail))
 
 const interruptedText = (partial: string) => (partial ? `${partial}\n\n*[interrupted]*` : '*[interrupted]*')
 
@@ -343,6 +351,7 @@ class TurnController {
     this.activeTools = []
     this.streamTimer = clear(this.streamTimer)
     this.bufRef = ''
+
     // `keepTurnArchive`: the turn-over signal arrived before the final; the sealed segments
     // and finished tool rows wait for `recordMessageComplete` to archive them.
     if (!opts.keepTurnArchive) {
@@ -618,6 +627,21 @@ class TurnController {
     patchTurnState({ streamSegments: this.segmentMessages })
   }
 
+  // A tool's image lands right under the trail line of the call that made it,
+  // ahead of whatever the agent streams next (same anchoring as diffs).
+  pushImageSegment(path?: null | string, toolId?: string) {
+    if (!path || this.interrupted) {
+      return
+    }
+
+    this.flushStreamingSegment()
+    this.segmentMessages = [
+      ...this.segmentMessages,
+      { images: [path], kind: 'image', role: 'system', text: '', ...(toolId && { imageRevision: toolId }) }
+    ]
+    patchTurnState({ streamSegments: this.segmentMessages })
+  }
+
   pushActivity(text: string, tone: ActivityItem['tone'] = 'info', replaceLabel?: string) {
     patchTurnState(state => {
       const base = replaceLabel
@@ -652,10 +676,11 @@ class TurnController {
     })
   }
 
-  recordError() {
+  recordError(reason?: string) {
     // A failed turn discards the whole unsealed turn (flushed segments AND the
     // streaming tail) — unlike recordMessageComplete, which must keep the tail
     // (#61520), and interruptTurn, which preserves it as `partial`.
+    $turnOutcome.set(errorOutcome(reason))
     this.idle()
     this.clearReasoning()
     this.clearStatusTimer()
@@ -683,13 +708,8 @@ class TurnController {
     const rawText = (completionText ?? this.bufRef).trimStart()
 
     // Text still in `this.bufRef` streamed after the last segment flush; `idle()`
-    // below would wipe it (#61520). Flush it as a segment only when the
-    // gateway's final text does not already carry it — otherwise the tail IS
-    // the answer and flushing would move the tool shelf/trail under it. Skipped
-    // when `completionText` is absent: `rawText` is then the buffer (#16391).
-    const tail = this.bufRef.trim()
-
-    if (tail && completionText != null && !completionText.includes(tail)) {
+    // below would wipe it (#61520).
+    if (keepsStreamedTail(this.bufRef.trim(), completionText, payload.response_transformed)) {
       this.flushStreamingSegment()
     }
 
@@ -775,6 +795,8 @@ class TurnController {
       void this.persistSpawnTree?.(finishedSubagents, sessionId)
     }
 
+    // Before idle() drops busy, so the terminal reads done/error, never a passing idle.
+    $turnOutcome.set(completionOutcome(wasInterrupted, payload))
     this.idle()
     this.clearReasoning()
     this.turnTools = []
@@ -1025,6 +1047,7 @@ class TurnController {
     // Session boundary: drop notice state so session A's sticky can't bleed
     // into session B (R3-H5). reset()/fullReset() CLEAR — they never flush.
     this.clearNoticeState()
+    $turnOutcome.set(null)
     patchTurnState({ activity: [], outcome: '' })
   }
 
@@ -1069,6 +1092,7 @@ class TurnController {
   }
 
   startMessage() {
+    $turnOutcome.set(null)
     this.endReasoningPhase()
     this.clearReasoning()
     this.activeTools = []

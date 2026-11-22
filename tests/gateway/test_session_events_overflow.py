@@ -5,14 +5,18 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 class Peer:
     def __init__(self, gate=None):
         self.frames = queue.Queue()
         self.gate = gate
+        self.entered = threading.Event()
 
     def write(self, frame):
+        self.entered.set()
         if self.gate is not None:
             self.gate.wait()
         self.frames.put(frame)
@@ -27,14 +31,12 @@ async def test_overflowed_subscriber_is_detached_and_told_to_resume(tmp_path):
     from gateway.session_authority import LiveSession, SessionAuthority
     from gateway.session_contract import SessionRef
     from gateway.session_controls import AuthorityConnection
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch
     from tui_gateway.transport import FanoutTransport
 
-    with SessionDB(db_path=tmp_path / 'state.db') as db:
-        db.create_session('s', source='test')
-        epoch = begin_runtime_epoch(db, instance_id='owner')
-        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+    with storage_handle(tmp_path) as db:
+        seed_session(db, 's', 'test')
+        epoch = db.runtime.begin_epoch(instance_id='owner')
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='owned', instance_id='owner', epoch=epoch, persistence=storage_handle(tmp_path))
         live = authority.sessions['s'] = LiveSession(None, 'route')
         ref = SessionRef('owned', 's')
         gate = threading.Event()
@@ -48,6 +50,11 @@ async def test_overflowed_subscriber_is_detached_and_told_to_resume(tmp_path):
             delivered = []
             for n in range(total):
                 live.event_stream.publish('s', {'n': n}, event_type='message.delta')
+                if n == 0:
+                    # The drain thread takes everything queued as ONE batch: wait until it holds
+                    # frame 0 alone, blocked in write, so frames 1.. fill the mailbox to the cap
+                    # instead of riding along in a late-starting thread's first batch.
+                    assert await asyncio.to_thread(slow.entered.wait, 5), 'stalled writer never started'
                 # Pace the healthy reader by receipt so only the stalled peer's backlog grows.
                 delivered.append(await asyncio.to_thread(healthy.frames.get, True, 5))
             # The healthy viewer saw the whole turn; the stalled one lost its subscription

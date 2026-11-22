@@ -20,7 +20,6 @@ async def test_cli_turn_fields_are_admitted_and_bound_to_their_own_turn(tmp_path
     from gateway.session_cli_turn import cli_turn
     from gateway.session_controls import AuthorityConnection
     from gateway.session_ingress import admission_author
-    from hermes_state_runtime import list_session_admissions
 
     seen = []
     async def answer(event):
@@ -50,13 +49,13 @@ async def test_cli_turn_fields_are_admitted_and_bound_to_their_own_turn(tmp_path
     finally:
         await connection.close()
 
-    rows = {row['request_id']: row for row in list_session_admissions(authority.db, session_id='s', pending_only=False)}
-    assert rows['full']['payload']['cli_turn_v1'] == {
+    rows = {row.request_id: row for row in authority.persistence.admissions.list(session_id='s', pending_only=False)}
+    assert rows['full'].payload['cli_turn_v1'] == {
         'turn_author': author, 'api_text': '[voice] hi', 'clarify_batch': True,
         'model_override': {'model': 'gpt-x', 'provider': 'openrouter'}}
-    assert 'cli_turn_v1' not in rows['plain']['payload']
+    assert 'cli_turn_v1' not in rows['plain'].payload
     assert not {'no-model', 'extra-key', 'bad-text', 'bad-author', 'bad-batch'} & set(rows)
-    assert seen[0] == ('full', rows['full']['payload']['cli_turn_v1'], {}, author)
+    assert seen[0] == ('full', rows['full'].payload['cli_turn_v1'], {}, author)
     # The next admission never inherits the previous turn's fields.
     assert seen[1][:3] == ('plain', {}, {})
 
@@ -84,7 +83,7 @@ def _gateway_runner():
     runner._provider_routing = {}
     runner._agent_cache_lock = None
     runner._agent_cache = {}
-    runner._session_db = runner._prefill_messages = None
+    runner._session_db = runner.persistence = runner._prefill_messages = None
     runner._pending_model_notes = runner._pending_skills_reload_notes = {}
     runner.session_store._entries = {}
     runner._pre_agent_fallback_notice = None
@@ -93,7 +92,7 @@ def _gateway_runner():
         "session-model", {"provider": "custom", "api_key": "k1", "base_url": "http://session"})
     runner._resolve_session_reasoning_config.return_value = None
     runner._resolve_session_service_tier.return_value = None
-    runner._resolve_turn_agent_config.side_effect = lambda _msg, model, rt: {
+    runner._resolve_turn_agent_config.side_effect = lambda _msg, model, rt, **_kw: {
         "model": model, "runtime": {k: v for k, v in rt.items() if k != "request_overrides"}}
     runner._agent_config_signature.return_value = ("sig",)
     runner._extract_cache_busting_config.return_value = {}
@@ -239,3 +238,29 @@ def test_a_finite_managed_worker_answers_clarify_headless():
     controls._ask = lambda *a: pytest.fail("a finite viewer can never answer")
     with finite_turn_scope(True):
         assert controls.clarify([{"qid": "q", "question": "?", "choices": [], "multi_select": False}])["outcome"] == "undelivered"
+
+
+def test_a_one_turn_model_never_becomes_the_sessions_stored_model():
+    """``/moa`` and ``/model --once`` run one admission on another route. The turn's post-run sync
+    wrote the executing agent's model to the session row (``default``, the MoA preset), so a /resume
+    right after restored onto the preset. Only a turn on the session's own route records its model."""
+    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from gateway.session_cli_turn import cli_turn_scope
+    from hermes_cli.model_switch import ModelSwitchResult
+
+    written = []
+    sessions = SimpleNamespace(get=lambda sid: SimpleNamespace(model="session-model", model_config={}),
+                               replace_session_config=lambda sid, command: written.append((sid, command.model)))
+    runner = _gateway_runner()
+    runner.persistence = SimpleNamespace(sessions=sessions)
+    runner._sync_session_model_from_agent = (
+        lambda sid, agent: GatewayTurnPrepareMixin._sync_session_model_from_agent(runner, sid, agent))
+    moa = ModelSwitchResult(success=True, new_model="default", target_provider="moa", api_key="",
+                            base_url="", api_mode="chat_completions")
+    committed = {"model_override": {"model": "default", "provider": "moa"}}
+    with patch("hermes_cli.model_switch.switch_model", return_value=moa), cli_turn_scope("adm-1", committed):
+        _result, agent = _run_turn(runner)
+    assert agent.model == "default" and written == []
+    with cli_turn_scope("adm-1", committed):
+        _run_turn(runner, admission_id="adm-2")
+    assert [model for _sid, model in written] == ["session-model"]

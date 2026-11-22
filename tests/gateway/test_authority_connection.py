@@ -1,5 +1,6 @@
 """Connection membership against the real authority and temporary SQLite."""
 import asyncio
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -7,18 +8,18 @@ import pytest
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
 from gateway.session_controls import AuthorityConnection
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.mark.asyncio
 async def test_repeated_resume_and_close_preserve_only_live_memberships(tmp_path):
-    db = SessionDB(db_path=tmp_path / 'state.db')
+    db = storage_handle(tmp_path)
     try:
-        db.create_session('s', source='test')
-        epoch = begin_runtime_epoch(db, instance_id='test')
+        seed_session(db, 's', 'test')
+        epoch = db.runtime.begin_epoch(instance_id='test')
         authority = SessionAuthority(SimpleNamespace(), profile_id='test',
-                                     instance_id='test', db=db, epoch=epoch)
+                                     instance_id='test', epoch=epoch, persistence=db)
         authority.sessions['s'] = LiveSession(None, 'route')
         first = AuthorityConnection(authority, object(), {'user_id': 'human'})
         peer = AuthorityConnection(authority, object(), {'user_id': 'human'})
@@ -45,14 +46,16 @@ async def test_close_after_a_subscribed_session_was_deleted_releases_every_membe
     """Deletion evicts the live session before the viewer disconnects; teardown must still
     release the other subscription and the transport instead of raising not_found."""
     import tui_gateway.ws
-    db = SessionDB(db_path=tmp_path / 'state.db')
+    db = storage_handle(tmp_path)
     try:
         for sid in ('doomed', 'kept'):
-            db.create_session(sid, source='test')
-        epoch = begin_runtime_epoch(db, instance_id='test')
-        store = SimpleNamespace(_routing_db=db, retire_runtime_sessions=lambda ids: None)
+            seed_session(db, sid, 'test')
+        epoch = db.runtime.begin_epoch(instance_id='test')
+        store = SimpleNamespace(_routing_persistence=storage_handle(tmp_path), retire_runtime_sessions=lambda ids: None)
         runner = SimpleNamespace(_draining=False, session_store=store, _evict_cached_agent=lambda route: None)
-        authority = SessionAuthority(runner, profile_id='test', instance_id='test', db=db, epoch=epoch)
+        authority = SessionAuthority(runner, profile_id='test', instance_id='test', epoch=epoch,
+                                     persistence=db)
+        runner.session_authority = authority  # the runtime owns this authority, so its delete passes the guard
         for sid in ('doomed', 'kept'):
             authority.sessions[sid] = LiveSession(None, sid + '-route')
         viewer = AuthorityConnection(authority, object(), {'user_id': 'human'})
@@ -76,15 +79,15 @@ async def test_close_after_a_subscribed_session_was_deleted_releases_every_membe
 
 @pytest.mark.asyncio
 async def test_detach_releases_only_the_paired_subscription_without_stopping_execution(tmp_path):
-    db = SessionDB(db_path=tmp_path / 'state.db')
+    db = storage_handle(tmp_path)
     running = None
     viewer = observer = None
     try:
         for sid in ('a', 'b'):
-            db.create_session(sid, source='test')
-        epoch = begin_runtime_epoch(db, instance_id='test')
+            seed_session(db, sid, 'test')
+        epoch = db.runtime.begin_epoch(instance_id='test')
         authority = SessionAuthority(SimpleNamespace(), profile_id='test',
-                                     instance_id='test', db=db, epoch=epoch)
+                                     instance_id='test', epoch=epoch, persistence=db)
         for sid in ('a', 'b'):
             authority.sessions[sid] = LiveSession(None, sid + '-route')
         running = asyncio.create_task(asyncio.Event().wait())
@@ -123,14 +126,14 @@ async def test_detach_releases_only_the_paired_subscription_without_stopping_exe
 
 @pytest.mark.asyncio
 async def test_stale_or_mismatched_pair_reports_detached_false_and_keeps_the_live_token(tmp_path):
-    db = SessionDB(db_path=tmp_path / 'state.db')
+    db = storage_handle(tmp_path)
     viewer = observer = None
     try:
         for sid in ('s', 'other'):
-            db.create_session(sid, source='test')
-        epoch = begin_runtime_epoch(db, instance_id='test')
+            seed_session(db, sid, 'test')
+        epoch = db.runtime.begin_epoch(instance_id='test')
         authority = SessionAuthority(SimpleNamespace(), profile_id='test',
-                                     instance_id='test', db=db, epoch=epoch)
+                                     instance_id='test', epoch=epoch, persistence=db)
         for sid in ('s', 'other'):
             authority.sessions[sid] = LiveSession(None, sid + '-route')
         viewer = AuthorityConnection(authority, object(), {'user_id': 'human'})
@@ -168,4 +171,62 @@ async def test_stale_or_mismatched_pair_reports_detached_false_and_keeps_the_liv
             await viewer.close()
         if observer is not None:
             await observer.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_a_sqlite_failure_keeps_the_wire_error_and_logs_its_cause(tmp_path, caplog):
+    """Storage failures retain their client contract while leaving an operator diagnostic."""
+    db = storage_handle(tmp_path)
+    try:
+        epoch = db.runtime.begin_epoch(instance_id='test')
+        authority = SessionAuthority(SimpleNamespace(), profile_id='test', instance_id='test',
+                                     persistence=db, epoch=epoch)
+
+        class Connection(AuthorityConnection):
+            def handlers(self):
+                async def probe(ref, params):
+                    raise sqlite3.OperationalError('database is locked')
+                return {'session.storage_probe': probe}
+
+        connection = Connection(authority, object(), {'user_id': 'human'})
+        with caplog.at_level('WARNING', logger='gateway.session_controls'):
+            reply = await connection.dispatch({'id': 9, 'method': 'session.storage_probe', 'params': {
+                'session_id': 'session-9'}})
+        assert reply['error'] == {
+            'code': 5001, 'message': 'storage_unavailable', 'data': {'reason': 'storage_unavailable'}}
+        assert any('session.storage_probe storage failure for profile=test session_id=' in record.getMessage()
+                   and 'database is locked' in record.getMessage() for record in caplog.records)
+        assert 'sqlite3.OperationalError: database is locked' in caplog.text
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_a_retrying_client_cannot_flood_the_log_with_storage_failures(tmp_path, caplog):
+    """Clients retry on ``storage_unavailable``: each failure keeps one short line, the traceback comes
+    once per method and error class, and a client-sized ``session_id`` is never copied whole."""
+    db = storage_handle(tmp_path)
+    try:
+        epoch = db.runtime.begin_epoch(instance_id='test')
+        authority = SessionAuthority(SimpleNamespace(), profile_id='test', instance_id='test',
+                                     persistence=db, epoch=epoch)
+
+        class Connection(AuthorityConnection):
+            def handlers(self):
+                async def probe(ref, params):
+                    raise sqlite3.OperationalError('database is locked')
+                return {'session.retry_probe': probe}
+
+        connection = Connection(authority, object(), {'user_id': 'human'})
+        with caplog.at_level('WARNING', logger='gateway.session_controls'):
+            for _ in range(3):
+                reply = await connection.dispatch({'id': 9, 'method': 'session.retry_probe', 'params': {
+                    'session_id': 'x' * 100_000}})
+                assert reply['error']['code'] == 5001
+        failures = [record for record in caplog.records if 'storage failure' in record.getMessage()]
+        assert [bool(record.exc_info) for record in failures] == [True, False, False]
+        assert all(len(record.getMessage()) < 300 for record in failures), failures[0].getMessage()[:300]
+        assert all('database is locked' in record.getMessage() for record in failures)
+    finally:
         db.close()

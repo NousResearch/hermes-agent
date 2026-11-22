@@ -553,6 +553,15 @@ class TestRestartWaitsForApiServerPort:
 
 
 class TestStopProfileGateway:
+
+    @pytest.fixture(autouse=True)
+    def owned_process_home(self, monkeypatch):
+        # These signal/reaping tests simulate an independently owned process.
+        # Ambiguous/shared ownership is exercised by the lifecycle regressions.
+        from gateway import host_attach
+        from hermes_cli import dashboard_procs
+        monkeypatch.setattr(host_attach, '_probe_host_gateway', lambda wait: None)
+        monkeypatch.setattr(dashboard_procs, '_hermes_home_for_pid', lambda pid, **kw: str(gateway.get_hermes_home()))
     @pytest.mark.platforms("windows")
     def test_windows_stop_drains_marker_before_force_termination(self, monkeypatch):
         """Windows must let the marker watcher run before escalating (#112750)."""
@@ -1125,18 +1134,27 @@ def test_service_commands_refuse_on_sealed_apt_termux(
     assert "Termux" in out
 
 
-@pytest.mark.parametrize("installed", [True, False])
-def test_install_if_missing_only_installs_when_no_service_exists(monkeypatch, installed):
+@pytest.mark.parametrize("installed, options", [(True, {}), (False, {}), (False, {"start_now": False})])
+def test_install_if_missing_only_installs_when_no_service_exists(monkeypatch, installed, options):
     """The installer's gateway stage runs after setup, which may have installed
-    the service already. --if-missing must not ask the install questions again."""
+    the service already. --if-missing must not ask the install questions again,
+    and install options it is given go to the explicit install path that honours them."""
+    from hermes_cli import gateway_setup_service
+
     installs = []
     monkeypatch.setattr(gateway, "is_managed", lambda: False)
     monkeypatch.setattr(gateway, "_is_service_installed", lambda: installed)
+    monkeypatch.setattr(gateway_setup_service, "_recorded_choice", lambda: None)
+    monkeypatch.setattr(gateway_setup_service, "_messaging_configured", lambda: True)
+    monkeypatch.setattr(gateway_setup_service, "ensure_gateway_service",
+                        lambda **kw: installs.append(kw) or True)
     monkeypatch.setattr(gateway, "_guard_named_profile_under_multiplexer", lambda force: None)
     monkeypatch.setattr(gateway, "_service_mgmt_blocked", lambda: False)
     monkeypatch.setattr(gateway, "_service_backend", lambda: "launchd")
-    monkeypatch.setattr(gateway, "launchd_install", lambda force, start_now, force_unit_path=False: installs.append(force))
+    monkeypatch.setattr(gateway, "launchd_install",
+                        lambda force, start_now, force_unit_path=False: installs.append({"start_now": start_now}))
 
-    gateway._cmd_install(SimpleNamespace(if_missing=True, force=False, system=False, run_as_user=None))
+    gateway._cmd_install(SimpleNamespace(if_missing=True, force=False, system=False, run_as_user=None, **options))
 
-    assert installs == ([] if installed else [False])
+    expected = [] if installed else [options or {"context": "setup", "interactive": True}]
+    assert installs == expected

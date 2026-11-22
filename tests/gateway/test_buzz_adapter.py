@@ -2825,7 +2825,7 @@ class TestInboundMediaAuthorizationGate:
     @pytest.mark.asyncio
     async def test_send_to_platform_live_buzz_delivers_all_media(self, monkeypatch, tmp_path):
         from gateway.config import Platform
-        from tools.send_message_tool import _send_to_platform
+        from gateway.outbound.send import _send_to_platform
 
         first = tmp_path / "first.txt"
         second = tmp_path / "second.pdf"
@@ -2873,11 +2873,11 @@ class TestBuzzAdapterLifecycle:
     @pytest.mark.asyncio
     async def test_disconnect_releases_scoped_lock(self, monkeypatch):
         """The identity lock taken in connect() must be released on disconnect."""
-        import gateway.status as gateway_status
+        import gateway.status_scoped_locks as scoped_locks
 
         released = []
         monkeypatch.setattr(
-            gateway_status,
+            scoped_locks,
             "release_scoped_lock",
             lambda platform, key: released.append((platform, key)),
         )

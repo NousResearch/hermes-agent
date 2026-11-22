@@ -4684,8 +4684,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         for duplicate in duplicates:
             summary = " ".join(duplicate.summary.split())
             lines.extend([
-                f"*Fingerprint:* `{duplicate.fingerprint}`",
-                f"Same alert as the original summary: <{duplicate.original_permalink}|{summary}>",
+                f"Original alert: <{duplicate.original_permalink}|{summary}>",
                 f"Latest occurrence: <{duplicate.current_permalink}|current alert>",
                 "",
             ])

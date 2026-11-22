@@ -1357,6 +1357,47 @@ def _on_server_started(
 
     _hb_loop.call_later(_hb_interval, _loop_heartbeat, _hb_loop.time() + _hb_interval)
 
+    # On-demand all-thread stack dump (parity with gateway/run_startup.py's SIGUSR2
+    # hook): a wedged serve backend can be dumped WITHOUT killing it, so the exact
+    # spinning callback is captured even while a window is still attached.
+    def _install_faulthandler_hook() -> None:
+        import faulthandler
+        import signal as _signal
+        sig = getattr(_signal, "SIGUSR2", None)
+        if sig is None or not hasattr(faulthandler, "register"):
+            return  # Windows: no SIGUSR2
+        from hermes_constants import get_process_hermes_home
+        path = get_process_hermes_home() / "logs" / "desktop_faulthandler.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # register() dups the fd, so the transient file object need not be retained.
+        faulthandler.register(sig, file=open(path, "a", encoding="utf-8"),
+                              all_threads=True, chain=False)
+
+    _best_effort("faulthandler SIGUSR2 hook", _install_faulthandler_hook)
+
+    # Runtime loop-liveness watchdog: the CF-1 tick above lives ON the loop, so a
+    # true spin never lets it fire. This watchdog is an independent OS thread: it
+    # dumps all-thread stacks on a sustained stall and self-exits ONLY an orphaned
+    # backend (no live WS client past the grace) so a wedged orphan cannot keep
+    # holding the chat's turn leases ("session stops midway"). A backend serving a
+    # live window is dumped, never exited.
+    def _install_loop_liveness_watchdog() -> None:
+        from tui_gateway import server as _tui_server
+        from tui_gateway.loop_liveness_watchdog import arm_loop_liveness_watchdog
+
+        def _has_clients() -> bool:
+            lock = _tui_server._live_transports_lock
+            if not lock.acquire(blocking=False):
+                return True  # registry busy: fail-safe, never license an exit
+            try:
+                return bool(_tui_server._live_transports)
+            finally:
+                lock.release()
+
+        arm_loop_liveness_watchdog(_hb_loop, _has_clients)
+
+    _best_effort("loop liveness watchdog install", _install_loop_liveness_watchdog)
+
 
 def _windows_serve_loop_factory(config):
     """Loop factory for serve on Windows: always a selector loop.

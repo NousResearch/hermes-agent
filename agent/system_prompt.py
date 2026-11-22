@@ -583,13 +583,17 @@ def _identity_parts(agent: Any, ctx_len: Optional[int]) -> tuple[list[str], bool
 
 
 def _reply_language_guidance() -> Optional[str]:
-    """Return the opt-in display-language instruction for a newly built session prompt."""
+    """Return the display-language instruction for a newly built session prompt.
+
+    Replies follow the selected ``display.language`` by default; an explicit
+    ``display.reply_in_language: false`` opts out. English needs no instruction.
+    """
     try:
         from hermes_cli.config import load_config_readonly
 
         config = load_config_readonly()
         display = config.get("display", {}) if isinstance(config, dict) else {}
-        if not isinstance(display, dict) or not is_truthy_value(display.get("reply_in_language"), default=False):
+        if not isinstance(display, dict) or not is_truthy_value(display.get("reply_in_language"), default=True):
             return None
 
         from agent import i18n

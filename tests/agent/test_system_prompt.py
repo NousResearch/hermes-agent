@@ -1020,19 +1020,41 @@ class TestSessionReadsThroughTheStorageInterface:
 
 
 @pytest.mark.parametrize(
-    ("enabled", "language", "expected"),
-    ((True, "ro", True), (False, "ro", False), (True, "en", False)),
+    ("setting", "language", "expected"),
+    (
+        (True, "ro", True),       # explicit opt-in
+        (False, "ro", False),     # explicit opt-out
+        ("missing", "ro", True),  # unset follows the selected language by default
+        (True, "en", False),      # English needs no instruction
+    ),
 )
-def test_reply_language_guidance_is_opt_in(enabled, language, expected, monkeypatch):
+def test_reply_language_guidance_follows_selected_language(setting, language, expected, monkeypatch):
     from agent import i18n
     from agent.system_prompt import _guidance_parts
 
-    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {
-        "display": {"reply_in_language": enabled},
-    })
+    display = {} if setting == "missing" else {"reply_in_language": setting}
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"display": display})
     monkeypatch.setattr(i18n, "get_language", lambda: language)
     with patch("agent.system_prompt._tool_guidance_block", return_value=""):
         parts = _guidance_parts(_make_agent())
 
     language_guidance = [part for part in parts if "Română (ro)" in part]
     assert bool(language_guidance) is expected
+
+
+def test_built_system_prompt_carries_romanian_reply_instruction(monkeypatch):
+    """End-to-end: the assembled prompt a fresh chat session sends tells the model to reply in ro."""
+    from copy import deepcopy
+
+    from hermes_cli.config import load_config_readonly
+
+    from agent import i18n
+
+    config = deepcopy(load_config_readonly())
+    config.setdefault("display", {})["language"] = "ro"
+    config["display"]["reply_in_language"] = True
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: config)
+    monkeypatch.setattr(i18n, "get_language", lambda: "ro")
+
+    prompt = build_system_prompt(_make_agent())
+    assert "Always reply to the user in Română (ro)." in prompt

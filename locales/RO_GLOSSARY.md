@@ -17,6 +17,19 @@ in a number of strings (`dvs.`, `vă`, e.g. `mesajul dvs.`, `vă păstrează edi
 Converting these requires noun-gender/number agreement per string and is left for
 human review rather than a risky bulk edit.
 
+## Agent chat responses
+
+Selecting Romanian (`display.language: ro`) makes the agent reply in Romanian in
+chats. `agent/system_prompt.py::_reply_language_guidance()` adds
+
+> Always reply to the user in Română (ro). Preserve code, command names, product
+> names, URLs, and quoted user content when appropriate.
+
+to the stable system prompt, so it is captured when a session starts. This is on by
+default; `display.reply_in_language: false` opts out and keeps responses in English.
+Existing sessions keep the prompt they started with — start a new session (or run
+`hermes sessions refresh-prompts`) after switching languages to adopt the change.
+
 ## Glossary
 
 | English | Romanian | Notes |

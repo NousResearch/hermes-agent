@@ -885,8 +885,10 @@ DEFAULT_CONFIG = {
         # UI language for static messages (approval prompts, some gateway slash replies); not agent
         # responses/logs/tool outputs. See agent.i18n.SUPPORTED_LANGUAGES; unknown → en.
         "language": "en",
-        # Opt-in: captured in the stable system prompt when a session starts; new sessions pick up changes.
-        "reply_in_language": False,
+        # When a non-English display language is selected, captured in the stable system prompt
+        # so the agent replies in that language. Set false to keep responses in English.
+        # New sessions pick up changes; existing sessions keep the prompt they started with.
+        "reply_in_language": True,
         # TUI busy indicator: kaomoji | emoji | unicode (braille) | ascii. `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
         # Seconds between idle prompt_toolkit redraws in the classic CLI; keeps wall-clock

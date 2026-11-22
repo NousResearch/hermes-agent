@@ -10,14 +10,20 @@ For every call `<alias>.compile/search/match/fullmatch/findall/finditer/split/su
   REJECTED   hermes_re refuses the pattern, or its RE2 program cannot be built
   SURROGATE  the pattern names a lone surrogate (U+D800..U+DFFF); RE2 can never match one
   INEXACT    the pattern has a `\\b` / `\\B` that RE2 evaluates with ASCII word rules
-  DIFFERS    the call's operation gives another result than stdlib `re` on generated strings
+  DIFFERS    the call's operation gives another result than stdlib `re` on generated strings (bytes too)
+  UNCHECKED  stdlib `re` did not finish the comparison within DEADLINE seconds (catastrophic backtracking on the
+             generated strings), so nothing says the swap keeps the results; review the pattern and waive it
   DYNAMIC    not checked, with the reason (listed with --verbose): the pattern is not a string literal, or the
              flags are not a literal (a clean result with flags=0 says nothing about the real flags)
-Any finding except DYNAMIC makes the exit status 1. One call is waived with a comment on its first or last line:
+Any finding except DYNAMIC makes the exit status 1. One call is waived with a comment on its first or last line
+(a real comment token: the marker inside a string literal waives nothing):
     # re2: reviewed -- <reason>
+Calls are resolved per scope (scripts/code_health canonical_tree): a function-local `import re` that shadows a
+module-level `import hermes_re as re` is stdlib code there and is not checked without --pre-swap.
 Without --pre-swap only files that import `hermes_re` are checked (the state after their swap). With --pre-swap,
 files that still say `import re` are checked as if already swapped: run this BEFORE swapping a file.
-Reads files as text; imports only `hermes_re`, which needs the google-re2 package (exit 2 with a message otherwise).
+Reads files as text; imports `hermes_re`, which needs the google-re2 package (exit 2 with a message otherwise), and
+the code-health AST helpers. The deadline uses SIGALRM, so it applies on POSIX hosts (CI, Linux and macOS commits).
 This script is a development tool under scripts/ and uses stdlib `re` as the reference engine.
 """
 import ast
@@ -25,6 +31,7 @@ import importlib
 import json
 import random
 import re as stdlib_re
+import signal
 import subprocess
 import sys
 import zlib
@@ -50,9 +57,15 @@ FLAGS = {"I": 2, "IGNORECASE": 2, "M": 8, "MULTILINE": 8, "S": 16, "DOTALL": 16,
 WAIVER = "# re2: reviewed --"
 EXTRA = " \n\t-_.,:;/|@=\"'()aZ09\u00e9\u00df\u0436\u65e5\u017f\u0130"
 SAMPLES = 160
+DEADLINE = 2.0
+
+
+class _Deadline(BaseException):
+    """Raised by SIGALRM inside a stdlib match; a BaseException so `run()` does not record it as a result."""
 
 
 def load_facade():
+    """(hermes_re, canonical_tree, python_comments) from the tree this script checks."""
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     try:
@@ -62,7 +75,9 @@ def load_facade():
         print(f"check_re2_patterns: hermes_re / google-re2 is not importable in {sys.executable} ({exc}); run it in the "
               "repository environment (source ./activate, or: just check --only re2-patterns)")
         sys.exit(2)
-    return hermes_re
+    rules = importlib.import_module("scripts.code_health.py_rules")
+    measure = importlib.import_module("scripts.code_health.measure")
+    return hermes_re, rules.canonical_tree, measure._python_comments
 
 
 def flag_value(node):
@@ -79,7 +94,11 @@ def flag_value(node):
 
 
 def subjects(pattern):
-    """Deterministic test strings built from the pattern's own characters plus a fixed mixed alphabet."""
+    """Deterministic test strings built from the pattern's own characters plus a fixed mixed alphabet.
+
+    A bytes pattern gets the same strings as UTF-8 bytes (multi-byte sequences included)."""
+    if isinstance(pattern, bytes):
+        return [s.encode("utf-8") for s in subjects(pattern.decode("latin-1"))]
     rng = random.Random(zlib.crc32(pattern.encode("utf-8", "surrogatepass")))
     letters = [c for c in pattern if c.isalnum() or c in " -_./:@=,"] or ["a"]
     alphabet = letters * 3 + list(EXTRA)
@@ -94,8 +113,11 @@ def _view(m):
 
 
 def operation(fn, repl):
+    def marker(p):
+        return b"<>" if isinstance(p.pattern, bytes) else "<>"
+
     table = {
-        "compile": lambda p, s: (_view(p.search(s)), p.findall(s), p.sub("<>", s), p.split(s)),
+        "compile": lambda p, s: (_view(p.search(s)), p.findall(s), p.sub(marker(p), s), p.split(s)),
         "search": lambda p, s: _view(p.search(s)),
         "match": lambda p, s: _view(p.match(s)),
         "fullmatch": lambda p, s: _view(p.fullmatch(s)),
@@ -115,17 +137,41 @@ def run(call, compiled, text):
         return "raises " + type(exc).__name__
 
 
+def _compare(call, old, new, texts):
+    for text in texts:
+        if run(call, old, text) != run(call, new, text):
+            return text
+    return None
+
+
+def _on_deadline(signum, frame):
+    raise _Deadline
+
+
+def _within_deadline(work):
+    """``work()``, or raise _Deadline after DEADLINE seconds where SIGALRM exists (stdlib matching checks signals)."""
+    alarm = getattr(signal, "SIGALRM", None)
+    if alarm is None:
+        return work()
+    previous = signal.signal(alarm, _on_deadline)
+    signal.setitimer(signal.ITIMER_REAL, DEADLINE)
+    try:
+        return work()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(alarm, previous)
+
+
 def differs(facade, pattern, flags, fn, repl):
+    """The first generated subject on which the call's result differs, else None; raises _Deadline when stdlib stalls."""
     try:
         old = stdlib_re.compile(pattern, flags)
     except (stdlib_re.error, ValueError, RecursionError):
         return None
     new = facade.compile(pattern, flags)
     call = operation(fn, repl)
-    for text in subjects(pattern) if isinstance(pattern, str) else ():
-        if run(call, old, text) != run(call, new, text):
-            return text
-    return None
+    texts = subjects(pattern)
+    return _within_deadline(lambda: _compare(call, old, new, texts))
 
 
 def keyword(node, name):
@@ -152,47 +198,52 @@ def classify(facade, node, fn, pattern):
     if note:
         return "DYNAMIC", "not checked (flags not a literal)"
     repl_node = node.args[1] if len(node.args) > 1 else keyword(node, "repl")
+    marker = b"<>" if isinstance(pattern, bytes) else "<>"
     repl = repl_node.value if fn in ("sub", "subn") and isinstance(repl_node, ast.Constant) \
-        and isinstance(repl_node.value, str) else "<>"
-    example = differs(facade, pattern, flags, fn, repl)
+        and isinstance(repl_node.value, type(pattern)) else marker
+    try:
+        example = differs(facade, pattern, flags, fn, repl)
+    except _Deadline:
+        return "UNCHECKED", f"stdlib re did not finish {fn}() on the generated strings within {DEADLINE:g}s"
     if example is not None:
         return "DIFFERS", f"{fn}() differs from stdlib on {example!r}"[:110]
     return None
 
 
-def aliases(tree, pre_swap):
-    """(names bound to the regex module, {name bound by `from <module> import <fn>`: fn})."""
-    wanted = {"hermes_re"} | ({"re"} if pre_swap else set())
-    modules, functions = set(), {}
+def imports_regex(tree, wanted):
+    """The file imports one of the ``wanted`` regex modules (absolute imports only)."""
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            modules |= {a.asname or a.name for a in node.names if a.name in wanted}
-        elif isinstance(node, ast.ImportFrom) and not node.level and node.module in wanted:
-            functions.update((a.asname or a.name, a.name) for a in node.names if a.name in FUNCS)
-    return modules, functions
+        if isinstance(node, ast.Import) and any(a.name in wanted for a in node.names):
+            return True
+        if isinstance(node, ast.ImportFrom) and not node.level and node.module in wanted:
+            return True
+    return False
 
 
-def called_function(node, modules, functions):
-    """The regex function a call node invokes, or None when it is not one."""
+def called_function(node, wanted):
+    """The regex function a call of the canonical tree invokes, or None when it is not one.
+
+    canonical_tree spells every import-bound name in its own scope (``c`` from ``from hermes_re import compile as
+    c`` -> ``hermes_re.compile``), so a local ``import re`` shadowing a module-level ``import hermes_re as re``
+    stays ``re`` inside that function only."""
     func = node.func
     if isinstance(func, ast.Attribute) and func.attr in FUNCS and isinstance(func.value, ast.Name) \
-            and func.value.id in modules:
+            and getattr(func.value, "imported", False) and not func.value.relative and func.value.id in wanted:
         return func.attr
-    if isinstance(func, ast.Name):
-        return functions.get(func.id)
     return None
 
 
-def check_file(facade, path, pre_swap):
+def check_file(tools, path, pre_swap):
+    facade, canonical_tree, python_comments = tools
     text = Path(path).read_text(encoding="utf-8-sig")
     tree = ast.parse(text)
-    modules, functions = aliases(tree, pre_swap)
-    if not modules and not functions:
+    wanted = {"hermes_re"} | ({"re"} if pre_swap else set())
+    if not imports_regex(tree, wanted):
         return None
-    lines = text.splitlines()
+    comments = python_comments(text)
     rows = []
-    for node in ast.walk(tree):
-        fn = called_function(node, modules, functions) if isinstance(node, ast.Call) else None
+    for node in ast.walk(canonical_tree(tree)):
+        fn = called_function(node, wanted) if isinstance(node, ast.Call) else None
         arg = (node.args[0] if node.args else keyword(node, "pattern")) if fn else None
         if arg is None:
             continue
@@ -200,8 +251,8 @@ def check_file(facade, path, pre_swap):
             rows.append(("DYNAMIC", node.lineno, "", "not checked (pattern not a literal)"))
             continue
         found = classify(facade, node, fn, arg.value)
-        last = lines[(node.end_lineno or node.lineno) - 1]
-        if found and WAIVER not in last and WAIVER not in lines[node.lineno - 1]:
+        waived = any(WAIVER in comments.get(line, "") for line in (node.lineno, node.end_lineno or node.lineno))
+        if found and not waived:
             rows.append((found[0], node.lineno, repr(arg.value)[:60], found[1]))
     return rows
 
@@ -229,12 +280,12 @@ def main(argv):
     verbose = "--verbose" in argv
     out = argv[argv.index("--json") + 1] if "--json" in argv else None
     paths = [a for a in argv if not a.startswith("--") and a != out]
-    facade = load_facade()
+    tools = load_facade()
     files = list(expand(paths)) if paths else [str(ROOT / f) for f in tracked_files()]
     report, bad, dynamic, checked = {}, 0, 0, 0
     for path in files:
         try:
-            rows = check_file(facade, path, pre_swap)
+            rows = check_file(tools, path, pre_swap)
         except (OSError, SyntaxError, UnicodeDecodeError) as exc:
             rows = [("REJECTED", 0, "", f"cannot read or parse the file: {exc}")]
         if rows is None:

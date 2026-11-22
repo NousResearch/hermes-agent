@@ -251,7 +251,7 @@ def test_parent_reopen_blocks_request_review_until_parent_is_done(conn) -> None:
         assignee="builder",
         parents=[parent_id],
     )
-    implementation = kb.claim_task(conn, task_id)
+    implementation = kb.claim_task(conn, task_id, claimer="builder:1")
     assert implementation is not None
     with kb.write_txn(conn):
         conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (parent_id,))
@@ -268,9 +268,14 @@ def test_parent_reopen_blocks_request_review_until_parent_is_done(conn) -> None:
     assert kb.request_review(
         conn,
         task_id,
+        reviewer="reviewer",
         summary="parent stable",
         expected_run_id=implementation.current_run_id,
     )
+    resumed = kb.get_task(conn, task_id)
+    assert resumed is not None
+    assert resumed.status == "review"
+    assert resumed.assignee == "reviewer"
 
 
 @pytest.mark.parametrize("bad_payload", ["{not-json", "[]"])
@@ -626,7 +631,7 @@ def test_goal_run_status_is_bound_to_original_run(conn) -> None:
 
 def test_parked_review_approval_without_evidence_still_creates_audit_run(conn) -> None:
     task_id = kb.create_task(conn, title="Manual approval", assignee="reviewer")
-    assert kb.request_review(conn, task_id, summary="implementation handoff")
+    assert kb.request_review(conn, task_id, reviewer="reviewer", summary="implementation handoff")
     assert kb.complete_task(conn, task_id)
     completed_event = _event(kb.list_events(conn, task_id), "completed")
     assert completed_event.run_id is not None
@@ -726,6 +731,38 @@ def _failures(conn, task_id: str) -> int:
     return int(conn.execute(
         "SELECT consecutive_failures FROM tasks WHERE id = ?", (task_id,)
     ).fetchone()[0])
+
+
+def test_first_review_requires_explicit_reviewer(conn) -> None:
+    """A brand-new task with no prior review/changes-requested history must
+    reject a reviewer-less request_review: without provenance, the dispatcher
+    self-routes to the card's own author (the bug that produced 74 null
+    review_requested events). Caller must pass reviewer= explicitly."""
+    task_id = kb.create_task(conn, title="First review", assignee="builder")
+    implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+    assert implementation is not None
+    assert not kb.request_review(
+        conn,
+        task_id,
+        summary="Ready for first review.",
+        expected_run_id=implementation.current_run_id,
+    )
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.status == "running"
+    assert task.assignee == "builder"
+    # Explicit reviewer restores the review path.
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer",
+        summary="Ready for first review.",
+        expected_run_id=implementation.current_run_id,
+    )
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.status == "review"
+    assert task.assignee == "reviewer"
 
 
 def test_review_transitions_preserve_consecutive_failures(conn) -> None:

@@ -3322,6 +3322,8 @@ def request_review(
                         "latest changes_requested event is missing or "
                         "malformed); pass reviewer= explicitly",
                     )
+                if reviewer is None:
+                    return _ret(False, "reviewer= is required for first reviews; pass the reviewer profile explicitly")
             reviewer = _canonical_assignee(reviewer)
             # The actor is the run that did the work. ``assignee`` is the actor
             # only while a worker holds the card; on a never-claimed card it is

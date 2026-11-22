@@ -96,11 +96,13 @@ def test_local_guard_unreadable_start_time_live_leader_is_best_effort(monkeypatc
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS posix_spawn wedge")
-def test_darwin_kill_path_survives_a_child_wedged_mid_spawn(tmp_path):
+@pytest.mark.parametrize("registry", [False, True], ids=["local", "registry"])
+def test_darwin_kill_path_survives_a_child_wedged_mid_spawn(registry, tmp_path):
     """A child whose posix_spawn opens a writerless FIFO (lldb `process launch -i <fifo>`)
-    blocks process-table sysctls and any signal to it. The process registry's tree kill must
-    snapshot it via libproc and abort the spawn by signalling its spawner first, never waiting on it."""
-    from tools.environments.local import _snapshot_descendants
+    blocks process-table sysctls and any signal to it. Both kill paths (the terminal's group
+    kill and the process registry's tree kill) must snapshot it via libproc and abort the
+    spawn by signalling its spawner first, never waiting on it."""
+    from tools.environments.local import _kill_process_group_posix, _snapshot_descendants
     from tools.process_registry import ProcessRegistry
 
     os.mkfifo(fifo := tmp_path / "stdin")
@@ -114,7 +116,7 @@ def test_darwin_kill_path_survives_a_child_wedged_mid_spawn(tmp_path):
         while not (wedged := _snapshot_descendants(proc.pid)):
             assert time.monotonic() - start < 5, "the spawner never forked"
             time.sleep(0.01)
-        ProcessRegistry._terminate_host_pid(proc.pid)
+        ProcessRegistry._terminate_host_pid(proc.pid) if registry else _kill_process_group_posix(proc)
         assert time.monotonic() - start < 3
         assert proc.wait(timeout=1) and not any(child.is_running() for child in wedged)
     finally:  # open the FIFO, never signal: a still-wedged child would block the cleanup too

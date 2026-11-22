@@ -2,6 +2,7 @@
 
 import contextlib
 import ctypes
+import errno
 import functools
 import logging
 import ntpath
@@ -1081,19 +1082,31 @@ def _listpids(kind: int, arg: int) -> list:
 
 
 def _killpg(pgid: int, sig: int) -> None:
-    """``os.killpg``, through libc on macOS (see ``_signal``). A signal 0 probe is never
-    delivered, so it never waits."""
+    """``os.killpg``; on macOS one member at a time, oldest first. A child mid-spawn takes
+    no signal until its spawner, sleeping interruptibly in the spawn's file actions,
+    returns, and libc's killpg reaches the child first; signalling the spawner first
+    aborts the spawn. A signal 0 probe is never delivered, so it never waits."""
     if sys.platform != "darwin" or sig == 0:
         return os.killpg(pgid, sig)  # windows-footgun: ok — POSIX only (callers gate _IS_WINDOWS)
-    _signal(-pgid, sig)  # kill(-pgid) is killpg
+    infos = ((pid, _bsd_info(pid)) for pid in _listpids(2, pgid))  # PROC_PGRP_ONLY
+    members = sorted((start, pid) for pid, (_, group, start) in infos if group == pgid)
+    errors = []
+    for _, pid in members:
+        try:
+            _signal(pid, sig)
+        except OSError as exc:
+            errors.append(exc)
+    if len(errors) == len(members):  # nothing delivered, as killpg would report
+        raise errors[-1] if errors else ProcessLookupError(errno.ESRCH, os.strerror(errno.ESRCH))
 
 
 def _bsd_info(pid: int) -> tuple:
-    """``(ppid, (start sec, usec))`` from ``PROC_PIDTBSDINFO``; Nones if gone or a zombie."""
+    """``(ppid, pgid, (start sec, usec))`` from ``PROC_PIDTBSDINFO``; Nones if gone or a zombie."""
     info = ctypes.create_string_buffer(136)  # sizeof(struct proc_bsdinfo)
     if _libsystem().proc_pidinfo(pid, 3, ctypes.c_uint64(0), info, 136) != 136:  # arg is uint64_t
-        return None, None
-    return (*struct.unpack_from("I", info, 16), struct.unpack_from("QQ", info, 120))
+        return None, None, None
+    return (*struct.unpack_from("I", info, 16), *struct.unpack_from("I", info, 100),
+            struct.unpack_from("QQ", info, 120))
 
 
 class _BsdProc(NamedTuple):

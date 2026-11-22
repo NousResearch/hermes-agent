@@ -580,6 +580,27 @@ def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
 
 
 
+def test_extract_text_flattens_list_content_blocks(monkeypatch):
+    """List-shaped content (e.g. Mistral reasoning + text blocks) must flatten without leaking repr."""
+    from agent import moa_loop
+
+    resp_mixed = _response([
+        {"type": "thinking", "thinking": [{"type": "text", "text": "internal thought"}]},
+        {"type": "text", "text": "  Visible MoA advice  "},
+    ])
+    resp_thinking_only = _response([
+        {"type": "thinking", "thinking": [{"type": "text", "text": "only thinking"}]},
+    ])
+
+    assert moa_loop._extract_text(resp_mixed) == "Visible MoA advice"
+    assert moa_loop._extract_text(resp_thinking_only) == ""
+
+    # Fallback path when transport normalization is unavailable.
+    monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
+    assert moa_loop._extract_text(resp_mixed) == "Visible MoA advice"
+    assert moa_loop._extract_text(resp_thinking_only) == ""
+
+
 def test_references_run_in_parallel(monkeypatch):
     """References fan out concurrently (delegate-batch semantics), not serially.
 

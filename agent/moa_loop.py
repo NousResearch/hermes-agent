@@ -839,16 +839,17 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _extract_text(response: Any) -> str:
     """Assistant text of a completed response: transport-normalized, else ``choices[0]``."""
+    from agent.agent_runtime_helpers import _flatten_content_text
+
     with contextlib.suppress(Exception):
-        text = (get_transport("chat_completions").normalize_response(response).content or "").strip()
+        raw = get_transport("chat_completions").normalize_response(response).content
+        text = (_flatten_content_text(raw) if raw else "").strip()
         if text:
             return text
     try:
         message = response.choices[0].message
         content = message.get("content") if isinstance(message, dict) else getattr(message, "content", message)
-        if not isinstance(content, str):
-            content = str(content) if content else ""
-        return content.strip()
+        return (_flatten_content_text(content) if content else "").strip()
     except Exception:
         return ""
 

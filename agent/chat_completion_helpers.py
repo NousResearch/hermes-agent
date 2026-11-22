@@ -2154,7 +2154,10 @@ def _summary_text(agent, response, **normalize_kwargs) -> str:
         # No summary path executes tool calls; log so a tool-only response that falls into the
         # empty-summary retry is diagnosable.
         logger.warning("Iteration summary emitted tool calls; discarding them")
-    return (normalized.content or "").strip()
+    if not normalized.content:
+        return ""
+    from agent.agent_runtime_helpers import _flatten_content_text
+    return _flatten_content_text(normalized.content).strip()
 
 
 def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):

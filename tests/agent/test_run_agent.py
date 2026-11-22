@@ -2682,6 +2682,34 @@ class TestHandleMaxIterations:
         assert result == "Summary"
         assert agent.client.chat.completions.create.call_count == 2
 
+    def test_summary_flattens_mistral_typed_content_list(self, agent):
+        """Reasoning-enabled ChatCompletions (Mistral) return content as typed blocks; flatten before .strip()."""
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content=[
+                {"type": "thinking", "thinking": [{"type": "text", "text": "internal"}]},
+                {"type": "text", "text": "Actual summary."},
+            ]
+        )
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Actual summary."
+        assert agent.client.chat.completions.create.call_count == 1
+
+    def test_summary_thinking_only_content_list_retries_once(self, agent):
+        """A typed block list containing only thinking blocks reads as empty and triggers one retry."""
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=[{"type": "thinking", "thinking": [{"type": "text", "text": "only thinking"}]}]),
+            _mock_response(content=[{"type": "text", "text": "Retry summary."}]),
+        ]
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Retry summary."
+        assert agent.client.chat.completions.create.call_count == 2
+
     def test_summary_request_removes_orphan_tool_result(self, agent):
         """Regression: max-iterations summary request must NOT contain
         orphan tool results (tool_call_id with no matching assistant tool_call)."""

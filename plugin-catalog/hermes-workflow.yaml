@@ -2,7 +2,7 @@ name: hermes-workflow
 title: Workflow Studio
 repo: https://github.com/SaM-0777/hermes-workflows
 sha: ca137e9c8aaba5c42e7b249d2634938dbc81a721
-description: General-purpose visual workflow studio for designing, running, and iterating on multi-step agent and automation flows inside Hermes Desktop.
+description: "General-purpose visual workflow studio for designing, running, and iterating on multi-step agent and automation flows inside Hermes Desktop. Disclosure — workflow nodes are Python code that runs on this computer as your user through Hermes' execute_code (separate process, not a sandbox) with your user's file and network access; the model can create and edit nodes, and a model-requested run needs your Hermes approval and a click in the studio."
 maintainer: SaM-0777
 tier: community
 category: desktop

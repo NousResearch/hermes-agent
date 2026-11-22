@@ -1266,6 +1266,23 @@ def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
         # platform="cron" (scheduler) / "subagent" (delegate_task) → providers skip writes (MemoryProvider.initialize).
         "agent_context": platform if platform in ("cron", "subagent") else "primary",
     }
+
+    # Bot-to-bot peer DMs (``hermes peer dm``) are agent-to-agent traffic, not
+    # the user talking. Their sessions are stamped source="bot_peer_dm". Running
+    # them as a primary context made memory providers auto-extract "facts" from
+    # the other agent's instructions and debugging chatter — on 22/11/26 the
+    # store filled with entries like "User has a Git repository at ...". A
+    # non-primary context makes providers skip writes (MemoryProvider.initialize
+    # contract), so the extraction path never sees peer traffic at all.
+    if kwargs["agent_context"] == "primary":
+        try:
+            _session_db = getattr(agent, "_session_db", None)
+            _row = _session_db.get_session(agent.session_id) if _session_db else None
+            if (_row or {}).get("source") == "bot_peer_dm":
+                kwargs["agent_context"] = "peer"
+        except Exception:
+            # Advisory lookup only: never block provider init on a state-db read.
+            pass
     if kwargs["platform"] == "cli":
         kwargs["warning_callback"] = agent._emit_warning
         kwargs["status_callback"] = agent._emit_status

@@ -12,6 +12,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+from tests.waiting import wait_until
+
 
 def _clear_clarify_state():
     """Reset module-level state between tests."""
@@ -19,7 +21,6 @@ def _clear_clarify_state():
     with cm._lock:
         cm._entries.clear()
         cm._session_index.clear()
-        cm._notify_cbs.clear()
 
 
 class TestClarifyPrimitive:
@@ -51,6 +52,16 @@ class TestClarifyPrimitive:
         assert cm.resolve_gateway_clarify("id-race", "A") is True
         assert cm.resolve_gateway_clarify("id-race", "") is False
         assert entry.response == "A"
+
+    def test_get_pending_tracks_lifecycle(self):
+        """Adapters read a pending entry through ``get_pending``; answered or unknown ids read None."""
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("id-pend", "sk-pend", "Pick", ["A", "B"])
+        assert cm.get_pending("id-pend") is entry
+        cm.resolve_gateway_clarify("id-pend", "A")
+        assert cm.get_pending("id-pend") is None
+        assert cm.get_pending("never-registered") is None
 
     def test_open_ended_auto_awaits_text(self):
         """Clarify with no choices is in text-capture mode immediately."""
@@ -199,12 +210,12 @@ class TestCoverageGaps:
 
 
     def test_get_clarify_timeout_exception_returns_default(self, monkeypatch):
-        """get_clarify_timeout returns 3600 when load_config raises."""
+        """get_clarify_timeout returns the 90s default when load_config raises."""
         from tools import clarify_gateway as cm
 
         monkeypatch.setattr("hermes_cli.config.load_config",
                             lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-        assert cm.get_clarify_timeout() == 3600
+        assert cm.get_clarify_timeout() == 90
 
 
 class TestClarifyTimeoutResolution:
@@ -217,13 +228,13 @@ class TestClarifyTimeoutResolution:
         """The classic CLI builds its config from ``cli._cli_config_defaults()``; a seeded
         legacy ``clarify.timeout`` there wins over the user's ``agent.clarify_timeout`` in
         the resolver, capping every CLI modal at that value (120 s) while the docs promise
-        3600 s / unlimited. The CLI defaults must leave the legacy key unset."""
+        90 s / unlimited. The CLI defaults must leave the legacy key unset."""
         import cli
         from tools import clarify_gateway as cm
 
         defaults = cli._cli_config_defaults()
         assert (defaults.get("clarify") or {}).get("timeout") is None
-        assert cm.resolve_clarify_timeout(defaults) == 3600
+        assert cm.resolve_clarify_timeout(defaults) == 90
         cli._merge_file_config(defaults, {"agent": {"clarify_timeout": 900}})
         assert cm.resolve_clarify_timeout(defaults) == 900
 
@@ -266,12 +277,38 @@ class TestUnlimitedWait:
         assert not t.is_alive()
         assert result_box["r"] == "B"
 
+    def test_interrupt_on_waiting_thread_withdraws_unlimited_wait(self):
+        """/stop or gateway shutdown signals the turn's thread; the wait is released as cancelled
+        (as the approval wait is) instead of holding the turn for the whole clarify timeout."""
+        from tools import clarify_gateway as cm
+        from tools.interrupt import set_interrupt
+
+        cm.register("u2", "sk", "Q?", ["A", "B"])
+        box = {}
+
+        def waiter():
+            box["tid"] = threading.get_ident()
+            box["r"] = cm.wait_for_response("u2", timeout=0)
+
+        t = threading.Thread(target=waiter, daemon=True)  # a regression must fail, not hang exit
+        t.start()
+        wait_until(lambda: "tid" in box, timeout=5, what="the waiter thread to start")
+        try:
+            set_interrupt(True, box["tid"], reason="gateway shutdown")
+            t.join(timeout=5.0)
+        finally:
+            set_interrupt(False, box["tid"])
+        assert not t.is_alive()
+        assert box["r"] == cm.CANCELLED
+        assert not cm.has_pending("sk")
+        assert cm.resolve_gateway_clarify("u2", "late") is False
+
 
 class TestMultiSelectTextFallback:
     """Multi-select clarifies via the gateway text fallback.
 
     The adapter's numbered-list fallback asks the user to reply with
-    comma/space-separated numbers; _coerce_text_response must map those to a
+    comma/space-separated numbers; _coerce_text_response_detailed must map those to a
     JSON array of choice labels (which _parse_multi_select_response on the
     tool side decodes into a list).
     """
@@ -299,11 +336,11 @@ class TestMultiSelectTextFallback:
         import json
         from tools import clarify_gateway as cm
         entry = self._register_multi()
-        coerced = cm._coerce_text_response(entry, "1, 1, 2")
+        coerced, _ = cm._coerce_text_response_detailed(entry, "1, 1, 2")
         assert json.loads(coerced) == ["A", "B"]
 
     def test_resolve_text_response_end_to_end(self):
-        """resolve_text_response_for_session delivers the JSON array to the waiter."""
+        """attempt_text_response delivers the JSON array to the waiter."""
         import json
         from tools import clarify_gateway as cm
         self._register_multi(cid="m3")
@@ -315,7 +352,7 @@ class TestMultiSelectTextFallback:
         t = threading.Thread(target=waiter)
         t.start()
         time.sleep(0.05)
-        assert cm.resolve_text_response_for_session("sk", "1,2") is True
+        assert cm.attempt_text_response("m3", "1,2") == cm.TEXT_RESOLVED
         t.join(timeout=5)
         assert json.loads(result_box["r"]) == ["A", "B"]
 
@@ -323,12 +360,12 @@ class TestMultiSelectTextFallback:
         """Single-select coercion unchanged: '2' maps to the choice label string."""
         from tools import clarify_gateway as cm
         entry = cm.register("s3", "sk", "Q?", ["A", "B", "C"])
-        assert cm._coerce_text_response(entry, "2") == "B"
+        assert cm._coerce_text_response_detailed(entry, "2") == ("B", None)
 
     def test_single_select_regression_label(self):
         from tools import clarify_gateway as cm
         entry = cm.register("s4", "sk", "Q?", ["A", "B"])
-        assert cm._coerce_text_response(entry, "b") == "B"
+        assert cm._coerce_text_response_detailed(entry, "b") == ("B", None)
 
 
 class TestNativeRejectClassification:
@@ -352,7 +389,7 @@ class TestNativeRejectClassification:
         value, reason = cm._coerce_text_response_detailed(entry, "99")
         assert value is None
         assert reason == "invalid_selection"
-        assert cm.attempt_text_response_for_session("sk-ms", "99") == (
+        assert cm.attempt_text_response("ms-oor", "99") == (
             cm.TEXT_REJECTED_SELECTION
         )
         pending = cm.get_pending_for_session("sk-ms", include_choice_prompts=True)
@@ -368,7 +405,7 @@ class TestNativeRejectClassification:
         value, reason = cm._coerce_text_response_detailed(entry, "1,99")
         assert value is None
         assert reason == "invalid_selection"
-        assert cm.attempt_text_response_for_session("sk-ms2", "nope,nope") == (
+        assert cm.attempt_text_response("ms-bad", "nope,nope") == (
             cm.TEXT_REJECTED_SELECTION
         )
         pending = cm.get_pending_for_session("sk-ms2", include_choice_prompts=True)
@@ -386,8 +423,8 @@ class TestNativeRejectClassification:
         )
         assert value is None
         assert reason == "prose"
-        assert cm.attempt_text_response_for_session(
-            "sk-ms3", "just checking the visual UI, no need to pass any data",
+        assert cm.attempt_text_response(
+            "ms-prose", "just checking the visual UI, no need to pass any data",
         ) == cm.TEXT_REJECTED_PROSE
 
     def test_single_select_out_of_range_is_invalid_selection(self):
@@ -397,7 +434,7 @@ class TestNativeRejectClassification:
         value, reason = cm._coerce_text_response_detailed(entry, "9")
         assert value is None
         assert reason == "invalid_selection"
-        assert cm.attempt_text_response_for_session("sk-ss", "9") == (
+        assert cm.attempt_text_response("ss-oor", "9") == (
             cm.TEXT_REJECTED_SELECTION
         )
 

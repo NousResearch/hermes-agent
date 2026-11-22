@@ -3,9 +3,11 @@
  * surfaces it as an ambient pill, and orchestrates the apply flow.
  */
 
+import { updateDebt } from '@hermes/shared'
 import { atom } from 'nanostores'
 
-import { connectionScoped, profileScoped } from '@/api/client'
+import { CANONICAL_GATEWAY_PROTOCOL } from '@/api/canonical-protocol'
+import { $apiRequestScope, connectionScoped, profileScoped } from '@/api/client'
 import type {
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
@@ -18,11 +20,12 @@ import type {
 import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
+import { cloudOwnsUpdates, updateTargetFor } from '@/store/cloud-updates'
 import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connections'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $connection } from '@/store/session'
-import type { BackendUpdateCheckResponse } from '@/types/hermes'
+import type { BackendUpdateCheckResponse, UpdateReceiptSummary } from '@/types/hermes'
 
 /** Keyed per retired-channel revision: a new retirement (or a revision bump on
  *  the same channel) re-shows the notice, a plain re-check never does. */
@@ -69,6 +72,10 @@ export const $updateOverlayTarget = atom<UpdateTarget>('client')
 export const setUpdateOverlayOpen = (open: boolean) => $updateOverlayOpen.set(open)
 
 export const openUpdateOverlayFor = (target: UpdateTarget): void => {
+  if (cloudOwnsUpdates(target)) {
+    return
+  }
+
   $updateOverlayTarget.set(target)
   $updateOverlayOpen.set(true)
   void (target === 'backend' ? checkBackendUpdates({ force: true }) : checkUpdates({ force: true }))
@@ -98,12 +105,14 @@ function isUpdateToastSnoozed(): boolean {
 }
 
 // Must match tui_gateway's DESKTOP_BACKEND_CONTRACT that this build was written
-// against. The backend reports its own value in session runtime info; a lower
-// value (or none — a pre-GUI checkout) means the backend is older than this
-// GUI, a higher value means this GUI is older than the backend. Both
+// against. Legacy backends report their own value in session runtime info; a
+// lower value (or none — a pre-GUI checkout) means the backend is older than
+// this GUI, a higher value means this GUI is older than the backend. Both
 // directions are GUI<->backend skew and both warn — an old GUI silently
 // driving a newer backend is just as broken as the reverse, it only fails
-// further from the cause.
+// further from the cause. Canonical gateways identify their distinct wire
+// protocol instead. That value does not claim the legacy API features listed
+// below.
 // v2: requires the file.attach RPC (remote-gateway non-image file upload).
 // v3: requires approvals.mode config RPCs and session.info reconciliation.
 // v4: requires explicit Fast-off session creation and session-scoped Fast edits.
@@ -176,8 +185,12 @@ function isInstallMethodToastSnoozed(): boolean {
  * Runs on every session open; closing a toast snoozes it for a cooldown so it
  * doesn't nag on every thread switch.
  */
-export function reportBackendContract(contract: number | undefined): void {
-  const reported = contract ?? 0
+export function reportBackendContract(contract: number | undefined, protocol?: string): void {
+  // A canonical gateway speaks exactly the protocol this build targets. An
+  // unknown explicit protocol must not fall back to a legacy version claim, so
+  // it reads as an out-of-date backend.
+  const reported =
+    protocol === undefined ? (contract ?? 0) : protocol === CANONICAL_GATEWAY_PROTOCOL ? REQUIRED_BACKEND_CONTRACT : 0
 
   if (reported >= REQUIRED_BACKEND_CONTRACT) {
     dismissNotification(SKEW_TOAST_ID)
@@ -199,13 +212,16 @@ export function reportBackendContract(contract: number | undefined): void {
     }
 
     notify({
-      action: {
-        label: translateNow('notifications.updateHermes'),
-        onClick: () => {
-          snoozeSkewToast()
-          void applyBackendUpdate()
-        }
-      },
+      // Hermes Cloud updates its agents itself: name the skew, offer no update.
+      action: cloudOwnsUpdates('backend')
+        ? undefined
+        : {
+            label: translateNow('notifications.updateHermes'),
+            onClick: () => {
+              snoozeSkewToast()
+              void applyBackendUpdate()
+            }
+          },
       durationMs: 0,
       id: SKEW_TOAST_ID,
       kind: 'warning',
@@ -223,13 +239,16 @@ export function reportBackendContract(contract: number | undefined): void {
     }
 
     notify({
-      action: {
-        label: translateNow('notifications.updateDesktopApp'),
-        onClick: () => {
-          snoozeGuiSkewToast()
-          openUpdateOverlayFor('client')
-        }
-      },
+      // A Webapp served by Hermes Cloud: Cloud replaced the image under this tab, and a reload loads it.
+      action: cloudOwnsUpdates('client')
+        ? { label: translateNow('commandCenter.reloadWindow'), onClick: () => window.location.reload() }
+        : {
+            label: translateNow('notifications.updateDesktopApp'),
+            onClick: () => {
+              snoozeGuiSkewToast()
+              openUpdateOverlayFor('client')
+            }
+          },
       durationMs: 0,
       id: GUI_SKEW_TOAST_ID,
       kind: 'warning',
@@ -274,7 +293,7 @@ export function reportInstallMethodWarning(message: string | undefined): void {
 export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, target: UpdateTarget = 'client') {
   // Either signal means "update ready": behind > 0 (git checkout) or
   // updateAvailable (shallow clone, App Installer feed).
-  if (!status || status.supported === false || status.error) {
+  if (!status || status.supported === false || status.error || cloudOwnsUpdates(target)) {
     return
   }
 
@@ -372,7 +391,7 @@ function maybeNotifyDiscontinued(retirement: NonNullable<DesktopUpdateStatus['re
  *  user is connected to. Surfaces that display one target's status must pass
  *  that target explicitly instead of inheriting this. */
 function activeUpdateTarget(): UpdateTarget {
-  return isRemoteMode() ? 'backend' : 'client'
+  return updateTargetFor($connection.get())
 }
 
 /**
@@ -404,6 +423,10 @@ export function openUpdatesWindow(target: UpdateTarget = activeUpdateTarget()): 
  * machine's status and must not fan out to the others.
  */
 export function startActiveUpdate(target?: UpdateTarget): void {
+  if (cloudOwnsUpdates(target ?? activeUpdateTarget())) {
+    return
+  }
+
   if (!target && hasMultipleUpdateTargets()) {
     $updateOverlayOpen.set(true)
     void applyEverythingUpdate()
@@ -426,9 +449,13 @@ export function startActiveUpdate(target?: UpdateTarget): void {
  * triggers the everything-flow.
  */
 export function requestActiveUpdate(): void {
+  if (cloudOwnsUpdates(activeUpdateTarget())) {
+    return
+  }
+
   if (hasMultipleUpdateTargets()) {
     const clientStatus = $updateStatus.get()
-    const backendStatus = $backendUpdateStatus.get()
+    const backendStatus = cloudOwnsUpdates('backend') ? null : $backendUpdateStatus.get()
 
     const anyBehind =
       (clientStatus?.behind ?? 0) > 0 ||
@@ -455,6 +482,17 @@ export function requestActiveUpdate(): void {
   openUpdateOverlayFor(target)
 }
 
+// Only the newest getVersion may publish, and only while the request scope
+// (connection + profile) is unchanged. A profile switch moves $apiRequestScope
+// without replacing $connection, so the connection identity alone is not enough.
+let versionRequestSeq = 0
+
+function versionScopeKey(): string {
+  const { connectionId, profile } = $apiRequestScope.get()
+
+  return `${connectionKey($connection.get())}|${connectionId ?? ''}|${profile ?? ''}`
+}
+
 /** Refresh the active gateway version and the desktop's build metadata. */
 export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null> {
   if (typeof window === 'undefined') {
@@ -467,10 +505,13 @@ export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null
   // mid-reload, or the bridge not yet ready on first paint) would surface
   // as an unhandled promise rejection in the renderer. Swallow it.
   try {
-    const connection = $connection.get()
+    const seq = ++versionRequestSeq
+    const scope = versionScopeKey()
     const next = await window.hermesDesktop?.getVersion?.({ ...connectionScoped(), ...profileScoped() })
 
-    if ($connection.get() !== connection) {
+    // Superseded, or the scope moved while in flight: the scope listener has
+    // already asked again for the new target.
+    if (seq !== versionRequestSeq || versionScopeKey() !== scope) {
       return null
     }
 
@@ -513,8 +554,14 @@ export function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateS
     error: checkFailed ? 'check-failed' : undefined,
     message: res.message ?? undefined,
     updateAvailable: res.update_available,
+    rollback: Boolean(res.rollback_to),
+    held: res.held ?? undefined,
+    sourceVersion: res.rollback_to ?? (res.held ? res.source_version : undefined) ?? undefined,
     behind: behind === null || behind < 0 ? null : behind,
     currentVersion: res.current_version,
+    channel: res.channel,
+    branch: res.branch ?? undefined,
+    latestTag: res.source_version && !res.rollback_to ? `v${res.source_version}` : undefined,
     targetSha: res.update_available ? `backend:${res.current_version}` : undefined,
     commits: res.commits,
     fetchedAt: Date.now()
@@ -534,6 +581,10 @@ let backendCheckPendingKey: string | undefined
 export async function checkBackendUpdates({
   force = false
 }: UpdateCheckOptions = {}): Promise<DesktopUpdateStatus | null> {
+  if (cloudOwnsUpdates('backend')) {
+    return null
+  }
+
   if (!isRemoteMode()) {
     return $backendUpdateStatus.get()
   }
@@ -592,7 +643,7 @@ export async function checkBackendUpdates({
 export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): Promise<DesktopUpdateStatus | null> {
   const bridge = window.hermesDesktop?.updates
 
-  if (!bridge || $updateChecking.get()) {
+  if (!bridge || $updateChecking.get() || cloudOwnsUpdates('client')) {
     return $updateStatus.get()
   }
 
@@ -629,7 +680,77 @@ export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): 
   }
 }
 
+export type SourceUpdateChannel = 'main' | 'stable'
+
+/** What a source checkout follows, for display; null where a package owns the channel. */
+export type SourceUpdateTrack = { kind: 'stable' } | { kind: 'main' } | { kind: 'branch'; name: string }
+
+export function sourceUpdateTrack(status: DesktopUpdateStatus | null): SourceUpdateTrack | null {
+  if (!status?.supported || (status.mechanism !== 'posix-handoff' && status.mechanism !== 'windows-handoff')) {
+    return null
+  }
+
+  if (status.channel === 'stable') {
+    return { kind: 'stable' }
+  }
+
+  if (status.channel !== undefined || !status.branch) {
+    return null
+  }
+
+  return status.branch === 'main' ? { kind: 'main' } : { kind: 'branch', name: status.branch }
+}
+
+/**
+ * The selectable channel of a source checkout, or null where the selector must not
+ * appear: packages own their channel, runtimes older than the flag cannot save one,
+ * and a custom branch is neither stable releases nor every commit on main.
+ */
+export function sourceUpdateChannel(status: DesktopUpdateStatus | null): SourceUpdateChannel | null {
+  const source = status?.mechanism === 'posix-handoff' || status?.mechanism === 'windows-handoff'
+
+  if (!status?.supported || !source || !status.channelSelectable) {
+    return null
+  }
+
+  if (status.channel === 'stable') {
+    return 'stable'
+  }
+
+  return status.channel === undefined && status.branch === 'main' ? 'main' : null
+}
+
+/**
+ * Persist the source checkout's channel; the reply is a fresh check against it.
+ * An unreachable release still returns a status naming the saved channel.
+ */
+export async function setUpdateChannel(channel: SourceUpdateChannel): Promise<DesktopUpdateStatus> {
+  const setChannel = window.hermesDesktop?.updates?.setChannel
+
+  if (!setChannel) {
+    throw new Error('This installation cannot change its update channel.')
+  }
+
+  $updateChecking.set(true)
+
+  try {
+    const status = await setChannel(channel)
+    $updateStatus.set(status)
+    maybeNotifyUpdateAvailable(status, 'client')
+
+    return status
+  } finally {
+    $updateChecking.set(false)
+  }
+}
+
+const CLOUD_OWNED: DesktopUpdateApplyResult = { ok: false, error: 'cloud-managed' }
+
 export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promise<DesktopUpdateApplyResult> {
+  if (cloudOwnsUpdates('client')) {
+    return CLOUD_OWNED
+  }
+
   if ($updateStatus.get()?.retirement) {
     openUpdateOverlayFor('client')
 
@@ -747,7 +868,53 @@ const BACKEND_ACTION_POLL_MS = 1500
 const BACKEND_ACTION_MAX_MS = 6 * 60 * 1000
 const BACKEND_RETURN_MAX_MS = 4 * 60 * 1000
 
-function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
+// Updater output kept for the error box's Technical details and the report it
+// attaches; the progress view only paints the last few lines.
+const UPDATE_LOG_LINES = 300
+
+// C3: a committed update succeeds even when post-commit steps are still owed,
+// and a partial one (committed, but the user must act) still owes them. Name
+// every owed step of THIS action's committed run whatever the exit: follow-ups
+// with the rerun remedy, a user action with the producer's own instruction,
+// verbatim (a rerun does not restore a parked stash).
+function owedMessage(receipt: UpdateReceiptSummary | undefined, actionId: string | undefined): string | null {
+  const debt = updateDebt(receipt, actionId)
+
+  if (!debt) {
+    return null
+  }
+
+  return [debt.followups && translateNow('updates.applyStatus.owed', debt.followups), debt.userAction]
+    .filter(Boolean)
+    .join(' ')
+}
+
+// A failed apply whose receipt still proves a committed partial run (exit 1)
+// names what that run owes instead of only "failed" / "did not come back".
+function failBackendApply(
+  fallback: { shown: string; result: string },
+  status: { receipt?: UpdateReceiptSummary } | null,
+  actionId: string | undefined
+): DesktopUpdateApplyResult {
+  const owed = owedMessage(status?.receipt, actionId)
+  const message = owed ? `${translateNow('updates.applyStatus.failed')} ${owed}` : fallback.shown
+
+  $backendUpdateApply.set({
+    ...$backendUpdateApply.get(),
+    applying: false,
+    stage: 'error',
+    error: 'apply-failed',
+    message
+  })
+
+  return { ok: false, error: 'apply-failed', message: owed ? message : fallback.result }
+}
+
+function finishBackendApply(
+  returned: boolean,
+  receipt?: UpdateReceiptSummary,
+  actionId?: string
+): DesktopUpdateApplyResult {
   if (returned) {
     $backendUpdateApply.set(IDLE)
     setUpdateOverlayOpen(false)
@@ -765,19 +932,22 @@ function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
     // affordance in remote mode targets the backend, so nothing ever told
     // them the app itself was stale). Nudge with a one-click client update.
     void maybeNudgeClientAfterBackendUpdate()
+    const owed = owedMessage(receipt, actionId)
+
+    if (owed) {
+      notify({ durationMs: 0, kind: 'warning', message: owed })
+
+      return { ok: true, message: owed }
+    }
 
     return { ok: true, message: 'Backend update applied.' }
   }
 
-  $backendUpdateApply.set({
-    ...$backendUpdateApply.get(),
-    applying: false,
-    stage: 'error',
-    error: 'apply-failed',
-    message: translateNow('updates.applyStatus.noReturn')
-  })
-
-  return { ok: false, error: 'apply-failed', message: 'Backend did not come back online.' }
+  return failBackendApply(
+    { shown: translateNow('updates.applyStatus.noReturn'), result: 'Backend did not come back online.' },
+    { receipt },
+    actionId
+  )
 }
 
 function ingestBackendActionStatus(status: Awaited<ReturnType<typeof getActionStatus>>): void {
@@ -786,7 +956,7 @@ function ingestBackendActionStatus(status: Awaited<ReturnType<typeof getActionSt
   const log = status.lines
     .filter(line => line.trim().length > 0)
     .map(line => ({ at: Date.now(), message: line, stage: current.stage }))
-    .slice(-50)
+    .slice(-UPDATE_LOG_LINES)
 
   const latest = log.at(-1)?.message
 
@@ -813,7 +983,11 @@ function completedAfterRestart(
  *  run started at-or-after we kicked the update off counts — an older
  *  receipt describes a previous update, and a still-running one proves
  *  nothing yet. The 60s slack absorbs client/backend clock skew. */
-function receiptProvesOutcome(status: Awaited<ReturnType<typeof getActionStatus>>, applyStartedAtMs: number): boolean {
+function receiptProvesOutcome(
+  status: Awaited<ReturnType<typeof getActionStatus>>,
+  applyStartedAtMs: number,
+  actionId: string | undefined
+): boolean {
   const receipt = status.receipt
 
   if (!receipt || !receipt.finished_at || !receipt.started_at) {
@@ -822,6 +996,12 @@ function receiptProvesOutcome(status: Awaited<ReturnType<typeof getActionStatus>
 
   if (receipt.outcome !== 'success' && receipt.outcome !== 'partial' && receipt.outcome !== 'failed') {
     return false
+  }
+
+  // A backend that records the writing action (null for a CLI run) proves
+  // identity directly: another action's success cannot certify this one.
+  if (actionId && receipt.action_id !== undefined) {
+    return receipt.action_id === actionId
   }
 
   const startedMs = Date.parse(receipt.started_at)
@@ -929,15 +1109,15 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       }
 
       if (last.exit_code === 0 || (last.exit_code === null && completedAfterRestart(last, started.action_id))) {
-        return finishBackendApply(true)
+        return finishBackendApply(true, last.receipt, started.action_id)
       }
 
       // #91277 bullet 3: the backend now attaches the durable update
       // receipt to the status. A receipt whose run STARTED after we kicked
       // this update off is authoritative — read its outcome instead of
       // inferring from log markers or timing out across the restart gap.
-      if (last.exit_code === null && receiptProvesOutcome(last, applyStartedAtMs)) {
-        return finishBackendApply(last.receipt!.outcome === 'success')
+      if (last.exit_code === null && receiptProvesOutcome(last, applyStartedAtMs, started.action_id)) {
+        return finishBackendApply(last.receipt!.outcome === 'success', last.receipt, started.action_id)
       }
 
       if (!started.action_id && last.exit_code === null) {
@@ -957,15 +1137,11 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       }
     }
 
-    $backendUpdateApply.set({
-      ...$backendUpdateApply.get(),
-      applying: false,
-      stage: 'error',
-      error: 'apply-failed',
-      message: translateNow('updates.applyStatus.failed')
-    })
-
-    return { ok: false, error: 'apply-failed', message: 'Backend update failed.' }
+    return failBackendApply(
+      { shown: translateNow('updates.applyStatus.failed'), result: 'Backend update failed.' },
+      last,
+      started.action_id
+    )
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     $backendUpdateApply.set({
@@ -981,6 +1157,10 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
 }
 
 export function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
+  if (cloudOwnsUpdates('backend')) {
+    return Promise.resolve(CLOUD_OWNED)
+  }
+
   if (backendUpdateInFlight) {
     return backendUpdateInFlight
   }
@@ -1067,6 +1247,11 @@ export function applyEverythingUpdate(): Promise<void> {
   return updateEverythingInFlight
 }
 
+/** The everything-flow's backend leg: a remote backend, unless Hermes Cloud updates it itself. */
+function backendLegApplies(): boolean {
+  return isRemoteMode() && !cloudOwnsUpdates('backend')
+}
+
 async function runEverythingUpdate(): Promise<void> {
   $updateEverything.set({ running: true })
 
@@ -1081,7 +1266,7 @@ async function runEverythingUpdate(): Promise<void> {
     //    Its own finish path re-checks and nudges, but the everything-flow
     //    continues regardless of the outcome: one unreachable backend must
     //    not strand the other machines or the client.
-    if (isRemoteMode()) {
+    if (backendLegApplies()) {
       $updateOverlayTarget.set('backend')
 
       await applyBackendUpdate().catch(() => null)
@@ -1153,7 +1338,8 @@ async function runEverythingUpdate(): Promise<void> {
 
 function ingestProgress(payload: DesktopUpdateProgress): void {
   const current = $updateApply.get()
-  const log = [...current.log, { stage: payload.stage, message: payload.message, at: payload.at }].slice(-50)
+  const entry = { stage: payload.stage, message: payload.message, at: payload.at }
+  const log = [...current.log, entry].slice(-UPDATE_LOG_LINES)
 
   const terminal =
     payload.stage === 'error' ||
@@ -1179,6 +1365,8 @@ let pollerStarted = false
 let backgroundTimer: ReturnType<typeof setInterval> | null = null
 let connectionUnsub: (() => void) | null = null
 let lastConnectionKey: string | undefined
+let versionScopeUnsub: (() => void) | null = null
+let lastVersionScopeKey: string | undefined
 
 // mode alone can't tell two remote backends apart — switching directly from
 // remote profile A to remote profile B leaves mode === 'remote' both times.
@@ -1223,6 +1411,7 @@ export function startUpdatePoller(): void {
 
   pollerStarted = true
   runPassiveChecks()
+  lastVersionScopeKey = versionScopeKey()
   void refreshDesktopVersion()
   bridge.onProgress(ingestProgress)
 
@@ -1244,6 +1433,27 @@ export function startUpdatePoller(): void {
     }
   })
 
+  // The reported version belongs to the request scope, local or remote. Watch
+  // both stores: a profile switch changes $apiRequestScope but not $connection.
+  const onVersionScope = (): void => {
+    const key = versionScopeKey()
+
+    if (key === lastVersionScopeKey) {
+      return
+    }
+
+    lastVersionScopeKey = key
+    void refreshDesktopVersion()
+  }
+
+  const unsubScope = $apiRequestScope.listen(onVersionScope)
+  const unsubConnection = $connection.listen(onVersionScope)
+
+  versionScopeUnsub = () => {
+    unsubScope()
+    unsubConnection()
+  }
+
   window.addEventListener('focus', onFocus)
   backgroundTimer = setInterval(runPassiveChecks, BACKGROUND_UPDATE_CHECK_MS)
 }
@@ -1256,7 +1466,11 @@ export function stopUpdatePoller(): void {
 
   connectionUnsub?.()
   connectionUnsub = null
+  versionScopeUnsub?.()
+  versionScopeUnsub = null
   lastConnectionKey = undefined
+  lastVersionScopeKey = undefined
+  versionRequestSeq++
   window.removeEventListener('focus', onFocus)
   pollerStarted = false
 }

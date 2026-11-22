@@ -116,9 +116,7 @@ function pruneRegistry(registry: ArtifactRegistry): ArtifactRegistry {
  *    the same content after index shifts, and a selection whose version was
  *    evicted snaps back to newest.
  */
-function enforceContentBudget(
-  entries: readonly (readonly [string, ArtifactRecord[]])[]
-): [string, ArtifactRecord[]][] {
+function enforceContentBudget(entries: readonly (readonly [string, ArtifactRecord[]])[]): [string, ArtifactRecord[]][] {
   // Capture each explicitly selected version's hash BEFORE pruning: after the
   // array shifts, the selection index no longer names the version the user
   // pinned, so the hash is the only stable handle.
@@ -218,6 +216,7 @@ function reconcileVersionSelection(
       // left it as the newest): absent = newest.
       delete next[artifactId]
       updated = next
+
       continue
     }
 

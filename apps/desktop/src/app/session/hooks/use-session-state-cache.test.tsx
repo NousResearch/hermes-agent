@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { purgeInFlightTurnJournals, resetInFlightTurnJournalStateForTests } from '@/lib/inflight-turn-journal'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionStoredIdRotation,
@@ -24,6 +25,7 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
+  setMessages,
   setSelectedStoredSessionId,
   setSessions,
   setSessionStartedAt,
@@ -71,9 +73,7 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
 
     setActiveSessionId('runtime-A')
     setSelectedStoredSessionId('stored-A')
-    render(
-      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
-    )
+    render(<PublishingHarness onReady={value => (cache = value)} />)
 
     act(() => {
       cache.updateSessionState('runtime-A', state => state, 'stored-A')
@@ -231,6 +231,57 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     expect(tiles.find(t => t.storedSessionId === 'stored-A-next')).toBeDefined()
   })
 
+  it('carries the conversation preview tabs onto the new tip when compression rotates it (#73890)', async () => {
+    const { $previewTabs, $visiblePreviewTabs, closeRightRail, openPreview } = await import('@/store/preview')
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId('stored-A')
+    render(<PublishingHarness onReady={value => (cache = value)} />)
+
+    try {
+      openPreview({ kind: 'url', label: 'Docs', source: 'https://docs.example', url: 'https://docs.example' })
+
+      act(() => {
+        cache.updateSessionState('runtime-A', state => state, 'stored-A')
+        cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+      })
+
+      expect($previewTabs.get().map(tab => tab.sessionId)).toEqual(['stored-A-next'])
+      expect($visiblePreviewTabs.get()).toHaveLength(1)
+
+      act(() => setSelectedStoredSessionId('stored-A-next'))
+      expect($visiblePreviewTabs.get()).toHaveLength(1)
+    } finally {
+      closeRightRail()
+    }
+  })
+
+  it("hands a runtime's pre-stored-id preview tabs over when its stored id binds, even on a no-op update (#73890)", async () => {
+    const { $previewTabs, closeRightRail, openPreview } = await import('@/store/preview')
+    let cache!: Cache
+
+    setActiveSessionId('runtime-B')
+    setSelectedStoredSessionId(null)
+    render(<Harness activeSessionId="runtime-B" onReady={value => (cache = value)} selectedStoredSessionId={null} />)
+
+    try {
+      act(() => {
+        cache.updateSessionState('runtime-B', state => state, null)
+      })
+      openPreview({ kind: 'url', label: 'Docs', source: 'https://docs.example', url: 'https://docs.example' }, null)
+      expect($previewTabs.get().map(tab => tab.sessionId)).toEqual([undefined])
+
+      act(() => {
+        cache.updateSessionState('runtime-B', state => state, 'stored-B')
+      })
+
+      expect($previewTabs.get().map(tab => tab.sessionId)).toEqual(['stored-B'])
+    } finally {
+      closeRightRail()
+    }
+  })
+
   it('rekeys the persisted owner profile when its runtime rotates while another profile is visible', () => {
     let cache!: Cache
     const profileA = 'rotation-profile-a-98622'
@@ -337,6 +388,92 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
   })
 })
 
+// #77486 review follow-up (kvnloo): the journal under a pre-rotation stored id
+// is unreachable by every id a permanent delete holds, so it used to survive
+// until MAX_AGE_MS. Rotation now migrates it to the new tip.
+describe('useSessionStateCache — journal migration on stored-id rotation', () => {
+  beforeEach(() => {
+    // The 400ms persist throttle is real timer work; fake timers make the
+    // journaled write deterministic without racing the 15s test timeout.
+    vi.useFakeTimers()
+    resetInFlightTurnJournalStateForTests()
+    window.localStorage.clear()
+  })
+
+  afterEach(() => {
+    cleanup()
+    clearAllSessionStates()
+    setActiveSessionId(null)
+    setActiveSessionStoredIdRotation(null)
+    setSelectedStoredSessionId(null)
+    setSessions([])
+    $sessionTiles.set([])
+    window.localStorage.clear()
+    resetInFlightTurnJournalStateForTests()
+    vi.useRealTimers()
+  })
+
+  it('migrates the journaled in-flight tail to the new stored id so permanent delete reaches it', () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId('stored-A')
+    render(<PublishingHarness onReady={value => (cache = value)} />)
+
+    // Busy turn journaled under the lineage tip A.
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+    })
+
+    const assistantStreaming = assistantText('assistant-stream-1', 'partial answer')
+
+    assistantStreaming.pending = true
+
+    act(() => {
+      cache.updateSessionState(
+        'runtime-A',
+        state => ({
+          ...state,
+          busy: true,
+          messages: [userMessage('u1', 'sensitive prompt'), assistantStreaming],
+          streamId: 'assistant-stream-1',
+          turnStartedAt: 1000
+        }),
+        'stored-A'
+      )
+    })
+
+    act(() => {
+      vi.advanceTimersByTime(400)
+    })
+
+    const journalKey = (storedSessionId: string) =>
+      `hermes.desktop.inflightTurnJournal.v2:${encodeURIComponent(storedSessionId)}`
+
+    expect(window.localStorage.getItem(journalKey('stored-A'))).not.toBeNull()
+
+    // Compression rotates the same runtime's stored id A -> B through the REAL
+    // ensureSessionState path (updateSessionState delegates to it).
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-B')
+    })
+
+    // The old key is gone and the new key holds the migrated snapshot.
+    expect(window.localStorage.getItem(journalKey('stored-A'))).toBeNull()
+    expect(window.localStorage.getItem(journalKey('stored-B'))).not.toBeNull()
+
+    // Permanent delete of the surviving lineage tip B reaches every copy: no
+    // journal key for A or B remains (the delete gesture holds B plus the
+    // lineage root; A is only reachable because the rotation migrated it).
+    act(() => {
+      purgeInFlightTurnJournals(['stored-B'])
+    })
+
+    expect(window.localStorage.getItem(journalKey('stored-A'))).toBeNull()
+    expect(window.localStorage.getItem(journalKey('stored-B'))).toBeNull()
+  })
+})
+
 function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessProps) {
   const busyRef: MutableRefObject<boolean> = { current: false }
 
@@ -379,6 +516,7 @@ function RotationHarness({ activeSessionId, onReady, selectedStoredSessionId }: 
     navigate: vi.fn() as never,
     requestGateway: async () => ({}) as never,
     resetViewSync: cache.resetViewSync,
+    routedSessionId: null,
     runtimeIdByStoredSessionIdRef: cache.runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef,
@@ -803,6 +941,59 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
     })
 
     expect($messages.get().some(message => message.error === 'OpenRouter 403')).toBe(true)
+  })
+
+  it('keeps a view-only assistant error when the next reply starts streaming', () => {
+    $messages.set([])
+    let cache!: Cache
+    render(<ViewHarness activeSessionId="thread-A" onReady={c => (cache = c)} />)
+    const first = userMessage('user-a', 'first try')
+    const retry = userMessage('user-b', 'retry')
+    const error = assistantError('assistant-a-error', 'Provider unavailable')
+
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({ ...state, messages: [first, retry] }), 'stored-A')
+    })
+    $messages.set([first, error, retry])
+    act(() => {
+      cache.updateSessionState(
+        'thread-A',
+        state => ({ ...state, messages: [...state.messages, assistantText('assistant-b', 'answer')] }),
+        'stored-A',
+        true
+      )
+    })
+
+    expect($messages.get().map(message => message.id)).toEqual(['user-a', 'assistant-a-error', 'user-b', 'assistant-b'])
+    expect($messages.get()[1].error).toBe('Provider unavailable')
+  })
+
+  it("publishes a queued prompt's started mark, its only change, to the view resume reads", () => {
+    $messages.set([])
+    let cache!: Cache
+    render(<ViewHarness activeSessionId="thread-A" onReady={c => (cache = c)} />)
+
+    const queued = userMessage('user-queued-thread-A', 'next question')
+    const transcript = [userMessage('user-a', 'first'), assistantText('assistant-a', 'working'), queued]
+
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({ ...state, busy: false, messages: transcript }), 'stored-A')
+    })
+
+    expect($messages.get().map(message => message.id)).toEqual(['user-a', 'assistant-a', queued.id])
+    expect($messages.get().at(-1)?.queuedTurnStarted).toBeUndefined()
+
+    // message.start for the queued prompt's turn marks only that row.
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({
+        ...state,
+        messages: state.messages.map(message =>
+          message.id === queued.id ? { ...message, queuedTurnStarted: true } : message
+        )
+      }))
+    })
+
+    expect($messages.get().at(-1)?.queuedTurnStarted).toBe(true)
   })
 
   it('evicts the oldest warm transcript with its reverse ownership while retaining lightweight state', () => {
@@ -1247,5 +1438,126 @@ describe('useSessionStateCache — parked tiles release their warm transcript (#
 
     expect(cache.sessionStateByRuntimeIdRef.current.has(runtime)).toBe(true)
     expect($sessionStates.get()[runtime]?.messages.length).toBe(2)
+  })
+})
+
+function PublishingHarness({ onReady }: { onReady: (cache: Cache) => void }) {
+  const cache = useSessionStateCache({
+    activeSessionId: 'runtime-A',
+    busyRef: { current: false },
+    selectedStoredSessionId: 'stored-A',
+    setAwaitingResponse: () => undefined,
+    setBusy: () => undefined,
+    setMessages
+  })
+
+  onReady(cache)
+
+  return null
+}
+
+describe('useSessionStateCache — live publish provenance', () => {
+  afterEach(() => {
+    cleanup()
+    clearAllSessionStates()
+    setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
+    $sessionStates.set({})
+  })
+
+  it('does not repaint an equal-content resume even when the state carries a streamId', () => {
+    let cache!: Cache
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId('stored-A')
+    render(<PublishingHarness onReady={value => (cache = value)} />)
+
+    const message: ChatMessage = { id: 'a1', parts: [{ type: 'text', text: 'streaming' }], role: 'assistant' }
+    act(() => {
+      cache.updateSessionState(
+        'runtime-A',
+        state => ({ ...state, busy: false, messages: [message], streamId: 'stream-1', storedSessionId: 'stored-A' }),
+        'stored-A'
+      )
+    })
+
+    const published = $messages.get()
+    // A resume rebuilds equal content into new objects while the runtime still
+    // reports the running stream id. Without an explicit delta cause this took
+    // the direct-publish path and repainted the whole transcript.
+    act(() => {
+      cache.updateSessionState(
+        'runtime-A',
+        state => ({
+          ...state,
+          messages: [{ id: 'a1', parts: [{ type: 'text', text: 'streaming' }], role: 'assistant' }]
+        }),
+        'stored-A'
+      )
+    })
+
+    expect($messages.get()).toBe(published)
+  })
+
+  it('keeps view-only completion timing through later live deltas', () => {
+    let cache!: Cache
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId('stored-A')
+    render(<PublishingHarness onReady={value => (cache = value)} />)
+
+    const user: ChatMessage = { id: 'u1', parts: [{ type: 'text', text: 'hi' }], role: 'user' }
+
+    const timed: ChatMessage = {
+      completedAt: 200,
+      id: 'a1',
+      parts: [{ completedAt: 200, text: 'done', timestamp: 100, type: 'text' }],
+      role: 'assistant',
+      timestamp: 100
+    }
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => ({ ...state, messages: [user, timed] }), 'stored-A')
+    })
+
+    // A hydration refresh rebuilds the reply without the live completion stamps.
+    const hydrated: ChatMessage = {
+      id: 'a1',
+      parts: [{ text: 'done', type: 'text' }],
+      role: 'assistant',
+      timestamp: 100
+    }
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => ({ ...state, messages: [user, hydrated] }), 'stored-A')
+    })
+    expect($messages.get()[1].completedAt).toBe(200)
+
+    const tail: ChatMessage = { id: 'a2', parts: [{ text: 'next', type: 'text' }], pending: true, role: 'assistant' }
+
+    act(() => {
+      cache.updateSessionState(
+        'runtime-A',
+        state => ({ ...state, messages: [...state.messages, tail] }),
+        'stored-A',
+        true
+      )
+    })
+
+    const settled = $messages.get()[1]
+    expect(settled.completedAt).toBe(200)
+    expect(settled.parts[0]).toMatchObject({ completedAt: 200 })
+
+    // A second delta reuses the merged row instead of rebuilding it.
+    act(() => {
+      cache.updateSessionState(
+        'runtime-A',
+        state => ({
+          ...state,
+          messages: [...state.messages.slice(0, -1), { ...tail, parts: [{ text: 'next more', type: 'text' }] }]
+        }),
+        'stored-A',
+        true
+      )
+    })
+    expect($messages.get()[1]).toBe(settled)
   })
 })

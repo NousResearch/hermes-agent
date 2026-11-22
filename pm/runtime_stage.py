@@ -18,7 +18,7 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
     The scratch project prevents uv from discovering the application's workspace.
     No project install, application extra, or application lock enters this graph.
     """
-    from pm.environment import PythonEnvironment
+    from pm.environment import PythonEnvironment  # noqa: TID251
     from pm.packages import uv_cache_dir
     from pm.runtime import runtime_environment
 
@@ -45,6 +45,7 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
         [str(environment.executable), "-I", "-B", "-c",
          "import packaging, tomli_w, truststore; from ruamel.yaml import YAML"],
         env=env, capture_output=True, text=True, timeout=30,
+        check=False,
     )
     if checked.returncode:
         raise InstallError("pm-runtime", f"dependency validation failed: {checked.stderr.strip()}")

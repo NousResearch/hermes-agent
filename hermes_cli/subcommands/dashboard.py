@@ -27,7 +27,7 @@ def _add_server_runtime_args(parser) -> None:
         "--skip-build", action="store_true",
         help="Skip the web UI build step and serve the existing dist directly. "
             "Useful for non-interactive contexts (Windows Scheduled Tasks, CI) "
-            "where npm may not be available. Pre-build with: cd web && npm run build")
+            "where pnpm may not be available. Pre-build with: pnpm --dir web run build")
     parser.add_argument(
         "--isolated", action="store_true",
         help="When launched from a named profile, run a dedicated server scoped "
@@ -71,6 +71,13 @@ def build_serve_parser(
         add_help=add_help, exit_on_error=exit_on_error)
     _configure_serve_parser(parser, cmd_dashboard=cmd_dashboard)
     return parser
+
+
+def _cmd_dashboard_password(args):
+    import sys
+
+    from hermes_cli.dashboard_password import cmd_dashboard_password
+    sys.exit(cmd_dashboard_password(args))
 
 
 def build_dashboard_parser(
@@ -123,3 +130,19 @@ def build_dashboard_parser(
             "portal. Also settable via HERMES_DASHBOARD_PORTAL_URL. Mainly for "
             "testing against a staging/preview portal.")
     dashboard_register_parser.set_defaults(func=cmd_dashboard_register)
+
+    dashboard_password_parser = dashboard_subparsers.add_parser(
+        "password",
+        help="Set or change the dashboard username and password (also the gateway Webapp's sign-in)",
+        description="Set or change the username and password the dashboard sign-in asks for, on "
+            "hermes dashboard / hermes serve and on the gateway's Webapp. Stores only a password hash "
+            "(config.yaml, dashboard.basic_auth) and creates the signing secret when missing. Reads the "
+            "password from a hidden prompt, or from standard input with --password-stdin; never from "
+            "the command line. A running gateway or backend must be restarted to use it.")
+    dashboard_password_parser.add_argument(
+        "--username", default=None,
+        help="Username to sign in with (default: the configured one, else 'admin')")
+    dashboard_password_parser.add_argument(
+        "--password-stdin", dest="password_stdin", action="store_true",
+        help="Read the password from the first line of standard input (for scripts and UIs)")
+    dashboard_password_parser.set_defaults(func=_cmd_dashboard_password)

@@ -601,6 +601,7 @@ class TestAnchoredAliasesBootE2E:
                 capture_output=True,
                 text=True,
                 timeout=120,
+                check=False,
             )
             assert probe.returncode == 0, (
                 f"{name} failed to boot after anchoring:\n{probe.stderr}"

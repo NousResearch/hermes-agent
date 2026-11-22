@@ -103,6 +103,21 @@ interface UseComposerTriggerOptions {
   slash: CompletionSource
 }
 
+/** The fields that decide the completion popover. */
+export function sameTriggerState(previous: TriggerState | null, detected: TriggerState | null): boolean {
+  return (
+    previous === detected ||
+    (previous !== null &&
+      detected !== null &&
+      previous.kind === detected.kind &&
+      previous.query === detected.query &&
+      previous.inline === detected.inline &&
+      previous.scope === detected.scope &&
+      previous.tokenLength === detected.tokenLength &&
+      previous.value === detected.value)
+  )
+}
+
 /**
  * Trigger / completion engine: `@`/`/` detection against the live editor, the
  * adapter-driven item list, the open popover's selection state, and the chip
@@ -144,6 +159,9 @@ export function useComposerTrigger({
     setTriggerActiveExplicit(false)
   }, [])
 
+  // A `/` source with no adapter offers no menu (the onboarding chat before its setup ends).
+  const slashOff = !slash.adapter
+
   const refreshTrigger = useCallback(() => {
     const editor = editorRef.current
 
@@ -168,7 +186,8 @@ export function useComposerTrigger({
     }
 
     const before = textBeforeCaret(editor)
-    const found = detectTrigger(before ?? composerPlainText(editor))
+    const typed = detectTrigger(before ?? composerPlainText(editor))
+    const found = slashOff && typed?.kind === '/' ? null : typed
 
     // A text-only command has no completion screen once its prose begins. Mixed
     // commands such as /goal stay live so their finite subcommands can still be
@@ -183,7 +202,11 @@ export function useComposerTrigger({
         ? null
         : found
 
-    setTrigger(detected)
+    // Re-detecting the same token (the input flush, then the keyup for the same
+    // keystroke; or a caret move inside an unchanged prefix) used to install a
+    // fresh object and re-render the composer plus re-run the item search. Keep
+    // the previous state when every field that shapes the popover is identical.
+    setTrigger(previous => (sameTriggerState(previous, detected) ? previous : detected))
 
     // Only reset the highlight when the trigger actually changed (opened, or
     // the query/kind differs). Re-detecting the *same* trigger — e.g. on a
@@ -192,7 +215,7 @@ export function useComposerTrigger({
     if (detected?.kind !== trigger?.kind || detected?.query !== trigger?.query) {
       resetTriggerActive()
     }
-  }, [editorRef, resetTriggerActive, trigger])
+  }, [editorRef, resetTriggerActive, slashOff, trigger])
 
   const triggerAdapter: Unstable_TriggerAdapter | null =
     trigger?.kind === '@'

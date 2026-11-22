@@ -14,7 +14,10 @@ import { readClarifyResult } from './parse'
 export function ClarifyToolSettled(props: ToolCallMessagePartProps) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
-  const { responses } = readClarifyResult(props.result)
+  const { outcome, responses } = readClarifyResult(props.result)
+  // Skip (the card's or the composer's) and a stopped turn both end the batch
+  // as `cancelled`: the user chose not to answer, so it reads as skipped.
+  const cancelled = outcome === 'cancelled'
 
   if (responses.length === 0) {
     return <ToolFallback {...props} />
@@ -43,7 +46,7 @@ export function ClarifyToolSettled(props: ToolCallMessagePartProps) {
                 )}
                 data-clarify-answer=""
               >
-                {blank ? (row.unanswered ? copy.noAnswer : copy.skipped) : answer}
+                {blank ? (row.unanswered && !cancelled ? copy.noAnswer : copy.skipped) : answer}
               </p>
             </ClarifyLine>
           </div>

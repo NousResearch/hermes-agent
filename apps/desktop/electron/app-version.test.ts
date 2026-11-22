@@ -6,7 +6,7 @@ import type { InstallStamp } from './install-stamp'
 describe('artifact version identity', (): void => {
   it.each([
     ['v1.2.3', 'stable'],
-    ['v1.2.4+canary.20260911T010101Z', 'canary'],
+    ['canary.20260911T010101Z-v1.2.4', 'canary'],
     [null, null]
   ] as const)(
     'reports the client version and fixed channel for %s, not a remote runtime',
@@ -81,6 +81,18 @@ describe('artifact version identity', (): void => {
   it('keeps source installs on their runtime version without a fixed package channel', (): void => {
     expect(appVersionInfo(null, '9.9.9-runtime', '1.2.3')).toMatchObject({ appVersion: '9.9.9-runtime' })
     expect((): void => assertSourceUpdateChannel(null)).not.toThrow()
+  })
+
+  it('uses the local bootstrap runtime version supplied by the desktop shell', (): void => {
+    const stamp: InstallStamp = {
+      payload: 'bootstrap',
+      displayVersion: null,
+      baseVersion: null,
+      source: 'local',
+      updateMechanism: 'self'
+    } as InstallStamp
+
+    expect(appVersionInfo(stamp, '0.21.5+6644.gb412ee9', '0.0.0').appVersion).toBe('0.21.5+6644.gb412ee9')
   })
 
   // #124581: the desktop package.json carries a 0.0.0 placeholder, so the

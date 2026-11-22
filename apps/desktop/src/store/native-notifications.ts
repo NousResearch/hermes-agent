@@ -6,6 +6,7 @@ import { persistString, storedString } from '@/lib/storage'
 
 import { recordFeatureToggle } from './desktop-metrics'
 import { $gateway } from './gateway'
+import { $hapticsMuted } from './haptics'
 import { withinNativeNotifyBaseline } from './notify-baseline'
 import {
   answerApproval,
@@ -253,7 +254,8 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
     kind: input.kind,
     notifyId: input.notifyId,
     sessionId: input.sessionId ?? undefined,
-    silent: input.silent,
+    // The app-sounds mute also silences OS notification sounds.
+    silent: $hapticsMuted.get() || input.silent,
     tag: input.tag,
     title
   })
@@ -361,7 +363,8 @@ export function dispatchPluginNativeNotification(pluginId: string, input: Plugin
     icon: input.icon,
     kind: 'plugin',
     notifyId,
-    silent: input.silent,
+    // The app-sounds mute also silences OS notification sounds.
+    silent: $hapticsMuted.get() || input.silent,
     tag: pluginId,
     title: input.title
   })

@@ -17,6 +17,7 @@ from agent.message_sanitization import _sanitize_messages_surrogates
 from agent.usage_anchor import anchored_context_tokens
 from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
 from agent.turn_context import build_api_messages
+from agent.turn_empty_response import add_empty_response_retry_hint
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -41,7 +42,7 @@ def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original
     """Run the MoA reference models and append their aggregated context to the last user
     message (as a trailing text part on multimodal turns). Fail-open."""
     try:
-        from agent.message_content import flatten_message_text as _flatten_mt
+        from session_rules.turns import flatten_message_text as _flatten_mt
         from agent.moa_loop import _preset_temperature, aggregate_moa_context
 
         _moa_context = aggregate_moa_context(
@@ -103,6 +104,32 @@ def _prepare_moa_request(agent: Any, api_messages: Any, pending_moa_prepared_req
     return prepared, api_messages, pending_moa_prepared_request
 
 
+
+def plan_request_cache(agent: Any, api_messages: Any, tools: Any) -> Any:
+    """The request-local cache sections (``PromptCachePlan``) for *agent*'s destination."""
+    from agent.prompt_caching import envelope_tool_part_cache_markers_supported
+
+    static_system_prefix = getattr(agent, "_cached_system_prompt_static", None)
+    return build_prompt_cache_plan(
+        api_messages,
+        tools,
+        # Clamp per-destination: a configured 1h regresses to 5m on
+        # Qwen/Alibaba routes, whose context cache is 5m-only.
+        cache_ttl=effective_cache_ttl(
+            agent._cache_ttl, provider=agent.provider, model=agent.model,
+            base_url=getattr(agent, "base_url", "") or "", auto=getattr(agent, "_cache_ttl_auto", False),
+        ),
+        native_anthropic=agent._use_native_cache_layout,
+        static_system_prefix=static_system_prefix if isinstance(static_system_prefix, str) else None,
+        session_system_prompt=agent._cached_system_prompt,
+        direct_native_tool_cache=agent._direct_native_anthropic_tool_cache_capability(),
+        # LiteLLM-style envelope routes forward part-level markers into
+        # tool_result.content[] → non-retryable 400.
+        tool_part_markers=envelope_tool_part_cache_markers_supported(
+            getattr(agent, "provider", ""), getattr(agent, "base_url", "")
+        ),
+    )
+
 def assemble_api_request(
     agent: Any, *, messages: Any, current_turn_user_idx: Any, _ext_prefetch_cache: Any,
     _plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
@@ -115,7 +142,11 @@ def assemble_api_request(
         _CODEX_INCOMPLETE_NUDGE, _apply_context_engine_selection, _canonicalize_api_tool_calls,
         _clone_message_for_send, _midturn_request_pressure_tokens, _pressure_with_real_floor,
     )
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from agent.model_metadata import (
+        estimate_messages_tokens_rough,
+        estimate_native_anthropic_messages_tokens_rough,
+        estimate_tokens_rough,
+    )
 
     api_messages, effective_system = build_api_messages(
         agent, messages, current_turn_user_idx=current_turn_user_idx,
@@ -143,6 +174,12 @@ def assemble_api_request(
         agent, api_messages, messages, _sel_incoming, logger=request_logger
     )
 
+    # Context selection may replace the request with a fresh clone of canonical history.
+    # Re-apply durable rejection suppression after that final replacement hook.
+    from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
+
+    apply_rejected_thinking_suppression(agent, api_messages)
+
     # Runs unconditionally (not gated on context_compressor) so orphaned tool
     # results from session loading or manual message edits are always caught.
     api_messages = agent._sanitize_api_messages(api_messages)
@@ -151,8 +188,9 @@ def assemble_api_request(
     # OpenAI-style tool-result image_url parts. The per-call clone is rewritten in
     # place; persisted history is untouched.
     from agent.context_compressor import evict_stale_outbound_tool_images
+    from agent.image_eviction_policy import outbound_retired_image_ids
 
-    evict_stale_outbound_tool_images(api_messages)
+    evict_stale_outbound_tool_images(api_messages, outbound_retired_image_ids(agent))
 
     # One-time repeated-heal notice goes out via the status/warning callback, NEVER
     # appended to messages: the cached prompt prefix stays byte-identical.
@@ -187,6 +225,8 @@ def assemble_api_request(
     # they crash json.dumps() inside the OpenAI SDK and trigger the 3-retry cycle.
     _sanitize_messages_surrogates(api_messages)
 
+    _empty_retry_suffix = add_empty_response_retry_hint(agent, api_messages)
+
     # No send-time pad loop here: ``repair_empty_non_final_messages`` (inside
     # ``_sanitize_api_messages``) is the single owner of empty-turn repair.
 
@@ -195,28 +235,7 @@ def assemble_api_request(
     # blocks the whitespace pass skips, so the same row's bytes vary across turns.
     tools_for_api = agent.tools
     if agent._use_prompt_caching and agent.provider != "moa":
-        from agent.prompt_caching import envelope_tool_part_cache_markers_supported
-
-        _static_system_prefix = getattr(agent, "_cached_system_prompt_static", None)
-        _initial_cache_plan = build_prompt_cache_plan(
-            api_messages,
-            tools_for_api,
-            # Clamp per-destination: a configured 1h regresses to 5m on
-            # Qwen/Alibaba routes, whose context cache is 5m-only.
-            cache_ttl=effective_cache_ttl(
-                agent._cache_ttl, provider=agent.provider, model=agent.model
-            ),
-            native_anthropic=agent._use_native_cache_layout,
-            static_system_prefix=(
-                _static_system_prefix if isinstance(_static_system_prefix, str) else None
-            ),
-            direct_native_tool_cache=agent._direct_native_anthropic_tool_cache_capability(),
-            # LiteLLM-style envelope routes forward part-level markers into
-            # tool_result.content[] → non-retryable 400.
-            tool_part_markers=envelope_tool_part_cache_markers_supported(
-                getattr(agent, "provider", ""), getattr(agent, "base_url", "")
-            ),
-        )
+        _initial_cache_plan = plan_request_cache(agent, api_messages, tools_for_api)
         api_messages = _initial_cache_plan.messages
         tools_for_api = _initial_cache_plan.tools
 
@@ -225,6 +244,10 @@ def assemble_api_request(
     # prepared request instead of running the advisors again.
     _moa_prepared_request = None
     if agent.provider == "moa":
+        # Advisors fan out inside prepare: the request-only replay price leaves the copies first.
+        from agent.message_metadata import drop_request_reasoning_tokens
+
+        drop_request_reasoning_tokens(api_messages)
         _moa_prepared_request, api_messages, pending_moa_prepared_request = _prepare_moa_request(
             agent, api_messages, pending_moa_prepared_request
         )
@@ -235,7 +258,17 @@ def assemble_api_request(
     from agent.turn_context import _agent_stale_thinking_on_wire
 
     if _agent_stale_thinking_on_wire(agent):
-        approx_tokens = estimate_messages_tokens_rough(api_messages)
+        if getattr(agent, "api_mode", "") == "anthropic_messages":
+            from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+
+            if native_anthropic_preserves_prior_thinking(
+                getattr(agent, "base_url", ""), getattr(agent, "model", "")
+            ):
+                approx_tokens = estimate_native_anthropic_messages_tokens_rough(api_messages)
+            else:
+                approx_tokens = estimate_messages_tokens_rough(api_messages)
+        else:
+            approx_tokens = estimate_messages_tokens_rough(api_messages)
     else:
         approx_tokens = estimate_messages_tokens_rough(api_messages, charge_stale_thinking=False)
     # Route-aware: native Responses compaction prunes the wire payload, so the raw
@@ -252,7 +285,7 @@ def assemble_api_request(
     _anchored_pressure = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
     agent._request_pressure_anchored = _anchored_pressure is not None
     if _anchored_pressure is not None:
-        request_pressure_tokens = _anchored_pressure
+        request_pressure_tokens = _anchored_pressure + estimate_tokens_rough(_empty_retry_suffix)
     else:
         # Rough fallback only: floor at the provider's last REAL prompt size (an anchored
         # figure is provider-exact and is never floored — on MoA turns that would re-add
@@ -260,6 +293,10 @@ def assemble_api_request(
         request_pressure_tokens = _pressure_with_real_floor(
             agent.context_compressor, request_pressure_tokens
         )
+    # Measured: the request-only replay price must not reach a provider.
+    from agent.message_metadata import drop_request_reasoning_tokens
+
+    drop_request_reasoning_tokens(api_messages)
     return AssembledRequest(
         "fallthrough", api_messages, tools_for_api, _moa_prepared_request,
         pending_moa_prepared_request, approx_tokens, request_pressure_tokens, approx_tokens * 4,

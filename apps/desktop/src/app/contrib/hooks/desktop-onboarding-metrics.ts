@@ -1,7 +1,7 @@
 /**
  * First-run funnel telemetry (hermes.desktop.onboarding). Observes the
- * onboarding stores' own transitions — the provider picker, the guided intro,
- * free-tier sign-in — and maps them onto the closed step set; nothing here
+ * onboarding stores' own transitions — the provider picker, first-run
+ * onboarding, free-tier sign-in — and maps them onto the closed step set; nothing here
  * changes onboarding behavior. Manual (Settings "add provider") flows are not
  * first run and are ignored.
  */
@@ -9,7 +9,7 @@
 import { closeOnboardingStep, recordDislike, recordOnboarding } from '@/store/desktop-metrics'
 import { $freeTierSignIn, type FreeTierSignInState } from '@/store/free-tier-sign-in'
 import { $desktopOnboarding, type DesktopOnboardingState } from '@/store/onboarding'
-import { $onboardingGate, type OnboardingPhase } from '@/store/onboarding-gate'
+import { $onboardingPhase, type OnboardingPhase } from '@/store/onboarding-phase'
 
 const OAUTH_PENDING = new Set(['awaiting_user', 'error', 'external_pending', 'polling', 'starting', 'submitting'])
 
@@ -85,18 +85,21 @@ export function onboardingTransition(prev: DesktopOnboardingState, next: Desktop
   }
 }
 
+/** D10: `guide` is reached when onboarding shows and completed when it finishes. */
 export function guidePhaseTransition(prev: OnboardingPhase, next: OnboardingPhase): void {
   if (prev === next) {
     return
   }
 
-  if (next === 'guided') {
+  if (next === 'shown') {
     recordOnboarding('guide', 'reached')
   } else if (next === 'skipped') {
     recordOnboarding('guide_skip', 'completed')
     closeOnboardingStep('guide')
   } else if (next === 'done') {
     recordOnboarding('guide', 'completed')
+  } else if (next === 'failed') {
+    closeOnboardingStep('guide')
   }
 }
 
@@ -107,10 +110,14 @@ export function signInTransition(prev: FreeTierSignInState, next: FreeTierSignIn
     return
   }
 
-  if (next.status === 'requested') {
+  // The offer reaches the step too: its Sign in goes straight to `setting_up`, never through
+  // `requested`. "Not now" closes the step without counting as a cancelled sign-in.
+  if (next.status === 'requested' || next.status === 'offer') {
     recordOnboarding('sign_in', 'reached')
   } else if (next.status === 'completed' || next.status === 'already_signed_in') {
     recordOnboarding('sign_in', 'completed')
+  } else if (next.status === 'closed' && prev.status === 'offer') {
+    closeOnboardingStep('sign_in')
   } else if (next.status === 'closed' && SIGN_IN_OPEN.has(prev.status)) {
     recordDislike('cancelled', 'free_tier_sign_in')
     closeOnboardingStep('sign_in')
@@ -120,7 +127,7 @@ export function signInTransition(prev: FreeTierSignInState, next: FreeTierSignIn
 /** Subscribe the three first-run stores; returns the unsubscribe. */
 export function observeOnboardingMetrics(): () => void {
   let onboarding = $desktopOnboarding.get()
-  let phase = $onboardingGate.get().phase
+  let phase = $onboardingPhase.get()
   let signIn = $freeTierSignIn.get()
 
   const stops = [
@@ -130,11 +137,11 @@ export function observeOnboardingMetrics(): () => void {
       onboarding = next
       onboardingTransition(prev, next)
     }),
-    $onboardingGate.listen(next => {
+    $onboardingPhase.listen(next => {
       const prev = phase
 
-      phase = next.phase
-      guidePhaseTransition(prev, next.phase)
+      phase = next
+      guidePhaseTransition(prev, next)
     }),
     $freeTierSignIn.listen(next => {
       const prev = signIn

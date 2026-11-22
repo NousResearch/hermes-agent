@@ -3,6 +3,7 @@ import subprocess
 from unittest.mock import MagicMock
 
 from hermes_cli import gateway as gw
+from hermes_cli import gateway_service_owner
 
 def _stale_plist(tmp_path, monkeypatch, *, registered: bool):
     plist_path = tmp_path / "com.hermes.plist"
@@ -10,7 +11,7 @@ def _stale_plist(tmp_path, monkeypatch, *, registered: bool):
     monkeypatch.setattr(gw, "get_launchd_plist_path", lambda: plist_path)
     monkeypatch.setattr(gw, "launchd_plist_is_current", lambda: False)
     monkeypatch.setattr(gw, "generate_launchd_plist", lambda: "<new/>")
-    monkeypatch.setattr(gw, "_refuse_temp_home_service_write", lambda *a: False)
+    monkeypatch.setattr(gateway_service_owner, "refuse_temp_home_service_write", lambda *a: False)
     monkeypatch.setattr(gw, "get_launchd_label", lambda: "com.hermes.agent")
     monkeypatch.setattr(gw, "_launchd_domain", lambda: "gui/501")
     monkeypatch.setattr(gw, "_append_launchd_reload_log", lambda msg: None)

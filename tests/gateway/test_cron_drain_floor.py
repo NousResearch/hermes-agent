@@ -17,9 +17,11 @@ post-drain cleanup window.
 """
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
+from gateway.config import Platform
 from gateway.restart import (
     CRON_DRAIN_CLEANUP_RESERVE_S,
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
@@ -65,6 +67,23 @@ class TestDrainWaitsForCronOnDefaultConfig:
             "the 0.00s drain from #82161"
         )
         assert runner._active_cron_job_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_zero_drain_timeout_still_waits_for_api_server_run(self):
+        """#132989: a /v1 run's caller is blocked on its result, so it rides the cron floor too."""
+        runner, _adapter = make_restart_runner()
+        live = [1]
+        runner.adapters = {Platform.API_SERVER: SimpleNamespace(active_agent_work_count=lambda: live[0])}
+
+        async def finish_run():
+            await asyncio.sleep(0.12)
+            live[0] = 0
+
+        task = asyncio.create_task(finish_run())
+        _snapshot, timed_out = await runner._drain_active_agents(0.0, 2.0)
+        await task
+
+        assert timed_out is False, "api_server run was interrupted on the 0s chat budget (#132989)"
 
     @pytest.mark.asyncio
     async def test_cron_floor_is_bounded_not_indefinite(self):

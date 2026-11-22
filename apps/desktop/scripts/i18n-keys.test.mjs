@@ -15,11 +15,11 @@ test('flattenKeys lists every leaf as a sorted dotted path, functions included, 
   assert.equal(renderKeysFile(['a']), `{\n  "surface": "${SURFACE}",\n  "keys": [\n    "a"\n  ]\n}\n`)
 })
 
-test('the committed locales/_keys.desktop.json matches the English catalog (run `npm run i18n:keys`)', async () => {
+test('the committed locales/_keys.desktop.json matches the English catalog (run `pnpm run i18n:keys`)', async () => {
   const out = join(repoRoot, 'locales', `_keys.${SURFACE}.json`)
   const committed = JSON.parse(readFileSync(out, 'utf8'))
   assert.equal(committed.surface, SURFACE)
   assert.ok(committed.keys.includes('common.save'))
-  assert.ok(committed.keys.includes('catalog.results'), 'function-valued entries are keys too')
+  assert.ok(committed.keys.includes('connectorsPage.searchPlaceholder'), 'function-valued entries are keys too')
   await emitDesktopKeys({ source: repoRoot, out, check: true })
 })

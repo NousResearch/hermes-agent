@@ -29,6 +29,16 @@ def test_vertex_has_curated_model_list():
     assert all(m.startswith("google/") for m in models)
 
 
+def test_vertex_lists_every_gemini_4_model_the_direct_route_offers():
+    """A Gemini 4 model pickable on the direct ``gemini`` route is also pickable on Vertex."""
+    gemini_4 = [m for m in _PROVIDER_MODELS["gemini"] if m.startswith("gemini-4-")]
+    assert gemini_4, "expected Gemini 4 entries in the direct gemini list"
+    for model in gemini_4:
+        assert f"google/{model}" in _PROVIDER_MODELS["vertex"], model
+    # A flagship is never the silent default.
+    assert not _PROVIDER_MODELS["vertex"][0].startswith("google/gemini-4-")
+
+
 def test_vertex_appears_when_credentials_configured():
     """has_vertex_credentials() == True must surface vertex in the picker."""
     with patch("agent.vertex_adapter.has_vertex_credentials", return_value=True):

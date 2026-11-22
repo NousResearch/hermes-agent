@@ -11,14 +11,16 @@ import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from time import monotonic_ns
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from agent import relay_runtime
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from agent.portal_tags import get_conversation_context
 from hermes_cli.version_info import get_version_info
 
 from .shared_metrics import SharedMetricsStore
 from . import shared_metrics_contract as contract
+from . import shared_metrics_connectors as connectors_
 from . import shared_metrics_efficiency as eff
 from . import shared_metrics_engagement as engagement_
 from . import shared_metrics_fields as fields_
@@ -70,6 +72,29 @@ def _task_parent_handle(session: _MetricsSession, task_id: str) -> Any:
     ):
         return active_turn.handle
     return session.relay_session.handle
+
+
+# Session sources a Hermes dispatcher stamps on the finite CLI child it spawns: a kanban worker
+# (``kanban_db_dispatch``) and an A2A forward (``--source a2a``). Nobody is at either keyboard.
+_DISPATCHED_SOURCES = frozenset({"a2a", "kanban"})
+
+
+def _with_launch_entrypoint(event: dict[str, Any]) -> dict[str, Any]:
+    """Declare the entrypoint of a finite CLI run (``hermes -z``, ``chat -q`` off a TTY, ``-Q``): the
+    ``HERMES_SINGLE_QUERY_SESSION`` marker those paths set (the same one ``cache_ttl: auto`` and the session
+    source read). ``background`` for a dispatcher-spawned child, else ``one_shot``; the REPL, other surfaces,
+    delegated children and an already-declared entrypoint are untouched."""
+    if (event.get("entrypoint") or event.get("parent_task_id") or event.get("parent_session_id")
+            or contract.execution_surface(event) != "cli"):
+        return event
+    from agent.oneshot_footprint import is_single_query_session
+
+    if not is_single_query_session():
+        return event
+    from gateway.session_context import get_session_env
+
+    source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip().lower()
+    return {**event, "entrypoint": "background" if source in _DISPATCHED_SOURCES else "one_shot"}
 
 
 def _elapsed_ms(started_ns: int) -> int:
@@ -166,6 +191,7 @@ class _MetricsSession:
     # Compression rotated this id away: close once its in-flight turn ends.
     retiring: bool = False
     efficiency: eff.SessionEfficiency = field(default_factory=eff.SessionEfficiency)
+    connectors: connectors_.ConnectorSessionState = field(default_factory=connectors_.ConnectorSessionState)
     route_run: engagement_.RouteRun = field(default_factory=engagement_.RouteRun)
     api_calls: int = 0
     tool_call_total: int = 0
@@ -183,6 +209,7 @@ class _PeakLineage:
     tally: engagement_.SessionTally = field(default_factory=engagement_.SessionTally)
     run: engagement_.RouteRun = field(default_factory=engagement_.RouteRun)
     spent: deque | None = None
+    connectors: connectors_.ConnectorSessionState | None = None
 
 
 # Backstop: conversations whose rotated-to segment a surface never closed are flushed past this many.
@@ -228,6 +255,11 @@ class _Runtime:
         # Guards the opt-in send pass: at most one in flight per process.
         self._send_lock = threading.RLock()
         self._send_thread: threading.Thread | None = None
+        # Flushing is a process-wide Relay barrier. Keep it off interactive turn threads while
+        # coalescing concurrent finish hooks into one worker.
+        self._flush_lock = threading.RLock()
+        self._flush_pending = False
+        self._flush_thread: threading.Thread | None = None
         self._snapshot_checked_ns: int | None = None
         self._subscriber_name = f"{SUBSCRIBER_NAME}.{self.host.runtime_id}"
         self.subscriber = SharedMetricsSubscriber(
@@ -319,7 +351,7 @@ class _Runtime:
                     return None
                 self._emit_client_active(session)
                 task_context = session.relay_session.context.copy()
-                start_fields = contract.task_start_fields(event)
+                start_fields = contract.task_start_fields(_with_launch_entrypoint(event))
                 handle = task_context.run(
                     self._with_scope_stack, self.relay.scope.push,
                     TASK_SCOPE, self.relay.ScopeType.Function,
@@ -439,6 +471,8 @@ class _Runtime:
         session, task = self._task_pair(event, start=True, allow_task_id_fallback=True)
         if session is None or task is None or not _text(event, "tool_call_id"):
             return
+        if connectors_.is_connector_batch(event):
+            return  # each entry opens its own lifecycle; the wrapper counts only if no entry ran
         identity = self._tool_call_identity(event)
         with session.lock:
             if not self._admits(session, task, event):
@@ -485,6 +519,8 @@ class _Runtime:
             tool_call = None
             if _text(event, "tool_call_id"):
                 observed_identity = self._tool_call_identity(event)
+                if self._settle_connector_batch(session, task, observed_identity, event):
+                    return
                 if observed_identity in task.completed_tool_call_ids:
                     return
                 identity = observed_identity
@@ -512,6 +548,27 @@ class _Runtime:
             if task.cost.user_turn:
                 session.efficiency.tools.used.add(eff.toolset_metric_name(event.get("toolset")))
             self._finish_tool_call(task, tool_call, event)
+            chain = session.connectors.observe(event)
+            if chain is not None:
+                self._mark(session, task, contract.CONNECTOR_CHAIN_MARK, chain)
+
+    def _settle_connector_batch(
+        self, session: _MetricsSession, task: _TaskRun, wrapper: tuple[str, str, str], event: dict[str, Any],
+    ) -> bool:
+        """A connector batch wrapper's post is not a call of its own once an entry started: entries
+        still open (the executor timed out or abandoned the batch) end with the wrapper's outcome.
+        True when the wrapper was settled this way; a batch refused before any entry counts as itself."""
+        if not connectors_.is_connector_batch(event):
+            return False
+        started = [key for key in session.tool_calls
+                   if key[0] == task.task_id and connectors_.is_batch_entry(key[1:], wrapper)]
+        if not started and not connectors_.batch_entry_ran(task.completed_tool_call_ids, wrapper):
+            return False
+        for key in started:
+            task.completed_tool_call_ids.add(key[1:])
+            self._finish_tool_call(task, session.tool_calls.pop(key), event)
+        task.completed_tool_call_ids.add(wrapper)
+        return True
 
     def record_skill_lifecycle(self, event: dict[str, Any]) -> None:
         """Emit one allowlisted skill fact without its local identity."""
@@ -554,7 +611,7 @@ class _Runtime:
         if retired:
             self.close_session({"session_id": session.session_id})
         elif finished:
-            self._flush_and_export("Hermes shared-metrics task flush failed")
+            self._schedule_flush_and_export("Hermes shared-metrics task flush failed")
 
     def close_session(self, event: dict[str, Any]) -> None:
         session = self._session(event)
@@ -566,20 +623,23 @@ class _Runtime:
         ):
             return
         self._emit_session_summary(session)
-        try:
-            self.relay.subscribers.flush()
-        except Exception as exc:
-            logger.warning(
-                "Hermes shared-metrics session %s closed with errors: subscriber flush failed: %s",
-                session.session_id,
-                exc,
-            )
-        else:
-            self._export()
+        self._schedule_flush_and_export(
+            f"Hermes shared-metrics session {session.session_id} flush failed"
+        )
         with self._sessions_lock:
             _forget(self._sessions, session.session_id, session)
 
     def shutdown(self) -> None:
+        # Callers (the atexit hook, an os._exit flush, a multiplex host's teardown) hold the launch
+        # profile's scope: this profile's own collection gate and send consent decide its exit.
+        with self._owner_scope():
+            if not enabled():  # revoked since its last turn: drop the data, never export it
+                if self._registered:
+                    self.deactivate()
+                return
+            self._close_and_export()
+
+    def _close_and_export(self) -> None:
         with self._sessions_lock:
             self._active = False
             session_ids = list(self._sessions)
@@ -594,6 +654,15 @@ class _Runtime:
         self._flush_and_export("Hermes shared-metrics shutdown flush failed")
         self._deregister()
         self._release()
+
+    @contextlib.contextmanager
+    def _owner_scope(self) -> Iterator[None]:
+        """Bind this runtime's profile home for work that can run outside its own turns."""
+        token = set_hermes_home_override(self.host.profile_key)
+        try:
+            yield
+        finally:
+            reset_hermes_home_override(token)
 
     def _deregister(self) -> None:
         self._safe(self.relay.subscribers.deregister, self._subscriber_name)
@@ -670,14 +739,48 @@ class _Runtime:
             return self._run_in_task(task, callback, *args, **kwargs)
         return self.host.run_in_session(session.relay_session, callback, *args, **kwargs)
 
+    def _schedule_flush_and_export(self, failure_message: str) -> None:
+        """Schedule the process-wide Relay flush without blocking the finishing turn.
+
+        ``flush()`` also waits for every managed tool/LLM call in flight in ANY session, so on a
+        turn thread one session finishing stalls behind another session's long tool. One worker
+        per runtime (= per profile); triggers landing while it runs coalesce into one more pass.
+        """
+        from agent.memory_provider import spawn_context_thread
+
+        with self._flush_lock:
+            self._flush_pending = True
+            if self._flush_thread is not None:
+                return
+            # Context copy: the export reads the profile's send/consent config via contextvars.
+            thread = spawn_context_thread(
+                self._run_flush_worker, name="hermes-shared-metrics-flush", args=(failure_message,)
+            )
+            # The worker's first act is taking this lock, so it cannot clear the slot before it is set.
+            thread.start()
+            self._flush_thread = thread
+
+    def _run_flush_worker(self, failure_message: str) -> None:
+        while True:
+            with self._flush_lock:
+                if not self._flush_pending:
+                    # Cleared under the lock that schedulers check: a trigger can never land on a
+                    # worker that has already decided to exit.
+                    self._flush_thread = None
+                    return
+                self._flush_pending = False
+            self._flush_and_export(failure_message)
+
     def _flush_and_export(self, failure_message: str) -> None:
-        """Flush the Relay subscriber, then export; a failed flush skips the export."""
+        """Flush the Relay subscriber, then export under this profile's scope (its send consent,
+        whoever triggered the flush); a failed flush skips the export."""
         try:
             self.relay.subscribers.flush()
         except Exception:
             logger.warning(failure_message, exc_info=True)
         else:
-            self._export()
+            with self._owner_scope():
+                self._export()
 
     def _abort_session(self, session: _MetricsSession, base_event: dict[str, Any]) -> bool:
         """Mark the session closing and system-abort its open tasks; False if already closing."""
@@ -1001,7 +1104,8 @@ class _Runtime:
                 if old is None:
                     return  # a segment this process never served: the new id is its own conversation
                 key = old_id
-                self._lineages[key] = _PeakLineage(open={old_id}, run=old.route_run, spent=old.efficiency.spent)
+                self._lineages[key] = _PeakLineage(
+                    open={old_id}, run=old.route_run, spent=old.efficiency.spent, connectors=old.connectors)
                 self._lineage_of[old_id] = key
             self._lineages[key].open.add(new_id)
             self._lineage_of[new_id] = key
@@ -1024,10 +1128,15 @@ class _Runtime:
             return lineage.spent if lineage is not None else None
 
     def _share_spent(self, session: _MetricsSession) -> None:
-        """A rotated-to segment's /undo and /retry reach the turns the earlier segments spent."""
+        """A rotated-to segment's /undo and /retry reach the turns the earlier segments spent, and its
+        connector chain continues the earlier segments' searches and descriptions."""
         spent = self._lineage_spent(session.session_id)
         if spent is not None:
             session.efficiency.spent = spent
+        with self._lineage_lock:
+            lineage = self._lineages.get(self._lineage_of.get(session.session_id, ""))
+            if lineage is not None and lineage.connectors is not None:
+                session.connectors = lineage.connectors
 
     def _with_route_run(
         self, session_id: str, own: engagement_.RouteRun | None, update: Callable[[engagement_.RouteRun], Any],
@@ -1186,9 +1295,11 @@ class _Runtime:
         with self._send_lock:
             # One in-flight pass per process; the next hook fire picks up what is pending.
             if self._send_thread is None or not self._send_thread.is_alive():
-                self._send_thread = threading.Thread(
-                    target=self._run_send_pass, args=(resolved.endpoint,),
-                    name="hermes-shared-metrics-send", daemon=True,
+                from agent.memory_provider import spawn_context_thread
+
+                # Context copy: the pass re-checks consent (still_consented) in THIS profile's scope.
+                self._send_thread = spawn_context_thread(
+                    self._run_send_pass, name="hermes-shared-metrics-send", args=(resolved.endpoint,)
                 )
                 self._send_thread.start()
 
@@ -1307,10 +1418,30 @@ def _reconcile_send_consent_once() -> None:
         logger.warning("Unable to reconcile shared-metrics send consent", exc_info=True)
 
 
+# Hooks whose only effect is a process mark (no task, no scope): gated like record_process_mark.
+_PROCESS_MARK_HOOKS = frozenset({"post_auxiliary_call"})
+
+
+def _process_marks_admitted() -> bool:
+    """Whether the inherited turn lets a process-level mark through.
+
+    A process mark has no owning task and opens no scope, so a turn that has CLOSED does not gate
+    it: background work spawned under the turn (a turn-end compaction pass, title generation)
+    inherits that turn through its copied context and still reports after it ends. A turn Relay
+    skipped (a concurrent turn on the session) keeps gating, open or closed."""
+    turn = relay_runtime.current_turn()
+    return turn is None or turn.relay_enabled
+
+
 def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
     """Project one Hermes lifecycle event into the core Relay integration."""
     _reconcile_send_consent_once()
-    if not handles_hook(hook_name) or not relay_runtime.relay_instrumentation_enabled():
+    if not handles_hook(hook_name):
+        return
+    if not (
+        _process_marks_admitted() if hook_name in _PROCESS_MARK_HOOKS
+        else relay_runtime.relay_instrumentation_enabled()
+    ):
         return
     runtime = _get_runtime()
     if runtime is None:
@@ -1377,6 +1508,16 @@ def start_task_run(
     )
 
 
+def shutdown_runtimes() -> None:
+    """Run each live runtime's exit flush now, for a process that leaves through ``os._exit`` (the
+    ``hermes -z`` exit) and so never reaches the atexit hook that closes sessions and writes
+    ``task_run.finished`` / ``session.count``. Each runtime binds its own profile while it does."""
+    with _RUNTIME_LOCK:
+        runtimes = [runtime for runtime in _RUNTIMES.values() if isinstance(runtime, _Runtime)]
+    for runtime in runtimes:
+        runtime._safe(runtime.shutdown)
+
+
 def close_session_run(session_id: str) -> None:
     """Emit the summary of a session a surface retired without a finalize hook (gateway
     auto-reset, idle expiry). Never creates a runtime; unknown ids are a no-op."""
@@ -1410,7 +1551,7 @@ def finish_task_run(
 
 def record_process_mark(mark: str, data: dict[str, Any]) -> None:
     """Emit one process-level decision mark when shared metrics are on (never raises)."""
-    if not enabled() or not relay_runtime.relay_instrumentation_enabled():
+    if not enabled() or not _process_marks_admitted():
         return
     runtime = _get_runtime(retry_failed=True)
     if runtime is not None:
@@ -1421,7 +1562,7 @@ def record_process_marks_saved(marks: list[tuple[str, dict[str, Any]]]) -> int:
     """``record_process_mark`` for facts recovered from a file the caller deletes only once they are
     saved (a busy store would otherwise lose them for good). How many rows are settled: saved, rejected
     by the contract, or nothing to record because collection is off."""
-    if not enabled() or not relay_runtime.relay_instrumentation_enabled():
+    if not enabled() or not _process_marks_admitted():
         return len(marks)
     runtime = _get_runtime(retry_failed=True)
     return (runtime._safe(runtime.record_process_marks_saved, marks) or 0) if runtime is not None else 0

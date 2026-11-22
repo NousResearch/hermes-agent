@@ -14,7 +14,8 @@ never needs to remember to call a tool.
 
 | Hook | Behaviour |
 |---|---|
-| `post_tool_call` | When `write_file` / `terminal` / `patch` creates a file matching `test_*`, `tmp_*`, or `*.test.*` inside `HERMES_HOME`, track it silently as `test` / `temp` / `cron-output`. |
+| `pre_tool_call` | Snapshot which paths named in the call's arguments do not exist yet, keyed by the owning task/session plus `tool_call_id` (the id alone is not unique: llama.cpp reuses one constant id). |
+| `post_tool_call` | When `write_file` / `terminal` / `patch` creates a file matching `test_*`, `tmp_*`, or `*.test.*` inside `HERMES_HOME` — a path named in the call that did not exist before it — track it silently as `test` / `temp` / `cron-output`. Existing files the call edits, runs or lists are never tracked, and neither is any path the call's own snapshot did not cover (e.g. one another plugin's `modify` hook swapped in). Calls without a `tool_call_id` (execute_code RPC) are not tracked. |
 | `on_session_end` | If any test files were auto-tracked during this turn, run `quick` cleanup (no prompts). |
 
 Deletion rules (same as the original PR):

@@ -176,3 +176,56 @@ def test_worker_sidecar_handlers_store_redacted_text(store):
 
     stored = _sidecar(db_path, row_id)
     assert FAKE_GITHUB not in stored, "a credential reached the sidecar verbatim through the worker path"
+
+
+# --- the content rewrite --------------------------------------------------
+#
+# A user turn is written at submit time and the prologue then rewrites it
+# (@-file expansion, image parts, a veto's placeholder), and a user can edit a
+# row outright. Those are bare UPDATEs too, so masking at insert time alone lets
+# edited text through. Probed before the fix: the rewritten row kept the token.
+
+
+def _content(db_path, row_id):
+    con = sqlite3.connect(db_path)
+    try:
+        return con.execute("SELECT content FROM messages WHERE id = ?", (row_id,)).fetchone()[0]
+    finally:
+        con.close()
+
+
+def test_user_content_rewrite_is_stored_redacted(store):
+    s, db_path = store
+    [row_id] = seed_messages(s, "s1", {"role": "user", "content": "deploy please"})
+
+    assert s.messages.set_user_message_content("s1", row_id, SIDECAR_TEXT)
+
+    stored = _content(db_path, row_id)
+    assert FAKE_GITHUB not in stored, "a credential reached the rewritten row verbatim"
+    assert stored.startswith("deploy with the token ") and stored.endswith(" please")
+
+
+def test_user_content_rewrite_with_metadata_is_stored_redacted(store):
+    s, db_path = store
+    [row_id] = seed_messages(s, "s1", {"role": "user", "content": "deploy please"})
+
+    assert s.messages.set_user_message_content("s1", row_id, SIDECAR_TEXT, {"edited": True})
+
+    assert FAKE_GITHUB not in _content(db_path, row_id)
+
+
+def test_worker_user_content_rewrite_is_stored_redacted(store):
+    """The worker-authority copy of the rewrite must mask too."""
+    s, db_path = store
+    [row_id] = seed_messages(s, "s1", {"role": "user", "content": "deploy please"})
+    from persistence.sqlite.workers._lifecycle import worker_user_content
+
+    con = sqlite3.connect(db_path)
+    try:
+        assert worker_user_content(
+            None, con, "s1", {"row_id": row_id, "content": SIDECAR_TEXT})["value"] == 1
+        con.commit()
+    finally:
+        con.close()
+
+    assert FAKE_GITHUB not in _content(db_path, row_id), "a credential reached the row verbatim"

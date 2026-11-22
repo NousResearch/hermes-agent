@@ -1002,11 +1002,12 @@ def set_user_message_content(holder: StoreHolder, session_id: str, row_id: int, 
     if display_metadata is None:
         return holder._write_rowcount(
             "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
-            (_encode_content(content), row_id, session_id))
+            (_encode_content(redact_message_content(content)), row_id, session_id))
     return holder._write_rowcount(
         f"UPDATE messages SET content = ?, api_content = NULL, display_metadata = {_MERGE_DISPLAY_META} "
         "WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
-        (_encode_content(content), _encode_display_metadata(display_metadata), row_id, session_id))
+        (_encode_content(redact_message_content(content)), _encode_display_metadata(display_metadata),
+         row_id, session_id))
 
 
 def deactivate_message(holder: StoreHolder, session_id: str, row_id: int) -> int:

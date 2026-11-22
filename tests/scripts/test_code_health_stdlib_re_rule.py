@@ -33,6 +33,8 @@ def _hits(rule: str, src: str) -> list[int]:
     ("__import__('re')\n", True),
     ("import importlib\nimportlib.import_module('re')\n", True),
     ("from importlib import import_module as load\nload('sre_parse')\n", True),
+    ("import importlib\nimportlib.import_module(name='re')\n", True),
+    ("__import__(name='re')\n", True),
     # the facade, and names that only look like the module
     ("import hermes_re as re\nre.compile('a')\n", False),
     ("import regex\n", False),
@@ -53,6 +55,7 @@ def test_stdlib_re_import_shapes(src, flagged):
     ("import hermes_re._engine\n", True),
     ("def f():\n    import hermes_re as re\n    return re\n", True),
     ("import importlib\nimportlib.import_module('hermes_re')\n", True),
+    ("import importlib\nimportlib.import_module(name='hermes_re')\n", True),
     ("import re\n", False),
     ("import hermes_requests\n", False),
     ("from . import hermes_re\n", False),

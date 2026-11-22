@@ -31,6 +31,13 @@ def _names(module: str | None, roots: tuple[str, ...]) -> bool:
     return module is not None and any(module == root or module.startswith(root + ".") for root in roots)
 
 
+def _module_argument(call: ast.Call) -> ast.expr | None:
+    """The module name of ``__import__`` / ``import_module``: first positional argument or ``name=``."""
+    if call.args:
+        return call.args[0]
+    return next((k.value for k in call.keywords if k.arg == "name"), None)
+
+
 def _imports(tree: ast.Module, roots: tuple[str, ...]) -> Iterator[int]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -40,8 +47,8 @@ def _imports(tree: ast.Module, roots: tuple[str, ...]) -> Iterator[int]:
             # level > 0 is a sibling module that happens to share the name (``from . import re``).
             if not node.level and _names(node.module, roots):
                 yield node.lineno
-        elif isinstance(node, ast.Call) and _call_name(node) in _DYNAMIC_IMPORTS and node.args:
-            target = node.args[0]
+        elif isinstance(node, ast.Call) and _call_name(node) in _DYNAMIC_IMPORTS:
+            target = _module_argument(node)
             if isinstance(target, ast.Constant) and isinstance(target.value, str) and _names(target.value, roots):
                 yield node.lineno
 

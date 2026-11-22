@@ -68,6 +68,17 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
             continue
 
         if not isinstance(value, str):
+            # A number emitted where the schema declares ``string``. Snowflake IDs are pure
+            # digits, so a model that reads one out of the conversation context emits it as a
+            # JSON int; without this repair jsonschema rejects the call before dispatch and the
+            # tool never runs. Only exact int/float are converted — bool is deliberately excluded
+            # (a real bool reaching a string field is a different mistake, and stringifying it
+            # would hide that instead of surfacing it).
+            if expected == "string" and type(value) in (int, float):
+                args[key] = repr(value) if isinstance(value, float) else str(value)
+                logger.info("coerce_tool_args: stringified %s for %s.%s (schema declares string)",
+                            type(value).__name__, tool_name, key)
+                continue
             # Native container: still normalize JSON-encoded elements/sub-fields.
             if (expected == "array" and is_container) or (expected == "object" and isinstance(value, dict)):
                 args[key] = _normalize_json_strings_for_schema(

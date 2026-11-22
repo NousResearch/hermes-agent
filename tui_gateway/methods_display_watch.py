@@ -36,7 +36,24 @@ def _lease_event_payload(profile_key: str, lease) -> dict:
 
 
 def _watched_lease_homes() -> list[Path]:
-    return [Path(_hermes_home), *_served_profile_homes]
+    extra: tuple[Path, ...] = ()
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+        homes = getattr(runner, "_served_profile_homes", None)
+        if isinstance(homes, dict):
+            extra = tuple(Path(h) for h in homes.values() if h)
+    except Exception:
+        pass
+    seen: dict[str, Path] = {}
+    for root in (Path(_hermes_home), *_served_profile_homes, *extra):
+        p = Path(root)
+        try:
+            key = str(p.resolve())
+        except OSError:
+            key = str(p)
+        seen.setdefault(key, p)
+    return list(seen.values())
 
 
 def _mtime(path: Path):

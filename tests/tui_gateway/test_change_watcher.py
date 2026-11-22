@@ -543,3 +543,32 @@ def test_a_skill_installed_in_another_sessions_repo_broadcasts_skills_changed(wa
         assert "/workspace-only" in sc.get_skill_commands()
     finally:
         reset_session_cwd(token)
+
+
+def test_multiplexed_gateway_runner_served_homes_drive_cron_and_sessions_watches(watcher_home, monkeypatch, tmp_path):
+    """A multiplexed GatewayRunner tracks its secondary profiles in ``runner._served_profile_homes``
+    without populating ``tui_gateway.server._served_profile_homes``. The watcher must still include
+    those homes so ``cron.changed`` and ``sessions.changed`` fire for every served sibling profile."""
+    import types
+    import gateway.run as gateway_run
+
+    home, events = watcher_home
+    sibling = tmp_path / "profiles" / "jarvis"
+    (sibling / "cron").mkdir(parents=True)
+    jobs = sibling / "cron" / "jobs.json"
+    jobs.write_text('{"jobs": []}')
+
+    monkeypatch.setattr(server, "_served_profile_homes", set())
+    fake_runner = types.SimpleNamespace(_served_profile_homes={"default": home, "jarvis": sibling})
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: fake_runner)
+
+    watched = server._watched_homes()
+    assert sibling in watched
+
+    server._broadcast_watched_changes(now=0.0)
+    assert not [e for e in events if e[0] == "cron.changed"]
+
+    jobs.write_text('{"jobs": [{"id": "1"}]}')
+    os.utime(jobs, (time.time() + 5, time.time() + 5))
+    server._broadcast_watched_changes(now=5.0)
+    assert ("cron.changed", {}) in events

@@ -9,6 +9,8 @@ def test_review_unknown_argument_rejects_before_handoff(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(home))
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(home))
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    import hermes_cli.profiles as _profiles
+    monkeypatch.setattr(_profiles, "profile_exists", lambda name: name in ("default", "reviewer"))
     for key in ('HERMES_KANBAN_TASK', 'HERMES_KANBAN_DB', 'HERMES_KANBAN_BOARD', 'HERMES_KANBAN_RUN_ID'):
         monkeypatch.delenv(key, raising=False)
     from hermes_cli import kanban_db as kb
@@ -27,7 +29,8 @@ def test_review_unknown_argument_rejects_before_handoff(tmp_path, monkeypatch):
     artifact = workspace / 'result.txt'
     artifact.write_text('verified result', encoding='utf-8')
     result = json.loads(registry.dispatch('kanban_request_review', {
-        'task_id': tid, 'summary': 'verified', 'summary_artifacts': [str(artifact)]}))
+        'task_id': tid, 'summary': 'verified', 'reviewer': 'reviewer',
+        'summary_artifacts': [str(artifact)]}))
     with kbc.connect_closing() as conn:
         status = kb.get_task(conn, tid).status
         attachments = kb.list_attachments(conn, tid)
@@ -35,7 +38,7 @@ def test_review_unknown_argument_rejects_before_handoff(tmp_path, monkeypatch):
     assert status == 'running'
     assert not attachments
     corrected = json.loads(registry.dispatch('kanban_request_review', {
-        'task_id': tid, 'summary': 'verified', 'artifacts': [str(artifact)],
+        'task_id': tid, 'summary': 'verified', 'reviewer': 'reviewer', 'artifacts': [str(artifact)],
         'metadata': {'custom_key': 'allowed'}}))
     assert corrected.get('ok'), corrected
     with kbc.connect_closing() as conn:

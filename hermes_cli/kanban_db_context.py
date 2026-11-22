@@ -102,6 +102,20 @@ def _ctx_header(lines: list[str], task: Task) -> None:
             lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
     if task.branch_name:
         lines.append(f"Branch:   {task.branch_name}")
+    if task.required_reviewer:
+        # One place only: the gate is a property of the card, not of the body.
+        lines.append(
+            f"Required reviewer: {task.required_reviewer} — this card is "
+            f"review-gated: finish with kanban_request_review (the saved "
+            f"reviewer is selected automatically); kanban_complete is not "
+            f"available to implementation runs on it."
+        )
+    elif (task.review_policy or "") == "disabled":
+        lines.append(
+            "Review policy: disabled. This card has no native review. When the work is done, "
+            "finish with kanban_complete(summary=..., artifacts=[...]); kanban_request_review "
+            "is not available on this card."
+        )
     lines.append("")
     if task.body and task.body.strip():
         lines.append("## Body")

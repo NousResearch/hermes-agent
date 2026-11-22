@@ -27,6 +27,10 @@ from typing import Iterator, Mapping, Optional
 # ``archived`` is outside every workflow: a filter toggle, never a board column.
 ARCHIVED = "archived"
 
+# Work in flight: the archive policy refuses to archive these directly (block first).
+# Owned here, pure data, so ``can_move`` states the refusal the server enforces.
+ARCHIVE_PROTECTED_STATUSES: frozenset = frozenset({"ready", "running", "review"})
+
 
 @dataclass(frozen=True)
 class Column:
@@ -74,7 +78,7 @@ class Workflow:
         if src == dst:
             return False
         if dst == ARCHIVED:
-            return True
+            return src not in ARCHIVE_PROTECTED_STATUSES
         self._require(dst)
         return dst in self.manual.get(src, frozenset())
 
@@ -131,7 +135,8 @@ DEFAULT_WORKFLOW = Workflow(
         "blocked": ("triage", "todo", "scheduled", "ready", "done"),
         # Known quirk kept for zero behavior change: review -> todo lands in ``ready``
         # (reopen_review_task ignores the requested target). Phase 1 fixes it.
-        "review": ("triage", "todo", "ready", "done"),
+        # blocked: block_task stops a review run (the stop-first path the archive copy names).
+        "review": ("triage", "todo", "ready", "blocked", "done"),
         "done": ("triage", "todo", "ready"),
         ARCHIVED: ("triage", "todo", "ready"),  # restore from the archive filter
     }),

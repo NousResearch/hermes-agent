@@ -10,7 +10,6 @@ must never shadow a shipped provider. Changing this order is a breaking change.
 from __future__ import annotations
 
 import ast
-import contextlib
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -18,7 +17,7 @@ import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Callable, Iterator, List, Optional, Tuple, TYPE_CHECKING
+from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from hermes_cli.config import cfg_get
 from plugins import plugin_loader as _loader

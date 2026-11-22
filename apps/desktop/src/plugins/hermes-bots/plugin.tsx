@@ -67,7 +67,7 @@ import {
   sweepGroupChatMembersForRemovedConnection,
   updateGroupChat
 } from './group-chat'
-import { stickyGroupEngine } from './group-engine'
+import { hydrateDurableGroupChatRoom } from './group-chat-record'
 import { groupWorkspaceOwnerKey } from './group-membership'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
 import { BOTS_LOCALES, botsText } from './i18n'
@@ -287,27 +287,10 @@ export default {
             for (const [name, room] of Object.entries(value)) {
               if (room && Array.isArray(room.log)) {
                 rooms[name] = {
+                  ...hydrateDurableGroupChatRoom(room),
                   // Pre-thread entries get synthetic thread ids on hydrate so
                   // every UI/engine path can assume entry.thread exists.
                   log: assignLegacyThreads(room.log),
-                  watermarks: room.watermarks && typeof room.watermarks === 'object' ? room.watermarks : {},
-                  sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
-                  sessionOwners: room.sessionOwners && typeof room.sessionOwners === 'object' ? room.sessionOwners : {},
-                  stranded: room.stranded && typeof room.stranded === 'object' ? room.stranded : {},
-                  // #93129: rehydrate sticky stop holds with the same shape
-                  // guard as the other maps — a held bot stays held across
-                  // window restarts until explicitly released.
-                  holds: room.holds && typeof room.holds === 'object' ? room.holds : {},
-                  externalCursors:
-                    room.externalCursors && typeof room.externalCursors === 'object' ? room.externalCursors : {},
-                  members: Array.isArray(room.members) ? room.members : [],
-                  roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
-                  ...stickyGroupEngine(room),
-                  image: typeof room.image === 'string' && room.image ? room.image : null,
-                  rosterOrder: Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined,
-                  pinned: Boolean(room.pinned),
-                  sectionId: room.sectionId ?? null,
-                  syncRevision: Math.max(0, Number(room.syncRevision || 0)),
                   epoch: 0,
                   running: false
                 }

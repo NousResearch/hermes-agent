@@ -133,8 +133,8 @@ def test_a_refused_delete_is_shown_as_delete_incomplete_until_retried(profile, m
     assert not profile.exists() and not named_profile_delete_incomplete(profile)
 
 
-@pytest.mark.parametrize(("record", "replaced"), [(b"", False), (b"incom", False), (b"deleted\r\n", True)],
-                         ids=["empty", "torn", "crlf-deleted"])
+@pytest.mark.parametrize(("record", "replaced"), [(b"", False), (b"incom", False), (None, False), (b"deleted\r\n", True)],
+                         ids=["empty", "torn", "unreadable", "crlf-deleted"])
 def test_only_a_finished_delete_record_lets_create_replace_the_leftovers(profile, monkeypatch, record, replaced):
     """A retry rewrites a partial delete's record (truncate, then write). Killed in between, the
     leftovers must not read as a finished delete's shell, which create replaces."""
@@ -150,7 +150,17 @@ def test_only_a_finished_delete_record_lets_create_replace_the_leftovers(profile
     monkeypatch.setattr(profiles, "_rmtree_with_retry", partial)
     with pytest.raises(RuntimeError, match="did not finish"):
         profiles.delete_profile("owned-delete", yes=True)
-    profile_tombstone_path(profile).write_bytes(record)
+    marker, real_read = profile_tombstone_path(profile), Path.read_bytes
+    if record is None:  # a record the reader cannot open (EACCES) keeps the leftovers too
+
+        def denied(path):
+            if path == marker:
+                raise PermissionError(errno.EACCES, "denied", str(path))
+            return real_read(path)
+
+        monkeypatch.setattr(Path, "read_bytes", denied)
+    else:
+        marker.write_bytes(record)
     if replaced:  # a finished delete's record, LF or CRLF: the dir is a shell create replaces
         profiles.create_profile("owned-delete", no_alias=True, no_skills=True)
     else:
@@ -274,7 +284,7 @@ def test_a_refused_rename_keeps_a_partial_deletes_record(profile, monkeypatch):
     assert note.read_text() == "keep me"
 
 
-def test_a_finished_delete_never_tombstones_a_create_that_cleared_it(profile, monkeypatch):
+def test_a_finished_delete_never_tombstones_a_create_that_cleared_it(profile, monkeypatch, capsys):
     """Another process's same-name create can clear the tombstone right after rmtree; recording the
     finished delete must not write it back over that create's new profile."""
     from hermes_constants import clear_named_profile_deleted, named_profile_is_deleted
@@ -287,6 +297,7 @@ def test_a_finished_delete_never_tombstones_a_create_that_cleared_it(profile, mo
     monkeypatch.setattr(profiles, "_rmtree_with_retry", removed_then_created_elsewhere)
     profiles.delete_profile("owned-delete", yes=True)
     assert not named_profile_is_deleted(profile)
+    assert "Could not record" not in capsys.readouterr().out  # the cleared record is that create's
 
 
 def test_an_interrupted_delete_of_the_active_profile_resets_it(profile, monkeypatch):
@@ -340,3 +351,29 @@ def test_a_finished_delete_whose_record_cannot_be_rewritten_says_how_to_finish(p
     monkeypatch.undo()
     assert not profile.exists() and marker.read_bytes() == TOMBSTONE_INCOMPLETE
     assert "finish it with `hermes profile delete owned-delete`" in capsys.readouterr().out
+
+
+def test_import_and_rename_onto_an_unfinished_delete_name_it(profile, tmp_path, capsys):
+    """#141466: import and rename onto the name give the same message; a live profile keeps the
+    old 'already exists' text and gets no 'delete incomplete' row."""
+    import tarfile
+    profiles.create_profile("kept", no_alias=True)
+    profiles.mark_named_profile_deleted(profile, incomplete=True)  # what the refused delete leaves
+    source = tmp_path / "archived"
+    source.mkdir()
+    (source / "SOUL.md").write_text("imported\n", encoding="utf-8")
+    archive = tmp_path / "archived.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(source, arcname="archived")
+    unfinished = f"Deletion of profile 'owned-delete' did not finish: {profile} still holds its files."
+    for refused in (lambda: profiles.import_profile(str(archive), name="owned-delete"),
+                    lambda: profiles.rename_profile("kept", "owned-delete")):
+        with pytest.raises(FileExistsError) as exc:
+            refused()
+        assert unfinished in str(exc.value)
+    with pytest.raises(FileExistsError, match="already exists. Switch to it"):
+        profiles.create_profile("kept", no_alias=True)
+    capsys.readouterr()
+    profile_cmd._profile_list(argparse.Namespace())
+    rows = capsys.readouterr().out.splitlines()
+    assert [line.split()[0] for line in rows if "delete incomplete" in line] == ["owned-delete"]

@@ -243,7 +243,7 @@ export const en: KanbanMessages = {
     scheduled: { label: 'Scheduled', help: 'Waiting for a scheduled time to arrive.' },
     ready: { label: 'Ready', help: 'Dependencies satisfied — assign a profile and the dispatcher runs it.' },
     running: { label: 'Running', help: 'Claimed by a worker — an agent is on it. Set by the dispatcher.' },
-    blocked: { label: 'Blocked', help: 'On hold — the card chip names the kind; only “needs input” awaits you.' },
+    blocked: { label: 'Blocked', help: 'On hold — every block waits on your unblock; the chip says what to do first.' },
     review: { label: 'Review', help: 'A review agent is checking the work. Set by the dispatcher.' },
     done: { label: 'Done', help: 'Completed; dependent children become ready.' },
     archived: { label: 'Archived', help: 'Hidden from the default board view.' }
@@ -487,7 +487,7 @@ const ja: KanbanMessages = {
     scheduled: { label: 'スケジュール', help: '予定時刻を待っています。' },
     ready: { label: 'Ready', help: '依存関係が解決済み — プロフィールを割り当てるとディスパッチャが実行します。' },
     running: { label: '実行中', help: 'ワーカーが取得済み — エージェントが作業中。ディスパッチャが設定します。' },
-    blocked: { label: 'ブロック', help: '保留中 — カードのチップが種類を示します。「要入力」のみあなたを待っています。' },
+    blocked: { label: 'ブロック', help: '保留中 — すべてのブロックはあなたの解除を待ちます。チップが最初に取る行動を示します。' },
     review: { label: 'レビュー', help: 'レビューエージェントが作業を確認中。ディスパッチャが設定します。' },
     done: { label: '完了', help: '完了。依存する子タスクが Ready になります。' },
     archived: { label: 'アーカイブ', help: 'デフォルトのボード表示から非表示。' }
@@ -730,7 +730,7 @@ const zh: KanbanMessages = {
     scheduled: { label: '已排期', help: '等待预定时间到来。' },
     ready: { label: '就绪', help: '依赖已满足 — 分配一个配置档，调度器即会运行它。' },
     running: { label: '运行中', help: '已被工作单元领取 — 有代理在处理。由调度器设置。' },
-    blocked: { label: '受阻', help: '暂停 — 卡片标记注明类型；只有「needs input」在等你。' },
+    blocked: { label: '受阻', help: '暂停 — 每个受阻都等待你的解除阻塞；标记说明先做什么。' },
     review: { label: '审查', help: '审查代理正在检查工作。由调度器设置。' },
     done: { label: '完成', help: '已完成；依赖它的子任务变为就绪。' },
     archived: { label: '已归档', help: '从默认面板视图中隐藏。' }
@@ -969,7 +969,7 @@ const zhHant: KanbanMessages = {
     scheduled: { label: '已排程', help: '等待預定時間到來。' },
     ready: { label: '就緒', help: '相依項目已滿足 — 指派一個設定檔，排程器便會執行它。' },
     running: { label: '執行中', help: '已被工作單元領取 — 有代理在處理。由排程器設定。' },
-    blocked: { label: '受阻', help: '暫停 — 卡片標記註明類型；只有「needs input」在等你。' },
+    blocked: { label: '受阻', help: '暫停 — 每個受阻都等待你的解除封鎖；標記說明先做什麼。' },
     review: { label: '審查', help: '審查代理正在檢查工作。由排程器設定。' },
     done: { label: '完成', help: '已完成；相依它的子任務變為就緒。' },
     archived: { label: '已封存', help: '從預設面板檢視中隱藏。' }

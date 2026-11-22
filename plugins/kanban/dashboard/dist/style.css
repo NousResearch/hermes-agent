@@ -315,15 +315,18 @@
   color: var(--color-foreground);
 }
 
-/* Blocked-card reason badges: only the human-owned kinds are highlighted;
-   machine-owned and untyped kinds stay muted so "needs input" stands out. */
+/* Blocked-card reason badges: every kind in this column sticks until a
+   human unblocks — the badge says what to do FIRST. Highlighted = act
+   now (answer / configure); transient = wait for the condition, then
+   unblock; untyped stays muted so it never reads as "answer me". */
 .hermes-kanban-block-kind {
   font-size: 0.6rem !important;
   padding: 0.05rem 0.3rem !important;
   color: var(--color-muted-foreground);
 }
 .hermes-kanban-block-kind--needs_input,
-.hermes-kanban-block-kind--capability {
+.hermes-kanban-block-kind--capability,
+.hermes-kanban-block-kind--transient {
   background: color-mix(in srgb, var(--color-warning, #d4b348) 16%, transparent);
   border-color: color-mix(in srgb, var(--color-warning, #d4b348) 45%, var(--color-border));
   color: var(--color-foreground);

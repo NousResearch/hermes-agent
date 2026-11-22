@@ -17,12 +17,12 @@ class DockerForeground:
     def __post_init__(self):
         self.directory = f"{self.env.get_temp_dir().rstrip('/')}/.hermes-foreground-{uuid.uuid4().hex}"
 
-    def wrap(self, command: str) -> str:
+    def wrap(self, command: str, *, login: bool = False) -> str:
         q = shlex.quote
         child = ("read -r s < /proc/$$/stat || exit 1; s=${s##*) }; set -- $s; "
                  f"printf '%s %s\\n' $$ \"${{20}}\" > {q(self.directory + '/pid')}; "
                  f"test ! -e {q(self.directory + '/cancel')} || exit 130; "
-                 f"exec bash -c {q(command)}")
+                 f"exec bash {'-l ' if login else ''}-c {q(command)}")
         # Bash job control gives the child its own namespace-local process group, even in images
         # without util-linux/setsid. The client shell waits so its exit code is the command's.
         return (f"(umask 077; mkdir -p {q(self.directory)}) || exit $?; "

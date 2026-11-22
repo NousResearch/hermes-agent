@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -162,9 +164,18 @@ def test_termux_commit_branch_is_read_only_and_has_no_apt_signing_key_access():
     assert "TERMUX_APT_GPG_PASSPHRASE" not in serialized_commit
     assert "stage_apt_repo.py" not in serialized_commit
     assert not any(str(step.get("uses", "")).startswith("actions/cache/save") for step in commit_job["steps"])
-    builder_step = next(step for step in commit_job["steps"] if step.get("id") == "builder_image")
-    assert "GITHUB_TOKEN" not in (builder_step.get("env") or {})
-    assert (builder_step.get("env") or {}).get("TERMUX_BUILDER_NO_PUSH") == "1"
+    termux_action_use = "./.build/termux-action/.github/actions/build-termux-deb"
+    commit_build = next(step for step in commit_job["steps"] if step.get("uses") == termux_action_use)
+    assert commit_build["with"]["build-mode"] == "commit"
+    assert commit_build["with"]["save-caches"] in (False, "false")
+    assert commit_build["with"]["push-builder-image"] in (False, "false")
+    assert "github-token" not in commit_build["with"]
+    release_build = next(step for step in release_job["steps"] if step.get("uses") == termux_action_use)
+    assert release_build["with"]["build-mode"] == "release"
+    assert release_build["with"]["push-builder-image"] in (True, "true")
+    for untrusted in (_candidate_dispatch(COMMIT_TAG), _candidate_dispatch(CHANNEL_TAG),
+                      DOWNLOADABLE_DISPATCHES["commit"]):
+        assert not gate(release_build["with"]["save-caches"], untrusted, {}, job_if=False)
     setup_pm = next(step for step in commit_job["steps"] if step.get("uses") == "./.github/actions/setup-pm")
     assert setup_pm["with"]["save-tools-cache"] is False
     assert setup_pm["with"]["save-node-cache"] is False
@@ -318,6 +329,62 @@ def test_untrusted_commit_legs_disable_persisted_credentials_and_strip_write_sco
         assert checkouts, job_name
         for step in checkouts:
             assert (step.get("with") or {}).get("persist-credentials") in (False, "false"), (job_name, step)
+
+
+@pytest.mark.parametrize("legacy_script", [False, True])
+def test_build_termux_deb_action_never_saves_caches_or_pushes_ghcr_in_commit_mode(tmp_path, legacy_script):
+    """The shared Termux composite action respects save-caches=false and push-builder-image=false."""
+    action = load(ROOT / ".github/actions/build-termux-deb/action.yml")
+    steps = action["runs"]["steps"]
+    save_steps = [s for s in steps if str(s.get("uses", "")).startswith("actions/cache/save")]
+    assert len(save_steps) == 2
+    for step in save_steps:
+        assert not gate(step["if"], {"save-caches": "false"}, {}, job_if=False), step["name"]
+        assert gate(step["if"], {"save-caches": "true"}, {}, job_if=False), step["name"]
+
+    push_step = next(s for s in steps if s.get("id") == "builder_image_push")
+    local_step = next(s for s in steps if s.get("id") == "builder_image_local")
+    assert not gate(push_step["if"], {"push-builder-image": "false"}, {}, job_if=False)
+    assert gate(push_step["if"], {"push-builder-image": "true"}, {}, job_if=False)
+    assert gate(local_step["if"], {"push-builder-image": "false"}, {}, job_if=False)
+    assert not gate(local_step["if"], {"push-builder-image": "true"}, {}, job_if=False)
+    assert "GITHUB_TOKEN" not in (local_step.get("env") or {})
+
+    # Replay builder_image_local on both current and pre-PR build_builder_image.sh trees.
+    repo = tmp_path / "repo"
+    scripts_dir = repo / "scripts/termux"
+    scripts_dir.mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts/termux/termux-builder.Dockerfile", scripts_dir / "termux-builder.Dockerfile")
+    if legacy_script:
+        (scripts_dir / "build_builder_image.sh").write_text("#!/usr/bin/env bash\necho 'legacy script should not run' >&2; exit 88\n", encoding="utf-8")
+    else:
+        shutil.copy2(ROOT / "scripts/termux/build_builder_image.sh", scripts_dir / "build_builder_image.sh")
+    shutil.copytree(ROOT / "pm", repo / "pm", ignore=shutil.ignore_patterns("__pycache__"))
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "python3").symlink_to(sys.executable)
+    docker_log = tmp_path / "docker.log"
+    docker_stub = tools / "docker"
+    docker_stub.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\n"
+        "case \"$1 $2\" in\n"
+        "  'manifest inspect') exit 1 ;;\n"
+        "  'build '*) exit 0 ;;\n"
+        "  'run '*) echo 'builder image smoke OK'; exit 0 ;;\n"
+        "  'login '*|'push '*) echo \"FORBIDDEN docker $1\" >&2; exit 99 ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    docker_stub.chmod(0o755)
+    replay = {**local_step, "env": {**local_step.get("env", {}),
+                                    "DOCKER_LOG": str(docker_log),
+                                    "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}"}}
+    out = workflow_steps.outputs(replay, {"github": {"repository_owner": "NousResearch"}}, cwd=repo)
+    assert out["image"].startswith("hermes-termux-builder-local:"), out
+    calls = docker_log.read_text(encoding="utf-8").splitlines()
+    assert not any(c.startswith(("login ", "push ")) for c in calls), calls
 
 
 def test_every_cache_save_step_skips_commit_and_channel_claims():

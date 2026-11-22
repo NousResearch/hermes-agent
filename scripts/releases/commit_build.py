@@ -340,8 +340,8 @@ def cmd_build_commit(args) -> None:
 def main() -> None:
     import sys
 
-    # Commit builds no longer mint a post-build receipt: their claim tag, made before the build,
-    # is their identity (release.py --build-commit).
+    # Commit builds no longer mint a post-build receipt: a claimed build's identity is its claim
+    # tag, made before the build (release.py --build-commit); a tagless one has only its commit.
     if sys.argv[1:] != ["admit"]:
         raise SystemExit("usage: python -m scripts.releases.commit_build admit")
     env = dict(os.environ)

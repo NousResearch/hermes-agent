@@ -6,7 +6,7 @@
 # Pushes to GHCR with the repo's CI identity (GITHUB_TOKEN); idempotent --
 # an existing identical tag is left alone.
 #
-# Usage: build_builder_image.sh [--no-push]   (build + push if missing; --no-push or TERMUX_BUILDER_NO_PUSH=1 falls back to the digest-pinned base image)
+# Usage: build_builder_image.sh [--no-push]   (uses the published image, else builds + pushes it; with --no-push or TERMUX_BUILDER_NO_PUSH=1 a miss falls back to the digest-pinned base image)
 set -euo pipefail
 
 NO_PUSH="${TERMUX_BUILDER_NO_PUSH:-0}"

@@ -56,8 +56,8 @@ DEFAULT = frozenset(lane.name for lane in LANES if lane.default)
 CANARY = frozenset(NAMES) - {"upgrade"}
 # A commit build runs only the bundle and smoke lanes (no shared CI/Docker/Nix/E2E/Store/upgrade
 # suites). Those shared suites run reusable workflows on the default branch whose cache-save gates
-# assume trusted branch commits, and a commit build publishes nowhere: its builds page lives in its
-# claim archive. COMMIT is the base a commit claim starts from (Termux stays opt-in via --with
+# assume trusted branch commits, and a commit build publishes to no channel, feed, GitHub release,
+# Docker tag or Store: its packages and builds page live only in its claim archive. COMMIT is the base a commit claim starts from (Termux stays opt-in via --with
 # termux, like DEFAULT); --only/--with/--without narrow or widen it within COMMIT_ALLOWED.
 COMMIT_ALLOWED = frozenset({"windows", "macos-arm64", "termux", "smoke"})
 COMMIT_REFUSED = frozenset(NAMES) - COMMIT_ALLOWED
@@ -98,7 +98,7 @@ JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs i
     "publish-bundles": ("bundles",),
     # A canary only advances channels, so it publishes only the full desktop set they serve.
     "publish-canary": ("desktop-channel",),
-    # A commit build publishes nowhere; its builds page lists whatever bundles it built.
+    # A commit build publishes only its claim archive's builds page, listing the bundles it built.
     "publish-commit": ("bundles",),
     "transitions-darwin-arm64": ("macos-arm64", "upgrade"),
     "transitions-win32": ("windows", "upgrade"),

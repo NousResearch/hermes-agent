@@ -2463,8 +2463,9 @@ jobs:
             --summary-commit "$RELEASE_COMMIT" --repo "$GITHUB_REPOSITORY" \
             --summary-out "$GITHUB_STEP_SUMMARY" \
             --summary-failed-legs "$failed" --run-url "$RUN_URL"
-      # No post-build receipt tag: a commit build's identity is its claim tag
-      # (commit.<stamp>-vX.Y.Z), minted before the build by release.py --build-commit.
+      # No post-build receipt tag: a claimed commit build's identity is its claim tag
+      # (commit.<stamp>-vX.Y.Z), minted before the build by release.py --build-commit; a
+      # tagless build_commit run (a repository whose default branch isn't main) has only its commit.
 
   stable-publish:
     name: Verify published candidate files

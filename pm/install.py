@@ -882,21 +882,39 @@ def _commit_selection(package, facts: Facts, change, *, enabled: list[str], stam
     from pm import receipt
     from hermes_cli.runtime_state import finish_publication, recover_publication
 
+    # A newly enabled native manifest may require only packages already pinned
+    # and present in the current committed environment. Under the same PM lock,
+    # qualify that exact case without re-locking every unrelated optional extra.
+    # All other changes continue through the full resolver and staging path.
+    reuse = False
+    if not current and not repair and explicit and not skip_invalid_secondary:
+        from pm.manifest_reuse import reusable_manifest_selection
+
+        prior = facts.get("venv")
+        reuse = reusable_manifest_selection(package, change, prior, enabled, inputs)
     try:
-        result = {} if current else (package.apply(enabled, explicit=explicit,
-                                                   skip_invalid_secondary=skip_invalid_secondary, **inputs) or {})
+        if reuse:
+            prior = facts.get("venv")
+            result = {"environment": Path(prior["environment"]),
+                      "resolved_lock": Path(prior["resolved_lock"])}
+        else:
+            result = {} if current else (package.apply(enabled, explicit=explicit,
+                                                       skip_invalid_secondary=skip_invalid_secondary, **inputs) or {})
         if not repair and package.expected_stamp(enabled, **inputs) != stamp:
             raise ValueError("Dependency inputs changed while preparing publication; retry.")
         if change is not None:
             change.publish(paths.repo_root())
         if not current:
-            if result.get("environment") is not None:
+            if result.get("environment") is not None and not reuse:
                 from pm.environments import flush_before_selecting
                 flush_before_selecting()
             facts.record_state("venv", stamp, enabled, **result)
         if change is not None:
             finish_publication(paths.repo_root())
-        receipt.record_venv_rebuild(not current, "already in sync" if current else "")
+        receipt.record_venv_rebuild(
+            not current and not reuse,
+            "already in sync" if current else
+            "pinned native requirements already installed" if reuse else "")
     except BaseException:
         recover_publication(paths.repo_root())
         raise

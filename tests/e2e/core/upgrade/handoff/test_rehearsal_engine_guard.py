@@ -5,13 +5,15 @@ regex engine), part of the upgrade rehearsal (stage S2c). Release N-1 (or ``HERM
 installed by its own installer, runs one idle gateway by hand. Upstream publishes HEAD plus a fault
 seam in ``pm/client.py``: while ``~/.e2e-rehearsal-break-deps`` exists, every dependency sync of the
 new tree raises, the way a sync fails without network. The old updater pauses the gateway, moves the
-checkout, its completion child's sync fails, so the update owes ``dependencies`` and the OLD process
-resumes the paused gateway itself through new-tree modules (``update_cmd.py:833-841@v0.23.0``). The
-network comes back (the toggle goes) and the next plain ``hermes update`` must finish the sync and
-bring the gateway back on the new code without any other command.
+checkout, its completion child's sync fails, so the update owes ``dependencies``. The paused gateway
+then either resumes on the previous dependencies, or (every supported start so far) the updater says it
+stays stopped until the next launch (``DEFERRED``) and none may run; a gateway left stopped without that
+line fails the cell before the recovery could hide it. The network comes back (the toggle goes) and the
+next plain ``hermes update`` must finish the sync and bring the gateway back on the new code without
+any other command.
 
-What the resumed gateway does depends on the guard, read at run time from the tree under test
-(``guard_armed``), one parametrized cell per state (the other one skips):
+What the resumed gateway does depends on the guard, probed at run time by running the tree's own guard
+without the engine (``guard_armed``), one parametrized cell per state (the other one skips):
 
 * ``guard-armed`` (from the first ``hermes_re`` swap, S6a PR 1, on): the new tree on the previous
   dependencies has no google-re2, so the resumed gateway exits 1 with ``hermes: cannot start:`` in its
@@ -26,7 +28,10 @@ launch's own dependency sync is part of both the failure and the recovery.
 
 from __future__ import annotations
 
+import functools
 import re
+import subprocess
+import sys
 
 import pytest
 
@@ -50,14 +55,52 @@ _SEAM = f"""    {_MARK}
 """
 DEPS_OWED = re.compile(r"⚠ Update follow-up 'dependencies' did not finish: .*dependencies not installed yet")
 REFUSED = "hermes: cannot start:"
+# The updater's deferral (``update_cmd_windows._resume_unless_torn``, every supported start): the paused set
+# stays stopped, owed to the next launch, because the dependencies are not current for the new code.
+DEFERRED = "Paused gateway(s) left stopped: dependencies are not current for the updated code yet"
 REPLY = "engine guard reply"
 
 
+# Runs the launch guard of the checkout under test (argv[1]) the way ``hermes_bootstrap`` does for a
+# gateway launch, with ``re2`` unimportable. Exit status: 20 refused (armed), 10 ran on (off or no guard
+# yet); anything else (a traceback, a guard imported from another tree) is a broken premise.
+_GUARD_PROBE = """
+import importlib.abc, sys
+from pathlib import Path
+
+class NoEngine(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name.partition(".")[0] == "re2":
+            raise ModuleNotFoundError(f"No module named {name!r} (blocked by the e2e guard probe)", name=name)
+        return None
+
+root = Path(sys.argv[1]).resolve()
+sys.meta_path.insert(0, NoEngine())
+sys.path.insert(0, str(root))
+import hermes_cli.venv_sync as vs
+if Path(vs.__file__).resolve().parent != root / "hermes_cli":
+    sys.exit(f"premise: imported {vs.__file__}, not the checkout under test")
+guard = getattr(vs, "guard_regex_engine", None)
+if guard is None:
+    sys.exit(10)
+try:
+    guard(root, ["gateway", "run"])
+except SystemExit as exc:
+    sys.exit(20 if exc.code == 1 else 30)
+sys.exit(10)
+"""
+
+
+@functools.cache
 def guard_armed() -> bool:
-    """Whether the published tree (HEAD, not whatever this process imports) refuses a launch without the
-    regex engine (S2d, armed by S6a PR 1)."""
-    text = I.git("show", f"{X.refs().head}:hermes_cli/venv_sync.py", cwd=H.WORKTREE)
-    return "def guard_regex_engine" in text and "REGEX_ENGINE_REQUIRED = False" not in text
+    """Whether the tree under test refuses a gateway launch without the regex engine (S2d adds the guard
+    inert, S6a PR 1 arms it): its own guard, run in a child that cannot import ``re2``."""
+    cp = subprocess.run([sys.executable, "-c", _GUARD_PROBE, str(H.WORKTREE)], cwd=str(H.WORKTREE),
+                        capture_output=True, text=True, encoding="utf-8", timeout=120, check=False)
+    assert cp.returncode in (10, 20), f"premise: the launch-guard probe broke\n{H.describe(cp)}"
+    if cp.returncode == 20:
+        assert REFUSED in cp.stderr, f"premise: the guard exited 1 without its refusal\n{H.describe(cp)}"
+    return cp.returncode == 20
 
 
 def _publish_seamed_head(inst: X.Install) -> str:
@@ -114,11 +157,13 @@ def _cell(inst: X.Install, armed: bool) -> None:
     offsets = _log_offsets(inst)
     up = inst.update()
     out = up.stdout + up.stderr
+    # The updater either resumes the paused gateway now or says it leaves it stopped until the next launch.
+    deferred = DEFERRED in out
     resumed = None
-    if armed:
+    if up.returncode == 0 and not deferred and armed:
         resumed = X.wait_for(lambda: REFUSED in _log_text_since(inst, offsets), timeout=300, interval=1.0,
-                             what=f"the resumed gateway's {REFUSED!r}") if up.returncode == 0 else None
-    else:
+                             what=f"the resumed gateway's {REFUSED!r}")
+    elif up.returncode == 0 and not deferred:
         resumed = X.settle_gateway(inst, before["pid"], timeout=300)
     logs = _log_text_since(inst, offsets)
     diag = inst.diagnostics(up) + f"\n--- logs since the update ---\n{logs[-8000:]}"
@@ -127,9 +172,17 @@ def _cell(inst: X.Install, armed: bool) -> None:
     assert up.returncode == 0, f"a dependency sync that failed after the move failed the update\n{diag}"
     bad = _engine_lines(f"{out}\n{logs}", armed)
     assert not bad, "a line names the regex engine or a missing module:\n" + "\n".join(bad[:20]) + f"\n{diag}"
-    if armed:
+    # Checked before the recovery: the second update restarts the gateway and would hide a first update
+    # that left it stopped without saying so.
+    if deferred:
+        assert X.identify(inst.hermes_home) is None, (
+            f"the update says the paused gateway stays stopped, but a gateway runs\n{diag}")
+    elif armed:
         assert resumed, f"the resumed gateway did not refuse to start without the regex engine\n{diag}"
         assert X.identify(inst.hermes_home) is None, f"a gateway runs without the regex engine\n{diag}"
+    else:
+        assert resumed is not None, (f"the update neither resumed the paused gateway on {target[:12]} nor "
+                                     f"said it leaves it stopped ({DEFERRED!r})\n{diag}")
 
     # The network is back: the next plain `hermes update` finishes the sync and the gateway serves the
     # new code again, with no other command.

@@ -76,8 +76,11 @@ def test_old_constants_record_a_started_delete_as_incomplete(tmp_path, monkeypat
     monkeypatch.delattr(hermes_constants, "named_profile_delete_incomplete")
     monkeypatch.delattr(hermes_constants, "TOMBSTONE_INCOMPLETE")
     monkeypatch.delattr(hermes_constants, "TOMBSTONE_DELETED")
-    monkeypatch.setattr(hermes_constants, "mark_named_profile_deleted",
-                        lambda profile_home: hermes_constants.profile_tombstone_path(profile_home).write_text("deleted\n"))
+
+    def v0_23_3_mark(profile_home):
+        raise AssertionError("v0.23.3's mark records 'deleted' before the rmtree; the fallback must not call it")
+
+    monkeypatch.setattr(hermes_constants, "mark_named_profile_deleted", v0_23_3_mark)
     old_process = _fresh("hermes_cli.profiles_remove")
     old_process.mark_delete_incomplete(home)
     assert old_process.named_profile_delete_incomplete(home)

@@ -114,13 +114,31 @@ def termux_builds(jobs: dict) -> dict[str, str]:
     """``"release" | "commit"`` -> id of that Termux .deb build trust branch."""
     legs: dict[str, str] = {}
     for name, job in jobs.items():
-        if not _stages(job, "termux"):
+        if needs_of(job) != ["validate"] or not _stages(job, "termux"):
             continue
         mode = _MODE_BY_CACHE[job["cache-mode"]]
         assert mode not in legs, f"{name} and {legs[mode]} both build termux ({mode})"
         legs[mode] = name
     assert set(legs) == {"release", "commit"}, legs
     return legs
+
+
+def commit_claim_stagers(jobs: dict) -> dict[str, str]:
+    """target (or ``"termux"``) -> fresh controller-only job that records/stages a commit claim."""
+    stagers: dict[str, str] = {}
+    expected = set(NATIVE_TARGETS) | {"termux"}
+    for name, job in jobs.items():
+        downloads = [step for step in job.get("steps", [])
+                     if str(step.get("uses", "")).startswith("actions/download-artifact@")
+                     and str((step.get("with") or {}).get("name", "")).startswith("commit-claim-")]
+        if not downloads:
+            continue
+        env_target = (job.get("env") or {}).get("TARGET")
+        target = env_target if env_target in NATIVE_TARGETS else "termux"
+        assert target not in stagers, f"{name} and {stagers[target]} both stage commit claim {target}"
+        stagers[target] = name
+    assert set(stagers) == expected, stagers
+    return stagers
 
 
 def termux_builder(jobs: dict) -> str:

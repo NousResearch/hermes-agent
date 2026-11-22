@@ -14,6 +14,7 @@ Commit and channel claims execute unreviewed commit code on release runners:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -27,13 +28,14 @@ from tests.ci.desktop_release_roles import (
     NATIVE_TARGETS,
     SHA,
     admitted,
+    commit_claim_stagers,
     evaluate,
     gate,
     linux_builds,
     load,
     native_builds,
+    needs_of,
     selection_gates,
-    stage_step,
     termux_builder,
     termux_builds,
     universal_assembler,
@@ -62,23 +64,39 @@ def test_untrusted_claims_route_only_to_read_only_native_legs_and_skip_linux(unt
     jobs = _workflow("desktop-bundled-release.yml")["jobs"]
     legs = native_builds(jobs)
     gates = selection_gates(jobs)
+    stagers = commit_claim_stagers(jobs)
     needs = admitted(["validate"], channel=bool(untrusted_inputs.get("channel")))
+    is_commit_claim = (
+        untrusted_inputs.get("release-phase") == "candidate"
+        and str(untrusted_inputs.get("tag", "")).startswith("commit.")
+    )
 
     for target in NATIVE_TARGETS:
         release_job = jobs[legs[(target, "release")]]
         commit_job = jobs[legs[(target, "commit")]]
+        stager_name = stagers[target]
+        stager_job = jobs[stager_name]
         assert release_job["cache-mode"] == "write"
         assert commit_job["cache-mode"] == "read"
         assert not gate(release_job["if"], untrusted_inputs, needs), (target, "release")
         assert gate(commit_job["if"], untrusted_inputs, needs), (target, "commit")
+        stager_needs = {**needs, legs[(target, "commit")]: {"result": "success"}}
+        assert gate(stager_job["if"], untrusted_inputs, stager_needs) is is_commit_claim, (target, stager_name)
 
         gate_needs = {
             **needs,
             legs[(target, "release")]: {"result": "skipped"},
             legs[(target, "commit")]: {"result": "success"},
+            stager_name: {"result": "success" if is_commit_claim else "skipped"},
         }
         assert evaluate(jobs[gates[target]]["env"]["SELECTED_BUILD_SUCCEEDED"],
                         untrusted_inputs, gate_needs, job_if=False) is True, target
+        if is_commit_claim:
+            # A commit claim must fail its selection gate if the fresh controller staging job failed or skipped.
+            for bad in ("failure", "skipped"):
+                bad_needs = {**gate_needs, stager_name: {"result": bad}}
+                assert evaluate(jobs[gates[target]]["env"]["SELECTED_BUILD_SUCCEEDED"],
+                                untrusted_inputs, bad_needs, job_if=False) is False, (target, bad)
 
     for target, name in linux_builds(jobs).items():
         assert target in LINUX_TARGETS
@@ -93,13 +111,16 @@ def test_release_and_canary_tags_keep_write_mode_native_and_termux_legs(trusted_
 
     legs = native_builds(jobs)
     gates = selection_gates(jobs)
+    stagers = commit_claim_stagers(jobs)
     for target in NATIVE_TARGETS:
         assert gate(jobs[legs[(target, "release")]]["if"], inputs, needs), target
         assert not gate(jobs[legs[(target, "commit")]]["if"], inputs, needs), target
+        assert not gate(jobs[stagers[target]]["if"], inputs, {**needs, legs[(target, "commit")]: {"result": "success"}}), target
         gate_needs = {
             **needs,
             legs[(target, "release")]: {"result": "success"},
             legs[(target, "commit")]: {"result": "skipped"},
+            stagers[target]: {"result": "skipped"},
         }
         assert evaluate(jobs[gates[target]]["env"]["SELECTED_BUILD_SUCCEEDED"],
                         inputs, gate_needs, job_if=False) is True
@@ -107,8 +128,14 @@ def test_release_and_canary_tags_keep_write_mode_native_and_termux_legs(trusted_
     t_legs = termux_builds(jobs)
     assert gate(jobs[t_legs["release"]]["if"], inputs, needs)
     assert not gate(jobs[t_legs["commit"]]["if"], inputs, needs)
+    assert not gate(jobs[stagers["termux"]]["if"], inputs, {**needs, t_legs["commit"]: {"result": "success"}})
     t_gate = jobs[termux_builder(jobs)]
-    t_needs = {**needs, t_legs["release"]: {"result": "success"}, t_legs["commit"]: {"result": "skipped"}}
+    t_needs = {
+        **needs,
+        t_legs["release"]: {"result": "success"},
+        t_legs["commit"]: {"result": "skipped"},
+        stagers["termux"]: {"result": "skipped"},
+    }
     assert evaluate(t_gate["env"]["SELECTED_BUILD_SUCCEEDED"], inputs, t_needs, job_if=False) is True
 
 
@@ -145,13 +172,25 @@ def test_termux_commit_branch_is_read_only_and_has_no_apt_signing_key_access():
     assert setup_pm["with"]["archive-inputs"] is False
 
     # Untrusted dispatches route only to termux-deb-commit (never termux-deb-release).
+    stager_name = commit_claim_stagers(jobs)["termux"]
     needs = admitted(["validate"])
     for inputs in (_candidate_dispatch(COMMIT_TAG), _candidate_dispatch(CHANNEL_TAG),
                    DOWNLOADABLE_DISPATCHES["commit"]):
+        is_claim = inputs.get("release-phase") == "candidate" and str(inputs.get("tag", "")).startswith("commit.")
         assert not gate(release_job["if"], inputs, needs)
         assert gate(commit_job["if"], inputs, needs)
-        gate_needs = {**needs, t_legs["release"]: {"result": "skipped"}, t_legs["commit"]: {"result": "success"}}
+        assert gate(jobs[stager_name]["if"], inputs, {**needs, t_legs["commit"]: {"result": "success"}}) is is_claim
+        gate_needs = {
+            **needs,
+            t_legs["release"]: {"result": "skipped"},
+            t_legs["commit"]: {"result": "success"},
+            stager_name: {"result": "success" if is_claim else "skipped"},
+        }
         assert evaluate(gate_job["env"]["SELECTED_BUILD_SUCCEEDED"], inputs, gate_needs, job_if=False) is True
+        if is_claim:
+            for bad in ("failure", "skipped"):
+                assert evaluate(gate_job["env"]["SELECTED_BUILD_SUCCEEDED"], inputs,
+                                {**gate_needs, stager_name: {"result": bad}}, job_if=False) is False
         # Defense in depth: even the APT signing steps inside termux-deb-release refuse commit/channel tags.
         for step in release_job["steps"]:
             if step.get("name") in ("Write the APT signing key", "Stage the APT repo handoff to R2"):
@@ -165,36 +204,88 @@ with open(os.environ["STAGING_RECEIPTS"], "a", encoding="utf-8") as stream:
 '''
 
 
-def _claim_staging_legs():
+def test_commit_claim_staging_runs_on_fresh_controller_only_jobs_without_builder_r2_fallback():
+    """Unreviewed build jobs never check out .build/commit-controller or stage commit claims to R2."""
     jobs = _workflow("desktop-bundled-release.yml")["jobs"]
     legs = native_builds(jobs)
-    rows = [(legs[(target, "commit")], target, "apps/desktop/release") for target in NATIVE_TARGETS]
-    return [*rows, (termux_builds(jobs)["commit"], None, "termux-build")]
+    t_legs = termux_builds(jobs)
+    stagers = commit_claim_stagers(jobs)
+    claim = _candidate_dispatch(COMMIT_TAG)
+    needs = admitted(["validate"])
+    commit_legs = {**{target: legs[(target, "commit")] for target in NATIVE_TARGETS}, "termux": t_legs["commit"]}
+
+    for target, build_name in commit_legs.items():
+        build_job = jobs[build_name]
+        serialized = json.dumps(build_job)
+        assert ".build/commit-controller" not in serialized, build_name
+        # Builder-side R2 staging steps must skip commit claims completely.
+        for step in build_job["steps"]:
+            if "scripts.releases.handoff stage" in step.get("run", ""):
+                assert not gate(step.get("if", "true"), claim, needs, job_if=False), (build_name, step["name"])
+        # Builder uploads only built package artifacts for commit claims (never sidecar metadata JSON).
+        uploads = [step for step in build_job["steps"]
+                   if str(step.get("uses", "")).startswith("actions/upload-artifact@")]
+        assert len(uploads) == 1, build_name
+        upload = uploads[0]
+        assert gate(upload["if"], claim, needs, job_if=False)
+        assert not gate(upload["if"], _candidate_dispatch("v0.33.0"), needs, job_if=False)
+        assert not gate(upload["if"], DOWNLOADABLE_DISPATCHES["commit"], needs, job_if=False)
+        assert "version-info" not in str(upload["with"]["path"])
+        assert upload["with"]["if-no-files-found"] == "error"
+
+        # Fresh controller-only staging job depends on validate + build leg, checks out only github.sha.
+        stager_name = stagers[target]
+        stager = jobs[stager_name]
+        assert needs_of(stager) == ["validate", build_name], (stager_name, stager.get("needs"))
+        assert stager["cache-mode"] == "read", stager_name
+        assert stager.get("permissions") == {"contents": "read"}, stager_name
+        checkouts = [step for step in stager["steps"] if "checkout@" in str(step.get("uses", ""))]
+        assert len(checkouts) == 1, stager_name
+        assert checkouts[0]["with"]["ref"] == "${{ github.sha }}", stager_name
+        assert checkouts[0]["with"]["persist-credentials"] in (False, "false"), stager_name
+        assert "validate.outputs.sha" not in json.dumps(checkouts[0]), stager_name
+        (download,) = [step for step in stager["steps"]
+                       if str(step.get("uses", "")).startswith("actions/download-artifact@")]
+        expected_name = (
+            "commit-claim-termux-${{ github.run_id }}-${{ github.run_attempt }}"
+            if target == "termux"
+            else "commit-claim-${{ env.TARGET }}-${{ github.run_id }}-${{ github.run_attempt }}"
+        )
+        assert download["with"]["name"] == expected_name, (stager_name, download["with"])
 
 
 @pytest.mark.parametrize("legacy", ["true", "false"])
-@pytest.mark.parametrize("job_name,target,artifacts", _claim_staging_legs())
+@pytest.mark.parametrize("target", [*NATIVE_TARGETS, "termux"])
 def test_claim_staging_runs_the_controller_recorder_on_the_built_artifacts(
-        tmp_path, job_name, target, artifacts, legacy):
-    """A claim's checkout is unreviewed and may predate claims, so it never stages itself."""
-    job = _workflow("desktop-bundled-release.yml")["jobs"][job_name]
-    checkout = tmp_path / "checkout"
-    for copy, base in (("claimed", checkout), ("controller", checkout / ".build/commit-controller")):
-        for module in ("scripts/bundles/release_artifacts.py", "scripts/releases/handoff.py"):
-            (base / module).parent.mkdir(parents=True, exist_ok=True)
-            (base / module).write_text(_STAGING_STUB.format(copy=copy), encoding="utf-8")
-    (checkout / artifacts).mkdir(parents=True)
+        tmp_path, target, legacy):
+    """Fresh controller staging jobs run only controller modules on the downloaded artifacts."""
+    jobs = _workflow("desktop-bundled-release.yml")["jobs"]
+    stager = jobs[commit_claim_stagers(jobs)[target]]
+    controller = tmp_path / "controller"
+    for module in ("scripts/bundles/release_artifacts.py", "scripts/releases/handoff.py"):
+        (controller / module).parent.mkdir(parents=True, exist_ok=True)
+        (controller / module).write_text(_STAGING_STUB.format(copy="controller"), encoding="utf-8")
+    staged = controller / "staged-artifacts"
+    (staged / "deb" if target == "termux" else staged).mkdir(parents=True)
+    extra_bin = tmp_path / "bin"
+    extra_bin.mkdir()
+    if target == "darwin-arm64":
+        (staged / "HermesBundled-0.33.0-mac-arm64.zip").write_bytes(b"zip-fixture")
+        ditto = extra_bin / "ditto"
+        ditto.write_text("#!/usr/bin/env bash\nset -e\n[ \"$1\" = -x ] && [ \"$2\" = -k ] && mkdir -p \"$4/Hermes.app\"\n", encoding="utf-8")
+        ditto.chmod(0o755)
     receipts = tmp_path / "receipts.jsonl"
-    step = stage_step(job)
-    replay = {**step, "env": {**job.get("env", {}), **step.get("env", {}),
-                              "GITHUB_WORKSPACE": str(checkout), "STAGING_RECEIPTS": str(receipts)}}
+    (step,) = [s for s in stager["steps"] if "scripts.releases.handoff stage" in s.get("run", "")]
+    replay = {**step, "env": {**stager.get("env", {}), **step.get("env", {}),
+                              "GITHUB_WORKSPACE": str(controller), "STAGING_RECEIPTS": str(receipts),
+                              "PATH": f"{extra_bin}{os.pathsep}{os.environ['PATH']}"}}
     context = {
-        "inputs": _candidate_dispatch(COMMIT_TAG), "matrix": {"target": {"label": target}},
+        "inputs": _candidate_dispatch(COMMIT_TAG),
         "needs": {"validate": {"result": "success", "outputs": {
             "sha": SHA, "channel-build": "", "archive-tag": COMMIT_TAG, "legacy-commit-build": legacy}}},
-        "github": {"workspace": str(checkout)},
+        "github": {"workspace": str(controller)},
     }
-    workflow_steps.outputs(replay, context, cwd=checkout)
+    workflow_steps.outputs(replay, context, cwd=controller)
 
     calls = [json.loads(line) for line in receipts.read_text(encoding="utf-8").splitlines()]
     assert {call["module"] for call in calls} == {"scripts.bundles.release_artifacts", "scripts.releases.handoff"}
@@ -204,7 +295,7 @@ def test_claim_staging_runs_the_controller_recorder_on_the_built_artifacts(
         for flag in ("--root", "--out"):
             if flag in argv:
                 path = Path(call["cwd"], argv[argv.index(flag) + 1]).resolve()
-                assert path.is_relative_to((checkout / artifacts).resolve()), (flag, call)
+                assert path.is_relative_to(staged.resolve()), (flag, call)
     (record,) = [call for call in calls if call["module"] == "scripts.bundles.release_artifacts"]
     assert ("--legacy-commit-build" in record["argv"]) == (legacy == "true")
 

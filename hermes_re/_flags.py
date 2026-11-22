@@ -59,6 +59,8 @@ def inline_globals(text: str) -> int:
 def ssize(value) -> int:
     """``value`` as stdlib's C ``Py_ssize_t`` argument (``pos``, ``endpos``, ``count``,
     ``maxsplit``): the same TypeError for a non-integer and OverflowError out of range."""
+    if value.__class__ is int and SSIZE_MIN <= value <= SSIZE_MAX:  # the common case, without operator.index
+        return value
     value = operator.index(value)
     if not SSIZE_MIN <= value <= SSIZE_MAX:
         raise OverflowError("Python int too large to convert to C ssize_t")

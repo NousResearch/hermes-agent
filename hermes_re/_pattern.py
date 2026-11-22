@@ -41,7 +41,7 @@ import weakref
 from . import _budget, _comments, _edge_bound, _edge_plan, _engine
 from ._edge_run import step
 from ._errors import error
-from ._flags import SSIZE_MAX, SSIZE_MIN, SUPPORTED, RegexFlag, checked, inline_globals, ssize
+from ._flags import SUPPORTED, RegexFlag, checked, inline_globals, ssize
 from ._form import Form
 from ._match import Match
 from ._offsets import Offsets
@@ -329,8 +329,7 @@ class Pattern:
 
     def _one(self, kind, string, pos, endpos):
         """One match attempt. ``kind``: 0 search, 1 match, 2 fullmatch."""
-        if not (pos.__class__ is int is endpos.__class__ and SSIZE_MIN <= pos <= SSIZE_MAX and SSIZE_MIN <= endpos <= SSIZE_MAX):
-            pos, endpos = ssize(pos), ssize(endpos)  # as stdlib: TypeError / OverflowError, bool as int
+        pos, endpos = ssize(pos), ssize(endpos)  # as stdlib: TypeError / OverflowError, bool as int
         data, mode, start, end, offsets, shift, _ = self._open(string, pos, endpos)
         if start > end:
             return None
@@ -390,8 +389,7 @@ class Pattern:
                 start = step(data, last)
 
     def finditer(self, string, pos=0, endpos=sys.maxsize):
-        if not (pos.__class__ is int is endpos.__class__ and SSIZE_MIN <= pos <= SSIZE_MAX and SSIZE_MIN <= endpos <= SSIZE_MAX):
-            pos, endpos = ssize(pos), ssize(endpos)  # as stdlib: TypeError / OverflowError, bool as int
+        pos, endpos = ssize(pos), ssize(endpos)  # as stdlib: TypeError / OverflowError, bool as int
         data, mode, start, end, offsets, shift, _ = self._open(string, pos, endpos)  # argument errors raise now
         return (Match(self, string, data, mode, spans, pos, endpos, offsets, shift)
                 for spans in self._spans(data, mode, start, end))
@@ -413,8 +411,7 @@ class Pattern:
         return standin, False
 
     def findall(self, string, pos=0, endpos=sys.maxsize):
-        if not (pos.__class__ is int is endpos.__class__ and SSIZE_MIN <= pos <= SSIZE_MAX and SSIZE_MIN <= endpos <= SSIZE_MAX):
-            pos, endpos = ssize(pos), ssize(endpos)  # as stdlib: TypeError / OverflowError, bool as int
+        pos, endpos = ssize(pos), ssize(endpos)  # as stdlib: TypeError / OverflowError, bool as int
         data, mode, start, end, offsets, _, source = self._open(string, pos, endpos)
         take, raw = self._texts(source, data, mode, offsets)
         empty = b"" if raw else ("" if self._is_str else b"")  # raw: UTF-8 bytes, decoded at the end
@@ -435,8 +432,7 @@ class Pattern:
         return [tuple(str(part, "utf-8") for part in item) for item in out]
 
     def split(self, string, maxsplit=0):
-        if maxsplit.__class__ is not int or not SSIZE_MIN <= maxsplit <= SSIZE_MAX:
-            maxsplit = ssize(maxsplit)
+        maxsplit = ssize(maxsplit)
         data, mode, start, end, offsets, _, source = self._open(string, 0, sys.maxsize)
         take, raw = self._texts(source, data, mode, offsets)
         out, last, done = [], 0, 0
@@ -451,8 +447,7 @@ class Pattern:
         return [None if item is None else item.decode("utf-8") for item in out] if raw else out
 
     def subn(self, repl, string, count=0):
-        if count.__class__ is not int or not SSIZE_MIN <= count <= SSIZE_MAX:
-            count = ssize(count)
+        count = ssize(count)
         data, mode, start, end, offsets, _, source = self._open(string, 0, sys.maxsize)
         take, raw = self._texts(source, data, mode, offsets)
         fill = repl if callable(repl) else _template(repl, self)

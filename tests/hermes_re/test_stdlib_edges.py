@@ -119,3 +119,9 @@ def test_a_non_ascii_digit_after_a_backslash_is_never_a_group_or_octal_digit():
         ("(?<=\\" + arabic_one + ")b", arabic_one + "b"),  # a one-character lookbehind guard, not a backreference
     ):
         assert [m.span() for m in hre.finditer(pattern, subject)] == [m.span() for m in std.finditer(pattern, subject)]
+
+
+def test_a_never_matching_edge_alternative_compiles_in_bytes_patterns():
+    # the facade's own never-matching filler must be valid in a bytes pattern, which has no \U escape
+    for pattern, subject in ((rb"(?<=a)b|c", b"abcxc"), ((r"(?<=a)b|c", "abcxc"))):
+        assert hre.compile(pattern).findall(subject) == std.compile(pattern).findall(subject)

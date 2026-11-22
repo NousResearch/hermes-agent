@@ -21,7 +21,7 @@ from ._edge_guard import approx, setting
 from ._edge_parse import Unsupported, parse
 
 ANY = "(?s:.)"                   # the character an unguarded alternative steps over
-DEAD = r"[^\x00-\U0010FFFF]"     # never matches, keeps the group numbering
+DEAD = r"[^\s\S]"  # never matches, keeps the group numbering; valid in str and bytes patterns alike
 DOLLAR = r"(?:\n?\z)"            # what a non-multiline `$` stands before: an optional final newline
 _END_ANCHORS = frozenset("$Zz")
 _TOKENS = ("(?=", "(?!", "(?<=", "(?<!")

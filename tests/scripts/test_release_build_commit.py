@@ -155,15 +155,30 @@ def test_commit_build_dispatch_is_repository_independent(fixture_repo):
                            '--repo', 'NousResearch/hermes-agent', '-f', f'tag={tag}']]
 
 
-def test_commit_build_refuses_before_claiming_when_admission_would_refuse_the_branch(fixture_repo):
-    """Stable Release admits only its controller branch, so a renamed default branch leaves no claim."""
+def test_commit_build_on_another_default_branch_builds_tagless_without_a_claim(fixture_repo):
+    """Stable Release admits only main, so a fork defaulting elsewhere keeps the tagless build that
+    branch's own workflow admits, and no claim is ever created for a run that would be refused."""
     repo, upstream, invoke = fixture_repo
     tip = git(repo, 'rev-parse', 'HEAD')
-    result, calls = invoke('--build-commit', tip, '--publish', extra={'PROBE_DEFAULT_BRANCH': 'trunk'})
+    trunk = {'PROBE_DEFAULT_BRANCH': 'trunk'}
+    result, calls = invoke('--build-commit', tip, extra=trunk)
+    assert result.returncode == 0, result.stderr
+    assert 'Dry run' in result.stdout and not any(call[1:3] == ['workflow', 'run'] for call in calls)
+    result, calls = invoke('--build-commit', tip, '--publish', '--bundle-env', 'HERMES_DATA_DIR_SUFFIX=x',
+                           extra=trunk)
+    assert result.returncode == 0, result.stderr
+    assert claims(upstream) == []
+    dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
+    assert dispatches == [['gh', 'workflow', 'run', 'desktop-bundled-release.yml', '--ref', 'trunk',
+                           '--repo', 'fixture-owner/fixture-repo', '-f', f'build_commit={tip}', '-f', 'tag=',
+                           '-f', 'upload_release=false', '-f', 'termux_upgrade_from_tag=',
+                           '-f', 'bundle_env={"HERMES_DATA_DIR_SUFFIX": "x"}']]
+    assert f'https://hermes-assets.nousresearch.com/releases/commit/{tip}/index.html' in result.stdout
+    # A lane choice needs Stable Release; it is refused before anything is dispatched.
+    result, calls = invoke('--build-commit', tip, '--publish', '--with', 'termux', extra=trunk)
     assert result.returncode != 0 and 'Traceback' not in result.stderr
     assert 'runs only from main' in result.stderr and 'defaults to trunk' in result.stderr
-    assert claims(upstream) == []
-    assert not any(call[1:3] == ['workflow', 'run'] for call in calls)
+    assert claims(upstream) == [] and not any(call[1:3] == ['workflow', 'run'] for call in calls)
 
 
 # (Fork-conditional removal) The disposable routing test retired with it: a

@@ -1373,6 +1373,16 @@ Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accept
 
 An entry keyed like a built-in provider (`openrouter:`, `Anthropic:`, `deepseek:`, in any case) that sets its own `api`/`base_url` **is** what that name means: `--provider openrouter`, `/model`, `hermes model` and the dashboard save it as `custom:openrouter` and every turn goes to your endpoint. When the entry declares a key (`api_key`, `key_env` or `key_cmd`), that key is used and the built-in's own key is never sent. An entry with no key gets the built-in's env and pooled keys only while its address is on the built-in's own host (scheme, host and port); anywhere else (a proxy, a mirror, another region's host such as Kimi's `.cn` endpoint) it sends no key, because a built-in's key is never sent to a host other than its own unless you say so. To use the built-in's key on your endpoint, name it: `key_env: DEEPSEEK_API_KEY` (the built-in's variable), or add the endpoint's key with `hermes auth add deepseek` while the entry is configured, which records the entry's address. A same-named block without an endpoint (for example `providers.openrouter: {request_timeout_seconds: 300}`) only tunes the built-in. `hermes doctor` warns when `model.provider` names a built-in that such an entry takes over.
 
+To shorten how a built-in or plugin provider is shown, give its block a `label`. It is display only: the `/model` and `hermes model` pickers, the Desktop model list and status lines show it, while routing, keys and the saved `model.provider` keep the provider id:
+
+```yaml
+providers:
+  claude-subscription-directsdk-experimental:
+    label: Claude Sub
+```
+
+The key is matched like a provider id (any case, aliases resolve to the provider). A label must be printable text on one line; anything else is ignored. Your own endpoint entries keep using `name` as their display name.
+
 :::note Migration: built-in keys and same-named entries
 Earlier releases sent the built-in's env key (for example `DEEPSEEK_API_KEY`) to a key-less `providers.deepseek` entry on any address. Now that key stays on the built-in's own host. If such an entry now gets `401`, add `key_env: DEEPSEEK_API_KEY` (use your provider's variable) to the entry. Hermes logs one warning per entry naming the remedy when this happens. Pooled keys added before addresses were recorded (`hermes auth add`, the dashboard) for a built-in's pool belong to the built-in's own address. To use one on the entry's host, re-add it with `hermes auth add <name>` while the entry is configured.
 :::

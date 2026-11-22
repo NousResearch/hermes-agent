@@ -81,3 +81,23 @@ def test_show_status_reports_empty_lmstudio_listing_as_reachable(monkeypatch, ca
     out = capsys.readouterr().out
     assert "LM Studio" in out
     assert "reachable (0 model(s)) at http://127.0.0.1:1234/v1" in out
+
+
+def test_lmstudio_probe_runs_when_lmstudio_has_a_user_label(monkeypatch, capsys, tmp_path):
+    # The LM Studio reachability row keys on the provider id, not its display label (#158907).
+    from hermes_cli import status as status_mod
+
+    _patch_common_status_deps(monkeypatch, status_mod, tmp_path)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {
+        "model": {"default": "q", "provider": "lmstudio", "base_url": "http://127.0.0.1:1234/v1"},
+        "providers": {"lmstudio": {"label": "Local LM"}}}, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "lmstudio", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "lmstudio", raising=False)
+    monkeypatch.setattr("hermes_cli.models_local.probe_lmstudio_models",
+                        lambda api_key=None, base_url=None, timeout=5.0: [])
+
+    status_mod.show_status(SimpleNamespace(full=True, deep=False))
+
+    out = capsys.readouterr().out
+    assert "Local LM" in out
+    assert "reachable (0 model(s)) at http://127.0.0.1:1234/v1" in out

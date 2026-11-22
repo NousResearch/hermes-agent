@@ -29,3 +29,12 @@ def test_non_openrouter_provider_untouched():
          patch("hermes_cli.status.resolve_provider", return_value="anthropic"):
         label = _effective_provider_label()
     assert "OpenRouter" not in label
+
+
+def test_user_label_wins_for_status_provider_line():
+    # providers.<id>.label (#158907) is what `hermes status` shows as the provider.
+    cfg = {"providers": {"nous": {"label": "Portal"}}}
+    with patch("hermes_cli.status.resolve_requested_provider", return_value="nous"), \
+         patch("hermes_cli.status.resolve_provider", return_value="nous"), \
+         patch("hermes_cli.status.load_config", return_value=cfg):
+        assert _effective_provider_label() == "Portal"

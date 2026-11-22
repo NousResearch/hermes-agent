@@ -150,6 +150,9 @@ def build_models_payload(
     from hermes_cli.models_validate import drop_unofferable_model_ids
 
     drop_unofferable_model_ids(rows)
+    # Skeleton, MoA and Local rows are added after the picker's own label pass (#158907).
+    from hermes_cli.config_providers import apply_user_provider_labels
+    apply_user_provider_labels(rows, ctx.user_providers)
 
     return {"providers": rows, "model": ctx.current_model, "provider": ctx.current_provider}
 

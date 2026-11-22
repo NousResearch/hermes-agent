@@ -187,7 +187,8 @@ def _render_apikey_providers(ctx):
 
     # LM Studio reachability: probe only when it is the active provider so users with foreign
     # configs see no noise. Auth rejection vs. a silent empty list is the common support case.
-    if _status._effective_provider_label() == "LM Studio":
+    from hermes_cli.models import normalize_provider as _hermes_provider_id
+    if _hermes_provider_id(_status._effective_provider_id()) == "lmstudio":
         from hermes_cli.models_local import probe_lmstudio_models
         model_cfg = ctx.config.get("model")
         base = ((model_cfg.get("base_url") if isinstance(model_cfg, dict) else None)

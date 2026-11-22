@@ -339,8 +339,18 @@ def _plugin_profile_pdef(name: str) -> Optional[ProviderDef]:
 
 
 def get_label(provider_id: str) -> str:
-    """Human-readable display name: label override, else models.dev name, else the id."""
+    """Human-readable display name: the user's ``providers.<id>.label``, else label override, else
+    models.dev name, else the id."""
     canonical = normalize_provider(provider_id)
+    # load_config_readonly() never raises on a bad file (last-known-good / defaults stand in) and
+    # user_provider_labels() ignores any malformed shape, so no guard is needed here.
+    from hermes_cli.config import load_config_readonly
+    from hermes_cli.config_providers import provider_label_key, user_provider_labels
+
+    labels = user_provider_labels((load_config_readonly() or {}).get("providers"))
+    user_label = labels.get(provider_label_key(provider_id))
+    if user_label:
+        return user_label
     if canonical in _LABEL_OVERRIDES:
         return _LABEL_OVERRIDES[canonical]
     pdef = get_provider(canonical)

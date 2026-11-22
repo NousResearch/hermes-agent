@@ -931,7 +931,10 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
     ``model_catalog.excluded_providers`` (slug or alias, case-insensitive) like the gateway/TUI."""
     from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_ALIASES
     from hermes_cli.models_catalog_static import group_providers, listed_canonical_providers, provider_group_for_slug
+    from hermes_cli.config_providers import user_provider_labels
     canonical_descs = {p.slug: p.tui_desc for p in CANONICAL_PROVIDERS}
+    # providers.<id>.label replaces the descriptive row text (#158907).
+    user_labels = user_provider_labels(config.get("providers"))
     listed = listed_canonical_providers()
     _cli_excluded = {
         str(p).strip().lower()
@@ -978,6 +981,7 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
                 if tier_row is None:
                     continue
                 label = tier_row["name"]
+            label = user_labels.get(slug, label)
             _add(slug, label, [], bool(active) and slug == active)
 
     for key, provider_info in custom_provider_map.items():
@@ -989,8 +993,8 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
     from hermes_cli.model_setup_flows_local import local_models_available
     from hermes_cli.providers import LLAMACPP_ALIASES
     if not _cli_excluded & set(LLAMACPP_ALIASES) and local_models_available():
-        _add("llamacpp", "Local models (run open models on this machine — no account or API key)", [],
-             active == "llamacpp")
+        _add("llamacpp", user_labels.get("llamacpp", "Local models (run open models on this machine — no account or API key)"),
+             [], active == "llamacpp")
     ordered.append(("custom", "Custom endpoint (enter URL manually)", []))
     if isinstance(config.get("custom_providers"), list) and config.get("custom_providers"):
         ordered.append(("remove-custom", "Remove a saved custom provider", []))

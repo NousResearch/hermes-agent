@@ -988,6 +988,32 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
 
 
+def _endpointless_known_provider_block(ep_name: str, ep_cfg: dict) -> bool:
+    """A ``providers.<id>`` block for a provider Hermes knows, with no endpoint of its own, only
+    tunes or labels that provider (``timeout``, ``label``, ...): it is not an endpoint row.
+    Known = a provider under its Hermes id or its models.dev id (``openai`` is only the latter), a
+    local runtime (llamacpp, ollama, vllm, local) or the virtual ``moa`` provider; a bare
+    ``custom`` or an unknown key keeps its old row."""
+    if _entry_base_url(ep_cfg, ("base_url", "api", "url")):
+        return False
+    from hermes_cli.auth import AuthError, resolve_provider
+    from hermes_cli.config_providers import provider_label_key
+    from hermes_cli.providers import normalize_provider
+
+    label_key = provider_label_key(ep_name)
+    if not label_key:
+        return False
+    if label_key == "moa" or normalize_provider(label_key) == "custom":
+        return True
+    for candidate in dict.fromkeys((label_key, normalize_provider(label_key))):
+        try:
+            if resolve_provider(candidate):
+                return True
+        except AuthError:
+            continue
+    return False
+
+
 def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
     """Section 3: ``providers:`` dict entries, grouped by (api_url, credential, api_mode,
     extra_headers) so keyed providers on one endpoint with the same wire protocol collapse into
@@ -998,6 +1024,8 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
     ep_groups: dict[tuple, dict] = {}
     for ep_name, ep_cfg in user_providers.items():
         if not isinstance(ep_cfg, dict) or not is_provider_enabled(ep_cfg) or ep_name.lower() in b.seen_slugs:
+            continue
+        if _endpointless_known_provider_block(ep_name, ep_cfg):
             continue
         display_name = coerce_provider_id(ep_cfg.get("name")) or ep_name
         api_url = _entry_base_url(ep_cfg, ("base_url", "api", "url"))
@@ -1331,6 +1359,10 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
     except Exception:
         pass
 
+    # ``providers.<id>.label`` renames built-in rows (display only; #158907).
+    from hermes_cli.config_providers import apply_user_provider_labels
+    apply_user_provider_labels(results, user_providers)
+
     # A custom/uncurated model set via `/model <provider>/<name>` would be invisible in every
     # picker (main and MoA slot pickers read these rows); inject it at the front of the current
     # provider's row.
@@ -1411,6 +1443,9 @@ def list_picker_providers(
                                         max_models=max_models, excluded_providers=excluded_providers)
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
+    # Local and MoA rows join after list_authenticated_providers' own label pass (#158907).
+    from hermes_cli.config_providers import apply_user_provider_labels
+    apply_user_provider_labels(providers, user_providers)
 
     filtered: list[dict] = []
     for p in providers:

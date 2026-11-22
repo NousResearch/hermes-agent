@@ -313,6 +313,16 @@ model:
 #       gpt-5.4:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
+# Provider display label (optional)
+# ``label`` renames a built-in or plugin provider wherever it is shown (/model and
+# `hermes model` pickers, the Desktop model list, status lines). Display only:
+# routing, keys and the saved model.provider keep the provider id. Must be
+# printable single-line text. Your own endpoint entries use ``name`` instead.
+#
+# providers:
+#   claude-subscription-directsdk-experimental:
+#     label: Claude Sub
+
 # =============================================================================
 # Unified Timeouts (operation deadlines)
 # =============================================================================

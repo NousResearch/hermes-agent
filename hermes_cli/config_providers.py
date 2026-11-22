@@ -123,7 +123,7 @@ _KNOWN_PROVIDER_KEYS = {
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
     "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify",
-    "catalog_provider", "session_affinity_header",
+    "catalog_provider", "session_affinity_header", "label",
     "gemini_api"}  # read by the gemini provider plugin (which Gemini API a model's calls use)
 
 
@@ -618,3 +618,78 @@ def is_provider_enabled(provider_cfg: Optional[dict[str, Any]]) -> bool:
     if isinstance(flag, str):
         return flag.strip().lower() not in _FALSE_WORDS
     return bool(flag)
+
+
+def provider_label_key(provider_id: Any) -> str:
+    """The id a provider label is keyed on: the slug its picker row and status line use.
+
+    Hermes' own provider id (case-insensitive; aliases resolve through ``hermes_cli.models``'
+    alias table, the one behind picker slugs). Not ``hermes_cli.providers.normalize_provider``:
+    that maps to models.dev ids and folds distinct Hermes providers together (kimi-coding and
+    kimi-coding-cn -> kimi-for-coding). Local runtimes the alias table sends to the generic
+    ``custom`` route keep their own name (llama.cpp spellings -> ``llamacpp``, the Local row's
+    slug); ``custom`` and ``auto`` are routes, not providers, and get ``""`` (never labelled).
+    """
+    if not isinstance(provider_id, str) or not provider_id.strip():
+        return ""
+    from hermes_cli.models import normalize_provider as hermes_provider_id
+    from hermes_cli.providers import LLAMACPP_ALIASES
+
+    raw = provider_id.strip().lower()
+    if raw in LLAMACPP_ALIASES:
+        return "llamacpp"
+    canonical = hermes_provider_id(raw)
+    if canonical == "custom":
+        return "" if raw == "custom" else raw
+    return "" if canonical == "auto" else canonical
+
+
+def user_provider_labels(providers: Any) -> dict[str, str]:
+    """``{provider_label_key(id): label}`` from enabled ``providers.<id>.label`` entries.
+
+    Display only: pickers and status lines show the label; routing never reads it (an entry with
+    no endpoint stays a tuning block, and ``name`` keeps its role as the routing identity). A label
+    must be a string that is printable as written, so no line break or control character can
+    reach a picker row, and non-empty after trimming spaces; anything else is ignored.
+    """
+    if not isinstance(providers, dict):
+        return {}
+    labels: dict[str, str] = {}
+    for key, entry in providers.items():
+        label_key = provider_label_key(key)
+        if not label_key or not isinstance(entry, dict):
+            continue
+        label = entry.get("label")
+        if not isinstance(label, str) or not label.isprintable() or not is_provider_enabled(entry):
+            continue
+        if label.strip():
+            labels[label_key] = label.strip()
+    return labels
+
+
+def apply_user_provider_labels(rows: Any, providers: Any) -> None:
+    """Rename built-in provider rows (``is_user_defined`` false) that have a user label, in place.
+    User-defined endpoint rows keep their ``name``: it is already the user's choice."""
+    labels = user_provider_labels(providers)
+    if not labels or not isinstance(rows, list):
+        return
+    for row in rows:
+        if not isinstance(row, dict) or row.get("is_user_defined"):
+            continue
+        label = labels.get(provider_label_key(row.get("slug")))
+        if label:
+            row["name"] = label
+
+
+def provider_label_for(labels: dict[str, str], provider_id: str) -> str:
+    """``labels`` entry for ``provider_id``, which may be a Hermes id or a models.dev id
+    (``hermes model`` resolves kilocode to ``kilo``); the id itself when neither has a label."""
+    return labels.get(provider_id) or labels.get(provider_label_key(provider_id)) or provider_id
+
+
+def provider_labels_for_config(config: Any) -> dict[str, str]:
+    """The ``hermes model`` picker's slug -> label map: built-in labels, then user labels."""
+    from hermes_cli.models_catalog_static import _PROVIDER_LABELS
+
+    providers = config.get("providers") if isinstance(config, dict) else None
+    return {**_PROVIDER_LABELS, **user_provider_labels(providers)}

@@ -71,8 +71,9 @@ def _configured_model_label(config: dict) -> str:
     return (model_cfg.strip() if isinstance(model_cfg, str) else "") or "(not set)"
 
 
-def _effective_provider_label() -> str:
-    """Return the provider label matching current CLI runtime resolution."""
+def _effective_provider_id() -> str:
+    """The provider id matching current CLI runtime resolution (``custom`` for a configured
+    custom endpoint that would otherwise read as OpenRouter)."""
     requested = resolve_requested_provider()
     try:
         effective = resolve_provider(requested)
@@ -82,14 +83,22 @@ def _effective_provider_label() -> str:
     if effective == "openrouter":
         # A custom endpoint may live in config.yaml (model.base_url, the canonical location) or
         # the legacy OPENAI_BASE_URL env var; either way labeling it "OpenRouter" is misleading.
-        try:
-            model_cfg = load_config().get("model")
-        except Exception:
-            model_cfg = None
+        # load_config() never raises on a bad file (last-known-good / defaults stand in).
+        model_cfg = load_config().get("model")
         config_base_url = (model_cfg.get("base_url") or "").strip() if isinstance(model_cfg, dict) else ""
         if config_base_url or get_env_value("OPENAI_BASE_URL"):
             effective = "custom"
-    return provider_label(effective)
+    return effective
+
+
+def _effective_provider_label() -> str:
+    """Display label for :func:`_effective_provider_id`: the user's ``providers.<id>.label``
+    (#158907), else the built-in label."""
+    from hermes_cli.config_providers import provider_label_key, user_provider_labels
+
+    effective = _effective_provider_id()
+    providers = (load_config() or {}).get("providers")
+    return user_provider_labels(providers).get(provider_label_key(effective)) or provider_label(effective)
 
 
 def _estop_status_line():

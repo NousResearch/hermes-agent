@@ -125,6 +125,46 @@ class TestImageToBase64DataUrl:
 class TestHandleVisionAnalyze:
     """Verify _handle_vision_analyze returns an Awaitable and builds correct prompt."""
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("question", [
+        '  Read only the label marked "温度".\nKeep its units.  ',
+        "Describe every visible detail, with a detailed explanation of the warning.",
+    ])
+    async def test_auxiliary_prompt_is_task_directed(self, tmp_path, question):
+        """Regression for #158699: the real auxiliary payload preserves the request."""
+        image = tmp_path / "label.png"
+        image.write_bytes(VALID_PNG)
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = "Requested analysis"
+
+        with (
+            patch("tools.vision_tools._should_use_native_vision_fast_path", return_value=False),
+            patch("tools.vision_tools._cfg_auxiliary", return_value=None),
+            patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock,
+                  return_value=response) as llm,
+        ):
+            result = json.loads(await _handle_vision_analyze({
+                "image_url": str(image), "question": question,
+            }))
+
+        assert result["success"] is True
+        assert result["analysis"] == "Requested analysis"
+        llm.assert_awaited_once()
+        payload = llm.await_args.kwargs
+        assert payload["task"] == "vision"
+        text, image_part = payload["messages"][0]["content"]
+        instructions, received_question = text["text"].split("\n\n", 1)
+        assert received_question == question
+        assert "Focus on visual details relevant to the request" in instructions
+        assert "concise and factual by default" in instructions
+        assert "provide the requested level of detail" in instructions
+        assert "Distinguish visible observations from inferences" in instructions
+        assert "Fully describe and explain everything" not in instructions
+        assert image_part["type"] == "image_url"
+        assert base64.b64decode(image_part["image_url"]["url"].split(",", 1)[1]) == VALID_PNG
+        assert image.read_bytes() == VALID_PNG
+
 
 
     @pytest.mark.asyncio

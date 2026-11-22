@@ -1266,12 +1266,25 @@
   padding-block: 0.5rem;
 }
 
+/* The popover is narrower than Figma's sheet, so a row's text keeps a readable measure: an action
+   too long to sit beside it drops to its own line, still at the row's end, and the × holds the
+   row's top corner either way. */
 :root[data-shell='portal'] .discovery-tray-card {
+  position: relative;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 1rem;
+  gap: 0.5rem 1rem;
   min-block-size: 4rem;
   padding-block: 0.75rem;
+}
+
+:root[data-shell='portal'] .discovery-tray-card:has(.discovery-tray-card-clear) {
+  padding-inline-end: 2rem;
+}
+
+:root[data-shell='portal'] .discovery-tray-card .discovery-welcome-place-text {
+  flex: 1 1 11rem;
 }
 
 :root[data-shell='portal'] .discovery-tray-card-title {
@@ -1289,6 +1302,7 @@
 
 :root[data-shell='portal'] .discovery-tray-card-action[data-size] {
   min-inline-size: 0;
+  margin-inline-start: auto;
   gap: 0.75rem;
 }
 
@@ -1297,7 +1311,9 @@
 }
 
 :root[data-shell='portal'] .discovery-tray-card-clear {
-  flex: none;
+  position: absolute;
+  inset-block-start: 0.75rem;
+  inset-inline-end: 0;
 }
 
 /* ── Desktop update, in the redesign (E2 18677:29477, E3 18677:29591) ─────────────────────────── */

@@ -994,9 +994,9 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
                 return "grace_minutes only applies to cron schedules."
     if a["schedule"] is not None:
         parsed_schedule = parse_schedule(a["schedule"])
-        if a["approve"] and job.get("enabled", True) and _schedule_key(parsed_schedule) == _schedule_key(job.get("schedule")):
-            # A model re-sending the schedule a job already has ("every 1d" for "every 24h") changes nothing,
-            # so it must not re-anchor the next run unasked: the stored schedule and run stay.
+        if _schedule_key(parsed_schedule) == _schedule_key(job.get("schedule")):
+            # Equivalent wording (`every 24h` vs `every 1d`) changes nothing.
+            # Do not ask for consent, re-arm the job, or move its saved next run.
             return None
         updates["schedule"] = parsed_schedule
         updates["schedule_display"] = parsed_schedule.get("display", a["schedule"])
@@ -1017,9 +1017,13 @@ def _action_update(job: dict[str, Any], a: dict[str, Any]) -> str:
         if error:
             return tool_error(error, success=False)
     if not updates:
-        if a["approve"] and a["schedule"] is not None:
-            return _dumps({"success": True, "job": _format_job(job),
-                           "message": "The job already has this schedule; nothing changed and its next run stays."})
+        if a["schedule"] is not None:
+            # Equivalent schedule wording is a successful no-op, not an error: the saved
+            # next_run_at is the authority and was deliberately left untouched.
+            return _dumps(_with_guidance(
+                {"success": True, "job": _format_job(job or {}),
+                 "message": "The job already has this schedule; nothing changed and its next run stays."},
+                job or {}, _normalize_deliver_param(a["deliver"])))
         return tool_error("No updates provided.", success=False)
     if a["approve"]:
         try:

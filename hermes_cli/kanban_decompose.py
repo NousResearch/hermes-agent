@@ -337,7 +337,7 @@ def decompose_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+    """Triage task ids an automatic sweep may decompose. Cards the unblock-loop breaker escalated
+    are skipped (see ``kanban_db.is_breaker_escalation``); ``decompose <id>`` still works on them."""
     with kbc.connect_closing() as conn:
-        rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
-    return [row.id for row in rows]
+        return kb.auto_triage_ids(conn, tenant=tenant)

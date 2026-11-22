@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from gateway.runtime_footer import (
+    FooteredReply,
     _home_relative_cwd,
     _model_short,
     build_footer_line,
@@ -279,3 +280,19 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
     assert format_runtime_footer(
         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
         served_model=None, fields=["served_model"]) == ""
+
+
+def test_footered_reply_survives_deepcopy_and_pickle():
+    # EventStream.publish deep-copies its payload; a plain str-subclass reduce
+    # crashed on the missing footer argument and aborted turn completion (#158883).
+    import copy
+    import pickle
+
+    r = FooteredReply("reply text", "runtime footer")
+    d = copy.deepcopy(r)
+    assert d == r
+    assert isinstance(d, FooteredReply)
+    assert d.runtime_footer == "runtime footer"
+    assert str(d) == "reply text\n\nruntime footer"  # footer appended exactly once
+    p = pickle.loads(pickle.dumps(r))
+    assert p == r and isinstance(p, FooteredReply)

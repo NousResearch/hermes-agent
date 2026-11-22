@@ -137,7 +137,16 @@ class FooteredReply(str):
     def __new__(cls, text: str, footer: str):
         instance = super().__new__(cls, f"{text}\n\n{footer}")
         instance.runtime_footer = footer
+        instance.reply_text = text  # kept for reconstruction; str(self) already has the footer appended
         return instance
+
+    def __reduce__(self):
+        # copy.deepcopy/pickle default to str.__reduce__, which rebuilds a
+        # str subclass with a single argument and crashes on the missing
+        # footer (EventStream.publish deep-copies its payload — #158883).
+        # Reducing from reply_text, not str(self): the constructor appends
+        # the footer itself, so reducing from the joined value would double it.
+        return (self.__class__, (self.reply_text, self.runtime_footer))
 
 
 class _FooterCaption(str):

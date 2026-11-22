@@ -71,6 +71,7 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .adapter_forwarded import (
         append_forwards, files_with_forwarded, is_forward, own_bot_ids, shared_message_sections,
         slack_file_marker as _slack_file_marker)
+    from .alert_dedup import AlertFingerprintStore, default_store_path
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from adapter_forwarded import (  # type: ignore
         append_forwards, files_with_forwarded, is_forward, own_bot_ids, shared_message_sections,
@@ -82,6 +83,7 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
     from adapter_socket_lifecycle import SlackSocketLifecycleMixin  # type: ignore
     from adapter_vault_code import SlackVaultCodeMixin  # type: ignore
     from adapter_image_batch import collect_image_uploads  # type: ignore
+    from alert_dedup import AlertFingerprintStore, default_store_path  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -883,6 +885,11 @@ def _resolve_slack_proxy_url() -> Optional[str]:
     return proxy_url
 
 
+def _slack_alert_dedup_enabled() -> bool:
+    raw = _get_scoped_secret("SLACK_ALERT_DEDUP_ENABLED", "true")
+    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+
 def _slack_dedup_ttl_seconds() -> float:
     """Dedup window for Socket Mode replays (override: ``SLACK_DEDUP_TTL_SECONDS``).
     Slack replays un-acked events on reconnect, sometimes minutes later, so the window must span the
@@ -1057,6 +1064,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         # Dedup cache: prevents duplicate bot responses when Socket Mode reconnects redeliver events
         # (#4777).
         self._dedup = MessageDeduplicator(ttl_seconds=_slack_dedup_ttl_seconds())
+        self._alert_fingerprints = AlertFingerprintStore(default_store_path())
         # ts of messages already routed to the agent, so later edits don't re-trigger a reply.
         self._processed_message_ts: dict[str, float] = {}
         # approval / clarify message_ts (or (team_id, ts)) → resolved; blocks double-clicks.
@@ -4657,6 +4665,44 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             self._register_mentioned_thread(thread_ts, team_id=team_id)
         return text, original_text, command_probe_text, is_command_text
 
+    async def _handle_alert_duplicate(self, event: dict, *, channel_id: str, team_id: str) -> bool:
+        """Reply to repeated Grafana notifications without invoking the model.
+
+        First firings continue through the normal alert-review path. A later firing with the same
+        rule UID and stable identity labels gets a deterministic reference to the first message.
+        """
+        if not _slack_alert_dedup_enabled() or not (event.get("bot_id") or event.get("subtype") == "bot_message"):
+            return False
+        message_ts = str(event.get("ts") or "")
+        if not message_ts:
+            return False
+        duplicates = self._alert_fingerprints.observe(
+            event, channel_id=channel_id, message_ts=message_ts)
+        if not duplicates:
+            return False
+        lines = ["🔁 *Duplicate alert notification*", ""]
+        for duplicate in duplicates:
+            summary = " ".join(duplicate.summary.split())
+            lines.extend([
+                f"*Fingerprint:* `{duplicate.fingerprint}`",
+                f"Same alert as the original summary: <{duplicate.original_permalink}|{summary}>",
+                f"Latest occurrence: <{duplicate.current_permalink}|current alert>",
+                "",
+            ])
+        text = "\n".join(lines).rstrip()
+        kwargs: dict[str, Any] = {"channel": channel_id, "text": text, "unfurl_links": False}
+        thread_ts = event.get("thread_ts")
+        if thread_ts and thread_ts != message_ts:
+            kwargs["thread_ts"] = thread_ts
+        try:
+            await self._get_client(channel_id, team_id=team_id or None).chat_postMessage(**kwargs)
+        except Exception:
+            logger.exception("[Slack] Failed to post duplicate alert reference for %s", message_ts)
+            return False
+        logger.info("[Slack] Replaced repeated alert notification %s with %d reference(s)",
+                    message_ts, len(duplicates))
+        return True
+
     async def _handle_slack_message_impl(self, event: dict, payload: Optional[dict] = None) -> None:
         """Handle an incoming Slack message event."""
         accepted = await self._prefilter_inbound(event, payload)
@@ -4744,6 +4790,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             is_mentioned=is_mentioned, is_thread_reply=is_thread_reply,
             event_thread_ts=event_thread_ts, user_id=user_id, team_id=team_id, is_dm=is_dm,
             force_process=force_process)):
+            return
+        if await self._handle_alert_duplicate(event, channel_id=channel_id, team_id=team_id):
             return
         # Claim the message ts HERE: a link unfurl emits `message_changed` with a different event
         # ts, so only the `_processed_message_ts` guard stops a duplicate turn, and it must be set

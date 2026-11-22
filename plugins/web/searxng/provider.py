@@ -25,8 +25,12 @@ class SearXNGWebSearchProvider(BaseWebSearchProvider):
         base_url = provider_env("SEARXNG_URL").rstrip("/")
         if not base_url:
             return search_fail("SEARXNG_URL is not set")
+        params = {"q": query, "format": "json", "pageno": 1}
+        engines = provider_env("SEARXNG_ENGINES")
+        if engines:
+            params["engines"] = engines
         data, failure = http_get_json(
-            "SearXNG", f"{base_url}/search", params={"q": query, "format": "json", "pageno": 1},
+            "SearXNG", f"{base_url}/search", params=params,
             headers={"Accept": "application/json"}, timeout=15, logger=logger, reach_target=f"SearXNG at {base_url}",
         )
         if failure is not None:

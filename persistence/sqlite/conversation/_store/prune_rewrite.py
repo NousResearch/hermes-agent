@@ -122,7 +122,12 @@ def held_row_mismatches(holder: StoreHolder, conn, session_id: str, held: list[d
             row["role"], _decode_content(row["content"]), row["tool_call_id"],
             _parse_tool_calls(row["tool_calls"]))
         if held_identity != stored_identity:
-            mismatches.append(int(row["id"]))
+            durable = message.get("_held_durable_content")
+            durable_identity = _row_identity(
+                "user", durable, message.get("tool_call_id"),
+                _parse_tool_calls(message.get("tool_calls"))) if durable is not None and message.get("role") == "user" else None
+            if durable_identity != stored_identity:
+                mismatches.append(int(row["id"]))
     return mismatches
 
 

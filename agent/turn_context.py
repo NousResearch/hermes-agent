@@ -747,8 +747,8 @@ def _stage_turn_user_message(
         # CLI-staged value is the clean text; restore the API-facing variant (e.g. voice
         # prefix) on the same dict, keeping any close-path durable marker.
         if user_msg.get("content") != user_message:
-            # Keep the persisted payload for the held-row CAS check: the API-facing variant
-            # is this turn's own transformation, not a concurrent rewrite.
+            # The API-facing variant is this turn's own transformation, not a concurrent
+            # rewrite. Preserve the stored identity for the lease-less held-row CAS check.
             user_msg["_held_durable_content"] = user_msg.get("content")
         user_msg["content"] = user_message
     else:

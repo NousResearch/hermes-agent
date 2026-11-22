@@ -61,6 +61,7 @@ def held_message(message: dict[str, Any]) -> HeldMessage:
     call_ids = message.get("tool_call_ids")
     return HeldMessage(
         role=role if isinstance(role, str) and role else "unknown", content=message.get("content"),
+        held_durable_content=message.get("_held_durable_content"),
         tool_call_id=tool_call_id if isinstance(tool_call_id, str) else None,
         tool_calls=tuple(tool_calls) if isinstance(tool_calls, (list, tuple)) else (),
         timestamp=float(timestamp) if isinstance(timestamp, float) else (

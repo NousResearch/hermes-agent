@@ -156,6 +156,8 @@ def _held_dict(held: HeldMessage) -> dict[str, Any]:
         msg["_row_id"] = int(held.row_id)
     if held.persisted:
         msg["_db_persisted"] = True
+    if held.held_durable_content is not None:
+        msg["_held_durable_content"] = held.held_durable_content
     if held.db_row_snapshot is not None:
         msg[DB_ROW_SNAPSHOT] = held.db_row_snapshot
     if held.message_uid is not None:

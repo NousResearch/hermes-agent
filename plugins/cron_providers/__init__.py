@@ -57,10 +57,19 @@ def find_provider_dir(name: str) -> Optional[Path]:
 
 
 def discover_cron_schedulers() -> list[tuple[str, str, bool]]:
-    """Return ``[(name, description, is_available), ...]`` for all discovered providers."""
+    """Return ``[(name, description, is_available), ...]`` for all discovered providers. A user
+    provider's code runs only when it is turned on (``cron.provider`` or ``plugins.enabled``, not
+    ``plugins.disabled``); any other is listed from its manifest as not available."""
+    choice = _loader.read_plugin_choice("cron", "provider")
     return [(name, _loader.read_plugin_description(child),
              _loader.probe_availability(lambda c=child: _load_provider_from_dir(c)))
+            if _is_bundled(child) or choice.allows_import(child, name)
+            else _loader.describe_without_import(name, child)
             for name, child in _iter_provider_dirs()]
+
+
+def _is_bundled(provider_dir: Path) -> bool:
+    return _loader.is_direct_child(provider_dir, _CRON_PLUGINS_DIR)
 
 
 def load_cron_scheduler(name: str) -> Optional[CronScheduler]:
@@ -78,7 +87,7 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional[CronScheduler]:
     """Import a provider module and extract its CronScheduler (register(ctx) or subclass)."""
     from cron.scheduler_provider import CronScheduler
     name = provider_dir.name
-    is_bundled = _loader.is_direct_child(provider_dir, _CRON_PLUGINS_DIR)
+    is_bundled = _is_bundled(provider_dir)
     module_name = f"{__package__}.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
     from hermes_cli.plugin_isolation import user_plugin_host
     host = None if is_bundled else user_plugin_host()

@@ -710,12 +710,13 @@ def _write_tag_page(args, archive: str, assets: dict, incomplete: list[str],
     from hermes_cli.update_channel import is_commit_tag
     from scripts.releases.bundle_env import decode
 
-    extra = ({"commit": args.candidate_commit, "bundle_env": decode(args.bundle_env_json),
-              "commit_files": commit_files}
-             if is_commit_tag(archive) else {})
+    commit_page = is_commit_tag(archive)
     write_page(r2.staging_key_for(archive, "index.html"),
                render_page(archive, assets, args.r2_base_url, incomplete, args.run_url,
-                           repo=args.repo, smoke_results=smoke_results, **extra),
+                           repo=args.repo, smoke_results=smoke_results,
+                           commit=args.candidate_commit if commit_page else None,
+                           bundle_env=decode(args.bundle_env_json) if commit_page else None,
+                           commit_files=commit_files if commit_page else None),
                args.r2_base_url)
 
 

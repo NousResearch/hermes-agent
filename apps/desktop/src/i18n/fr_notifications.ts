@@ -58,6 +58,7 @@ export const frNotifications = {
   muteSoundsDesc:
     'Coupe les signaux automatiques de fin, d’activation et de réflexion, le retour haptique et les sons des notifications système. Les aperçus sonores et les réponses vocales restent audibles.',
   completionSoundTitle: 'Son de fin',
+  completionSoundVolumeTitle: 'Volume',
   completionSoundDesc: "Se joue à la fin d'un tour d'agent. Choisissez un préréglage et prévisualisez-le ici.",
   completionSoundPreview: 'Aperçu'
 }

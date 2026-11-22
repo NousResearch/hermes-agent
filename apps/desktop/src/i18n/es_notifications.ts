@@ -58,6 +58,7 @@ export const esNotifications = {
   muteSoundsDesc:
     'Silencia los avisos automáticos de finalización, activación y reflexión, la respuesta háptica y los sonidos de las notificaciones del sistema. Las vistas previas de sonido y las respuestas habladas siguen reproduciéndose.',
   completionSoundTitle: 'Sonido de finalización',
+  completionSoundVolumeTitle: 'Volumen',
   completionSoundDesc:
     'Reproduce un sonido cuando termina el turno de un agente. Elige un ajuste predefinido y pruébalo aquí.',
   completionSoundPreview: 'Vista previa'

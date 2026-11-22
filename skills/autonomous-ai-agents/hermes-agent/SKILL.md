@@ -89,6 +89,7 @@ Profiles use `~/.hermes/profiles/<name>/` with the same layout. When a profile i
 | User wants... | Load |
 |---|---|
 | **Anything not listed below — "can Hermes do X?", "how do I set up X?"** | **https://hermes-agent.nousresearch.com/docs/llms.txt** |
+| Create a specialist from chat, hand it context, or propose a follow-up routine | `references/specialist-handoff.md` |
 | Bots that chat, run routines, or message each other; the Bots tab | docs: `/user-guide/bot-mode` |
 | CLI commands, subcommands, flags, "how do I run X" | `references/cli-reference.md` |
 | In-session slash commands | `references/slash-commands.md` |

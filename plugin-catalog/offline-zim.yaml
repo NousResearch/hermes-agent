@@ -1,0 +1,23 @@
+name: offline-zim
+title: Offline ZIM Library
+repo: https://github.com/nftpoetrist/hermes-offline-zim
+sha: 0b34b34d96ea322227dddaf93b301b02f4d660c0
+description: "Lets the agent search and read ZIM files on this machine without internet access: the open archive format behind Kiwix's offline Wikipedia, Wiktionary, Stack Exchange, Project Gutenberg and other libraries. zim_list_books lists the ZIM files configured under plugins.entries.offline-zim.settings.paths, zim_search uses each archive's full-text index (or its titles when it has none), and zim_read returns an article as plain text in parts, with redirects followed and in-book links listed. Not affiliated with Kiwix or openZIM; reads archives with python-libzim. Disclosure — reads only the ZIM files and folders you configure (folders are listed to find *.zim), makes no network calls, writes nothing, needs no credentials and runs no commands. Article text is returned to the model as the archive's maker wrote it, with scripts and styles stripped. The libzim dependency is GPL-3.0-or-later."
+maintainer: nftpoetrist
+tier: community
+category: tools
+requires_hermes: ">=0.23.3"
+version: "0.1.0"
+docs_url: https://github.com/nftpoetrist/hermes-offline-zim#readme
+readme: true
+known_issues:
+  - "Text only: images, audio and video inside a ZIM are not returned."
+  - "Split archives (.zimaa, .zimab, ...) are not discovered; point paths at a single .zim file."
+capabilities:
+  provides_tools:
+    - zim_list_books
+    - zim_search
+    - zim_read
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

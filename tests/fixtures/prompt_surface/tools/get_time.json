@@ -1,0 +1,15 @@
+{
+  "description": "Read the current host time in UTC and a local timezone.",
+  "name": "get_time",
+  "parameters": {
+    "additionalProperties": false,
+    "properties": {
+      "timezone": {
+        "description": "IANA timezone. Defaults to the Hermes timezone, or UTC if unset.",
+        "type": "string"
+      }
+    },
+    "required": [],
+    "type": "object"
+  }
+}

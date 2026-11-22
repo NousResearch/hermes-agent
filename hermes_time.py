@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import threading
-from datetime import datetime
+from datetime import datetime, timezone, tzinfo
 from typing import Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -148,3 +148,23 @@ def now() -> datetime:
     """Current time as a tz-aware datetime: configured zone, else server-local."""
     tz = get_timezone()
     return datetime.now(tz) if tz is not None else datetime.now().astimezone()
+
+def format_timestamp(epoch: float, zone: Optional[tzinfo] = None) -> str:
+    """ISO 8601 at second precision. UTC fields use Z, local fields retain their offset."""
+    value = datetime.fromtimestamp(epoch, timezone.utc if zone is None else zone)
+    text = value.isoformat(timespec="seconds")
+    return text.removesuffix("+00:00") + "Z" if zone is None else text
+
+
+def report_timezone(name: Optional[str] = None) -> ZoneInfo:
+    """Resolve a clock-report zone using the active Hermes profile, defaulting to UTC."""
+    if name is None:
+        name = get_timezone_name() or "UTC"
+    if not isinstance(name, str) or not name or name in {"EST", "MST", "HST", "CET", "EET", "MET", "WET"}:
+        raise ValueError("Use an IANA timezone name such as America/New_York or UTC.")
+    if name in {"localtime", "posixrules"} or name.startswith(("posix/", "right/")):
+        raise ValueError(f"Invalid IANA timezone: {name!r}")
+    try:
+        return ZoneInfo(name)
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f"Invalid IANA timezone: {name!r}") from exc

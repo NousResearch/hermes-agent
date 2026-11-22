@@ -19,7 +19,7 @@ _HERMES_CORE_TOOLS = [
     "browser_vault",  # rides with the browser; deferred by default (tools.tool_search.defer)
     "text_to_speech",
     "todo_list", "memory",
-    "session_search",
+    "session_search", "get_time",
     "clarify",
     "execute_code", "delegate_task",
     "cronjob_manage",
@@ -147,6 +147,7 @@ TOOLSETS = {
         ["manage_catalog"],
         platforms=frozenset({"desktop"}),
     ),
+    "time": _ts("Read the host clock", ["get_time"]),
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
     "delegation": _ts("Spawn subagents with isolated context for complex subtasks", ["delegate_task"]),

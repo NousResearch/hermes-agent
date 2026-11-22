@@ -25,6 +25,14 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 | `browser_dialog` | Respond to a native JavaScript dialog (alert / confirm / prompt / beforeunload) blocking the page: `browser_dialog(action='accept'\|'dismiss')`, with `prompt_text` for `prompt()` and `dialog_id` when several are queued. | CDP endpoint |
 | `browser_vault` | Use saved logins, passwords, cards, addresses and one-time codes on the current page without secrets entering the conversation. Actions: `list`, `fill`, `save_login`, `enter_code`, `unlock`. | — |
 
+## `time` toolset
+
+`get_time({})` reads the Hermes host clock once and returns `utc`, `local`, and `timezone`.
+The local time uses the active Hermes timezone, defaulting to UTC when unset.
+Pass an IANA name such as `{"timezone":"America/New_York"}` to override it for one call.
+Both timestamps include seconds. UTC uses `Z` and local time includes its numeric offset.
+Invalid zones return an error. The tool requires no credentials or shell access.
+
 ## `clarify` toolset
 
 | Tool | Description | Requires environment |

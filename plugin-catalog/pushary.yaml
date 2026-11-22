@@ -31,3 +31,4 @@ capabilities:
   provides_middleware: []
   requires_env:
     - PUSHARY_API_KEY
+requires_hermes: ">=0.23.2"

@@ -1,12 +1,14 @@
 """One stdlib JSON-line PM request per isolated process."""
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
 import queue
 import sys
 import threading
+from typing import cast
 
 
 def _read_controls(messages, pause, fd):
@@ -42,6 +44,10 @@ def main():
     # Capture the protocol FD before redirecting even native/subprocess stdout.
     wire = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8", buffering=1)
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+    # Progress lines carry "→"/"…"; a piped Windows worker otherwise encodes them as cp1252 and the
+    # operation fails. Importing hermes_cli used to repair this as a side effect; pm must not rely on it.
+    for stream in (sys.stdout, sys.stderr):
+        cast(io.TextIOWrapper, stream).reconfigure(encoding="utf-8", errors="replace")
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     # A pending read on inherited control stdin can block child Python startup
     # on Windows. Keep the protocol private and give every ordinary child EOF.

@@ -67,3 +67,36 @@ def test_worker_children_get_eof_while_control_pipe_stays_open(tmp_path, isolate
                 if process.poll() is None:
                     process.kill()
                     process.wait(timeout=5)
+
+
+
+def test_worker_progress_survives_a_non_utf8_stdio(tmp_path, isolated_python):
+    """A piped Windows worker starts with cp1252 stdio; its "→ label…" progress must not fail the operation."""
+    root = Path(__file__).resolve().parents[2]
+    script = textwrap.dedent(f"""
+        import io, sys
+        sys.path.insert(0, {str(root)!r})
+        # What a Windows interpreter hands a worker whose standard streams are pipes.
+        sys.stdout = io.TextIOWrapper(io.FileIO(1, 'w', closefd=False), encoding='cp1252', line_buffering=True)
+        sys.stderr = io.TextIOWrapper(io.FileIO(2, 'w', closefd=False), encoding='cp1252', line_buffering=True)
+        from pm import build_operations, worker
+
+        def probe(cache, ci=False):
+            print('  \u2192 Preparing build tools\u2026')
+            print('stderr \u2192', file=sys.stderr)
+            return 'progress written'
+
+        build_operations.prune_cache = probe
+        worker.main()
+    """)
+    request = {
+        "id": "encoding-probe", "operation": "prune_cache",
+        "arguments": {"cache": str(tmp_path)}, "callbacks": [], "packages": [],
+        "context": {"repo": str(root), "lockfile": str(root / "pm/lock.json")},
+    }
+    env = {**os.environ, "HERMES_HOME": str(tmp_path / "home"), "HERMES_RUNTIME_DIR": str(tmp_path / "tools")}
+    completed = subprocess.run([str(isolated_python), "-I", "-c", script], input=json.dumps(request) + "\n",
+                               capture_output=True, encoding="utf-8", env=env, timeout=60)
+    response = json.loads(completed.stdout)
+    assert response.get("result") == "progress written", (response, completed.stderr)
+    assert "\u2192 Preparing build tools\u2026" in completed.stderr

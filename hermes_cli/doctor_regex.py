@@ -184,6 +184,11 @@ def _mention_patterns(platform: str, env: str, *, first: First = "yaml", yaml_st
 # One row per user setting that takes a regular expression. Each platform row reads the value where its
 # adapter reads it (base text): Telegram and Matrix env first; Slack, WhatsApp, DingTalk YAML first (unless
 # null); Photon and BlueBubbles YAML first whenever the key is present.
+# ``if_refused`` is what happens once the setting's own code runs on RE2, not today's fallback for an invalid
+# pattern (a matcher compared as plain text, a filter that answers False, a skipped entry): there a refused hook
+# matcher stops its hook and blocks tool calls if ``fail_closed``, a refused route filter stops the webhook
+# platform (a subscription is skipped), and a refused Matrix ignore entry stops the adapter, because the old
+# fallbacks would let through what those settings exist to keep out.
 SETTINGS: tuple[Setting, ...] = (
     Setting("shell hook matcher (fail_closed: true, pre_tool_call)", _hook_matchers(True),
             "the hook will be refused and every tool call blocked until the matcher is fixed"),

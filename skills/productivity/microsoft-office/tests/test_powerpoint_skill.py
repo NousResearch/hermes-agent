@@ -433,6 +433,42 @@ def test_duplicate_chart_slide_refused(deck, workdir):
     assert "chart" in proc.stderr.lower()
 
 
+def test_duplicate_slide_preserves_explicit_background(workdir):
+    from pptx import Presentation
+
+    spec_path = workdir / "background_source.json"
+    write_json(spec_path, {"slides": [
+        {"layout": "blank", "background": "112233"},
+    ]})
+    source = workdir / "background_source.pptx"
+    duplicate = workdir / "background_duplicate.pptx"
+    run("pptx_create.py", str(spec_path), str(source))
+    run("pptx_edit.py", str(source), "--output", str(duplicate),
+        "--duplicate-slide", "0")
+
+    prs = Presentation(str(duplicate))
+    assert str(prs.slides[0].background.fill.fore_color.rgb) == "112233"
+    assert str(prs.slides[1].background.fill.fore_color.rgb) == "112233"
+
+
+def test_iter_shapes_descends_into_groups():
+    import importlib.util
+    from pathlib import Path
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    spec = importlib.util.spec_from_file_location(
+        "pptx_edit", Path(SCRIPTS) / "pptx_edit.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    leaf = type("Leaf", (), {"shape_type": MSO_SHAPE_TYPE.AUTO_SHAPE})()
+    group = type("Group", (), {
+        "shape_type": MSO_SHAPE_TYPE.GROUP,
+        "shapes": [leaf],
+    })()
+
+    assert list(module.iter_shapes([group])) == [leaf]
+
+
 def test_create_polish_features(workdir):
     from pptx import Presentation
     spec_path = workdir / "polish.json"

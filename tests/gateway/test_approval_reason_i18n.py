@@ -142,44 +142,6 @@ def test_a_language_without_its_own_entry_keeps_the_payload_text(tmp_path, monke
     assert seen == [("card", "recursive delete (payload); SQL DROP (eo fixture)")]
 
 
-def test_a_child_under_another_profile_raises_reasons_in_the_chats_language(profiles):
-    """Codex review: a delegated child routed to profile B (fr) raises its approval in profile A's (de)
-    chat from B's scope. The card must render in A's language, and the child's own scope (what its
-    approval policy and grants run under) must be left as it was."""
-    from tools.delegate_tool_routes import delegated_profile_scope
-
-    seen, child_view = [], {}
-
-    class Adapter:
-        def pause_typing_for_chat(self, chat_id):
-            pass
-
-        async def send_exec_approval(self, **kwargs):
-            seen.append(kwargs["description"])
-            return SimpleNamespace(success=True, error=None, message_id=None)
-
-    approval = {"command": "rm -rf build/", "description": "english description",
-                "reasons": [{"slug": "recursive_delete", "text": "recursive delete"}]}
-
-    def child(turn):
-        with delegated_profile_scope(profiles["fr"]):
-            turn._approval_notify_sync(approval)
-            child_view["language"] = i18n.get_language()
-
-    async def exercise():
-        ctx = SimpleNamespace(_status_adapter=Adapter(), _status_chat_id="fixture", _status_thread_metadata=None,
-                              session_key="reason-fixture", _loop_for_step=asyncio.get_running_loop(),
-                              stream_consumer_holder=[None])
-        with _routed(profiles["de"]):
-            turn = TurnRunner(SimpleNamespace(), ctx)  # built inside the chat's routed scope, as in a turn
-            await asyncio.to_thread(child, turn)
-
-    asyncio.run(exercise())
-    assert seen == ["rekursives Loeschen (Fixture)"]
-    assert child_view["language"] == "fr"  # the child's scope was not switched by the render
-    assert approval["reasons"] == [{"slug": "recursive_delete", "text": "recursive delete"}]
-
-
 def test_catalog_supplied_reason_text_is_redacted_like_the_description(tmp_path, monkeypatch):
     """Codex review: a translation or joiner from a user overlay / plugin pack is display input from
     outside the core, so a credential-shaped value or a bidi control character in it must be scrubbed
@@ -202,3 +164,41 @@ def test_catalog_supplied_reason_text_is_redacted_like_the_description(tmp_path,
         assert "rekursiv" in text and "second" in text
         assert _FAKE_GHP not in text
         assert "\u202e" not in text
+
+
+def test_a_delegated_childs_card_uses_one_language_for_reasons_and_heading(profiles):
+    """A child delegated to profile B raises its approval in A's chat from B's scope. As on main for the
+    rest of the card, the reasons render in that same scope, so the card never mixes two languages.
+    (Binding all of the card's presentation to the destination profile is a separate change.)"""
+    from tools.delegate_tool_routes import delegated_profile_scope
+
+    seen, expected = [], {}
+
+    class Adapter:
+        def pause_typing_for_chat(self, chat_id):
+            pass
+
+        async def send(self, chat_id, text, **kwargs):
+            seen.append(text)
+            return SimpleNamespace(success=True, message_id=None)
+
+    approval = {"command": "rm -rf build/", "description": "english description",
+                "reasons": [{"slug": "recursive_delete", "text": "recursive delete"}]}
+
+    def child(turn):
+        with delegated_profile_scope(profiles["fr"]):
+            expected["header"] = i18n.t("gateway.exec_approval.header")
+            turn._approval_notify_sync(approval)
+
+    async def exercise():
+        ctx = SimpleNamespace(_status_adapter=Adapter(), _status_chat_id="fixture", _status_thread_metadata=None,
+                              session_key="reason-fixture", _loop_for_step=asyncio.get_running_loop(),
+                              stream_consumer_holder=[None])
+        with _routed(profiles["de"]):
+            turn = TurnRunner(SimpleNamespace(), ctx)
+            await asyncio.to_thread(child, turn)
+
+    asyncio.run(exercise())
+    (text,) = seen
+    assert expected["header"] in text and "suppression recursive (fixture)" in text
+    assert "rekursives" not in text

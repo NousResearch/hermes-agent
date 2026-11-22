@@ -245,17 +245,12 @@ def get_language() -> str:
     return _resolve_language(_current_home())
 
 
-def lookup(key: str, lang: str | None = None, home: str | None = None) -> str | None:
+def lookup(key: str, lang: str | None = None) -> str | None:
     """The active (or explicit ``lang``) language's own value for ``key``, unformatted, or None.
 
     Unlike :func:`t` there is no English or bare-key fallback, for callers that hold their own
-    fallback text and must tell a translation apart from an English default. ``home`` reads another
-    profile's catalog (its overlay and supported languages) than the one bound now; it needs an explicit
-    ``lang`` too, since the active language is the BOUND profile's (its secret scope and config), and
-    resolving it against another home would pair the wrong language with that home's catalog."""
-    if home is not None and not lang:
-        raise ValueError("i18n.lookup(home=...) needs lang=: the active language belongs to the bound profile")
-    home = home or _current_home()
+    fallback text and must tell a translation apart from an English default."""
+    home = _current_home()
     target = _normalize_lang(lang, home) if lang else _resolve_language(home)
     return _load_catalog(target, home).get(key)
 

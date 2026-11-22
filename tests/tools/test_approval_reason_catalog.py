@@ -132,9 +132,3 @@ def test_a_catalog_without_the_joiner_key_still_joins_readably(tmp_path, monkeyp
         i18n.reset_language_cache()
     assert text == "first; second"
 
-
-def test_render_reasons_refuses_another_home_without_its_language(tmp_path):
-    from tools.approval_reason_catalog import render_reasons
-
-    with pytest.raises(ValueError):
-        render_reasons([{"slug": "recursive_delete", "text": "recursive delete"}], str, home=str(tmp_path))

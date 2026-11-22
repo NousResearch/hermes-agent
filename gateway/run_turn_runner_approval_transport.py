@@ -28,7 +28,7 @@ def approval_transport(turn):
     # background prompt must never use. ``_render_approval_sync`` reads only ``_ctx`` and ``_schedule``,
     # and its timeout notice follows this context, so it fires even after a newer turn has started.
     presenter = TurnRunner.__new__(TurnRunner)
-    presenter._runner, presenter._ctx, presenter._origin_locale = runner, origin, turn._origin_locale
+    presenter._runner, presenter._ctx = runner, origin
 
     def notify(data):
         turn._approval_notify_sync(data)

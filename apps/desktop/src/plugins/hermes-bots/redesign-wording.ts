@@ -150,6 +150,8 @@ const en: BotsWording = {
     remoteHint: target =>
       `The agent is created on ${target} and appears in the roster as a Connections agent. Chat routes to that machine.`,
     shareKeys: 'Share keys & accounts with the main agent',
+    shareKeysHint:
+      'Logins stay shared with the main agent (not copied), so token refreshes never invalidate each other. If the new agent starts from another agent that has its own logins (the agent it clones, or, for a fresh agent, the named agent creating it), it gets a copy of those instead. API keys are copied either way. Uncheck for an isolated copy. Subscription logins that can’t be copied are read from the main agent instead.',
     shareKeysOn: target => `Share keys & accounts with the default agent on ${target}`
   },
   group: {
@@ -382,6 +384,8 @@ const ja: BotsWording = {
     remoteHint: target =>
       `エージェントは ${target} に作成され、接続先のエージェントとして一覧に表示されます。チャットはそのマシンに送られます。`,
     shareKeys: 'メインエージェントとキー・アカウントを共有',
+    shareKeysHint:
+      'ログインはメインエージェントとコピーせず共有するため、トークン更新で互いに無効になりません。独自のログインを持つ別のエージェント（複製元のエージェント、複製しない場合は作成元の名前付きエージェント）から始める場合は、代わりにそのログインのコピーを使います。API キーはどちらの場合もコピーされます。チェックを外すと独立したコピーになります。コピーできないサブスクリプションのログインは、代わりにメインエージェントのものを使います。',
     shareKeysOn: target => `${target} の default エージェントとキー・アカウントを共有`
   },
   group: {
@@ -600,6 +604,8 @@ const zh: BotsWording = {
     noImageModel: '没有可用的图像模型。如果刚启用模型或更新了 Hermes，请重启 Hermes：Ctrl+K →“重启 Hermes”。',
     remoteHint: target => `智能体将在 ${target} 上创建，并作为连接智能体显示在名册中。聊天将路由到该机器。`,
     shareKeys: '与主智能体共享密钥和账户',
+    shareKeysHint:
+      '登录信息与主智能体保持共享而非复制，令牌刷新不会使另一方失效。如果新智能体基于另一个拥有自己登录信息的智能体（被克隆的智能体；不克隆时则为创建它的命名智能体），则会改为获得这些登录信息的副本。API 密钥在两种情况下都会复制。取消勾选则创建独立副本。无法复制的订阅登录会改为使用主智能体中的登录。',
     shareKeysOn: target => `与 ${target} 上的 default 智能体共享密钥和账户`
   },
   group: {
@@ -807,6 +813,8 @@ const zhHant: BotsWording = {
     noImageModel: '沒有可用的影像模型。如果剛啟用模型或更新了 Hermes，請重新啟動 Hermes：Ctrl+K →「重新啟動 Hermes」。',
     remoteHint: target => `智慧體將在 ${target} 上建立，並作為連線智慧體顯示在名冊中。聊天將路由到該機器。`,
     shareKeys: '與主要智慧體共用金鑰和帳戶',
+    shareKeysHint:
+      '登入資訊與主要智慧體保持共用而非複製，權杖更新不會使另一方失效。如果新智慧體以另一個擁有自己登入資訊的智慧體為基礎（被複製的智慧體；不複製時則為建立它的具名智慧體），則會改為取得這些登入資訊的副本。API 金鑰在兩種情況下都會複製。取消勾選則建立獨立副本。無法複製的訂閱登入會改為使用主要智慧體中的登入。',
     shareKeysOn: target => `與 ${target} 上的 default 智慧體共用金鑰和帳戶`
   },
   group: {

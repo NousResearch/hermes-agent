@@ -234,6 +234,19 @@ def test_check_notary_auth_handles_success_timeout_oserror_and_redacts_secrets(t
     assert issuer not in combined
     assert _PEM_BEGIN not in combined
 
+    body_lines = pem.splitlines()[1:-1]
+    for code, expected in ((401, PreflightStatus.AUTH_FAILED), (500, PreflightStatus.TRANSIENT)):
+        def body_echo_runner(argv: list[str], timeout: float, code: int = code) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr=f"Error: HTTP status code: {code}.\nkey:\n" + "\n".join(body_lines),
+            )
+
+        echoed = check_notary_auth(str(key_file), key_id, issuer, runner=body_echo_runner)
+        assert echoed.status is expected
+        assert "HTTP status code" in echoed.detail
+        leaked = [line for line in body_lines if line in f"{echoed.message}\n{echoed.detail}"]
+        assert not leaked, f"key body lines reached the log on HTTP {code}"
+
     def timeout_runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(argv, timeout)
 

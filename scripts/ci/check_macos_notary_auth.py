@@ -284,7 +284,9 @@ def check_notary_auth(
         return PreflightResult(PreflightStatus.OK, _success_message(proc.stdout or ""))
 
     raw_output = "\n".join(part for part in (proc.stderr or "", proc.stdout or "") if part.strip())
-    redacted = redact_secrets(raw_output, (clean_key_id, clean_issuer))
+    # Key material echoed without its PEM markers would escape the block pattern.
+    body = [line.strip() for line in pem_text.splitlines() if line.strip() and not line.strip().startswith("-----")]
+    redacted = redact_secrets(raw_output, (*body, clean_key_id, clean_issuer))
     status, message = classify_notarytool_failure(redacted)
     return PreflightResult(status, message, detail=redacted)
 

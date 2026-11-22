@@ -31,9 +31,16 @@ def watcher_home(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_sessions_db_sig_cache", {})
 
     events = []
-    monkeypatch.setattr(
-        server, "_broadcast_global_event", lambda ev, payload=None: events.append((ev, payload))
-    )
+    class Peer:
+        def write(self, frame):
+            event = frame["params"]
+            events.append((event["type"], event.get("payload")))
+            return True
+
+    peer = Peer()
+    monkeypatch.setattr(server, "_live_transports", set())
+    monkeypatch.setattr(server, "_stdio_is_rpc_channel", False)
+    server.register_live_transport(peer)
     return tmp_path, events
 
 

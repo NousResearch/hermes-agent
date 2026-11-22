@@ -758,6 +758,20 @@ def test_tab_management_stays_usable_while_a_tab_is_private(monkeypatch, cdp_ser
         assert "private or internal address" in result["error"] and sent == []
 
 
+@pytest.mark.parametrize("params, background", [
+    ({"url": "about:blank"}, True),  # unspecified: never raise the user's browser window (#156748)
+    ({"url": "about:blank", "background": False}, False),  # an explicit foreground request is honored
+])
+def test_create_target_defaults_to_background(cdp_server, params, background):
+    cdp_server.on("Target.createTarget", lambda params, sid: {"targetId": "new-tab"})
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Target.createTarget", params=dict(params)))
+
+    sent = [m for m in cdp_server.received() if m.get("method") == "Target.createTarget"]
+    assert result["success"] is True
+    assert [m["params"]["background"] for m in sent] == [background]
+
+
 def test_private_guard_inactive_does_not_probe(monkeypatch, cdp_server):
     cdp_server.on("Runtime.evaluate", lambda params, sid: {"result": {"value": "ok"}})
 

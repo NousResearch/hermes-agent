@@ -6,24 +6,27 @@ import pytest
 
 from gateway.session_contract import Submission
 from tests.gateway.test_local_authority_transitions import local_session
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_read import session_row
 
 
 @pytest.mark.asyncio
 async def test_submit_waiting_on_delete_reports_not_found(tmp_path, monkeypatch):
     from gateway import session_mutations
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     owner, connection, ref = await local_session(tmp_path, monkeypatch)
     entered, release = threading.Event(), threading.Event()
     attempted = asyncio.Event()
-    original = session_mutations.mutate_runtime_session
+    runtime = session_mutations.authority_persistence(owner).runtime
+    original = runtime.mutate
 
     def blocked(*args, **kwargs):
         entered.set()
         assert release.wait(10)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(session_mutations, 'mutate_runtime_session', blocked)
+    monkeypatch.setattr(runtime, 'mutate', blocked)
     handle = owner._handle(ref)
     deletion = asyncio.create_task(session_mutations.mutate_session(owner, connection.actor, ref,
         dict(session_id=ref.session_id, request_id='delete', operation='delete', payload={},
@@ -40,11 +43,11 @@ async def test_submit_waiting_on_delete_reports_not_found(tmp_path, monkeypatch)
         await asyncio.wait_for(attempted.wait(), 5)
         release.set()
         await asyncio.wait_for(deletion, 5)
-        with pytest.raises(RuntimeStoreError, match='not_found'):
+        with pytest.raises(AuthorityRefusal, match='not_found'):
             await asyncio.wait_for(submission, 5)
-        assert owner.db.get_session(ref.session_id) is None
+        assert session_row(owner.persistence, ref.session_id) is None
     finally:
         release.set()
         await asyncio.gather(deletion, *([submission] if submission is not None else []), return_exceptions=True)
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)

@@ -115,7 +115,8 @@ pnpm run pack         # unpacked app under release/ (no installer)
 These are ordinary packaging commands, not complete tagged payload builds.
 Use [BUILDING.md](BUILDING.md) for the native bundled builder, Azure/Apple
 signing, R2 artifact publication, and release gates. The current release matrix
-publishes Windows and macOS packages; Linux desktop legs are disabled.
+publishes Windows and macOS packages; Linux AppImages build on canary tags as
+unpublished diagnostic artifacts.
 
 ### How it works
 

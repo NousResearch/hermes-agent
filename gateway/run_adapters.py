@@ -30,6 +30,7 @@ from gateway.platforms.helpers import carry_inbound_dedup, hand_over_held_inboun
 from gateway.run_adapters_recovery import (
     GatewaySecondaryReconnectMixin,
     _adapter_unavailable_message,
+    discount_suspended_wait,
 )
 from gateway.run_shutdown import _log_suppressed
 from gateway.session import SessionSource
@@ -554,36 +555,38 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         # In-flight dispatches by session id: a handoff is a FULL agent turn, so never process inline.
         inflight: dict[str, asyncio.Task] = {}
 
-        async def _dispatch(row, session_id, session_db, profile_name) -> None:
+        async def _dispatch(row, session_id, store, profile_name) -> None:
             """Run one claimed handoff to a terminal state, off the poll path."""
             try:
                 await self._process_handoff(*((row, profile_name) if _process_takes_profile else (row,)))
-                await session_db.complete_handoff(session_id)
+                await store.aio.coordination.complete_handoff(session_id=session_id)
             except asyncio.CancelledError:
                 # Leave the row 'running' so the next start's reclaim marks it failed with a clear reason.
                 raise
             except Exception as exc:
                 logger.warning("Handoff for session %s failed: %s", session_id, exc, exc_info=True)
                 with _log_suppressed(logging.DEBUG, "Could not record handoff failure", exc_info=True):
-                    await session_db.fail_handoff(session_id, str(exc))
+                    await store.aio.coordination.fail_handoff(session_id=session_id, error=str(exc))
             finally:
                 inflight.pop(session_id, None)
 
         async def _tick(profile_name: Optional[str] = None) -> None:
             """One poll of the CURRENTLY-SCOPED store; ``profile_name`` (None = root) routes delivery
             to that profile's OWN adapter. A closure, not a method: tests bind ``_handoff_watcher`` onto
-            a ``SimpleNamespace`` with only ``_session_db``/``_running``/``_process_handoff``."""
-            session_db = getattr(self, "_session_db", None)
-            if session_db is None:
+            a ``SimpleNamespace`` with only ``persistence``/``_running``/``_process_handoff``."""
+            store = getattr(self, "persistence", None)
+            if store is None:
                 return
-            pending = await session_db.list_pending_handoffs()
-            for row in pending:
-                session_id = row.get("id")
+            pending = await store.aio.coordination.list_pending_handoffs()
+            for handoff in pending:
+                session_id = handoff.session_id
                 if not session_id or session_id in inflight:
                     continue
-                if not await session_db.claim_handoff(session_id):
+                if not await store.aio.coordination.claim_handoff(session_id=session_id):
                     # Another tick or another gateway already claimed it.
                     continue
+                # The session-row fields ``_process_handoff`` reads.
+                row = {"id": session_id, "handoff_platform": handoff.platform, "title": handoff.title}
                 # INVARIANT (do not weaken): created inside _profile_runtime_scope but RUNS after it
                 # exits; it sees the profile scope only because ensure_future copies the Context.
                 # Positional, not keyword: the watcher's existing unit tests bind a stand-in
@@ -596,7 +599,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                 # primary-config delivery (the exact bug fixed in #91217) while still recording
                 # handoff_state='completed'.
                 inflight[session_id] = asyncio.ensure_future(
-                    _dispatch(row, session_id, session_db, profile_name)
+                    _dispatch(row, session_id, store, profile_name)
                 )
 
         # A row still 'running' at startup died mid-dispatch and blocks request_handoff until reclaimed.
@@ -722,16 +725,23 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         """Periodically retry failed platforms: backoff 30s → 300s cap, retryable failures retry
         forever (self-heal), non-retryable drop out. Pausing is manual only (``/platform pause``)."""
         async def _idle(seconds: int, until_queued: bool = False) -> bool:
-            """Sleep in 1s steps; False once the runner stops (or, if asked, once work is queued)."""
+            """Sleep in 1s steps; False once the runner stops (or, if asked, once work is queued). The
+            empty-queue wait measures each step: a fatal queued during it just before the host sleeps
+            must not age by the suspend either. The post-pass wait is measured once by its caller."""
             for _ in range(seconds):
                 if not self._running:
                     return False
                 if until_queued and self._failed_platforms:
                     break
+                step_from = time.monotonic()
                 await asyncio.sleep(1)
+                if until_queued:
+                    discount_suspended_wait(self._failed_platforms.values(), step_from, 1)
             return True
 
+        started = time.monotonic()
         await asyncio.sleep(10)  # initial delay — let startup finish
+        discount_suspended_wait(self._failed_platforms.values(), started, 10)  # startup-queued entries
         while self._running:
             if not self._failed_platforms:
                 if not await _idle(30, until_queued=True):
@@ -742,17 +752,21 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                 if not self._running:
                     return
                 await self._reconnect_failed_platform(platform, now)
+            idle_from = time.monotonic()
             if not await _idle(10):  # re-check every 10 seconds
                 return
+            discount_suspended_wait(self._failed_platforms.values(), idle_from, 10)
 
     def _flag_reconnect_needs_attention(
         self, platform, info: dict, now: float, *, status_key: Optional[str] = None
     ) -> bool:
         """Flag NEEDS_ATTENTION (once) past the threshold — a signal, NOT a circuit breaker. The threshold
         is the bound profile's ``agent.reconnect_attention_after``: secondaries call this inside their
-        ``_profile_runtime_scope`` with their ``<profile>:<platform>`` status key. True = flagged now."""
+        ``_profile_runtime_scope`` with their ``<profile>:<platform>`` status key. True = flagged now.
+        Only after a failed attempt: time queued with no retry yet proves nothing failed (#126825)."""
         from gateway.run import _reconnect_needs_attention
-        if info.get("attention_flagged") or not _reconnect_needs_attention(info, now):
+        if (info.get("attention_flagged") or info.get("attempts", 0) < 1
+                or not _reconnect_needs_attention(info, now)):
             return False
         info["attention_flagged"] = True
         queued_for = now - info.get("queued_at", now)
@@ -903,16 +917,6 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         self._sync_voice_mode_state_to_adapter(adapter)
         self._bind_voice_input_callback(adapter)
 
-    def _schedule_planned_restart_replay(self) -> None:
-        """Replay the owed planned-restart notice after a reconnect, in the background: notification delivery
-        must not hold up adapter recovery or other platforms' reconnects."""
-        from gateway.run import _planned_restart_notification_pending
-        if _planned_restart_notification_pending():
-            task = self._retain_background_task(asyncio.create_task(
-                self._replay_pending_planned_restart_notification(),
-            ))
-            task.add_done_callback(self._late_failure_callback("planned-restart notification replay failed"))
-
     async def _install_reconnected_adapter(self, platform, adapter) -> None:
         """Publish a freshly reconnected primary adapter and replay what it missed while down."""
         self._publish_primary_adapter(platform, adapter)
@@ -931,7 +935,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             logger.info("⚠ %s reconnected in degraded mode (receive path not yet confirmed)", platform.value)
         else:
             logger.info("✓ %s reconnected successfully", platform.value)
-        self._schedule_planned_restart_replay()
+        self._schedule_restart_notice_replay()
         # Responses rejected while down are owned by this live process (startup recovery cannot claim them).
         with _log_suppressed(
             logging.DEBUG, "failed-obligation redelivery after %s reconnect failed",
@@ -942,6 +946,10 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         with suppress(Exception):
             from gateway.channel_directory import build_channel_directory
             await build_channel_directory(self.adapters)
+        # A late Relay connection must retry the durable FIFO, not only legacy resume_pending rows.
+        if platform == Platform.RELAY:
+            from gateway.session_native_recovery_routes import recover_after_late_connection
+            await recover_after_late_connection(self)
         # A platform offline at startup skipped its restart-interrupted sessions; resume them now.
         try:
             self._schedule_resume_pending_sessions(platform=platform)

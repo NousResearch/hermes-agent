@@ -21,6 +21,8 @@ from contextvars import ContextVar
 from typing import Any, Awaitable, Callable, Optional
 
 from gateway.platforms.base import SendResult
+from plugins.platforms.telegram.telegram_media_budget import media_sources, scaled_budgets
+from plugins.platforms.telegram.telegram_media_retry import send_media_retrying, unconfirmed_media_result
 
 logger = logging.getLogger("plugins.platforms.telegram.adapter")
 
@@ -95,6 +97,20 @@ class _KnownFloodWindow(Exception):
 class TelegramMediaFloodMixin:
     """Native local-file upload shell + flood recovery shared by every media sender."""
 
+    media_caption_limit = 1024  # a photo's caption cap: the runtime footer may ride it (gateway.runtime_footer)
+
+    async def _send_media(
+        self, send_fn: Any, chat_id: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]], media_label: str,
+        reset_media: Optional[Any] = None, **media_kwargs: Any) -> Any:
+        """Send one native media payload with thread routing + DM-topic anchor retry; a failure Telegram
+        provably never posted repeats (``telegram_media_retry``)."""
+        from plugins.platforms.telegram.adapter import _MEDIA_SEND_DEADLINE, _MEDIA_SEND_READ_TIMEOUT
+        budget, deadline = scaled_budgets(media_sources(media_kwargs), _MEDIA_SEND_DEADLINE, _MEDIA_SEND_READ_TIMEOUT)  # #133093
+        _, kwargs = self._media_send_kwargs(chat_id, reply_to, metadata)
+        return await send_media_retrying(lambda: self._send_with_dm_topic_reply_anchor_retry(
+            send_fn, {**kwargs, **budget, **media_kwargs}, metadata, media_label, reset_media=reset_media,
+            deadline=deadline), reset_media, media_label)
+
     async def _send_local_file(
         self, label: str, path: str, chat_id, reply_to, metadata, media_key: str, build_kwargs, on_error,
         redo: Optional[Redo] = None, source: Optional[str] = None,
@@ -122,7 +138,11 @@ class TelegramMediaFloodMixin:
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:  # health: allow BLE001 -- upload boundary: flood recovery or the caller's on_error (which logs) owns every failure
             recovered = await self._media_flood_recover(e, chat_id, redo, what, source, metadata)
-            return recovered if recovered is not None else await on_error(e)
+            if recovered is not None:
+                return recovered
+            # The request left and no answer came back: it may be in the chat, so no fallback
+            # re-upload (photo -> document) and no failure notice (#62079).
+            return unconfirmed_media_result(e, what) or await on_error(e)
 
     async def _media_flood_recover(
         self, error: Exception, chat_id, redo: Redo, what: str, source: Optional[str] = None, metadata=None,

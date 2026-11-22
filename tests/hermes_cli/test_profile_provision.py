@@ -17,7 +17,7 @@ def launch(tmp_path, monkeypatch):
     (home / "config.yaml").write_text("model:\n  default: m\n  provider: openrouter\n")
     (home / ".env").write_text("OPENROUTER_API_KEY=sk-or-x\nTELEGRAM_BOT_TOKEN=1:x\n")
     (home / "auth.json").write_text('{"version": 1, "providers": {}, "credential_pool": {}}')
-    monkeypatch.setattr(profiles, "seed_profile_skills", lambda path, quiet=True: {"copied": ["s"]})
+    monkeypatch.setattr(profiles, "seed_profile_skills", lambda path, quiet=True, problems=None: {"copied": ["s"]})
     monkeypatch.setattr(profiles, "check_alias_collision", lambda name: None)
     monkeypatch.setattr(profiles, "create_wrapper_script", lambda name: Path("/wrapper") / name)
     return home
@@ -125,7 +125,7 @@ def test_alias_collision_is_reported_not_written(launch, monkeypatch):
 
 
 def test_a_failing_step_is_a_warning_and_the_profile_stays(launch, monkeypatch):
-    def boom(path, quiet=True):
+    def boom(path, quiet=True, problems=None):
         raise OSError("disk full")
     monkeypatch.setattr(profiles, "seed_profile_skills", boom)
     result = provision_profile(ProfileCreateRequest(name="work"))

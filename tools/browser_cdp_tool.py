@@ -313,6 +313,12 @@ async def _cdp_call(ws_url: str, method: str, params: dict[str, Any], target_id:
         return msg.get("result", {})
 
 
+def _redact_cdp_method_result(method: str, result: Any) -> Any:
+    """Redact a CDP result with ``method``'s binary-path exemptions; every success return goes through here."""
+    return _redact_cdp_output(result, always_paths=_CDP_ALWAYS_BINARY_PATHS.get(method, ()),
+                              flagged_paths=_CDP_FLAGGED_BINARY_PATHS.get(method, ()))
+
+
 def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params: Optional[dict[str, Any]],
                                 timeout: float) -> str:
     """Route a CDP call through the live supervisor session for an OOPIF frame."""
@@ -360,7 +366,7 @@ def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params
         return tool_error(f"CDP call via supervisor failed: {type(exc).__name__}: {exc}", cdp_docs=CDP_DOCS_URL)
 
     return json.dumps({"success": True, "method": method, "frame_id": frame_id, "session_id": child_sid,
-                       "result": result_msg.get("result", {})}, ensure_ascii=False)
+                       "result": _redact_cdp_method_result(method, result_msg.get("result", {}))}, ensure_ascii=False)
 
 
 def browser_cdp(method: str, params: Optional[dict[str, Any]] = None, target_id: Optional[str] = None,
@@ -420,9 +426,7 @@ def browser_cdp(method: str, params: Optional[dict[str, Any]] = None, target_id:
         logger.exception("browser_cdp unexpected error")
         return tool_error(f"Unexpected error: {type(exc).__name__}: {exc}", method=method)
 
-    payload: dict[str, Any] = {"success": True, "method": method, "result": _redact_cdp_output(
-        result, always_paths=_CDP_ALWAYS_BINARY_PATHS.get(method, ()),
-        flagged_paths=_CDP_FLAGGED_BINARY_PATHS.get(method, ()))}
+    payload: dict[str, Any] = {"success": True, "method": method, "result": _redact_cdp_method_result(method, result)}
     if target_id:
         payload["target_id"] = target_id
     return json.dumps(payload, ensure_ascii=False)

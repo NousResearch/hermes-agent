@@ -124,7 +124,7 @@ fields; callers may initialize a provider without an agent or a session database
 | `hermes_home` | Active profile's storage directory. |
 | `platform` | Session surface, such as `cli`, `gui`, `acp`, or `telegram`. |
 | `session_title` | Stored session title, when available. A display label is not necessarily a user-selected identity. |
-| `session_title_source` | Stored title provenance, when available: `derived`, `llm`, or `user`. Automatic sources must not be mistaken for explicit identity overrides; missing provenance retains a provider's legacy behavior. Shared constants live in `hermes_state_common.py`. |
+| `session_title_source` | Stored title provenance, when available: `derived`, `llm`, or `user`. Automatic sources must not be mistaken for explicit identity overrides; missing provenance retains a provider's legacy behavior. The values are `persistence.conversation.sessions.TitleSource`. |
 | `cwd` | Non-empty logical workspace supplied as `AIAgent(cwd=...)`, available before provider initialization. Omitted for `None` or an empty string. |
 | `gateway_session_key` | Stable messaging-chat identity for per-chat session isolation. |
 | `user_id`, `user_id_alt`, `user_name`, `chat_id` | Gateway identity fields, included when present. |
@@ -529,7 +529,7 @@ data_dir = Path("~/.hermes/my-provider").expanduser()
 
 One gateway process can serve several profiles at once, and their turns run concurrently on different threads. Each agent gets its own `MemoryManager` and its own provider instance, initialized for one profile. Your provider must:
 
-- **Return a new instance per load.** `register(ctx)` should construct the provider (`ctx.register_memory_provider(MyProvider())`), not hand back a module-level singleton. The manager refuses to initialize an instance that another profile's manager already bound, and logs `memory_provider_instance_shared`.
+- **Return a new instance per load.** `register(ctx)` should construct the provider (`ctx.register_memory_provider(MyProvider())`), not hand back a module-level singleton. The manager refuses to initialize an instance that another profile's live manager already bound, on any host that serves several profiles, multiplexed or not, and logs `memory_provider_instance_shared`.
 - **Bind from `initialize()`.** Derive every store, path, client, bank and tenant from the `hermes_home` keyword (and secrets read through `get_secret()` during `initialize`), and keep that binding on `self`.
 - **Keep nothing profile-specific at module or class level.** No global "current store", and no rebinding a shared binding on each call. Two profiles' calls interleave, so a per-call rebind races.
 

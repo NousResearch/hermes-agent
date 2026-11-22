@@ -14,6 +14,21 @@ from providers.base import ProviderProfile
 logger = logging.getLogger(__name__)
 
 
+# Models that take the ``xhigh`` thinking level; Gemini 4 Argon and Carbon answer 400 to it.
+_XHIGH_MODELS = ("gemini-4-hydrogen",)
+_XHIGH_EFFORTS = {"xhigh", "max", "ultra"}
+
+
+def _with_top_thinking_level(model: str, reasoning_config: Any, thinking_config: dict[str, Any]) -> dict[str, Any]:
+    """Send ``xhigh`` where the model has it: the shared mapping stops at ``high``, the top level of the
+    other thinking-level models."""
+    name = (model or "").strip().lower().removeprefix("google/")
+    effort = str(reasoning_config.get("effort") or "").strip().lower() if isinstance(reasoning_config, dict) else ""
+    if name.startswith(_XHIGH_MODELS) and effort in _XHIGH_EFFORTS and thinking_config.get("thinkingLevel") == "high":
+        return {**thinking_config, "thinkingLevel": "xhigh"}
+    return thinking_config
+
+
 class GeminiProfile(ProviderProfile):
     """Gemini — translate reasoning_config to thinking_config in extra_body."""
 
@@ -29,6 +44,7 @@ class GeminiProfile(ProviderProfile):
         raw = _build_gemini_thinking_config(context.get("model") or "", context.get("reasoning_config"))
         if not raw:
             return {}
+        raw = _with_top_thinking_level(context.get("model") or "", context.get("reasoning_config"), raw)
         base_url = context.get("base_url") or self.base_url
         if self.name == "gemini" and _is_gemini_openai_compat_base_url(base_url):
             thinking_config = _snake_case_gemini_thinking_config(raw)

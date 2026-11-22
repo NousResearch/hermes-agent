@@ -1,0 +1,28 @@
+name: hot-hermes
+title: Hot Hermes
+repo: https://github.com/firetussin/hermes-hot-hermes
+sha: e5bba328bd2ed247bc07f314de85d7acf92cad3d
+description: >-
+  Compact profile service-state monitoring, resource planning and explicit Desktop
+  connection retention. Detects shared gateways; no model keepalive prompts or
+  unverified speed claims. Reads OS memory/CPU and sampler process metadata.
+maintainer: firetussin
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.1.2"
+platforms: []
+image: https://raw.githubusercontent.com/firetussin/hermes-hot-hermes/e5bba328bd2ed247bc07f314de85d7acf92cad3d/docs/hot-hermes.png
+screenshots:
+  - https://raw.githubusercontent.com/firetussin/hermes-hot-hermes/e5bba328bd2ed247bc07f314de85d7acf92cad3d/preview/shared-gateway.png
+  - https://raw.githubusercontent.com/firetussin/hermes-hot-hermes/e5bba328bd2ed247bc07f314de85d7acf92cad3d/preview/light.png
+known_issues:
+  - Requires supported Desktop profile-route and retention APIs.
+  - Socket retention does not guarantee tool, session or provider-cache residency; no speed improvement has been measured.
+  - Screenshots use a labelled synthetic fixture; v0.1.1 live Start succeeded; v0.1.2 installer acceptance is pending.
+capabilities:
+  provides_tools: [hot_hermes_status]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+

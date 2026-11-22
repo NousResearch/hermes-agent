@@ -202,6 +202,10 @@ _GLOBAL_ENV_EXACT = frozenset({
     "HERMES_MAX_ITERATIONS", "HERMES_API_TIMEOUT",
     "HERMES_REDACT_SECRETS", "HERMES_NOUS_TIMEOUT_SECONDS",
     "_HERMES_GATEWAY",
+    # Managed-scope bootstrap: launch-only (see hermes_constants.LAUNCH_ONLY_ENV_KEYS) —
+    # every process must resolve the SAME directory or a routed child silently loses
+    # administrator policy, so it is never residue and never profile-scoped (#135200).
+    "HERMES_MANAGED_DIR",
     # OS / interpreter
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TZ", "PWD", "SHELL", "TMPDIR",
     "VIRTUAL_ENV", "PYTHONPATH", "SSL_CERT_FILE",
@@ -233,7 +237,8 @@ _GLOBAL_ENV_PREFIXES = (
 
 def _is_global_env(name: str) -> bool:
     """True for genuinely process-global (non-profile-secret) env vars."""
-    return name in _GLOBAL_ENV_EXACT or name.startswith(_GLOBAL_ENV_PREFIXES)
+    from hermes_constants import is_launch_only_env_key  # case-folded: Windows env names (#135200)
+    return name in _GLOBAL_ENV_EXACT or name.startswith(_GLOBAL_ENV_PREFIXES) or is_launch_only_env_key(name)
 
 
 def _environ_or(name: str, default: Optional[str]) -> Optional[str]:
@@ -423,6 +428,14 @@ def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     secret sources. Global vars are NOT copied in — ``get_secret`` reads those
     from ``os.environ`` — so the scope holds only profile secrets."""
     secrets = load_env_file(Path(hermes_home) / ".env")
+    # Launch-only keys are never profile secrets (#135200): get_secret consults
+    # _is_global_env first, but direct scope.get readers (e.g. platform_gate_env
+    # under multiplexing) do not — a planted .env entry would otherwise survive
+    # into the mapping as a readable value. The external/managed paths below
+    # already drop them via _is_global_env; this is the one entry that doesn't.
+    from hermes_constants import is_launch_only_env_key
+    secrets = {k: v for k, v in secrets.items() if not is_launch_only_env_key(k)}
+    dotenv = dict(secrets)
     try:
         from hermes_cli.env_loader import get_secret_source_values
         external_secrets = get_secret_source_values(Path(hermes_home))
@@ -445,8 +458,28 @@ def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     # once, not restored by each consumer.
     from hermes_cli.managed_scope import load_managed_env  # fail-open: {} when no managed scope
 
-    secrets.update((k, v) for k, v in load_managed_env().items() if not _is_global_env(k))
+    managed = {k: v for k, v in load_managed_env().items() if not _is_global_env(k)}
+    secrets.update(managed)
+    _expand_dotenv_templates(secrets, hermes_home, {**dotenv, **managed})
     return secrets
+
+
+def _expand_dotenv_templates(secrets: dict[str, str], hermes_home: Path, raw: dict[str, str]) -> None:
+    """Resolve ``${VAR}`` / ``${VAR:-default}`` in values that came from the dotenv layers, with
+    ``load_hermes_dotenv``'s own resolver, so the scope and ``os.environ`` agree on what a file says:
+    ``TELEGRAM_HOME_CHANNEL=${TELEGRAM_USER_ID}`` otherwise reached cron delivery as the literal
+    template (#137080). A value another source replaced (an external secret) is left alone.
+
+    Another profile's references resolve against process-global vars only: the launch process's
+    shell exports and external secrets are the launch profile's, and ``${OPENAI_API_KEY:-default}``
+    in a satellite must take its default, never the gateway's key."""
+    templated = {k: v for k, v in raw.items() if "${" in v and secrets.get(k) == v}
+    if not templated:
+        return
+    from hermes_cli.env_loader import resolve_home_dotenv
+    lookup = None if _is_process_home(hermes_home) else {k: v for k, v in os.environ.items() if _is_global_env(k)}
+    resolved = resolve_home_dotenv(Path(hermes_home), lookup_env=lookup)
+    secrets.update((k, resolved[k]) for k in templated if k in resolved)
 
 
 def _is_process_home(hermes_home: Path) -> bool:
@@ -466,16 +499,24 @@ def refresh_installed_secret_scope(hermes_home: Path) -> bool:
     A scope is frozen when installed, but a fire can learn of new values afterwards: a routed cron
     fire's first agent build discovers plugin secret sources, and under multiplex semantics the
     reload that follows is hydrate-only (never ``os.environ``), so nothing else would carry those
-    values into the scope this fire already holds. The caller names the home the installed scope
-    was built for. True when a scope was updated; False when none is installed."""
+    values into the scope this fire already holds. True when a scope was updated; False when none
+    is installed, or when the installed scope belongs to another home than *hermes_home* (its stamp;
+    unstamped means the process home): another home's secrets never replace it."""
     bound = _bound_secrets()
     scope = bound.mapping if bound is not None else None
     if not isinstance(scope, dict):
         return False
+    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+    owner = bound.profile_home or get_routing_process_hermes_home()
+    if hermes_home_key(owner) != hermes_home_key(hermes_home):
+        return False
     # REPLACE, don't merge: the rebuild is the profile's current truth, so a name a source has
     # stopped supplying (rotated, revoked, source removed) must disappear from the fire's scope
-    # rather than survive as the stale value dict.update() would keep.
-    rebuilt = build_profile_secret_scope(hermes_home)
+    # rather than survive as the stale value dict.update() would keep. Rebuilt through
+    # ``owner_secret_scope``: the process home's scope also carries the env frozen at activation
+    # (systemd / ``op run`` / docker ``-e`` keys, YAML-bridged allowlists) that no file can rebuild.
+    from tui_gateway.launch_profile_policy import owner_secret_scope
+    rebuilt = owner_secret_scope(hermes_home)
     # Update first, then drop what is gone: a concurrent reader never sees an emptied scope.
     scope.update(rebuilt)
     for name in [n for n in scope if n not in rebuilt]:

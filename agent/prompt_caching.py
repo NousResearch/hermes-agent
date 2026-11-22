@@ -1,4 +1,4 @@
-"""Anthropic prompt caching strategy — pure functions, no AIAgent dependency.
+"""Anthropic prompt caching strategy and session TTL resolution.
 
 Default layout: 4 cache_control breakpoints — the static system prefix, the end of the
 system prompt, and the last 2 non-system messages (without a static prefix: one system
@@ -6,6 +6,7 @@ breakpoint plus the last 3 messages). All markers share one TTL (5m or 1h).
 """
 
 import copy
+import json
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
@@ -150,9 +151,13 @@ def is_qwen_model(model: str) -> bool:
 # seconds until they finish and never collect the retention, so they stay on 5m.
 # Measured on one install (2 days of per-call logs): 63% of interactive cache-write tokens
 # were cold re-writes after a 5–60 min idle gap (1h saves ~42% of write cost there), while
-# 1h on subagents/cron would have cost ~49% more.
+# 1h on subagents/cron would have cost ~49% more. ``auto`` is the shipped default
+# (hermes_cli/config_defaults.py). ``api_server`` is the API server's platform label and
+# ``curator`` the background skill curator (tens of back-to-back calls); both are machine-paced.
 AUTO_CACHE_TTL = "auto"
-MACHINE_PACED_SOURCES = frozenset({"subagent", "cron", "oneshot", "webhook", "kanban", "api", "tool", "batch"})
+MACHINE_PACED_SOURCES = frozenset({
+    "subagent", "cron", "oneshot", "webhook", "kanban", "api", "api_server", "tool", "batch", "curator",
+    "a2a", "msgraph_webhook", "gateway_hygiene"})
 
 
 def auto_cache_ttl_for_source(source: str | None) -> str:
@@ -161,23 +166,150 @@ def auto_cache_ttl_for_source(source: str | None) -> str:
     return "5m" if (source or "").strip().lower() in MACHINE_PACED_SOURCES else "1h"
 
 
-def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "") -> str:
+def auto_cache_ttl_for_agent(agent: Any) -> str:
+    """Resolve auto, including finite gateway admissions whose launch env was scrubbed."""
+    from agent.session_source import session_source_for
+    from gateway.session_finite import finite_turn_required
+    from gateway.session_policy import active_policy
+
+    agent._cache_ttl_auto = True
+    finite = finite_turn_required()
+    policy = active_policy()
+    if finite is None and policy is not None:
+        # Read the frozen admission when turn context is not yet bound at construction.
+        finite = json.loads(policy.request_json).get("turn_v1", {}).get("finite", policy.source == "oneshot")
+    ttl = "5m" if finite is True else auto_cache_ttl_for_source(
+        session_source_for(getattr(agent, "platform", None)))
+    # The source's choice, not the route's: the route clamp runs per send (effective_cache_ttl with
+    # auto=True), so a chat that starts on a 5m route still gets 1h after switching to a 1h route.
+    return ttl
+
+
+def auto_start_cache_ttl(agent: Any) -> str:
+    """The tier an ``auto`` session starts on: the source's choice, a 1h choice starting on 5m until
+    the chat's first pause (``prompt_cache_lifecycle.tier``)."""
+    from agent.prompt_cache_lifecycle.tier import adaptive_start_tier
+
+    return adaptive_start_tier(agent, auto_cache_ttl_for_agent(agent))
+
+
+def refresh_auto_cache_ttl(agent: Any) -> None:
+    """Re-resolve an auto tier after a platform stamp, preserving side agents and explicit pins."""
+    if getattr(agent, "_cache_ttl_auto", False) and not getattr(agent, "side_agent", False):
+        upgraded = getattr(agent, "_cache_ttl_adaptive", False) and agent._cache_ttl == "1h"
+        agent._cache_ttl = auto_start_cache_ttl(agent)
+        if upgraded and agent._cache_ttl_adaptive:  # an upgraded session keeps 1h: its prefix carries 1h markers
+            agent._cache_ttl = "1h"
+
+
+def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "", base_url: str = "",
+                        auto: bool = False) -> str:
     """Clamp a requested cache TTL to what the destination route supports (``None`` → ``5m``).
 
     Qwen/Alibaba routes drop ``1h`` (→ ``5m``) except on ``MEASURED_1H_PROVIDERS`` minus
     ``NO_1H_TIER_MODELS``; that check runs BEFORE the generic Qwen clamp, which would swallow it.
+    Bedrock keeps auto on 5m for legacy models; an explicit 1h pin is preserved.
+    Then the route's declared ceiling (:func:`route_ttl_ceiling`) applies to that result on every
+    path: the prompt-cache clock reads the same helper, so what Hermes asks for and what it
+    believes never disagree.
     """
     if ttl != "1h":
         return ttl or "5m"
     provider_lower = (provider or "").lower()
+    if auto and provider_lower == "bedrock":
+        return "5m"
     if provider_lower in MEASURED_1H_PROVIDERS:
-        return "5m" if _flat_model(model) in NO_1H_TIER_MODELS else "1h"
-    return "5m" if is_qwen_model(model) or provider_lower in ALIBABA_FAMILY_PROVIDERS else "1h"
+        clamped = "5m" if _flat_model(model) in NO_1H_TIER_MODELS else "1h"
+    elif _catalog_route(provider, base_url):
+        clamped = "1h"  # the catalog route's own ceiling decides, not the model family
+    else:
+        clamped = "5m" if is_qwen_model(model) or provider_lower in ALIBABA_FAMILY_PROVIDERS else "1h"
+    return "5m" if clamped == "5m" or route_ttl_ceiling(provider, base_url) == "5m" else "1h"
+
+
+# Seconds per tier name: Anthropic markers (5m/1h), OpenAI GPT-5.6+ ``prompt_cache_options.ttl`` (30m/12h).
+TTL_SECONDS = {"5m": 300, "30m": 1800, "1h": 3600, "12h": 43200}
+_CEILING_TIERS = ("5m", "1h")
+
+
+def _route_names(provider: str, base_url: str) -> list[str]:
+    """Canonical provider names a route answers to: the configured name, then the provider whose
+    host serves ``base_url`` (a ``custom`` endpoint at the Nous Portal is the Nous route)."""
+    from agent.model_metadata import _infer_provider_from_url
+    from providers import get_provider_profile
+
+    names: list[str] = []
+    for name in ((provider or "").strip().lower(), _infer_provider_from_url(base_url) if base_url else None):
+        profile = get_provider_profile(name) if name else None
+        for candidate in (name, getattr(profile, "name", None)):
+            if candidate and candidate not in names:
+                names.append(candidate)
+    return names
+
+
+def _catalog_route(provider: str, base_url: str) -> bool:
+    from providers import get_provider_profile
+
+    return any(getattr(get_provider_profile(n), "prompt_cache_markers_from_catalog", False)
+               for n in _route_names(provider, base_url))
+
+
+def catalog_cache_markers(provider: str, base_url: str = "", model: str = "", api_key: str = "") -> bool | None:
+    """Whether the route's ``/models`` catalog prices ``model`` with a cache-write rate (explicit
+    ``cache_control`` caching), on a provider that declares ``prompt_cache_markers_from_catalog``.
+    None when the route declares nothing, or its catalog (or the model's row) is unavailable."""
+    from agent.model_metadata import fetch_endpoint_model_metadata
+    from providers import get_provider_profile
+
+    profile = next((p for p in map(get_provider_profile, _route_names(provider, base_url))
+                    if getattr(p, "prompt_cache_markers_from_catalog", False)), None)
+    if profile is None or not model:
+        return None
+    row = fetch_endpoint_model_metadata(base_url or profile.base_url, api_key=api_key or "").get(model)
+    if not isinstance(row, dict) or not isinstance(row.get("pricing"), dict):
+        return None
+    return row["pricing"].get("cache_write") not in (None, "", "0")
+
+
+def learned_or_catalog_markers(provider: str, base_url: str = "", model: str = "", api_key: str = "") -> bool | None:
+    """Whether a Chat Completions request to ``model`` should carry markers: what Hermes learned from
+    this route's own usage (``prompt_cache_routes.marker_preference``) first, then its catalog."""
+    from agent.prompt_cache_routes import marker_preference
+
+    learned = marker_preference(provider, base_url, model)
+    return learned if learned is not None else catalog_cache_markers(provider, base_url, model, api_key)
+
+
+def route_ttl_ceiling(provider: str, base_url: str = "") -> str | None:
+    """Longest cache tier the route keeps, or None when it keeps whatever is asked for.
+
+    Data, not code: config ``prompt_caching.route_ttl_ceilings: {<provider>: 5m|1h}`` wins, else the
+    provider profile's ``prompt_cache_max_ttl``. A route that silently keeps less than it is asked
+    for gets a ``5m`` ceiling so it is never asked for (or billed) the dearer tier; a gateway that
+    keeps 1h declares ``1h`` so the prompt-cache clock trusts the tier it sends.
+    """
+    from hermes_cli.config import load_config_readonly
+    from providers import get_provider_profile
+
+    names = _route_names(provider, base_url)
+    section = load_config_readonly().get("prompt_caching")
+    # Runs on every send: a malformed (non-mapping) section or override table counts as absent.
+    overrides = section.get("route_ttl_ceilings") if isinstance(section, dict) else None
+    for name in names:
+        if isinstance(overrides, dict) and name in overrides:
+            value = overrides[name]
+            return value if value in _CEILING_TIERS else None
+    for name in names:
+        ceiling = getattr(get_provider_profile(name), "prompt_cache_max_ttl", None)
+        if ceiling in _CEILING_TIERS:
+            return ceiling
+    return None
 
 
 def _apply_system_cache_markers(
     message: dict, cache_marker: dict, static_system_prefix: str | None, *,
     native_anthropic: bool, mark_suffix: bool = True, fallback_to_whole: bool = True,
+    session_system_prompt: str | None = None, mark_session_end: bool = True,
 ) -> int:
     """Mark the static system prefix (and optionally the full prompt); returns markers applied.
 
@@ -185,10 +317,24 @@ def _apply_system_cache_markers(
     is the tool-cache-plan layout (suffix budget spent on the tools array); ``fallback_to_whole=
     False`` marks nothing when the split is impossible. When the prompt IS the prefix the whole
     message is one block — never an empty text block (400).
+
+    ``session_system_prompt`` is the prompt built once per session, before the API-time
+    ephemeral addition (a subagent's per-task text, a personality). When the content carries
+    such a tail the request sends three parts. The end of the whole prompt is always marked, as
+    without a tail, so a request whose history changed still reads the tail. The end of the
+    session prompt takes a marker too when ``mark_session_end`` (the caller has a breakpoint to
+    spare), so sessions that differ only in the tail still read the skills index.
     """
     content = message.get("content")
     if isinstance(static_system_prefix, str) and static_system_prefix and isinstance(content, str) and content.startswith(static_system_prefix):
         suffix = content[len(static_system_prefix):]
+        if (mark_suffix and isinstance(session_system_prompt, str) and content.startswith(session_system_prompt)
+                and session_system_prompt[len(static_system_prefix):].strip() and content[len(session_system_prompt):].strip()):
+            message["content"] = [
+                _text_part(static_system_prefix, cache_marker),
+                _text_part(session_system_prompt[len(static_system_prefix):], cache_marker if mark_session_end else None),
+                _text_part(content[len(session_system_prompt):], cache_marker)]
+            return 3 if mark_session_end else 2
         if suffix.strip():
             message["content"] = [_text_part(static_system_prefix, cache_marker),
                                   _text_part(suffix, cache_marker if mark_suffix else None)]
@@ -208,7 +354,7 @@ def strip_anthropic_cache_control(api_messages: list[dict[str, Any]]) -> list[di
 
     Used before re-decorating after a mid-turn failover. Flattening to a string is restricted
     to the exact shapes :func:`apply_anthropic_cache_control` produces from string content
-    (single text part, two-part system split, two-part skill split) so the ``""``-join is
+    (single text part, two- or three-part system split, two-part skill split) so the ``""``-join is
     byte-exact. Marker removal is copy-on-write on part dicts: parts can alias caller-held
     lists and stripping must never rewrite the stored transcript.
     """
@@ -224,6 +370,7 @@ def strip_anthropic_cache_control(api_messages: list[dict[str, Any]]) -> list[di
         # The skill split is the only decoration marking the FIRST part of a user message, so the
         # marked shape identifies it even after the prefix registry evicted the entry.
         first_part_marked = user_pair and "cache_control" in content[0] and "cache_control" not in content[1]
+        first_system_marked = role == "system" and bool(content) and isinstance(content[0], dict) and "cache_control" in content[0]
         if _has_part_marker(content):
             content = msg["content"] = [
                 {k: v for k, v in part.items() if k != "cache_control"}
@@ -239,7 +386,11 @@ def strip_anthropic_cache_control(api_messages: list[dict[str, Any]]) -> list[di
         # An UNMARKED split (outside the marker window) only the registry tells from a genuine
         # two-part user message.
         skill_split = first_part_marked or (user_pair and find_stable_prefix(joined) == content[0]["text"])
-        if len(content) == 1 or (role == "system" and len(content) == 2) or skill_split:
+        # Two plain system parts are joined as on main. Three are joined only when they are the
+        # planner's own split (static / session rest / ephemeral tail), which always marks part 0:
+        # a context engine's own three-part system message keeps its boundaries.
+        planner_system_split = role == "system" and (len(content) == 2 or (len(content) == 3 and first_system_marked))
+        if len(content) == 1 or planner_system_split or skill_split:
             msg["content"] = joined
     return api_messages
 
@@ -314,6 +465,7 @@ def build_prompt_cache_plan(
     api_messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, *,
     cache_ttl: str = "5m", native_anthropic: bool = False, static_system_prefix: str | None = None,
     direct_native_tool_cache: bool = False, tool_part_markers: bool = True,
+    session_system_prompt: str | None = None,
 ) -> PromptCachePlan:
     """Build copy-on-write cache sections for one resolved request destination
     (``tool_part_markers=False`` keeps markers off role:tool parts on LiteLLM-style routes)."""
@@ -322,7 +474,8 @@ def build_prompt_cache_plan(
         # apply_anthropic_cache_control re-canonicalises prior decoration itself.
         planned_messages = apply_anthropic_cache_control(
             list(api_messages or []), cache_ttl=cache_ttl, native_anthropic=native_anthropic,
-            static_system_prefix=static_system_prefix, tool_part_markers=tool_part_markers)
+            static_system_prefix=static_system_prefix, tool_part_markers=tool_part_markers,
+            session_system_prompt=session_system_prompt)
         return PromptCachePlan(messages=planned_messages, tools=planned_tools)
 
     messages = _strip_prior_decoration(list(api_messages or []))
@@ -345,6 +498,7 @@ def build_prompt_cache_plan(
 def apply_anthropic_cache_control(
     api_messages: list[dict[str, Any]], cache_ttl: str = "5m", native_anthropic: bool = False,
     static_system_prefix: str | None = None, tool_part_markers: bool = True,
+    session_system_prompt: str | None = None,
 ) -> list[dict[str, Any]]:
     """Apply Anthropic cache-control markers to API messages.
 
@@ -361,14 +515,16 @@ def apply_anthropic_cache_control(
     messages = _strip_prior_decoration(list(api_messages))
     marker = _build_marker(cache_ttl)
 
+    non_sys = [i for i, m in enumerate(messages) if m.get("role") != "system"
+               and _can_carry_marker(m, native_anthropic=native_anthropic, tool_part_markers=tool_part_markers)]
     breakpoints_used = 0
     if messages[0].get("role") == "system":
         messages[0] = copy.deepcopy(messages[0])
-        breakpoints_used = _apply_system_cache_markers(messages[0], marker, static_system_prefix,
-                                                       native_anthropic=native_anthropic)
-
-    non_sys = [i for i, m in enumerate(messages) if m.get("role") != "system"
-               and _can_carry_marker(m, native_anthropic=native_anthropic, tool_part_markers=tool_part_markers)]
+        # The session-prompt boundary takes the breakpoint a first call has spare (it has a single
+        # message to mark): that write is what lets a session with a different tail read the index.
+        breakpoints_used = _apply_system_cache_markers(
+            messages[0], marker, static_system_prefix, native_anthropic=native_anthropic,
+            session_system_prompt=session_system_prompt, mark_session_end=len(non_sys) < 2)
     for idx in non_sys[-(4 - breakpoints_used):]:
         messages[idx] = copy.deepcopy(messages[idx])
         _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic, tool_part_markers=tool_part_markers)

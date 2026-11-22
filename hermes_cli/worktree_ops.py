@@ -796,15 +796,21 @@ def _inside_tree(worktree_path: str):
     return inside
 
 
-# The gateway's own records that it will still act in a session after its last viewer quits:
-# an active /loop, /heartbeat or /goal (its continuation) row (``hermes_cli.loops`` / ``heartbeat`` /
-# ``goals``, keyed by the stored session id, status ``active`` when the field is absent), and a row
-# no viewer close ended: Ink's exit detaches with ``tui_shutdown`` and the owner ends the idle row
-# only once no other viewer holds it (``gateway/session_viewer_close.py``).
-_SERVED_TREE_SQL = (
-    "SELECT 1 FROM sessions s WHERE hermes_inside_tree(s.cwd) AND (s.ended_at IS NULL OR EXISTS ("
-    "SELECT 1 FROM state_meta m WHERE m.key IN ('loop:'||s.id, 'heartbeat:'||s.id, 'goal:'||s.id) "
-    "AND (json_valid(m.value)=0 OR COALESCE(json_extract(m.value,'$.status'),'active')='active'))) LIMIT 1")
+def _retention_store() -> Path:
+    """What a ``-w`` tree's lock names as its sessions' store: the store's file, or the profile home of a store
+    without one (both open as a reader)."""
+    from persistence_assembly import profile_scope, store_location
+    scope = profile_scope(home=get_hermes_home())
+    return store_location(scope) or scope.profile_dir
+
+
+def _retained_store(db_path: str) -> Optional[Path]:
+    """The store a retention record names, when it exists: a store file, or the home of a store without one."""
+    path = Path(db_path)
+    if path.is_dir():
+        from persistence_assembly import profile_scope, store_exists
+        return path if store_exists(profile_scope(home=path)) else None
+    return path if path.is_file() else None
 
 
 def _tree_still_served(db_path: str, worktree_path: str) -> Optional[str]:
@@ -814,27 +820,21 @@ def _tree_still_served(db_path: str, worktree_path: str) -> Optional[str]:
     session inside it (an active loop, heartbeat or goal continuation), another viewer still holding
     such a session (its row was not ended by the quit), or an enabled cron job that runs in the tree
     (``workdir``) or is bound to such a session's local chat. Reads only; unreadable fails SAFE."""
-    import sqlite3
-    from urllib.parse import quote
+    from persistence.core.errors import STORE_FAILURES
+    from persistence_assembly import open_persistence_reader
 
-    from hermes_cli.sqlite_safe_read import connect_tracked
-
-    path = Path(db_path)
-    chats: set = set()
-    if path.is_file():
+    path = _retained_store(db_path)
+    chats: frozenset = frozenset()
+    if path is not None:
         try:
-            conn = connect_tracked(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=2, tracking_path=path)
-            try:
-                conn.create_function("hermes_inside_tree", 1, _inside_tree(worktree_path), deterministic=True)
-                if conn.execute(_SERVED_TREE_SQL).fetchone():
-                    return "session"
-                chats = {row[0] for row in conn.execute(
-                    "SELECT chat_id FROM sessions WHERE hermes_inside_tree(cwd) AND chat_id IS NOT NULL")}
-            finally:
-                conn.close()
-        except sqlite3.Error as exc:
+            with open_persistence_reader(path, patience_s=2) as store:
+                facts = store.maintenance.tree_served_sessions(worktree_path)
+        except STORE_FAILURES as exc:
             logger.debug("retained worktree serve check failed (%s); keeping tree", exc)
             return "unreadable"
+        if facts.served:
+            return "session"
+        chats = facts.chat_ids
     return "cron" if _cron_bound_to_tree(worktree_path, chats) else None
 
 
@@ -868,30 +868,18 @@ def _retained_tree_is_live(db_path: str, worktree_path: str, *, pending_only: bo
     a row with history or pending gateway work (*pending_only*: pending work alone, the exiting
     ``--tui -w`` launcher's "is the gateway still using it" check). A missing store means the
     profile is gone; unreadable fails SAFE (live)."""
-    import sqlite3
-    from urllib.parse import quote
+    from persistence.core.errors import STORE_FAILURES
+    from persistence_assembly import open_persistence_reader
 
-    from hermes_cli.sqlite_safe_read import connect_tracked
-
-    path = Path(db_path)
-    if not path.is_file():
+    path = _retained_store(db_path)
+    if path is None:
         return False
-    inside = _inside_tree(worktree_path)
     try:
-        conn = connect_tracked(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=2, tracking_path=path)
-        try:
-            conn.create_function("hermes_inside_tree", 1, inside, deterministic=True)
-            row = conn.execute(
-                "SELECT 1 FROM sessions s WHERE hermes_inside_tree(s.cwd) AND ("
-                + ("" if pending_only else "s.message_count>0 OR ")
-                + "EXISTS (SELECT 1 FROM session_admissions a WHERE a.target_session_id=s.id "
-                "AND a.status!='terminal')) LIMIT 1").fetchone()
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
+        with open_persistence_reader(path, patience_s=2) as store:
+            return store.maintenance.retained_tree_is_live(worktree_path, pending_only=pending_only)
+    except STORE_FAILURES as exc:
         logger.debug("retained worktree session check failed (%s); keeping tree", exc)
         return True
-    return row is not None
 
 
 def _worktree_lock_reason(repo_root: str, worktree_path: str, timeout: int):
@@ -966,16 +954,33 @@ def prune_tier_hours(name: str, max_age_hours: float) -> float:
     return max_age_hours if name.startswith(_AUTO_TREE_PREFIXES) else max_age_hours * 3
 
 
-def _prune_candidates(worktrees_dir: Path, max_age_hours: int, now: float) -> list:
+def resumable_pins() -> dict:
+    """``{realpath: reason}`` for trees a resumable subagent still owns (``tools.delegate_tool_resumable``);
+    empty when the records cannot be read (the sweep then behaves as before)."""
+    try:
+        from tools.delegate_tool_resumable import pinned_worktrees
+        return pinned_worktrees()
+    except Exception:
+        logger.debug("resumable subagent pins unreadable", exc_info=True)
+        return {}
+
+
+def _prune_candidates(worktrees_dir: Path, max_age_hours: int, now: float, pins: Optional[dict] = None) -> list:
     """Phase 1, stat-only age filter -> ``[(entry, mtime, force)]`` for trees past their soft cutoff.
 
     Kanban trees (``t_<hex>``) belong to the kanban gc. Hermes-made trees age on *max_age_hours*,
-    deliberately named trees at 3x (``prune_tier_hours``); *force* marks the hard (3x) tier.
+    deliberately named trees at 3x (``prune_tier_hours``); *force* marks the hard (3x) tier. A tree a
+    resumable subagent pins (*pins*, default ``resumable_pins()``) is never a candidate while the pin lasts.
     """
+    from tools.delegate_tool_resumable import pin_reason
     kanban_re = re.compile(r"^t_[0-9a-f]+$")
+    pins = resumable_pins() if pins is None else pins
     candidates: list = []
     for entry in sorted(worktrees_dir.iterdir()):
         if not entry.is_dir() or kanban_re.match(entry.name):
+            continue
+        if pins and (why := pin_reason(str(entry), pins)):
+            logger.info("Keeping worktree %s: %s", entry.name, why)
             continue
         tier_hours = prune_tier_hours(entry.name, max_age_hours)
         try:
@@ -1088,6 +1093,10 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
         blocked = removal_blocked(str(entry))
         if blocked:
             preserved_stale.append(f"{entry.name} ({blocked[1]})")
+            continue
+        from hermes_cli.worktree_sweep import pinned_now
+        if pinned := pinned_now(str(entry)):  # a continue pinned it after the plan was made
+            logger.info("Keeping worktree %s: %s", entry.name, pinned)
             continue
 
         if lock_state == "dead":

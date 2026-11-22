@@ -1,5 +1,9 @@
 """Shape of the <available_skills> index rows (single-skill categories, headers, clipped descriptions)."""
+import contextlib
+import importlib
 import re
+import sys
+from types import ModuleType
 
 import pytest
 
@@ -77,3 +81,65 @@ def test_index_desc_limit_widens_the_index_and_rebuilds_a_stale_snapshot(monkeyp
     assert release_row(fresh_process=True).endswith("...")  # nor the disk snapshot
     config.write_text("skills:\n  index_desc_limit: \"\u00b2\"\n", encoding="utf-8")  # isdigit() but not int()
     assert release_row(fresh_process=True).endswith("...")
+
+
+@contextlib.contextmanager
+def _without_modules(*names: str):
+    saved = []
+    for name in names:
+        parent_name, _, attr = name.rpartition(".")
+        parent = sys.modules.get(parent_name) if parent_name else None
+        had_attr = parent is not None and hasattr(parent, attr)
+        saved_attr = getattr(parent, attr, None) if had_attr else None
+        saved_mod = sys.modules.pop(name, None)
+        if had_attr:
+            delattr(parent, attr)
+        saved.append((name, saved_mod, parent, attr, had_attr, saved_attr))
+    try:
+        yield
+    finally:
+        for name, saved_mod, parent, attr, had_attr, saved_attr in reversed(saved):
+            if saved_mod is not None:
+                sys.modules[name] = saved_mod
+            else:
+                sys.modules.pop(name, None)
+            if parent is not None:
+                if had_attr:
+                    setattr(parent, attr, saved_attr)
+                elif hasattr(parent, attr):
+                    delattr(parent, attr)
+
+
+@pytest.mark.parametrize("mod_name", ["agent.curator", "agent.learn_prompt", "tools.skill_linter"])
+def test_lazy_skill_consumers_load_and_run_against_n1_skill_utils(monkeypatch, mod_name):
+    import agent
+    import agent.skill_utils as real_skill_utils
+
+    legacy_utils = ModuleType("agent.skill_utils")
+    for attr, val in vars(real_skill_utils).items():
+        if attr != "get_skill_desc_limit":
+            setattr(legacy_utils, attr, val)
+    monkeypatch.setitem(sys.modules, "agent.skill_utils", legacy_utils)
+    monkeypatch.setattr(agent, "skill_utils", legacy_utils, raising=False)
+
+    with _without_modules(mod_name):
+        mod = importlib.import_module(mod_name)
+        if mod_name == "agent.curator":
+            assert mod.get_skill_desc_limit() == SKILL_PROMPT_DESC_LIMIT
+        elif mod_name == "agent.learn_prompt":
+            prompt = mod.build_learn_prompt("summarize api")
+            assert f"<={SKILL_PROMPT_DESC_LIMIT} characters" in prompt
+            assert "summarize api" in prompt
+        else:
+            findings = mod.lint_content(
+                f"---\nname: long-desc\ndescription: {'x' * (SKILL_PROMPT_DESC_LIMIT + 10)}\n---\n\n# Body\n",
+            )
+            desc_findings = [f for f in findings if f.rule == "description-length"]
+            assert desc_findings and str(SKILL_PROMPT_DESC_LIMIT) in desc_findings[0].message
+
+
+@pytest.mark.parametrize("mod_name", ["agent.curator", "agent.learn_prompt", "tools.skill_linter"])
+def test_lazy_skill_consumers_do_not_swallow_missing_skill_utils(monkeypatch, mod_name):
+    monkeypatch.setitem(sys.modules, "agent.skill_utils", None)
+    with _without_modules(mod_name), pytest.raises(ModuleNotFoundError):
+        importlib.import_module(mod_name)

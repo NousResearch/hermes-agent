@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -10,10 +11,16 @@ import re
 import select
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import time
 from urllib.request import Request, urlopen
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 
 def check_image(image: Path, sha256: str) -> None:
@@ -202,9 +209,98 @@ def check_desktop(work: Path, image: Path) -> None:
     check_execs(work, "desktop", set(), floor=True)
 
 
+_SIOCGIFFLAGS = 0x8913
+_SIOCGIFADDR = 0x8915
+_IFF_UP = 0x1
+_IFF_LOOPBACK = 0x8
+
+
+def _ifreq(name: str) -> bytes:
+    raw = name.encode("ascii")
+    if not raw or len(raw) > 15:
+        raise ValueError(f"invalid interface name: {name!r}")
+    return struct.pack("16s24x", raw)
+
+
+def _iface_flags(sock: socket.socket, name: str) -> int:
+    if fcntl is None:
+        raise OSError("fcntl is unavailable")
+    packed = fcntl.ioctl(sock.fileno(), _SIOCGIFFLAGS, _ifreq(name))
+    return struct.unpack_from("H", packed, 16)[0]
+
+
+def _iface_has_ipv4(sock: socket.socket, name: str) -> bool:
+    if fcntl is None:
+        raise OSError("fcntl is unavailable")
+    try:
+        fcntl.ioctl(sock.fileno(), _SIOCGIFADDR, _ifreq(name))
+    except OSError as exc:
+        if exc.errno == errno.EADDRNOTAVAIL:
+            return False
+        raise
+    return True
+
+
+def _ipv6_available() -> bool:
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM):
+            return True
+    except OSError:
+        return False
+
+
+def _proc_net_ifaces(path: Path, column: int, *, skip_header: bool = False) -> set[str]:
+    lines = path.read_text(encoding="ascii").splitlines()
+    if skip_header:
+        lines = lines[1:]
+    return {fields[column] for line in lines if len(fields := line.split()) > column}
+
+
+def _non_loopback_problem(sock: socket.socket, extra: list[str], proc_net: Path) -> str | None:
+    # Kernels with tunnel drivers add down, unaddressed fallback devices (tunl0, sit0, ...) to --network none.
+    active = [name for name in extra if _iface_flags(sock, name) & _IFF_UP]
+    if active:
+        return f"non-loopback interfaces are up: {', '.join(active)}"
+    addressed_v4 = [name for name in extra if _iface_has_ipv4(sock, name)]
+    if addressed_v4:
+        return f"non-loopback interfaces have IPv4 addresses: {', '.join(addressed_v4)}"
+    extra_set = set(extra)
+    routed_v4 = sorted(extra_set & _proc_net_ifaces(proc_net / "route", 0, skip_header=True))
+    if routed_v4:
+        return f"non-loopback IPv4 routes: {', '.join(routed_v4)}"
+    if _ipv6_available():
+        addressed_v6 = sorted(extra_set & _proc_net_ifaces(proc_net / "if_inet6", 5))
+        if addressed_v6:
+            return f"non-loopback interfaces have IPv6 addresses: {', '.join(addressed_v6)}"
+        routed_v6 = sorted(extra_set & _proc_net_ifaces(proc_net / "ipv6_route", 9))
+        if routed_v6:
+            return f"non-loopback IPv6 routes: {', '.join(routed_v6)}"
+    return None
+
+
+def _sandbox_problem(proc_net: Path = Path("/proc/self/net")) -> str | None:
+    if not hasattr(os, "geteuid") or fcntl is None or os.geteuid() == 0:
+        return "running as root or unsupported platform"
+    try:
+        names = {name for _, name in socket.if_nameindex()}
+        if "lo" not in names:
+            return f"missing loopback interface ({sorted(names)})"
+        extra = sorted(names - {"lo"})
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            lo_flags = _iface_flags(sock, "lo")
+            if not (lo_flags & _IFF_UP) or not (lo_flags & _IFF_LOOPBACK):
+                return f"loopback interface is not up (flags=0x{lo_flags:x})"
+            if extra:
+                return _non_loopback_problem(sock, extra, proc_net)
+    except (OSError, ValueError) as exc:
+        return f"cannot verify network isolation: {exc}"
+    return None
+
+
 def main(ubuntu: str, sha256: str, *, image: Path = Path("/image.AppImage")) -> None:
-    if not hasattr(os, "geteuid") or os.geteuid() == 0 or {name for _, name in socket.if_nameindex()} != {"lo"}:
-        raise SystemExit("refusing to run outside the offline non-root sandbox")
+    problem = _sandbox_problem()
+    if problem is not None:
+        raise SystemExit(f"refusing to run outside the offline non-root sandbox ({problem})")
     work = Path.cwd()
     check_image(image, sha256)
     subprocess.run([image, "--appimage-extract"], stdout=subprocess.DEVNULL, check=True, timeout=300)

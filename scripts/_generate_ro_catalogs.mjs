@@ -1,4 +1,5 @@
 import { readFile, writeFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -7,6 +8,8 @@ import { workspaceTool } from './build/frontend-common.mjs'
 const root = process.cwd()
 const localeDir = path.join(root, 'locales')
 const webEnglishPath = path.join(root, 'web/src/i18n/en.ts')
+const pythonExecutable = 'C:\\Users\\mihai\\AppData\\Local\\Programs\\Python\\Python313\\python.exe'
+const translateScript = path.join(root, 'scripts/translate_libre.py')
 const batchCharacterLimit = 2400
 const concurrency = 4
 
@@ -20,8 +23,8 @@ const manualTranslations = new Map([
   ['ON', 'PORNIT'], ['OFF', 'OPRIT'], ['On', 'Pornit'], ['Off', 'Oprit'], ['on', 'pornit'], ['off', 'oprit'],
   ['Back', 'Înapoi'], ['Cancel', 'Anulează'], ['Close', 'Închide'], ['Confirm', 'Confirmă'],
   ['Continue', 'Continuă'], ['Copy', 'Copiază'], ['Copied', 'Copiat'], ['Delete', 'Șterge'],
-  ['Done', 'Gata'], ['Edit', 'Editează'], ['Language', 'Limbă'], ['Loading…', 'Se încarcă…'],
-  ['Loading...', 'Se încarcă...'], ['Message', 'Mesaj'], ['New chat', 'Chat nou'],
+  ['Done', 'Finalizat'], ['Edit', 'Editează'], ['Language', 'Limbă'], ['Loading…', 'Se încarcă…'],
+  ['Loading...', 'Se încarcă...'], ['Message', 'Mesaj'], ['New chat', 'Conversație nouă'],
   ['No', 'Nu'], ['Open', 'Deschide'], ['Retry', 'Reîncearcă'], ['Save', 'Salvează'],
   ['Search', 'Caută'], ['Send', 'Trimite'], ['Send a message', 'Trimite un mesaj'],
   ['Settings', 'Setări'], ['Submit', 'Trimite'], ['Yes', 'Da'], ['Approve', 'Aprobă'],
@@ -30,6 +33,9 @@ const manualTranslations = new Map([
   ['Type a message...', 'Scrie un mesaj...'], ['Type a message…', 'Scrie un mesaj…'],
   ['Start a new chat', 'Începe o conversație nouă'], ['Start a conversation', 'Începe o conversație'],
   ['What can I help you with?', 'Cu ce te pot ajuta?'], ['Are you sure?', 'Sigur?'],
+  ['Running', 'Rulează'], ['running', 'rulează'], ['Not running', 'Nu rulează'],
+  ['Logs', 'Jurnale'], ['logs', 'jurnale'], ['Tokens', 'Tokeni'], ['tokens', 'tokeni'],
+  ['Slug', 'Slug'], ['slug', 'slug'], ['Todo', 'De făcut'], ['Ready', 'Pregătit'],
 ])
 
 const yamlPath = workspaceTool(root, 'apps/desktop', 'yaml')
@@ -87,24 +93,46 @@ function manualTranslation(text) {
 }
 
 async function requestTranslation(text) {
-  const query = new URLSearchParams({ client: 'gtx', sl: 'en', tl: 'ro', dt: 't', q: text })
-  let lastError
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    try {
-      const response = await fetch(`https://translate.googleapis.com/translate_a/single?${query}`, {
-        signal: AbortSignal.timeout(30000),
-      })
-      if (!response.ok) throw new Error(`translation endpoint returned HTTP ${response.status}`)
+  // 1. Try LibreTranslate local HTTP server if active
+  try {
+    const response = await fetch('http://127.0.0.1:5000/translate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: text, source: 'en', target: 'ro' }),
+      signal: AbortSignal.timeout(2000),
+    })
+    if (response.ok) {
       const payload = await response.json()
-      const segments = payload?.[0]
-      if (!Array.isArray(segments)) throw new Error('translation endpoint returned no text segments')
-      return segments.map((segment) => Array.isArray(segment) && typeof segment[0] === 'string' ? segment[0] : '').join('')
-    } catch (error) {
-      lastError = error
-      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 750 * (attempt + 1)))
+      if (typeof payload?.translatedText === 'string') {
+        return payload.translatedText
+      }
     }
+  } catch {
+    // Fall back to direct local LibreTranslate / ArgosTranslate Python engine
   }
-  throw lastError
+
+  // 2. Local LibreTranslate / ArgosTranslate engine via Python subprocess
+  return new Promise((resolve, reject) => {
+    const proc = spawn(pythonExecutable, [translateScript], {
+      env: {
+        ...process.env,
+        XDG_DATA_HOME: 'C:\\Users\\mihai\\AppData\\Local\\hermes\\cache\\data',
+        XDG_CONFIG_HOME: 'C:\\Users\\mihai\\AppData\\Local\\hermes\\cache\\config',
+        XDG_CACHE_HOME: 'C:\\Users\\mihai\\AppData\\Local\\hermes\\cache\\cache',
+      },
+    })
+    let stdout = ''
+    let stderr = ''
+    proc.stdout.on('data', (data) => { stdout += data })
+    proc.stderr.on('data', (data) => { stderr += data })
+    proc.on('close', (code) => {
+      if (code === 0) resolve(stdout)
+      else reject(new Error(`LibreTranslate engine failed (exit code ${code}): ${stderr}`))
+    })
+    proc.on('error', reject)
+    proc.stdin.write(text)
+    proc.stdin.end()
+  })
 }
 
 async function translateBatch(values, firstIndex) {

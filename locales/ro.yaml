@@ -3909,7 +3909,7 @@ cli:
 
       invalidează memoria cache a promptului furnizorului. Următorul mesaj va
 
-      retrimiteți jetoane de intrare complete (poate fi costisitoare în context lung sau
+      retrimiteți tokeni de intrare compleți (poate fi costisitoare în context lung sau
 
       modele raționale)."
     choice_once: "Aprobați o dată"
@@ -4172,7 +4172,7 @@ display:
     summary_callback: "💾 Revizuire de auto-îmbunătățire: {summary}"
     aux_failure_label: "revizuire de fundal"
   notice:
-    uncompressed_context_overflow: "⚠️ Contextul sesiunii (jetoane ~{tokens}) depășește fereastra de context model (jetoane ~{context_length}) cu compresia dezactivată (compression.enabled: false). Utilizați /compact pentru a comprima istoricul sau pentru a activa compresia în config.yaml."
+    uncompressed_context_overflow: "⚠️ Contextul sesiunii (~{tokens} tokeni) depășește fereastra de context model (jetoane ~{context_length}) cu compresia dezactivată (compression.enabled: false). Utilizați /compact pentru a comprima istoricul sau pentru a activa compresia în config.yaml."
 explainer:
   no_reply_prefix: "⚠️ Niciun răspuns:"
   empty_response: "{model} nu a produs un răspuns de data aceasta, chiar și după reîncercări. Trimiteți `continue` pentru a încerca din nou sau schimbați modelele cu /model."
@@ -4309,7 +4309,7 @@ tips:
   t084: "/reasoning scăzut sau /reasoning reduce profunzimea gândirii sub valoarea implicită (medie) - răspunsuri mai rapide, mai ieftine."
   t085: "Modelele hermes direcționează sarcinile de viziune, compresie și auxiliare către modele mai ieftine — reduce costul simbolului de fundal cu 85%+, fără a modifica modelul principal de chat."
   t086: "Setați display.bell_on_complete: true în config.yaml pentru a auzi un sonerie când sarcinile lungi se termină."
-  t087: "Setați afișarea.streaming: adevărat pentru a vedea jetoanele care apar în timp real pe măsură ce modelul este generat."
+  t087: "Setați afișarea.streaming: adevărat pentru a vedea tokenii care apar în timp real pe măsură ce modelul este generat."
   t088: "Setați display.show_reasoning: adevărat pentru a urmări raționamentul din lanțul de gândire al modelului."
   t089: "Setați display.compact: true pentru a reduce spațiul alb în ieșire pentru informații mai dense."
   t090: "Setați display.busy_input_mode: coada pentru a pune în coadă mesajele în loc să întrerupeți agentul sau direcționați pentru a le injecta la mijlocul rulării prin /steer."

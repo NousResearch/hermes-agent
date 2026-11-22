@@ -29,6 +29,9 @@ from .shared_metrics_subscriber import SharedMetricsSubscriber
 logger = logging.getLogger(__name__)
 
 _RUNTIME_FAILED = object()
+# Platform-expected absence (e.g. no nemo-relay wheel on Intel macOS): permanent for
+# the process, so unlike _RUNTIME_FAILED it is never retried, not even with retry_failed.
+_RUNTIME_EXPECTED_ABSENT = object()
 _RUNTIMES: dict[str, _Runtime | object] = {}
 _RUNTIME_LOCK = threading.RLock()
 
@@ -1508,11 +1511,22 @@ def _get_runtime(
             if host is None or runtime.host is host:
                 return runtime
             runtime.deactivate()
+        elif runtime is _RUNTIME_EXPECTED_ABSENT:
+            return None
         elif runtime is _RUNTIME_FAILED and not retry_failed:
             return None
         try:
             _RUNTIMES[profile_key] = runtime = _Runtime(host=host)
         except Exception:
+            if host is None and relay_runtime.core_runtime_absence_expected():
+                # The core host itself is the platform-expected Noop fallback (issue
+                # #129451): downgrade to the same reduced-capability path and never
+                # re-attempt — retry_failed=True re-warned this once per agent turn.
+                logger.info(
+                    "Hermes shared metrics unavailable: core Relay runtime is absent on this platform"
+                )
+                _RUNTIMES[profile_key] = _RUNTIME_EXPECTED_ABSENT
+                return None
             logger.warning("Hermes shared metrics initialization failed", exc_info=True)
             _RUNTIMES[profile_key] = _RUNTIME_FAILED
             return None

@@ -57,6 +57,48 @@ def _quiet(label: str, fn: Callable[[], Any]) -> Any:
         return None
 
 
+def _should_skip_ingest(home: Path, session_id: str, *, enabled: bool = True) -> bool:
+    """Incognito gate (Gate 1): True when *session_id* must not be ingested into RetainDB.
+
+    Skips sessions that hold a live incognito lease (``plugin-data/incognito/leases.json`` —
+    the incognito plugin's ``is_incognito`` surface, which also covers pending burns) and
+    sessions that no longer exist in state.db (burned between enqueue and flush). Fails
+    open: any read error returns False so the archive keeps working as before.
+    """
+    if not enabled or not session_id:
+        return False
+    leases_path = home / "plugin-data" / "incognito" / "leases.json"
+    try:
+        if leases_path.is_file():
+            leases = json.loads(leases_path.read_text(encoding="utf-8"))
+            if isinstance(leases, dict) and session_id in leases:
+                return True
+    except Exception as exc:
+        logger.debug("RetainDB ingest gate: leases check failed (%s); proceeding", exc)
+    state_db = home / "state.db"
+    if not state_db.is_file():
+        return False
+    try:
+        conn = sqlite3.connect(f"file:{state_db.as_posix()}?mode=ro", uri=True, timeout=2)
+        try:
+            has_session = conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone()
+            has_messages = conn.execute("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1", (session_id,)).fetchone()
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.debug("RetainDB ingest gate: state.db check failed (%s); proceeding", exc)
+        return False
+    return not has_session and not has_messages
+
+
+def _incognito_gate_enabled(block: dict[str, Any]) -> bool:
+    """``memory.retaindb.skip_incognito_sessions`` (default on); falsey strings disable it."""
+    value = block.get("skip_incognito_sessions", True)
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
+
+
 def _schema(name: str, description: str, properties: dict | None = None, required: tuple = ()) -> dict:
     return {"name": name, "description": description,
             "parameters": {"type": "object", "properties": properties or {}, "required": list(required)}}
@@ -184,8 +226,9 @@ class _Client:
 class _WriteQueue:
     """SQLite-backed async write queue. Survives crashes — pending rows replay on startup."""
 
-    def __init__(self, client: _Client, db_path: Path):
+    def __init__(self, client: _Client, db_path: Path, ingest_guard: Callable[[str], bool] | None = None):
         self._client, self._db_path, self._q = client, db_path, queue.Queue()
+        self._ingest_guard = ingest_guard  # Gate 1: session predicate that vetoes ingest (fail-open on error)
         self._thread = spawn_context_thread(self._loop, name="retaindb-writer")
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()  # one cached connection per thread, all tracked in _connections
@@ -223,7 +266,22 @@ class _WriteQueue:
         conn, self._local.conn = getattr(self._local, "conn", None), None
         self._close(*([conn] if conn is not None else []))
 
+    def _guarded(self, session_id: str) -> bool:
+        """True when the ingest guard vetoes *session_id* (guard errors fail open)."""
+        guard = self._ingest_guard
+        if guard is None:
+            return False
+        try:
+            if guard(session_id):
+                logger.info("RetainDB: skipping ingest for protected or burned session %s", session_id[:16])
+                return True
+        except Exception as exc:
+            logger.debug("RetainDB ingest guard failed (%s); proceeding", exc)
+        return False
+
     def enqueue(self, user_id: str, session_id: str, messages: list) -> None:
+        if self._guarded(session_id):
+            return
         now = datetime.now(UTC).isoformat()
         with self._shutdown_lock:
             if self._shutdown:
@@ -233,6 +291,9 @@ class _WriteQueue:
             self._q.put((cur.lastrowid, user_id, session_id, messages))
 
     def _flush_row(self, row_id: int, user_id: str, session_id: str, messages: list) -> None:
+        if self._guarded(session_id):  # re-check: the session may have been protected or burned since enqueue
+            self._execute("DELETE FROM pending WHERE id = ?", (row_id,))
+            return
         try:
             self._client.ingest_session(user_id, session_id, messages)
             self._execute("DELETE FROM pending WHERE id = ?", (row_id,))
@@ -324,6 +385,7 @@ class RetainDBMemoryProvider(MemoryProvider):
             {"key": "api_key", "description": "RetainDB API key", "secret": True, "required": True, "env_var": "RETAINDB_API_KEY", "url": "https://retaindb.com"},
             {"key": "base_url", "description": "API endpoint", "default": _DEFAULT_BASE_URL},
             {"key": "project", "description": "Project identifier (optional — uses 'default' project if not set)", "default": ""},
+            {"key": "skip_incognito_sessions", "description": "Skip auto-ingestion of incognito-protected or burned sessions (incognito plugin)", "default": "true"},
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
@@ -343,7 +405,9 @@ class RetainDBMemoryProvider(MemoryProvider):
         # Bind to the profile the manager names, not the ambient one (multiplexing contract, MemoryProvider).
         from hermes_constants import get_hermes_home
         home = Path(kwargs["hermes_home"]) if kwargs.get("hermes_home") else get_hermes_home()
-        self._queue = _WriteQueue(self._client, home / "retaindb_queue.db")
+        # Gate 1: don't auto-ingest sessions the incognito plugin protects or has burned.
+        ingest_guard = (lambda sid: _should_skip_ingest(home, sid)) if _incognito_gate_enabled(_load_retaindb_config()) else None
+        self._queue = _WriteQueue(self._client, home / "retaindb_queue.db", ingest_guard=ingest_guard)
         soul = (home / "SOUL.md").read_text(encoding="utf-8-sig", errors="replace").strip() if (home / "SOUL.md").exists() else ""
         if soul:  # seed agent identity from SOUL.md in background
             seed = lambda: self._client.seed_agent_identity(self._agent_id, soul, source="soul_md")

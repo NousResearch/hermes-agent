@@ -233,6 +233,24 @@ def _check_manifest_version(manifest: dict, plugin_name: str) -> None:
                                          failure_class="incompatible")
 
 
+# The user plugins folder whose children provider discovery imports by placement alone.
+_PROVIDER_PLUGINS_FOLDER = "model-providers"
+
+
+def _refuse_provider_plugins_folder_name(plugin_name: str, target: Path, prior: object, source: str) -> None:
+    """Refuse installing a plugin AS the provider-plugins folder (any letter case): every package
+    inside it would load as a provider while the plugin reads as not enabled. Re-installing an
+    existing install of that name from its recorded source (an update's re-clone) is left as it was."""
+    if str(plugin_name).casefold() != _PROVIDER_PLUGINS_FOLDER:
+        return
+    if target.is_dir() and isinstance(prior, dict) and prior.get("source") == source:
+        return
+    raise _pc().PluginOperationError(
+        f"Invalid plugin name '{plugin_name}': {_PROVIDER_PLUGINS_FOLDER} is the folder Hermes reserves for "
+        "provider plugins and cannot be used as a plugin's own name. Change the name in the plugin's manifest "
+        "to install it.", failure_class="manifest_invalid")
+
+
 def _read_manifest_for_install(plugin_dir: Path) -> dict:
     """A candidate's unreadable or malformed manifest must stop publication."""
     native = _pc()._native_manifest_file(plugin_dir)
@@ -463,6 +481,7 @@ def _install_plugin_core(
             target = _pc()._sanitize_plugin_name(plugin_name, plugins_dir)
         except ValueError as e:
             raise _pc().PluginOperationError(str(e), failure_class="manifest_invalid") from e
+        _refuse_provider_plugins_folder_name(plugin_name, target, old_metadata.get(plugin_name), source)
         _check_manifest_version(manifest, plugin_name)
         # One owner per plugin: an `install --ref` publishing between an unattended updater's hold
         # check and its publication would be overwritten (the updater holds this lock across both).

@@ -18,7 +18,7 @@ Model provider plugins are the third kind of **provider plugin**. The others are
 
 1. **Bundled plugins** — `<repo>/plugins/model-providers/<name>/` — ship with Hermes
 2. **User plugins** — `$HERMES_HOME/plugins/model-providers/<name>/` — drop in a directory; a running process picks it up on its next provider lookup (no restart)
-3. **Installed plugins** — `$HERMES_HOME/plugins/<name>/` (where `hermes plugins install owner/repo` clones) — imported only when `plugin.yaml` declares `kind: model-provider`; every other kind there belongs to the general PluginManager
+3. **Installed plugins** — `$HERMES_HOME/plugins/<name>/` (where `hermes plugins install owner/repo` clones) — imported only when `plugin.yaml` declares `kind: model-provider`; every other kind there belongs to the general PluginManager. `model-providers` is the folder from step 2, so `hermes plugins install` refuses a plugin whose own name is `model-providers` (in any letter case)
 4. **Legacy single-file** — `<repo>/providers/<name>.py` — back-compat for out-of-tree editable installs
 
 Steps 2 and 3 are **per profile home**: one process that serves several profiles (the multiplex gateway a local Desktop attaches to, a `hermes serve` backend) resolves the plugins of whichever profile's `$HERMES_HOME` is bound at lookup time, and a plugin installed in one profile is not visible from another. Install the plugin in every profile that should use it (`hermes -p <profile> plugins install ...`).

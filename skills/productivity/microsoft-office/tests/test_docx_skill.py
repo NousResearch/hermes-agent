@@ -8,6 +8,7 @@ fixtures are generated on the fly; no network.
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import struct
 import subprocess
@@ -20,6 +21,12 @@ from docx import Document
 
 SKILL = Path(__file__).resolve().parent.parent
 SCRIPTS = SKILL / "scripts"
+
+VALIDATE_SPEC = importlib.util.spec_from_file_location(
+    "docx_validate_pure", SCRIPTS / "docx_validate.py")
+assert VALIDATE_SPEC and VALIDATE_SPEC.loader
+docx_validate = importlib.util.module_from_spec(VALIDATE_SPEC)
+VALIDATE_SPEC.loader.exec_module(docx_validate)
 
 NON_ASCII = "Фамилия — ‘test’"
 
@@ -418,6 +425,13 @@ class TestComments:
 
 
 class TestValidate:
+    def test_relationship_source_keeps_each_part_distinct(self):
+        assert docx_validate._source_part_for_rels(
+            "word/_rels/document.xml.rels") == "word/document.xml"
+        assert docx_validate._source_part_for_rels(
+            "word/_rels/header1.xml.rels") == "word/header1.xml"
+        assert docx_validate._source_part_for_rels("_rels/.rels") == ""
+
     def test_healthy_file_passes(self, created: Path):
         res = run("docx_validate.py", created)
         assert res["ok"] is True

@@ -1887,7 +1887,7 @@ jobs:
     environment: release-signing
     cache-mode: write
     timeout-minutes: 90
-    env: &termux-env
+    env:
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       # Archive ref for the termux handoff: attempt ref for stable phases.
       HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
@@ -2193,8 +2193,9 @@ jobs:
 
   termux-deb-commit:
     name: Build the termux .deb (aarch64, commit)
-    # Read-only cache token and no APT GPG signing key: commit builds and commit/channel
-    # claims run unreviewed code and only produce a downloadable .deb, never a signed APT repo.
+    # Read-only cache token, no GHCR push permission, and no APT GPG signing key:
+    # commit builds and commit/channel claims run unreviewed code and only produce
+    # a downloadable .deb, never a signed APT repo or shared builder image.
     needs: [validate]
     if: >-
       !cancelled() && needs.validate.result == 'success'
@@ -2205,8 +2206,18 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404-arm
     environment: release-signing
     cache-mode: read
+    permissions:
+      contents: read
+      packages: read
     timeout-minutes: 90
-    env: *termux-env
+    env:
+      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
+      HERMES_BUILD_COMMIT: ${{ (inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha) || (inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.') && needs.validate.outputs.sha) || '' }}
+      HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
+      LEGACY_COMMIT_BUILD: ${{ needs.validate.outputs.legacy-commit-build }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
@@ -2281,15 +2292,40 @@ jobs:
             bash scripts/termux/termux_pkg_build.sh "$tool" "$tool" termux-build/payload
           done
 
-      - name: Ensure the derived builder image (toolchain pre-baked)
+      - name: Ensure the derived builder image (toolchain pre-baked, no push)
         id: builder_image
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          TERMUX_BUILDER_NO_PUSH: '1'
         run: |
           mkdir -p termux-build
-          bash scripts/termux/build_builder_image.sh | tee termux-build/.builder-image.log
+          if grep -q 'TERMUX_BUILDER_NO_PUSH' scripts/termux/build_builder_image.sh 2>/dev/null; then
+            bash scripts/termux/build_builder_image.sh --no-push | tee termux-build/.builder-image.log
+          else
+            # Pre-PR commit checkout: reuse a published GHCR image if present,
+            # else build and smoke a job-local image without logging into or pushing to GHCR.
+            digest="$(python3 -c 'import sys; sys.path.insert(0, "."); from pm.lock import termux_docker_digest; print(termux_docker_digest())')"
+            base="termux/termux-docker@${digest}"
+            dockerfile="scripts/termux/termux-builder.Dockerfile"
+            short="$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(sys.argv[1].encode() + b"\0" + pathlib.Path(sys.argv[2]).read_bytes()).hexdigest()[:12])' "$base" "$dockerfile")"
+            owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+            published="ghcr.io/${owner}/hermes-termux-builder:${short}"
+            if docker manifest inspect "$published" >/dev/null 2>&1; then
+              printf 'builder image already published: %s\n%s\n' "$published" "$published" | tee termux-build/.builder-image.log
+            else
+              local_img="hermes-termux-builder-local:${short}"
+              docker build -f "$dockerfile" --build-arg "BASE=${base}" -t "$local_img" scripts/termux
+              docker run --rm --platform linux/arm64 "$local_img" /data/data/com.termux/files/usr/bin/bash -c '
+                export PREFIX=/data/data/com.termux/files/usr
+                for tool in clang rustc cargo make; do
+                  command -v "$tool" >/dev/null 2>&1 || { echo "smoke FAIL: $tool"; exit 1; }
+                done
+                echo "builder image smoke OK"
+              '
+              printf 'built locally (push disabled): %s\n%s\n' "$local_img" "$local_img" | tee termux-build/.builder-image.log
+            fi
+          fi
           img="$(tail -n1 termux-build/.builder-image.log)"
           echo "builder image: $img"
           echo "image=$img" >> "$GITHUB_OUTPUT"
@@ -2350,6 +2386,9 @@ jobs:
         shell: bash
         env:
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
         run: |
           # python -m imports from the working directory first: a claim runs the controller copy.
           root="$GITHUB_WORKSPACE/termux-build"

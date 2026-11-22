@@ -224,3 +224,49 @@ def test_builder_image_identity_covers_all_inputs(tmp_path, changed_input):
     assert image() != original
     changed.write_bytes(before)
     assert image() == original
+
+
+@pytest.mark.parametrize("mode", ["flag", "env"])
+def test_builder_image_no_push_builds_local_image_without_registry_login_or_push(tmp_path, mode):
+    """Commit builds must never log in or push to GHCR on a builder-image cache miss."""
+    repo = tmp_path / "repo"
+    scripts = repo / "scripts/termux"
+    scripts.mkdir(parents=True)
+    for name in ("build_builder_image.sh", "termux-builder.Dockerfile"):
+        shutil.copy2(ROOT / "scripts/termux" / name, scripts / name)
+    shutil.copytree(ROOT / "pm", repo / "pm", ignore=shutil.ignore_patterns("__pycache__"))
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "python3").symlink_to(sys.executable)
+    docker_log = tmp_path / "docker.log"
+    docker_stub = tools / "docker"
+    docker_stub.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\n"
+        "case \"$1 $2\" in\n"
+        "  'manifest inspect') exit 1 ;;\n"
+        "  'build '*) exit 0 ;;\n"
+        "  'run '*) echo 'builder image smoke OK'; exit 0 ;;\n"
+        "  'login '*|'push '*) echo \"FORBIDDEN docker $1\" >&2; exit 99 ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    docker_stub.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
+           "GITHUB_REPOSITORY_OWNER": "NousResearch", "DOCKER_LOG": str(docker_log)}
+    env.pop("GITHUB_TOKEN", None)
+    args = ["bash", str(scripts / "build_builder_image.sh")]
+    if mode == "flag":
+        args.append("--no-push")
+    else:
+        env["TERMUX_BUILDER_NO_PUSH"] = "1"
+    result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    image = result.stdout.splitlines()[-1]
+    assert image.startswith("hermes-termux-builder-local:"), image
+    calls = docker_log.read_text(encoding="utf-8").splitlines()
+    assert any(c.startswith("manifest inspect ghcr.io/nousresearch/hermes-termux-builder:") for c in calls)
+    assert any(c.startswith("build ") and f"-t {image}" in c for c in calls)
+    assert any(c.startswith("run ") and image in c for c in calls)
+    assert not any(c.startswith(("login ", "push ")) for c in calls), calls

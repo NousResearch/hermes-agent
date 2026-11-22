@@ -822,6 +822,13 @@ class SessionAuthority:
         from gateway.owner_identity import same_owner
         if not same_owner(row['principal_id'], actor.subject) and 'session:control' not in actor.capabilities:
             raise AuthorityRefusal('permission_denied')
+        if row['status'] == 'unknown':
+            # A poller (the Kanban dispatcher's worker_client, which only ever reads this RPC after
+            # its one kanban.run) can be the only thing left watching this session: without a nudge
+            # the drain never retries _claim_next, so the already-built unattended auto-resolution
+            # (GW-10, session_unattended_unknown.py) never gets a chance to settle a stuck kanban/
+            # automation 'unknown' admission. _schedule is idempotent (no-ops with a live drain task).
+            self._schedule(ref)
         live = self.sessions[ref.session_id]
         with live.event_stream.lock:
             # Read after the row: a terminal row whose completion is not yet published reads as

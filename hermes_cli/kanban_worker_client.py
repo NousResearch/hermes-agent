@@ -122,6 +122,17 @@ async def _await_receipt(client, params, board_db, claim):
         await asyncio.sleep(.2)
         receipt = await _receipt(client, claim)
         claim.answered = time.monotonic()
+    if receipt['status'] == 'unknown':
+        # This exact read just nudged the owner's drain (session_authority.receipt) to retry
+        # _claim_next, which self-resolves a kanban-tagged 'unknown' admission (GW-10) in the
+        # same tick when nothing else would. Poll briefly for that before surfacing a fatal
+        # error -- real max 2s, well inside existing retry budgets.
+        for _ in range(10):
+            await asyncio.sleep(.2)
+            receipt = await _receipt(client, claim)
+            claim.answered = time.monotonic()
+            if receipt['status'] != 'unknown':
+                break
     return receipt
 
 

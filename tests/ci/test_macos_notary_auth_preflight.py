@@ -16,6 +16,7 @@ from tests.ci.desktop_release_roles import (
     DOWNLOADABLE_DISPATCHES,
     DRY_DISPATCH,
     ROOT,
+    admitted,
     gate,
     load,
     native_builds,
@@ -395,6 +396,21 @@ def test_workflow_write_and_preflight_steps_replay_end_to_end(tmp_path: Path):
     )
     assert channel_401.returncode != 0
     assert "::error::" in channel_401.stdout + channel_401.stderr
+
+    # A release candidate's admitted commit can predate the helper; the controller checkout supplies it.
+    release_workspace = tmp_path / "older-release-source"
+    release_workspace.mkdir()
+    for step in release_job["steps"]:
+        checkout = step.get("with", {})
+        if checkout.get("ref") == "${{ github.sha }}" and gate(
+            step["if"], DOWNLOADABLE_DISPATCHES["candidate"], admitted(["validate"]), job_if=False,
+        ):
+            dest = release_workspace / checkout["path"] / "scripts/ci/check_macos_notary_auth.py"
+            dest.parent.mkdir(parents=True)
+            shutil.copy2(ROOT / "scripts/ci/check_macos_notary_auth.py", dest)
+    older_release = run_steps(pem_text=_synthetic_p8(), cwd=release_workspace)
+    assert older_release.returncode == 0, older_release.stdout + older_release.stderr
+    assert xcrun_log.exists(), "a release of an older commit still needs the auth probe"
 
     # Older commit builds lacking the helper warn and continue; release checkouts fail closed.
     older_checkout = tmp_path / "older-checkout"

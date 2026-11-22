@@ -855,7 +855,11 @@ jobs:
           fetch-tags: ${{ inputs.build_commit == '' && needs.validate.outputs.channel-build == '' }}
 
       - name: Check out trusted channel controller
-        if: needs.validate.outputs.channel-build != ''
+        # Release candidates take the notarization preflight from here too: the
+        # admitted release commit can predate scripts/ci/check_macos_notary_auth.py.
+        if: >-
+          needs.validate.outputs.channel-build != ''
+          || (inputs.release-phase == 'candidate' && inputs.build_commit == '' && inputs.channel == '')
         uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ github.sha }}

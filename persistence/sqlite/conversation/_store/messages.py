@@ -31,6 +31,7 @@ from persistence.sqlite.conversation._store.messages_sql import (
     _SET_COUNTERS_SQL, _SET_DISPLAY_META_SQL, _SHADOWED_CHECKPOINT_ROWS_SQL, _TURN_LEASE_ROW_SQL, _coerce_timestamp,
     _parse_tool_calls, _scrub_surrogates, _stale_holder, _tool_calls_count, _tool_calls_len, logger,
 )
+from persistence.sqlite.conversation._store.reasoning import _reasoning_is_shared, _restore_shared_reasoning
 from persistence.sqlite.conversation._store.rules import (
     CANONICAL_ROW, DATA_USE, DB_ROW_SNAPSHOT, TOOL_CALL_UID, _is_checkpoint_item, _newest_checkpoint_carrier,
     _sanitize_surrogates, coerce_epoch, lift_data_use, stamp_message_uid,
@@ -199,6 +200,10 @@ def _message_row_params(holder: StoreHolder, session_id: str, role: str, msg: di
         # Writers that copy a fixed field list (/branch) carry the key, not display_metadata.
         display_metadata = {**(display_metadata or {}), DATA_USE: list(msg[DATA_USE])}
     display_metadata = _encode_display_metadata(display_metadata)
+    reasoning = _scrub_surrogates(_reasoning("reasoning"))
+    reasoning_content = _scrub_surrogates(_reasoning("reasoning_content"))
+    if _reasoning_is_shared(role, reasoning, reasoning_content):
+        reasoning = None
     identity_row = {
         "role": role, "content": encoded_content, "timestamp": message_timestamp,
         "tool_call_id": msg.get("tool_call_id"), "tool_calls": encoded_tool_calls,
@@ -208,7 +213,7 @@ def _message_row_params(holder: StoreHolder, session_id: str, role: str, msg: di
     return (session_id, role, encoded_content, msg.get("tool_call_id"),
         encoded_tool_calls, encoded_tool_name,
         msg.get("effect_disposition"), message_timestamp, msg.get("token_count"), msg.get("finish_reason"),
-        _scrub_surrogates(_reasoning("reasoning")), _scrub_surrogates(_reasoning("reasoning_content")),
+        reasoning, reasoning_content,
         *(_reasoning_json_text(_reasoning(k))
           for k in ("reasoning_details", "codex_reasoning_items", "codex_message_items")),
         msg.get("platform_message_id") or msg.get("message_id"),
@@ -1273,6 +1278,7 @@ def _row_to_message_dict(holder: StoreHolder, row, *, warn_context: str, summary
             msg["tool_calls"], [], f"Failed to deserialize tool_calls in {warn_context}, falling back to []")
     if msg.get("display_metadata") is not None:
         msg["display_metadata"] = _decode_display_metadata(msg["display_metadata"])
+    _restore_shared_reasoning(msg)
     # A `SELECT *` picks up every column, including any BLOB added to the schema later; the
     # JSON encoder that serves these dicts over HTTP fails outright on raw bytes. Drop them
     # here, once, rather than needing a new named pop for each future binary column. Known
@@ -1619,6 +1625,7 @@ def _rows_to_conversation(holder: StoreHolder, rows, *, session_id: str, include
             msg.update((col, row[col]) for col in ("finish_reason", "reasoning") if row[col])
             if row["reasoning_content"] is not None:
                 msg["reasoning_content"] = row["reasoning_content"]
+            _restore_shared_reasoning(msg)
             msg.update(
                 (col, _json_or(row[col], None, f"Failed to deserialize {col}, falling back to None"))
                 for col in ("reasoning_details", "codex_reasoning_items", "codex_message_items") if row[col])

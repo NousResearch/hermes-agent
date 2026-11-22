@@ -215,12 +215,16 @@ class Pattern:
         if not wide or self._wide_text is None:
             return
         form = self._wide_built
-        if form is None:  # not built yet, or matching fell back to the ASCII `\\b`: build it here, or raise why not
-            form = self._wide_form(self._wide_text)
-            form.rescue = None
-            self._wide = form.build()
-            self._wide_built = form
+        if form is not None:
+            form.verify()
+            return
+        # Not built yet, or matching fell back to the ASCII `\\b`: build it here, or raise why not. The
+        # runner is installed only once its exact twin is proven to fit: a failed check must leave
+        # later matches exactly as they would be without it.
+        form = self._wide_form(self._wide_text)
+        runner = form.build()
         form.verify()
+        self._wide, self._wide_built = runner, form
 
     def _unbuild(self) -> list:
         """Forget the programs (they are built again on next use); returns them."""

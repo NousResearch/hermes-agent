@@ -72,6 +72,25 @@ def test_build_all_reaches_every_live_pattern_even_equal_ones():
     gc.collect()
 
 
+def test_a_failed_wide_check_leaves_later_matches_as_they_would_be_without_it():
+    from hermes_re import _engine
+    source, real = r"\babc[a-z]*?\b", _engine.MAX_MEM
+    subject = "\u2014abc\u00e9 abcx\u00e9d abcd\u2014"  # needs the exact twin, which does not fit
+    hre.purge()
+    _engine.MAX_MEM = 20_000  # room for the cheap programs, not for the exact one with the Unicode `\w` class
+    try:
+        unchecked = [m.span() for m in hre.compile(source).finditer(subject)]  # falls back to the ASCII `\b`
+        hre.purge()
+        checked = hre.compile(source)
+        assert [p for p, _ in hre.build_all(wide=True) if p is checked] == [checked]
+        assert outcome(lambda: [m.span() for m in checked.finditer(subject)]) == unchecked
+        first = checked.search(subject)
+        assert first is not None and first.span() == unchecked[0]
+    finally:
+        _engine.MAX_MEM = real
+        hre.purge()
+
+
 def test_build_all_wide_checks_a_wide_form_that_matching_already_built():
     from hermes_re import _engine
     source, real = r"\babc[a-z]*?\b", _engine.MAX_MEM

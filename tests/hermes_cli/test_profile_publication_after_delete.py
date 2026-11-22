@@ -97,9 +97,30 @@ def test_an_import_racing_a_publish_of_its_name_refuses_and_leaves_the_winner_al
     assert _leftovers() == []
 
 
+@pytest.mark.platforms("windows")
+def test_a_losing_import_removes_the_read_only_files_it_extracted(profile_env, monkeypatch):
+    """Extraction re-applies each member's mode, so a read-only file (a git object) lands read-only, and
+    Windows refuses to unlink a read-only file: a plain rmtree leaves the staged tree behind."""
+    profiles.create_profile("source", no_alias=True)
+    pack = profiles.get_profile_dir("source") / "skills" / "repo" / "p.pack"
+    pack.parent.mkdir(parents=True)
+    pack.write_text("p")
+    pack.chmod(0o444)
+    archive = Path(profiles.export_profile("source", str(profile_env / "source.tar.gz")))
+    real = profiles_initialization.prepare_imported_tree
+
+    def publish_meanwhile(staged):
+        real(staged)
+        _publish_winner("racer")
+
+    monkeypatch.setattr(profiles_initialization, "prepare_imported_tree", publish_meanwhile)
+    with pytest.raises(FileExistsError, match="already exists"):
+        profiles.import_profile(str(archive), name="racer")
+    assert _leftovers() == []
+
+
 def test_an_import_waits_for_a_create_of_the_same_name_in_this_process(profile_env, monkeypatch):
-    """In-process creates and imports of one name share ``profiles/.<name>.staging-<pid>``: the import
-    must hold the create lock so neither removes the other's staging tree."""
+    """An in-process create and import of one name serialize on the create lock: the import waits."""
     from hermes_cli import profile_provision
 
     archive = _archive(profile_env)
@@ -129,9 +150,13 @@ def test_an_import_stages_privately_until_its_files_are_tightened(profile_env, m
         real(staged)
 
     monkeypatch.setattr(profiles_initialization, "prepare_imported_tree", record)
-    monkeypatch.setattr("os.umask", lambda *_a: 0o022, raising=False)
-    profiles.import_profile(str(archive), name="private")
-    assert modes == [0o700]
+    import os
+    old_umask = os.umask(0o022)  # the process umask: a mkdir without mode=0o700 would give 0o755
+    try:
+        profiles.import_profile(str(archive), name="private")
+    finally:
+        os.umask(old_umask)
+    assert modes == [0o700] and _leftovers() == []  # the emptied staging root is removed too
 
 
 def test_a_rename_racing_a_publish_of_the_new_name_refuses_and_keeps_both(profile_env, monkeypatch):

@@ -535,6 +535,46 @@ def test_active_pr_guard_lifts_for_profile_handed_the_card_after_the_pr(
         assert kbd.check_respawn_guard(conn, closer_id) == "active_pr"
 
 
+@pytest.mark.parametrize("wake", ["unblock", "promote"])
+def test_active_pr_guard_lifts_when_native_wake_follows_the_pr(
+    kanban_home: Path, wake: str,
+) -> None:
+    """A native wake after publication resumes work on that PR, not a duplicate."""
+    pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title=f"native {wake}", assignee="dev")
+        kb.add_comment(conn, tid, author="dev", body=pr_comment)
+        _backdate_comments(conn, tid)
+        assert kb.block_task(conn, tid, reason="waiting for native input")
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+        if wake == "unblock":
+            assert kb.unblock_task(conn, tid)
+        else:
+            ok, reason = kb.promote_task(conn, tid, actor="operator", reason="input ready")
+            assert (ok, reason) == (True, None)
+
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status == "ready"
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_active_pr_guard_survives_reclaim_after_the_pr(kanban_home: Path) -> None:
+    """Crash/operator recovery is not an instruction to duplicate published work."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="reclaimed", assignee="dev")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        kb.add_comment(
+            conn, tid, author="dev",
+            body="Opened https://github.com/example/repo/pull/44 for review.",
+        )
+        _backdate_comments(conn, tid)
+        assert kb.reclaim_task(conn, tid, reason="worker disappeared")
+
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+
 def test_active_pr_guard_holds_through_same_profile_reassign_and_unassign(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

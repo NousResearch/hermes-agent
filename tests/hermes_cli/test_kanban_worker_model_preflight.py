@@ -357,3 +357,41 @@ def test_an_ip_literal_is_judged_by_its_scope(url, expected, monkeypatch):
     monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
     monkeypatch.setattr(models, "get_default_model_for_provider", lambda provider: "cloud-model")
     assert task_model(_card(), {"model": {"provider": "deepseek", "base_url": url}}) == expected
+
+
+def test_a_pinned_card_spawns_without_reading_its_profiles_config(dispatch_profile, monkeypatch):
+    """A card with its own model never needs the profile's: a config backend outage must not defer it."""
+    from hermes_cli import config_effective
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+
+    profile, spawned = dispatch_profile
+    real = config_effective.load_user_config_effective
+
+    def unavailable(config_path=None, **kwargs):
+        if config_path is not None and Path(config_path).parent == profile:
+            raise ConfigBackendUnavailable("config plane unreachable")
+        return real(config_path, **kwargs)
+
+    monkeypatch.setattr(config_effective, "load_user_config_effective", unavailable)
+    task_id, result, row, _, _ = _dispatch(profile, "model:\n  provider: openrouter\n", model_override="task-model")
+    assert len(spawned) == 1 and result.spawned[0][0] == task_id and row.status == "running"
+
+
+def test_an_unreadable_profile_config_is_left_to_the_owner_not_refused(dispatch_profile, monkeypatch):
+    """Broken YAML with no last-good copy must not read as an empty config: with a managed overlay naming
+    a public custom route, that would be refused as "No model configured" and spend the retry budget."""
+    from hermes_cli import managed_scope
+
+    profile, spawned = dispatch_profile
+    route = {"provider": "custom", "base_url": "https://llm.example.test/v1"}
+    monkeypatch.setattr(managed_scope, "apply_managed_overlay", lambda config: {**config, "model": dict(route)})
+    task_id, result, row, _, _ = _dispatch(profile, "model: [unclosed\n")
+    assert len(spawned) == 1 and result.spawned[0][0] == task_id
+    assert row.consecutive_failures == 0
+
+
+def test_a_refusal_names_the_unblock_that_re_runs_a_blocked_card(dispatch_profile):
+    """Refusals spend the retry budget and block the card at the limit; set-model alone then does nothing."""
+    profile, _ = dispatch_profile
+    task_id, _, task, _, _ = _dispatch(profile, "model:\n  provider: custom\n  base_url: https://llm.example.test/v1\n")
+    assert f"`hermes kanban unblock {task_id}`" in task.last_failure_error

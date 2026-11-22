@@ -209,6 +209,26 @@ class HermesProviderMixin:
             request.headers["User-Agent"] = ua
         return stamp_default_user_agent(request)
 
+    def _with_grant_scope(self, request):
+        """Name the grant's scope on a ``refresh_token`` POST; the SDK builds it with none.
+
+        RFC 6749 §6 makes ``scope`` optional there, but Microsoft Entra v2 requires it and answers
+        ``400 AADSTS90009 ... requesting a token for itself`` without it when the OAuth client is
+        also the resource (an internal MCP server behind its own app registration), so every
+        refresh failed and the server needed a fresh browser sign-in each hour. The stored token's
+        scope is the granted one (the SDK records the requested scope when the grant omits it), so
+        re-sending it never widens the grant. No stored scope = request unchanged."""
+        scope = getattr(self.context.current_tokens, "scope", None) or self.context.client_metadata.scope
+        if not scope:
+            return request
+        from urllib.parse import parse_qsl
+        form = dict(parse_qsl(request.content.decode()))
+        if form.get("scope"):
+            return request
+        form["scope"] = scope
+        headers = {k: v for k, v in request.headers.items() if k.lower() not in ("content-length", "host")}
+        return type(request)(request.method, request.url, data=form, headers=headers)
+
     def _coerce_client_secret_post(self) -> None:
         """Same rule as ``HermesTokenStorage._coerce_secret_auth_method``, applied to the
         in-memory client info BEFORE the SDK builds a token-endpoint request from it."""
@@ -326,7 +346,7 @@ class HermesProviderMixin:
                     # refresh token would only burn a generation on a single-use
                     # provider. Skip the POST and let the flow restart.
                     raise _RefreshCompletedByPeer
-            return self._prepare_token_request(await super()._refresh_token())
+            return self._prepare_token_request(self._with_grant_scope(await super()._refresh_token()))
         except BaseException:
             # Never hold the fence when no POST will follow.
             await self._hermes_release_refresh_fence()

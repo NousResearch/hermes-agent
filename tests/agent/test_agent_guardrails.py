@@ -206,7 +206,7 @@ class TestSanitizeApiMessages:
         pairs = []
         for msg in out:
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                pairs.extend(_replay_tool_call_items(msg, start_index=0, wire_ids=wire))
+                pairs.extend(r.wire for r in _replay_tool_call_items(msg, start_index=0, wire_ids=wire))
             elif msg.get("role") == "tool":
                 pairs.extend(_tool_output_items(msg, wire_ids=wire))
         calls = [i["call_id"] for i in pairs if i["type"] == "function_call"]

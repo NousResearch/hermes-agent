@@ -30,7 +30,8 @@ def test_card_default_keeps_unreviewed_tools_disabled(altitude):
 @pytest.mark.parametrize("probe_succeeds", [False, True])
 def test_cli_default_keeps_unreviewed_tools_disabled(altitude, monkeypatch, probe_succeeds):
     advertised = [(name, "") for name in READ_TOOLS + [
-        "generate_exports", "download_export", "future_action",
+        "generate_exports", "download_export", "list_cards", "list_members",
+        "list_tasks", "download_receipt", "future_action",
     ]]
     monkeypatch.setattr(mc, "_probe_tools", lambda name: advertised if probe_succeeds else None)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)

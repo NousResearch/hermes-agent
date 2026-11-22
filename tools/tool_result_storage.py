@@ -478,6 +478,17 @@ def archive_compaction_drops(
 
 
 ARCHIVE_LIST_HEADING = "Archived tool output (exact originals; read_file a path to recover one):"
+# The list exists so the model can still open a replaced result; it is not a transcript index. Left
+# unbounded it grows monotonically across compactions (each round re-lists every earlier round's archives,
+# since only the summary names them) until it dominates the summary it is appended to. Cap it and point at
+# session_search for the rest.
+ARCHIVE_LIST_MAX_ENTRIES = 40
+
+
+def _newest(ordered: list[str]) -> list[str]:
+    """The ``ARCHIVE_LIST_MAX_ENTRIES`` newest of *ordered* (sorted archive refs). One definition, so the list
+    ``archive_list_for_summary`` renders and the set the caller stops counting are the same window."""
+    return ordered[-ARCHIVE_LIST_MAX_ENTRIES:] if len(ordered) > ARCHIVE_LIST_MAX_ENTRIES else ordered
 
 
 def _row_text(row: Any) -> str:
@@ -494,15 +505,26 @@ def archive_list_for_summary(named: set[str], kept: list[dict[str, Any]]) -> str
     """The *named* archives no row of *kept* (the committed transcript, summary included) points at, as a
     deterministic list to append to the committed summary; ``""`` when none. The generated summary may drop
     a pointer: this list keeps the model's recovery path, and the reference the retention sweep reads,
-    whatever the summarizer wrote."""
+    whatever the summarizer wrote.
+
+    Bounded by ``ARCHIVE_LIST_MAX_ENTRIES``: the *newest* names are listed and every older one collapses to a
+    single count. Unbounded, the list is re-committed by every later compaction (only the summary ever names
+    those archives) and ends up larger than the summary carrying it. The shown window is the newest-N slice,
+    so re-listing reproduces it exactly instead of rotating a dropped entry back in each round.
+    """
     from hermes_constants import get_hermes_home
 
     missing = named - pruned_archive_refs(kept)
     if not missing:
         return ""
     home = get_hermes_home()
-    return "\n\n" + ARCHIVE_LIST_HEADING + "".join(
-        f"\n- {_archive_stub_path(str(home / ref))}" for ref in sorted(missing))
+    ordered = _newest(sorted(missing))
+    overflow = len(missing) - len(ordered)
+    body = "".join(f"\n- {_archive_stub_path(str(home / ref))}" for ref in ordered)
+    if overflow > 0:
+        body += (f"\n- … and {overflow} earlier archive(s) — find them with session_search("
+                 f"session_id='<this session>')")
+    return "\n\n" + ARCHIVE_LIST_HEADING + body
 
 
 def discard_archives(paths: list[str]) -> None:

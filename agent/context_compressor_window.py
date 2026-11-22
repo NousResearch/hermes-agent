@@ -23,6 +23,27 @@ def _restart_probe_extra() -> int:
 _SUMMARY_KEEPS_PRUNED_FORM = frozenset({"clarify"})
 
 
+def _strip_archive_list(summary: str) -> str:
+    """*summary* without the archive list a previous compaction appended to it.
+
+    ``archive_list_for_summary`` treats a pointer still present in the transcript as live, and the previous
+    summary is part of the transcript: left in, its list keeps every older archive "named forever", so each
+    compaction re-commits the whole history of lists and the summary grows without bound. The list is
+    regenerated from the current round's archives, so dropping the inherited one loses no recovery path.
+
+    Everything from the FIRST heading is dropped, not just the last block: a summary written by an older build
+    can already carry several stacked blocks, and cutting only the trailing one would leave the rest to
+    accumulate.
+    """
+    from tools.tool_result_storage import ARCHIVE_LIST_HEADING
+
+    at = summary.find(ARCHIVE_LIST_HEADING)
+    if at < 0:
+        return summary
+    # Each block is a flat "\n- <path>" list appended at the end, so the first heading starts the tail to cut.
+    return summary[:at].rstrip()
+
+
 def summary_view(
     plan: list[dict[str, Any]], originals: list[dict[str, Any]], start: int, end: int,
 ) -> list[dict[str, Any]]:
@@ -149,11 +170,21 @@ class CompactionWindowMixin:
         nor the generated summary still name, listed in the summary row: the summarizer never saw the pointers
         (it read the originals), and the list keeps the model's path back and the reference the retention
         sweep keeps the file for."""
-        from tools.tool_result_storage import archive_list_for_summary, pruned_archive_refs
+        from tools.tool_result_storage import archive_list_for_summary, pruned_archive_refs, _newest
 
         named = pruned_archive_refs(messages)
-        kept = [*messages[:start], *messages[max(end, scan.tail_start):], {"content": summary}]
-        return self._assemble_compressed(messages, start, end, scan, summary + archive_list_for_summary(named, kept))
+        # Bound *named* to the window the list can show. Underlying every older archive would make the
+        # difference below non-empty on every later round (a capped list only ever names the newest few), so a
+        # fresh compaction would rediscover them and re-render a different "newest 40" each time — the same
+        # unbounded growth the cap exists to stop. Archives past the window stay recoverable through
+        # session_search, which is what the list's overflow line points at.
+        named = set(_newest(sorted(named)))
+        # The previous summary carries the last round's archive list; committed as-is it would be stacked on
+        # top of this round's list, so every later compaction re-committed one more block and the summary grew
+        # without bound. Commit the body only, then this round's freshly rendered list.
+        body = _strip_archive_list(summary)
+        kept = [*messages[:start], *messages[max(end, scan.tail_start):], {"content": body}]
+        return self._assemble_compressed(messages, start, end, scan, body + archive_list_for_summary(named, kept))
 
     def _offload_window_results(
         self, plan: list[dict[str, Any]], start: int, end: int,

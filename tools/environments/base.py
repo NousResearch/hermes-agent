@@ -565,7 +565,8 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
     def _wait_for_process(
         self, proc: ProcessHandle, timeout: int = 120, *,
         bounded_capture: bool = False, watch_interrupt_tid: int | None = None,
-        output=None, yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
+        output=None, yield_handler: Callable[[ProcessHandle, str], dict] | None = None,
+        on_chunk: Callable[[str], None] | None = None) -> dict:
         """Poll-based wait with interrupt checking and stdout draining (shared, not overridden).
         ``yield_handler(proc, output_so_far)``: when the tool thread is asked to yield
         (``tools.interrupt.request_yield`` — a user message arrived mid-command), the drain
@@ -588,7 +589,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         if output is None:
             output = _new_output_collector(proc, bounded_capture)
         drain_stop = threading.Event() if yield_handler is not None else None
-        drain_thread = _start_drain_thread(proc, output, drain_stop)
+        drain_thread = _start_drain_thread(proc, output, drain_stop, on_chunk)
         _now = time.monotonic()
         deadline = _now + timeout
         _activity_state = {"last_touch": _now, "start": _now}
@@ -624,7 +625,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
                         output.close_spill()
                         return handed
                     drain_stop.clear()
-                    drain_thread = _start_drain_thread(proc, output, drain_stop)
+                    drain_thread = _start_drain_thread(proc, output, drain_stop, on_chunk)
                 if time.monotonic() > deadline:
                     trace.timed_out()
                     _kill_and_join()
@@ -746,7 +747,8 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
         yield_handler: Callable[[ProcessHandle, str], dict] | None = None,
-        allow_cwd_fallback: bool = False) -> dict:
+        allow_cwd_fallback: bool = False,
+        on_chunk: Callable[[str], None] | None = None) -> dict:
         """Execute a command, return {"output": str, "returncode": int}. ``bounded_capture=True``
         caps retention at ``tool_output.max_bytes`` WHILE draining; only the foreground terminal
         tool may set it — internal full-fidelity consumers (file-op ``cat`` reads feeding the
@@ -819,7 +821,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             try:
                 return self._wait_for_process(
                     spawned, timeout=effective_timeout, bounded_capture=bounded_capture,
-                    watch_interrupt_tid=parent_tid, output=output,
+                    watch_interrupt_tid=parent_tid, output=output, on_chunk=on_chunk,
                     **({"yield_handler": yield_handler} if yield_handler is not None else {}))
             finally:
                 with _live_foreground_cond:

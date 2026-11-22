@@ -181,7 +181,30 @@ export function seedAgentTerminalCommand(procId: string, command: string): void 
   seededCommands.add(procId)
   const header = `$ ${trimmed}\r\n`
   commandHeaders.set(procId, header)
-  writeAgentTerminalChunk(procId, header)
+
+  // Live chunks can land before the tab exists (foreground sessions mint on the
+  // first output chunk, then the tab is created): the backlog already carries the
+  // pre-mount output, so the `$ cmd` header must be PREPENDED, not appended —
+  // otherwise the mount replay prints the output, then the `$ cmd` line, and
+  // syncAgentTerminalSnapshot re-appends the output (the doubled-output bug).
+  // Re-ordering the backlog here (before the writer replay) puts the header first;
+  // the snapshot fence then sees body.endsWith(output) and adds nothing.
+  const entry = backlog.get(procId)
+  const existing = entry ? backlogText(entry) : ''
+
+  if (existing) {
+    const next = (header + existing).slice(-MAX_BACKLOG)
+    setBacklog(procId, next)
+
+    if (writers.get(procId)) {
+      // A writer is already attached (seeded after mount): repaint with the corrected
+      // order rather than leaving the old interleaving on screen.
+      writers.get(procId)?.(`\x1c${next}`)
+    }
+  } else {
+    writeAgentTerminalChunk(procId, header)
+  }
+  evictColdProcs()
 }
 
 /** Ingest a full output snapshot from process.list/status-stack. This is the

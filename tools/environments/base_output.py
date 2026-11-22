@@ -378,8 +378,13 @@ class _ThreadedProcessHandle:
 
 
 # --- Stdout drain thread ---
-def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: threading.Event | None = None) -> None:
+def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector,
+                   stop: threading.Event | None = None,
+                   on_chunk: Callable[[str], None] | None = None) -> None:
     """Drain ``proc.stdout`` into *output* until EOF or shortly after exit.
+    *on_chunk* (optional) is called for each decoded chunk as it is read, so a
+    foreground command can push its live output to a tracked streaming session
+    without altering the collector's own capture semantics.
     ``for line in proc.stdout`` would block on ``readline()`` until EOF, and a backgrounded
     grandchild (``cmd &``, ``setsid cmd & disown``) inherits the pipe's write end — so the
     tool would hang for the grandchild's lifetime. Instead we ``select()`` with a short poll
@@ -416,11 +421,14 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: th
         if not isinstance(fd, int) or fd < 0:
             for piece in stream:
                 if piece is not None:
-                    output.append(decoder.decode(piece) if isinstance(piece, bytes) else str(piece))
+                    text = decoder.decode(piece) if isinstance(piece, bytes) else str(piece)
+                    output.append(text)
+                    if on_chunk is not None:
+                        on_chunk(text)
         elif os.name == "nt":
-            _drain_fd_windows(proc, fd, output, decoder, stop)
+            _drain_fd_windows(proc, fd, output, decoder, stop, on_chunk)
         else:
-            _drain_fd_select(proc, fd, output, decoder, stop)
+            _drain_fd_select(proc, fd, output, decoder, stop, on_chunk)
     except Exception:
         pass  # closed fd / broken stream: keep what was captured
     finally:
@@ -429,11 +437,14 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: th
             tail = decoder.decode(b"", final=True)
             if tail:
                 output.append(tail)
+                if on_chunk is not None:
+                    on_chunk(tail)
         except Exception:
             pass
 
 
-def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> None:
+def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None,
+                      on_chunk: Callable[[str], None] | None = None) -> None:
     """POSIX drain: selector readiness (no FD_SETSIZE ceiling, #94928), stopping ~300ms after
     bash exits with the pipe idle, or when *stop* is set (the pipe is being handed to another
     reader — yield-to-background)."""
@@ -441,12 +452,13 @@ def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, st
     if waiter is None:
         return  # fd already closed
     try:
-        _drain_fd_waiter(proc, fd, waiter, output, decoder, stop)
+        _drain_fd_waiter(proc, fd, waiter, output, decoder, stop, on_chunk)
     finally:
         waiter.close()
 
 
-def _drain_fd_waiter(proc, fd: int, waiter, output: _BoundedOutputCollector, decoder, stop) -> None:
+def _drain_fd_waiter(proc, fd: int, waiter, output: _BoundedOutputCollector, decoder, stop,
+                     on_chunk: Callable[[str], None] | None = None) -> None:
     idle_after_exit = 0
     while True:
         if stop is not None and stop.is_set():
@@ -458,7 +470,10 @@ def _drain_fd_waiter(proc, fd: int, waiter, output: _BoundedOutputCollector, dec
                 return
             if not chunk:
                 return  # true EOF — all writers closed
-            output.append(decoder.decode(chunk))
+            text = decoder.decode(chunk)
+            output.append(text)
+            if on_chunk is not None:
+                on_chunk(text)
             idle_after_exit = 0
         elif proc.poll() is not None:
             # bash is gone and the pipe was idle ~100ms; allow two more cycles
@@ -468,7 +483,8 @@ def _drain_fd_waiter(proc, fd: int, waiter, output: _BoundedOutputCollector, dec
                 return
 
 
-def _drain_fd_windows(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> None:
+def _drain_fd_windows(proc, fd: int, output: _BoundedOutputCollector, decoder, stop,
+                      on_chunk: Callable[[str], None] | None = None) -> None:
     """Windows drain: poll ``PeekNamedPipe`` because ``select`` cannot poll pipes.
 
     ``os.read`` on a Windows pipe blocks until data is available or every writer
@@ -506,7 +522,10 @@ def _drain_fd_windows(proc, fd: int, output: _BoundedOutputCollector, decoder, s
                 return
             if not chunk:
                 return
-            output.append(decoder.decode(chunk))
+            text = decoder.decode(chunk)
+            output.append(text)
+            if on_chunk is not None:
+                on_chunk(text)
             idle_after_exit = 0
             continue
         if proc.poll() is not None:
@@ -518,8 +537,9 @@ def _drain_fd_windows(proc, fd: int, output: _BoundedOutputCollector, decoder, s
 
 def _start_drain_thread(
         proc: ProcessHandle, output: _BoundedOutputCollector, stop: threading.Event | None = None,
-) -> threading.Thread:
+        on_chunk: Callable[[str], None] | None = None,
+    ) -> threading.Thread:
     """Start the daemon thread running :func:`_drain_stdout`; *stop* ends it early."""
-    thread = threading.Thread(target=_drain_stdout, args=(proc, output, stop), daemon=True)
+    thread = threading.Thread(target=_drain_stdout, args=(proc, output, stop, on_chunk), daemon=True)
     thread.start()
     return thread

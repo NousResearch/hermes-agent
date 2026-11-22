@@ -2348,6 +2348,48 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         """O(1) running count for status-bar polling; dict ``len()`` is atomic, no lock."""
         return len(self._running)
 
+    # ----- Foreground streaming sessions (read-only, no reader thread) -----
+    # A foreground command runs through the normal env.execute() drain thread; the
+    # tool pushes each decoded chunk via foreground_emit() so the command is listed
+    # (and therefore gets a read-only terminal tab) and streams live in the UI.
+    def foreground_start_session(self, command: str, task_id: str, owner_task_id: str,
+                                 session_key: str, cwd: str | None, **extra) -> ProcessSession:
+        """Create and register a read-only tracked session for a foreground command whose
+        output the caller feeds manually. No reader thread is started: the command's
+        own drain thread calls foreground_emit() for each decoded chunk."""
+        session = self._new_session(command, task_id, owner_task_id, session_key, cwd, **extra)
+        session.pid = None
+        with self._lock:
+            self._prune_if_needed()
+            self._running[session.id] = session
+        self._write_checkpoint()
+        return session
+
+    def foreground_emit(self, session: ProcessSession, chunk: str) -> None:
+        """Deliver one decoded chunk to a foreground session: update the rolling tail
+        and publish the live stream event (when a local UI sink is installed)."""
+        if not chunk:
+            return
+        session.append_output(chunk)
+        self._emit_output(session, chunk)
+
+    def foreground_exit(self, session: ProcessSession, exit_code: int, reason: str = "exited",
+                        source: str = "") -> None:
+        """Mark a foreground session finished and move it to the finished store (so it
+        remains listed with its exit code). No reader thread is associated, so this is
+        safe."""
+        with self._lock:
+            session.mark_exited(exit_code, reason, source)
+        self._move_to_finished(session)
+
+    def remove_foreground_session(self, session_id: str) -> None:
+        """Drop a foreground session superseded by another (e.g. adopted to a background
+        process on yield). No reader thread is associated, so this is safe."""
+        with self._lock:
+            self._running.pop(session_id, None)
+            self._finished.pop(session_id, None)
+        self._write_checkpoint()
+
     def list_sessions(self, task_id: str | None = None, session_key: str | None = None, *, include_retained: bool = False) -> list:
         """Running and recently-finished processes for ``task_id`` and/or ``session_key``;
         cross-task entries sharing the gateway session (a forgotten preview server

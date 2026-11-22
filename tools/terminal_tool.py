@@ -1422,19 +1422,78 @@ def _run_foreground(
     metered: bool = True,
 ) -> str:
     """Execute in the foreground with retry on transient errors, then finalize. ``metered``
-    is False for Hermes' own control-plane commands (``_host_local``)."""
+    is False for Hermes' own control-plane commands (``_host_local``).
+
+    Foreground output is mirrored to a lightweight read-only process-registry session so the
+    command gets a Terminal tab and streams live. The session is created lazily on the first
+    output chunk (commands with no output create none), fed by the drain thread via *on_chunk*,
+    and closed out here — marked finished, or dropped if the command yielded to background."""
     from hermes_cli.observability.shared_metrics_harness import record_terminal_outcome
+    from tools.process_registry import process_registry
     max_retries = 3
     env_type, eff, effective_timeout = plan.env_type, plan.effective_task_id, plan.effective_timeout
 
     # Clean interrupt slate for an approved command, ONCE before the retry
     # loop: drop a stale bit that landed during the approval-wait so it
     # can't SIGINT the just-approved run. Do NOT re-clear inside the loop —
-    # a genuine interrupt during the backoff sleep must survive and abort
-    # the next attempt (rc 130).
+    # a genuine interrupt during the backoff sleep must survive to abort the
+    # next attempt (rc 130).
     if clear_interrupt:
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
+
+    # The shell wrapper prints per-session control lines — ``__HERMES_PIPE_<sid>__``
+    # (per-segment exit statuses), ``__HERMES_CWD_<sid>__`` (the landed cwd) and, only
+    # on a cwd fallback, ``__HERMES_CWDFB_<sid>__`` — that the tool parses at
+    # result-assembly. They are internal signals, never part of the user's command
+    # output, so drop any streamed line that carries a marker. Lines are buffered so a
+    # marker split across a read boundary is still caught whole.
+    _fg_markers = tuple(
+        m for m in (
+            getattr(env, "_pipe_marker", ""),
+            getattr(env, "_cwd_marker", ""),
+            getattr(env, "_cwd_fallback_marker", ""),
+        ) if m
+    )
+    _fg_state = {"buf": ""}
+    _fg_lock = threading.Lock()
+    # Initialize the lazily-created streaming session so the inner
+    # _fg_chunk/_fg_flush callbacks (nonlocal fg_session) and the close-out
+    # reads in the retry loop always see a bound value, even if on_chunk fires
+    # before (or never) assigns it. Without this, the first output chunk or the
+    # post-`env.execute` reads raise UnboundLocalError.
+    fg_session = None
+
+    def _fg_marked(text: str) -> bool:
+        return bool(_fg_markers) and any(m in text for m in _fg_markers)
+
+    def _fg_chunk(chunk: str) -> None:
+        nonlocal fg_session
+        if not chunk:
+            return
+        if fg_session is None:
+            fg_session = process_registry.foreground_start_session(
+                command, eff, task_id or eff, session_key, plan.cwd)
+        with _fg_lock:
+            buf = _fg_state["buf"] + chunk
+            _fg_state["buf"] = ""
+        if "\n" in buf:
+            complete, partial = buf.rsplit("\n", 1)
+            lines = complete.split("\n")
+        else:
+            lines, partial = [], buf
+        _fg_state["buf"] = partial
+        clean = [ln for ln in lines if not _fg_marked(ln)]
+        if clean:
+            process_registry.foreground_emit(fg_session, "\n".join(clean) + "\n")
+
+    def _fg_flush() -> None:
+        nonlocal fg_session
+        with _fg_lock:
+            buf = _fg_state["buf"]
+            _fg_state["buf"] = ""
+        if buf and not _fg_marked(buf) and fg_session is not None:
+            process_registry.foreground_emit(fg_session, buf)
 
     for retry_count in range(max_retries + 1):
         try:
@@ -1450,12 +1509,34 @@ def _run_foreground(
             # ``workdir`` the model named is refused, or a typo would run ``rm -f ./*`` a level up.
             result = env.execute(
                 command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
-                allow_cwd_fallback=not workdir,
+                allow_cwd_fallback=not workdir, on_chunk=_fg_chunk,
                 **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
                                 task_id=task_id, session_key=session_key),
             )
+            # Close out the streaming session: if the command yielded to background, drop our
+            # tracked session (the adopted background session is the source of truth);
+            # otherwise flush the trailing buffered line and mark it finished so it stays
+            # listed with its exit code and its read-only terminal tab remains.
+            if result.get("yielded_session_id"):
+                if fg_session is not None:
+                    process_registry.remove_foreground_session(fg_session.id)
+                    fg_session = None
+            elif fg_session is not None:
+                _fg_flush()
+                rc = result.get("returncode", 130)
+                reason = ("timeout" if result.get("hermes_timed_out")
+                          else "interrupted" if result.get("hermes_interrupted")
+                          else "exited")
+                process_registry.foreground_exit(fg_session, rc, reason=reason)
+                fg_session = None
             break
         except Exception as e:
+            # A backend exception can land after the drain thread produced partial output
+            # (a foreground session already exists). Settle it so it does not leak in the
+            # registry: mark it failed and keep it listed so the tab shows the output so far.
+            if fg_session is not None:
+                process_registry.foreground_exit(fg_session, -1, reason="failed")
+                fg_session = None
             # A backend exception (e.g. an SSH connect timeout) never reached an exit status, so it
             # is not a terminal outcome; Hermes' own deadline arrives as ``hermes_timed_out``.
             if "timeout" in str(e).lower():

@@ -429,14 +429,22 @@ class Pattern:
                 piece = fill(Match(self, string, data, mode, spans, 0, sys.maxsize, offsets))
             else:
                 piece = fill
-            if piece is not None:  # as stdlib: a callback returning None removes the match
-                out.append(piece.encode("utf-8") if raw else piece)
+            if piece is None:  # as stdlib: a callback returning None removes the match
+                pass
+            elif not raw:
+                out.append(piece)
+            elif isinstance(piece, str):
+                # surrogatepass: a lone surrogate in replacement text is the caller's to keep, as in
+                # stdlib; it comes back from the decode below as itself (the subject has none)
+                out.append(piece.encode("utf-8", "surrogatepass"))
+            else:  # the TypeError the join raises on the other paths
+                raise TypeError(f"sequence item {len(out)}: expected str instance, {type(piece).__name__} found")
             last, done = e, done + 1
             if done == count:
                 break
         out.append(take(slice(last, len(data))))
         if raw:
-            return b"".join(out).decode("utf-8"), done
+            return b"".join(out).decode("utf-8", "surrogatepass"), done
         return ("" if self._is_str else b"").join(out), done
 
     def sub(self, repl, string, count=0):

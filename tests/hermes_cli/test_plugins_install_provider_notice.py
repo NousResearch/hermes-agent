@@ -76,7 +76,8 @@ def _new_line(name: str) -> str:
 
 
 def _install(repo: Path, capsys, **flags) -> str:
-    plugins_cmd.cmd_install(repo.as_uri(), yes_deps=True, allow_removed=True, **flags)
+    # --yes-deps and --no-deps are mutually exclusive on the command line, so pass only one of them.
+    plugins_cmd.cmd_install(repo.as_uri(), yes_deps=not flags.get("no_deps"), allow_removed=True, **flags)
     return " ".join(capsys.readouterr().out.split())
 
 

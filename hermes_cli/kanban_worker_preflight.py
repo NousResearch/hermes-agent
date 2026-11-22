@@ -121,7 +121,8 @@ def refuse_unresolved_model(task, workspace: str, board: str | None) -> None:
     if not unresolved:
         return
     # A refusal spends the retry budget; once it blocks the card, set-model alone does not re-run it.
-    message = f"{missing_model_detail(profile, home)}; then `hermes kanban unblock {task.id}` if it was blocked"
+    unblock = f"hermes kanban{f' --board {board}' if board else ''} unblock {task.id}"  # from any current board
+    message = f"{missing_model_detail(profile, home)}; then `{unblock}` if it was blocked"
     with open_task_worker_log(task, board) as log:
         log.write(f"Kanban worker refused: {message}\n".encode())
     raise RuntimeError(message)

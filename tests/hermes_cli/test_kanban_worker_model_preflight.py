@@ -394,4 +394,4 @@ def test_a_refusal_names_the_unblock_that_re_runs_a_blocked_card(dispatch_profil
     """Refusals spend the retry budget and block the card at the limit; set-model alone then does nothing."""
     profile, _ = dispatch_profile
     task_id, _, task, _, _ = _dispatch(profile, "model:\n  provider: custom\n  base_url: https://llm.example.test/v1\n")
-    assert f"`hermes kanban unblock {task_id}`" in task.last_failure_error
+    assert f"`hermes kanban --board work unblock {task_id}`" in task.last_failure_error

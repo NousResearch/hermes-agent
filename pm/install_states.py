@@ -101,8 +101,7 @@ def orphan_install_states(installs: Path) -> list[Path]:
 def _install_lock(state: Path):
     """Hold the state's install lock (``runtime_lock``'s) without waiting: yields False while
     another process holds it, or when it cannot even be opened."""
-    # runtime_state's moved_lock also resolves in a process that kept v0.23.3's pm.filesystem (#158723)
-    from hermes_cli.runtime_state import install_lock_paths, moved_lock
+    from pm.moved_locks import install_lock_paths, moved_lock
 
     with contextlib.ExitStack() as stack:
         try:
@@ -114,7 +113,7 @@ def _install_lock(state: Path):
 
 def _leased(state: Path) -> bool:
     """True while a generation lease (dependency env or PM runtime) is held."""
-    from hermes_cli.runtime_state import leases_held
+    from pm.leases import leases_held
 
     for generations in (state / "environments", state / "pm-runtime" / "generations"):
         if generations.is_dir():

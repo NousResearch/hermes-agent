@@ -114,8 +114,7 @@ def _validate(python: Path, env: dict[str, str]) -> str:
 @contextmanager
 def _prepare_lock(root: Path, *, timeout: float | None):
     """Serialize staging and collection of *root*'s generations; yields whether the lock is held."""
-    # runtime_state's moved_lock also resolves in a process that kept v0.23.3's pm.filesystem (#158723)
-    from hermes_cli.runtime_state import moved_lock
+    from pm.moved_locks import moved_lock
 
     with moved_lock(root / ".prepare.lock", root.parent / "locks" / "prepare.lock", timeout=timeout) as held:
         yield held
@@ -131,7 +130,7 @@ _HELD: dict[Path, Callable[[], None]] = {}
 
 
 def _hold_for_children(environment: Path) -> None:
-    from hermes_cli.runtime_state import lease_directory
+    from pm.leases import lease_directory
 
     if environment not in _HELD:
         _HELD[environment] = lease_directory(environment)
@@ -186,7 +185,7 @@ def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False
 def lease_current_runtime() -> None:
     """Pin the PM runtime this process runs from so the collector leaves it alone."""
     if (Path(sys.prefix) / "pm-runtime.json").is_file():
-        from hermes_cli.runtime_state import lease_directory
+        from pm.leases import lease_directory
 
         lease_directory(Path(sys.prefix))
 
@@ -199,7 +198,7 @@ def collect_runtime_generations(root: Path) -> list[Path]:
     once every worker launched from it has exited; generations published before leases
     existed stay, as the application collector keeps its own.
     """
-    from hermes_cli.runtime_state import collect_lease_dirs, leases_held
+    from pm.leases import collect_lease_dirs, leases_held
 
     generations = root / "generations"
     removed: list[Path] = []

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import runtime_state
+from pm import leases
 
 
 def _generation(root: Path) -> Path:
@@ -28,13 +29,13 @@ def test_pruner_removes_abandoned_file_while_holding_its_lock(tmp_path, monkeypa
         if path == lease:
             probe = os.open(path, os.O_RDWR)
             try:
-                locked_at_delete.append(not runtime_state._lock(probe, wait=False))
+                locked_at_delete.append(not leases._lock(probe, wait=False))
             finally:
                 os.close(probe)
         return unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "unlink", observe_unlink)
-    assert not runtime_state.leases_held(generation)
+    assert not leases.leases_held(generation)
     assert not lease.exists()
     assert locked_at_delete == [True]
 
@@ -42,22 +43,22 @@ def test_pruner_removes_abandoned_file_while_holding_its_lock(tmp_path, monkeypa
 @pytest.mark.platforms("windows")
 def test_pruner_keeps_a_windows_creator_before_its_first_lock(tmp_path, monkeypatch):
     generation = _generation(tmp_path / "generation")
-    lock = runtime_state._lock
+    lock = leases._lock
     observed = []
 
     def interleave_prune(fd, *, wait, **kwargs):
         if wait and not observed:
             created = list((generation / ".leases").iterdir())
-            observed.append((runtime_state.leases_held(generation), created))
+            observed.append((leases.leases_held(generation), created))
         return lock(fd, wait=wait, **kwargs)
 
-    monkeypatch.setattr(runtime_state, "_lock", interleave_prune)
-    release = runtime_state.lease_directory(generation)
+    monkeypatch.setattr(leases, "_lock", interleave_prune)
+    release = leases.lease_directory(generation)
     try:
         held, created = observed[0]
         assert held, "An unlocked but still-open creator is not an abandoned owner"
         assert len(created) == 1 and created[0].exists()
-        assert runtime_state.leases_held(generation)
+        assert leases.leases_held(generation)
     finally:
         release()
     assert list((generation / ".leases").iterdir()) == []
@@ -99,7 +100,7 @@ def test_unremovable_lease_keeps_its_generation(tmp_path, monkeypatch, collector
 
     with monkeypatch.context() as patch:
         patch.setattr(Path, "unlink", refuse_lease)
-        assert runtime_state.leases_held(generation)
+        assert leases.leases_held(generation)
         assert collect() == []
         assert generation.is_dir() and lease.exists()
     assert collect() == [generation]

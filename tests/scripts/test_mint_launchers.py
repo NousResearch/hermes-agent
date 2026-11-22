@@ -70,6 +70,7 @@ def payload_tree(tmp_path: Path):
                      "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py",
                      "hermes_agent/compat/finder.py", "hermes_agent/compat/moves.py",
                      "pm/environments.py", "pm/filesystem.py", "hermes_cli/runtime_state.py",
+                     "pm/leases.py", "pm/moved_locks.py",
                      "hermes_cli/_early_recovery.py", "hermes_cli/_parser.py",
                      # prepare_launch returns early for a fixture repo (no .git), but the bootstrap
                      # imports these two before it can tell.

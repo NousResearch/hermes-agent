@@ -19,10 +19,11 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.runtime_state import collect_generations, lease_directory, leases_held, runtime_lock
+from hermes_cli.runtime_state import collect_generations, runtime_lock
 from pm.environments import activate_dependencies, install_state_dir, runtime_facts_path, site_packages
 from pm.filesystem import lock_fd
 from pm.install_states import collect_orphan_install_states
+from pm.leases import lease_directory, leases_held
 from pm.runtime import collect_runtime_generations
 
 GENERATIONS = {"environments": "environments", "pm-runtime": "pm-runtime/generations"}

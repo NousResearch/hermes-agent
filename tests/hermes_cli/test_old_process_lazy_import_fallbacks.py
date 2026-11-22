@@ -1,5 +1,5 @@
 """A process started on v0.23.3 keeps its old ``hermes_constants`` / ``pm.filesystem`` /
-``tools.environments.local`` and imports newer modules from the new tree after ``hermes update``
+``tools.environments.local`` / ``hermes_cli.runtime_state`` and imports newer modules from the new tree after ``hermes update``
 (#158723). These load each module fresh against a sibling that lacks the newer name."""
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def test_old_filesystem_lock_excludes_the_current_lock_both_ways(tmp_path, monke
     old, new = tmp_path / ".install.lock", tmp_path / "locks" / "install.lock"
     current_lock = pm.filesystem.moved_lock
     monkeypatch.delattr(pm.filesystem, "moved_lock")
-    fallback = _fresh("hermes_cli.runtime_state").moved_lock
+    fallback = _fresh("pm.moved_locks").moved_lock
     with fallback(old, new, timeout=0) as held:
         assert held
         with current_lock(old, new, timeout=0) as other:
@@ -60,7 +60,7 @@ def test_old_filesystem_lock_excludes_a_v0_23_3_runtime_lock(tmp_path, monkeypat
     """The fallback and v0.23.3's own runtime_lock (lock_path on .install.lock) are one mutex."""
     old, new = tmp_path / ".install.lock", tmp_path / "locks" / "install.lock"
     monkeypatch.delattr(pm.filesystem, "moved_lock")
-    fallback = _fresh("hermes_cli.runtime_state").moved_lock
+    fallback = _fresh("pm.moved_locks").moved_lock
     fd = pm.filesystem.lock_path(old, timeout=0, create_dir=True)
     try:
         with fallback(old, new, timeout=0) as held:

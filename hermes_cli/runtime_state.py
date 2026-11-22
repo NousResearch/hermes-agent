@@ -1,7 +1,6 @@
 """Stdlib-only recovery and lifetime protection for dependency generations."""
 from __future__ import annotations
 
-import atexit
 import base64
 from collections.abc import Callable
 from contextlib import contextmanager, suppress
@@ -12,13 +11,13 @@ import os
 from pathlib import Path
 import shutil
 import time
-import uuid
 
 from pm.environments import dependency_home_root, install_state_dir, runtime_facts_path
+from pm.leases import collect_lease_dirs, lease_directory, leases_held
+from pm.moved_locks import install_lock_paths, moved_lock
 # Private aliases: this module calls them through its globals (tests patch ``_atomic_bytes``
 # here) and updaters shipped before PM import them by these names mid-swap
 # (tests/compat/old_updater_surface.json). New code imports the pm.filesystem names.
-from pm import filesystem as _pm_filesystem
 from pm.filesystem import (
     durable_write_bytes as _atomic_bytes,
     file_digest as _digest,
@@ -28,21 +27,6 @@ from pm.filesystem import (
 
 LOG = logging.getLogger(__name__)
 
-
-@contextmanager
-def _old_path_lock(old: Path, new: Path, *, timeout: float | None):
-    """The install lock as v0.23.3 takes it: *old* alone (current processes take *old* first too)."""
-    fd = _pm_filesystem.lock_path(old, timeout=timeout, create_dir=True)
-    try:
-        yield fd is not None
-    finally:
-        if fd is not None:
-            os.close(fd)
-
-
-# A v0.23.3 process keeps its pm.filesystem (no moved_lock) and reaches this module lazily after
-# `hermes update` moved the checkout (#158723).
-moved_lock = getattr(_pm_filesystem, "moved_lock", _old_path_lock)
 
 # How long a process that only needs to READ the install state waits for a writer. The holder can
 # be another profile's backend rebuilding the whole dependency environment (measured: tens of
@@ -66,11 +50,6 @@ def runtime_lock(project: Path, *, timeout: float | None = INSTALL_LOCK_TIMEOUT_
         if not held:
             LOG.warning("dependency lock still held after %ss; continuing without it (%s)", timeout, new)
         yield held
-
-
-def install_lock_paths(state: Path) -> tuple[Path, Path]:
-    """The install lock where releases before ``locks/`` existed take it, and where it lives now."""
-    return state / ".install.lock", state / "locks" / "install.lock"
 
 
 def _recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
@@ -160,57 +139,6 @@ def lease_generation(environment: Path) -> Callable[[], None]:
     return lease_directory(environment.parent)
 
 
-def lease_dirs(generation: Path) -> list[Path]:
-    """Where *generation*'s leases are taken now, then where releases before that took them.
-
-    An install's generations lease from ``installs/<key>/leases/<kind>/<generation>``, outside the
-    dependency tree, so that tree can be mounted read-only. Processes started on an earlier
-    release still lease ``<generation>/.leases`` until they exit.
-    """
-    old = generation / ".leases"
-    parent = generation.parent
-    if parent.name == "environments":
-        return [parent.parent / "leases" / "environments" / generation.name, old]
-    if parent.name == "generations" and parent.parent.name == "pm-runtime":
-        return [parent.parent.parent / "leases" / "pm-runtime" / generation.name, old]
-    return [old]
-
-
-def lease_directory(generation: Path) -> Callable[[], None]:
-    """Pin a lease-managed generation directory for this process's lifetime."""
-    if not (generation / ".lease-managed").is_file():
-        return lambda: None  # Generations produced before leases stay conservatively retained.
-    leases = lease_dirs(generation)[0]
-    leases.mkdir(parents=True, exist_ok=True)
-    _prune_unlocked_leases(leases)
-    while True:
-        lease = leases / uuid.uuid4().hex
-        fd = os.open(lease, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
-        try:
-            _lock(fd, wait=True)
-        except BaseException:
-            os.close(fd)
-            raise
-        # Create and flock are two syscalls; a peer's prune (pm workers and launch run outside
-        # ``runtime_lock``) can lock-and-unlink the file in between, and we would then hold an
-        # unlinked inode invisible to every collector. The pruner only unlinks while holding the
-        # lock, so once we hold it the path is either still ours or already gone for good.
-        if lease.exists():
-            break
-        os.close(fd)
-
-    def release() -> None:
-        atexit.unregister(release)
-        os.close(fd)
-        # Best effort: the collector ignores unlocked lease files, but one per
-        # invocation would otherwise accumulate for the life of the generation.
-        with suppress(OSError):
-            lease.unlink()
-
-    atexit.register(release)
-    return release
-
-
 def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> list[Path]:
     """Remove unselected lease-managed generations after their readers exit."""
     from pm.environments import selected_venv
@@ -237,84 +165,3 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
                 removed.append(generation)
         collect_lease_dirs(root / "leases" / "environments", generations)
     return removed
-
-
-def leases_held(generation: Path) -> bool:
-    """True while any process still holds a lease taken by ``lease_directory``."""
-    return any([_prune_unlocked_leases(leases) for leases in lease_dirs(generation)])
-
-
-def collect_lease_dirs(leases: Path, generations: Path) -> None:
-    """Remove the lease directories under *leases* whose generation is gone and nothing holds."""
-    if not leases.is_dir():
-        return
-    for directory in leases.iterdir():
-        if not (generations / directory.name).exists() and not _prune_unlocked_leases(directory):
-            with suppress(OSError):
-                directory.rmdir()  # a lease taken since the prune keeps it
-
-
-def _open_lease_probe(lease: Path) -> int:
-    """Let a Windows pruner unlink while still holding its exclusion lock.
-
-    Creator handles deliberately keep their ordinary sharing: an open creator
-    between O_EXCL and locking must still prevent a peer from deleting its lease.
-    """
-    if os.name != "nt":
-        return os.open(lease, os.O_RDWR)
-
-    import ctypes
-    from ctypes import wintypes
-    import msvcrt
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateFileW.argtypes = [
-        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
-        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
-    ]
-    kernel32.CreateFileW.restype = wintypes.HANDLE
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-    # GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | WRITE | DELETE, OPEN_EXISTING.
-    handle = kernel32.CreateFileW(str(lease), 0xC0000000, 0x7, None, 3, 0x80, None)
-    if handle == ctypes.c_void_p(-1).value:
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        # The CRT owns the handle after conversion; os.close releases it and its lock.
-        return msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY | os.O_NOINHERIT)
-    except BaseException:
-        kernel32.CloseHandle(handle)
-        raise
-
-
-def _prune_unlocked_leases(leases: Path) -> bool:
-    """Remove abandoned lease files and report whether any live lock remains.
-
-    Kernel locks disappear even when ``execv``, ``os._exit`` or a crash bypasses
-    ``atexit``. Cleaning those unlocked files whenever a reader arrives bounds leaks in
-    the selected generation too, which generation GC intentionally never visits.
-
-    Fail closed: a lease this user cannot open or remove is held, never a boot failure.
-    """
-    held = False
-    for lease in leases.glob("*"):
-        try:
-            fd = _open_lease_probe(lease)
-        except FileNotFoundError:
-            continue
-        except OSError:
-            held = True
-            continue
-        try:
-            if not _lock(fd, wait=False):
-                held = True
-            else:
-                try:
-                    lease.unlink()
-                except FileNotFoundError:
-                    pass  # A peer already removed it.
-                except OSError:
-                    held = True
-        finally:
-            os.close(fd)
-    return held

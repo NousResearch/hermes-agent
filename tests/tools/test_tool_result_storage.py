@@ -359,8 +359,14 @@ class TestEnforceTurnBudget:
                  "content": [{"type": "text", "text": "x" * 60_000}, {"type": "text", "text": "scale note"}, img]}
                 for i in range(6)]
         enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
-        assert sum(PERSISTED_OUTPUT_TAG in m["content"][0]["text"] for m in msgs) >= 2
-        assert all(m["content"][1]["text"] == "scale note" and m["content"][2] == img for m in msgs)
+        persisted_count = 0
+        for message in msgs:
+            parts = message["content"]
+            assert isinstance(parts, list)
+            persisted_count += PERSISTED_OUTPUT_TAG in parts[0]["text"]
+            assert parts[1]["text"] == "scale note"
+            assert parts[2] == img
+        assert persisted_count >= 2
 
 # ── Per-tool threshold integration ────────────────────────────────────
 

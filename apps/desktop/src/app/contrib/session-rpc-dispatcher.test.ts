@@ -49,6 +49,7 @@ const { $sessionTiles, clearAllSessionStates, publishSessionState, recordSession
 
 const { makeSessionInfo } = await import('@/test/session-info')
 const { createClientSessionState } = await import('@/lib/chat-runtime')
+const { searchResultToSession } = await import('@/app/chat/sidebar')
 
 function dispatcher(
   ambientRequest = vi.fn(async () => ({ ambient: true })),
@@ -311,6 +312,39 @@ describe('createSessionRpcDispatcher: exact owner rungs', () => {
     expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith('homelab', 'worker', 'session.control.read', {
       session_id: 'stored-unlisted'
     })
+  })
+
+  it('routes a full-text search hit, the other door onto a row no slice holds (#156566)', async () => {
+    // `mergeSearchResults` synthesizes its row per render through
+    // `searchResultToSession`, so a hit is a real session the sidebar renders
+    // without ever entering $sessions, $archivedSessions, cron or messaging —
+    // and it has no tile or mirror entry either. It carries a STORED id, so it
+    // rides the pass-through rung into the probe: the same branch the Archived
+    // view reaches, opened from search. This is the door the field report in
+    // #156566 used (1260 of 1633 sessions archived), not the archive list.
+    const hit = searchResultToSession({
+      lineage_root: 'root-archived',
+      model: 'deepseek-v4-flash',
+      role: 'agent',
+      session_id: 'stored-search-hit',
+      session_started: 1_753_450_000,
+      snippet: 'the archived conversation the query matched',
+      source: 'agent'
+    })
+
+    probe.resolveSessionOwner.mockResolvedValue({ connectionId: 'local', profile: 'omar' } as never)
+
+    const { ambientRequest } = dispatcher()
+
+    await expect(
+      requestForOwnedSession(hit.id, ambientRequest as never, 'session.control.read', { session_id: hit.id })
+    ).resolves.toEqual({ routed: true })
+
+    expect(probe.resolveSessionOwner).toHaveBeenCalledWith('stored-search-hit')
+    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'omar', 'session.control.read', {
+      session_id: 'stored-search-hit'
+    })
+    expect(ambientRequest).not.toHaveBeenCalled()
   })
 })
 

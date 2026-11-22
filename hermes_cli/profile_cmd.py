@@ -183,15 +183,16 @@ def _print_channel_clone_notice(name: str, made, clone_channels: bool, clone_fla
         print(shared_credential_warning(name, made.shared_channels, made.source_label))
 
 
-def _print_mirrored(mirrored: dict, launch: str, *, isolate_hint: bool) -> None:
-    """What the new profile took from the launch profile (the bot page's "Share keys & accounts")."""
+def _print_mirrored(mirrored: dict, launch: str, auth_label: str, *, isolate_hint: bool) -> None:
+    """What the new profile took (the bot page's "Share keys & accounts"): keys and model from the launch
+    profile, logins from *auth_label* (a clone's source, else the launch profile)."""
     if mirrored.get("env"):
         print(f"Copied API keys from '{launch}' (bot tokens and allowlists left out).")
     if mirrored.get("auth") == "shared":
         hint = " (--isolated-auth copies them)" if isolate_hint else ""
         print(f"Logins and subscriptions are shared with the default profile{hint}.")
     elif mirrored.get("auth"):
-        print(f"Copied logins from '{launch}' (single-use OAuth logins are still read from the default profile).")
+        print(f"Copied logins from '{auth_label}' (single-use OAuth logins are still read from the default profile).")
     if mirrored.get("model_inherited"):
         print(f"Model inherited from '{launch}'.")
 
@@ -268,7 +269,7 @@ def _profile_create(args):
                 print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
                 print("  Add to your shell config (~/.bashrc or ~/.zshrc):")
                 print('    export PATH="$HOME/.local/bin:$PATH"')
-    _print_mirrored(made.mirrored, made.launch_label,
+    _print_mirrored(made.mirrored, made.launch_label, made.source_label,
                     isolate_hint=not getattr(args, "isolated_auth", False) and not getattr(args, "no_credentials", False))
     for warning in made.warnings:
         print(f"⚠ {warning}")

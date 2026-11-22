@@ -1,8 +1,9 @@
 """Trusted messaging admission and the existing TurnRunner invocation boundary."""
 import asyncio
 import logging
+import os
 from contextvars import ContextVar
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager, nullcontext, suppress
 from dataclasses import replace
 
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
@@ -517,7 +518,26 @@ async def deliver_response(adapter, event, session_key, response):
     extracted = await adapter._extract_response_content(text, event, session_key, is_ephemeral_response=ttl > 0)
     metadata = _mark_notify_metadata(_thread_metadata_for_event(event))
     results = []
-    if extracted.text_content:
+    # A busy follow-up is delivered here, not by the adapter's own send path, so it has to run the
+    # same auto-TTS step that path runs before the text (#158787).
+    tts_paths: list[str] = []
+    requested_tts_path = None
+    if extracted.text_content and adapter._wants_auto_tts(
+            event, session_key, event, extracted.text_content, extracted.media_files):
+        tts_paths, requested_tts_path = await adapter._synthesize_auto_tts(
+            extracted.text_content, event.source)
+    tts_caption_delivered = False
+    for tts_index, tts_path in enumerate(tts_paths):
+        try:
+            tts_caption_delivered |= await adapter._play_tts_file(
+                event, extracted.text_content, tts_path, tts_index == 0, metadata, results.append)
+        finally:
+            with suppress(OSError):
+                os.remove(tts_path)
+    if not tts_paths and requested_tts_path is not None:
+        with suppress(OSError):
+            os.remove(requested_tts_path)
+    if extracted.text_content and not tts_caption_delivered:
         await adapter._send_final_text(event, session_key, extracted.text_content,
                                        metadata, ttl > 0, ttl, results.append)
     await adapter._deliver_attachments(event, extracted, metadata, anything_sent=bool(results),

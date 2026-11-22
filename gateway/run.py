@@ -2901,9 +2901,6 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     return None
 
 
-_PROFILE_ID_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-
-
 def _parse_session_key(session_key: str) -> dict | None:
     """Parse a session key (``agent:{ns}:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
 
@@ -2914,11 +2911,13 @@ def _parse_session_key(session_key: str) -> dict | None:
     is omitted. Named profiles are reported as ``profile``; ``main`` keys keep their historical
     shape exactly (no ``profile`` key) so equality assertions on parsed dicts stay stable.
     """
+    from hermes_constants import PROFILE_ID_RE
+
     parts = session_key.split(":")
     if (
         len(parts) >= 5
         and parts[0] == "agent"
-        and (parts[1] in ("main", "main~") or _PROFILE_ID_KEY_RE.match(parts[1]))
+        and (parts[1] in ("main", "main~") or PROFILE_ID_RE.match(parts[1]))
     ):
         result = {"platform": parts[2], "chat_type": parts[3], "chat_id": parts[4]}
         if parts[1] != "main":

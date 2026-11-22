@@ -237,8 +237,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = _CuratedCatalog({
     "xai-oauth": _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK)),
     "gemini": [
         # Gemini 4 after it: [0] is the silent default when no model is configured, and a flagship never is.
-        "gemini-3.8-flash", "gemini-4-hydrogen", "gemini-4-carbon", "gemini-4-argon", "gemini-3.7-flash",
-        "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3.6-flash", "gemini-3.1-flash-lite-preview",
+        "gemini-3.8-flash", "gemini-4-neon", "gemini-4-hydrogen", "gemini-4-carbon", "gemini-4-argon",
+        "gemini-3.7-flash", "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3.6-flash",
+        "gemini-3.1-flash-lite-preview",
     ],
     "zai": [
         "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "glm-5v-turbo", "glm-5-turbo",
@@ -346,7 +347,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = _CuratedCatalog({
     # only shows the configured model. IDs carry the "google/" publisher prefix Vertex expects
     # (see hermes_cli/model_setup_flows.py); validated live against a GCP project (global region).
     "vertex": [
-        "google/gemini-3.8-flash", "google/gemini-4-argon", "google/gemini-3.7-flash",  # [0] = silent default
+        "google/gemini-3.8-flash",  # [0] = silent default; Gemini 4 after it, in the direct gemini list's order
+        "google/gemini-4-neon", "google/gemini-4-hydrogen", "google/gemini-4-carbon", "google/gemini-4-argon",
+        "google/gemini-3.7-flash",
         "google/gemini-3.1-pro-preview", "google/gemini-3-pro-preview", "google/gemini-3.6-flash",
         "google/gemini-3.5-flash", "google/gemini-3.5-flash-lite", "google/gemini-3-flash-preview",
         "google/gemini-3.1-flash-lite-preview", "google/gemini-3.1-flash-lite",

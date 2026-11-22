@@ -1,7 +1,7 @@
 import './global-overviews.css'
 
 import { useStore } from '@nanostores/react'
-import { type ComponentType, useCallback, useEffect, useMemo, useRef } from 'react'
+import { type ComponentType, type ReactNode, useCallback, useEffect, useMemo, useRef } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router'
 
 import { Button } from '@/components/ui/button'
@@ -116,14 +116,33 @@ const SUBPAGE_VIEWS: Partial<Record<SettingsViewId, ComponentType<{ subpage?: st
   notifications: NotificationsSettings
 }
 
-/** The Settings pages that carry the page hero band (Account & Plan 18563:12067, Machines
+/** The Settings pages that carry the page hero band (Account & Plan's overview 18563:12067, Machines
  *  18563:12326); the redesign only. */
-function settingsHeroArt(view: SettingsViewId, billingOverview: boolean): PageHeroArt | undefined {
+function settingsHeroArt(
+  redesign: boolean,
+  view: SettingsViewId,
+  billingView: BillingSubView,
+  canViewPlans: boolean
+): PageHeroArt | undefined {
+  if (!redesign) {
+    return undefined
+  }
+
   if (view === 'gateway' || view === 'connections') {
     return 'veil'
   }
 
-  return view === 'billing' && billingOverview ? 'stream' : undefined
+  return view === 'billing' && (billingView === 'overview' || !canViewPlans) ? 'stream' : undefined
+}
+
+/** The column, and with a band the band's containing block before the content that paints over it. */
+function SettingsMain({ children, hero }: { children: ReactNode; hero?: PageHeroArt }) {
+  return (
+    <OverlayMain className={cn('px-0 pb-0', hero && 'relative')}>
+      {hero && <PageHero art={hero} />}
+      {children}
+    </OverlayMain>
+  )
 }
 
 /** Type-to-search: printable keystrokes on the Settings surface (outside any
@@ -654,10 +673,6 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     <SessionsSettings subpage={subpage} />
   )
 
-  const hero = simplified
-    ? settingsHeroArt(activeView, billingView === 'overview' || !canViewPlans)
-    : undefined
-
   return (
     <OverlayView
       closeLabel={t.settings.closeSettings}
@@ -681,8 +696,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
           titleAction={<SettingsSearchButton />}
         />
 
-        <OverlayMain className={cn('px-0 pb-0', hero && 'relative')}>
-          {hero && <PageHero art={hero} />}
+        <SettingsMain hero={settingsHeroArt(simplified, activeView, billingView, canViewPlans)}>
           <SettingsBreadcrumbContext.Provider value>
             {headerGroup && <SettingsSubpageHeader child={headerChild} group={headerGroup} />}
             {needsSubpageRedirect ? (
@@ -691,7 +705,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
               activeSettingsContent
             )}
           </SettingsBreadcrumbContext.Provider>
-        </OverlayMain>
+        </SettingsMain>
       </OverlaySplitLayout>
     </OverlayView>
   )

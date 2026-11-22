@@ -1167,7 +1167,7 @@ platform:
         description: "A ~/.hermes/skills/ újraolvasása új vagy törölt skillek után"
       voice:
         description: "Hangos válasz mód ki-be kapcsolása"
-        arg_mode: "Hangmód: join, channel, leave, on, tts, off vagy status"
+        arg_mode: "Hangmód: join, channel, leave, on, tts, off vagy status, vagy media"
         choice_join: "join — belépés a hangcsatornádba"
         choice_channel: "channel — belépés a hangcsatornádba (alias)"
         choice_leave: "leave — kilépés a hangcsatornából"
@@ -1175,6 +1175,7 @@ platform:
         choice_tts: "tts — hangos válasz minden üzenetre"
         choice_mode_off: "off — csak szöveg"
         choice_status: "status — jelenlegi mód megjelenítése"
+        choice_media: "media — play audio in the voice channel (Discord)"
       update:
         followup: "Frissítés elindítva~"
       restart:

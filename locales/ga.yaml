@@ -1150,7 +1150,7 @@ platform:
         description: "Athscan ~/.hermes/skills/ le haghaidh scileanna nua nó bainte"
       voice:
         description: "Scoránaigh mód freagra gutha"
-        arg_mode: "Mód gutha: join, channel, leave, on, tts, off, nó status"
+        arg_mode: "Mód gutha: join, channel, leave, on, tts, off, nó status, nó media"
         choice_join: "join — téigh isteach i do chainéal gutha"
         choice_channel: "channel — téigh isteach i do chainéal gutha (ailias)"
         choice_leave: "leave — fág an cainéal gutha"
@@ -1158,6 +1158,7 @@ platform:
         choice_tts: "tts — freagra gutha ar gach teachtaireacht"
         choice_mode_off: "off — téacs amháin"
         choice_status: "status — taispeáin an mód reatha"
+        choice_media: "media — play audio in the voice channel (Discord)"
       update:
         followup: "Nuashonrú tosaithe~"
       restart:

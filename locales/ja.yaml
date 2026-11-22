@@ -1150,7 +1150,7 @@ platform:
         description: "~/.hermes/skills/ を再スキャンしてスキルの追加・削除を反映します"
       voice:
         description: "音声返信モードを切り替えます"
-        arg_mode: "音声モード: join、channel、leave、on、tts、off、または status"
+        arg_mode: "音声モード: join、channel、leave、on、tts、off、または status、media"
         choice_join: "join — あなたのボイスチャンネルに参加"
         choice_channel: "channel — あなたのボイスチャンネルに参加 (別名)"
         choice_leave: "leave — ボイスチャンネルから退出"
@@ -1158,6 +1158,7 @@ platform:
         choice_tts: "tts — すべてのメッセージに音声で返信"
         choice_mode_off: "off — テキストのみ"
         choice_status: "status — 現在のモードを表示"
+        choice_media: "media — play audio in the voice channel (Discord)"
       update:
         followup: "アップデートを開始しました~"
       restart:

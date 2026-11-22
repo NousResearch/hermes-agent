@@ -1150,7 +1150,7 @@ platform:
         description: "Пересканировать ~/.hermes/skills/ на новые или удалённые навыки"
       voice:
         description: "Переключить режим голосовых ответов"
-        arg_mode: "Голосовой режим: join, channel, leave, on, tts, off или status"
+        arg_mode: "Голосовой режим: join, channel, leave, on, tts, off или status, или media"
         choice_join: "join — присоединиться к вашему голосовому каналу"
         choice_channel: "channel — присоединиться к вашему голосовому каналу (псевдоним)"
         choice_leave: "leave — покинуть голосовой канал"
@@ -1158,6 +1158,7 @@ platform:
         choice_tts: "tts — голосом отвечать на все сообщения"
         choice_mode_off: "off — только текст"
         choice_status: "status — показать текущий режим"
+        choice_media: "media — play audio in the voice channel (Discord)"
       update:
         followup: "Обновление запущено~"
       restart:

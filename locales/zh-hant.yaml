@@ -1150,7 +1150,7 @@ platform:
         description: "重新掃描 ~/.hermes/skills/ 以找出新增或移除的技能"
       voice:
         description: "切換語音回覆模式"
-        arg_mode: "語音模式：join、channel、leave、on、tts、off 或 status"
+        arg_mode: "語音模式：join、channel、leave、on、tts、off 或 status、media"
         choice_join: "join — 加入你的語音頻道"
         choice_channel: "channel — 加入你的語音頻道（別名）"
         choice_leave: "leave — 離開語音頻道"
@@ -1158,6 +1158,7 @@ platform:
         choice_tts: "tts — 以語音回覆所有訊息"
         choice_mode_off: "off — 僅文字"
         choice_status: "status — 顯示目前模式"
+        choice_media: "media — play audio in the voice channel (Discord)"
       update:
         followup: "已開始更新～"
       restart:

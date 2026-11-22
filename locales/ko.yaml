@@ -1150,7 +1150,7 @@ platform:
         description: "~/.hermes/skills/를 다시 스캔해 새로 추가되거나 삭제된 스킬 반영"
       voice:
         description: "음성 답변 모드 전환"
-        arg_mode: "음성 모드: join, channel, leave, on, tts, off 또는 status"
+        arg_mode: "음성 모드: join, channel, leave, on, tts, off 또는 media"
         choice_join: "join — 음성 채널 참여"
         choice_channel: "channel — 음성 채널 참여 (별칭)"
         choice_leave: "leave — 음성 채널 나가기"
@@ -1158,6 +1158,7 @@ platform:
         choice_tts: "tts — 모든 메시지에 음성으로 답변"
         choice_mode_off: "off — 텍스트만"
         choice_status: "status — 현재 모드 보기"
+        choice_media: "media — play audio in the voice channel (Discord)"
       update:
         followup: "업데이트를 시작했어요~"
       restart:

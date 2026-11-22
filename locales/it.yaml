@@ -1150,7 +1150,7 @@ platform:
         description: "Riesamina ~/.hermes/skills/ per trovare skill nuove o rimosse"
       voice:
         description: "Attiva/disattiva la modalità risposta vocale"
-        arg_mode: "Modalità voce: join, channel, leave, on, tts, off o status"
+        arg_mode: "Modalità voce: join, channel, leave, on, tts, off o status o media"
         choice_join: "join — entra nel tuo canale vocale"
         choice_channel: "channel — entra nel tuo canale vocale (alias)"
         choice_leave: "leave — esci dal canale vocale"
@@ -1158,6 +1158,7 @@ platform:
         choice_tts: "tts — risposta vocale a tutti i messaggi"
         choice_mode_off: "off — solo testo"
         choice_status: "status — mostra la modalità attuale"
+        choice_media: "media — play audio in the voice channel (Discord)"
       update:
         followup: "Aggiornamento avviato~"
       restart:

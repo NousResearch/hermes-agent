@@ -1150,7 +1150,7 @@ platform:
         description: "إعادة فحص ~/.hermes/skills/ بحثًا عن مهارات جديدة أو محذوفة"
       voice:
         description: "تبديل وضع الردّ الصوتي"
-        arg_mode: "وضع الصوت: join أو channel أو leave أو on أو tts أو off أو status"
+        arg_mode: "وضع الصوت: join أو channel أو leave أو on أو tts أو off أو media"
         choice_join: "join — الانضمام إلى قناتك الصوتية"
         choice_channel: "channel — الانضمام إلى قناتك الصوتية (اسم بديل)"
         choice_leave: "leave — مغادرة القناة الصوتية"
@@ -1158,6 +1158,7 @@ platform:
         choice_tts: "tts — ردّ صوتي على جميع الرسائل"
         choice_mode_off: "off — نص فقط"
         choice_status: "status — عرض الوضع الحالي"
+        choice_media: "media — play audio in the voice channel (Discord)"
       update:
         followup: "بدأ التحديث~"
       restart:

@@ -4226,6 +4226,13 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         live = self._final_delivery_adapter(event.source)
         human_delay = live._get_human_delay()
         images, media_files, local_files = extracted.images, extracted.media_files, extracted.local_files
+        # Voice-channel playback seam: an adapter connected in a live voice channel (and opting in
+        # via resolve_voice_playback_guild / play_voice_media) plays MEDIA audio there instead of
+        # attaching it to the text channel nobody is listening on. Fail-open: any problem keeps
+        # the classic attachment path intact. See gateway/voice_media.py.
+        from gateway.voice_media import route_media_attachments
+
+        media_files = route_media_attachments(live, event, media_files)
         if images:
             logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
             await live._send_image_batch(event, images, metadata, human_delay, record_delivery)

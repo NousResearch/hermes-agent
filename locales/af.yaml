@@ -1150,7 +1150,7 @@ platform:
         description: "Deursoek ~/.hermes/skills/ weer vir nuwe of verwyderde vaardighede"
       voice:
         description: "Wissel stemantwoord-modus"
-        arg_mode: "Stemmodus: join, channel, leave, on, tts, off, of status"
+        arg_mode: "Stemmodus: join, channel, leave, on, tts, off, of status, of media"
         choice_join: "join — sluit by jou stemkanaal aan"
         choice_channel: "channel — sluit by jou stemkanaal aan (alias)"
         choice_leave: "leave — verlaat stemkanaal"
@@ -1158,6 +1158,7 @@ platform:
         choice_tts: "tts — stemantwoord op alle boodskappe"
         choice_mode_off: "off — slegs teks"
         choice_status: "status — wys huidige modus"
+        choice_media: "media — play audio in the voice channel (Discord)"
       update:
         followup: "Opdatering begin~"
       restart:

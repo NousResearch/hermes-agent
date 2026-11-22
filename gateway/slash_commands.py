@@ -689,7 +689,7 @@ class GatewaySlashCommandsMixin(
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
-        """Handle /voice [on|off|tts|channel|leave|status] command."""
+        """Handle /voice [on|off|tts|channel|leave|status|media ...] command."""
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
         # Voice state belongs to the (bot, chat) pair: resolve the adapter that received the
@@ -711,6 +711,8 @@ class GatewaySlashCommandsMixin(
             else:
                 self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
 
+        if args and args.split(maxsplit=1)[0] == "media":
+            return self._handle_voice_media_command(args[len("media"):].strip(), adapter, event)
         if args in _VOICE_MODE_BY_ARG:
             mode, reply_key = _VOICE_MODE_BY_ARG[args]
             _set_mode(mode)
@@ -731,6 +733,11 @@ class GatewaySlashCommandsMixin(
                 for m in info["members"]:
                     status = t("gateway.voice.speaking") if m.get("is_speaking") else ""
                     lines.append(t("gateway.voice.status_member", name=m['display_name'], status=status))
+            from gateway.voice_media import voice_media_status
+            try:
+                lines.append(voice_media_status(int(guild_id) if guild_id else None))
+            except (TypeError, ValueError):
+                lines.append(voice_media_status(None))
             return "\n".join(lines)
 
         # Toggle: off → on, on/all → off
@@ -742,6 +749,43 @@ class GatewaySlashCommandsMixin(
         supports_voice_channels = adapter is not None and hasattr(adapter, "join_voice_channel")
         channels = t("gateway.voice.help_channels") if supports_voice_channels else ""
         return t("gateway.voice.help", toggle=toggle_line, channels=channels)
+
+    def _handle_voice_media_command(self, sub: str, adapter, event: MessageEvent) -> str:
+        """``/voice media on|off|stop`` — gate + queue control for voice-channel MEDIA playback.
+        The gate persists ``<platform>.voice_media_playback``; the drain queue lives in
+        gateway/voice_media.py and is keyed by guild."""
+        from gateway.voice_media import stop_voice_media, voice_media_status
+
+        guild_id = None
+        get_guild = getattr(self, "_get_guild_id", None)
+        if callable(get_guild):
+            try:
+                raw = get_guild(event)
+                guild_id = int(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                guild_id = None
+            except Exception:
+                guild_id = None
+        if sub in ("on", "enable", "true"):
+            value = "true"
+        elif sub in ("off", "disable", "false"):
+            value = "false"
+        elif sub == "stop":
+            dropped = stop_voice_media(guild_id) if guild_id is not None else 0
+            return t("gateway.voice.media_stopped", count=dropped)
+        else:
+            return voice_media_status(guild_id)
+        try:
+            from hermes_cli.config import set_config_value
+            platform = str(event.source.platform or "discord")
+            set_config_value(f"{platform}.voice_media_playback", value)
+        except Exception as exc:
+            logger.warning("voice_media: set_config_value failed: %s", exc)
+            return t("gateway.voice.media_error", error=exc)
+        # Turning the gate off also cuts what is currently playing/queued for this guild.
+        if value == "false" and guild_id is not None:
+            stop_voice_media(guild_id)
+        return t("gateway.voice.media_on" if value == "true" else "gateway.voice.media_off")
 
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""

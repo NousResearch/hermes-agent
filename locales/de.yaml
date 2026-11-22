@@ -1150,7 +1150,7 @@ platform:
         description: "~/.hermes/skills/ erneut nach neuen oder entfernten Skills durchsuchen"
       voice:
         description: "Sprachantwort-Modus umschalten"
-        arg_mode: "Sprachmodus: join, channel, leave, on, tts, off oder status"
+        arg_mode: "Sprachmodus: join, channel, leave, on, tts, off oder status oder media"
         choice_join: "join — Ihrem Sprachkanal beitreten"
         choice_channel: "channel — Ihrem Sprachkanal beitreten (Alias)"
         choice_leave: "leave — Sprachkanal verlassen"
@@ -1158,6 +1158,7 @@ platform:
         choice_tts: "tts — Sprachantwort auf alle Nachrichten"
         choice_mode_off: "off — nur Text"
         choice_status: "status — aktuellen Modus anzeigen"
+        choice_media: "media — play audio in the voice channel (Discord)"
       update:
         followup: "Update eingeleitet~"
       restart:

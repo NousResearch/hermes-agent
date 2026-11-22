@@ -20,6 +20,7 @@ the unified index existed).
 
 import json
 import os
+import subprocess
 import sys
 from collections import Counter
 from datetime import datetime, timezone, UTC
@@ -258,6 +259,73 @@ def _source_url(source: str, identifier: str, extra: dict) -> str:
     return ""
 
 
+def load_git_dates() -> dict[str, dict[str, str]]:
+    """``{"<base>/<rel dir>": {"addedAt": iso, "updatedAt": iso}}`` from git history of local SKILL.md files.
+
+    Mirrors ``load_git_dates()`` in extract-plugins.py, keyed on the skill's directory
+    (``skills/devops/foo``) since each skill is one SKILL.md in its own directory. One
+    ``git log`` over ``skills/`` and ``optional-skills/``, newest first: the first commit seen
+    touching a SKILL.md is its last update, the last one is when it entered the repo. Renames
+    (``R``) carry the old path's history onto the new path so a moved skill keeps its
+    original addedAt. Committer dates, not author dates: rebase-merged PRs are stamped when
+    they LAND on main, which is when the skill actually became installable.
+
+    Empty when git is unavailable or the checkout is shallow — a depth-1 clone would report
+    every skill as added in the tip commit, which is worse than no dates (deploy-site.yml
+    checks out with ``fetch-depth: 0`` for this reason).
+    """
+    try:
+        shallow = subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=True, timeout=30,
+        ).stdout.strip()
+        if shallow == "true":
+            print("[extract-skills] shallow checkout: skipping addedAt/updatedAt (need fetch-depth: 0)")
+            return {}
+        log = subprocess.run(
+            ["git", "log", "--format=%x00%cI", "--name-status", "-M", "--",
+             *(base for base, _label in LOCAL_SKILL_DIRS)],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=True, timeout=300,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"[extract-skills] git history unavailable, skipping addedAt/updatedAt ({e})")
+        return {}
+
+    dates: dict[str, dict[str, str]] = {}
+    alias: dict[str, str] = {}  # old skill dir → current dir, for renamed skills
+
+    def touch(path: str, when: str) -> None:
+        if os.path.basename(path) != "SKILL.md":
+            return
+        skill_dir = os.path.dirname(path)
+        # Follow the alias chain to the current directory name. History with back-and-forth
+        # renames (A->B, later B->A) can make this cyclic; a seen-set turns that into "stop
+        # and use the last name we had" instead of spinning forever.
+        seen = {skill_dir}
+        while skill_dir in alias and alias[skill_dir] not in seen:
+            skill_dir = alias[skill_dir]
+            seen.add(skill_dir)
+        rec = dates.setdefault(skill_dir, {"addedAt": when, "updatedAt": when})
+        rec["addedAt"] = when  # newest-first walk: the last write wins = oldest commit
+
+    when = ""
+    for line in log.splitlines():
+        if line.startswith("\x00"):
+            when = line[1:].strip()
+            continue
+        parts = line.split("\t")
+        if len(parts) < 2 or not when:
+            continue
+        if parts[0].startswith("R") and len(parts) == 3:
+            old, new = parts[1], parts[2]
+            touch(new, when)
+            if os.path.basename(old) == "SKILL.md":
+                alias[os.path.dirname(old)] = os.path.dirname(new)
+            continue
+        touch(parts[-1], when)
+    return dates
+
+
 def extract_local_skills():
     skills = []
     try:
@@ -268,6 +336,8 @@ def extract_local_skills():
         curation = {}
     artwork = curation.get("artwork", {}).get("skills", {})
     featured = curation.get("featured", {}).get("skills", [])
+
+    git_dates = load_git_dates()
 
     for base_dir, source_label in LOCAL_SKILL_DIRS:
         base_path = os.path.join(REPO_ROOT, base_dir)
@@ -334,6 +404,10 @@ def extract_local_skills():
                 f"official/{rel_id}" if source_label == "optional"
                 else f"NousResearch/hermes-agent/skills/{rel_id}"
             )
+            dates = git_dates.get(f"{base_dir}/{rel_id}", {})
+            # No "stars" for skills: nothing in this pipeline carries a star count for them
+            # (build_skills_index.py fetches none). A real fix means extending it to pull
+            # counts for the external sources; local skills have no star concept at all.
             skills.append({
                 "name": fm.get("name", os.path.basename(root)),
                 "description": fm.get("description", ""),
@@ -349,6 +423,8 @@ def extract_local_skills():
                 "envVars": env_vars,
                 "commands": commands,
                 "docsPath": _docs_page_path(rel, source_label),
+                "addedAt": dates.get("addedAt"),
+                "updatedAt": dates.get("updatedAt"),
                 **({"image": CATALOG_ART_URL + artwork[rel_id]} if rel_id in artwork else {}),
                 # 1-based curated hero rank; the site and the app rotate through these.
                 **({"featured": featured.index(rel_id) + 1} if rel_id in featured else {}),

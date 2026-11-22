@@ -2173,20 +2173,20 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists():
         raise _profile_exists_error(canon, profile_dir)
+    import tempfile
     from hermes_cli.profile_provision import _create_lock
-    from hermes_cli.profiles_initialization import clone_staging_dir, prepare_imported_tree, publish_staging
-    with _create_lock(canon):  # stage and publish as create does: a name published meanwhile wins, never nests
-        staging_root = clone_staging_dir(profile_dir)
-        try:
-            staging_root.mkdir(mode=0o700)  # private until prepare_imported_tree tightens .env/config.yaml
-            safe_extract_targz(archive, staging_root)
-            extracted = staging_root / archive_root
-            if not extracted.is_dir():
-                raise ValueError(f"Profile archive root is missing or invalid: {archive_root}")
-            prepare_imported_tree(extracted)
-            publish_staging(extracted, profile_dir, lambda: _profile_exists_error(canon, profile_dir))
-        finally:
-            shutil.rmtree(staging_root, ignore_errors=True)
+    from hermes_cli.profiles_initialization import prepare_imported_tree, publish_staging
+    profile_dir.parent.mkdir(parents=True, exist_ok=True)
+    # Hidden mkdtemp beside the target: 0700 until prepare_imported_tree tightens .env/config.yaml, and its cleanup
+    # clears the read-only bits extraction re-applies, which a plain rmtree can't delete on Windows.
+    with _create_lock(canon), tempfile.TemporaryDirectory(  # publish as create does: a racing publish wins
+            prefix=f".{canon}.staging-", dir=profile_dir.parent, ignore_cleanup_errors=True) as staging_root:
+        safe_extract_targz(archive, Path(staging_root))
+        extracted = Path(staging_root) / archive_root
+        if not extracted.is_dir():
+            raise ValueError(f"Profile archive root is missing or invalid: {archive_root}")
+        prepare_imported_tree(extracted)
+        publish_staging(extracted, profile_dir, lambda: _profile_exists_error(canon, profile_dir))
     clear_named_profile_deleted(profile_dir)
     return profile_dir
 

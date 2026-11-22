@@ -19,7 +19,6 @@ from ._edge_parse import Node, Unsupported, parse
 from ._edge_plan import DEAD
 from ._edge_word import N, W, definite, edge, inline_flags, is_boundary
 
-ENABLED = True
 _GUARD = {("lead", W): r"(?<!\w)", ("lead", N): r"(?<=\w)", ("trail", W): r"(?!\w)", ("trail", N): r"(?=\w)"}
 _ONCE = ("", "?", "??")          # quantifiers that cannot repeat the group
 _OPTIONAL = {"?": "(?:{0}|(?!\\w))", "??": "(?:(?!\\w)|{0})", "*": "(?:{0}+|(?!\\w))", "*?": "(?:(?!\\w)|{0}+?)"}
@@ -53,7 +52,7 @@ def _optional_tail(pattern, node, icase):
 
 def rewrite(pattern: str, flags: int):
     """``(source for the edge planner / RE2, Stats or None when `\\b` needs no attention)``."""
-    if not ENABLED or flags & 256 or not ("\\b" in pattern or "\\B" in pattern):  # ASCII flag: RE2's `\b` is exact
+    if flags & 256 or not ("\\b" in pattern or "\\B" in pattern):  # ASCII flag: RE2's `\b` is exact
         return pattern, None
     try:
         branches, _ = parse(pattern)

@@ -23,7 +23,6 @@ from ._edge_parse import Unsupported, parse
 ANY = "(?s:.)"                   # the character an unguarded alternative steps over
 DEAD = r"[^\x00-\U0010FFFF]"     # never matches, keeps the group numbering
 DOLLAR = r"(?:\n?\z)"            # what a non-multiline `$` stands before: an optional final newline
-GENERAL_TRAILING = True          # (?=Y) at the trailing edge with ANY RE2-compatible Y
 _END_ANCHORS = frozenset("$Zz")
 _TOKENS = ("(?=", "(?!", "(?<=", "(?<!")
 _ONCE = {"": "", "{1}": "", "?": "?", "{0,1}": "?", "??": "??", "{0,1}?": "??"}  # quantifier -> its short form
@@ -241,7 +240,7 @@ class _Emitter:
             return None
         items = _items(node)
         if node.sub == "=":
-            if items or (GENERAL_TRAILING and node.branches != [[]]):
+            if items or node.branches != [[]]:  # (?=Y) at the trailing edge with any RE2-compatible Y
                 return (items and self.cheap(items, False, self.trail_tests)) or (
                     "(?:" + self.consumed(node.branches, ml) + ")")
             return None

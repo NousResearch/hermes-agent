@@ -39,6 +39,9 @@ logger = logging.getLogger(__name__)
 # once its process exits; leave enough room for the former without leaking a
 # supervisor thread and warnings forever for the latter.
 MAX_POST_ATTACH_RECONNECT_FAILURES = 5
+PAGE_SELECTION_TIMEOUT_S = 10.0
+PAGE_CANDIDATE_TIMEOUT_S = 3.0
+PAGE_DETACH_TIMEOUT_S = 1.0
 
 
 def _redact_cdp_error_text(exc: object) -> str:
@@ -149,7 +152,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             self.stop()
             # ``err`` is a raw ``websockets`` exception embedding the full cdp_url (token /
             # userinfo): re-raise redacted, ``from None`` so the traceback chain leaks nothing.
-            raise RuntimeError(f"CDP supervisor failed to start: {_redact_cdp_error_text(err)}") from None
+            raise RuntimeError(f"CDP supervisor failed to start: {type(err).__name__}: {_redact_cdp_error_text(err)}") from None
 
     def stop(self, timeout: float = 5.0) -> None:
         """Cancel the supervisor task and join the thread."""
@@ -276,13 +279,6 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         if loop is None or not loop.is_running():
             return _fail("supervisor loop is not running")
 
-        async def _attach(target_id: str) -> str:
-            attach = await self._cdp("Target.attachToTarget", {"targetId": target_id, "flatten": True}, timeout=timeout)
-            sid = attach["result"]["sessionId"]
-            await self._enable_page_domains(sid, timeout=timeout)
-            await self._install_dialog_bridge(sid)
-            return sid
-
         async def _focus() -> dict[str, Any]:
             from agent.vault_store import normalize_origin
             targets = (await self._cdp("Target.getTargets", timeout=timeout)).get("result", {}).get("targetInfos", [])
@@ -297,20 +293,19 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 except Exception:
                     continue
             for target_id, url in candidates:
-                sid = await _attach(target_id)
-                if accept:
-                    probe = await self._cdp("Runtime.evaluate", {"expression": accept, "returnByValue": True},
-                                            session_id=sid, timeout=timeout)
-                    if not probe.get("result", {}).get("result", {}).get("value"):
-                        await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
-                        continue
+                sid = await self._attach_page_candidate(target_id, accept=accept, timeout=timeout)
+                if sid is None:
+                    continue
                 with self._state_lock:
                     self._page_session_id = sid
                 return {"ok": True, "url": url}
             return _fail(f"no open page on {origin or 'any site'}" + (" with the expected form" if accept and candidates else ""))
 
         try:
-            return _schedule(_focus(), loop, timeout=timeout + 1)
+            # wait_for cancels in-flight setup; allow one bounded detach before
+            # the sync bridge expires so selection cannot continue in the background.
+            return _schedule(asyncio.wait_for(_focus(), timeout=timeout), loop,
+                             timeout=timeout + PAGE_DETACH_TIMEOUT_S + 1)
         except Exception as exc:
             return _err(exc)
 
@@ -325,7 +320,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             loop.run_until_complete(self._run())
         except BaseException as e:
             if not self._fail_start(e):
-                logger.warning("CDP supervisor %s crashed: %s", self.task_id, e)
+                logger.warning("CDP supervisor %s crashed: %s: %s", self.task_id,
+                               type(e).__name__, _redact_cdp_error_text(e))
         finally:
             # Cancel + flush remaining tasks before closing the loop to avoid
             # "Task was destroyed but it is pending" warnings.
@@ -438,15 +434,49 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             backoff = min(backoff * 2, 10.0)
 
     async def _attach_initial_page(self) -> None:
-        """Find (or create) a page target, attach flattened, enable domains, install dialog bridge."""
+        """Bound discovery and setup even with many unresponsive restored tabs."""
+        await asyncio.wait_for(self._select_initial_page(), timeout=PAGE_SELECTION_TIMEOUT_S)
+
+    async def _select_initial_page(self) -> None:
         targets = (await self._cdp("Target.getTargets")).get("result", {}).get("targetInfos", [])
-        page_target = next((t for t in targets if t.get("type") == "page"), None)
-        if page_target is None:
-            page_target = (await self._cdp("Target.createTarget", {"url": "about:blank"}))["result"]
-        attach = await self._cdp("Target.attachToTarget", {"targetId": page_target["targetId"], "flatten": True})
-        self._page_session_id = sid = attach["result"]["sessionId"]
-        await self._enable_page_domains(sid, timeout=10.0)
-        await self._install_dialog_bridge(sid)
+        pages = [t for t in targets if t.get("type") == "page"]
+        if not pages:
+            pages = [(await self._cdp("Target.createTarget", {"url": "about:blank"}))["result"]]
+        for page in pages:
+            sid = await self._attach_page_candidate(page["targetId"], timeout=10.0)
+            if sid is not None:
+                self._page_session_id = sid
+                return
+        raise RuntimeError("CDP supervisor could not attach to any page target")
+
+    async def _attach_page_candidate(self, target_id: str, *, timeout: float,
+                                     accept: Optional[str] = None) -> Optional[str]:
+        sid, selected = None, False
+        try:
+            async with asyncio.timeout(min(timeout, PAGE_CANDIDATE_TIMEOUT_S)):
+                attach = await self._cdp("Target.attachToTarget", {"targetId": target_id, "flatten": True}, timeout=timeout)
+                sid = attach["result"]["sessionId"]
+                # Restored Chrome tabs can stall Page.enable until explicitly activated.
+                await self._cdp("Target.activateTarget", {"targetId": target_id}, timeout=timeout)
+                await self._enable_page_domains(sid, timeout=timeout)
+                await self._install_dialog_bridge(sid)
+                if accept:
+                    probe = await self._cdp("Runtime.evaluate", {"expression": accept, "returnByValue": True},
+                                            session_id=sid, timeout=timeout)
+                    if not probe.get("result", {}).get("result", {}).get("value"):
+                        return None
+                selected = True
+                return sid
+        except Exception as exc:  # health: allow BLE001 -- candidate failures must continue; raw tracebacks can expose CDP credentials
+            logger.debug("CDP page candidate setup failed: %s: %s", type(exc).__name__, _redact_cdp_error_text(exc))
+            return None
+        finally:
+            if sid is not None and not selected:
+                try:
+                    await asyncio.wait_for(self._cdp("Target.detachFromTarget", {"sessionId": sid}),
+                                           timeout=PAGE_DETACH_TIMEOUT_S)
+                except Exception as exc:  # health: allow BLE001 -- best-effort detach; log only redacted diagnostics
+                    logger.debug("CDP candidate detach failed: %s: %s", type(exc).__name__, _redact_cdp_error_text(exc))
 
     async def _cdp(self, method: str, params: Optional[dict[str, Any]] = None, *,
                    session_id: Optional[str] = None, timeout: Optional[float] = 10.0) -> dict[str, Any]:

@@ -191,9 +191,17 @@ it('each selection gate joins exactly one target\'s two trust branches after adm
   }
   const switches = Object.keys(desktop.jobs.validate.outputs)
   for (const gate of gates) {
-    const [admission, ...branches] = gate.needs
+    const [admission, ...rest] = gate.needs
     expect(admission).toBe('validate')
+    const branches = rest.filter(id => id in legs)
+    const stagers = rest.filter(id => !(id in legs))
     expect(branches.map(id => legs[id]?.['cache-mode']).sort()).toEqual(['read', 'write'])
+    expect(stagers).toHaveLength(1)
+    const [stagerId] = stagers
+    const stager = desktop.jobs[stagerId]
+    const commitLeg = branches.find(id => legs[id]['cache-mode'] === 'read')
+    expect(stager['cache-mode']).toBe('read')
+    expect(stager.needs).toEqual(['validate', commitLeg])
     // One admission switch opens the gate, and both branches run on it alone.
     const [label, ...others] = switches.filter(output =>
       evaluate(gate.if, { inputs: dispatches.candidate, needs: admitted([output]) }))
@@ -204,6 +212,11 @@ it('each selection gate joins exactly one target\'s two trust branches after adm
       expect(evaluate(legs[id].if, { inputs, needs: admitted([label]) }), id).toBe(true)
       expect(evaluate(legs[id].if, { inputs, needs: admitted([]) }), id).toBe(false)
     }
+    // Commit claims require the fresh controller-only staging job; other modes skip it.
+    const stagerNeeds = { ...admitted([label]), [commitLeg]: { result: 'success' } }
+    expect(evaluate(stager.if, { inputs: dispatches.claim, needs: stagerNeeds }), stagerId).toBe(true)
+    expect(evaluate(stager.if, { inputs: dispatches.candidate, needs: stagerNeeds }), stagerId).toBe(false)
+    expect(evaluate(stager.if, { inputs: dispatches.commit, needs: stagerNeeds }), stagerId).toBe(false)
     // The gate runs always() to judge a skipped branch, so it must still
     // refuse a failed admission itself.
     const needs = admitted([label])

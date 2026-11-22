@@ -25,7 +25,15 @@ def github(tmp_path, monkeypatch):
                     "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
                         {"context": "required", "app": {"databaseId": 1}}]}}}}}}
             elif "/rules/branches/" in self.path:
-                value = [[]]
+                rules = state.get("rules")
+                value = [[{"type": "required_status_checks",
+                           "parameters": {"required_status_checks": rules}}] if rules else []]
+            elif self.path.startswith("/apps/"):
+                app_id = state.get("apps", {}).get(self.path.removeprefix("/apps/"))
+                if app_id is None:
+                    self.send_error(404)
+                    return
+                value = {"id": app_id}
             elif "/check-runs" in self.path:
                 run = {"id": 42, "name": "required", "head_sha": sha,
                        "app": {"id": 1}, "status": "in_progress" if state["conclusion"] == "pending" else "completed", "conclusion": state["conclusion"],
@@ -41,7 +49,7 @@ def github(tmp_path, monkeypatch):
                 if state.get("head_change"):
                     state["head"] = "b" * 40
             elif "/statuses" in self.path:
-                value = [[]]
+                value = [state.get("statuses", [])]
             elif "/pulls/" in self.path:
                 value = {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "open"}
             else:
@@ -107,6 +115,30 @@ def test_pr_completion_requires_current_required_evidence(github):
         local = kb.create_task(conn, title="local", completion_contract="local-only")
         assert kb.complete_task(conn, local, summary="https://github.com/acme/repo/pull/7 is background context")
         assert len(github["requests"]) == before
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("creator, accepted", [
+    ({"login": "coderabbitai[bot]", "type": "Bot"}, True),
+    ({"login": "other-app[bot]", "type": "Bot"}, False),
+    ({"login": "coderabbitai", "type": "User"}, False),
+])
+def test_app_pinned_context_accepts_only_that_apps_commit_status(github, creator, accepted):
+    """An app may publish its required context as a commit status, not a check run
+    (CodeRabbit with `commit_status: true`). GitHub counts that status for a check
+    pinned to the app; a status from any other creator leaves the check missing."""
+    github.update(rules=[{"context": "CodeRabbit", "integration_id": 347564}],
+                  apps={"coderabbitai": 347564, "other-app": 9},
+                  statuses=[{"id": 5, "context": "CodeRabbit", "state": "success", "creator": creator,
+                             "target_url": "https://coderabbit.ai"}])
+    with connect() as conn:
+        tid = kb.create_task(conn, title="app status", completion_contract="acme/repo")
+        assert kb.complete_task(conn, tid, result="done",
+                                metadata={"published_pr": "https://github.com/acme/repo/pull/7"}) is accepted
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+    checks = {c["name"]: c["classification"] for c in receipt["checks"]}
+    assert checks == {"required": "success", "CodeRabbit": "success" if accepted else "missing"}
 
 
 @pytest.mark.platforms("linux")

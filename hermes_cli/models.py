@@ -1398,6 +1398,25 @@ def _api_key_provider_live(normalized: str, force_refresh: bool) -> Optional[lis
         return None
 
 
+def _kimi_coding_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
+    """kimi-coding live list merged with the curated catalog (the ``_stepfun_catalog`` pattern).
+
+    The coding-plan endpoint serves the K3 generation (``k3.1-pro`` and friends)
+    that the curated static list predates; every picker surface resolves through
+    ``provider_model_ids`` -> this fetcher. Live rows lead, then curated-only
+    additions — the legacy K2 ids stay visible when the endpoint no longer lists
+    them. The non-interactive provider default is unaffected: it resolves from
+    ``static_catalog`` (``get_default_model_for_provider``), not from picker rows.
+    When the probe declines (no credentials / failure) ``None`` falls through to
+    the generic profile path, whose curated floor serves as before.
+    """
+    live = _api_key_provider_live(normalized, force_refresh)
+    if not live:
+        return live
+    curated = list(static_catalog(normalized))
+    return _merge_unique(live, curated, key=_model_dedup_key) if curated else live
+
+
 def _stepfun_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     """Step Plan live list merged with the curated catalog (the ``_anthropic_catalog`` pattern).
 
@@ -1521,6 +1540,7 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
     "openai-codex": _codex_catalog,
     "nous": _nous_catalog,
     "stepfun": _stepfun_catalog,
+    "kimi-coding": _kimi_coding_catalog,
     "gmi": _api_key_provider_live,
     "anthropic": _anthropic_catalog,
     "ai-gateway": lambda normalized, force_refresh: _fetch_ai_gateway_models() or None,
@@ -1700,7 +1720,7 @@ def _relay_model_catalog(normalized: str, relay: str) -> Optional[list[str]]:
 # "no vendor egress when a relay is configured" invariant, so intercepting them would only
 # override correct, better-merged behaviour. Everything else is vendor-pinned (#121387).
 _RELAY_AWARE_CATALOG_FETCHERS = frozenset(
-    {"anthropic", "custom", "openai", "openai-api", "stepfun", "gmi"}
+    {"anthropic", "custom", "openai", "openai-api", "stepfun", "gmi", "kimi-coding"}
 )
 
 

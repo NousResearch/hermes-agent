@@ -355,7 +355,7 @@ def test_voice_actions_are_core_discord_actions(action):
 
 
 def test_no_separate_discord_voice_tool_registered():
-    import tools.discord_tool  # noqa: F401
+    import tools.discord_tool
     from tools.registry import registry
     assert registry.get_entry("discord_voice") is None
 

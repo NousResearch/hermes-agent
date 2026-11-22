@@ -2,6 +2,7 @@
 (``json.JSONDecodeError`` raised in the host) is a 400 with no secret saved, a profile hook runs in
 the host with the new profile's home, and a host started only for that hook does not outlive it."""
 
+import contextlib
 import json
 import os
 
@@ -108,6 +109,22 @@ def hosted_home(request, tmp_path, monkeypatch):
     plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.fixture
+def hook_managers(monkeypatch):
+    """Every throwaway manager a profile hook ran in (``transient_plugin_host``)."""
+    from hermes_cli import plugin_isolation
+    real, seen = plugin_isolation.transient_plugin_host, []
+
+    @contextlib.contextmanager
+    def recording():
+        with real() as manager:
+            seen.append(manager)
+            yield manager
+
+    monkeypatch.setattr(plugin_isolation, "transient_plugin_host", recording)
+    return seen
+
+
 @pytest.mark.platforms("any")  # the host is a child process
 def test_a_refused_save_crosses_the_host_as_a_400_with_no_secret_saved(hosted_home):
     from starlette.testclient import TestClient
@@ -126,13 +143,16 @@ def test_a_refused_save_crosses_the_host_as_a_400_with_no_secret_saved(hosted_ho
 
 
 @pytest.mark.platforms("any")
-def test_a_profile_hook_runs_in_the_host_and_its_host_is_stopped(hosted_home):
+def test_a_profile_hook_runs_in_the_host_and_its_host_is_stopped(hosted_home, hook_managers):
     from hermes_cli.profiles import create_profile
 
     work = create_profile("work", clone_config=True, no_alias=True)
 
     seen = json.loads((work / "hook.json").read_text())
     assert seen["name"] == "work" and seen["pid"] != os.getpid()
+    (hook_manager,) = hook_managers  # the hook's own host stopped and its registrations disposed
+    assert hook_manager._running_plugin_host() is None
+    assert not any(hook_manager._ownership_ledger.values())
     hosts = [getattr(m, "_plugin_host_instance", None) for m in plugins_mod._known_plugin_managers()]
     assert not any(h is not None and h.alive for h in hosts)
     # Everything the hook-only load registered proxied into the stopped host: hook, tool,
@@ -144,12 +164,14 @@ def test_a_profile_hook_runs_in_the_host_and_its_host_is_stopped(hosted_home):
     token = set_hermes_home_override(str(work))
     try:
         manager = plugins_mod.get_plugin_manager()
+        scopes = (manager.scope_key, hook_manager.scope_key)  # the hook's own scope too
         assert not any(manager._ownership_ledger.values())
         assert not manager._hooks.get("on_session_start")
-        assert registry.get_entry("hostedprov_probe", scope=manager.scope_key) is None
+        for scope in scopes:
+            assert registry.get_entry("hostedprov_probe", scope=scope) is None
         assert not manager._middleware.get("tool_request")
         assert not manager._plugin_rpc_methods
-        assert not [r for r in _REGISTRATIONS.values() if r[0] == manager.scope_key]
+        assert not [r for r in _REGISTRATIONS.values() if r[0] in scopes]
     finally:
         reset_hermes_home_override(token)
 
@@ -202,11 +224,14 @@ def test_a_profile_hook_teardown_leaves_a_concurrent_load_on_the_shared_host(hos
     shared = []
 
     def hook(provider):  # notify binds work's home: this load goes through work's shared manager
-        shared.append((plugins_mod.get_plugin_manager(), load_memory_provider("hostedprov")))
+        manager = plugins_mod.get_plugin_manager()
+        during = registry.get_entry("hostedprov_probe", scope=manager.scope_key)
+        shared.append((manager, during, load_memory_provider("hostedprov")))
 
     pmc.notify_memory_provider(work, hook)
 
-    (manager, provider), = shared
+    (manager, during, provider), = shared
+    assert during is None  # the hook-only load's tool never showed in the profile's own scope
     assert manager._running_plugin_host() is not None
     assert any(manager._ownership_ledger.values())
     assert registry.get_entry("hostedprov_probe", scope=manager.scope_key) is not None
@@ -279,14 +304,19 @@ def test_overlapping_transient_hosts_get_their_own_scopes(hosted_home):
 
 
 @pytest.mark.platforms("any")
-def test_a_transient_host_whose_channel_closed_is_still_stopped(hosted_home):
+def test_a_transient_host_whose_channel_closed_is_still_stopped(hosted_home, monkeypatch):
     """A host whose channel closed (its child may still run) is not ``alive``: teardown must stop it anyway."""
+    from hermes_cli import plugin_host
     from hermes_cli.plugin_isolation import transient_plugin_host
+
+    monkeypatch.setattr(plugin_host, "_SHUTDOWN_GRACE_SECS", 0.2)  # the child ignores its closed channel
 
     with transient_plugin_host() as manager:
         host = manager._plugin_host()
         host.ensure_started()
         proc = host._proc
-        host._channel.close("test: channel lost")
+        # Closed the way a read error closes it, pipes left open: close() would also close the child's
+        # stdin, and the child then exits on its own a few ms later, with or without the teardown.
+        host._channel._close("test: channel lost")
         assert not host.alive and proc.poll() is None
     assert proc.poll() is not None

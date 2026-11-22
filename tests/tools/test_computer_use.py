@@ -1194,17 +1194,26 @@ class TestCuaDriverSessionReconnect:
             ("call", "list_apps", {}),
         ]
 
-    @pytest.mark.parametrize("name,args,ended_id,reject_again", [
-        ("bring_to_front", {"pid": 42}, "mcp-123-456", False),
-        ("click", {"session": "hermes-label"}, "hermes-label", False),
-        ("bring_to_front", {"pid": 42}, "mcp-123-456", True),
-        ("start_session", {"session": "hermes-label"}, "hermes-label", False),
-        ("end_session", {"session": "hermes-label"}, "hermes-label", False),
+    @pytest.mark.parametrize("name,args,ended_id,reject_again,message", [
+        ("bring_to_front", {"pid": 42}, "mcp-123-456", False, "old"),
+        ("click", {"session": "hermes-label"}, "hermes-label", False, "old"),
+        ("bring_to_front", {"pid": 42}, "mcp-123-456", True, "old"),
+        ("start_session", {"session": "hermes-label"}, "hermes-label", False, "old"),
+        ("end_session", {"session": "hermes-label"}, "hermes-label", False, "old"),
+        ("bring_to_front", {"pid": 42}, None, False, "unnamed"),
+        ("click", {"session": "hermes-label"}, "hermes-label", False, "named"),
+        ("click", {"session": "hermes-label"}, "hermes-label", False, "labelled_052"),
     ])
-    def test_ended_session_recovery(self, name, args, ended_id, reject_again):
-        rejection = {"isError": True, "data": (
-            f"session '{ended_id}' has ended; tool call '{name}' was rejected. "
-            "Call start_session with this id to revive it before issuing further actions.")}
+    def test_ended_session_recovery(self, name, args, ended_id, reject_again, message):
+        messages = {
+            "old": f"session '{ended_id}' has ended; tool call '{name}' was rejected. "
+                   "Call start_session with this id to revive it before issuing further actions.",
+            "unnamed": "this transport's unnamed session has ended; call start_session without a session label to start a new one",
+            "named": "That session has ended. Start it again with start_session (same label), or use a new session label.",
+            "labelled_052": f"session '{ended_id}' has ended; call start_session with session '{ended_id}' "
+                            "to start it again, or use a new session label",
+        }
+        rejection = {"isError": True, "data": messages[message]}
         success = {"isError": False, "data": "ok"}
 
         class FakeBridge:
@@ -1223,7 +1232,7 @@ class TestCuaDriverSessionReconnect:
         result = session.call_tool(name, args)
         expected_calls = [("call", name, args)]
         if name not in {"start_session", "end_session"}:
-            expected_calls += [("call", "start_session", {"session": ended_id}), ("call", name, args)]
+            expected_calls += [("call", "start_session", {"session": ended_id} if ended_id else {}), ("call", name, args)]
         assert bridge.calls == expected_calls
         assert result == (rejection if reject_again or name in {"start_session", "end_session"} else success)
         assert session._declared_session_id == "hermes-label"

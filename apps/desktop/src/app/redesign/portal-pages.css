@@ -52,6 +52,11 @@
   padding-block: var(--portal-page-top) 0;
 }
 
+/* The agent page's frame starts at its eyebrow top, as the loaded page does (agent-settings.css). */
+:where(:root[data-shell='portal']) [data-page-surface] .management-panel.page-frame-fallback.page-frame-eyebrow {
+  padding-block: var(--portal-page-eyebrow-top) 0;
+}
+
 /* Loading placeholders, on every redesigned surface: the token block, never the classic accent. */
 :root[data-shell='portal'] [data-slot='skeleton'],
 :where(:root[data-shell='portal']) .page-frame-skeleton-title,

@@ -3,7 +3,7 @@
 [data-page-surface] .management-panel.agent-management {
   /* The page hero's containing block (page-hero.css). */
   position: relative;
-  padding-block: var(--portal-page-top) 0;
+  padding-block: var(--portal-page-eyebrow-top) 0;
   font-family: var(--portal-font-body);
 }
 

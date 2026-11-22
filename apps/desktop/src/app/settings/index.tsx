@@ -50,6 +50,7 @@ import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
+import { PageHero, type PageHeroArt } from '../redesign/page-hero'
 import { SETTINGS_ROUTE } from '../routes'
 
 import { AboutSettings } from './about-settings'
@@ -113,6 +114,16 @@ const SUBPAGE_VIEWS: Partial<Record<SettingsViewId, ComponentType<{ subpage?: st
   gateway: GatewaySettings,
   keybinds: KeybindSettings,
   notifications: NotificationsSettings
+}
+
+/** The Settings pages that carry the page hero band (Account & Plan 18563:12067, Machines
+ *  18563:12326); the redesign only. */
+function settingsHeroArt(view: SettingsViewId, billingOverview: boolean): PageHeroArt | undefined {
+  if (view === 'gateway' || view === 'connections') {
+    return 'veil'
+  }
+
+  return view === 'billing' && billingOverview ? 'stream' : undefined
 }
 
 /** Type-to-search: printable keystrokes on the Settings surface (outside any
@@ -643,6 +654,10 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     <SessionsSettings subpage={subpage} />
   )
 
+  const hero = simplified
+    ? settingsHeroArt(activeView, billingView === 'overview' || !canViewPlans)
+    : undefined
+
   return (
     <OverlayView
       closeLabel={t.settings.closeSettings}
@@ -666,7 +681,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
           titleAction={<SettingsSearchButton />}
         />
 
-        <OverlayMain className="px-0 pb-0">
+        <OverlayMain className={cn('px-0 pb-0', hero && 'relative')}>
+          {hero && <PageHero art={hero} />}
           <SettingsBreadcrumbContext.Provider value>
             {headerGroup && <SettingsSubpageHeader child={headerChild} group={headerGroup} />}
             {needsSubpageRedirect ? (

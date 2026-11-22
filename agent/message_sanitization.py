@@ -37,8 +37,9 @@ _MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role", DB_ROW_
 # HTTP 400 "Failed to tokenize prompt" in ~0.2s — before the model runs, non-retryable,
 # and identical on every endpoint of that server, so failover cannot route around it.
 # A session poisons itself just by reading the server's own /props into a tool result.
-# ``<__media__>`` / ``<__image__>`` are the fixed spellings older builds use.
-_MEDIA_MARKER_RE = re.compile(r'<__(?:media|image)(?:_[A-Za-z0-9_-]+)?__>')
+# ``<__media__>`` is the fixed spelling older builds use; current builds emit only
+# the randomized-suffix form — no other tag shape is known from llama.cpp.
+_MEDIA_MARKER_RE = re.compile(r'<__media(?:_[A-Za-z0-9_-]+)?__>')
 
 
 def _sanitize_surrogates(text: str) -> str:

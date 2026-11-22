@@ -104,7 +104,7 @@ def terminal_handoff_status(
     pairing policy), not by tool name: the mixed-invalid-batch path appends an error row
     under the terminal tool's own name, and name alone would read that as a handoff.
     """
-    from agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
+    from session_rules.turns import tool_call_id_variants, tool_result_id_variants
 
     terminal_calls = [
         tc for tc in (tool_calls or ()) if _tool_call_name(tc) in _TERMINAL_KANBAN_TOOLS

@@ -6,6 +6,7 @@ maintainer: quotumorg
 tier: community
 category: models
 version: "0.3.1"
+image: https://raw.githubusercontent.com/qvotvm/hermes-quotum/b820ea8006056ae0be9ed3f63ca9c5646fd9b5d4/docs/catalog-1200x600.png
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/qvotvm/hermes-quotum#readme
 known_issues:

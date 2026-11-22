@@ -9,6 +9,7 @@ import sys
 from hermes_cli._subprocess_compat import windows_detach_popen_kwargs, _WINDOWS_GATEWAY_BREAKAWAY_ENV
 from hermes_cli.gateway_launchd_runtime import GatewayJob, start_gateway_job
 from hermes_cli.gateway_runtime_service import RuntimeStartError, remaining
+from hermes_cli._startup_fast import project_root_str
 
 
 # A detached gateway claiming any of these believes the service launched it: it skips the
@@ -84,7 +85,7 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     if process_is_elevated() and process_elevation_type() != TOKEN_ELEVATION_TYPE_DEFAULT:
         raise RuntimeStartError("client_elevated", detail=CLIENT_ELEVATED_REMEDY)
     home = profile_home.resolve()
-    root = Path(__file__).resolve().parent.parent
+    root = Path(project_root_str())
     # A root home is only pinned by an explicit selector: without one the child's
     # _apply_profile_override follows the sticky active_profile and boots the wrong
     # profile's daemon. A <root>/profiles/<name> home is already trusted as-is.
@@ -93,8 +94,8 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
                *(["--idle-exit"] if idle_exit else []), *(["--force"] if force else [])]
     # The target profile's own secrets, never the launching client's: a `hermes -p work` client's
     # dotenv would otherwise become the default daemon's frozen launch env (host_gateway_child_env).
-    from tools.environments.local import served_profile_child_env
-    env = served_profile_child_env(base=dict(os.environ), target_home=home, inherit_credentials=True)
+    from tools.environments.local import gateway_child_env
+    env = gateway_child_env(home, base=dict(os.environ))
     if sys.platform == "win32":
         from hermes_cli.gateway_windows import windowless_gateway_restart_spec
         command, _, overlay = windowless_gateway_restart_spec(command)

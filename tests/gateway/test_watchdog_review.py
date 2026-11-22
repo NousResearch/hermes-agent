@@ -13,12 +13,16 @@ from types import SimpleNamespace
 import pytest
 
 from agent.session_activity import ActivityProvenance, build_activity_snapshot
-from hermes_state import SessionDB
+from hermes_cli.session_export import to_legacy_export_dict
+from persistence.core.errors import StoreContention
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _activity_snapshot(db, session_id):
+def _activity_snapshot(store, session_id):
     """Durable activity snapshot for *session_id* (what gateway/delegate readers build from the row)."""
-    row = db.get_session(session_id)
+    row = session_row(store, session_id)
     return build_activity_snapshot(
         last_activity_at=row.get("last_activity_at"),
         last_activity_description=row.get("last_activity_description"),
@@ -41,9 +45,9 @@ def _hold_write_lock(db_path: Path, held: threading.Event, release: threading.Ev
 
 
 def test_s1_contended_activity_write_gives_up_within_short_budget(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     sid = "S1_CONTENDED"
-    db.create_session(sid, source="cli")
+    seed_session(db, sid, "cli")
 
     held = threading.Event()
     release = threading.Event()
@@ -54,8 +58,8 @@ def test_s1_contended_activity_write_gives_up_within_short_budget(tmp_path):
     try:
         assert held.wait(timeout=5)
         t0 = time.monotonic()
-        with pytest.raises(sqlite3.OperationalError):
-            db.touch_session_activity(sid, time.time(), description="working")
+        with pytest.raises(StoreContention):
+            db.sessions.touch_activity(sid, time.time(), description="working")
         elapsed_touch = time.monotonic() - t0
     finally:
         release.set()
@@ -69,10 +73,10 @@ def test_s1_contended_activity_write_gives_up_within_short_budget(tmp_path):
 
 
 def test_s1_contended_clear_gives_up_within_short_budget(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     sid = "S1_CLEAR_CONTENDED"
-    db.create_session(sid, source="cli")
-    db.touch_session_activity(sid, time.time(), description="busy")
+    seed_session(db, sid, "cli")
+    db.sessions.touch_activity(sid, time.time(), description="busy")
 
     held = threading.Event()
     release = threading.Event()
@@ -83,8 +87,8 @@ def test_s1_contended_clear_gives_up_within_short_budget(tmp_path):
     try:
         assert held.wait(timeout=5)
         t0 = time.monotonic()
-        with pytest.raises(sqlite3.OperationalError):
-            db.clear_session_activity_labels(sid)
+        with pytest.raises(StoreContention):
+            db.sessions.clear_activity_labels(sid)
         elapsed = time.monotonic() - t0
     finally:
         release.set()
@@ -218,27 +222,27 @@ async def test_s2_still_stale_after_revalidation_delivers():
 
 
 def test_s4_export_includes_activity_import_resets_it(tmp_path):
-    src = SessionDB(db_path=tmp_path / "src.db")
+    src = storage_handle(tmp_path / "src")
     sid = "S4_PORTABILITY"
-    src.create_session(sid, source="cli")
-    src.append_message(sid, "user", "hello")
-    src.touch_session_activity(
+    seed_session(src, sid, "cli")
+    seed_messages(src, sid, {"role": "user", "content": "hello"})
+    src.sessions.touch_activity(
         sid,
         time.time(),
         description="working on something",
         provenance=ActivityProvenance.AGENT_COMPRESSION,
     )
 
-    exported = src.export_session(sid)
+    exported = to_legacy_export_dict(src.maintenance.export_session(sid))
     # Export INCLUDES the live activity fields (part of the durable row).
     assert exported["last_activity_at"] is not None
     assert exported["last_activity_description"] == "working on something"
 
-    dst = SessionDB(db_path=tmp_path / "dst.db")
-    result = dst.import_sessions([exported])
-    assert sid in result.get("imported_ids", result.get("imported", [sid]))
+    dst = storage_handle(tmp_path / "dst")
+    result = dst.maintenance.import_sessions([exported])
+    assert sid in result.imported_ids
 
-    row = dst.get_session(sid)
+    row = session_row(dst, sid)
     # Import RESETS activity: no resurrected "working" label on a machine
     # where no agent is running (explicit contract, #76354 S4).
     assert row.get("last_activity_at") is None

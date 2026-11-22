@@ -143,13 +143,26 @@ def _apply_terminal_mapping(scope: dict[str, str], mapping: dict[str, Any]) -> N
             scope[env_var] = _terminal_env_value(value)
 
 
-def default_terminal_scope() -> dict[str, str]:
-    """Code-default ``TERMINAL_*`` policy: what a profile-bypassing session freezes instead of
-    reading ``.env``/``config.yaml``. Total like the profile projection, minus the profile."""
+def _code_default_terminal_scope() -> dict[str, str]:
     from hermes_cli.config_defaults import DEFAULT_CONFIG
 
     scope: dict[str, str] = {}
     _apply_terminal_mapping(scope, {**_TOOL_LEVEL_DEFAULTS, **(DEFAULT_CONFIG.get("terminal") or {})})
+    return scope
+
+
+def default_terminal_scope() -> dict[str, str]:
+    """``TERMINAL_*`` policy a profile-bypassing session freezes instead of reading ``.env``/
+    ``config.yaml``: the code defaults, then managed-scope ``terminal:``. Bypassing the user's
+    config never bypasses the administrator's pins (a managed docker backend must not become local)."""
+    from hermes_cli import managed_scope
+
+    scope = _code_default_terminal_scope()
+    managed_terminal = managed_scope.apply_managed_overlay({}).get("terminal")
+    if isinstance(managed_terminal, dict):
+        _apply_terminal_mapping(scope, managed_terminal)
+        if managed_terminal.get("docker_image") is not None:
+            scope["TERMINAL_DOCKER_IMAGE_PINNED"] = "1"
     return scope
 
 
@@ -175,7 +188,7 @@ def build_profile_terminal_scope(
     from hermes_cli.config_backend import config_exists
 
     home = Path(hermes_home)
-    scope = default_terminal_scope()
+    scope = _code_default_terminal_scope()
     default_image = scope.get("TERMINAL_DOCKER_IMAGE")
     env_path = home / ".env"
     if env_path.exists():

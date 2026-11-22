@@ -1,5 +1,6 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 
+import { createGlobalRemoteSessionRoute, probeRemoteAuthMode } from './global-remote-session-route'
 import type { GatewayEndpoint } from './local-gateway'
 import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, localGatewayDial, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure, runGatewayOwnerRestart } from './local-gateway'
 import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
@@ -65,6 +66,7 @@ import {
 } from './app-version'
 import { runAppInstallerChecker } from './appinstaller-checker'
 import { installApplicationMenuAfterFirstWindow } from './application-menu-startup'
+import { joinBackendApiUrl } from './backend-api-url'
 import { stopBackendChild as stopBackendChildImpl, waitForBackendExit } from './backend-child'
 import {
   execText,
@@ -215,8 +217,8 @@ import { buildRemoteBlock } from './connection-remote-block'
 import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
-import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
-import { registerDeepLinkProtocol as registerDeepLinkProtocolWith } from './deep-link-protocol'
+import { resolveDesktopUserData } from './data-paths'
+import { extractDeepLink, handleLaunchDeepLink, registerDeepLinkProtocol as registerDeepLinkProtocolWith } from './deep-link-protocol'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
 import {
@@ -230,6 +232,7 @@ import {
 } from './desktop-profile'
 import { registryPrimaryBootRoute, resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import { type DesktopSharedMetrics, registerDesktopSharedMetrics } from './desktop-shared-metrics'
+import { type DesktopSshBudgets, readDesktopSshBudgets } from './desktop-ssh-budgets'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -292,6 +295,8 @@ import {
   assertExistingPathForOpen,
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
   clampDataUrlReadMaxMb,
+  composerImageBufferFromIpc,
+  composerPasteTextFromIpc,
   DATA_URL_READ_DEFAULT_MAX_MB,
   dataUrlReadMaxBytesFromMb,
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -313,7 +318,6 @@ import {
 } from './hardening'
 import { isHermesProcess } from './hermes-process'
 import { assertNotPassiveSpawn } from './host-backend-singleton'
-import { HERMES_HUB_FALLBACK_ORIGIN, HERMES_HUB_ORIGIN, isHermesHubClipboardWrite } from './hub-iframe-policy'
 import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
@@ -357,6 +361,7 @@ import { resolveDesktopClientVersion } from './local-runtime-version'
 import { localSkinProfileKey, registerLocalSkinIpc } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
 import { registerMachineProfile } from './machine-profile'
+import { resolveMainHermesHome } from './main-hermes-home'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
 import { activateWindow, ensureMainWindow, shouldQuitOnLastChatClosed } from './main-window-lifecycle'
 import {
@@ -418,12 +423,12 @@ import {
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import {
-  bundledPayload,
   installIdForRoot,
   type PayloadInfo,
   payloadPythonPath,
   payloadTicketRuntime,
-  requireBundledPayload
+  requireBundledPayload,
+  runnableBundledPayload
 } from './payload-backend'
 import { petOverlayClickThrough, shouldPopInOnOverlayClosed } from './pet-overlay'
 import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
@@ -573,7 +578,7 @@ import { removeStaleSingletonLock } from './singleton-lock'
 import { createSourcePythonBackend, resolveSourceInstallationBackend, type SourceBackend } from './source-backend'
 import { resolveSourcePython } from './source-python'
 import { registerSpellcheckDictionaryIpc } from './spellcheck-dictionary-ipc'
-import { resolveSshBinary } from './ssh-binary'
+import { resolveSshBinary, windowsSshEnv } from './ssh-binary'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
@@ -724,7 +729,6 @@ import {
   shouldSurfaceErrorForRendererStackCookieCrashLoop,
   writeGpuStackCookieMarker
 } from './windows-stack-cookie-fallback'
-import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath, setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
@@ -1255,11 +1259,7 @@ if (INSTALL_STAMP) {
 
 const DESKTOP_PROFILE_CONFIG_PATH: string = path.join(app.getPath('userData'), 'active-profile.json')
 
-const HERMES_HOME: string = resolveDesktopHermesHome({
-  home: app.getPath('home'),
-  directoryExists,
-  readWindowsHome: (): string | null => readWindowsUserEnvVar('HERMES_HOME')
-})
+const HERMES_HOME: string = resolveMainHermesHome(app.getPath('home'))
 
 // #77311: `desktop.electron_flags` and the renderer heap ceiling
 // (`desktop.renderer_max_old_space_mb`) used to reach Chromium only through
@@ -1270,6 +1270,7 @@ const HERMES_HOME: string = resolveDesktopHermesHome({
 // `desktop.ssh_path` (#103288) rides the same pre-window read: an explicit
 // Windows ssh client for when the in-box OpenSSH is missing or broken.
 let desktopSshPathOverride = ''
+let desktopSshBudgets: DesktopSshBudgets = {} // desktop.ssh_*_timeout (#132508)
 
 {
   let desktopLaunchYaml: string = ''
@@ -1282,6 +1283,7 @@ let desktopSshPathOverride = ''
 
   const desktopLaunchConfig = readDesktopLaunchConfig(desktopLaunchYaml)
   desktopSshPathOverride = desktopLaunchConfig.sshPath || ''
+  desktopSshBudgets = readDesktopSshBudgets(desktopLaunchYaml)
 
   // `desktop.renderer_accessibility: false` must reach packaged launches too,
   // not only the `hermes desktop` launcher's env bridge (#118271).
@@ -4819,8 +4821,8 @@ function writeDefaultProjectDir(dir) {
 
 const installedRuntimeGate = createInstalledRuntimeGate(process.env, rememberLog)
 
-async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHermesBackend> {
-  const payload = bundledPayload(process.resourcesPath)
+async function resolveHermesBackend(backendArgs: string[], progress?: typeof advanceBootProgress): Promise<ResolvedHermesBackend> {
+  const payload = await runnableBundledPayload(rememberLog, progress)
 
   if (payload) {
     if (!IS_WINDOWS) {
@@ -6740,16 +6742,7 @@ function installDownloadHandling() {
 
 function installMediaPermissions() {
   // Async request handler: the prompt-style path (most platforms).
-  // clipboard-sanitized-write is granted ONLY to the exact Skills Hub origins
-  // (hub-iframe-policy.ts): the picker's Copy controls write to the clipboard,
-  // and every other frame — artifact previews included — stays denied.
-  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
-    if ((permission as string) === 'clipboard-sanitized-write') {
-      callback(isHermesHubClipboardWrite(focusedFrameOrigin(webContents)))
-
-      return
-    }
-
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
     callback(isMediaCapturePermission(permission, details))
   })
 
@@ -6760,83 +6753,9 @@ function installMediaPermissions() {
   // the shared predicate runs with `undefined` details and allows the capture
   // permissions — identical policy to the request handler below, just without
   // the metadata refinement (absent metadata is allowed there too).
-  session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
-    if ((permission as string) === 'clipboard-sanitized-write') {
-      return isHermesHubClipboardWrite(focusedFrameOrigin(webContents))
-    }
-
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
     return isMediaCapturePermission(permission, undefined)
   })
-}
-
-// Origin of the frame a permission request came from. The request handler is
-// given the webContents of the TOP document (Chromium routes subframe
-// permission requests through it in Electron 40 without exposing the frame
-// directly), so when the top document is NOT on a hub origin we fall back to
-// the request's own `requestingUrl` — the URL the frame actually asked for —
-// whose origin is exact for both hub deployments and `null` for anything
-// sandboxed or opaque.
-function focusedFrameOrigin(
-  webContents: { getURL?: () => string } | null | undefined,
-  details?: { requestingUrl?: string }
-): string | null {
-  try {
-    if (details?.requestingUrl) {
-      return new URL(details.requestingUrl).origin
-    }
-
-    if (webContents?.getURL) {
-      return new URL(webContents.getURL()).origin
-    }
-  } catch {
-    // Unparseable URL — report no origin; callers deny.
-  }
-
-  return null
-}
-
-/** The picker embed URL the hub iframe starts on (both deployments). */
-function isHermesHubPickerUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url)
-    const isHubOrigin = parsed.origin === HERMES_HUB_ORIGIN || parsed.origin === HERMES_HUB_FALLBACK_ORIGIN
-    const isPickerPath = parsed.pathname === '/hermes-agent/docs/skills' || parsed.pathname === '/docs/skills'
-
-    return isHubOrigin && isPickerPath
-  } catch {
-    return false
-  }
-}
-
-/** Look up a subframe by its process/routing id; never throws. */
-function findFrameByIdentifier(
-  webContents: { frames?: readonly unknown[]; framesInSubtree?: readonly unknown[] } | null | undefined,
-  frameProcessId: number,
-  frameRoutingId: number
-): { origin?: string; reload?: () => void } | null {
-  const candidates = [...(webContents?.frames ?? []), ...(webContents?.framesInSubtree ?? [])] as Array<{
-    processId?: number
-    routingId?: number
-    frameProcessId?: number
-    frameRoutingId?: number
-    origin?: string
-    reload?: () => void
-  }>
-
-  return (
-    candidates.find(
-      f => (f.frameProcessId ?? f.processId) === frameProcessId && (f.frameRoutingId ?? f.routingId) === frameRoutingId
-    ) ?? null
-  )
-}
-
-/** `frame.origin` as a safe string; destroyed frames report opaque/'null'. */
-function safeFrameOrigin(frame: { origin?: string } | null | undefined): string | null {
-  if (!frame?.origin || frame.origin === 'null') {
-    return null
-  }
-
-  return frame.origin
 }
 
 // ---------------------------------------------------------------------------
@@ -7434,6 +7353,7 @@ interface GatewayFileConnection extends RegistryBackendRequestScope {
 interface GatewayFileSavePayload {
   sessionId?: string
   connectionId?: unknown
+  downloadPath?: unknown
   path?: unknown
   profile?: unknown
   suggestedName?: unknown
@@ -7469,7 +7389,8 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<Ga
   const requestPaths = gatewayFileRequestPaths(
     filePath,
     requestPath => gatewayFileRequestPath(connection, connectionId, profile, requestPath),
-    payload.sessionId
+    payload.sessionId,
+    payload.downloadPath
   )
 
   const deps: GatewayFileSaveDeps = {
@@ -7480,7 +7401,7 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<Ga
   return saveGatewayDownload(requestPaths, ctx, {
     ...deps,
     download: async (requestPath: string, context: GatewayFileSaveContext): Promise<GatewayFileSaveResult> => {
-      const url: string = `${connection.baseUrl}${requestPath}`
+      const url: string = joinBackendApiUrl(connection.baseUrl, requestPath)
 
       if (connection.authMode === 'oauth') {
         return requestWithOauthFallback(connection.baseUrl, {
@@ -9368,12 +9289,7 @@ function desktopSshBinary(): string {
   return resolveSshBinary({
     platform: process.platform,
     override: desktopSshPathOverride,
-    env: {
-      systemRoot: process.env.SystemRoot || process.env.windir || 'C:\\Windows',
-      localAppData: process.env.LOCALAPPDATA || '',
-      programFiles: process.env['ProgramFiles'] || 'C:\\Program Files',
-      programFilesX86: process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
-    },
+    env: windowsSshEnv(process.env),
     fs: { existsSync: fileExists, readdirSync: dir => fs.readdirSync(dir) }
   })
 }
@@ -9526,6 +9442,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       {
         rememberLog: sshRememberLog,
         sshBinary: desktopSshBinary(),
+        ...desktopSshBudgets,
         ownershipId: sshOwnershipKey(profile),
         scope,
         effectiveConfigFingerprint: sshConfig.effectiveConfigFingerprint
@@ -9905,72 +9822,15 @@ async function requestJsonForProfile(profile: string, path: string, method: stri
   return fetchJsonForBackend(conn, path, { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
 }
 
-async function probeRemoteAuthMode(rawUrl) {
-  // Determine how a remote gateway expects callers to authenticate, WITHOUT
-  // sending any credentials. ``/api/status`` is public on every Hermes
-  // gateway (it backs the portal liveness probe) and reports:
-  //   auth_required: true  → OAuth gate is engaged (cookie + ws-ticket auth)
-  //   auth_required: false → loopback/--insecure: legacy session-token auth
-  // ``/api/auth/providers`` (also public, only meaningful when gated) gives
-  // the human-facing provider name(s) for the login button label.
-  //
-  // The settings UI calls this as the user types a URL so it can render an
-  // OAuth login button vs a session-token entry box. Network/parse failures
-  // surface as ``reachable: false`` rather than throwing, so a half-typed or
-  // unreachable URL degrades to "can't tell yet" instead of a hard error.
-  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
-
-  let status
-
-  try {
-    status = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
-  } catch (error: any) {
-    return {
-      baseUrl,
-      reachable: false,
-      authMode: 'unknown',
-      providers: [],
-      version: null,
-      error: error instanceof Error ? error.message : String(error)
-    }
-  }
-
-  const authRequired = authModeFromStatus(status) === 'oauth'
-  let providers = []
-
-  if (authRequired) {
-    // Best-effort: a gated gateway exposes the registered providers so the
-    // button can read "Sign in with Nous Research" instead of a generic
-    // label, and so a username/password provider can be distinguished from
-    // an OAuth-redirect one (``supports_password``). A failure here doesn't
-    // change the auth mode, so swallow it.
-    try {
-      const body = (await fetchPublicJson(`${baseUrl}/api/auth/providers`, { timeoutMs: 8_000 })) as any
-
-      if (Array.isArray(body?.providers)) {
-        providers = body.providers
-          .filter(p => p && typeof p === 'object')
-          .map(p => ({
-            name: String(p.name || ''),
-            displayName: String(p.display_name || p.name || ''),
-            supportsPassword: Boolean(p.supports_password)
-          }))
-          .filter(p => p.name)
-      }
-    } catch {
-      // Provider listing is optional metadata; the auth mode is already known.
-    }
-  }
-
-  return {
-    baseUrl,
-    reachable: true,
-    authMode: authRequired ? 'oauth' : 'token',
-    providers,
-    version: status?.version || null,
-    error: null
-  }
-}
+const globalRemoteSessions = createGlobalRemoteSessionRoute({
+  globalRemoteActive,
+  primaryHasRemoteOverride: () => Boolean(profileHasRemoteOverride(primaryProfileKey())),
+  request: (conn, path, method, body) => fetchJsonForBackend(conn, path, { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }),
+  requestPrimary: (path, method, body) => requestJsonForProfile(null, path, method, body as string),
+  resolveGlobalRemote: () => resolveRemoteBackend(null),
+  resolvePrimary: () => ensureBackend(null, { passive: true }),
+  waitReady: conn => waitForRemoteHermes(conn)
+})
 
 async function testDesktopConnectionConfig(input: any = {}) {
   if (input.mode === 'ssh') {
@@ -9989,7 +9849,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
 
     const ssh = createSshProbeConnection(
       { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
-      { rememberLog: sshRememberLog, sshBinary: desktopSshBinary() }
+      { rememberLog: sshRememberLog, sshBinary: desktopSshBinary(), ...desktopSshBudgets }
     )
 
     try {
@@ -10150,6 +10010,7 @@ function resetBootProgressForReconnect() {
 function resetHermesConnectionState({ soft = false }: { soft?: boolean } = {}): void {
   backendStartFailure = null
   remoteReauthFailure = null
+  globalRemoteSessions.reset()
   remoteLiveness.clear()
   // The next startHermes() re-reads active-profile.json for its launch profile.
   primaryProfilePin.clear()
@@ -10879,7 +10740,7 @@ async function openManagedSshUpdateTransport(
 
   const ssh = createSshProbeConnection(
     { host: config.host, user: config.user, port: config.port, keyPath: config.keyPath },
-    { rememberLog: sshRememberLog, sshBinary: desktopSshBinary() }
+    { rememberLog: sshRememberLog, sshBinary: desktopSshBinary(), ...desktopSshBudgets }
   )
 
   await ssh.open()
@@ -11655,7 +11516,7 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
       prepareLocalBackend: async () => {
         await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
 
-        return resolveHermesBackend(backendArgs)
+        return resolveHermesBackend(backendArgs, advanceBootProgress)
       },
       resolveRemote: () => {
         // Classify immediately before each throwing resolve. This callback runs
@@ -11869,46 +11730,7 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   installContextMenuBridge(win)
   // Always deny, never open as a side effect: GHSA-9f4c-93c8-jc8g. Trusted
   // links arrive via `hermes:openExternal`, not here. See window-open-policy.ts.
-  // The trusted-hub delegation (window-open-policy.ts, #91612) also never
-  // creates a window: it hands http/https/mailto opens from the EXACT hub
-  // origin to the audited `openExternalUrl` as a deny side effect.
-  win.webContents.setWindowOpenHandler(
-    createWindowOpenHandler(origin => rememberLog(`[window-open] denied: ${origin}`), {
-      getOpenerOrigin: () => win.webContents.getFocusedFrame?.()?.origin ?? null,
-      openExternalUrl: (url: string) => void openExternalUrl(url)
-    })
-  )
-  // The embedded Skills Hub picker must stay pinned to its picker URL
-  // (#91612): the frame is free to navigate itself within the picker (search,
-  // pagination), but the moment it tries to escape to the full docs site —
-  // whose layout is not embeddable and whose links are then dead — the
-  // navigation is denied and the frame is reloaded onto the picker URL.
-  win.webContents.on('will-frame-navigate', (event, url, isMainFrame, frameProcessId, frameRoutingId) => {
-    if (isMainFrame) {
-      return
-    }
-
-    const frame = findFrameByIdentifier(win.webContents, frameProcessId, frameRoutingId)
-    const frameOrigin = safeFrameOrigin(frame)
-
-    if (frameOrigin !== HERMES_HUB_ORIGIN && frameOrigin !== HERMES_HUB_FALLBACK_ORIGIN) {
-      return
-    }
-
-    if (isHermesHubPickerUrl(url)) {
-      return
-    }
-
-    event.preventDefault()
-
-    // Reload the frame back onto the picker instead of leaving it on a
-    // half-navigated document.
-    try {
-      frame?.reload()
-    } catch {
-      // A destroyed frame is gone; nothing to restore.
-    }
-  })
+  win.webContents.setWindowOpenHandler(createWindowOpenHandler(origin => rememberLog(`[window-open] denied: ${origin}`)))
   win.webContents.on('will-navigate', (event, url) => {
     if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {
       return
@@ -13423,6 +13245,7 @@ function createWindow() {
 
   const revealController = wireWindowReveal(createdMainWindow, {
     onRevealed: () => {
+      revealedMainWindows.add(createdMainWindow)
       // Persist geometry as soon as the window is visible so a crash before the
       // first clean resize/move/close still captures the restored bounds (#56726).
       schedulePersistWindowState()
@@ -14590,7 +14413,7 @@ async function probeSshProfileInventory(connection) {
 
   const ssh = createSshProbeConnection(
     { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
-    { rememberLog: sshRememberLog, sshBinary: desktopSshBinary() }
+    { rememberLog: sshRememberLog, sshBinary: desktopSshBinary(), ...desktopSshBudgets }
   )
 
   try {
@@ -14961,16 +14784,15 @@ async function getJsonForBackend(descriptor, path, opts: any = {}) {
   return fetchJsonForBackend(descriptor, path, opts)
 }
 
-// Any-method REST call against a resolved backend descriptor — the descriptor
-// analogue of the hermes:api handler's own auth split: OAuth backends prefer a
-// native bearer (cookieless RFC 8252 flow) and fall back to the OAuth cookie
-// partition; token/local descriptors use the static session-token header.
+// Any-method REST call against a resolved backend descriptor, the one sink for renderer-routed paths (so the
+// join refuses any path that would move the credentials off the backend origin). OAuth backends prefer a native
+// bearer (cookieless RFC 8252) and fall back to the cookie partition; token/local use the session-token header.
 async function fetchJsonForBackend(
   descriptor,
   path,
   opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number; profileScoped?: boolean } = {}
 ) {
-  const url = `${descriptor.baseUrl}${path}`
+  const url = joinBackendApiUrl(descriptor.baseUrl, path)
 
   // A native grant names one profile and the gateway refuses `all`: assemble the unified
   // session lists, project tree and PR scan from one read per profile, each carrying that
@@ -14995,23 +14817,20 @@ async function fetchJsonForBackend(
   }
 
   if (descriptor.authMode === 'oauth') {
-    // The OAuth cookie path rides electron.net with JSON headers; multipart
-    // isn't wired there. Fail loudly rather than corrupting the upload.
-    if (opts.upload) {
-      throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
-    }
+    const options = { method: opts.method, body: opts.body, timeoutMs: opts.timeoutMs, headers: descriptor.headers }
 
-    const options = {
-      method: opts.method,
-      body: opts.body,
-      timeoutMs: opts.timeoutMs,
-      headers: descriptor.headers
-    }
-
+    // The bearer leg is fetchJson, which carries multipart; the cookie leg rides electron.net with
+    // JSON headers only, so an upload there fails loudly rather than corrupting the file.
     return requestWithOauthFallback(descriptor.baseUrl, {
       ensureNativeAccessToken,
-      requestWithBearer: (bearer: string) => fetchJson(url, null, { ...options, bearer }),
-      requestWithCookie: () => fetchJsonViaOauthSession(url, options)
+      requestWithBearer: (bearer: string) => fetchJson(url, null, { ...options, upload: opts.upload, bearer }),
+      requestWithCookie: async () => {
+        if (opts.upload) {
+          throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
+        }
+
+        return fetchJsonViaOauthSession(url, options)
+      }
     })
   }
 
@@ -15025,7 +14844,7 @@ async function fetchJsonForBackend(
   })
 }
 
-ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
+ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl, fetchPublicJson))
 ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl, rawOpts) => {
   // Capability-gated login (RFC 8252). Probe the gateway's public /api/status
   // for supported auth_flows and /api/auth/providers for provider capabilities:
@@ -15538,12 +15357,12 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
       const path = `${pathname}?${passthroughParams.toString()}`
 
       if (method === 'GET') {
-        return fetchJsonForProfile(null, path)
+        return globalRemoteSessions.request(path, method)
       }
 
       const body = request.body && typeof request.body === 'object' ? { ...request.body, profile } : { profile }
 
-      return requestJsonForProfile(null, path, method, body)
+      return globalRemoteSessions.request(path, method, body)
     }
 
     return undefined
@@ -15618,7 +15437,9 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registryS
       return remoteSessionList(requested, searchParams)
     }
 
-    return fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile)
+    return fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, {
+      aggregate: globalRemoteSessions.fetchOptions()
+    })
   }
 
   return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources, pinnedConnectionId)
@@ -15635,10 +15456,13 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
   const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
 
-  const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, { prefixForMerge: true })) as any
+  const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, {
+    prefixForMerge: true,
+    aggregate: globalRemoteSessions.fetchOptions()
+  })) as any
 
   if (pinned) {
-    await tagPrimaryAggregateRows(base, () => ensureBackend(null, { passive: true }), pinned)
+    await tagPrimaryAggregateRows(base, globalRemoteSessions.aggregateBackend, pinned)
   }
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
@@ -15739,7 +15563,9 @@ async function reusedPrimarySshDescriptor(registry, connectionId: string) {
 
 // RT-42: install_id of the backend the primary session aggregate reads (see the module).
 const primaryBackendInstallId = createPrimaryInstallIdResolver({
-  resolve: () => ensureBackend(null, { passive: true }),
+  // The backend the aggregate was read from (the app-global remote in mixed mode), so its rows
+  // are not counted again when that server is also a registry source.
+  resolve: () => globalRemoteSessions.aggregateBackend(),
   status: descriptor => getJsonForBackend(descriptor, '/api/status', { timeoutMs: 2_000 }),
   ttlMs: INSTALL_ID_TTL_MS,
   negativeTtlMs: INSTALL_ID_NEGATIVE_TTL_MS
@@ -16220,25 +16046,13 @@ ipcMain.handle('hermes:capturePreview', async (_event, payload) => {
 })
 
 ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
-  const data = payload?.data
-
-  if (!data) {
-    throw new Error('saveImageBuffer: missing data')
-  }
-
-  const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
+  const buffer = composerImageBufferFromIpc(payload?.data)
 
   return writeComposerImage(buffer, payload?.ext || '.png', payload?.name)
 })
 
 ipcMain.handle('hermes:savePastedText', async (_event, payload) => {
-  const text = typeof payload?.text === 'string' ? payload.text : ''
-
-  if (!text) {
-    throw new Error('savePastedText: missing text')
-  }
-
-  return writeComposerPaste(HERMES_HOME, text)
+  return writeComposerPaste(HERMES_HOME, composerPasteTextFromIpc(payload?.text))
 })
 
 ipcMain.handle('hermes:saveClipboardImage', async () => {
@@ -17358,17 +17172,16 @@ let _rendererReadyForDeepLink = false
 // Set by sendOpenUpdatesRequested() when the renderer cannot hear it yet.
 let _pendingOpenUpdates = false
 
-function _extractDeepLink(argv) {
-  if (!Array.isArray(argv)) {
-    return null
-  }
-
-  return argv.find(a => typeof a === 'string' && DEEPLINK_SCHEMES.some(s => a.startsWith(`${s}://`))) || null
-}
+const revealedMainWindows = new WeakSet()
+const launchTarget = () => ({ ready: revealedMainWindows.has(mainWindow), activate: () => activateWindow(mainWindow) })
 
 function handleDeepLink(url) {
   if (!url || typeof url !== 'string') {
     return
+  }
+
+  if (handleLaunchDeepLink(url, DEEPLINK_SCHEMES, launchTarget())) {
+    return rememberLog('[deeplink] launch link handled (content ignored)')
   }
 
   let parsed
@@ -17529,7 +17342,7 @@ if (!isPrimaryInstance) {
       handleDeepLink('hermes://close-preview')
     }
 
-    const url = _extractDeepLink(argv)
+    const url = extractDeepLink(argv, DEEPLINK_SCHEMES)
 
     if (url) {
       handleDeepLink(url)
@@ -17700,7 +17513,7 @@ app.whenReady().then(() => {
   })
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
-  const _coldStartLink = _extractDeepLink(process.argv)
+  const _coldStartLink = extractDeepLink(process.argv, DEEPLINK_SCHEMES)
 
   if (_coldStartLink) {
     handleDeepLink(_coldStartLink)

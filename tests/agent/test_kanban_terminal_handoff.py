@@ -27,6 +27,7 @@ from tools.registry import tool_error
 LANDED = {
     "kanban_complete": "done",
     "kanban_block": "blocked",
+    "kanban_schedule": "scheduled",
     "kanban_request_review": "review",
     "kanban_request_changes": "ready",
 }

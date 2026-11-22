@@ -27,6 +27,8 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+from hermes_cli._startup_fast import project_root_str
+from hermes_cli.kanban_worker_log import open_task_worker_log as _open_worker_log
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -1586,20 +1588,20 @@ def check_respawn_guard(
     # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
     #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
     #    An infrastructure spawn refusal (#114720) shares the cooldown: the host
-    #    condition is not the card's, so it retries forever, spaced, and never
-    #    reaches the breaker.
+    #    condition is not the card's (its text may still say 403), so it retries
+    #    forever, spaced, and reaches neither the breaker nor blocker_auth.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
     latest_run = conn.execute(
         "SELECT outcome, ended_at, metadata FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",  # runs end on whole seconds: the later insert wins a tie
         (task_id,),
     ).fetchone()
-    if latest_run is not None and latest_run["outcome"] == "spawn_failed":
-        if rl_cooldown > 0 and _kb._json_dict(latest_run["metadata"]).get("infrastructure"):
-            ended_at = _kb._to_epoch(latest_run["ended_at"])
-            if ended_at is not None and (now - ended_at) < rl_cooldown:
-                return "infrastructure_cooldown"
+    infrastructure = (latest_run is not None and latest_run["outcome"] == "spawn_failed"
+                      and bool(_kb._json_dict(latest_run["metadata"]).get("infrastructure")))
+    ended_at = _kb._to_epoch(latest_run["ended_at"]) if infrastructure else None
+    if rl_cooldown > 0 and ended_at is not None and (now - ended_at) < rl_cooldown:
+        return "infrastructure_cooldown"
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
@@ -1619,7 +1621,7 @@ def check_respawn_guard(
     # benign commands such as ``claude auth status`` (#117097).
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+    if err and latest_outcome != "crashed" and not infrastructure and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL
@@ -1692,19 +1694,19 @@ def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
-    """``hermes_cli.profiles.profile_exists``, or ``None`` when it cannot be
-    imported (local import avoids a cycle; callers fall back to trusting the
-    assignee).
+    """``profile_exists`` from ``hermes_cli.profiles``; ``None`` when it cannot be
+    imported and no allowlist is set (callers then trust the assignee).
 
-    When ``kanban.dispatch_profiles`` is set (#110995) the returned predicate
-    additionally requires the assignee to be listed, fail-closed — so a card
-    assigned to ``default`` is only claimable by homes that opted into it.
-    Foreign assignees land in the existing ``skipped_nonspawnable`` bucket.
-    """
+    With ``kanban.dispatch_profiles`` set (#110995) the predicate also requires the
+    assignee to be listed, fail-closed: a ``default`` card is only claimable by homes that
+    opted in, and a set allowlist whose gate cannot be built claims nothing (#147531)."""
     try:
         from hermes_cli.profiles import normalize_profile_name, profile_exists
     except Exception:
-        return None
+        if _dispatch_profile_allowlist(str) is None:
+            return None
+        _kb._log.warning("kanban: hermes_cli.profiles unimportable — claiming no cards", exc_info=True)
+        return lambda _name: False
     allowlist = _dispatch_profile_allowlist(normalize_profile_name)
     if allowlist is None:
         return profile_exists
@@ -1732,24 +1734,24 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
           dispatch_profiles: ["sage", "researcher"]   # or "sage,researcher"
 
     Returns ``None`` only when the key is absent from the user config (upstream
-    behavior: any existing profile is claimable). A present value is
-    fail-closed: an empty list, ``null`` or a bare ``dispatch_profiles:`` claims
-    nothing. The user layer is read without the ``DEFAULT_CONFIG`` merge (whose
-    ``None`` placeholder would make the key look present in every home), and a
-    config read that raises also claims nothing — a corrupt config on a shared
-    board must never widen this home's claim scope silently (#113620).
+    behavior: any existing profile is claimable). A present value is fail-closed:
+    an empty list, ``null`` or a bare ``dispatch_profiles:`` claims nothing, and
+    so does a non-mapping ``kanban`` section (a bare ``kanban:`` is absent) or an
+    unreadable config (#113620, #147532) — the user layer is read without the
+    ``DEFAULT_CONFIG`` merge, whose ``None`` placeholder fakes the key's presence.
     """
     try:
         from hermes_cli.config_effective import load_user_config_effective
-        kanban = (load_user_config_effective(fail_closed=True) or {}).get("kanban", {})
+        kanban = (load_user_config_effective(fail_closed=True) or {}).get("kanban")
+        if kanban is not None and not isinstance(kanban, Mapping):
+            raise TypeError(f"the `kanban` section is {type(kanban).__name__}, not a mapping")
     except Exception as exc:
         _kb._log.warning(
-            "kanban: could not read kanban.dispatch_profiles (%s: %s) — "
-            "this home claims no cards until the config is readable",
+            "kanban: kanban.dispatch_profiles cannot be resolved (%s: %s) — this home claims no cards",
             type(exc).__name__, exc,
         )
         return frozenset()
-    if not isinstance(kanban, Mapping) or "dispatch_profiles" not in kanban:
+    if "dispatch_profiles" not in (kanban or {}):
         return None
     raw = kanban["dispatch_profiles"]
     if raw is None or (isinstance(raw, str) and not raw.strip()):
@@ -1769,15 +1771,14 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
 
 
 def dispatch_profile_allowlist_summary() -> str:
-    """Human-readable resolution of ``kanban.dispatch_profiles`` for this home.
-
-    Surfaced by ``hermes kanban diagnostics`` so an operator on a shared board
-    can see what a home believes it may claim (#113620): ``any`` (key absent),
-    the sorted allowed names, or ``none (fail-closed: ...)``.
-    """
+    """What this home may claim, for ``hermes kanban diagnostics`` (#113620): ``any``
+    (key absent; also when profiles cannot import, as the gate then stays open too),
+    the sorted allowed names, or ``none (fail-closed: ...)``, as `_profile_exists_fn`."""
     try:
         from hermes_cli.profiles import normalize_profile_name
     except Exception as exc:
+        if _dispatch_profile_allowlist(str) is None:
+            return "any"
         return f"none (fail-closed: profiles unavailable: {exc})"
     allowlist = _dispatch_profile_allowlist(normalize_profile_name)
     if allowlist is None:
@@ -1808,7 +1809,7 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
 
     Lets health telemetry tell "stuck" (``0 spawned`` with spawnable work) from
     "correctly idle" (only control-plane lanes waiting on ``claim_task``). Falls
-    back to "any assigned" when ``profile_exists`` is unimportable.
+    back to "any assigned" when profiles cannot import and no allowlist is set.
     """
     return _has_spawnable(conn, "ready")
 
@@ -2122,8 +2123,8 @@ def _dispatch_lane_task(
         result.spawned.append((task_id, assignee, ""))
         _count_spawn(assignee)
         return True
-    claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
-    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
+    claim = _kb.claim_review_task if lane == "review" else _kb.claim_task  # reassigned since the gates: CAS loses (#147534)
+    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds, expect_assignee=assignee)
     if claimed is None:
         return False
     try:
@@ -2160,11 +2161,12 @@ def _dispatch_lane_task(
         _count_spawn(claimed.assignee)
         return True
     except Exception as exc:
+        from hermes_cli.kanban_worker_preflight import ProfileConfigUnavailable
         from tools.process_registry import RestartSafeScopeUnavailable
 
-        # The host refused the spawn (no restart-safe scope): nothing about the
-        # card ran, so it must not spend the card's retry budget (#114720).
-        infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
+        # The host refused the spawn (no restart-safe scope) or the config backend could not serve
+        # the profile: nothing about the card ran, so it must not spend its retry budget (#114720).
+        infrastructure = isinstance(exc, (RestartSafeScopeUnavailable, ProfileConfigUnavailable))
         if infrastructure:
             _kb._log.warning("kanban dispatcher: spawn of %s deferred, host cannot place the worker: %s", claimed.id, exc)
         if _record_task_failure(
@@ -2174,37 +2176,6 @@ def _dispatch_lane_task(
         ):
             result.auto_blocked.append(claimed.id)
         return False
-
-
-def _apply_default_assignee(
-    conn: sqlite3.Connection, task_id: str, assignee: str, *, dry_run: bool,
-) -> bool:
-    """Persist ``kanban.default_assignee`` on an unassigned ready row.
-
-    Mutating the row keeps board state honest: the task is legitimately owned
-    by the default, not "unassigned but secretly routed". ``dry_run`` reports
-    without writing. Returns False when the write failed.
-    """
-    if dry_run:
-        return True
-    try:
-        with _kb.write_txn(conn):
-            conn.execute(
-                "UPDATE tasks SET assignee = ? WHERE id = ? "
-                "AND (assignee IS NULL OR assignee = '')",
-                (assignee, task_id),
-            )
-            _kb._append_event(
-                conn, task_id, "assigned",
-                {"assignee": assignee, "source": "kanban.default_assignee"},
-            )
-    except Exception:
-        _kb._log.debug(
-            "kanban dispatch: failed to apply default_assignee=%r to task %s",
-            assignee, task_id, exc_info=True,
-        )
-        return False
-    return True
 
 
 def _run_reclaim_phase(
@@ -2311,7 +2282,7 @@ def _any_spawnable_review(
 ) -> bool:
     """Mirror review dispatch gates before reserving ready-lane capacity.
 
-    Unavailable profile metadata retains the historic fail-open behavior. A
+    Unimportable profiles fail open only when no allowlist is set. A
     review row that :func:`_dispatch_lane_task` would refuse this tick — its
     assignee already at the per-profile cap, or respawn-guarded — cannot
     consume the reservation, so it must not withhold capacity from an
@@ -2338,9 +2309,9 @@ def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
     """``kanban.default_assignee`` when it names a real profile this home may
     claim (``kanban.dispatch_profiles`` gated, same predicate as the spawn
     gate). Otherwise ``None`` so an unassigned shared-board card is never
-    written to. When the profiles module isn't importable trust the
-    operator's config: the downstream check still buckets a missing profile
-    as nonspawnable."""
+    written to. Profiles unimportable: trust the config if no allowlist is set
+    (the downstream check still buckets a missing profile as nonspawnable),
+    else ``None`` — the fail-closed gate claims nothing (#147531)."""
     name = (default_assignee or "").strip() or None
     if name:
         profile_exists = _profile_exists_fn()
@@ -2429,15 +2400,9 @@ def _dispatch_once_locked(
             break
         row_assignee = row["assignee"]
         if not row_assignee:
-            # Honour kanban.default_assignee so an unassigned task doesn't
-            # park in 'ready' forever.
-            if not default_assignee or not _apply_default_assignee(
-                conn, row["id"], default_assignee, dry_run=dry_run,
-            ):
-                result.skipped_unassigned.append(row["id"])
+            row_assignee = _kbda.fill_default_assignee(conn, row["id"], default_assignee, result, dry_run=dry_run)
+            if not row_assignee:
                 continue
-            row_assignee = default_assignee
-            result.auto_assigned_default.append(row["id"])
         if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
             spawned += 1
 
@@ -2652,22 +2617,22 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
     """Reclaim pre-tag worker rows in state.db so they leave the session lists.
 
     Best-effort: the durable gate is ``state_meta`` in
-    ``retag_kanban_worker_sessions``; the in-process set avoids reopening
+    ``retag_worker_sessions``; the in-process set avoids reopening
     state.db on every spawn. A tick must never fail because a session DB was
     busy or missing.
     """
     if workspaces_root_path in _retagged_workspace_roots:
         return
     try:
-        from hermes_state_registry import acquire, release_or_close
+        from persistence_assembly import open_persistence, profile_scope
 
-        # Inside the gateway the dispatcher shares the process's registry handle; a bare
-        # SessionDB() here was one more writer connection on the same state.db (#100896).
-        db = acquire()
+        # Inside the gateway the dispatcher shares the process's store for the profile, not one more
+        # writer connection on the same state.db (#100896).
+        store = open_persistence(profile_scope())
         try:
-            db.retag_kanban_worker_sessions(workspaces_root_path)
+            store.sessions.retag_worker_sessions(workspaces_root_path)
         finally:
-            release_or_close(db)
+            store.close()
         _retagged_workspace_roots.add(workspaces_root_path)
     except Exception as exc:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)
@@ -2677,19 +2642,6 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     """The profile owner executes; this subprocess only waits for its receipt."""
     import sys
     return [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
-
-
-def _open_worker_log(task: Task, board: Optional[str]):
-    """Append-mode per-task log (a re-run on unblock appends, never overwrites),
-    rotated first. Anchored at the board root (not the shared kanban root) so
-    `hermes kanban log` reads its own file and boards sharing task ids don't
-    collide."""
-    log_dir = _kb.worker_logs_dir(board=board)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"{task.id}.log"
-    from hermes_cli.kanban_worker_log import rotate_worker_log, worker_log_rotation_config
-    rotate_worker_log(log_path, *worker_log_rotation_config())
-    return open(log_path, "ab")
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
@@ -2741,6 +2693,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     """
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
+    from hermes_cli.kanban_worker_preflight import refuse_unresolved_model
+    refuse_unresolved_model(task, workspace, board)  # raises before a worker exists when no model can
 
     from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
 
@@ -2840,13 +2794,11 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     env.pop("HERMES_TUI", None)
 
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
-    # The worker is `-m hermes_cli.kanban_worker_client`: Hermes itself, with no console-script
-    # bootstrap. The routed-profile scrub above strips Hermes-owned PYTHONPATH entries (user
-    # children must not see our tree), so a PYTHONPATH-launched dispatcher spawned a child that
-    # died on `No module named 'hermes_cli'` before it ever reached the owner. Same pin as cron's
-    # external worker (#112729): applied to the sanitized env, after every other decision stands.
+    # The worker is `-m hermes_cli.kanban_worker_client` with no console-script bootstrap, and the scrub
+    # above strips our PYTHONPATH entries, so a PYTHONPATH-launched dispatcher's child died on
+    # `No module named 'hermes_cli'` (#112729). Pinned last, after every other env decision.
     from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
-    env = pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parent.parent)
+    env = pin_hermes_tree_on_pythonpath(env, Path(project_root_str()))
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.
@@ -2941,4 +2893,5 @@ def run_daemon(
 # module is fully populated before ``kanban_db`` imports from it.
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
+from hermes_cli import kanban_db_default_assignee as _kbda
 from hermes_cli import kanban_db_workspace as _kbw

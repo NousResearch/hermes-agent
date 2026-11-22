@@ -55,8 +55,6 @@ export interface AudioSttLeaseResponse {
   ok: boolean
   lease: string
   active: boolean
-  /** Live lease holders after this call (null when the backend call itself failed). */
-  leases: null | number
   /** Warm-up outcome: `loaded` | `cached` | `noop` | `error`. Release carries no action. */
   action?: string
   /** Whether the configured engine was actually warmed (`noop` for cloud providers carries false). */
@@ -478,58 +476,6 @@ export interface TelegramOnboardingApplyResponse {
   restart_started?: boolean
 }
 
-// -- Webhooks (subscription CRUD) --------------------------------------------
-// Incoming HTTP event routes served by the webhook gateway platform. Backed by
-// the same JSON store the CLI/dashboard use; per-route HMAC secrets are
-// redacted on read and surfaced exactly once on create.
-
-export interface WebhookRoute {
-  created_at: null | string
-  deliver: string
-  deliver_only: boolean
-  description: string
-  enabled: boolean
-  events: string[]
-  name: string
-  prompt: string
-  secret_set: boolean
-  skills: string[]
-  url: string
-}
-
-export interface WebhooksResponse {
-  base_url: string
-  enabled: boolean
-  subscriptions: WebhookRoute[]
-}
-
-export interface WebhookCreatePayload {
-  deliver?: string
-  deliver_chat_id?: string
-  deliver_only?: boolean
-  description?: string
-  events?: string[]
-  name: string
-  prompt?: string
-  skills?: string[]
-}
-
-// Create echoes the route summary plus the one-time secret.
-export interface WebhookCreateResponse extends WebhookRoute {
-  secret: string
-}
-
-export interface WebhookEnableResponse {
-  enabled: true
-  needs_restart: boolean
-  ok: boolean
-  platform: 'webhook'
-  restart_action?: string
-  restart_error?: string
-  restart_pid?: null | number
-  restart_started?: boolean
-}
-
 export interface HermesConfig {
   agent?: {
     reasoning_effort?: string
@@ -684,7 +630,7 @@ export interface SessionInfo {
    *  as visible. */
   hidden?: boolean
   /** Derived read state (backend watermark: `last_read_at` vs `last_active`,
-   *  see `SessionDB.session_unread`). True when the conversation was
+   *  see `session_unread` in persistence/sqlite/conversation/_store/sessions.py). True when the conversation was
    *  explicitly marked unread or a response arrived after it was last read.
    *  Undefined against a backend predating the flag; treat as read. */
   unread?: boolean
@@ -1472,6 +1418,8 @@ export interface ComputerUseStatus {
 }
 
 export interface SessionSearchResult {
+  /** Whether the matched session is archived. Older gateways may omit it. */
+  archived?: boolean
   /** Recency of the matched conversation, straight from the sessions row —
    *  present on hits backed by a rich row (the search endpoint fills it).
    *  Used to order unloaded hits honestly; falls back to session_started. */

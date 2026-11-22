@@ -101,15 +101,18 @@ def cmd_normalize(doc) -> dict:
                 continue
             if (prev is not None
                     and _run_format_key(prev) == _run_format_key(r_el)):
-                pt = prev.find(_q("t"))
-                ct = r_el.find(_q("t"))
-                if pt is None:
-                    pt = prev.makeelement(_q("t"), {})
-                    prev.append(pt)
-                pt.text = (pt.text or "") + ((ct.text or "")
-                                             if ct is not None else "")
+                text = "".join(
+                    node.text or ""
+                    for run in (prev, r_el)
+                    for node in run.findall(_q("t"))
+                )
+                for node in list(prev.findall(_q("t"))):
+                    prev.remove(node)
+                pt = prev.makeelement(_q("t"), {})
+                pt.text = text
                 pt.set("{http://www.w3.org/XML/1998/namespace}space",
                        "preserve")
+                prev.append(pt)
                 r_el.getparent().remove(r_el)
                 merged += 1
             else:

@@ -51,8 +51,22 @@ def _comments_root(doc):
             el = getattr(part, "_element", None)
             if el is not None:
                 return el
-            return etree.fromstring(part.blob)
+            root = etree.fromstring(part.blob)
+            _attach_live_root(part, root)
+            return root
     return None
+
+
+def _attach_live_root(part, root):
+    """Make mutations of a generic comments part serialize on save."""
+    base = part.__class__
+
+    def _blob(self):
+        return etree.tostring(self._element, xml_declaration=True,
+                              encoding="UTF-8", standalone=True)
+
+    part.__class__ = type("CommentsXmlPart", (base,), {"blob": property(_blob)})
+    part._element = root
 
 
 def _anchored_texts(doc) -> dict:
@@ -95,31 +109,31 @@ def list_comments(doc) -> list:
 
 def _split_run(para, run_el, offset: int):
     """Split a run element at text offset; return the new right-hand run."""
-    text = "".join(t.text or "" for t in run_el.iter(q("t")))
+    from docx.text.run import Run
+    text = Run(run_el, para).text
     right = deepcopy(run_el)
     run_el.addnext(right)
-    for el, s in ((run_el, text[:offset]), (right, text[offset:])):
-        for t in list(el.iter(q("t"))):
-            el.remove(t)
-        t = etree.SubElement(el, q("t"))
-        t.text = s
-        t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    Run(run_el, para).text = text[:offset]
+    Run(right, para).text = text[offset:]
     return right
 
 
 def find_anchor_runs(doc, target: str):
     """Isolate `target`'s first occurrence into whole runs; return them."""
     from docx_common import iter_all_paragraphs
+    from docx.text.run import Run
     for para in iter_all_paragraphs(doc):
-        full = para.text
+        run_elements = list(para._p.iter(q("r")))
+        run_text = [(run_el, Run(run_el, para).text)
+                    for run_el in run_elements]
+        full = "".join(text for _, text in run_text)
         start = full.find(target)
         if start < 0:
             continue
         end = start + len(target)
         pos = 0
         covered = []
-        for run_el in para._p.iter(q("r")):
-            rtext = "".join(t.text or "" for t in run_el.iter(q("t")))
+        for run_el, rtext in run_text:
             r_start, r_end = pos, pos + len(rtext)
             pos = r_end
             if r_end <= start or r_start >= end:
@@ -166,15 +180,7 @@ def add_comment_xml(doc, runs, text, author, initials) -> str:
         part = Part(PackURI("/word/comments.xml"), COMMENTS_CT, blob,
                     doc.part.package)
         doc.part.relate_to(part, RT.COMMENTS)
-        # keep a live element on the part so edits reach save()
-        part._element = root
-        part.blob_ = None
-
-        def _blob(self=part):
-            return etree.tostring(self._element, xml_declaration=True,
-                                  encoding="UTF-8", standalone=True)
-        part.__class__ = type("CommentsXmlPart", (Part,),
-                              {"blob": property(lambda self: _blob(self))})
+        _attach_live_root(part, root)
     now = _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     comment = etree.SubElement(root, q("comment"))
     comment.set(q("id"), cid)

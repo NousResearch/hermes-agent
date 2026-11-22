@@ -51,6 +51,8 @@ from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.oxml.ns import qn
 
+from office_text_replace import contiguous_run_groups, replace_in_runs
+
 R_EMBED = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 
 
@@ -85,33 +87,23 @@ def normalize_runs(para):
 def replace_in_text_frame(text_frame, old, new):
     count = 0
     for para in text_frame.paragraphs:
-        joined = "".join(run.text for run in para.runs)
-        if old not in joined:
-            continue
-        if not any(old in run.text for run in para.runs):
-            # Match spans runs: merge identically-formatted neighbours
-            # first, which resolves pure spell-check splits losslessly.
-            normalize_runs(para)
-        if any(old in run.text for run in para.runs):
-            # Run-level replace: preserves each run's formatting exactly.
-            for run in para.runs:
-                if old in run.text:
-                    count += run.text.count(old)
-                    run.text = run.text.replace(old, new)
-        else:
-            # Match spans genuinely differently-formatted runs -> rewrite
-            # paragraph, keeping only the first run's formatting (caveat).
-            joined = "".join(run.text for run in para.runs)
-            count += joined.count(old)
-            first = para.runs[0]
-            first.text = joined.replace(old, new)
-            for run in para.runs[1:]:
-                run._r.getparent().remove(run._r)
+        normalize_runs(para)
+        for runs in contiguous_run_groups(para.runs):
+            count += replace_in_runs(runs, old, new)
     return count
 
 
+def iter_shapes(shapes):
+    """Yield editable leaf shapes, descending into PowerPoint groups."""
+    for shape in shapes:
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            yield from iter_shapes(shape.shapes)
+        else:
+            yield shape
+
+
 def iter_text_frames(slide):
-    for shape in slide.shapes:
+    for shape in iter_shapes(slide.shapes):
         if shape.has_text_frame:
             yield shape.text_frame
         if shape.has_table:

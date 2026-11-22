@@ -486,6 +486,24 @@ env-over-YAML rule as every other setting). Avoid
 `all` when peer bots can answer each other without an explicit mention, because
 their own reply policies can still create loops.
 
+### Use the current Slack bot display name
+
+If a renamed Slack app still appears under its install-time name, enable the
+current bot name for interactive replies. Hermes reads it from `bots.info` when
+connecting and passes it as the display username on replies, stream starts, and
+thread-status updates. Slack bot IDs and mention routing are unchanged.
+
+```yaml
+platforms:
+  slack:
+    extra:
+      use_current_bot_display_name: true
+```
+
+This is off by default and needs the `chat:write.customize` bot scope. If the
+scope or name is unavailable, Hermes sends without a username override. It does
+not rename the bot user in Slack or change existing messages.
+
 ### Working-State Status Line
 
 While the agent processes a message, Slack shows a status line next to the bot

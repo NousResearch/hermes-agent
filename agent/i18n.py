@@ -249,9 +249,12 @@ def lookup(key: str, lang: str | None = None) -> str | None:
     """The active (or explicit ``lang``) language's own value for ``key``, unformatted, or None.
 
     Unlike :func:`t` there is no English or bare-key fallback, for callers that hold their own
-    fallback text and must tell a translation apart from an English default."""
+    fallback text and must tell a translation apart from an English default. An explicit ``lang`` no
+    layer supplies any more (an unregistered pack) is a miss, not English."""
     home = _current_home()
-    target = _normalize_lang(lang, home) if lang else _resolve_language(home)
+    target = resolve_language_id(lang, home) if lang else _resolve_language(home)
+    if target is None:
+        return None
     return _load_catalog(target, home).get(key)
 
 

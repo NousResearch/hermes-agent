@@ -176,3 +176,21 @@ def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
     assert result.name == "locales"
 
 
+
+
+def test_lookup_of_a_language_no_layer_supplies_is_a_miss_not_english(tmp_path, monkeypatch):
+    """``lookup`` promises no English fallback: a stale explicit language (a pack since unregistered)
+    must not normalize to ``en`` and hand back an English overlay's value."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    (tmp_path / "locales").mkdir()
+    (tmp_path / "locales" / "en.yaml").write_text("fixture:\n  key: \"english overlay\"\n", encoding="utf-8")
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    i18n.reset_language_cache()
+    token = set_hermes_home_override(tmp_path)
+    try:
+        assert i18n.lookup("fixture.key", lang="en") == "english overlay"
+        assert i18n.lookup("fixture.key", lang="xx-unregistered") is None
+    finally:
+        reset_hermes_home_override(token)
+        i18n.reset_language_cache()

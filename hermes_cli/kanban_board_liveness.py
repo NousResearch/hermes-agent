@@ -21,7 +21,7 @@ failure shapes apart so the alert stays trustworthy (ADR §3.4):
 
 Board-level events need a row to hang on (subscriptions and cursors are keyed by ``task_id``),
 so a per-board sentinel task ``board:<slug>:liveness`` is created idempotently
-(:func:`ensure_sentinel_task`, run from the connect() migration). It is deliberately:
+(:func:`ensure_sentinel_task`, created lazily on first emit). It is deliberately:
 
 * ``status='scheduled'`` — invisible to the estate ``stall-sentinel.py`` (its parked set is
   ``blocked/triage/todo`` and its STRANDED arms cover ``ready``/``todo``/``running`` only), and

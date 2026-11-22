@@ -4,8 +4,6 @@ Extracted from ``hermes_cli/main.py`` so the CLI facade can carry new dispatch-t
 behaviour without growing past its line cap (see scripts/code_health).
 """
 
-import sys
-
 
 def set_process_title() -> None:
     """Cosmetic: show 'hermes' instead of 'python3.xx' in ps/top/htop.

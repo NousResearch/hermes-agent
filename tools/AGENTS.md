@@ -89,7 +89,7 @@ configured engine — the packaged Chromium from `browser_launcher.launch_chromi
 Lightpanda only when `browser.engine: lightpanda` is set (never tried automatically). That browser
 is fresh unless a persistent profile is configured (`browser.user_data_dir`, Bot Desktop). One
 browser per cache key (`--remote-debugging-port=0` + `DevToolsActivePort`). State lives in
-`browser_session.py`; siblings late-import it inside functions. Every launched Chromium is stopped
+`browser_session.py`. Every launched Chromium is stopped
 parent-first and recorded in a private 0700 dir (a throwaway profile's in
 `<HERMES_HOME>/cache/browser/chromium-records`; a persistent profile's per OS user under the host lock dir,
 one for every home pinning it) so a later process reaps a crashed owner's browser after checking pid + start

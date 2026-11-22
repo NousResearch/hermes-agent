@@ -248,8 +248,8 @@ def _nous_sign_in_poller(session_id: str, sess: dict[str, Any]) -> None:
 
     The generator was created and advanced to its ``Code`` state by ``_start_nous_device_code``, so
     it is already holding the device code and its HTTP client. Nothing here is wrapped in
-    ``_profile_scope``: that context manager holds a process-global lock and swaps module
-    attributes across its ``yield``, and this loop can last the sign-in code's whole expiry. The
+    ``_profile_scope``: that context manager holds a process-global lock across its
+    ``yield``, and this loop can last the sign-in code's whole expiry. The
     generator scopes its own short config/auth-store sections instead.
     """
     gen = sess.get("_sign_in")

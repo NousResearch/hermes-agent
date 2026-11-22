@@ -12,6 +12,7 @@ import pytest
 
 import plugins.config_backends
 from hermes_cli import config_backend as cb
+from tests.held_import import held_import
 
 FAKE = "fakekind_p21"
 
@@ -124,3 +125,11 @@ def test_broken_backend_package_shows_its_own_import_error(fake_kind):
         fh.write("import hermes_missing_dependency_p21\n")
     with pytest.raises(ModuleNotFoundError, match="hermes_missing_dependency_p21"):
         cb._backend_for(FAKE)
+
+
+def test_selection_waits_for_a_backend_another_thread_is_importing():
+    """A selection made while another thread's first selection is still running the backend
+    package's body gets that backend, not "is not a config backend this build provides"."""
+    backend = object()
+    with held_import("plugins.config_backends.heldkind", get_backend=lambda: backend) as held:
+        assert held.run_during_import(lambda: cb._backend_for("heldkind")) is backend

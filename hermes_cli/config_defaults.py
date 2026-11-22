@@ -116,10 +116,10 @@ DEFAULT_CONFIG = {
         # many slow/unreachable MCP servers.
         # See #63078.
         "build_wait_timeout": 600,
-        # Hermes-level retry attempts for API errors (connection drops, timeouts, 5xx) wrapping the
-        # whole call; the OpenAI SDK also retries transient errors (max_retries=2). Set 1 for fast
-        # failover to fallback providers; raise to tolerate longer provider hiccups.
+        # Hermes-level retries for API errors (connection drops, timeouts, 5xx) around the whole call; the
+        # SDK also retries (max_retries=2). Set 1 for fast failover to fallbacks; raise for longer hiccups.
         "api_max_retries": 3,
+        "codex_request_compression": True,  # zstd to official Codex; a bare-400 frame resends as JSON
         # Once api_max_retries AND the fallback chain are spent on a transient outage (5xx,
         # overloaded/529, connect/read timeouts) with nothing delivered yet, wait and retry this many
         # more cycles (jittered 15/30/60/60/60s; a provider Retry-After wins up to 120s) with a
@@ -682,11 +682,11 @@ DEFAULT_CONFIG = {
         # Opt-in: write the next summary in the background near the trigger; compaction uses (or waits for) it if it still covers the same messages.
         "prepare_ahead": False,
     },
-    # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "5m" | "1h" | "auto"
+    # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "auto" (default) | "5m" | "1h"
     # (auto = 1h for human-paced sessions — cli/tui/desktop/messaging — and 5m for subagent, cron,
-    # oneshot, webhook, kanban, api, tool, batch); other non-falsy values are ignored; falsy (false, null, "off",
-    # "disabled", "no", "none") disables caching.
-    "prompt_caching": {"cache_ttl": "5m"},
+    # oneshot, webhook, kanban, api_server, tool, batch, curator); falsy ("off", null, ...) disables caching.
+    # route_ttl_ceilings {<provider>: "5m"|"1h"} overrides a profile's prompt_cache_max_ttl.
+    "prompt_caching": {"cache_ttl": "auto", "route_ttl_ceilings": {}},
     # OpenRouter settings. response_cache: X-OpenRouter-Cache header — identical requests return
     # cached responses at zero billing; independent of Anthropic prompt caching. response_cache_ttl:
     # seconds (1-86400), only used when response_cache is on. min_coding_score (0.0-1.0):
@@ -835,8 +835,8 @@ DEFAULT_CONFIG = {
         "tui_agents_nudge": True,
         "bell_on_complete": False,
         "bell_on_prompt": False,   # bell when a blocking prompt opens (clarify/approval/sudo)
-        # Stream reasoning live before the response; otherwise thinking models show only a spinner
-        # for tens of seconds.
+        "program_status": True,    # OSC 7501 idle/working/blocked/done/error for terminals that track it
+        # Stream reasoning live before the response; otherwise thinking models show a bare spinner.
         "show_reasoning": True,
         # Post-response "Reasoning" recap collapses to 10 lines; true prints it all (live streaming
         # is always full).
@@ -853,8 +853,7 @@ DEFAULT_CONFIG = {
         "timestamps": False,      # message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format, e.g. "%b-%d %H:%M"
         "final_response_markdown": "strip",  # render | strip | raw
-        # Preserve recent classic-CLI output across Ctrl+L, /redraw and resize clears; disable if an
-        # emulator misbehaves with replayed scrollback.
+        # Preserve recent classic-CLI output across Ctrl+L, /redraw and resize clears; disable on emulator bugs.
         "persistent_output": True,
         "json_output": False,  # --json default for CLI verbs that declare the flag
         "persistent_output_max_lines": 200,
@@ -1398,13 +1397,12 @@ DEFAULT_CONFIG = {
     # and resolved; read-only — creation goes to ~/.hermes/skills/ unless create_dir redirects it.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
-        # Where skill_manage-created skills go (empty = profile-local dir). When set, new skills
-        # land here AND agent-facing instructions name this path; expanded (~, ${VAR}), relative to
-        # HERMES_HOME, scanned alongside the local dir.
+        "index_desc_limit": 60,  # skill-index description chars (60..1024); wider routes better, costs tokens
+        # Where skill_manage-created skills go (empty = profile-local dir). When set, new skills land here
+        # AND agent-facing instructions name this path; expanded (~, ${VAR}), relative to HERMES_HOME.
         "create_dir": "",
-        # In a git checkout, <root>/.hermes/skills/ and <root>/.agents/skills/ load as the
-        # highest-precedence tier — ONLY if the root is in trusted_project_dirs. false = no scan, no
-        # untrusted-skills notice.
+        # In a git checkout, <root>/.hermes/skills/ and <root>/.agents/skills/ load as the highest-precedence
+        # tier — ONLY if the root is in trusted_project_dirs. false = no scan, no untrusted-skills notice.
         "project_discovery": True,
         # Trusted project roots; managed by `hermes skills trust` / `untrust`.
         "trusted_project_dirs": [],
@@ -2509,7 +2507,7 @@ DEFAULT_CONFIG = {
         # spills the rest to a cache file, so an unbounded walk pays for nodes the model never sees:
         # measured on macOS (cua-driver 0.28.2, M-series) a 1,444-node Chrome window went 540 ms -> 83 ms
         # and a 456-node Finder window 6.9 s -> 0.6 s at 200, with the returned elements a prefix of the
-        # unbounded walk. 0 = driver default (2,000 elements / depth 25) — the pre-fix behaviour.
+        # unbounded walk. 0 omits max_elements: driver default (250 nodes on Cua >= 0.35), not unlimited.
         # ~400 keeps the full first 100 visible elements on a pathological tree, at ~1.4 s on Finder;
         # the walk's cost grows with the bound, so keep it in the low hundreds. This caps the nodes
         # COLLECTED, not the walk's wall clock: a target whose AX surface exceeds the driver's own 20 s
@@ -2664,7 +2662,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 53,  # Config schema version - bump this when adding new required fields
+    "_config_version": 54,  # Config schema version - bump this when adding new required fields
 }
 
 

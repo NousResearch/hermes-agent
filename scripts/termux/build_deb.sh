@@ -6,7 +6,7 @@
 #
 # Inputs (all required):
 #   --repo <dir>          hermes-agent checkout (tag must exist; provenance)
-#   --tag <tag>           immutable release tag (vX.Y.Z or vX.Y.Z+canary.<UTC timestamp>)
+#   --tag <tag>           immutable release tag (vX.Y.Z or canary.<UTC timestamp>-vX.Y.Z)
 #   --payload <dir>       dir containing python/, node/, app/ (git archive of
 #                         the tag) and wheelhouse/ (from termux_build.sh)
 #   --out <dir>           output dir; <out>/hermes-agent_<v>_aarch64.deb lands here
@@ -75,20 +75,20 @@ if [ -n "$COMMIT_MODE" ] || [ -n "$RELEASE_COMMIT" ]; then
     [[ "$SELECTED_COMMIT" =~ ^[a-f0-9]{40}$ ]] || fail "commit identity requires an exact full 40-character SHA"
     COMMIT="$(git -C "$REPO_ABS" rev-parse HEAD)" || fail "not a git checkout: $REPO_ABS"
     [ "$COMMIT" = "$SELECTED_COMMIT" ] || fail "checkout HEAD $(echo "$COMMIT" | cut -c1-12) is not the requested commit"
-    PY_VERSION="$(python3 - "$REPO_ROOT" "$REPO_ABS" "$COMMIT" "$TAG" <<'PY'
-import sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-from scripts.releases.commit_build import version_at
-version = sys.argv[4][1:] if sys.argv[4] else version_at(Path(sys.argv[2]), sys.argv[3])
-print(version)
-PY
-    )" || fail "commit version admission failed"
     if [ -n "$RELEASE_COMMIT" ]; then
         DEB_VERSION="$(python3 "$HERE/deb_version.py" "$TAG")" || fail "version derivation failed for tag $TAG"
         export HERMES_PAYLOAD_TAG="$TAG"
         unset HERMES_BUILD_COMMIT
     else
+        # A tagless commit build reads its version from the checkout.
+        PY_VERSION="$(python3 - "$REPO_ROOT" "$REPO_ABS" "$COMMIT" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from scripts.releases.commit_build import version_at
+print(version_at(Path(sys.argv[2]), sys.argv[3]))
+PY
+        )" || fail "commit version admission failed"
         DEB_VERSION="${PY_VERSION}+commit${COMMIT_MODE:0:12}"
         export HERMES_PAYLOAD_TAG=""
         export HERMES_BUILD_COMMIT="$COMMIT_MODE"
@@ -97,8 +97,14 @@ else
     unset HERMES_BUILD_COMMIT
     COMMIT="$(git -C "$REPO_ABS" rev-parse --verify "refs/tags/$TAG^{commit}")" \
         || fail "tag $TAG not found in $REPO_ABS"
-    PY_VERSION="${TAG#v}"
 fi
+if [ -n "$TAG" ]; then
+    # A release tag names its version (X.Y.Z or X.Y.Z+canary.<stamp>), with or without a pinned
+    # commit: never strip the leading v, a canary tag starts with its kind.
+    PY_VERSION="$(python3 "$HERE/deb_version.py" --release-version "$TAG")" \
+        || fail "version derivation failed for tag $TAG"
+fi
+log "Payload version: $PY_VERSION"
 [ -n "$TUI_PRODUCT" ] || fail "--tui-product is required (run scripts/termux/build.py)"
 TUI_PRODUCT="$(cd "$TUI_PRODUCT" && pwd)"
 [ -f "$TUI_PRODUCT/dist/entry.js" ] && [ -f "$TUI_PRODUCT/package.json" ] || fail "incomplete TUI product"

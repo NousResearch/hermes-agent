@@ -41,8 +41,6 @@ class OptionalSkillSource(SkillSource):
     OFFICIAL_REPO = "NousResearch/hermes-agent"
     OPTIONAL_SKILLS_PREFIX = "optional-skills"
 
-    _parse_frontmatter = staticmethod(_parse_frontmatter)
-
     def __init__(self, auth: Optional[GitHubAuth] = None):
         from hermes_constants import get_optional_skills_dir
 

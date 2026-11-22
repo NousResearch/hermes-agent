@@ -27,8 +27,8 @@ class ChildSessionStore(RuntimeSessionStore):
     def create_session(self, session_id, source, **fields):
         # The owner created this row at reservation with its source, lineage and profile; only
         # the constructor facts are the child's to add.
-        from hermes_state_worker_lifecycle import _CONSTRUCTOR_CONFIG
-        config = {k: v for k, v in (fields.get('model_config') or {}).items() if k in _CONSTRUCTOR_CONFIG}
+        from persistence.workers.vocabulary import WORKER_CONSTRUCTOR_CONFIG_KEYS
+        config = {k: v for k, v in (fields.get('model_config') or {}).items() if k in WORKER_CONSTRUCTOR_CONFIG_KEYS}
         return super().create_session(session_id, 'subagent', model=fields.get('model'),
                                       model_config=config or None, system_prompt=fields.get('system_prompt'))
 
@@ -41,7 +41,7 @@ class ChildSessionStore(RuntimeSessionStore):
             super().close()
 
 
-def reserve_child_store(parent):
+def reserve_child_store(parent, *, persistence=None):
     """A ``ChildSessionStore`` the owner reserved under ``parent``'s verified execution."""
     secret = secrets.token_urlsafe(32)
     # Reached from delegate_task's tool callback, which can run on Relay's loop (#139029).

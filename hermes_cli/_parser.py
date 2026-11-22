@@ -398,10 +398,6 @@ def build_top_level_parser():
     subparsers = parser.add_subparsers(dest="command", help="Command to run", metavar="<command>")
     return parser, subparsers, _build_chat_parser(subparsers)
 
-# Pre-parse of `-p`/`--profile` (main._apply_profile_override); shared with the container boot
-# reconciler, which reads the container CMD without importing the side-effectful CLI entry point.
-_PROFILE_NAME_RE = r"^[a-z0-9][a-z0-9_-]{0,63}$"  # mirrors hermes_cli.profiles._PROFILE_ID_RE
-
 
 def _inside_mcp_add_args(argv: list, index: int) -> bool:
     """True once argv reaches `hermes mcp add ... --args <command argv>`.
@@ -455,6 +451,8 @@ def scan_profile_flag(argv: list) -> tuple:
     plugin (`hermes kanban ... -p 8080`), and option-looking values (``no:xdist``,
     ``--flag``) are always a silent skip.
     """
+    from hermes_constants import PROFILE_ID_RE
+
     value_flags, optional_value_flags = top_level_value_flag_sets()
     i = 0
     saw_subcommand = False
@@ -465,7 +463,7 @@ def scan_profile_flag(argv: list) -> tuple:
         if arg in {"--profile", "-p"} and i + 1 < len(argv):
             raw = argv[i + 1]
             value = raw.strip().casefold()
-            if re.match(_PROFILE_NAME_RE, value):
+            if PROFILE_ID_RE.match(value):
                 return value, 2, i
             if not saw_subcommand and not _looks_like_option_value(raw) and _looks_like_hermes_invocation():
                 _exit_invalid_profile_name(raw)

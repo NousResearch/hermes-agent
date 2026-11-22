@@ -772,7 +772,7 @@ DEFAULT_CONFIG = {
         },
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
         "tts_audio_tags": _aux(30),
-        "voice_chat": {**_aux(120), "reasoning_effort": "none"},  # agent/voice_turn_route.py; off = lowest valid
+        "voice_chat": _aux(120),  # agent/voice_turn_route.py; unset = session model and reasoning
         # Kanban: triage_specifier expands a Triage one-liner into a spec; kanban_decomposer a JSON graph.
         "triage_specifier": _aux(120),
         "kanban_decomposer": _aux(180),

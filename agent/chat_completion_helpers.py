@@ -1269,34 +1269,15 @@ def interruptible_api_call(agent, api_kwargs: dict):
     return _NonStreamRequest(agent, api_kwargs).run()
 
 
-def _consume_ephemeral_reasoning_off(agent) -> bool:
-    """Consume the one-shot "answer without thinking" continuation flag.
-
-    Set by the length-continuation path when a request returned reasoning but NO
-    visible content (thinking ate the output cap); continuation turns never replay
-    prior reasoning, so thinking ON would re-burn the budget. When True the caller
-    overrides the wire reasoning_config with ``{"enabled": False, "effort": "none"}``
-    for exactly the next call. Prompt-cache cost is bounded to ONE cold prefix write
-    on config-sensitive providers (Anthropic, OpenAI) — far cheaper than four futile
-    full-budget continuations.
-    """
-    consumed = bool(getattr(agent, "_ephemeral_reasoning_off", False))
-    if consumed:
-        agent._ephemeral_reasoning_off = False
-    return consumed
-
-
 def _reasoning_config_for_wire(agent):
-    """``agent.reasoning_config`` with the one-shot reasoning-off override applied.
+    """Session reasoning, adjusted only for provider-proven rejection.
 
     Once the route has answered a disable with "reasoning is mandatory"
-    (``agent._reasoning_disable_rejected``), every disable — configured or
-    the one-shot continuation override — is dropped until the route
+    (``agent._reasoning_disable_rejected``), a configured disable is dropped until the route
     changes: the request goes out without a reasoning config and the route
     applies its own default.
     """
     cfg = agent.reasoning_config
-    ephemeral_off = _consume_ephemeral_reasoning_off(agent)
     if getattr(agent, "_reasoning_effort_rejected", False):
         # The route rejected the configured reasoning LEVEL itself (#100536: ``reasoning.effort:
         # max`` on an enabled config). Omit the reasoning fields until the route changes —
@@ -1329,8 +1310,6 @@ def _reasoning_config_for_wire(agent):
             return None
         agent._wire_reasoning_config = cfg
         return cfg
-    if ephemeral_off:
-        cfg = {**(cfg or {}), "enabled": False, "effort": "none"}
     # What actually went out: the reasoning-rejection rung reads it to tell a rejected
     # disable (drop the disable) from a rejected level (drop the reasoning fields).
     agent._wire_reasoning_config = cfg

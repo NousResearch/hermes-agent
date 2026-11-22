@@ -322,9 +322,6 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     st.length_continue_retries += 1
     n = st.length_continue_retries
     _interim_content = getattr(assistant_message, "content", None)
-    if not _interim_content and not st.is_stub:
-        # Thinking-only truncation: continuing with thinking ON re-burns the budget.
-        agent._ephemeral_reasoning_off = True
     if _interim_content:
         interim_msg = agent._build_assistant_message(assistant_message, st.finish_reason)
         interim_msg["_length_continuation_fragment"] = True  # ceiling exit drops these
@@ -356,8 +353,6 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         agent, messages, st.current_turn_user_idx, finish_reason="length",
         parts=st.truncated_response_parts,
     )
-    # The one-shot reasoning-off override must not leak into the next turn.
-    agent._ephemeral_reasoning_off = False
     agent._vprint(
         f"{agent.log_prefix}⚠️  Not continuing — each attempt would only grow the prompt."
         if filled is not None else
@@ -689,7 +684,6 @@ def continue_codex_incomplete(
                 if not _already_nudged and _last_msg.get("role") == "assistant":
                     append_message(messages, {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE})
         if not interim_has_content and _codex_finish_reason(response) == "incomplete":
-            agent._ephemeral_reasoning_off = True
             # No configured cap means the provider's own ceiling was hit: the observed
             # output_tokens IS that ceiling, so seed the escalation from it (else 4096).
             usage = getattr(response, "usage", None)

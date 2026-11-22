@@ -168,8 +168,9 @@ def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_pr
         rewrite_prompt_model_identity(agent, agent.model, agent.provider)
         agent._turn_route_task = TASK
         logger.info("Voice turn routed to %s (%s)", agent.model, agent.provider)
-    if effort is not None:
-        agent.reasoning_config = _voice_reasoning(agent, effort)
+    # Binding another model resolves its profile effort; an unset voice effort must
+    # still follow the session's live choice, not a newly resolved config default.
+    agent.reasoning_config = _voice_reasoning(agent, effort) if effort is not None else state["reasoning_config"]
     return agent._cached_system_prompt or system_prompt
 
 

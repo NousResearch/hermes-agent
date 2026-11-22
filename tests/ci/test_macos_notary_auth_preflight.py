@@ -427,11 +427,24 @@ def test_workflow_write_and_preflight_steps_replay_end_to_end(tmp_path: Path):
     assert "::error::" in bad_pem.stdout + bad_pem.stderr
     assert not xcrun_log.exists(), "invalid PEM must fail before invoking xcrun"
 
+    def place_controller_helper(workspace: Path, job: dict, dispatch: str, needs: dict) -> None:
+        """Copy the helper wherever *job* checks out the trusted controller for *dispatch*."""
+        paths = [
+            step["with"]["path"]
+            for step in job["steps"]
+            if step.get("with", {}).get("ref") == "${{ github.sha }}"
+            and gate(step.get("if", "true"), DOWNLOADABLE_DISPATCHES[dispatch], needs, job_if=False)
+        ]
+        assert paths, f"no trusted controller checkout runs for a {dispatch} dispatch"
+        for path in paths:
+            dest = workspace / path / "scripts/ci/check_macos_notary_auth.py"
+            dest.parent.mkdir(parents=True)
+            shutil.copy2(ROOT / "scripts/ci/check_macos_notary_auth.py", dest)
+
     # Channel builds prefer the trusted controller checkout over the target branch checkout.
     channel_workspace = tmp_path / "channel-workspace"
-    controller_dir = channel_workspace / ".build/channel-controller/scripts/ci"
-    controller_dir.mkdir(parents=True)
-    shutil.copy2(ROOT / "scripts/ci/check_macos_notary_auth.py", controller_dir / "check_macos_notary_auth.py")
+    commit_job = jobs[native_builds(jobs)[("darwin-arm64", "commit")]]
+    place_controller_helper(channel_workspace, commit_job, "channel", admitted(["validate"], channel=True))
     # The admitted checkout's own helper passes without probing, so only the controller's can fail here.
     workspace_helper = channel_workspace / "scripts/ci/check_macos_notary_auth.py"
     workspace_helper.parent.mkdir(parents=True)
@@ -448,15 +461,7 @@ def test_workflow_write_and_preflight_steps_replay_end_to_end(tmp_path: Path):
 
     # A release candidate's admitted commit can predate the helper; the controller checkout supplies it.
     release_workspace = tmp_path / "older-release-source"
-    release_workspace.mkdir()
-    for step in release_job["steps"]:
-        checkout = step.get("with", {})
-        if checkout.get("ref") == "${{ github.sha }}" and gate(
-            step["if"], DOWNLOADABLE_DISPATCHES["candidate"], admitted(["validate"]), job_if=False,
-        ):
-            dest = release_workspace / checkout["path"] / "scripts/ci/check_macos_notary_auth.py"
-            dest.parent.mkdir(parents=True)
-            shutil.copy2(ROOT / "scripts/ci/check_macos_notary_auth.py", dest)
+    place_controller_helper(release_workspace, release_job, "candidate", admitted(["validate"]))
     older_release = run_steps(pem_text=_synthetic_p8(), cwd=release_workspace)
     assert older_release.returncode == 0, older_release.stdout + older_release.stderr
     assert xcrun_log.exists(), "a release of an older commit still needs the auth probe"

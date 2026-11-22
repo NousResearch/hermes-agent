@@ -20,12 +20,13 @@ def clone_staging_dir(profile_dir: Path) -> Path:
 
 
 def publish_staging(staging: Path, profile_dir: Path, exists_error: Callable[[], Exception]) -> None:
-    """Rename ``staging`` onto ``profile_dir``. A create in another process that also passed the exists
-    check and published first leaves a non-empty destination: the loser raises ``exists_error()`` (the
-    usual "already exists"), not a raw ENOTEMPTY (Windows: FileExistsError, or PermissionError while the
-    destination exists). Any other failure stays raw; the caller removes its own staging."""
+    """Rename ``staging`` onto ``profile_dir`` (create, import and rename publish a name this way). A
+    create, import or rename that also passed the exists check and published first leaves a non-empty
+    destination: the loser raises ``exists_error()`` (the usual "already exists"), not a raw ENOTEMPTY
+    (Windows: FileExistsError, or PermissionError while the destination exists). Any other failure stays
+    raw; what happens to ``staging`` then is the caller's."""
     try:
-        os.rename(staging, profile_dir)
+        staging.rename(profile_dir)
     except OSError as exc:
         from hermes_platform.host.facts import os_family
         lost = isinstance(exc, FileExistsError) or exc.errno in (errno.ENOTEMPTY, errno.EEXIST) or (

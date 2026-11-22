@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 from hermes_cli._startup_fast import project_root_str
+from hermes_cli.kanban_worker_log import open_task_worker_log as _open_worker_log
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -1587,20 +1588,20 @@ def check_respawn_guard(
     # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
     #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
     #    An infrastructure spawn refusal (#114720) shares the cooldown: the host
-    #    condition is not the card's, so it retries forever, spaced, and never
-    #    reaches the breaker.
+    #    condition is not the card's (its text may still say 403), so it retries
+    #    forever, spaced, and reaches neither the breaker nor blocker_auth.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
     latest_run = conn.execute(
         "SELECT outcome, ended_at, metadata FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",  # runs end on whole seconds: the later insert wins a tie
         (task_id,),
     ).fetchone()
-    if latest_run is not None and latest_run["outcome"] == "spawn_failed":
-        if rl_cooldown > 0 and _kb._json_dict(latest_run["metadata"]).get("infrastructure"):
-            ended_at = _kb._to_epoch(latest_run["ended_at"])
-            if ended_at is not None and (now - ended_at) < rl_cooldown:
-                return "infrastructure_cooldown"
+    infrastructure = (latest_run is not None and latest_run["outcome"] == "spawn_failed"
+                      and bool(_kb._json_dict(latest_run["metadata"]).get("infrastructure")))
+    ended_at = _kb._to_epoch(latest_run["ended_at"]) if infrastructure else None
+    if rl_cooldown > 0 and ended_at is not None and (now - ended_at) < rl_cooldown:
+        return "infrastructure_cooldown"
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
@@ -1620,7 +1621,7 @@ def check_respawn_guard(
     # benign commands such as ``claude auth status`` (#117097).
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+    if err and latest_outcome != "crashed" and not infrastructure and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL
@@ -2160,11 +2161,12 @@ def _dispatch_lane_task(
         _count_spawn(claimed.assignee)
         return True
     except Exception as exc:
+        from hermes_cli.kanban_worker_preflight import ProfileConfigUnavailable
         from tools.process_registry import RestartSafeScopeUnavailable
 
-        # The host refused the spawn (no restart-safe scope): nothing about the
-        # card ran, so it must not spend the card's retry budget (#114720).
-        infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
+        # The host refused the spawn (no restart-safe scope) or the config backend could not serve
+        # the profile: nothing about the card ran, so it must not spend its retry budget (#114720).
+        infrastructure = isinstance(exc, (RestartSafeScopeUnavailable, ProfileConfigUnavailable))
         if infrastructure:
             _kb._log.warning("kanban dispatcher: spawn of %s deferred, host cannot place the worker: %s", claimed.id, exc)
         if _record_task_failure(
@@ -2642,18 +2644,6 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     return [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
 
 
-def _open_worker_log(task: Task, board: Optional[str]):
-    """Append-mode per-task log (a re-run on unblock appends, never overwrites),
-    rotated first. Anchored at the board root (not the shared kanban root) so
-    `hermes kanban log` reads its own file and boards sharing task ids don't
-    collide."""
-    log_dir = _kb.worker_logs_dir(board=board)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"{task.id}.log"
-    from hermes_cli.kanban_worker_log import open_worker_log
-    return open_worker_log(log_path)
-
-
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
     """Wrap a systemd-hosted dispatcher's worker in the shared restart-safe scope.
 
@@ -2703,6 +2693,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     """
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
+    from hermes_cli.kanban_worker_preflight import refuse_unresolved_model
+    refuse_unresolved_model(task, workspace, board)  # raises before a worker exists when no model can
 
     from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
 

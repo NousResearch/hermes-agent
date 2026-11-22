@@ -201,13 +201,14 @@ class WindowsHost(FakeHost):
                             unit="Hermes Dashboard", hermes_home=str(self.home), this_home=True)]
 
 
-def test_windows_dry_run_exits_6_changes_nothing_and_prints_the_task_steps(home, capsys):
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_windows_dry_run_exits_6_changes_nothing_and_prints_the_task_steps(home, capsys, dry_run):
     host = WindowsHost(home)
     before = _files(home)
 
-    code = engine.cmd_apply(host, _args(dry_run=True))
+    code = engine.cmd_apply(host, _args(dry_run=dry_run))
 
-    assert code == engine.EXIT_UNSUPPORTED and _files(home) == before
+    assert code == engine.EXIT_UNSUPPORTED and host.calls == [] and _files(home) == before
     assert not (home / "backend_migration.json").exists()
     out = capsys.readouterr().out
     lines = [line.strip() for line in out.splitlines()]
@@ -255,6 +256,16 @@ def test_an_already_blocked_windows_plan_reads_no_turns_and_adds_no_turn_blocker
     blocked = json.loads(capsys.readouterr().out)["plan"]
     assert len(blocked["blockers"]) == 1 and "external secret source is enabled" in blocked["blockers"][0]
     assert blocked["unsupported"][0]["steps"] == []
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_forced_windows_steps_warn_when_a_turn_is_running_on_the_old_backend(home, capsys, dry_run):
+    host = WindowsHost(home)
+    host.turns = 1
+
+    assert engine.cmd_apply(host, _args(dry_run=dry_run, force_interrupt=True)) == engine.EXIT_UNSUPPORTED
+    assert host.calls == []
+    assert "1 turn(s) are running on it now: stopping it interrupts them" in capsys.readouterr().out
 
 
 def test_where_wmic_works_the_windows_report_reads_and_prints_what_main_does(monkeypatch):
@@ -401,3 +412,17 @@ def test_the_windows_recipe_copies_only_what_the_env_file_lacks(home, capsys):
     (copy,) = [line.strip() for line in out.splitlines() if line.strip().startswith("# copy")]
     assert code == engine.EXIT_UNSUPPORTED
     assert copy.startswith("# copy HERMES_DASHBOARD_BASIC_AUTH_SECRET, HERMES_DASHBOARD_BASIC_AUTH_USERNAME from")
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_detach_on_windows_refuses_up_front_with_the_steps_and_leaves_no_record(home, capsys, as_json):
+    host = WindowsHost(home)
+    before = _files(home)
+
+    code = engine.cmd_apply(host, _args(detach=True, json=as_json))
+
+    assert code == engine.EXIT_UNSUPPORTED and host.spawned == [] and host.calls == []
+    assert _files(home) == before  # no detached-refused.json, no manifest: --status stays "none"
+    out = capsys.readouterr().out
+    assert "schtasks /End" in out
+    assert engine.status_payload(host)["state"] == "none"

@@ -1,8 +1,9 @@
 """The backend migration with a hand-written launchd LaunchAgent as the old backend (macOS).
 
-Same fake host as the dry-run tests (service manager, process table and network stand-ins; config.yaml,
-.env and the old job's plist are real files read by the real code), with a launchd job instead of a
-systemd unit and the gateway as a launchd agent. macOS is planned automatically (exit 0), not exit 6.
+Same fake host as the engine's safety-rule tests (service manager, process table and network stand-ins;
+config.yaml, .env, the manifest and the old job's plist are real files written and read by the real code),
+with a launchd job instead of a systemd unit and the gateway as a launchd agent. macOS is planned and
+applied automatically (exit 0), not exit 6.
 """
 
 from __future__ import annotations
@@ -59,6 +60,10 @@ class LaunchdHost(FakeHost):
         return None
 
 
+def _env_keys(home):
+    return {line.split("=", 1)[0] for line in (home / ".env").read_text(encoding="utf-8").splitlines() if "=" in line}
+
+
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     h = tmp_path / "hermes-home"
@@ -67,6 +72,8 @@ def home(tmp_path, monkeypatch):
     (h / "config.yaml").write_text("model:\n  default: fake-model\n", encoding="utf-8")
     (h / ".env").write_text("OPENAI_API_KEY=***\n", encoding="utf-8")
     os.chmod(h / ".env", 0o600)
+    monkeypatch.setattr(engine, "VERIFY_SECONDS", 0.0)
+    monkeypatch.setattr(engine, "ROLLBACK_VERIFY_SECONDS", 0.0)
     return h
 
 
@@ -98,7 +105,7 @@ def test_the_dry_run_names_the_plist_credentials_of_a_loaded_job_that_is_not_run
 
     out = capsys.readouterr().out
     assert "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD" in out and _PASSWORD not in out
-    assert _files(home) == before and not (home / "backend_migration.json").exists()
+    assert host.calls == [] and _files(home) == before and not (home / "backend_migration.json").exists()
 
 
 def test_the_dry_run_plans_the_launchd_agent_and_never_lingering(home, plist, capsys):
@@ -109,3 +116,74 @@ def test_the_dry_run_plans_the_launchd_agent_and_never_lingering(home, plist, ca
     out = capsys.readouterr().out
     assert "install the launchd agent (hermes -p default gateway install; it starts at login)" in out
     assert "inger" not in out
+
+
+def test_a_loaded_job_that_is_not_running_still_carries_its_plist_credentials(home, plist, capsys):
+    host = LaunchdHost(home, plist, running=False)
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+
+    assert {"HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD"} <= _env_keys(home)
+    assert _PASSWORD not in capsys.readouterr().out
+
+
+def test_rollback_loads_again_a_job_that_was_loaded_but_not_running(home, plist):
+    host = LaunchdHost(home, plist, running=False)
+    host.fail_at["gateway_start"] = RuntimeError("the gateway agent did not start")
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLED_BACK
+
+    assert host.calls[-2:] == ["old_enable", "old_start"]
+    assert engine.read_manifest(home)["old_backend"]["was_loaded"] is True
+
+
+def test_the_apply_output_names_the_launchd_agent_and_never_lingering(home, plist, capsys):
+    host = LaunchdHost(home, plist)
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "install the launchd agent (hermes -p default gateway install; it starts at login)" in out
+    assert "launchd agent of this user: like the old backend, it starts when you log in" in out
+    assert "inger" not in out
+
+
+def test_the_manual_rollback_steps_enable_the_label_before_loading_it(home, plist):
+    host = LaunchdHost(home, plist)
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+
+    steps = engine._manual_rollback_steps(engine.read_manifest(home))
+
+    assert steps[-1] == (f"mv {plist}.disabled {plist}; launchctl enable {_DOMAIN}/{_LABEL}; "
+                         f"launchctl bootstrap {_DOMAIN} {plist}")
+
+
+def test_restore_enables_the_label_before_it_loads_the_job_again(home, plist):
+    host = LaunchdHost(home, plist)
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+    assert host.old == {"enabled": False, "active": False}
+
+    assert engine.restore(host, yes=True) == engine.EXIT_OK
+
+    assert host.calls[-2:] == ["old_enable", "old_start"] and host.old == {"enabled": True, "active": True}
+    assert engine.status_payload(host)["state"] == "restored"
+
+
+class _TwoJobsHost(LaunchdHost):
+    """The moved job, plus a second job for this home that launchd has loaded but is not running now."""
+
+    def backends(self):
+        idle = BackendItem(supervisor="launchd", running=False, argv=["/Users/u/.local/bin/hermes", "serve"],
+                           unit="local.hermes-serve", scope=_DOMAIN, unit_path="/Users/u/Library/x.plist",
+                           hermes_home=None, this_home=None)
+        return [*super().backends(), idle]
+
+
+def test_a_loaded_idle_launch_agent_for_this_home_is_a_second_owner(home, plist, capsys):
+    host = _TwoJobsHost(home, plist)
+
+    assert engine.cmd_apply(host, _args(address="0.0.0.0:9119")) == engine.EXIT_BLOCKED
+
+    assert host.calls == [] and "Another old backend also serves this home: launchd local.hermes-serve" in \
+        capsys.readouterr().out
+

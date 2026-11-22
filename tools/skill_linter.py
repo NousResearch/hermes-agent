@@ -10,12 +10,23 @@ BOM handling and the prompt description budget stay in one place.
 
 from __future__ import annotations
 
+import importlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from agent.skill_utils import get_skill_desc_limit, parse_frontmatter
+from agent.skill_utils import parse_frontmatter
+
+# v0.23.3 and earlier gateways cache agent.skill_utils at boot without get_skill_desc_limit.
+_skill_utils = importlib.import_module("agent.skill_utils")
+
+
+def _default_skill_desc_limit() -> int:
+    return getattr(_skill_utils, "SKILL_PROMPT_DESC_LIMIT", 60)
+
+
+get_skill_desc_limit = getattr(_skill_utils, "get_skill_desc_limit", _default_skill_desc_limit)
 
 # Shell utilities already wrapped as native tools; naming them in prose steers
 # the model to a raw shell call. banned token -> native tool to name instead.

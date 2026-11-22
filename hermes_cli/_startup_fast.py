@@ -225,7 +225,9 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
     print(f"Python: {sys.version.split()[0]}")
     openai_version = read_openai_version()
     print(f"OpenAI SDK: {openai_version}" if openai_version else "OpenAI SDK: Not installed")
-    if not check_updates:
+    # A version read must not phone home. Updater status is an explicit
+    # operator-approved action, never part of --version or startup.
+    if not check_updates or os.environ.get("HERMES_EXPLICIT_UPDATE_STATUS") != "1":
         return
     # Synchronous update status — bounded by check_for_updates' own subprocess/network timeouts
     # and its 6-hour cache; any failure prints nothing.
@@ -263,6 +265,5 @@ def try_fast_version(argv: list[str] | None = None) -> bool:
         return False
     if container_mode_may_be_active():
         return False
-
-    print_fast_version_info()
+    print_fast_version_info(check_updates=False)
     return True

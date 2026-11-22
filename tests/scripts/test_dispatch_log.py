@@ -7,6 +7,7 @@ import pytest
 from scripts.releases import dispatch_log
 from scripts.releases.bundle_env import parse_assignments
 from scripts.releases.channel_build import dispatch_command as channel_dispatch
+from scripts.releases.commit_build import tagless_dispatch_command as tagless_dispatch
 from scripts.releases.job_groups import ALL_JOBS
 from tests.ci.test_desktop_release_tag_admission import _workflow
 
@@ -94,13 +95,26 @@ def test_unrecreatable_dispatches_name_the_kind_and_no_command(override):
 
 @pytest.mark.parametrize("extra", [{}, {"JOBS": "termux"},
                                    {"BUNDLE_ENV_JSON": json.dumps({"HERMES_HOME": None})}])
-def test_a_tagless_commit_dispatch_is_legacy_with_no_replay_and_no_receipt(extra):
-    # release.py --build-commit runs Stable Release on a commit claim now; a direct tagless commit
-    # dispatch is the legacy mode, which no release.py command recreates and which mints no receipt.
+def test_a_tagless_commit_dispatch_from_main_has_no_replay_and_no_receipt(extra):
+    # From main, release.py --build-commit runs Stable Release on a commit claim; a direct tagless
+    # commit dispatch there is one no release.py command recreates, and it mints no receipt.
     text = dispatch_log.report(env(BUILD_COMMIT=SHA, **extra))
     assert "kind: commit" in text
-    assert "a legacy tagless commit build" in text and "workflow: " not in text
+    assert "a tagless commit build" in text and "workflow: " not in text
     assert "receipt: this dispatch writes no post-build receipt tag" in text
+
+
+@pytest.mark.parametrize("extra", [{}, {"BUNDLE_ENV_JSON": json.dumps({"HERMES_HOME": None, "HERMES_DATA_DIR_SUFFIX": "-t"})}])
+def test_a_tagless_commit_dispatch_off_main_prints_the_release_py_command_that_sent_it(extra):
+    values = env(BUILD_COMMIT=SHA, DEFAULT_BRANCH="develop", GITHUB_REF="refs/heads/develop", **extra)
+    baked = json.loads(values["BUNDLE_ENV_JSON"])
+    text = dispatch_log.report(values)
+    assert "workflow: " + shlex.join(tagless_dispatch(SHA, REPOSITORY, "develop", baked or None)) in text
+    flags = dispatch_log.command_flags(dispatch_log.describe(values))
+    assert "release.py: " + shlex.join(["python", "scripts/release.py", "--publish", "--remote", "<remote>", *flags]) in text
+    assert "receipt: this dispatch writes no post-build receipt tag" in text
+    # A job subset is not what release.py sends.
+    assert "workflow: " not in dispatch_log.report({**values, "JOBS": "termux"})
 
 
 @pytest.mark.parametrize("jobs", ["termux", "darwin-arm64,win32-x64"])
@@ -113,7 +127,7 @@ def test_a_partial_jobs_channel_has_a_receipt_but_no_release_command(jobs):
 def test_an_unreadable_jobs_value_is_reported_not_raised():
     # The log must not fail the build; admission refuses the input next.
     text = dispatch_log.report(env(BUILD_COMMIT=SHA, JOBS="mac,mac"))
-    assert "a legacy tagless commit build" in text and "workflow: " not in text
+    assert "a tagless commit build" in text and "workflow: " not in text
     assert '"jobs": "mac,mac"' in text
 
 

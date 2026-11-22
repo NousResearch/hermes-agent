@@ -2269,14 +2269,18 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 def cleanup_task_resources(agent, task_id: str) -> None:
     """Per-turn VM + browser cleanup for a task. Skips ``cleanup_vm`` for persistent
     terminal envs (``_cleanup_inactive_envs`` reaps them after ``terminal.lifetime_seconds``)
-    and ``cleanup_browser`` in headed mode (the inactivity reaper handles idle sessions)."""
-    def _headed() -> bool:
-        from tools.browser_session_cloud import is_headed_mode
-        return is_headed_mode()
+    and ``cleanup_browser`` in headed mode or on a persistent profile (``browser.user_data_dir``):
+    the inactivity reaper handles idle sessions. A persistent profile exists to keep sign-ins across
+    turns; killing its browser every turn also drops session cookies and any half-finished sign-in
+    (a 2FA prompt waiting for the user's code in the next turn)."""
+    def _keep_browser() -> bool:
+        from tools.browser_session_cloud import is_headed_mode, user_data_dir
+        return is_headed_mode() or bool(user_data_dir())
 
     for label, skip, skip_what, cleanup in (
         ("VM", is_persistent_env, "cleanup_vm for persistent env", lambda: _ra().cleanup_vm(task_id)),
-        ("browser", lambda _tid: _headed(), "cleanup_browser for headed session", lambda: _ra().cleanup_browser(task_id)),
+        ("browser", lambda _tid: _keep_browser(), "cleanup_browser for headed/persistent-profile session",
+         lambda: _ra().cleanup_browser(task_id)),
     ):
         try:
             if skip(task_id):

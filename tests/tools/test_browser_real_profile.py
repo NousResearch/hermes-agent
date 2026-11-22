@@ -807,6 +807,20 @@ class TestReviewRound3:
         bc.cleanup_real_profile_snapshots()
         assert not (home / "browser-profile").exists()
 
+    def test_cleanup_never_removes_the_configured_persistent_profile(self, tmp_path, monkeypatch):
+        """``browser.user_data_dir: ~/.hermes/browser-profile`` is the natural name for the automation
+        profile; consent-off cleanup must not wipe it (and its sign-ins) as a stale snapshot."""
+        import hermes_cli.browser_connect as bc
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        (home / "browser-profile" / "Default").mkdir(parents=True)
+        monkeypatch.setattr("tools.browser_session_cloud.user_data_dir", lambda: str(home / "browser-profile"))
+        bc.cleanup_real_profile_snapshots()
+        assert (home / "browser-profile" / "Default").is_dir()
+        monkeypatch.setattr("tools.browser_session_cloud.user_data_dir", lambda: str(tmp_path / "elsewhere"))
+        bc.cleanup_real_profile_snapshots()
+        assert not (home / "browser-profile").exists()
+
     def test_cleanup_idempotent_when_absent(self, tmp_path, monkeypatch):
         import hermes_cli.browser_connect as bc
         monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "hh")

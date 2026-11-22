@@ -71,7 +71,17 @@ export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): Ambi
   // contract, but it cannot import `resolveSessionOwner` itself: that module
   // (use-session-actions/utils) imports store/session-states, so the import
   // would close a cycle. Hand the probe over once, when the window wires up.
-  setSessionOwnerProbe(resolveSessionOwner)
+  //
+  // Translate runtime → stored id FIRST. The gate hands the probe whatever id
+  // the RPC carries, and a session-scoped RPC carries the RUNTIME id, while
+  // `resolveSessionOwner` is keyed on the stored one (its by-id REST read is
+  // the stored id's row). Untranslated, a runtime-addressed read probed an id
+  // no backend answers, the gate deferred an ownerless read, and an archived
+  // row — which no other ladder rung names, so nothing re-armed the defer —
+  // never got its `session.control.read`: no banner, and no read either.
+  // Unmapped ids pass through unchanged, so the RPCs that already carry a
+  // stored id resolve exactly as before.
+  setSessionOwnerProbe(sessionId => resolveSessionOwner(storedSessionIdForRuntimeId(sessionId) ?? sessionId))
 
   return async <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
     const paramSessionId = typeof params?.session_id === 'string' && params.session_id ? params.session_id : undefined

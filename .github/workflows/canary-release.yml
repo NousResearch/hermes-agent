@@ -28,8 +28,9 @@ jobs:
   tag:
     name: Tag, draft, and start the canary build
     runs-on: ubuntu-24.04
+    # Only upstream publishes to the public canary channel. Forks stay idle.
     # A dispatch from a feature branch would tag unmerged code as the canary.
-    if: github.ref_name == github.event.repository.default_branch
+    if: github.repository == 'NousResearch/hermes-agent' && github.ref_name == github.event.repository.default_branch
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:

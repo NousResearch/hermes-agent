@@ -99,6 +99,7 @@ import {
   deleteChipBeforeCaret,
   deleteSelectionInEditor,
   insertComposerContentsAtCaret,
+  insertComposerLineBreak,
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { useComposerScope, useComposerSurfaceId } from './scope'
@@ -991,6 +992,20 @@ export function ChatBar({
         if (result !== null) {
           loadIntoComposer(result.text, scope.attachments.$attachments.get())
         }
+      }
+
+      return
+    }
+
+    // Shift+Enter inserts a soft line break ourselves. WebKit's native
+    // contenteditable break at the end of the draft leaves a lone <br> with no
+    // height, so Safari looked like it ignored the key.
+    if (event.key === 'Enter' && event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      event.preventDefault()
+      recordUndoPoint()
+
+      if (insertComposerLineBreak(event.currentTarget)) {
+        scheduleFlushEditorToDraft(event.currentTarget)
       }
 
       return

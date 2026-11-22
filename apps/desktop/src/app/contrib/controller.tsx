@@ -128,6 +128,7 @@ import {
   WorkspaceTabMenu
 } from '../chat/session-tile'
 import { AppContextMenu } from '../context-menu/app-context-menu'
+import { installDiscoveryLabPaletteRow } from '../discovery-lab/palette'
 import { HudShell } from '../hud/hud-shell'
 import { installDesignSystemPaletteRow } from '../redesign/design-system/palette'
 import { $terminalCollapsedRail, $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
@@ -510,6 +511,7 @@ registry.registerMany([
 
 registerLayoutPresets()
 installDesignSystemPaletteRow()
+installDiscoveryLabPaletteRow()
 
 declareDefaultTree(DEFAULT_TREE, BASIC_TREE)
 

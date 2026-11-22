@@ -1,0 +1,59 @@
+/* TESTING ONLY: the discovery lab's page (index.tsx). Rendered in the redesign only; the column is the
+   page stage contract's (portal-pages.css), the rows are the settings cards' (global-overviews.css). */
+
+.discovery-lab-page {
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.discovery-lab-stage {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  padding-block: var(--portal-page-top) var(--portal-page-end-space);
+}
+
+.discovery-lab-note {
+  margin-top: 0.25rem;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+
+.discovery-lab-readout {
+  display: grid;
+  padding: 0.5rem 1rem;
+}
+
+.discovery-lab-readout + .discovery-lab-readout {
+  border-top: 1px solid var(--portal-stroke-divider);
+}
+
+.discovery-lab-readout-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.25rem 1rem;
+  padding-block: 0.375rem;
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+
+.discovery-lab-readout-row dt {
+  color: var(--ui-text-secondary);
+}
+
+.discovery-lab-readout-row dd {
+  min-width: 0;
+  color: var(--ui-text-primary);
+  font-family: var(--portal-font-mono);
+  overflow-wrap: anywhere;
+}
+
+.discovery-lab-readout-row dd[data-empty] {
+  color: var(--ui-text-tertiary);
+}

@@ -16,7 +16,7 @@
 import { computed } from 'nanostores'
 
 import { $guidanceLedger, markGuidance } from './guidance-ledger'
-import { $sharedMetricsConsent, $sharedMetricsDetailsOpen, sharedMetricsOfferPending } from './shared-metrics'
+import { $sharedMetricsDetailsOpen, $sharedMetricsOfferConsent, sharedMetricsOfferPending } from './shared-metrics'
 import { $portalShell } from './shell-variant'
 
 export type UsageStatsOfferPlace = 'card' | 'tray'
@@ -24,7 +24,7 @@ export type UsageStatsOfferPlace = 'card' | 'tray'
 const PLACE_BY_MARK = { deferred: 'tray', cleared: null } as const
 
 export const $usageStatsOfferPlace = computed(
-  [$portalShell, $sharedMetricsConsent, $guidanceLedger],
+  [$portalShell, $sharedMetricsOfferConsent, $guidanceLedger],
   (portal, consent, ledger): null | UsageStatsOfferPlace => {
     if (!portal || !sharedMetricsOfferPending(consent)) {
       return null

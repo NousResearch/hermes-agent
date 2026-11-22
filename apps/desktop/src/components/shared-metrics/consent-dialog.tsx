@@ -25,6 +25,7 @@ import { normalizeProfileKey } from '@/store/profile'
 import {
   $sharedMetricsConsent,
   $sharedMetricsDetailsOpen,
+  $sharedMetricsOfferConsent,
   answerSharedMetricsOffer,
   closeSharedMetricsDetails,
   readSharedMetricsConsent,
@@ -73,7 +74,7 @@ function SharedMetricsConsentDialogForOwner({ connectionId, enabled, profile }: 
   const surfaceClear = useStore($onboardingSurfaceClear)
   const tourActive = useStore($tourActive)
   const detailsId = useId()
-  const consent = useStore($sharedMetricsConsent)
+  const consent = useStore($sharedMetricsOfferConsent)
   const detailsOpen = useStore($sharedMetricsDetailsOpen)
   const [expanded, setExpanded] = useState(true)
   const [saving, setSaving] = useState(false)

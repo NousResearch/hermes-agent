@@ -1,7 +1,8 @@
 import type { SharedMetricsConsentResult } from '@hermes/shared'
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import { captureDesktopMetricsGate, recordOnboarding } from './desktop-metrics'
+import { $discoveryLabUsageStatsConsent } from './discovery-lab'
 
 /** Public page describing exactly what shared metrics contain and how consent windows work. */
 export const SHARED_METRICS_DOCS_URL = 'https://hermes-agent.nousresearch.com/docs/developer-guide/relay-shared-metrics'
@@ -75,6 +76,13 @@ export async function saveSharedMetricsConsent(
  */
 export const $sharedMetricsConsent = atom<SharedMetricsConsent | null>(null)
 
+/** The answer the redesign's offer and its details dialog follow: the backend's, unless the discovery
+ *  lab stands in for it (TESTING ONLY, store/discovery-lab.ts; absent, this is the backend's). */
+export const $sharedMetricsOfferConsent = computed(
+  [$sharedMetricsConsent, $discoveryLabUsageStatsConsent],
+  (consent, standIn) => standIn ?? consent
+)
+
 /** The "What is collected" details dialog, opened only by the user from the strip. */
 export const $sharedMetricsDetailsOpen = atom(false)
 
@@ -94,6 +102,14 @@ export async function answerSharedMetricsOffer(
   choice: SharedMetricsChoice,
   profileScope: string
 ): Promise<void> {
+  // TESTING ONLY: an offer the discovery lab stood in for is answered there, never in the config.
+  if ($discoveryLabUsageStatsConsent.get()) {
+    $discoveryLabUsageStatsConsent.set(null)
+    $sharedMetricsDetailsOpen.set(false)
+
+    return
+  }
+
   const applyGate = await captureDesktopMetricsGate(profileScope)
   let consent = await saveSharedMetricsConsent(request, SHARED_METRICS_CHOICES[choice], { firstRun: true })
 

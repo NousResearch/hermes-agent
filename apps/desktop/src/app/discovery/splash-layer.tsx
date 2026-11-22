@@ -50,6 +50,12 @@ const SPLASHES: readonly SplashDefinition[] = [
   }
 ]
 
+/** Settle every splash on `verdict`, the rename splash first: a `fresh` verdict records the newcomer
+ *  the first-time splash reads. Repeated calls are no-ops once each is decided. */
+export function considerSplashes(verdict: ExistingUserVerdict): void {
+  SPLASHES.forEach(splash => splash.consider(verdict))
+}
+
 /** The splash on screen and why it is there, or null. */
 const $shownSplash = computed(
   SPLASHES.map(splash => splash.$open),
@@ -87,8 +93,7 @@ function SplashTriggers() {
     routines: routines.length
   })
 
-  // The rename splash first: a `fresh` verdict records the newcomer the first-time splash reads.
-  useEffect(() => SPLASHES.forEach(splash => splash.consider(verdict)), [verdict])
+  useEffect(() => considerSplashes(verdict), [verdict])
 
   useEffect(() => {
     if (!open) {

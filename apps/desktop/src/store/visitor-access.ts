@@ -21,6 +21,7 @@ import {
   withoutSignInOutcome
 } from '@/lib/visitor-access'
 
+import { discoveryLabVisitorAccess } from './discovery-lab'
 import { recordIaAction } from './ia-metrics'
 import { $portalShell } from './shell-variant'
 
@@ -49,11 +50,14 @@ export function dismissSignInRecovery(): void {
 export function installVisitorAccess(): void {
   const pageUrl = window.location.href
 
-  const access = visitorAccessFrom({
-    nativeApp: Boolean(window.hermesDesktop) && !isBrowserHostedDesktop(),
-    pageUrl,
-    signUpUrl: (window as Window & BrowserHostGlobals).__HERMES_SIGN_UP_URL__
-  })
+  // TESTING ONLY: null unless the discovery lab turned its sign-up stand-in on in this tab.
+  const access =
+    discoveryLabVisitorAccess(pageUrl) ??
+    visitorAccessFrom({
+      nativeApp: Boolean(window.hermesDesktop) && !isBrowserHostedDesktop(),
+      pageUrl,
+      signUpUrl: (window as Window & BrowserHostGlobals).__HERMES_SIGN_UP_URL__
+    })
 
   $visitorAccess.set(access)
   $signInFailed.set(access.kind === 'sign_up_required' && signInFailedAt(pageUrl))

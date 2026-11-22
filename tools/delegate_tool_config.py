@@ -495,6 +495,13 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
     with a user-facing message."""
     values = {k: str(cfg.get(k) or "").strip() or None for k in ("model", "provider", "base_url", "api_key")}
+    # ``provider: auto`` is a documented inheritance sentinel — the value returned by
+    # ``resolve_requested_provider()`` when nothing is configured — not the name of a real
+    # provider. Passing it into the runtime-provider ladder makes every subagent spawn fail
+    # (or, on older builds, silently reroute through the fallback chain and spend an
+    # unrelated provider's balance). Map it to None so the pure-inherit branch below runs.
+    if values["provider"] and values["provider"].lower() == "auto":
+        values["provider"] = None
     values["api_mode"] = str(cfg.get("api_mode") or "").strip().lower() or None
     explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None
     is_native_sdk_provider = (values["provider"] or "").strip().lower() in _NATIVE_SDK_PROVIDERS

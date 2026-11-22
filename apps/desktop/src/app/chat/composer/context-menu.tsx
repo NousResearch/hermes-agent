@@ -14,19 +14,30 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Kbd } from '@/components/ui/kbd'
 import { Tip } from '@/components/ui/tooltip'
+import type { HermesGateway, ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Clipboard, FileText, FolderOpen, type IconComponent, ImageIcon, Link, MessageSquareText } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { profileScopeForSessionOwner, type SessionOwnerScope } from '@/store/session-request-router'
 
+import { type CapabilityKind, CapabilityMenu } from './capability-menu'
 import { useComposerAttachmentProviders } from './contrib'
 import { GHOST_ICON_BTN } from './controls'
 import type { ChatBarState } from './types'
 
 const SNIPPET_KEYS = ['codeReview', 'implementationPlan', 'explainThis']
 
+export function capabilityScopeForChat(owner: SessionOwnerScope, profile: string | null | undefined): ProfileScope {
+  return profileScopeForSessionOwner(owner) ?? profile ?? null
+}
+
 export function ContextMenu({
+  gateway,
+  profile,
+  sessionId,
   state,
   onInsertText,
+  onInsertSkill,
   onOpenUrlDialog,
   onPasteClipboardImage,
   onPickFiles,
@@ -35,6 +46,8 @@ export function ContextMenu({
 }: ContextMenuProps) {
   const { t } = useI18n()
   const c = t.composer
+  const [panel, setPanel] = useState<CapabilityKind | null>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
   // Prompt snippets used to be a Radix submenu. That submenu didn't open
   // reliably when the parent menu was positioned at the bottom of the
   // window (composer "+" anchor), so we promoted it to a real Dialog —
@@ -46,7 +59,16 @@ export function ContextMenu({
 
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu
+        onOpenChange={open => {
+          setMenuOpen(open)
+
+          if (!open) {
+            setPanel(null)
+          }
+        }}
+        open={menuOpen}
+      >
         <Tip label={state.tools.label} placement="control">
           <DropdownMenuTrigger asChild>
             <Button
@@ -64,55 +86,119 @@ export function ContextMenu({
             </Button>
           </DropdownMenuTrigger>
         </Tip>
-        <DropdownMenuContent align="start" className={cn('w-60', composerPanelCard)} side="top" sideOffset={6}>
-          <DropdownMenuLabel className="px-2 pb-0.5 pt-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">
-            {c.attachLabel}
-          </DropdownMenuLabel>
-          <ContextMenuItem disabled={!onPickFiles} icon={FileText} onSelect={onPickFiles}>
-            {c.files}
-          </ContextMenuItem>
-          <ContextMenuItem disabled={!onPickFolders} icon={FolderOpen} onSelect={onPickFolders}>
-            {c.folder}
-          </ContextMenuItem>
-          <ContextMenuItem disabled={!onPickImages} icon={ImageIcon} onSelect={onPickImages}>
-            {c.images}
-          </ContextMenuItem>
-          <ContextMenuItem
-            disabled={!onPasteClipboardImage}
-            icon={Clipboard}
-            onSelect={onPasteClipboardImage ? () => void onPasteClipboardImage() : undefined}
-          >
-            {c.pasteImage}
-          </ContextMenuItem>
-          <ContextMenuItem icon={Link} onSelect={onOpenUrlDialog}>
-            {c.url}
-          </ContextMenuItem>
+        <DropdownMenuContent align="start" className={cn('w-72', composerPanelCard)} side="top" sideOffset={6}>
+          {panel ? (
+            <>
+              <DropdownMenuItem
+                onSelect={event => {
+                  event.preventDefault()
+                  setPanel(null)
+                }}
+              >
+                <Codicon name="arrow-left" size="0.875rem" />
+                <span>
+                  {t.common.back} ·{' '}
+                  {panel === 'skills'
+                    ? t.skills.tabSkills
+                    : panel === 'plugins'
+                      ? t.skills.tabPlugins
+                      : t.connectorsPage.title}
+                </span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <CapabilityMenu
+                gateway={gateway}
+                kind={panel}
+                onClose={() => setMenuOpen(false)}
+                onInsertSkill={onInsertSkill}
+                profile={profile ?? null}
+                sessionId={sessionId}
+              />
+            </>
+          ) : (
+            <>
+              <DropdownMenuLabel className="px-2 pb-0.5 pt-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">
+                {c.attachLabel}
+              </DropdownMenuLabel>
+              <ContextMenuItem disabled={!onPickFiles} icon={FileText} onSelect={onPickFiles}>
+                {c.files}
+              </ContextMenuItem>
+              <ContextMenuItem disabled={!onPickFolders} icon={FolderOpen} onSelect={onPickFolders}>
+                {c.folder}
+              </ContextMenuItem>
+              <ContextMenuItem disabled={!onPickImages} icon={ImageIcon} onSelect={onPickImages}>
+                {c.images}
+              </ContextMenuItem>
+              <ContextMenuItem
+                disabled={!onPasteClipboardImage}
+                icon={Clipboard}
+                onSelect={onPasteClipboardImage ? () => void onPasteClipboardImage() : undefined}
+              >
+                {c.pasteImage}
+              </ContextMenuItem>
+              <ContextMenuItem icon={Link} onSelect={onOpenUrlDialog}>
+                {c.url}
+              </ContextMenuItem>
 
-          <DropdownMenuSeparator />
+              <DropdownMenuSeparator />
 
-          <ContextMenuItem icon={MessageSquareText} onSelect={() => setSnippetsOpen(true)}>
-            {c.promptSnippets}
-          </ContextMenuItem>
+              <ContextMenuItem icon={MessageSquareText} onSelect={() => setSnippetsOpen(true)}>
+                {c.promptSnippets}
+              </ContextMenuItem>
 
-          {attachmentProviders.length > 0 && <DropdownMenuSeparator />}
-          {attachmentProviders.map(provider => (
-            <DropdownMenuItem
-              className="text-[length:var(--conversation-tool-font-size)] focus:bg-(--ui-bg-tertiary)"
-              key={provider.key}
-              onSelect={() => void provider.run({ insertText: onInsertText })}
-            >
-              <Codicon name={provider.icon ?? 'plug'} size="0.875rem" />
-              <span>{provider.label}</span>
-            </DropdownMenuItem>
-          ))}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onSelect={event => {
+                  event.preventDefault()
+                  setPanel('skills')
+                }}
+              >
+                <Codicon name="tools" size="0.875rem" />
+                <span>{t.skills.tabSkills}</span>
+                <Codicon className="ml-auto" name="chevron-right" size="0.75rem" />
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={event => {
+                  event.preventDefault()
+                  setPanel('connectors')
+                }}
+              >
+                <Codicon name="plug" size="0.875rem" />
+                <span>{t.connectorsPage.title}</span>
+                <Codicon className="ml-auto" name="chevron-right" size="0.75rem" />
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={event => {
+                  event.preventDefault()
+                  setPanel('plugins')
+                }}
+              >
+                <Codicon name="extensions" size="0.875rem" />
+                <span>{t.skills.tabPlugins}</span>
+                <Codicon className="ml-auto" name="chevron-right" size="0.75rem" />
+              </DropdownMenuItem>
 
-          <DropdownMenuSeparator />
+              {attachmentProviders.length > 0 && <DropdownMenuSeparator />}
+              {attachmentProviders.map(provider => (
+                <DropdownMenuItem
+                  className="text-[length:var(--conversation-tool-font-size)] focus:bg-(--ui-bg-tertiary)"
+                  key={provider.key}
+                  onSelect={() => void provider.run({ insertText: onInsertText })}
+                >
+                  <Codicon name={provider.icon ?? 'plug'} size="0.875rem" />
+                  <span>{provider.label}</span>
+                </DropdownMenuItem>
+              ))}
 
-          <div className="px-2 py-1 text-[0.7rem] text-muted-foreground/80">
-            {c.tipPre}
-            <Kbd size="sm">@</Kbd>
-            {c.tipPost}
-          </div>
+              <DropdownMenuSeparator />
+
+              <div className="px-2 py-1 text-[0.7rem] text-muted-foreground/80">
+                {c.tipPre}
+                <Kbd size="sm">@</Kbd>
+                {c.tipPost}
+              </div>
+            </>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
 
@@ -185,7 +271,11 @@ interface ContextMenuItemProps {
 }
 
 interface ContextMenuProps {
+  gateway?: HermesGateway | null
+  profile?: ProfileScope
+  sessionId?: string | null
   onInsertText: (text: string) => void
+  onInsertSkill: (name: string) => void
   onOpenUrlDialog: () => void
   onPasteClipboardImage?: (opts?: { silent?: boolean }) => Promise<boolean> | void
   onPickFiles?: () => void

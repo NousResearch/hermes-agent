@@ -668,6 +668,11 @@ export function useComposerDraft({
     paintDraft(`${base}${sep}${text}`)
   }
 
+  const insertSkill = (name: string) => {
+    const draft = syncDraftFromEditor()
+    paintDraft(`/${name} ${draft}`)
+  }
+
   // insertInlineRefs mutates the editor in place (chips), so it can't go through
   // paintDraft's re-render — it mirrors the resulting plain text and refocuses.
   const insertInlineRefs = (refs: InlineRefInput[]) => {
@@ -955,6 +960,7 @@ export function useComposerDraft({
     focusInput,
     hasText,
     insertInlineRefs,
+    insertSkill,
     insertText,
     isHelpHint,
     isSteerableText,

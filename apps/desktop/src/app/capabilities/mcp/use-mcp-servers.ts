@@ -64,9 +64,11 @@ export interface McpServersController extends McpDraft, PublishedProbes {
 export interface UseMcpServersOptions {
   gateway: HermesGateway | null
   profile?: ProfileScope
+  /** The chat this menu belongs to. Omit to reload whichever chat is active. */
+  sessionId?: string | null
 }
 
-export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpServersController {
+export function useMcpServers({ gateway, profile, sessionId }: UseMcpServersOptions): McpServersController {
   const { t } = useI18n()
   const m = t.settings.mcp
   const activeSessionId = useStore($activeSessionId)
@@ -152,7 +154,7 @@ export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpSe
     }
 
     try {
-      announceMcpReload(await reloadMcp(gateway, activeSessionId))
+      announceMcpReload(await reloadMcp(gateway, sessionId !== undefined ? sessionId : activeSessionId))
     } catch (err) {
       notifyError(err, m.reloadFailed)
     }

@@ -1064,6 +1064,45 @@ def test_core_runtime_does_not_warn_for_expected_intel_macos_absence(monkeypatch
     relay_runtime._reset_for_tests()
 
 
+def test_start_task_run_does_not_warn_for_expected_intel_macos_absence(
+    tmp_path, monkeypatch, caplog
+):
+    """Shared-metrics init stays quiet on the platform-expected Intel macOS fallback.
+
+    #129451: with telemetry.shared_metrics.enabled, _get_runtime(retry_failed=True)
+    re-attempted the doomed _Runtime build once per task hook, re-emitting
+    "Hermes shared metrics initialization failed" on every turn.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    monkeypatch.setattr(
+        "hermes_cli.config.read_raw_config_readonly",
+        lambda: {"telemetry": {"shared_metrics": {"enabled": True}}},
+    )
+    relay_shared_metrics._reset_for_tests()
+    relay_runtime._reset_for_tests()
+
+    def missing_relay(name: str):
+        assert name == "nemo_relay"
+        raise ModuleNotFoundError(name, name=name)
+
+    monkeypatch.setattr(relay_runtime.importlib, "import_module", missing_relay)
+    monkeypatch.setattr(relay_runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(relay_runtime.platform, "machine", lambda: "x86_64")
+    caplog.set_level("WARNING")
+
+    relay_shared_metrics.start_task_run(
+        session_id="s-intel-1", task_id="t-intel-1", platform="test"
+    )
+    relay_shared_metrics.start_task_run(
+        session_id="s-intel-2", task_id="t-intel-2", platform="test"
+    )
+
+    assert "Hermes shared metrics initialization failed" not in caplog.text
+    assert "Hermes core Relay runtime is unavailable" not in caplog.text
+    relay_shared_metrics._reset_for_tests()
+    relay_runtime._reset_for_tests()
+
+
 def test_core_task_instrumentation_preserves_prompt_history_and_tool_schema(
     direct_runtime,
     monkeypatch,

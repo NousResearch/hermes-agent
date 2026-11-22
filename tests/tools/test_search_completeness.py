@@ -75,6 +75,8 @@ def test_count_mode_ranks_files_highest_first_and_states_the_total(proj):
 def test_complete_says_whether_hidden_or_gitignored_files_also_match(proj):
     if not _get_file_ops(task_id="t-complete-hidden")._has_command("rg"):
         pytest.skip("rg not installed")
+    single = _search(proj / "two.py", "t-complete-hidden", pattern="hit")  # rg prints no filename for one file
+    assert "none match" in single["complete"], single["complete"]
     clean = _search(proj, "t-complete-hidden", pattern="hit")
     assert "none match" in clean["complete"]
     assert "node_modules" in clean["complete"]  # the claim names the trees the check prunes

@@ -5,7 +5,7 @@ description: "One live skill library for every profile on one machine. `hermes c
 maintainer: Chrisyk
 tier: community
 category: tools
-requires_hermes: ">=0.23.0"
+requires_hermes: ">=0.23.2"
 docs_url: https://github.com/Chrisyk/hermes-commons#readme
 version: "0.2.1"
 title: "Commons"

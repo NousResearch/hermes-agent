@@ -366,12 +366,14 @@ def test_discord_tool_join_and_status_reach_the_voice_path(runner, monkeypatch):
     runner.adapters[Platform.DISCORD] = adapter
     tokens = _bind()
     try:
-        with patch.object(type(runner), "_voice_channel_join_for_source",
-                          AsyncMock(return_value="joined")):
+        join = AsyncMock(return_value="joined")
+        with patch.object(type(runner), "_voice_channel_join_for_source", join):
             joined = _discord_tool_call(runner, "voice_join")
         status = _discord_tool_call(runner, "voice_status")
     finally:
         clear_session_vars(tokens)
+    join.assert_awaited_once()
+    assert join.await_args.args[1] == GUILD
     assert joined["action"] == "join" and "error" not in joined
     assert "connected" in status
 

@@ -45,7 +45,16 @@
    never runs past the window. */
 :root[data-shell='portal'] [data-slot='select-content'] {
   min-width: var(--radix-select-trigger-width);
+  max-width: var(--radix-select-content-available-width, 100vw);
   max-height: min(calc(8 * 2rem + 10px), var(--radix-select-content-available-height, 100dvh));
+}
+
+/* A label longer than the window allows ends in an ellipsis inside the menu. */
+:root[data-shell='portal'] [data-slot='select-item'] > span:not([data-slot='select-item-indicator']) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 :root[data-shell='portal'] [data-slot='select-content'] > [data-radix-select-viewport] {

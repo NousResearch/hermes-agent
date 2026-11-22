@@ -1,0 +1,22 @@
+manifest_version: 1
+
+name: ocean-security
+description: Query detected email threats, phishing reports, and security metrics from Ocean Security.
+source: https://docs.ocean.security/api-reference/mcp/overview
+
+transport:
+  type: http
+  url: https://api.ocean.security/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - ocean security
+  hosts:
+    - ocean.security
+
+post_install: |
+  Sign in with your Ocean account. OAuth access is read-only and follows your
+  Ocean role. The server is in beta; your tenant must have MCP access enabled.

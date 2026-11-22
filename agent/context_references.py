@@ -295,7 +295,7 @@ def _expand_file_reference(
         # so it can read/convert/view the file itself.
         return None, _binary_reference_block(ref, path)
 
-    text, encoding = _read_text_attachment(path)
+    text, encoding, ambiguous = _read_text_attachment(path)
     if ref.line_start is not None:
         lines = text.splitlines()
         start_idx = max(ref.line_start - 1, 0)
@@ -304,18 +304,24 @@ def _expand_file_reference(
 
     lang = _code_fence_language(path)
     label = ref.raw if encoding == "utf-8" else f"{ref.raw} (decoded as {encoding})"
-    return None, f"📄 {label} ({estimate_tokens_rough(text)} tokens)\n```{lang}\n{text}\n```"
+    warning = None
+    if ambiguous:
+        names = ", ".join([encoding, *ambiguous])
+        warning = (
+            f"{ref.raw}: encoding is ambiguous among {names}; decoded as {encoding}"
+        )
+    return warning, f"📄 {label} ({estimate_tokens_rough(text)} tokens)\n```{lang}\n{text}\n```"
 
 
-def _read_text_attachment(path: Path) -> tuple[str, str]:
+def _read_text_attachment(path: Path) -> tuple[str, str, list[str]]:
     data = path.read_bytes()
 
     for bom, encoding in _TEXT_ATTACHMENT_BOMS:
         if data.startswith(bom):
-            return data.decode(encoding), encoding
+            return data.decode(encoding), encoding, []
 
     try:
-        return data.decode("utf-8"), "utf-8"
+        return data.decode("utf-8"), "utf-8", []
     except UnicodeDecodeError:
         pass
 
@@ -324,12 +330,41 @@ def _read_text_attachment(path: Path) -> tuple[str, str]:
     result = from_bytes(data)
     best = result.best()
     if best is not None:
-        return str(best), best.encoding
+        return str(best), best.encoding, _encodings_tied_with_different_text(result, best)
 
     # Re-raise the original UTF-8 error — nothing could decode the bytes.
     raise UnicodeDecodeError(
         "utf-8", data, 0, len(data), "no encoding detected by charset-normalizer"
     )
+
+
+def _encodings_tied_with_different_text(matches, best) -> list[str]:
+    """Tied encodings whose text is close enough to hide a wrong decode.
+
+    charset-normalizer can rank several single-byte codecs as a perfect tie.
+    cp1252 and cp1250 can differ by a single character, so showing only the
+    first label looks certain. A distant tie such as gb18030 versus johab is
+    already visible and does not get this warning.
+    """
+    chosen = str(best)
+    disagreeing: list[str] = []
+    for match in matches:
+        if match.encoding == best.encoding:
+            continue
+        chaos_tied = abs(match.chaos - best.chaos) <= 1e-6
+        coherence_tied = abs(match.coherence - best.coherence) <= 1e-6
+        if not chaos_tied or not coherence_tied:
+            continue
+        if _texts_nearly_equal(chosen, str(match)):
+            disagreeing.append(str(match.encoding))
+    return disagreeing
+
+
+def _texts_nearly_equal(left: str, right: str) -> bool:
+    if not left or not right or left == right:
+        return False
+    same = sum(a == b for a, b in zip(left, right))
+    return same / max(len(left), len(right)) >= 0.9
 
 
 def _expand_folder_reference(
@@ -517,6 +552,11 @@ def _is_binary_file(path: Path) -> bool:
     ):
         return True
     chunk = path.read_bytes()[:4096]
+    # UTF-16/32 text carries NUL bytes. A BOM identifies it before that check,
+    # otherwise a .txt file is handed back as a binary placeholder and the
+    # decoder below never runs.
+    if any(chunk.startswith(bom) for bom, _encoding in _TEXT_ATTACHMENT_BOMS):
+        return False
     return b"\x00" in chunk
 
 

@@ -231,6 +231,54 @@ def test_file_reference_expands_cp932_text_with_line_range(tmp_path: Path):
     assert "三行目" not in result.message
 
 
+@pytest.mark.parametrize(
+    ("filename", "payload"),
+    [
+        ("utf16-le.txt", b"\xff\xfe" + "name,amount\nAlice,10\n".encode("utf-16-le")),
+        ("utf16-be.txt", b"\xfe\xff" + "name,amount\nAlice,10\n".encode("utf-16-be")),
+        ("utf32-le.txt", b"\xff\xfe\x00\x00" + "name,amount\nAlice,10\n".encode("utf-32-le")),
+        ("utf32-be.txt", b"\x00\x00\xfe\xff" + "name,amount\nAlice,10\n".encode("utf-32-be")),
+    ],
+)
+def test_file_reference_expands_bom_text_before_nul_check(tmp_path: Path, filename: str, payload: bytes):
+    from agent.context_references import preprocess_context_references
+
+    (tmp_path / filename).write_bytes(payload)
+
+    result = preprocess_context_references(
+        f"Summarize @file:{filename}",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert not result.warnings
+    assert "name,amount\nAlice,10" in result.message
+    assert "binary file, not inlined" not in result.message
+
+
+def test_file_reference_warns_when_legacy_encoding_guess_is_tied(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    payload = tmp_path / "note.txt"
+    payload.write_bytes("Café résumé naïve".encode("cp1252"))
+
+    result = preprocess_context_references(
+        "Read @file:note.txt",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert result.warnings
+    warning = result.warnings[0]
+    assert "ambiguous" in warning
+    assert "cp1250" in warning
+    assert "cp1252" in warning
+    assert "Café résumé" in result.message
+    assert "binary file, not inlined" not in result.message
+
+
 def test_file_reference_warns_for_undecodable_text_bytes(tmp_path: Path):
     from agent.context_references import preprocess_context_references
 

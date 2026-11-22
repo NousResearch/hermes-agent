@@ -1109,6 +1109,52 @@ class TestEnvironmentHints:
         contents2 = [c for _k, _l, c in _pb._parse_remote_context_payload(out2.stdout, "abc123def456")]
         assert "INNER-SYMLINK-OK" in contents2
 
+    def test_remote_discovery_script_dedups_same_file_real_bash(self, tmp_path):
+        """#156648 review note: on a case-insensitive filesystem (macOS backends) CLAUDE.md and
+        claude.md resolve to ONE file, and the script used to ride the payload twice. The -ef guard
+        fires on file identity, so a hardlinked twin reproduces the case-fold condition on any FS;
+        a genuinely distinct lowercase name must still emit (control)."""
+        import os
+        import shutil
+        import subprocess
+
+        import agent.prompt_builder as _pb
+        if shutil.which("bash") is None or shutil.which("git") is None:
+            import pytest
+            pytest.skip("bash+git required (the remote backends all execute via bash)")
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "."], cwd=repo, check=True)
+        (repo / "CLAUDE.md").write_text("CLAUDE-CONTENT", encoding="utf-8")
+        (repo / "AGENTS.md").write_text("AGENTS-CONTENT", encoding="utf-8")
+        for src, twin in (("CLAUDE.md", "claude.md"), ("AGENTS.md", "agents.md")):
+            try:
+                os.link(repo / src, repo / twin)  # same inode: what case-folding produces on macOS
+            except FileExistsError:
+                pass  # case-insensitive FS: the twin name already resolves to src — the exact bug
+
+        out = subprocess.run(
+            ["bash", "-c", _pb._remote_context_discovery_script(str(repo), "abc123def456")],
+            capture_output=True, text=True, check=True,
+        )
+        triples = _pb._parse_remote_context_payload(out.stdout, "abc123def456")
+        kinds = [k for k, _l, _c in triples]
+        assert kinds.count("claude_md") == 1, triples
+        assert kinds.count("agents_md") == 1, triples
+        assert [c for k, _l, c in triples if k == "claude_md"] == ["CLAUDE-CONTENT"]
+
+        control = tmp_path / "lower"
+        control.mkdir()
+        subprocess.run(["git", "init", "-q", "."], cwd=control, check=True)
+        (control / "claude.md").write_text("LOWER-ONLY", encoding="utf-8")
+        out2 = subprocess.run(
+            ["bash", "-c", _pb._remote_context_discovery_script(str(control), "abc123def456")],
+            capture_output=True, text=True, check=True,
+        )
+        assert [(k, c) for k, _l, c in _pb._parse_remote_context_payload(out2.stdout, "abc123def456")] \
+            == [("claude_md", "LOWER-ONLY")]
+
     def test_probe_remote_backend_tears_down_its_sandbox(self, monkeypatch):
         """THE BUG: the probe leaked a second, permanently idle sandbox.
 

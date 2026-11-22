@@ -957,10 +957,14 @@ def _remote_context_discovery_script(cwd: str, nonce: str) -> str:
         "while :; do chain+=(\"$d\"); [ \"$d\" = \"$root\" ] && break; nd=$(dirname \"$d\"); [ \"$nd\" = \"$d\" ] && break; d=$nd; done",
         # Directory components are checked too (``[ -d ]`` follows links): a symlinked .cursor must not
         # redirect the *.mdc glob to an outside tree; the per-file emit guard is the second net.
-        "for ((i=${#chain[@]}-1; i>=0; i--)); do dir=${chain[i]}; "
-        "for n in AGENTS.override.md AGENTS.md agents.md; do f=\"$dir/$n\"; [ -s \"$f\" ] && emit agents_md \"${f#\"$PWD\"/}\" \"$f\"; done; done",
+        # Same-file dedup (PR #156648 review): on a case-insensitive filesystem (macOS backends) a
+        # case-variant pair resolves to ONE file and would ride the payload twice; -ef (dev+inode)
+        # drops the second name without stat/external tools, stays correct on case-sensitive FS,
+        # and also collapses hardlinked twins.
+        "for ((i=${#chain[@]}-1; i>=0; i--)); do dir=${chain[i]}; prev=''; "
+        "for n in AGENTS.override.md AGENTS.md agents.md; do f=\"$dir/$n\"; [ -s \"$f\" ] || continue; { [ -z \"$prev\" ] || ! [ \"$f\" -ef \"$prev\" ]; } && emit agents_md \"${f#\"$PWD\"/}\" \"$f\"; prev=\"$f\"; done; done",
         "for dir in \"${chain[@]}\"; do for n in .hermes.md HERMES.md; do f=\"$dir/$n\"; [ -s \"$f\" ] && emit hermes_md \"${f#\"$PWD\"/}\" \"$f\"; done; done",
-        "for n in CLAUDE.md claude.md; do f=\"$PWD/$n\"; [ -s \"$f\" ] && emit claude_md \"$n\" \"$f\"; done",
+        "prev=''; for n in CLAUDE.md claude.md; do f=\"$PWD/$n\"; [ -s \"$f\" ] || continue; { [ -z \"$prev\" ] || ! [ \"$f\" -ef \"$prev\" ]; } && emit claude_md \"$n\" \"$f\"; prev=\"$f\"; done",
         "[ -s \"$PWD/.cursorrules\" ] && ! [ -L \"$PWD/.cursorrules\" ] && emit cursorrules .cursorrules \"$PWD/.cursorrules\"",
         "if [ -d \"$PWD/.cursor/rules\" ] && ! [ -L \"$PWD/.cursor\" ] && ! [ -L \"$PWD/.cursor/rules\" ]; then "
         "for f in \"$PWD\"/.cursor/rules/*.mdc; do "

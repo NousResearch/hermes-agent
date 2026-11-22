@@ -153,6 +153,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._outbound_only = False
 
     # --- API helpers ---
 
@@ -214,7 +215,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     # --- Lifecycle ---
 
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
+    async def connect(self, *, is_reconnect: bool = False, start_webhook: bool = True) -> bool:
+        """``start_webhook=False`` sets up the REST client only, for one-shot outbound sends."""
         if not self.server_url or not self.password:
             logger.error("[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required")
             return False
@@ -235,6 +237,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, _safe_error(exc, self.server_url))
             await self._close_client()
             return False
+        if not start_webhook:
+            # A one-shot send can run beside a gateway that already owns this platform's webhook
+            # port, registration and runtime status: binding again fails with EADDRINUSE, and the
+            # disconnect would unregister the gateway's webhook and publish "disconnected" over it.
+            self._outbound_only = True
+            self._running = True
+            return True
         # client_max_size makes aiohttp enforce the cap on every read path, incl. chunked requests
         # with no Content-Length.
         # Explicit body cap: BlueBubbles webhook events are small JSON (or form-encoded) payloads.
@@ -264,6 +273,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             self.client = None
 
     async def disconnect(self) -> None:
+        if self._outbound_only:  # nothing bound or registered; the shared status is not ours
+            await self._close_client()
+            self._running = False
+            return
         await self._unregister_webhook()
         await self._close_client()
         if self._runner:
@@ -687,7 +700,7 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
         return send_error("BlueBubbles requirements not met (need aiohttp + httpx).")
     try:
         adapter = BlueBubblesAdapter(PlatformConfig(extra=dict(getattr(pconfig, "extra", None) or {})))
-        if not await adapter.connect():
+        if not await adapter.connect(start_webhook=False):
             return send_error("BlueBubbles: failed to connect to server")
         try:
             result = await adapter.send(chat_id, message)

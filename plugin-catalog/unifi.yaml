@@ -7,7 +7,7 @@ maintainer: Anunnaki-Astronaut
 tier: community
 category: desktop
 requires_hermes: ">=0.22.2"
-description: "See which UniFi devices and clients are online, and check Wi-Fi, switch ports, and ISP health in Hermes. This unofficial plugin reads from UniFi Site Manager and, if configured, your local console. It cannot change the network."
+description: "See which UniFi devices and clients are online, and check Wi-Fi, switch ports, and ISP health in Hermes. This unofficial plugin reads from UniFi Site Manager and, if configured, your local console. It cannot change the network. Disclosure — sends your UniFi API key to UniFi's cloud API at api.ui.com and, if you set a console host, your Network API key to that local UniFi console; reads only, and can show device and client details (IP addresses only if you turn that on) to the agent."
 docs_url: https://github.com/Anunnaki-Astronaut/hermes-unifi/blob/feaf1a067b68d1198c91f4fe884c99d2c5be37fd/docs/INSTALL.md
 image: https://raw.githubusercontent.com/Anunnaki-Astronaut/hermes-unifi/feaf1a067b68d1198c91f4fe884c99d2c5be37fd/docs/screenshots/catalog-banner.png
 screenshots:

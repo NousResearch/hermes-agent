@@ -124,6 +124,11 @@ def test_no_hook_means_no_masking_work(hook_off):
 def _stub_agent():
     return types.SimpleNamespace(
         session_id="s-1", model="m-1", _persist_disabled=False, platform="cli",
+        # The dispatch builds ReviewSignals from the agent before the hook runs
+        # (agent/review_signals.py:52-59); a fake without these dies with
+        # AttributeError before reaching what this test asserts.
+        _iters_since_skill=0, _turns_since_memory=0,
+        _skill_nudge_interval=10, _memory_nudge_interval=10,
     )
 
 

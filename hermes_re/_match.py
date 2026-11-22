@@ -9,7 +9,7 @@ from __future__ import annotations
 import types
 
 from . import _offsets
-from ._subject import DIRECT, UTF8
+from ._subject import DIRECT, UTF8, flat
 from ._template import template as _template
 from ._translate_scan import close_ranks as _close_ranks
 
@@ -19,9 +19,12 @@ class Match:
     __class_getitem__ = classmethod(types.GenericAlias)
 
     def __init__(self, pattern, string, data, mode, spans, pos, endpos, offsets=None, shift=0):
-        self.re, self.string, self._data, self._mode, self._spans = pattern, string, data, mode, spans
+        self.re, self.string, self._mode, self._spans = pattern, string, mode, spans
+        # A binary subject is sliced afresh, as stdlib does, so a Match never pins a view of the
+        # caller's buffer (a bytearray stays resizable while the Match is alive).
+        self._data = data if mode != DIRECT or isinstance(string, str) else None
         self._shift = shift  # character index of the buffer's first character (a window of the subject)
-        size = len(string)
+        size = len(string) if isinstance(string, (str, bytes, bytearray)) else len(flat(string))
         self.pos = 0 if pos <= 0 else min(pos, size)
         self.endpos = size if endpos >= size else max(endpos, 0)
         self._offsets = offsets  # sparse offset index of the subject (None for byte == char offsets)
@@ -60,10 +63,11 @@ class Match:
         if a < 0:
             return default
         if self._mode == DIRECT:
-            shift = self._shift
-            text = self.string[a + shift:e + shift] if shift else self.string[a:e]
-            # as stdlib: any other bytes-like subject (bytearray, memoryview, mmap) yields bytes
-            return text if isinstance(text, (str, bytes)) else bytes(text)
+            string, shift = self.string, self._shift
+            if isinstance(string, (str, bytes)):
+                return string[a + shift:e + shift] if shift else string[a:e]
+            # as stdlib: any other bytes-like subject yields bytes, its offsets counting bytes
+            return bytes(flat(string)[a:e])
         if self._mode == UTF8:
             return str(self._data[a:e], "utf-8")
         a, e = self.span(group)

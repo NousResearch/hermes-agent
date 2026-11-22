@@ -109,6 +109,24 @@ def window(string, first: int, last: int):
         return part.translate(_SURROGATES).encode("utf-8"), STANDIN, part
 
 
+def flat(string):
+    """A bytes-like subject as an object indexed by BYTE, as stdlib reads it: the object itself
+    when it already is one (bytes, bytearray, mmap, a one-dimensional view of single bytes), else a
+    byte view of its memory (``memoryview(b"abcd").cast("I")`` is four bytes, not one element).
+    Raises the TypeError stdlib raises for anything else, a non-contiguous view included."""
+    if string.__class__ is bytes or string.__class__ is bytearray:
+        return string
+    try:
+        view = memoryview(string)
+    except TypeError:
+        view = None
+    if view is None or not view.c_contiguous:
+        raise TypeError(f"expected string or bytes-like object, got {type(string).__name__!r}")
+    if view.ndim == 1 and view.itemsize == 1:
+        return string
+    return view.cast("B")
+
+
 def clear() -> None:
     """Drop both cached subjects (called by ``purge()``)."""
     global _last_subject, _large, _charge, _sighted

@@ -1,4 +1,5 @@
 """A bytearray / memoryview / mmap subject gives the results stdlib gives: bytes, never the buffer type."""
+import array
 import mmap
 import re as std
 
@@ -39,3 +40,55 @@ def test_a_bytes_like_subject_gives_stdlibs_bytes_results(call, subjects):
         expected = _CALLS[call](std, subject)
         got = _CALLS[call](hre, subject)
         assert got == expected and repr(got) == repr(expected), (kind, got, expected)
+
+
+_TYPED_SUBJECT = b"xa yb a\xffbaab"  # 12 bytes: whole items for "H" and "I"
+_TYPED = {
+    "cast_I": lambda: memoryview(_TYPED_SUBJECT).cast("I"),
+    "cast_H": lambda: memoryview(_TYPED_SUBJECT).cast("H"),
+    "cast_I_slice": lambda: memoryview(_TYPED_SUBJECT).cast("I")[1:],
+    "two_dimensional": lambda: memoryview(_TYPED_SUBJECT).cast("B", (3, 4)),
+    "array_I": lambda: array.array("I", _TYPED_SUBJECT),
+}
+
+
+def _bounds(m, subject):
+    return m.span(1), m.pos, m.endpos, m.string is subject
+
+
+_TYPED_CALLS = {
+    **_CALLS,
+    "span_and_bounds": lambda r, s: _bounds(r.search(rb"b(a)", s), s),
+    "search_endpos": lambda r, s: r.compile(rb"(b)").search(s, 1, 6).span(),
+    "search_last_byte": lambda r, s: r.search(rb"b$", s).span(),
+    "fullmatch": lambda r, s: r.fullmatch(rb"(?s).*", s).group(),
+    "finditer_spans": lambda r, s: [m.span() for m in r.finditer(rb"a", s)],
+    "split_bytes": lambda r, s: r.split(rb"\xff", s),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_TYPED))
+@pytest.mark.parametrize("call", sorted(_TYPED_CALLS))
+def test_a_typed_view_is_scanned_by_byte_as_stdlib_does(kind, call):
+    # stdlib reads any bytes-like subject as its bytes: offsets, limits and results count bytes,
+    # not items, while Match.string stays the caller's object
+    subject = _TYPED[kind]()
+    expected = _TYPED_CALLS[call](std, subject)
+    got = _TYPED_CALLS[call](hre, subject)
+    assert got == expected and repr(got) == repr(expected), (kind, got, expected)
+
+
+def test_a_non_contiguous_view_is_refused_as_stdlib_refuses_it():
+    subject = memoryview(_TYPED_SUBJECT)[::2]
+    with pytest.raises(TypeError):
+        std.search(rb"a", subject)
+    with pytest.raises(TypeError):
+        hre.search(rb"a", subject)
+
+
+def test_a_match_does_not_pin_the_subject_buffer():
+    # stdlib's Match holds the object, not a buffer export: the bytearray stays resizable
+    subject = bytearray(b"xa yb a")
+    found = hre.compile(rb"(a)").search(subject, 0, 4)
+    subject.extend(b"zz")
+    assert found.group(1) == b"a"

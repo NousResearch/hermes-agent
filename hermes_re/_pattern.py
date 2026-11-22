@@ -45,7 +45,7 @@ from ._flags import RegexFlag, checked
 from ._form import Form
 from ._match import Match
 from ._offsets import Offsets
-from ._subject import DIRECT, UTF8, WINDOW, held, subject, window
+from ._subject import DIRECT, UTF8, WINDOW, flat, held, subject, window
 from ._template import template as _template
 from ._validate import check, stdlib_syntax
 
@@ -268,8 +268,8 @@ class Pattern:
     def _open(self, string, pos, endpos):
         """``(buffer, mode, byte pos, byte endpos, offset index, shift, text source)`` or raise
         the TypeError stdlib raises. ``shift`` is the character index of the buffer's first
-        character and ``text source`` the ``str`` / bytes the buffer stands for: the subject
-        itself, or a window of it (``_window``).
+        character and ``text source`` what the buffer stands for: the ``str`` subject itself, a
+        window of it (``_window``), or the byte-indexed form of a binary subject (``flat``).
         Every matching operation starts here, so this is where an unbuilt pattern builds itself."""
         if not self._built:
             self._build()
@@ -280,15 +280,18 @@ class Pattern:
             raise TypeError("cannot use a string pattern on a bytes-like object"
                             if isinstance(string, (bytes, bytearray, memoryview))
                             else f"expected string or bytes-like object, got {type(string).__name__!r}")
-        size = len(string)
+        if self._is_str:
+            size = len(string)
+        else:  # offsets count bytes, whatever the item size of the subject (a cast view, an array)
+            data = source = flat(string)
+            mode, offsets, size = DIRECT, None, len(data)
         pos = 0 if pos <= 0 else min(pos, size)
         endpos = size if endpos >= size else max(endpos, 0)
-        if not self._is_str:
-            data, mode, offsets = string, DIRECT, None
-        elif (pos or endpos < size) and endpos - pos <= WINDOW and not held(string):
-            return _window(string, pos, endpos)
-        else:
+        if self._is_str:
+            if (pos or endpos < size) and endpos - pos <= WINDOW and not held(string):
+                return _window(string, pos, endpos)
             data, mode, offsets = subject(string)
+            source = string
         if mode != DIRECT:
             if offsets is None and (pos or endpos < size):
                 offsets = Offsets(data)  # uncached subject (short, or over the cache limit)
@@ -297,7 +300,7 @@ class Pattern:
             endpos = len(data) if endpos >= size else offsets.byte(endpos)
         if endpos < len(data):  # stdlib treats endpos as the end of the subject for `$` and `\b`
             data = memoryview(data)[:endpos]
-        return data, mode, pos, endpos, offsets, 0, string
+        return data, mode, pos, endpos, offsets, 0, source
 
     def _one(self, kind, string, pos, endpos):
         """One match attempt. ``kind``: 0 search, 1 match, 2 fullmatch."""
@@ -401,8 +404,8 @@ class Pattern:
         return [tuple(str(part, "utf-8") for part in item) for item in out]
 
     def split(self, string, maxsplit=0):
-        data, mode, start, end, offsets, _, _ = self._open(string, 0, sys.maxsize)
-        take, raw = self._texts(string, data, mode, offsets)
+        data, mode, start, end, offsets, _, source = self._open(string, 0, sys.maxsize)
+        take, raw = self._texts(source, data, mode, offsets)
         out, last, done = [], 0, 0
         for spans in self._spans(data, mode, start, end) if maxsplit >= 0 else ():  # as stdlib: negative splits nothing
             a, e = spans[0]
@@ -415,8 +418,8 @@ class Pattern:
         return [None if item is None else item.decode("utf-8") for item in out] if raw else out
 
     def subn(self, repl, string, count=0):
-        data, mode, start, end, offsets, _, _ = self._open(string, 0, sys.maxsize)
-        take, raw = self._texts(string, data, mode, offsets)
+        data, mode, start, end, offsets, _, source = self._open(string, 0, sys.maxsize)
+        take, raw = self._texts(source, data, mode, offsets)
         fill = repl if callable(repl) else _template(repl, self)
         out, last, done = [], 0, 0
         for spans in self._spans(data, mode, start, end) if count >= 0 else ():  # as stdlib: negative replaces nothing

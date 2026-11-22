@@ -83,12 +83,14 @@ def shorthand(letter: str, ascii_only: bool, icase: bool, latin1: bool = False) 
     return _wrap(_emit(_category(letter, ascii_only), latin1), icase)
 
 
-def _escape(body: str, i: int):
+def _escape(body: str, i: int, latin1: bool = False):
     """``(code point or None, shorthand letter or None, next index)`` for the escape at ``i``."""
     ch = body[i + 1]
     if ch in "dDwWsS":
         return None, ch, i + 2
     width = {"x": 2, "u": 4, "U": 8}.get(ch)
+    if latin1 and ch in "uUN":  # as stdlib: a bytes pattern has no \u, \U or \N escape
+        raise Unsupported(f"bad escape \\{ch}")
     if width:
         code = int(body[i + 2:i + 2 + width], 16)
         if code > _r.MAX:  # as stdlib: refused, not left for RE2 to refuse at the first match
@@ -109,7 +111,7 @@ def _escape(body: str, i: int):
     return ord(ch), None, i + 2
 
 
-def _parse(body: str):
+def _parse(body: str, latin1: bool = False):
     """``(negated, literal ranges, shorthand letters)`` of ``[...]``."""
     i, end = 1, len(body) - 1
     negated = body[1] == "^"
@@ -118,15 +120,17 @@ def _parse(body: str):
     ranges, letters = [], []
     while i < end:
         if body[i] == "\\":
-            low, letter, i = _escape(body, i)
+            low, letter, i = _escape(body, i, latin1)
             if letter:
+                if i + 1 < end and body[i] == "-":  # as stdlib: `[\d-a]` is an error, `[\d-]` is not
+                    raise Unsupported(f"bad character range \\{letter}-{body[i + 1]}")
                 letters.append(letter)
                 continue
         else:
             low, i = ord(body[i]), i + 1
         if i + 1 < end and body[i] == "-":
             if body[i + 1] == "\\":
-                high, letter, i = _escape(body, i + 1)
+                high, letter, i = _escape(body, i + 1, latin1)
                 if letter:
                     raise Unsupported("a shorthand class as a range end")
             else:
@@ -139,10 +143,10 @@ def _parse(body: str):
     return negated, ranges, letters
 
 
-def members(body: str, ascii_only: bool, icase: bool):
+def members(body: str, ascii_only: bool, icase: bool, latin1: bool = False):
     """``(negated, literal ranges as a range set, shorthand letters)`` of ``[...]``, the literal
     ranges with stdlib's IGNORECASE folding applied."""
-    negated, ranges, letters = _parse(body)
+    negated, ranges, letters = _parse(body, latin1)
     if icase and ranges and any(_fold.any_cased(lo, hi, ascii_only) for lo, hi in ranges):
         extra = set()
         for lo, hi in ranges:
@@ -155,7 +159,7 @@ def members(body: str, ascii_only: bool, icase: bool):
 
 @functools.lru_cache(maxsize=2048)
 def bracket(body: str, ascii_only: bool, icase: bool, latin1: bool = False) -> str:
-    negated, ranges, letters = members(body, ascii_only, icase)
+    negated, ranges, letters = members(body, ascii_only, icase, latin1)
     cells = _r.literal(ranges)
     for letter in letters:
         cells = _r.cells_union(cells, _category(letter, ascii_only))

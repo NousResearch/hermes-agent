@@ -73,6 +73,25 @@ def test_a_profile_without_refused_patterns_gets_one_ok_line(monkeypatch, capsys
     assert "not a valid RE2 pattern" not in out
 
 
+def test_a_subscription_shadowed_by_a_static_route_of_the_same_name_is_not_checked(monkeypatch, capsys):
+    """The webhook adapter drops such a subscription (static routes win), so its filters never run."""
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "platforms:\n  webhook:\n    enabled: true\n    extra:\n      routes:\n        deploys:\n"
+        "          secret: s\n          filters:\n            - field: payload.ref\n              regex: \"^main$\"\n",
+        encoding="utf-8")
+    (home / "webhook_subscriptions.json").write_text(json.dumps({
+        "deploys": {"secret": "s", "filters": [{"field": "payload.ref", "regex": r"(a)\1"}]},
+        "builds": {"secret": "s", "filters": [{"field": "payload.ref", "regex": r"(b)\1"}]}}), encoding="utf-8")
+
+    status, out = _doctor(monkeypatch, capsys)
+
+    assert "(a)" not in out  # the shadowed subscription
+    assert "webhook subscription 'builds' filter regex" in out  # a subscription the adapter loads is still checked
+    assert status == 1
+
+
 def test_an_env_pattern_is_split_like_its_adapter_splits_it(monkeypatch, capsys):
     # Telegram reads one pattern per line: the comma belongs to the pattern, which RE2 accepts.
     monkeypatch.setenv("TELEGRAM_MENTION_PATTERNS", "^(hey|hi),? hermes")

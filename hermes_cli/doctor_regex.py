@@ -97,13 +97,21 @@ def _route_regexes(kind: str, routes: object) -> Iterator[tuple[str, str]]:
                 yield f"webhook {kind} '{name}' filter regex", pattern
 
 
+def _static_routes(inputs: Inputs) -> dict:
+    routes = inputs.extras.get("webhook", {}).get("routes")
+    return routes if isinstance(routes, dict) else {}
+
+
 def _static_route_regexes(inputs: Inputs) -> Iterator[tuple[str, str]]:
-    return _route_regexes("route", inputs.extras.get("webhook", {}).get("routes"))
+    return _route_regexes("route", _static_routes(inputs))
 
 
 def _subscription_regexes(inputs: Inputs) -> Iterator[tuple[str, str]]:
     from hermes_cli.webhook import _load_subscriptions
-    return _route_regexes("subscription", _load_subscriptions())
+    static = _static_routes(inputs)
+    # The adapter drops a subscription that a static route of the same name shadows: its filters never run.
+    return _route_regexes("subscription", {name: route for name, route in _load_subscriptions().items()
+                                           if name not in static})
 
 
 def _one(value: str) -> list[str]:

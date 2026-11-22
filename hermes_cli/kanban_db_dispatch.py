@@ -1051,11 +1051,18 @@ class _DeadWorker:
     terminal_provider: bool = False
     """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
     credential/model — trips the breaker on this first occurrence."""
+    owner_shutdown: bool = False
+    """The owner process (the gateway) went away mid-attempt and took its managed worker with
+    it: the infrastructure cancelled the attempt, so it charges nothing. Set by
+    ``kanban_owner_recovery.owner_shutdown_cancellation`` in the reclaim sweep."""
 
     @property
     def run_outcome(self) -> str:
         # A rate-limited requeue is recorded as ``rate_limited`` so board history
-        # doesn't show a phantom crash for a quota wall.
+        # doesn't show a phantom crash for a quota wall; an owner shutdown is booked
+        # ``cancelled`` for the same reason — nothing about the card failed.
+        if self.owner_shutdown:
+            return "cancelled"
         return "rate_limited" if self.rate_limited else "crashed"
 
 
@@ -1155,6 +1162,8 @@ class _CrashSweep:
 
     crashed: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
+    # Owner (gateway) shutdowns: re-queued, never counted, not crashes.
+    cancelled: list[str] = field(default_factory=list)
     # ``(task_id, pid, claimer, dead_worker)``: accounted after the txn via
     # ``_record_task_failure`` (needs its own write_txn).
     crash_details: list[tuple[str, int, str, _DeadWorker]] = field(default_factory=list)
@@ -1173,7 +1182,10 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = _kb._host_prefix()
-        from hermes_cli.kanban_owner_recovery import apply_attempt_note, managed_run_exit_code, owner_reclaim_blocked
+        from hermes_cli.kanban_owner_recovery import (
+            apply_attempt_note, managed_run_exit_code, owner_reclaim_blocked,
+            owner_shutdown_cancellation,
+        )
         for row in rows:
             lock = row["claim_lock"] or ""
             if not lock.startswith(host_prefix):
@@ -1195,6 +1207,18 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             exit_code = managed_run_exit_code(conn, row["id"], pid, row["claim_lock"])
             dead = _classify_dead_worker(pid, row["claim_lock"], exit_code, task_id=row["id"], board=board)
             apply_attempt_note(conn, row["id"], pid, dead)
+            # An owner that went away mid-attempt cancelled it: the run is booked
+            # ``cancelled`` and never reaches the breaker. Genuine worker faults (a real exit
+            # code, a protocol violation, a quota wall, a terminal provider) keep charging
+            # exactly as before.
+            if not (dead.rate_limited or dead.protocol_violation or dead.terminal_provider):
+                _lost = dead.event_payload.get("worker_lost") or {}
+                if owner_shutdown_cancellation(conn, row["id"],
+                                              worker_lost_reason=_lost.get("reason")):
+                    dead.owner_shutdown = True
+                    dead.event_kind = "cancelled"
+                    dead.event_payload["infrastructure"] = True
+                    dead.event_payload["owner_shutdown"] = True
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
@@ -1223,17 +1247,21 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 "outcome": dead.run_outcome,
                 "retry_status": retry_status,
             })
-            if dead.rate_limited or dead.protocol_violation:
+            if dead.rate_limited or dead.protocol_violation or dead.owner_shutdown:
                 # Stamp last_failure_error WITHOUT touching ``consecutive_failures``:
                 # a rate-limited requeue must show ``check_respawn_guard`` a quota
                 # blocker; a below-budget protocol violation never reaches
                 # ``_record_task_failure`` (which stamps this column), yet the
-                # board UI and retry worker need the corrective message.
+                # board UI and retry worker need the corrective message. An owner
+                # shutdown is the same class: the message names what took the attempt
+                # down, and the respawn guard's quota/auth patterns never match it.
                 conn.execute(
                     "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
                     (dead.error_text[:500], row["id"]),
                 )
-            if dead.rate_limited:
+            if dead.owner_shutdown:
+                sweep.cancelled.append(row["id"])
+            elif dead.rate_limited:
                 sweep.rate_limited.append(row["id"])
             else:
                 sweep.crashed.append(row["id"])
@@ -1329,7 +1357,9 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     Clean exit while ``running`` is a protocol violation with a bounded
     violation-only retry budget; ``KANBAN_RATE_LIMIT_EXIT_CODE`` is a quota
     wall, released WITHOUT counting a failure and surfaced via the
-    ``_last_rate_limited`` attribute (the return stays crashed-only).
+    ``_last_rate_limited`` attribute (the return stays crashed-only). A worker
+    taken down by its own owner's shutdown is likewise released without counting,
+    as ``cancelled``, via ``_last_cancelled``.
     """
     sweep = _reclaim_dead_workers(conn, board=board)
     # Outside the main txn: account each crash and maybe trip the breaker.
@@ -1339,6 +1369,8 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     # requeues did NOT count a failure and are NOT crashes.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
     detect_crashed_workers._last_rate_limited = sweep.rate_limited  # type: ignore[attr-defined]
+    # Owner-shutdown cancellations likewise counted nothing and are not crashes.
+    detect_crashed_workers._last_cancelled = sweep.cancelled  # type: ignore[attr-defined]
     # Fired only now, after the reclaim txn AND breaker accounting have
     # committed, so subscribers always observe fully durable board state.
     if sweep.exited_hook_payloads and _kb._kanban_observer_consumed("on_kanban_worker_exited"):

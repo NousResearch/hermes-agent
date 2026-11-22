@@ -9,7 +9,10 @@ lost attempt:
   A2  an elapsed ``claim_expires`` never leaves the card ``running`` after one tick, even
       with no heartbeat and no pid (and even behind a settled owner receipt);
   A3  every such booking increments ``consecutive_failures``, so ``kanban.failure_limit``
-      covers this outcome class and the card blocks at the limit.
+      covers this outcome class and the card blocks at the limit;
+  A4  a worker taken down by its own owner's shutdown (a gateway restart) is booked
+      ``cancelled`` and charges NOTHING — the infrastructure cancelled the attempt, the card
+      did nothing to fail.
 """
 
 from __future__ import annotations
@@ -306,3 +309,110 @@ def test_a_loss_recorded_against_a_superseded_run_is_dropped(board):
     board.conn.commit()
     record_worker_loss(policy, "managed_worker_failed", pid=1234, bound=False)
     assert count() == 1
+
+
+# --- A4: a gateway restart is an infrastructure cancellation, not a card failure -----------
+# The owner's own process going away takes every managed worker running under it with it, and
+# the restarted owner settles the admission ``interrupted``. With the dispatcher's effective
+# limit of 1, charging that burns a card permanently: two library-cleanup cards died at the
+# same second with "pid <n> not alive [owner admission settled interrupted]", having done no
+# work. The class is the host's spawn refusal (``infrastructure: true``) — book the run
+# ``cancelled``, leave ``consecutive_failures`` alone, re-dispatch with the budget intact.
+
+def test_a_gateway_restart_mid_attempt_leaves_the_retry_budget_intact(board):
+    """The default ``running`` shape IS a gateway restart: the owner pid is gone, its admission
+    settled ``interrupted``, the claim is live, the heartbeat is fresh, and no ``worker_lost``
+    (the owner's loss handler records that event only for worker-side faults, never for a Stop
+    or a superseded generation).
+    """
+    run_id = board.running("t_restart", claim_expires_in=900, heartbeat_age=30)
+    result = board.tick(failure_limit=1)
+    row, run = board.state("t_restart"), board.run(run_id)
+    assert row["status"] == "ready"                       # the card is re-dispatchable
+    assert (row["claim_lock"], row["worker_pid"], row["current_run_id"]) == (None, None, None)
+    assert row["consecutive_failures"] == 0               # the budget is untouched
+    assert "owner admission settled interrupted" in row["last_failure_error"]
+    assert run["outcome"] == "cancelled"
+    payload = json.loads(run["metadata"] or "{}")
+    assert payload["infrastructure"] is True and payload["owner_shutdown"] is True
+    assert "t_restart" not in result.crashed
+    assert getattr(kbd.detect_crashed_workers, "_last_cancelled", []) == ["t_restart"]
+
+
+def test_the_shape_the_incident_left_behind_is_cancelled_too(board):
+    """The two library-cleanup cards: a lapsed claim, a 131 s fresh heartbeat, a bound dead pid.
+
+    A lapsed claim with NO heartbeat is the ghost shape the TTL path owns and charges (the A2
+    parametrization pins it, unchanged). A lapsed claim WITH a heartbeat inside the window is a
+    live attempt the gateway took down under it; because the run had bound an interpreter, the
+    crash sweep — not the TTL path — is the one that books it.
+    """
+    pid = _absent_pid()
+    run_id = board.running("t_incident", worker_pid=pid,
+                           claim_expires_in=CLAIM_LAPSED, heartbeat_age=131)
+    lock = board.state("t_incident")["claim_lock"]
+    board.event("t_incident", run_id, "worker_bound",
+                {"pid": pid, "started_at": FINGERPRINT, "claim_lock": lock}, NOW - 116)
+    assert kbd.detect_crashed_workers(board.conn) == []   # not a crash
+    row, run = board.state("t_incident"), board.run(run_id)
+    assert row["status"] == "ready"
+    assert row["consecutive_failures"] == 0
+    assert run["outcome"] == "cancelled"
+    assert "owner admission settled interrupted" in run["error"]
+
+
+def test_a_worker_fault_under_the_same_owner_receipt_still_charges_the_breaker(board):
+    """The distinguishing evidence is the worker-side fault, not the owner's absence.
+
+    The exact shape of the cancellation test above, with the one thing the owner's loss
+    handler writes only for a worker's own failure. The breaker must keep charging it.
+    """
+    run_id = board.running("t_fault", claim_expires_in=900, heartbeat_age=30,
+                           worker_lost="managed_worker_failed")
+    board.tick(failure_limit=1)
+    row, run = board.state("t_fault"), board.run(run_id)
+    assert row["consecutive_failures"] == 1
+    assert run["outcome"] == "crashed"
+    assert "t_fault" not in getattr(kbd.detect_crashed_workers, "_last_cancelled", [])
+
+
+def test_the_classifier_refuses_every_shape_that_is_not_a_restart(board):
+    """Missing evidence is never proof: a worker-side fault, a live owner, a lapsed claim.
+
+    The classifier takes the reason the owner recorded, because the owner's loss handler is the
+    authority on what the worker itself did; the board's own liveness columns are the authority
+    on whether the attempt was still observable.
+    """
+    import os
+    board.running("t_guard", claim_expires_in=900, heartbeat_age=30)
+    cancel = kanban_owner_recovery.owner_shutdown_cancellation
+    assert cancel(board.conn, "t_guard", worker_lost_reason=None) is True
+    # The real gateway restart: the worker's stream closes on the owner's death (EOFError).
+    assert cancel(board.conn, "t_guard", worker_lost_reason="EOFError") is True
+    # The worker's own fault is a card fault, under the same owner receipt.
+    assert cancel(board.conn, "t_guard", worker_lost_reason="managed_worker_failed") is False
+    assert cancel(board.conn, "t_guard", worker_lost_reason="invalid_worker_frame") is False
+    # A lapsed claim with no heartbeat is a long outage, not a restart: the TTL path owns it.
+    board.conn.execute("UPDATE tasks SET claim_expires = ?, last_heartbeat_at = NULL WHERE id = 't_guard'",
+                       (NOW - 100,))
+    board.conn.commit()
+    assert cancel(board.conn, "t_guard", worker_lost_reason=None) is False
+    # A live owner process: the gateway that admitted the attempt is the one running now.
+    board.running("t_live", claim_expires_in=900, heartbeat_age=30, owner_pid=os.getpid())
+    assert cancel(board.conn, "t_live", worker_lost_reason=None) is False
+
+
+def test_a_stream_close_on_the_owners_death_is_cancelled_through_the_dispatcher(board):
+    """The shape the gateway restart actually leaves: ``worker_lost`` with EOFError, no fault.
+
+    Booked ``cancelled`` with the budget intact, and the note keeps naming the loss so the
+    board still says what happened.
+    """
+    run_id = board.running("t_eof", claim_expires_in=900, heartbeat_age=30,
+                           worker_lost="EOFError")
+    board.tick(failure_limit=1)
+    row, run = board.state("t_eof"), board.run(run_id)
+    assert row["status"] == "ready"
+    assert row["consecutive_failures"] == 0
+    assert run["outcome"] == "cancelled"
+    assert "managed worker lost: EOFError" in run["error"]

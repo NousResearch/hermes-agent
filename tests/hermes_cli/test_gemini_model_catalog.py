@@ -42,11 +42,12 @@ def _serve(monkeypatch, *, fail_page: str | None = None):
     return seen
 
 
-def test_native_catalog_lists_every_page_of_agent_chat_models(monkeypatch):
+@pytest.mark.parametrize("base_url", ["https://generativelanguage.googleapis.com/v1beta", "https://generativelanguage.googleapis.com/"])
+def test_native_catalog_lists_every_page_of_agent_chat_models(monkeypatch, base_url):
     seen = _serve(monkeypatch)
     profile = get_provider_profile("gemini")
 
-    ids = profile.fetch_models(api_key="fixture-key", base_url=profile.base_url)
+    ids = profile.fetch_models(api_key="fixture-key", base_url=base_url)
 
     # Media/TTS/embedding families drop out even though Google marks some generateContent; Gemma
     # stays out of the picker by design (free-tier-only on this API).

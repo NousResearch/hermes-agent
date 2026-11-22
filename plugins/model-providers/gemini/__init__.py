@@ -7,6 +7,7 @@ model. This profile also carries auth/endpoint metadata and the thinking_config 
 
 import json
 import logging
+import re
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -74,6 +75,13 @@ def _is_ai_studio_native_base_url(base_url: str) -> bool:
     return urllib.parse.urlsplit(normalized).hostname == "generativelanguage.googleapis.com" and not normalized.endswith("/openai")
 
 
+def _with_api_version(base_url: str) -> str:
+    """``GEMINI_BASE_URL`` may be the bare host root (chat adds ``/v1beta`` the same way): keep an
+    existing ``v1``/``v1beta``/``v1alpha`` segment, else list under ``/v1beta``."""
+    trimmed = base_url.strip().rstrip("/")
+    return trimmed if re.match(r"^v\d+(?:alpha|beta)?\d*$", trimmed.rsplit("/", 1)[-1], re.IGNORECASE) else f"{trimmed}/v1beta"
+
+
 class GeminiProfile(ProviderProfile):
     """Gemini — translate reasoning_config to thinking_config in extra_body."""
 
@@ -94,7 +102,7 @@ class GeminiProfile(ProviderProfile):
         """
         effective_base = (base_url or self.base_url or "").rstrip("/")
         if _is_ai_studio_native_base_url(effective_base):
-            return _list_native_chat_models(effective_base, api_key, timeout) if api_key else None
+            return _list_native_chat_models(_with_api_version(effective_base), api_key, timeout) if api_key else None
         models = super().fetch_models(api_key=api_key, base_url=effective_base or None, timeout=timeout)
         return [_bare_model_id(m) for m in models] if models else models
 

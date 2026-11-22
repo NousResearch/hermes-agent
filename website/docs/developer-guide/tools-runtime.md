@@ -234,6 +234,10 @@ TERM handlers may legitimately write cleanup output during the grace period, and
 TERM does not prevent escalation to KILL when enabled. A stop acknowledgement is not a transactional
 rollback of side effects already performed.
 
+Hard-exit teardown dispatches identity-verified group KILLs without TERM or grace. Docker
+control calls run concurrently under the shared hard-exit budget instead of serializing
+one control round trip per foreground command.
+
 `tools/process_registry_adoption.py` owns local and sandbox foreground adoption as registry
 methods. Docker's exec wrapper removes its ownership record after the child exits, without
 launching another exec for normal-path cleanup.

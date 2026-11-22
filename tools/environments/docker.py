@@ -1118,6 +1118,14 @@ class DockerEnvironment(BaseEnvironment):
             record.kill()
         super()._kill_process(proc)
 
+    def _force_kill_process(self, proc):
+        try:
+            record = self._foreground_commands.get(id(proc))
+            if record is not None:
+                record.kill(force=True)
+        finally:
+            super()._kill_process(proc)
+
     def _run_bash_untracked(self, cmd_string: str, *, login: bool = False,
                             timeout: int = 120,
                             stdin_data: str | None = None) -> subprocess.Popen:

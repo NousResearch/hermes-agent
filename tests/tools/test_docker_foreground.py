@@ -20,8 +20,9 @@ def test_wrapper_cleans_ownership_without_changing_command_outcome(tmp_path, com
     assert (tmp_path / record.directory).exists() is cleanup_fails
 
 
-def test_failed_namespace_kill_never_claims_verified_termination(tmp_path, monkeypatch):
+@pytest.mark.parametrize("force", [False, True])
+def test_failed_namespace_kill_never_claims_verified_termination(tmp_path, monkeypatch, force):
     record = DockerForeground(Mock(get_temp_dir=lambda: str(tmp_path)))
     monkeypatch.setattr(record, "control", Mock(return_value={"returncode": 1}))
     with pytest.raises(RuntimeError, match="termination could not be verified"):
-        record.kill()
+        record.kill(force=force)

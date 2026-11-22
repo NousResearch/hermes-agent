@@ -120,7 +120,7 @@ def kill_live_foreground_processes(*, now: bool = False) -> int:
     KILLs, so a SIGTERM-ignoring command outlives a hard exit that lands inside that window. It also
     raises the exit fence and waits for spawns already past it to register, so no command started
     around the snapshot survives, and it never blocks past ``_HARD_KILL_BUDGET_S``: SDK cancels
-    (Modal, Daytona, Vercel) run on daemon threads under that one deadline."""
+    (Docker, Modal, Daytona, Vercel) run on daemon threads under that one deadline."""
     global _exit_fenced
     if not now:
         with _live_foreground_cond:
@@ -140,7 +140,7 @@ def kill_live_foreground_processes(*, now: bool = False) -> int:
         live = list(_live_foreground.values())
     remote = []
     for env, proc in live:
-        if isinstance(proc, subprocess.Popen):  # killpg/kill: never blocks
+        if isinstance(proc, subprocess.Popen) and getattr(env, "is_local", False):  # killpg/kill: never blocks
             _quiet_kill(env._force_kill_process, proc)
         else:
             remote.append(threading.Thread(target=_quiet_kill, args=(env._force_kill_process, proc), daemon=True))

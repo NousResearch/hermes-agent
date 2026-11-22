@@ -43,7 +43,7 @@ class DockerForeground:
             raise RuntimeError("Docker foreground PID is not available")
         return int(result["output"].split()[0])
 
-    def kill(self) -> None:
+    def kill(self, *, force: bool = False) -> None:
         q = shlex.quote
         steps = math.ceil(self.term_grace / 0.05)
         escalation = (f'wait_group {steps} && exit 0; '
@@ -62,7 +62,8 @@ class DockerForeground:
             '[ "$3" = "$p" ] && [ "$1" != Z ] && return 0; done; return 1; }; '
             'wait_group() { local attempt; for ((attempt=0; attempt<$1; attempt++)); do '
             'alive_group || return 0; sleep 0.05; done; ! alive_group; }; '
-            'kill -TERM -- -"$p" 2>/dev/null || :; '
-            f'{escalation}; else exit 0; fi', timeout=max(10, self.term_grace + 5))
+            f'kill -{"KILL" if force else "TERM"} -- -"$p" 2>/dev/null || :; '
+            f'{"wait_group 40" if force else escalation}; else exit 0; fi',
+            timeout=10 if force else max(10, self.term_grace + 5))
         if result["returncode"] != 0:
             raise RuntimeError("Docker foreground process group termination could not be verified")

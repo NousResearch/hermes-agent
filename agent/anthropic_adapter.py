@@ -20,7 +20,8 @@ from agent.anthropic_credentials import _is_oauth_token, anthropic_route_is_oaut
 from agent.anthropic_endpoints import (
     _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
     _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
-    _is_third_party_anthropic_endpoint, _model_name_is_kimi_family, _normalize_base_url_text,
+    _is_third_party_anthropic_endpoint, _model_name_is_kimi_family,
+    _model_name_is_minimax_adaptive, _normalize_base_url_text,
     _requires_bearer_auth,
 )
 from agent.anthropic_message_convert import (
@@ -171,11 +172,21 @@ def _resolve_anthropic_messages_max_tokens(requested, model: str, context_length
 
 
 def _supports_adaptive_thinking(model: str) -> bool:
-    """True for Claude models using adaptive thinking (4.6+): unknown Claude models default to
-    adaptive, the explicit legacy list stays manual, and non-Claude models return False — except
-    Kimi/Moonshot, whose Anthropic-compatible endpoints implement the adaptive contract."""
-    return _model_name_is_kimi_family(model) or (
-        _is_claude_model(model) and not _model_matches(model, _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
+    """True for models accepting the adaptive-thinking contract (``thinking.type=adaptive``
+    + ``output_config.effort``): Claude 4.6+, Kimi/Moonshot, and the MiniMax M3.1 family.
+
+    MiniMax M3.1 is included because its Anthropic-compatible endpoint tunes thinking depth
+    ONLY via ``output_config.effort`` — the manual ``budget_tokens`` shape does not constrain
+    it (measured live against api.minimaxi.com), and ``thinking.type=disabled`` is rejected
+    with HTTP 400. M3 and the M2.x family stay on the manual path.
+    """
+    return (
+        _model_name_is_kimi_family(model)
+        or _model_name_is_minimax_adaptive(model)
+        or (
+            _is_claude_model(model)
+            and not _model_matches(model, _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
+        )
     )
 
 

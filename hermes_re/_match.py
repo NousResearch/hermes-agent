@@ -61,7 +61,9 @@ class Match:
             return default
         if self._mode == DIRECT:
             shift = self._shift
-            return self.string[a + shift:e + shift] if shift else self.string[a:e]
+            text = self.string[a + shift:e + shift] if shift else self.string[a:e]
+            # as stdlib: any other bytes-like subject (bytearray, memoryview, mmap) yields bytes
+            return text if isinstance(text, (str, bytes)) else bytes(text)
         if self._mode == UTF8:
             return str(self._data[a:e], "utf-8")
         a, e = self.span(group)

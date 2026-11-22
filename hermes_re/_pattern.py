@@ -364,7 +364,10 @@ class Pattern:
         """A function ``slice -> text`` over match offsets, and whether it yields UTF-8 bytes
         that must be decoded once at the end."""
         if mode == DIRECT:
-            return string.__getitem__, False
+            if isinstance(string, (str, bytes)):
+                return string.__getitem__, False
+            # as stdlib: any other bytes-like subject (bytearray, memoryview, mmap) yields bytes
+            return lambda span: bytes(string[span]), False
         if mode == UTF8:
             return data.__getitem__, True
         to_char = (offsets or Offsets(data)).char
@@ -376,7 +379,7 @@ class Pattern:
     def findall(self, string, pos=0, endpos=sys.maxsize):
         data, mode, start, end, offsets, _, source = self._open(string, pos, endpos)
         take, raw = self._texts(source, data, mode, offsets)
-        empty = b"" if raw else string[:0]
+        empty = b"" if raw else ("" if self._is_str else b"")  # raw: UTF-8 bytes, decoded at the end
         groups, out = self.groups, []
         for spans in self._spans(data, mode, start, end):
             if groups == 0:
@@ -427,7 +430,7 @@ class Pattern:
         out.append(take(slice(last, len(data))))
         if raw:
             return b"".join(out).decode("utf-8"), done
-        return string[:0].join(out), done
+        return ("" if self._is_str else b"").join(out), done
 
     def sub(self, repl, string, count=0):
         return self.subn(repl, string, count)[0]

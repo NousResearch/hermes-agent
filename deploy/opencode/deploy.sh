@@ -8,7 +8,7 @@
 #                             wrapper + key file, tighten opencode.jsonc,
 #                             add gate check g (warning only), run tests + gate
 #   deploy.sh --apply --restart   same, then restart hermes-mux-gateway and the WebUI
-#   deploy.sh --wrapper-only  (re)install only the wrapper (after an npm update)
+#   deploy.sh --wrapper-only  (re)install only the wrapper (after `npm i -g @opencode/cli@<version>`)
 #   deploy.sh --rollback      undo using the state file written by --apply
 set -euo pipefail
 
@@ -17,7 +17,7 @@ LIVE="$HOME_DIR/.hermes/hermes-agent"
 BRANCH="feat/opencode-task-tool"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WRAPPER_DST="$HOME_DIR/.npm-global/bin/opencode"
-REAL_BIN="$HOME_DIR/.npm-global/lib/node_modules/opencode-ai/bin/opencode.exe"
+REAL_BIN="$HOME_DIR/.npm-global/lib/node_modules/@opencode/cli/bin/opencode.exe"  # OpenCode 2 (npm @opencode/cli)
 SLOT_DIR="$HOME_DIR/.hermes/run/opencode-slots"
 KEY_FILE="$HOME_DIR/.config/opencode/omniroute.key"
 OC_CONFIG="$HOME_DIR/.config/opencode/opencode.jsonc"

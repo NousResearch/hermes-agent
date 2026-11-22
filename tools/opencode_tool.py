@@ -93,11 +93,14 @@ def load_previous_job(job_id: str, owner_email: str) -> tuple[Optional[dict], Op
     if (prev.get("owner_email") or "") != (owner_email or ""):
         return None, "continue_job: that job belongs to someone else."
     state = Path(prev.get("state_dir") or (_job_root() / job_id / "state"))
-    if not (state / "data" / "opencode" / "opencode.db").is_file():
+    try:
+        result = json.loads((_job_root() / job_id / "result.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        result = {}
+    if not state.is_dir() or not result.get("session"):
         return None, f"continue_job: job {job_id} has no OpenCode session to continue."
     prev["_state_dir"] = str(state)
-    from tools.opencode_task_runner import session_facts
-    prev["_session"] = session_facts(state).get("session", "")
+    prev["_session"] = str(result["session"])
     if not prev["_session"]:
         return None, f"continue_job: job {job_id} has no OpenCode session to continue."
     return prev, None
@@ -114,7 +117,7 @@ def _host_home() -> Path:
 def _opencode_binary() -> str:
     from hermes_cli.synthpulse_settings import setting
     configured = setting("opencode.binary")
-    return str(configured or (_host_home() / ".npm-global/lib/node_modules/opencode-ai/bin/opencode.exe"))
+    return str(configured or (_host_home() / ".npm-global/lib/node_modules/@opencode/cli/bin/opencode.exe"))
 
 
 def _max_slots() -> int:
@@ -332,20 +335,29 @@ def home_layout(access) -> dict:
             "runtime_paths": [str(_host_home() / p) for p in RUNTIME_PATHS]}
 
 
-def user_mcp_names() -> list[str]:
-    """MCP servers the host's OpenCode config defines. Inline config merges with
-    it, so an empty "mcp" does not switch them off; each needs enabled=false."""
+def host_mcp_servers() -> dict:
+    """MCP servers the host's OpenCode config defines (v1 map or v2 ``mcp.servers``), by name.
+
+    Inline config merges with it, and in OpenCode 2 an override replaces the whole server object,
+    so switching one off means repeating its type and command/url with ``disabled: true``."""
     import re
 
-    names: set[str] = set()
+    servers: dict = {}
     for name in ("opencode.jsonc", "opencode.json"):
         path = _host_home() / ".config" / "opencode" / name
         try:
             text = re.sub(r"(?m)^\s*//.*$", "", path.read_text(encoding="utf-8-sig"))
-            names.update((json.loads(text).get("mcp") or {}).keys())
+            mcp = json.loads(text).get("mcp") or {}
         except (OSError, ValueError, AttributeError):
             continue
-    return sorted(names)
+        if isinstance(mcp.get("servers"), dict):
+            mcp = mcp["servers"]
+        servers.update({k: v for k, v in mcp.items() if isinstance(v, dict)})
+    return servers
+
+
+def user_mcp_names() -> list[str]:
+    return sorted(host_mcp_servers())
 
 
 def plainboard_token(access) -> str:
@@ -369,52 +381,90 @@ def plainboard_token(access) -> str:
     return ""
 
 
-def opencode_config(deny_patterns: list[str], lean: bool = True, plainboard: bool = False) -> dict:
-    """Inline config (highest precedence): provider, the caller's denies, no edits outside the workdir.
+OPENCODE_MODELS = ("synthwave-auto", "synthpulse-sonnet", "synthpulse-opus",
+                   "auto/best-coding", "auto/coding", "auto/best-coding-fast", "auto/best-reasoning")
 
-    lean (07-11-2026): the host's MCP servers off. With the external skills also
-    off (runner env) a step costs ~13k input tokens instead of ~134k.
+
+def _path_variants(pattern: str, workdir: str) -> list[str]:
+    """One deny glob as OpenCode 2 resources: ``*`` already spans ``/`` (no ``**``), paths inside the
+    workdir are matched relative to it, absolute paths outside it; ``*/x/*`` also covers ``x/*``."""
+    glob = pattern.replace("**", "*")
+    while "**" in glob:
+        glob = glob.replace("**", "*")
+    out = [glob]
+    root = workdir.rstrip("/") + "/" if workdir else ""
+    if root and glob.startswith(root):
+        out.append(glob[len(root):])
+    if glob.startswith("*/"):
+        out.append(glob[2:])
+    return list(dict.fromkeys(g for g in out if g))
+
+
+def opencode_config(deny_patterns: list[str], lean: bool = True, plainboard: bool = False,
+                    workdir: str = "") -> dict:
+    """Inline config for OpenCode 2 (highest precedence): provider, the caller's denies, no edits
+    outside the workdir.
+
+    permissions (22-11-2026, OpenCode 2): an ordered list in which the last matching rule wins, so
+    the broad allow comes first and every deny after it. OpenCode 2 matches paths inside the
+    workdir relative to it, so each deny is given both ways (v1-style absolute globs alone are
+    silently ignored there). The bubblewrap mounts remain the hard boundary.
+    lean (07-11-2026): the host's MCP servers off and, in OpenCode 2, skills denied (there is no
+    longer a switch for external skills): a step costs ~13k input tokens instead of ~150k.
     plainboard (22-11-2026): the PlainBoard bridge stays on, also when lean, with the caller's token."""
-    rules = {"*": "allow"}
-    bash_rules = {"*": "allow", "*opencode*run*": "deny"}
+    rules = [{"action": "*", "resource": "*", "effect": "allow"},
+             {"action": "external_directory", "resource": "*", "effect": "deny"},
+             {"action": "shell", "resource": "*opencode*run*", "effect": "deny"}]
     for pattern in deny_patterns:
-        rules[pattern] = "deny"
+        for glob in _path_variants(pattern, workdir):
+            rules += [{"action": "read", "resource": glob, "effect": "deny"},
+                      {"action": "edit", "resource": glob, "effect": "deny"}]
         stem = pattern.replace("/**", "").lstrip("*").strip("/")
         if stem:
-            bash_rules[f"*{stem}*"] = "deny"
+            rules.append({"action": "shell", "resource": f"*{stem}*", "effect": "deny"})
+    if lean:
+        rules.append({"action": "skill", "resource": "*", "effect": "deny"})
     return {
         "$schema": "https://opencode.ai/config.json",
-        "provider": {
+        "update": "disable",
+        "providers": {
             "omniroute": {
-                "npm": "@ai-sdk/openai-compatible",
+                "package": "aisdk:@ai-sdk/openai-compatible",
                 "name": "OmniRoute (Synthwave gateway)",
-                "options": {"baseURL": "http://127.0.0.1:20128/v1", "apiKey": "{env:OMNIROUTE_API_KEY}"},
-                "models": {m: {"name": m} for m in (
-                    "synthwave-auto", "synthpulse-sonnet", "synthpulse-opus",
-                    "auto/best-coding", "auto/coding", "auto/best-coding-fast", "auto/best-reasoning")},
+                "settings": {"baseURL": "http://127.0.0.1:20128/v1", "apiKey": "{env:OMNIROUTE_API_KEY}"},
+                "models": {m: {"name": m} for m in OPENCODE_MODELS},
             }
         },
-        "mcp": _mcp_section(lean, plainboard),
-        "permission": {
-            "external_directory": "deny",
-            "read": dict(rules),
-            "edit": dict(rules),
-            "bash": bash_rules,
-            "webfetch": "allow",
-        },
+        "mcp": {"servers": _mcp_servers(lean, plainboard)},
+        "permissions": rules,
     }
 
 
-def _mcp_section(lean: bool, plainboard: bool) -> dict:
-    host = user_mcp_names()
-    mcp: dict = {name: {"enabled": False} for name in host} if lean else {}
+def _off(server: dict) -> Optional[dict]:
+    """A host server object switched off (OpenCode 2 replaces the whole object on override)."""
+    kind = server.get("type")
+    if kind == "local" and server.get("command"):
+        return {"type": "local", "command": server["command"], "disabled": True}
+    if kind == "remote" and server.get("url"):
+        return {"type": "remote", "url": server["url"], "disabled": True}
+    return None  # OpenCode 2 ignores entries without a type
+
+
+def _mcp_servers(lean: bool, plainboard: bool) -> dict:
+    host = host_mcp_servers()
+    servers: dict = {}
+    if lean:
+        for name, server in host.items():
+            off = _off(server)
+            if off:
+                servers[name] = off
     if plainboard:
-        mcp["plainboard"] = {"type": "remote", "url": PLAINBOARD_MCP_URL, "enabled": True, "oauth": False,
-                             "headers": {"Authorization": "Bearer {env:PLAINBOARD_MCP_TOKEN}"}}
+        servers["plainboard"] = {"type": "remote", "url": PLAINBOARD_MCP_URL, "oauth": False,
+                                 "headers": {"Authorization": "Bearer {env:PLAINBOARD_MCP_TOKEN}"}}
     elif "plainboard" in host:
         # The host's own entry would run with the host user's token: never for a caller without the grant.
-        mcp["plainboard"] = {"enabled": False}
-    return mcp
+        servers["plainboard"] = {"type": "remote", "url": PLAINBOARD_MCP_URL, "disabled": True}
+    return servers
 
 
 def resolve_continuation(continue_job: str, workdir: Optional[str]) -> tuple[Optional[dict], Optional[str]]:
@@ -540,7 +590,8 @@ def opencode_task(task: str, workdir: str, model: Optional[str] = None, backgrou
     job["lean"] = wants_lean(full_context, prev)
     pb_token = plainboard_token(access)
     job["plainboard"] = bool(pb_token)
-    job["opencode_config"] = opencode_config(deny_patterns, lean=job["lean"], plainboard=job["plainboard"])
+    job["opencode_config"] = opencode_config(deny_patterns, lean=job["lean"], plainboard=job["plainboard"],
+                                             workdir=str(job.get("worktree") or resolved))
     job.update(home_layout(access))
 
     run_dir = get_hermes_home() / "cache/opencode-tasks" / job_id

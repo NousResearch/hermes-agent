@@ -48,7 +48,6 @@ import time
 from pathlib import Path
 
 import re
-import sqlite3
 
 REPORT_DIFF_LINES = 400
 RETRY_BACKOFF = (15, 45, 90)
@@ -171,43 +170,71 @@ def state_dir(job: dict, run_dir: Path) -> Path:
     return Path(job.get("state_dir") or (run_dir / "state"))
 
 
-def session_facts(state: Path) -> dict:
-    """The latest OpenCode session in this state dir: id, last error, last text."""
-    db = state / "data" / "opencode" / "opencode.db"
+def stream_facts(output: str) -> dict:
+    """Session id, last error, last answer text and step count from ``opencode run --format json``.
+
+    OpenCode 2 writes one JSON event per line (step_start, text, tool_use, step_finish, error, each
+    with sessionID). Reading that stream replaces reading OpenCode 1's internal sqlite database,
+    whose layout OpenCode 2 changed. Non-JSON lines (stderr, notes) are skipped."""
     facts = {"session": "", "error": "", "text": "", "steps": 0}
-    if not db.is_file():
-        return facts
-    try:
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
+    texts: dict[str, list[str]] = {}
+    order: list[str] = []
+    for line in (output or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
         try:
-            row = con.execute("select id from session where parent_id is null "
-                              "order by time_updated desc limit 1").fetchone()
-            if not row:
-                return facts
-            facts["session"] = row[0]
-            msgs = con.execute("select id, data from message where session_id=? order by time_created",
-                               (row[0],)).fetchall()
-            assistant = [(mid, json.loads(d)) for mid, d in msgs]
-            assistant = [(mid, d) for mid, d in assistant if d.get("role") == "assistant"]
-            facts["steps"] = len(assistant)
-            if assistant:
-                _, last = assistant[-1]
-                err = last.get("error") or {}
-                if err:
-                    data = err.get("data") or {}
-                    facts["error"] = str(data.get("message") or err.get("name") or err)[:600]
-                for mid, _ in reversed(assistant):
-                    parts = con.execute("select data from part where message_id=? order by time_created", (mid,)).fetchall()
-                    text = "\n".join(json.loads(d).get("text", "") for (d,) in parts
-                                     if json.loads(d).get("type") == "text")
-                    if text.strip():
-                        facts["text"] = text
-                        break
-        finally:
-            con.close()
-    except (sqlite3.Error, OSError, ValueError):
-        pass
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        facts["session"] = event.get("sessionID") or facts["session"]
+        kind = event.get("type")
+        part = event.get("part") if isinstance(event.get("part"), dict) else {}
+        if kind == "step_finish":
+            facts["steps"] += 1
+        elif kind == "text":
+            mid = part.get("messageID") or ""
+            if mid not in texts:
+                texts[mid] = []
+                order.append(mid)
+            texts[mid].append(part.get("text") or "")
+        elif kind == "error":
+            err = event.get("error") or {}
+            facts["error"] = str(err.get("message") or err.get("type") or err)[:600] if isinstance(err, dict) else str(err)[:600]
+    for mid in reversed(order):
+        text = "\n".join(texts[mid]).strip()
+        if text:
+            facts["text"] = text
+            break
     return facts
+
+
+def readable_output(output: str) -> str:
+    """The JSON event stream as short lines for the report: tool calls, answers, errors."""
+    lines = []
+    for raw in (output or "").splitlines():
+        raw = raw.strip()
+        try:
+            event = json.loads(raw) if raw.startswith("{") else None
+        except ValueError:
+            event = None
+        if not isinstance(event, dict):
+            if raw:
+                lines.append(raw)
+            continue
+        part = event.get("part") if isinstance(event.get("part"), dict) else {}
+        kind = event.get("type")
+        if kind == "tool_use":
+            state = part.get("state") or {}
+            arg = json.dumps(state.get("input") or {}, ensure_ascii=False)[:160]
+            lines.append(f"[{part.get('tool')}] {arg} -> {state.get('status')}")
+        elif kind == "text" and (part.get("text") or "").strip():
+            lines.append(part["text"].strip())
+        elif kind == "error":
+            lines.append(f"ERROR: {json.dumps(event.get('error'), ensure_ascii=False)[:400]}")
+    return "\n".join(lines)
 
 
 def is_transient(error: str) -> bool:
@@ -438,19 +465,22 @@ def run_with_resume(job: dict, run_dir: Path, workroot: Path, git_info: dict, en
     """Run OpenCode; resume the same session after a passing gateway failure.
 
     Returns (exit code, output, session facts, session id, retry notes)."""
-    state = state_dir(job, run_dir)
     session = job.get("continue_session", "")
     message = job["task"]
     retries: list[str] = []
     outputs: list[str] = []
     while True:
-        argv = bwrap_argv(job, run_dir, workroot, git_info) + [job["opencode_bin"], "run", "-m", job["model"]]
+        # OpenCode 2: a private server per run (no shared background service inside the sandbox),
+        # permissions decided by the inline rules (--auto approves what they do not deny), one JSON
+        # event per line on stdout; the workdir is the sandbox's cwd (v2 has no --dir).
+        argv = bwrap_argv(job, run_dir, workroot, git_info) + [
+            job["opencode_bin"], "run", "--standalone", "--auto", "--format", "json", "-m", job["model"]]
         if session:
             argv += ["--session", session]
-        argv += ["--dir", str(workroot), message]
+        argv += [message]
         code, output = _run(argv, cwd=str(workroot), env=env, timeout=max(60, int(deadline - time.time())))
         outputs.append(output)
-        facts = session_facts(state)
+        facts = stream_facts(output)
         session = facts["session"] or session
         error = facts["error"] or (output.strip()[-600:] if code not in (0, 124) else "")
         if code == 124 or not is_transient(error) or len(retries) >= len(RETRY_BACKOFF) or not session:
@@ -550,7 +580,7 @@ def main(job_dir: str) -> int:
                 report += ["", "Nothing is committed: review, then commit or `git checkout -- <file>` to undo."]
         if job.get("test_command"):
             report += ["", "## Test output", _tail(test_out)]
-        report += ["", "## OpenCode output", _tail(output)]
+        report += ["", "## OpenCode output", _tail(readable_output(output))]
         took = int(time.time() - started)
         report.append(f"\nstatus: {'ok' if code == 0 else 'failed'} in {took}s")
         text = "\n".join(report)

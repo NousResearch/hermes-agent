@@ -129,16 +129,22 @@ def test_test_command_is_checked_like_terminal(tmp_path, workroot):
     assert not decision.allowed
 
 
+def _rules(cfg, action, effect="deny"):
+    return [r["resource"] for r in cfg["permissions"] if r["action"] == action and r["effect"] == effect]
+
+
 def test_owner_sees_keys_and_only_the_secret_mount_is_masked(tmp_path, workroot):
     dirs, files, patterns = opencode_tool.mask_plan(None)
     assert dirs == ["/run/synthpulse/secrets"] and files == []
     cfg = opencode_tool.opencode_config(patterns)
-    perm = cfg["permission"]
-    assert perm["external_directory"] == "deny"
-    assert "**/.env*" not in perm["read"] and perm["read"]["*"] == "allow"
-    assert perm["bash"]["*opencode*run*"] == "deny"
-    assert all(entry == {"enabled": False} for entry in cfg["mcp"].values())  # no MCP server active
-    assert cfg["provider"]["omniroute"]["options"]["apiKey"] == "{env:OMNIROUTE_API_KEY}"
+    assert cfg["permissions"][0] == {"action": "*", "resource": "*", "effect": "allow"}  # last match wins
+    assert "*" in _rules(cfg, "external_directory")
+    assert "*/.env*" not in _rules(cfg, "read")
+    assert "*opencode*run*" in _rules(cfg, "shell")
+    assert all(s.get("disabled") is True for s in cfg["mcp"]["servers"].values())  # no MCP server active
+    assert cfg["providers"]["omniroute"]["settings"]["apiKey"] == "{env:OMNIROUTE_API_KEY}"
+    assert cfg["providers"]["omniroute"]["package"] == "aisdk:@ai-sdk/openai-compatible"
+    assert cfg["update"] == "disable" and "permission" not in cfg and "provider" not in cfg
 
 
 def test_caller_denied_paths_are_masked(tmp_path, workroot):
@@ -148,12 +154,23 @@ def test_caller_denied_paths_are_masked(tmp_path, workroot):
     dirs, _, patterns = opencode_tool.mask_plan(access)
     assert creds in dirs and creds + "/**" in patterns
     cfg = opencode_tool.opencode_config(patterns)
-    assert cfg["permission"]["read"][creds + "/**"] == "deny"
-    assert cfg["permission"]["bash"]["*" + creds.lstrip("/") + "*"] == "deny"
+    assert creds + "/*" in _rules(cfg, "read") and creds + "/*" in _rules(cfg, "edit")
+    assert "*" + creds.lstrip("/") + "*" in _rules(cfg, "shell")
     (tmp_path / "b").mkdir()
     allowed, _, _ = _blacklist(tmp_path / "b", workroot)
     dirs_ok, _, _ = opencode_tool.mask_plan(allowed)
     assert creds not in dirs_ok
+
+
+def test_deny_globs_become_opencode2_resources_relative_and_absolute():
+    v = opencode_tool._path_variants
+    assert v("/w/repo/secret/**", "/w/repo") == ["/w/repo/secret/*", "secret/*"]
+    assert v("**/.ssh/**", "/w/repo") == ["*/.ssh/*", ".ssh/*"]
+    assert v("/other/x/**", "/w/repo") == ["/other/x/*"]
+    cfg = opencode_tool.opencode_config(["/w/repo/secret/**"], workdir="/w/repo")
+    assert cfg["permissions"].index({"action": "read", "resource": "secret/*", "effect": "deny"}) > 0
+    assert {"action": "skill", "resource": "*", "effect": "deny"} in cfg["permissions"]
+    assert {"action": "skill", "resource": "*", "effect": "deny"} not in opencode_tool.opencode_config([], lean=False)["permissions"]
 
 
 def test_runner_reports_only_files_this_job_changed(tmp_path):
@@ -341,33 +358,27 @@ def test_directory_denies_do_not_mask_unrelated_project_files(tmp_path):
 # ── 07-11-2026: ideas from dsh-superagent ─────────────────────────────────────
 
 FAKE_OPENCODE_DB = r'''#!/usr/bin/env python3
-"""Fake `opencode run`: fails the model call once, then finishes on --session."""
-import json, os, sqlite3, sys, time
+"""Fake OpenCode 2 `run --format json`: fails the model call once, then finishes on --session."""
+import json, os, sys
 args = sys.argv[1:]
-db = os.path.join(os.environ["XDG_DATA_HOME"], "opencode", "opencode.db")
-os.makedirs(os.path.dirname(db), exist_ok=True)
-con = sqlite3.connect(db)
-con.execute("create table if not exists session (id text primary key, parent_id text, time_updated integer)")
-con.execute("create table if not exists message (id text primary key, session_id text, time_created integer, data text)")
-con.execute("create table if not exists part (id text primary key, message_id text, time_created integer, data text)")
-now = int(time.time() * 1000) + len(con.execute("select id from message").fetchall())
 log = os.path.join(os.environ["XDG_DATA_HOME"], "calls.log")
+os.makedirs(os.path.dirname(log), exist_ok=True)
 with open(log, "a") as fh:
     fh.write(json.dumps(args) + "\n")
+def emit(**event):
+    print(json.dumps(event))
 if "--session" in args:
     sid = args[args.index("--session") + 1]
-    mid = f"m{now}"
-    con.execute("insert into message values (?,?,?,?)", (mid, sid, now, json.dumps({"role": "assistant"})))
-    con.execute("insert into part values (?,?,?,?)", (f"p{now}", mid, now, json.dumps(
-        {"type": "text", "text": "Changed a.txt, verified with cat.\nSTATUS: blocked\nQUESTION: Keep the old API?"})))
+    emit(type="step_start", sessionID=sid, part={"messageID": "m2", "type": "step-start"})
+    emit(type="text", sessionID=sid, part={"messageID": "m2", "type": "text",
+         "text": "Changed a.txt, verified with cat.\nSTATUS: blocked\nQUESTION: Keep the old API?"})
+    emit(type="step_finish", sessionID=sid, part={"messageID": "m2", "type": "step-finish", "reason": "stop"})
     open("a.txt", "w").write("done\n")
 else:
-    sid = "ses_test1"
-    con.execute("insert into session values (?,?,?)", (sid, None, now))
-    con.execute("insert into message values (?,?,?,?)", (f"m{now}", sid, now, json.dumps(
-        {"role": "assistant", "error": {"name": "UnknownError", "data": {"message": "Maximum combo retry limit reached"}}})))
-con.commit()
-print("fake opencode done")
+    emit(type="step_start", sessionID="ses_test1", part={"messageID": "m1", "type": "step-start"})
+    emit(type="error", sessionID="ses_test1",
+         error={"type": "provider.error", "message": "Maximum combo retry limit reached"})
+    sys.exit(1)
 '''
 
 
@@ -404,6 +415,7 @@ def test_runner_resumes_same_session_after_gateway_error(tmp_path, monkeypatch, 
     assert "retry 1" in out and "a.txt" in out
     calls = [json.loads(l) for l in (run_dir / "state" / "data" / "calls.log").read_text().splitlines()]
     assert len(calls) == 2 and "--session" not in calls[0] and calls[1][calls[1].index("--session") + 1] == "ses_test1"
+    assert calls[0][:6] == ["run", "--standalone", "--auto", "--format", "json", "-m"] and "--dir" not in calls[0]
     result = json.loads((run_dir / "result.json").read_text())
     assert result["status"] == "blocked" and result["retries"] == 1 and result["session"] == "ses_test1"
     assert (run_dir / "report.md").read_text().startswith("# opencode_task j1")
@@ -415,6 +427,10 @@ def test_handoff_contract_is_appended_and_continue_job_checks_owner(tmp_path, mo
     (tmp_path / "j0" / "job.json").write_text(json.dumps({"id": "j0", "owner_email": "a@x", "workdir": "/w"}))
     assert "someone else" in opencode_tool.load_previous_job("j0", "b@x")[1]
     assert "no OpenCode session" in opencode_tool.load_previous_job("j0", "a@x")[1]
+    (tmp_path / "j0" / "state").mkdir()
+    (tmp_path / "j0" / "result.json").write_text(json.dumps({"session": "ses_x"}))
+    prev, err = opencode_tool.load_previous_job("j0", "a@x")
+    assert err is None and prev["_session"] == "ses_x" and prev["_state_dir"] == str(tmp_path / "j0" / "state")
     assert "earlier" in opencode_tool.load_previous_job("../etc", "a@x")[1]
     assert "no earlier job" in opencode_tool.load_previous_job("nope", "a@x")[1]
     assert "STATUS: ready | blocked | failed | dropped" in opencode_tool.HANDOFF_CONTRACT
@@ -423,11 +439,13 @@ def test_handoff_contract_is_appended_and_continue_job_checks_owner(tmp_path, mo
 def test_lean_jobs_switch_off_host_mcp_servers_and_external_skills(tmp_path, monkeypatch):
     cfg = tmp_path / ".config" / "opencode"
     cfg.mkdir(parents=True)
-    (cfg / "opencode.jsonc").write_text('{\n  // comment\n  "mcp": {"mailchimp": {"type": "local"}, "ragflow": {}}\n}')
+    (cfg / "opencode.jsonc").write_text('{\n  // comment\n  "mcp": {"mailchimp": {"type": "local", "command": ["m"]},'
+                                        ' "ragflow": {"type": "remote", "url": "http://r"}, "old": {}}\n}')
     monkeypatch.setattr(opencode_tool, "_host_home", lambda: tmp_path)
-    assert opencode_tool.opencode_config([], lean=True)["mcp"] == {
-        "mailchimp": {"enabled": False}, "ragflow": {"enabled": False}}
-    assert opencode_tool.opencode_config([], lean=False)["mcp"] == {}
+    assert opencode_tool.opencode_config([], lean=True)["mcp"]["servers"] == {
+        "mailchimp": {"type": "local", "command": ["m"], "disabled": True},
+        "ragflow": {"type": "remote", "url": "http://r", "disabled": True}}
+    assert opencode_tool.opencode_config([], lean=False)["mcp"]["servers"] == {}
     job = {"home": str(tmp_path), "opencode_config": {}}
     env = runner.sandbox_env({**job, "lean": True}, tmp_path / "run", "k")
     assert env["OPENCODE_DISABLE_EXTERNAL_SKILLS"] == "1" and env["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] == "1"
@@ -455,17 +473,35 @@ def test_plainboard_token_only_with_the_grant_and_from_the_profile_env(tmp_path,
 
 
 def test_plainboard_mcp_stays_on_when_lean_and_is_off_without_token(monkeypatch):
-    monkeypatch.setattr(opencode_tool, "user_mcp_names", lambda: ["plainboard", "twenty"])
-    on = opencode_tool.opencode_config([], lean=True, plainboard=True)["mcp"]
-    assert on["twenty"] == {"enabled": False}
-    assert on["plainboard"]["enabled"] is True and on["plainboard"]["type"] == "remote"
+    host = {"plainboard": {"type": "remote", "url": "http://127.0.0.1:18156/mcp"}, "twenty": {"type": "remote", "url": "http://t"}}
+    monkeypatch.setattr(opencode_tool, "host_mcp_servers", lambda: host)
+    on = opencode_tool.opencode_config([], lean=True, plainboard=True)["mcp"]["servers"]
+    assert on["twenty"]["disabled"] is True
+    assert on["plainboard"]["type"] == "remote" and not on["plainboard"].get("disabled")
     assert on["plainboard"]["headers"]["Authorization"] == "Bearer {env:PLAINBOARD_MCP_TOKEN}"
-    assert opencode_tool.opencode_config([], lean=True, plainboard=False)["mcp"]["plainboard"] == {"enabled": False}
-    assert opencode_tool.opencode_config([], lean=False, plainboard=False)["mcp"] == {"plainboard": {"enabled": False}}
-    monkeypatch.setattr(opencode_tool, "user_mcp_names", lambda: ["twenty"])
-    assert opencode_tool.opencode_config([], lean=False, plainboard=False)["mcp"] == {}
-    models = opencode_tool.opencode_config([])["provider"]["omniroute"]["models"]
+    assert opencode_tool.opencode_config([], lean=True, plainboard=False)["mcp"]["servers"]["plainboard"]["disabled"] is True
+    assert opencode_tool.opencode_config([], lean=False, plainboard=False)["mcp"]["servers"] == {
+        "plainboard": {"type": "remote", "url": opencode_tool.PLAINBOARD_MCP_URL, "disabled": True}}
+    monkeypatch.setattr(opencode_tool, "host_mcp_servers", lambda: {"twenty": host["twenty"]})
+    assert opencode_tool.opencode_config([], lean=False, plainboard=False)["mcp"]["servers"] == {}
+    models = opencode_tool.opencode_config([])["providers"]["omniroute"]["models"]
     assert "synthwave-auto" in models and opencode_tool.DEFAULT_MODEL == "omniroute/synthwave-auto"
+
+
+def test_stream_facts_and_readable_output():
+    out = "\n".join([
+        "some stderr line",
+        json.dumps({"type": "step_start", "sessionID": "ses_1", "part": {"messageID": "a"}}),
+        json.dumps({"type": "tool_use", "sessionID": "ses_1", "part": {"tool": "shell", "messageID": "a",
+                    "state": {"status": "completed", "input": {"command": "ls"}}}}),
+        json.dumps({"type": "step_finish", "sessionID": "ses_1", "part": {"messageID": "a"}}),
+        json.dumps({"type": "text", "sessionID": "ses_1", "part": {"messageID": "b", "text": "Done.\nSTATUS: ready"}}),
+        json.dumps({"type": "step_finish", "sessionID": "ses_1", "part": {"messageID": "b"}})])
+    facts = runner.stream_facts(out)
+    assert facts == {"session": "ses_1", "error": "", "text": "Done.\nSTATUS: ready", "steps": 2}
+    assert "[shell]" in runner.readable_output(out) and "STATUS: ready" in runner.readable_output(out)
+    err = json.dumps({"type": "error", "sessionID": "ses_2", "error": {"type": "provider.no-route", "message": "Model unavailable"}})
+    assert runner.stream_facts(err)["error"] == "Model unavailable" and runner.stream_facts(err)["session"] == "ses_2"
 
 
 def test_runner_passes_the_plainboard_token_once(tmp_path):

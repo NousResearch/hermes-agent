@@ -1177,7 +1177,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
             if separator and marker_text.endswith("]") and prompt:
                 # Alternation repair can fold a real prompt into this display row.
                 row = {**row, "content": prompt}
-                from agent.turn_context import drop_stale_api_content
+                from session_rules.turns import drop_stale_api_content
                 drop_stale_api_content(row)
                 for key in ("display_kind", "_db_persisted", "_merged_turn_prefix"):
                     row.pop(key, None)

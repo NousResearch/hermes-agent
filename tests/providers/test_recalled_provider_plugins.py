@@ -129,3 +129,50 @@ def test_a_recalled_provider_plugin_never_runs_in_the_plugin_host(hermes_home):
         host = getattr(plugins_mod.get_plugin_manager(), "_plugin_host_instance", None)
         if host is not None:
             host.shutdown()
+
+
+# ── A cached catalog copy that is not a JSON object is ignored ────────────────
+# The last fetch only ever writes an object; a hand-edited or damaged file holding any other JSON
+# value counts as no cached copy, so the lookup goes on with the in-tree removal list alone.
+
+_NOT_AN_OBJECT = {"list": "[1]", "string": '"text"', "number": "1", "null": "null"}
+
+
+def _write_cache(home: Path, text: str) -> None:
+    (home / "cache").mkdir(exist_ok=True)
+    (home / "cache" / "plugin-catalog.json").write_text(text, encoding="utf-8")
+
+
+@pytest.mark.parametrize("value", sorted(_NOT_AN_OBJECT))
+def test_a_cached_catalog_that_is_not_an_object_does_not_stop_provider_lookup(hermes_home, value):
+    layouts = [_layouts(hermes_home, name)["nested"] for name in ("firstprov", "secondprov")]
+    markers = [_write_plugin(directory, directory.name) for directory in layouts]
+    _write_cache(hermes_home, _NOT_AN_OBJECT[value])
+    import providers
+
+    assert providers.get_provider_profile("firstprov") is not None
+    assert providers.get_provider_profile("secondprov") is not None
+    assert all(marker.exists() for marker in markers)
+    assert providers.plugin_load_error("firstprov") == ""
+
+
+@pytest.mark.parametrize("value", sorted(_NOT_AN_OBJECT))
+def test_the_general_loader_loads_an_enabled_plugin_beside_such_a_cache(hermes_home, value):
+    from hermes_cli.plugins import PluginManager
+
+    plugin_dir = hermes_home / "plugins" / "generalplug"
+    plugin_dir.mkdir(parents=True)
+    marker = hermes_home / "ran-generalplug"
+    (plugin_dir / "plugin.yaml").write_text("name: generalplug\nversion: 0.1.0\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(f"def register(ctx):\n    open({str(marker)!r}, 'a').close()\n",
+                                            encoding="utf-8")
+    (hermes_home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": ["generalplug"]}}),
+                                             encoding="utf-8")
+    _write_cache(hermes_home, _NOT_AN_OBJECT[value])
+
+    manager = PluginManager()
+    manager.discover_and_load()
+
+    loaded = manager._plugins["generalplug"]
+    assert (loaded.enabled, loaded.error) == (True, None)
+    assert marker.exists()

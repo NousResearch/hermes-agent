@@ -18,5 +18,7 @@ suggest:
     - ocean.security
 
 post_install: |
-  Sign in with your Ocean account. OAuth access is read-only and follows your
-  Ocean role. The server is in beta; your tenant must have MCP access enabled.
+  Sign in with your Ocean account when Hermes opens the browser. To sign in
+  from the CLI, run `hermes mcp login ocean`. OAuth is read-only and follows
+  your Ocean role. If no tools appear after sign-in, contact Ocean support to
+  check that MCP is enabled for your tenant during the beta.

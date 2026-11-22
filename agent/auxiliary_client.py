@@ -4980,8 +4980,11 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
         logger.warning("resolve_provider_client: named custom provider %r has no resolvable "
                        "api_key — request will be sent with placeholder no-key-required "
                        "and will 401 on auth-required endpoints", custom_entry.get("name") or provider)
-    # Actual's wire protocol takes precedence over persisted task/provider modes.
-    entry_api_mode = (req.api_mode or custom_entry.get("api_mode") or "").strip()
+    # The named provider's own declared transport is authoritative for its endpoint: a stale
+    # api_mode inherited from the previous main model (e.g. codex_responses) must not leak into a
+    # chat-completions custom provider after a /model switch. A task-level override still applies
+    # when the entry declares no transport. (Actual's wire is forced just below.)
+    entry_api_mode = (custom_entry.get("api_mode") or req.api_mode or "").strip()
     if _is_actual_auxiliary_route(req, custom_base):
         from hermes_cli.auth import normalize_actual_base_url
         custom_base = normalize_actual_base_url(custom_base)
@@ -5030,6 +5033,11 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # codex_responses, or auto-detect via _wrap_transport (which reads the task-level api_mode).
     if entry_api_mode == "codex_responses":
         client = CodexAuxiliaryClient(client, final_model)
+    elif entry_api_mode == "chat_completions":
+        # The entry explicitly declares the OpenAI Chat Completions wire — keep it. Falling through
+        # to _wrap_transport would re-read req.api_mode (the main session's stale codex_responses
+        # mode) and wrongly wrap this client in Responses.
+        pass
     else:
         client = _wrap_transport(req, client, final_model, custom_base, custom_key)
     return _route_client(req, client, final_model)

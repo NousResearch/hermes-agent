@@ -138,8 +138,7 @@ def read_plugin_description(plugin_dir: Path) -> str:
 @dataclass(frozen=True)
 class PluginChoice:
     """What config.yaml says about one category's user plugins, read once per listing: the provider
-    the category key selects and the ``plugins.enabled`` / ``plugins.disabled`` lists. An unreadable
-    config means nothing is selected, enabled or disabled."""
+    the category key selects and the ``plugins.enabled`` / ``plugins.disabled`` lists."""
 
     selected: str = ""
     enabled: frozenset = frozenset()
@@ -164,16 +163,19 @@ class PluginChoice:
 
 
 def read_plugin_choice(*selection_key: str, builtin: frozenset = frozenset()) -> PluginChoice:
-    """One read-only config read for a listing; *selection_key* is the category's config path
-    (``"memory", "provider"``), none when only the plugin lists matter. A selection in *builtin*
-    picks the category's built-in, which loads no plugin, so it selects nothing here."""
+    """One config read for a listing, through the uncopied cached view (the result is never changed);
+    *selection_key* is the category's config path (``"memory", "provider"``), none when only the
+    plugin lists matter. A selection in *builtin* picks the category's built-in, which loads no
+    plugin, so it selects nothing here. A config.yaml that does not parse reads as its last good copy
+    when one was kept, else as the defaults; only a read that raises means nothing is selected,
+    enabled or disabled."""
     try:
-        from hermes_cli.config import cfg_get, load_config
+        from hermes_cli.config import cfg_get, load_config_readonly
 
-        config = load_config()
+        config = load_config_readonly()
         selected = cfg_get(config, *selection_key) if selection_key else ""
         lists = [cfg_get(config, "plugins", key) for key in ("enabled", "disabled")]
-    except Exception:  # health: allow BLE001 -- same boundary as the memory check it replaces: an unreadable config.yaml turns nothing on or off
+    except Exception:  # health: allow BLE001 -- same boundary as the memory check it replaces: a config read that raises turns nothing on or off
         return PluginChoice()
     enabled, disabled = (frozenset(v for v in value if isinstance(v, str)) if isinstance(value, list)
                          else frozenset() for value in lists)

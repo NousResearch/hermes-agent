@@ -450,6 +450,19 @@ describe('a refreshed page over a settled backend-started turn', () => {
     expect(list.filter(message => message.rowId === turn.first)).toHaveLength(kind === 'hidden' ? 0 : 1)
   })
 
+  it('keeps a live result on the page’s copy when the page has no result row for it yet', async () => {
+    // The resume barrier calls the preserve step on the page directly: the last call's result row is
+    // not stored yet, so only the live card that gives way to the page's copy has the result.
+    seed(history)
+    await streamMachineTurn(machine, 'complete')
+    const last = machine.tools.at(-1)!
+    const pending = page.filter(row => !(row.role === 'tool' && row.tool_call_id === last))
+
+    const list = preserveLocalPendingTurnMessages(toChatMessages(pending), messages())
+
+    expect(toolCards(list, last).map(card => card.result)).toEqual(['ok'])
+  })
+
   it('gives the reply its uid when the receipt already bound its row', async () => {
     seed(history)
     await streamMachineTurn(machine, 'complete')

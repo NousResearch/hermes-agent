@@ -8,6 +8,7 @@ import {
   chatMessageText,
   indexStoredParts,
   isLocalRowToKeep,
+  lendLiveResults,
   preserveLocalAssistantErrors,
   textPart,
   toChatMessages
@@ -605,13 +606,13 @@ function durableFoldCoversLiveResponse(folds: ChatMessage[], live: ChatMessage):
   )
 }
 
-export function preserveLocalPendingTurnMessages(
-  nextMessages: ChatMessage[],
-  previousMessages: ChatMessage[]
-): ChatMessage[] {
+export function preserveLocalPendingTurnMessages(page: ChatMessage[], previousMessages: ChatMessage[]): ChatMessage[] {
   if (!previousMessages.length) {
-    return nextMessages
+    return page
   }
+
+  // A live row dropped below as the page's copy keeps its card's result on that copy.
+  const nextMessages = lendLiveResults(page, previousMessages)
 
   const acknowledged = acknowledgedTranscriptBoundary(nextMessages, previousMessages)
   const remainingNext = nextMessages.slice(acknowledged.storedIndex + 1)

@@ -11,31 +11,7 @@
  * never paired here; older backends keep the receipt path (transcript-receipt-turns).
  */
 
-import {
-  type ChatMessage,
-  type ChatMessagePart,
-  indexStoredParts,
-  isLiveCopy,
-  keepsItsLiveState
-} from '@/lib/chat-messages'
-
-type ToolCallPart = Extract<ChatMessagePart, { type: 'tool-call' }>
-
-/** A stored call slot the page has no result for yet takes the live card's result. */
-function withResultOf(stored: ToolCallPart, live: ToolCallPart): ToolCallPart {
-  if (stored.result !== undefined || live.result === undefined) {
-    return stored
-  }
-
-  return {
-    ...stored,
-    result: live.result,
-    ...(live.isError !== undefined ? { isError: live.isError } : {}),
-    ...(live.artifact !== undefined ? { artifact: live.artifact } : {}),
-    ...(live.completedAt !== undefined ? { completedAt: live.completedAt } : {}),
-    ...(live.toolResultMetadata !== undefined ? { toolResultMetadata: live.toolResultMetadata } : {})
-  }
-}
+import { type ChatMessage, indexStoredParts, isLiveCopy, keepsItsLiveState, lendLiveResults } from '@/lib/chat-messages'
 
 /**
  * The window without the parts the page stores, and the page with the results only the live cards
@@ -52,52 +28,22 @@ export function reconcileLiveRowsWithPage(
     return { window, page }
   }
 
-  const patches = new Map<string, ToolCallPart>()
   const rows = new Map<number, ChatMessage | null>()
 
   window.forEach((message, at) => {
-    if (message.role !== 'assistant') {
+    // A cached fold from an earlier read keeps its parts under the stored-id merge's rules
+    // (transcript-backfill); it only lends the page a result an earlier refresh filled in.
+    if (message.role !== 'assistant' || !isLiveCopy(message)) {
       return
     }
 
-    // A cached fold from an earlier read keeps its parts under the stored-id merge's rules
-    // (transcript-backfill); it only lends the page a result an earlier refresh filled in.
-    const live = isLiveCopy(message)
-
-    const parts = message.parts.filter(part => {
-      const copy = stored.copyOf(part)
-
-      if (!copy) {
-        return true
-      }
-
-      const storedPart = page[copy.at].parts[copy.part]
-
-      if (part.type === 'tool-call' && storedPart.type === 'tool-call') {
-        const key = `${copy.at}:${copy.part}`
-        const filled = withResultOf(patches.get(key) ?? storedPart, part)
-
-        if (filled !== storedPart) {
-          patches.set(key, filled)
-        }
-      }
-
-      return !live
-    })
+    const parts = message.parts.filter(part => !stored.copyOf(part))
 
     if (parts.length !== message.parts.length) {
       const kept = keepsItsLiveState(message) || parts.some(part => part.type !== 'reasoning')
       rows.set(at, kept ? { ...message, parts } : null)
     }
   })
-
-  const nextPage = patches.size
-    ? page.map((message, at) =>
-        message.parts.some((_, part) => patches.has(`${at}:${part}`))
-          ? { ...message, parts: message.parts.map((part, index) => patches.get(`${at}:${index}`) ?? part) }
-          : message
-      )
-    : page
 
   const nextWindow = rows.size
     ? window.flatMap((message, at) => {
@@ -107,5 +53,5 @@ export function reconcileLiveRowsWithPage(
       })
     : window
 
-  return { window: nextWindow, page: nextPage }
+  return { window: nextWindow, page: lendLiveResults(page, window) }
 }

@@ -144,3 +144,51 @@ export function isLocalRowToKeep(
 ): boolean {
   return isOptimisticUser || (isLiveAssistant && !storedWhole(storedParts, message))
 }
+
+/** A stored call slot the page has no result for yet takes the live card's result. */
+function withResultOf(stored: ToolCallPart, live: ToolCallPart): ToolCallPart {
+  if (stored.result !== undefined || live.result === undefined) {
+    return stored
+  }
+
+  return {
+    ...stored,
+    result: live.result,
+    ...(live.isError !== undefined ? { isError: live.isError } : {}),
+    ...(live.artifact !== undefined ? { artifact: live.artifact } : {}),
+    ...(live.completedAt !== undefined ? { completedAt: live.completedAt } : {}),
+    ...(live.toolResultMetadata !== undefined ? { toolResultMetadata: live.toolResultMetadata } : {})
+  }
+}
+
+/**
+ * `page` with the results only the window's cards had: a stored call the page holds before its result
+ * row is stored takes the result its live card (or a cached fold from an earlier read) already drew,
+ * so the card that gives way to the page's copy does not take the result with it.
+ */
+export function lendLiveResults(page: ChatMessage[], window: ChatMessage[]): ChatMessage[] {
+  const stored = indexStoredParts(page)
+  const patches = new Map<string, ToolCallPart>()
+
+  for (const part of window.flatMap(message => (message.role === 'assistant' ? message.parts : []))) {
+    const copy = part.type === 'tool-call' ? stored.copyOf(part) : undefined
+    const slot = copy && page[copy.at].parts[copy.part]
+
+    if (part.type === 'tool-call' && copy && slot?.type === 'tool-call') {
+      const key = `${copy.at}:${copy.part}`
+      const filled = withResultOf(patches.get(key) ?? slot, part)
+
+      if (filled !== slot) {
+        patches.set(key, filled)
+      }
+    }
+  }
+
+  return patches.size
+    ? page.map((message, at) =>
+        message.parts.some((_, index) => patches.has(`${at}:${index}`))
+          ? { ...message, parts: message.parts.map((part, index) => patches.get(`${at}:${index}`) ?? part) }
+          : message
+      )
+    : page
+}

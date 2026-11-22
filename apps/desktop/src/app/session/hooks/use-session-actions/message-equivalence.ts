@@ -90,6 +90,13 @@ const HANDLED_PART_TYPES = [
 // conservative compare (occasionally false-negative → one extra idempotent
 // setMessages) is safe, but a false-POSITIVE (claiming equal when different)
 // would skip a needed update.
+/** The stored row a part names (lib/chat-messages/live-row-identity): a view that kept an unaddressed
+ *  copy would never give way to the page's. */
+const sameStoredAddress = (a: ChatMessage['parts'][number], b: ChatMessage['parts'][number]) =>
+  a.sourceRowId === b.sourceRowId &&
+  a.sourceCallRowId === b.sourceCallRowId &&
+  a.sourceMessageUid === b.sourceMessageUid
+
 export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: ChatMessage['parts'][number]): boolean {
   // Reference equality fast-path
   if (aPart === bPart) {
@@ -100,15 +107,15 @@ export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: 
     return false
   }
 
-  if (aPart.timestamp !== bPart.timestamp || aPart.completedAt !== bPart.completedAt) {
+  if (
+    aPart.timestamp !== bPart.timestamp ||
+    aPart.completedAt !== bPart.completedAt ||
+    !sameStoredAddress(aPart, bPart)
+  ) {
     return false
   }
 
   if (aPart.type === 'text' || aPart.type === 'reasoning') {
-    if (aPart.sourceRowId !== bPart.sourceRowId) {
-      return false
-    }
-
     return (aPart as { text: string }).text === (bPart as { text: string }).text
   }
 

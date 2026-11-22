@@ -5,6 +5,7 @@ export {
   isLiveCopy,
   isLocalRowToKeep,
   keepsItsLiveState,
+  lendLiveResults,
   liveRowIdentity,
   storedRowFields,
   storedWhole

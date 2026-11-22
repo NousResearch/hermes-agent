@@ -4832,6 +4832,8 @@ export const esOverrides = {
     closeAll: 'Cerrar todo',
     newSessionTab: 'Nueva pestaña de sesión',
     newTab: 'Nueva pestaña',
+    scrollTabsLeft: 'Desplazar las pestañas a la izquierda',
+    scrollTabsRight: 'Desplazar las pestañas a la derecha',
     pluginDisabled: pluginId => `Plugin "${pluginId}" desactivado`,
     pluginDisabledBody: 'Vuelve a activarlo en Capacidades → Plugins para recuperar el panel.',
     missingPane: paneId => `Falta el panel: ${paneId}`,

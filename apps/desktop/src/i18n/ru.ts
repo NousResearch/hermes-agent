@@ -3505,6 +3505,8 @@ export const ruOverrides = {
     closeToRight: 'Закрыть справа',
     closeAll: 'Закрыть все',
     newSessionTab: 'Вкладка нового сеанса',
+    scrollTabsLeft: 'Прокрутить вкладки влево',
+    scrollTabsRight: 'Прокрутить вкладки вправо',
     pluginDisabled: pluginId => `Плагин «${pluginId}» отключён`,
     pluginDisabledBody: 'Включите его снова в Возможности → Плагины, чтобы вернуть панель.',
     missingPane: paneId => `нет панели: ${paneId}`,

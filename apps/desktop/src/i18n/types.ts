@@ -3873,6 +3873,8 @@ export interface Translations extends NoticeTranslations {
     closeAll: string
     newSessionTab: string
     newTab: string
+    scrollTabsLeft: string
+    scrollTabsRight: string
     pluginDisabled: (pluginId: string) => string
     pluginDisabledBody: string
     missingPane: (paneId: string) => string

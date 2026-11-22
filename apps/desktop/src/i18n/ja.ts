@@ -3251,6 +3251,8 @@ export const jaOverrides = {
     closeAll: 'すべて閉じる',
     newSessionTab: '新しいセッションタブ',
     newTab: '新しいタブ',
+    scrollTabsLeft: 'タブを左へスクロール',
+    scrollTabsRight: 'タブを右へスクロール',
     pluginDisabled: pluginId => `プラグイン「${pluginId}」を無効化しました`,
     pluginDisabledBody: 'スキルとツール → プラグイン で再有効化するとペインが戻ります。',
     missingPane: paneId => `ペインが見つかりません: ${paneId}`,

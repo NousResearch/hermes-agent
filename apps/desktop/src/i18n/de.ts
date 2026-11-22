@@ -4846,6 +4846,8 @@ export const deOverrides = {
     closeAll: 'Alle schließen',
     newSessionTab: 'Neuer Session-Tab',
     newTab: 'Neuer Tab',
+    scrollTabsLeft: 'Tabs nach links scrollen',
+    scrollTabsRight: 'Tabs nach rechts scrollen',
     pluginDisabled: pluginId => `Plugin "${pluginId}" deaktiviert`,
     pluginDisabledBody: 'Aktivieren Sie es wieder unter Einstellungen → Plugins, um das Panel zurückzuholen.',
     missingPane: paneId => `fehlendes Panel: ${paneId}`,

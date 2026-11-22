@@ -558,6 +558,8 @@ export const arChrome = {
     closeOthers: 'إغلاق الأخرى',
     closeToRight: 'إغلاق ما على اليمين',
     closeAll: 'إغلاق الكل',
+    scrollTabsLeft: 'تمرير علامات التبويب إلى اليسار',
+    scrollTabsRight: 'تمرير علامات التبويب إلى اليمين',
     pluginDisabled: pluginId => `الإضافة "${pluginId}" معطلة`,
     pluginDisabledBody: 'أعد تفعيلها من القدرات ← الإضافات لإرجاع اللوحة.',
     missingPane: paneId => `لوحة مفقودة: ${paneId}`,

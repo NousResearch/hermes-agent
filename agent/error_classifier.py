@@ -1266,6 +1266,11 @@ def _status_429(c: _Ctx) -> Verdict:
     # this handler always returns, so _by_error_code never sees the code.
     if c.code in _BILLING_ERROR_CODES:
         return _V_BILLING
+    # ``x-ratelimit-limit-*: 0`` = the plan grants no allowance for this model (Mistral answers
+    # every request with a bare "Rate limit exceeded" 429): no wait refills it, so rotate or fall
+    # back instead of backing off (omp#19301).
+    if _zero_allowance_header(c.headers):
+        return _V_BILLING
     # Z.AI/Zhipu reuse 429 for server-wide overload: back off on the same
     # key instead of burning the pool (#14038).
     if any(p in c.msg for p in _OVERLOADED_PATTERNS):
@@ -1665,6 +1670,14 @@ def _body_of(exc: Any) -> Optional[dict]:
     except Exception:
         return None
     return json_body if isinstance(json_body, dict) else None
+
+
+def _zero_allowance_header(headers: Any) -> Optional[str]:
+    """Name of the first ``x-ratelimit-limit-*`` header whose value is ``0``, else None."""
+    for name, value in (headers.items() if headers else ()):
+        if str(name).lower().startswith("x-ratelimit-limit") and str(value).strip() == "0":
+            return name
+    return None
 
 
 def _headers_of(exc: Any) -> Any:

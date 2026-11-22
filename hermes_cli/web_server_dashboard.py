@@ -660,30 +660,37 @@ def _installed_plugin_dirs(root: Path, prefix: str = "") -> list[tuple[Path, str
 
 class _PluginNameOwners:
     """Which installed plugin directories answer to a name (directory, key or ``plugin.yaml`` name)
-    across the scanned roots, read lazily from the manifests: no plugin code runs."""
+    across the scanned ``(root, source)`` pairs, read lazily from the manifests: no plugin code runs."""
 
-    def __init__(self, roots: list[Path]) -> None:
+    def __init__(self, roots: list[tuple[Path, str]]) -> None:
         self._roots, self._owners = roots, None
 
-    def others(self, name: str, plugin_dir: Path) -> list[Path]:
-        """Directories of other installed plugins that answer to ``name``. A same-named directory in
-        another root is the same plugin (the documented override of a bundled copy), not another."""
+    def others(self, name: str, plugin_dir: Path, source: str) -> list[Path]:
+        """Directories of other installed plugins that answer to ``name``, for the dashboard plugin at
+        ``plugin_dir`` (key ``plugin_dir.name`` in a ``source`` root). The same key with a bundled copy on
+        either side is the same plugin (the documented override of a bundled plugin); any other
+        directory is another plugin, even one with the same leaf name (a profile's own ``plugins/foo``
+        and the root's, a flat ``foo`` and a categorized ``memory/foo``)."""
         from pm.plugins_state import plugin_spellings
         if self._owners is None:
             self._owners = {}
-            for root in self._roots:
+            for root, root_source in self._roots:
                 for directory, key in _installed_plugin_dirs(root):
                     for spelling in plugin_spellings(directory, key):
-                        self._owners.setdefault(spelling, []).append(directory)
-        return [d for d in self._owners.get(name, []) if d.name != plugin_dir.name]
+                        self._owners.setdefault(spelling, []).append((directory, key, root_source))
+        entries = self._owners.get(name, [])
+        same = {d for d, key, owner_source in entries if d == plugin_dir
+                or (key == plugin_dir.name and "bundled" in (source, owner_source))}
+        return [d for d, _key, _source in entries if d not in same]
 
 
-def _dashboard_name_taken(name: Any, plugin_dir: Path, spellings: frozenset, owners: _PluginNameOwners) -> bool:
+def _dashboard_name_taken(name: Any, plugin_dir: Path, source: str, spellings: frozenset,
+                          owners: _PluginNameOwners) -> bool:
     """Whether ``name`` (from the plugin's dashboard/manifest.json) is another installed plugin's: then
     this entry is not registered, so it neither borrows that plugin's enable state nor hides its tab."""
     if name in spellings or not isinstance(name, str):
         return False
-    others = owners.others(name, plugin_dir)
+    others = owners.others(name, plugin_dir, source)
     if others:
         _log.warning(
             "Dashboard plugin at %s is not registered: its dashboard name '%s' is the name of the plugin "
@@ -693,12 +700,12 @@ def _dashboard_name_taken(name: Any, plugin_dir: Path, spellings: frozenset, own
     return bool(others)
 
 
-def _own_spellings(plugin_dir: Path, spellings: set, owners: _PluginNameOwners) -> frozenset:
+def _own_spellings(plugin_dir: Path, source: str, spellings: set, owners: _PluginNameOwners) -> frozenset:
     """The names that may turn this plugin on: its directory name, and each other spelling (its ``plugin.yaml``
     name) that no other installed plugin answers to. The loader gives such a name to the other plugin
     (``resolve_manifest_winners`` skips the other directory), so it must not grant this one consent either; every
     declared spelling still counts for ``plugins.disabled``."""
-    return frozenset(s for s in spellings if s == plugin_dir.name or not owners.others(s, plugin_dir))
+    return frozenset(s for s in spellings if s == plugin_dir.name or not owners.others(s, plugin_dir, source))
 
 
 def _discover_dashboard_plugins(search_dirs: Optional[list] = None) -> list:
@@ -715,7 +722,7 @@ def _discover_dashboard_plugins(search_dirs: Optional[list] = None) -> list:
     seen_names: set = set()
     roots = _dashboard_plugin_search_dirs() if search_dirs is None else search_dirs
     # A project plugin (opt-in, ships with the CWD) may be refused a name but never takes one from a user or bundled one.
-    owners = _PluginNameOwners([root for root, source in roots if source != "project"])
+    owners = _PluginNameOwners([(root, source) for root, source in roots if source != "project"])
     for plugins_root, source in roots:
         try:
             if not plugins_root.is_dir():
@@ -735,8 +742,8 @@ def _discover_dashboard_plugins(search_dirs: Optional[list] = None) -> list:
                 if name in seen_names:
                     continue
                 spellings = frozenset(plugin_spellings(child, child.name))
-                owned = _own_spellings(child, spellings, owners)
-                if _dashboard_name_taken(name, child, owned, owners):
+                owned = _own_spellings(child, source, spellings, owners)
+                if _dashboard_name_taken(name, child, source, owned, owners):
                     continue
                 seen_names.add(name)
                 entry = _dashboard_plugin_entry(data, name, child / "dashboard", source)

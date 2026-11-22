@@ -195,6 +195,92 @@ def test_a_plugin_enabled_by_its_own_plugin_yaml_name_mounts(dash):
     assert dash.ping("dir-tab").json() == {"pong": "dash-dir"}
 
 
+def _categorized(root, category, directory, yaml_name):
+    """A plugin one category down (``plugins/<category>/<directory>``) with no dashboard of its own."""
+    plugin = root / "plugins" / category / directory
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text(f"name: {yaml_name}\nversion: 1.0.0\n")
+
+
+def test_a_same_named_directory_one_category_down_is_another_plugin(dash):
+    """``plugins/foo-tool`` and ``plugins/memory/foo-tool`` are two plugins: the name both declare in
+    plugin.yaml turns neither dashboard on, as for any two plugins that share a name."""
+    imported = _install(dash.home, "foo-tool", "foo-tab", yaml_name="shared-name")
+    _categorized(dash.home, "memory", "foo-tool", "shared-name")
+    _plugins(dash.home, enabled=["shared-name"])
+    dash.start()
+
+    assert not imported.exists()
+    assert dash.ping("foo-tab").status_code == 404
+    assert not imported.exists()
+
+
+def test_a_dashboard_name_from_a_same_named_directory_one_category_down_is_not_registered(dash):
+    """The other plugin's plugin.yaml name is not this plugin's dashboard name either."""
+    imported = _install(dash.home, "foo-tool", "shared-name", yaml_name="foo-tool")
+    _categorized(dash.home, "memory", "foo-tool", "shared-name")
+    _plugins(dash.home, enabled=["shared-name", "foo-tool"])
+    dash.start()
+
+    assert not imported.exists()
+    assert "shared-name" not in dash.listed()
+    assert dash.ping("shared-name").status_code == 404
+
+
+@pytest.fixture
+def profile_process(dash, tmp_path, monkeypatch):
+    """A process launched as profile ``work`` (``HERMES_HOME=<root>/profiles/work``): the dashboard
+    scans the profile's own ``plugins/`` and then the root's."""
+    root = tmp_path / "hermes-root"
+    profile = root / "profiles" / "work"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    return root, profile
+
+
+def test_a_profile_plugin_and_a_root_plugin_in_same_named_directories_are_two_plugins(dash, profile_process):
+    """The profile's ``plugins/foo-tool`` and the root's are different plugins: a plugin.yaml name
+    both declare turns neither on."""
+    root, profile = profile_process
+    profile_imported = _install(profile, "foo-tool", "profile-tab", yaml_name="shared-name")
+    root_imported = _install(root, "foo-tool", "root-tab", yaml_name="shared-name")
+    _plugins(profile, enabled=["shared-name"])
+    dash.start()
+
+    assert dash.ping("profile-tab").status_code == 404
+    assert dash.ping("root-tab").status_code == 404
+    assert not profile_imported.exists() and not root_imported.exists()
+
+
+def test_a_root_plugin_cannot_take_the_profile_plugins_name_from_a_same_named_directory(dash, profile_process):
+    """The root's ``foo-tool`` whose dashboard name is the profile's ``foo-tool`` plugin.yaml name is
+    not registered; the profile's plugin, enabled by that name, keeps it."""
+    root, profile = profile_process
+    profile_imported = _install(profile, "foo-tool", "profile-tab", yaml_name="profile-name")
+    root_imported = _install(root, "foo-tool", "profile-name", yaml_name="foo-tool")
+    _plugins(profile, enabled=["profile-name"])
+    dash.start()
+
+    assert profile_imported.exists()
+    assert dash.ping("profile-tab").json() == {"pong": "foo-tool"}
+    assert "profile-name" not in dash.listed()
+    assert not root_imported.exists()
+
+
+def test_a_profile_and_root_copy_enabled_by_directory_name_behave_as_before(dash, profile_process):
+    """Control: the profile's copy of a plugin installed in both places wins its dashboard name."""
+    root, profile = profile_process
+    profile_imported = _install(profile, "foo-tool", "foo-tool", yaml_name="foo-tool")
+    root_imported = _install(root, "foo-tool", "foo-tool", yaml_name="foo-tool")
+    _plugins(profile, enabled=["foo-tool"])
+    dash.start()
+
+    assert profile_imported.exists()
+    assert not root_imported.exists()
+    assert dash.listed()["foo-tool"]["source"] == "user"
+    assert dash.ping("foo-tool").status_code == 200
+
+
 def test_plugin_enabled_by_its_directory_key_mounts_and_lists(dash):
     """``hermes plugins enable hermes-mobile`` turns on a plugin whose dashboard calls itself ``mobile``."""
     imported = _install(dash.home, "hermes-mobile", "mobile", yaml_name="hermes-mobile")

@@ -1233,7 +1233,12 @@
   flex-direction: column;
   gap: 1.5rem;
   inline-size: 27rem;
-  max-inline-size: calc(100vw - 1rem);
+  /* Beside the rail on a phone there is less than the window: the room the popover measured, less
+     the offset that moves it off the rail. */
+  max-inline-size: min(
+    calc(100vw - 1rem),
+    calc(var(--radix-popover-content-available-width, 100vw) - var(--portal-rail-popover-offset))
+  );
   max-block-size: calc(100dvh - 2rem);
   overflow-y: auto;
   padding: 1.5rem 1rem;

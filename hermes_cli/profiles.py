@@ -2149,7 +2149,6 @@ def export_profile(name: str, output_path: str, extra_files: Optional[dict[str, 
 
 def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     """Import a profile from a tar.gz archive."""
-    import tempfile
     archive = Path(archive_path)
     if not archive.exists():
         raise FileNotFoundError(f"Archive not found: {archive}")
@@ -2174,20 +2173,20 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists():
         raise _profile_exists_error(canon, profile_dir)
-    _get_profiles_root().mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="hermes_profile_import_") as tmpdir:
-        staging_root = Path(tmpdir)
-        safe_extract_targz(archive, staging_root)
-        extracted = staging_root / archive_root
-        if not extracted.is_dir():
-            raise ValueError(f"Profile archive root is missing or invalid: {archive_root}")
-        final_source = extracted
-        if archive_root != canon:
-            final_source = staging_root / canon
-            extracted.rename(final_source)
-        from hermes_cli.profiles_initialization import prepare_imported_tree
-        prepare_imported_tree(final_source)
-        shutil.move(str(final_source), str(profile_dir))
+    from hermes_cli.profile_provision import _create_lock
+    from hermes_cli.profiles_initialization import clone_staging_dir, prepare_imported_tree, publish_staging
+    with _create_lock(canon):  # stage and publish as create does: a name published meanwhile wins, never nests
+        staging_root = clone_staging_dir(profile_dir)
+        try:
+            staging_root.mkdir(mode=0o700)  # private until prepare_imported_tree tightens .env/config.yaml
+            safe_extract_targz(archive, staging_root)
+            extracted = staging_root / archive_root
+            if not extracted.is_dir():
+                raise ValueError(f"Profile archive root is missing or invalid: {archive_root}")
+            prepare_imported_tree(extracted)
+            publish_staging(extracted, profile_dir, lambda: _profile_exists_error(canon, profile_dir))
+        finally:
+            shutil.rmtree(staging_root, ignore_errors=True)
     clear_named_profile_deleted(profile_dir)
     return profile_dir
 
@@ -2236,6 +2235,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # 2. Everything before the move is undone on any exit (Ctrl-C in the service stop or owner wait, EXDEV, a
     # racing writer); after it, the old name is never re-served.
     from hermes_constants import hermes_home_key
+    from hermes_cli.profiles_initialization import publish_staging
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
     gw_running = _check_gateway_running(old_dir)
     service_removed = live_mux = renamed = False
@@ -2254,7 +2254,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         shutdown_mcp_servers(scope=hermes_home_key(old_dir))
         if live_mux and not wait_profile_unowned(old_dir):  # same owner wait as delete_profile
             raise RuntimeError("a running gateway still owns this profile; retry the rename once it settles")
-        old_dir.rename(new_dir)
+        publish_staging(old_dir, new_dir, lambda: _profile_exists_error(new_canon, new_dir))  # a racing publish wins
         renamed = True
     finally:
         moved = renamed  # identity only for an interrupt after the move: FAT/CIFS may change the dir ID

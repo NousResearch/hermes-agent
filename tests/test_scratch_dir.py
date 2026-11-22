@@ -136,6 +136,34 @@ def test_scratch_env_follows_home_and_respects_user_tmpdir(tmp_path):
     assert "TMP" not in user_env  # a partially user-set triple is left exactly as found
 
 
+def test_boot_hook_still_prunes_when_a_user_tmpdir_wins(scratch_prune_spawns, tmp_path, monkeypatch):
+    """A boot env that already carries a temp value must still reach the prune.
+
+    git-bash exports ``TMPDIR=TMP=TEMP=/tmp``, so ``apply_scratch_tmp_env`` returns False
+    before ``get_scratch_dir(prune=True)`` is ever reached. Gating the prune on that
+    decision leaves the 24h cleanup dead on such a host: nothing else on the boot path
+    asks for the scratch dir with ``prune=True`` (issue #158752).
+    """
+    import hermes_constants as hc
+
+    monkeypatch.setattr(hc, "_scratch_pruned_once", False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for key in ("TMPDIR", "TMP", "TEMP"):
+        monkeypatch.setenv(key, "/tmp")
+    monkeypatch.delenv("HERMES_SCRATCH_DIR", raising=False)
+
+    scratch = tmp_path / "cache" / "scratch"
+    scratch.mkdir(parents=True, exist_ok=True)
+    (scratch / hc._SCRATCH_PRUNE_STAMP).unlink(missing_ok=True)
+
+    # The user-set triple still wins for TMPDIR itself, which is the documented contract.
+    assert hc.export_scratch_tmp_env() is False
+    assert os.environ["TMPDIR"] == "/tmp"
+
+    # Pruning the scratch dir does not depend on that decision.
+    assert scratch_prune_spawns == [scratch], "boot hook never reached the prune"
+
+
 def test_bootstrap_import_exports_scratch_to_process_and_children(tmp_path):
     """``import hermes_bootstrap`` alone makes ``tempfile`` (this process AND a child) land in scratch."""
     env = {k: v for k, v in os.environ.items() if k not in ("TMPDIR", "TMP", "TEMP", "HERMES_SCRATCH_DIR")}

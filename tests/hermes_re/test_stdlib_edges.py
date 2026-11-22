@@ -28,6 +28,29 @@ def test_a_callback_returning_none_removes_the_match_as_in_stdlib():
         assert hre.subn(pattern, lambda m: None, subject) == std.subn(pattern, lambda m: None, subject)
 
 
+def test_an_escaped_parenthesis_does_not_end_a_comment():
+    for source, subject in ((r"a(?#note\))b", "ab"), (r"(?#x\))(a)", "a"), (r"(?#x\\)(a)", "a"),
+                            (r"a(?#x\)\))(b)", "ab")):
+        assert view(hre.match(source, subject)) == view(std.match(source, subject))
+    assert outcome(lambda: hre.compile(r"(a)(?#\)")) == outcome(lambda: std.compile(r"(a)(?#\)")) == "raises error"
+
+
+def test_an_out_of_range_class_escape_is_refused_at_compile():
+    for source in (r"[\U00110000]", r"[a-\U00110000]", r"[\400]", r"[\777]"):
+        assert outcome(lambda: std.compile(source)) == "raises error"
+        assert outcome(lambda: hre.compile(source)) == "raises error", source
+    assert hre.findall(r"[\377\U0010FFFF]", "\xff\U0010ffff") == ["\xff", "\U0010ffff"]
+
+
+def test_three_octal_digits_in_a_template_are_an_escape_never_a_group_reference():
+    many = "(a)" * 41  # group 40 exists, so `\400` must not read as group 40 followed by "0"
+    for template in (r"\400", r"\401x", r"\777"):
+        assert outcome(lambda: std.sub(many, template, "a" * 41)) == "raises error"
+        assert outcome(lambda: hre.sub(many, template, "a" * 41)) == "raises error", template
+    for template in (r"\377", r"\40", r"\408", r"\0"):
+        assert hre.sub(many, template, "a" * 41) == std.sub(many, template, "a" * 41)
+
+
 def test_lastindex_counts_a_lookahead_group_as_closing_where_the_lookahead_runs():
     for source in (r"(?P<outer>a(?=(?P<inner>b)))", r"((a)(?=(b)))", r"(a)(?=(b))", r"(a)(?=(b)(c))",
                    r"(?:(a)|(b))+(?=(c))", r"(a)(?=b|(c))"):

@@ -90,12 +90,18 @@ def _escape(body: str, i: int):
         return None, ch, i + 2
     width = {"x": 2, "u": 4, "U": 8}.get(ch)
     if width:
-        return int(body[i + 2:i + 2 + width], 16), None, i + 2 + width
+        code = int(body[i + 2:i + 2 + width], 16)
+        if code > _r.MAX:  # as stdlib: refused, not left for RE2 to refuse at the first match
+            raise Unsupported(f"bad escape \\{ch}{body[i + 2:i + 2 + width]}")
+        return code, None, i + 2 + width
     if ch in _OCTAL:
         j = i + 1
         while j < min(i + 4, len(body)) and body[j] in _OCTAL:
             j += 1
-        return int(body[i + 1:j], 8), None, j
+        code = int(body[i + 1:j], 8)
+        if code > 0o377:
+            raise Unsupported(f"octal escape value \\{body[i + 1:j]} outside of range 0-0o377")
+        return code, None, j
     if ch in _CONTROL:
         return _CONTROL[ch], None, i + 2
     if ch.isascii() and ch.isalnum():

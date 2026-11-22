@@ -1,7 +1,7 @@
 """`(?#...)` comment groups: removed from the pattern text before anything else reads it.
 
-Stdlib reads a comment as: ``(?#``, then everything up to the FIRST ``)`` (so it may hold ``[``
-or ``(`` but cannot be nested), and it must be terminated. Inside a bracket class and after a
+Stdlib reads a comment as: ``(?#``, then everything up to the FIRST ``)`` that no backslash
+escapes (so it may hold ``[`` or ``(`` but cannot be nested), and it must be terminated. Inside a bracket class and after a
 backslash ``(?#`` is ordinary text. A comment is not an atom: a quantifier after it applies to
 what stands before it (``a(?#x)*`` is ``a*``).
 
@@ -22,7 +22,7 @@ from __future__ import annotations
 from bisect import bisect_right
 
 from ._errors import error
-from ._translate_scan import class_end, group_open, repeat_end
+from ._translate_scan import class_end, comment_end, group_open, repeat_end
 
 SEPARATOR = "(?:)"
 _REPEATS = frozenset("*+?{")
@@ -41,10 +41,9 @@ _LAST = float("inf")  # sorts after every shift, so a bisect lands after the cut
 def _comment_end(pattern: str, i: int, original) -> int:
     """Index after the run of comments starting at ``pattern[i:] == '(?#...'``."""
     while pattern.startswith("(?#", i):
-        end = pattern.find(")", i)
-        if end < 0:
+        i = comment_end(pattern, i)
+        if i < 0:
             raise error("missing ), unterminated comment", original)
-        i = end + 1
     return i
 
 

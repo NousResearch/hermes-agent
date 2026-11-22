@@ -67,6 +67,19 @@ def property_end(pattern: str, i: int) -> int:
     return end + 1 if end != -1 else len(pattern)
 
 
+def comment_end(pattern: str, i: int) -> int:
+    """For ``pattern[i:]`` = ``(?#...``: the index after its closing ``)``, or ``-1`` when it is
+    not terminated. As in stdlib, a backslash takes the next character with it, so ``\\)`` does
+    not end the comment."""
+    j, n = i + 3, len(pattern)
+    while j < n:
+        ch = pattern[j]
+        if ch == ")":
+            return j + 1
+        j += 2 if ch == "\\" else 1
+    return -1
+
+
 def group_open(pattern: str, i: int) -> int:
     """Index after the opener of the group at ``pattern[i] == '('``; negative when the group
     has no body (inline flags ``(?i)``, comment, named backreference): then ``-index after it``."""
@@ -74,7 +87,10 @@ def group_open(pattern: str, i: int) -> int:
         return i + 1
     n = len(pattern)
     rest = pattern[i + 2:i + 4]
-    if rest[:1] == "#" or rest == "P=":
+    if rest[:1] == "#":
+        end = comment_end(pattern, i)
+        return -(end if end != -1 else n)
+    if rest == "P=":
         end = pattern.find(")", i)
         return -(end + 1 if end != -1 else n)
     if rest[:1] in ":=!>":

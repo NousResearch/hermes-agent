@@ -50,12 +50,15 @@ def parse(template, groups, names):
             else:
                 raise error(f"bad character in group name {name!r}", template)
             i = end + 1
-        elif nxt == "0" or (nxt in "123" and text[i + 2:i + 3] in _OCTAL and text[i + 2:i + 3]
+        elif nxt == "0" or (nxt in _OCTAL and text[i + 2:i + 3] in _OCTAL and text[i + 2:i + 3]
                             and text[i + 3:i + 4] in _OCTAL and text[i + 3:i + 4]):
             j = i + 1
             while j < min(i + 4, n) and text[j] in _OCTAL:
                 j += 1
-            literal.append(chr(int(text[i + 1:j], 8)))
+            code = int(text[i + 1:j], 8)
+            if code > 0o377:  # as stdlib: three octal digits are an escape, never a group reference
+                raise error(f"octal escape value \\{text[i + 1:j]} outside of range 0-0o377", template)
+            literal.append(chr(code))
             i = j
         elif nxt.isdigit():
             j = i + 3 if text[i + 2:i + 3].isdigit() else i + 2

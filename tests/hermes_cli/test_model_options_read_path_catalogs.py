@@ -11,6 +11,7 @@ import threading
 import time
 
 import hermes_cli.models as models_mod
+from hermes_cli import models_cache_lock as locks
 from hermes_cli.inventory import build_model_options_payload, load_picker_context
 
 _DEAD_PROVIDER = "deepseek"
@@ -46,7 +47,7 @@ def _picker_env(monkeypatch, tmp_path, *, hung=None):
 def _drain_background_warms(timeout=10.0) -> None:
     """Let spawned catalog warms finish so a tmp HERMES_HOME can be torn down with no writers left."""
     deadline = time.time() + timeout
-    while time.time() < deadline and models_mod._swr_refresh_inflight:
+    while time.time() < deadline and locks._swr_refresh_inflight:
         time.sleep(0.02)
 
 

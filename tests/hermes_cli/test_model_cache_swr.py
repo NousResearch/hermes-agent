@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading
 import time
 from unittest.mock import patch
 
@@ -21,12 +22,12 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _reset_swr_state():
-    import hermes_cli.models as models_mod
-    with models_mod._swr_refresh_lock:
-        models_mod._swr_refresh_inflight.clear()
+    from hermes_cli import models_cache_lock as locks
+    with locks._swr_refresh_lock:
+        locks._swr_refresh_inflight.clear()
     yield
-    with models_mod._swr_refresh_lock:
-        models_mod._swr_refresh_inflight.clear()
+    with locks._swr_refresh_lock:
+        locks._swr_refresh_inflight.clear()
 
 
 class TestProviderModelsSWR:
@@ -192,25 +193,28 @@ class TestProviderModelsSWR:
 
     def test_swr_refresh_dedupes_inflight(self):
         import hermes_cli.models as mod
+        from hermes_cli.models_cache_lock import wait_for_provider_models_refresh
 
         started = []
 
         class FakeThread:
-            def __init__(self, target=None, daemon=None, name=None):
+            def __init__(self, target=None, daemon=None, name=None, **_kwargs):
                 started.append(name)
                 self._target = target
 
             def start(self):
                 pass  # never run — keeps the provider marked in-flight
 
-        with patch.object(mod.threading, "Thread", FakeThread):
+        with patch.object(threading, "Thread", FakeThread):
             mod._spawn_swr_refresh("openrouter")
             mod._spawn_swr_refresh("openrouter")  # deduped
             mod._spawn_swr_refresh("nous")
         assert started == ["model-cache-swr-openrouter", "model-cache-swr-nous"]
+        assert not wait_for_provider_models_refresh("openrouter", timeout=0)
 
     def test_swr_refresh_writes_cache_and_clears_inflight(self):
         import hermes_cli.models as mod
+        from hermes_cli import models_cache_lock as locks
 
         saved = {}
 
@@ -220,13 +224,13 @@ class TestProviderModelsSWR:
         captured = {}
 
         class InlineThread:
-            def __init__(self, target=None, daemon=None, name=None):
+            def __init__(self, target=None, daemon=None, name=None, **_kwargs):
                 captured["target"] = target
 
             def start(self):
                 captured["target"]()  # run synchronously
 
-        with patch.object(mod.threading, "Thread", InlineThread), \
+        with patch.object(threading, "Thread", InlineThread), \
              patch.object(mod, "provider_model_ids", return_value=["fresh1", "fresh2"]), \
              patch.object(mod, "_credential_fingerprint", return_value="fp"), \
              patch.object(mod, "_load_provider_models_cache", return_value={}), \
@@ -234,7 +238,7 @@ class TestProviderModelsSWR:
             mod._spawn_swr_refresh("openrouter")
 
         assert saved["openrouter"]["models"] == ["fresh1", "fresh2"]
-        assert "openrouter" not in mod._swr_refresh_inflight  # cleared on completion
+        assert "openrouter" not in locks._swr_refresh_inflight  # cleared on completion
 
 
 class TestCatalogSWR:

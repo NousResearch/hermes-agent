@@ -20,7 +20,6 @@ from unittest.mock import patch
 
 import pytest
 
-from tests.waiting import wait_until
 
 
 class TestCachedFetchApiModels:
@@ -345,6 +344,7 @@ class TestSalvageFollowups:
         import threading as _threading
 
         import hermes_cli.models as mod
+        from hermes_cli.models_cache_lock import wait_for_provider_models_refresh
 
         done = _threading.Event()
         saved = {}
@@ -363,8 +363,7 @@ class TestSalvageFollowups:
         assert saved["custom:https://gw.example.com/v1#fp"]["models"] == ["refreshed"]
         # The save fires before the worker's finally drops the inflight key (and the cache lock
         # release sits between them): wait for the dedupe slot instead of racing the thread.
-        wait_until(lambda: "custom:https://gw.example.com/v1#fp" not in mod._swr_refresh_inflight,
-                   what="SWR inflight key released")
+        assert wait_for_provider_models_refresh("custom:https://gw.example.com/v1#fp", timeout=5)
 
     def test_corrupt_at_field_degrades_to_live_fetch_instead_of_raising(self):
         """provider_models_cache.json is user-editable; a corrupted 'at' must

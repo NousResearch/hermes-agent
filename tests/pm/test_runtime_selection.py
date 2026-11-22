@@ -46,7 +46,9 @@ def test_boot_uses_one_selected_dependency_tree_in_fresh_process(tmp_path, monke
     for venv, version in [(base, "old"), (selected, "new")]:
         site = site_of(venv)
         site.mkdir(parents=True)
-        (venv / "pyvenv.cfg").write_text("home = test")
+        (venv / "pyvenv.cfg").write_text(
+            f"home = test\nversion_info = {sys.version_info.major}.{sys.version_info.minor}.0\n"
+        )
         (site / "probe_package.py").write_text(f"version = {version!r}")
     (site_of(base) / "base_only.py").write_text("version = 'must-not-leak'")
     (state / "facts.json").write_text(json.dumps({"schema": 1, "packages": {

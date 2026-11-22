@@ -1,37 +1,32 @@
 name: llama-cpp
 repo: https://github.com/Lazzdaycod/hermes-lang-it
-sha: 1641d7b1a0404ca35dc1ad0f5e20be4405f14048
+sha: 64adc98bcf46e858a8fc2354f19a5e06a2e4b4dd
 subdir: plugins/llama-cpp
 title: llama.cpp GPU Manager
 description: >-
   Desktop page + FastAPI backend for the Hermes-managed llama.cpp runtime. It
-  detects the GPU by model and vendor (NVIDIA compute capability included) and
-  shows the matching official ggml-org build (Vulkan, CUDA sm_75+, ROCm/HIP
-  for AMD) with the installed and latest known version; lists local GGUF
-  models with size and state; edits and applies per-model presets (context
-  window, n-gpu-layers, KV cache type/quant, flash attention, batch, sampling);
-  loads/unloads the active model; and benchmarks generation and prefill tok/s
-  with a leaderboard that records the preset and the llama.cpp build used for
-  each test. It also registers the llama_server_status agent tool. The page
-  makes no core-internal calls: server stop/start/restart and build installs
-  stay in Settings → Local models, and the installed-builds panel is read-only
-  pending a public select/remove route (issue #157878). Disclosure — it reads
-  and writes inside $HERMES_HOME (runtimes/llamacpp: server state, presets,
-  bench history); POST /apply with set_active sets model.default in
-  config.yaml through Hermes's own save_config (no raw-YAML fallback).
-  Benchmarks call only the local server. Update checks fetch public GitHub
-  release metadata (ggml-org/llama.cpp) and use a GitHub token only if the user
-  already set GH_TOKEN/GITHUB_TOKEN — never gh auth token, never environment
-  writes. Local endpoint discovery probes /models without credentials; no
-  api_key is read from config.yaml. Downloading a build is an explicit user
-  action executed by the core package manager and never fetches or replaces
-  the plugin's own files. No telemetry, no credentials in the UI.
+  detects the GPU architecture (NVIDIA compute capability, AMD gfx bucket) and
+  matches the right build: Vulkan (any GPU), CUDA (NVIDIA sm_75+; CUDA 13
+  dropped Maxwell/Pascal/Volta) and ROCm via Lemonade (AMD). It lists local
+  GGUF models, edits and applies per-model presets, loads/unloads the active
+  model, and benchmarks generation and prefill tok/s with a leaderboard that
+  records the preset and the build used. The page updates a build only when the
+  GPU supports it, restores the previous installed build of the same variant,
+  selects/deletes installed builds, and stops/restarts the managed server. It
+  also registers the llama_server_status agent tool. Disclosure — it reads and
+  writes inside $HERMES_HOME (runtimes/llamacpp and the build store); it drives
+  the Hermes package manager (pm) and the runtime bootstrap for build
+  install/select/delete and stop/restart; POST /apply with set_active sets
+  model.default through Hermes's own save_config; build/version checks use
+  gh auth token when available. Benchmarks call only the local server. Local
+  endpoint discovery probes /models without credentials; no api_key is read
+  from config.yaml. No telemetry, no credentials in the UI.
 maintainer: Lazzdaycod
 tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/Lazzdaycod/hermes-lang-it/tree/main/plugins/llama-cpp
-version: "1.2.0"
+version: "1.3.0"
 platforms: []
 capabilities:
   provides_tools: [llama_server_status]

@@ -272,7 +272,7 @@ class CLILoopsMixin:
 
     def _cmd_version(self, cmd_original: str):
         from hermes_cli.main import _print_version_info
-        _print_version_info(check_updates=True)
+        _print_version_info(check_updates=False)
 
     def _cmd_reload(self, cmd_original: str):
         from hermes_cli.config import reload_env

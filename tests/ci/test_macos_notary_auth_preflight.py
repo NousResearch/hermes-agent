@@ -126,6 +126,8 @@ def test_validate_p8_pem_accepts_pkcs8_and_rejects_malformed_keys():
             "Please try again at a later time.",
             "transient",
         ),
+        # A 5xx status or a transport failure wins over auth-sounding text in the same output.
+        ("Error: HTTP status code: 500. Unauthenticated.", "transient"),
         ("Error: HTTP status code: 502. Bad Gateway.", "transient"),
         ("Error: HTTP status code: 503. Service Unavailable.", "transient"),
         ("Error: HTTP status code: 504. Gateway Timeout.", "transient"),
@@ -136,6 +138,7 @@ def test_validate_p8_pem_accepts_pkcs8_and_rejects_malformed_keys():
         ),
         ('Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost."', "transient"),
         ('Error Domain=NSURLErrorDomain Code=-1009 "The Internet connection appears to be offline."', "transient"),
+        ('Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost." Invalid credentials.', "transient"),
         ("xcrun: error: unexpected transient portal hiccup", "transient"),
     ],
 )

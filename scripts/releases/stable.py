@@ -914,23 +914,30 @@ def admit(env: dict) -> None:
     )
 
 
-def commit_supports_claim_tag(commit: str, run=output) -> bool:
-    """Whether ``commit`` already carries commit-claim support in its own build scripts.
+# Where a claimed tree declares the commit-claim build contract its packaging honours, and the
+# contracts this controller can build. A tree without the file builds through the tagless path.
+CLAIM_BUILD_FILE = "scripts/releases/commit_claim_build.txt"
+CLAIM_BUILD_VERSIONS = frozenset({"1"})
 
-    A commit forked before commit claims existed still builds cleanly through the tagless
-    ``--commit`` path while the trusted controller records, stages, smokes and renders its
-    candidate under the claim archive.
+
+def commit_supports_claim_tag(commit: str, run=output) -> bool:
+    """Whether ``commit`` declares a commit-claim build this controller can run (CLAIM_BUILD_FILE).
+
+    A commit without the declaration (every commit forked before commit claims could build)
+    still builds cleanly through the tagless ``--commit`` path while the trusted controller
+    records, stages, smokes and renders its candidate under the claim archive. Matching the
+    claim readers' source text let a tree that had the readers but not the packaging through. A
+    failed read, or a contract this controller doesn't know, raises rather than passing for an
+    old commit.
     """
-    try:
-        channel_py = run(["git", "show", f"{commit}:hermes_cli/update_channel.py"])
-        msix_mjs = run(["git", "show", f"{commit}:scripts/msix-shared.mjs"])
-        deb_py = run(["git", "show", f"{commit}:scripts/termux/deb_version.py"])
-    except (subprocess.CalledProcessError, ValueError):
+    if not run(["git", "ls-tree", "--name-only", commit, "--", CLAIM_BUILD_FILE]):
         return False
-    # The claim-tag reader each file gained; a test runs this against the current tree.
-    return ("def is_commit_tag(" in channel_py
-            and "COMMIT_TAG_RE" in msix_mjs
-            and "canary|commit" in deb_py)
+    declared = [line.strip() for line in run(["git", "show", f"{commit}:{CLAIM_BUILD_FILE}"]).splitlines()
+                if line.strip() and not line.lstrip().startswith("#")]
+    if len(declared) != 1 or declared[0] not in CLAIM_BUILD_VERSIONS:
+        raise ValueError(f"{commit} declares commit-claim build {declared!r}; this controller builds "
+                         f"{', '.join(sorted(CLAIM_BUILD_VERSIONS))}")
+    return True
 
 
 def verify(env: dict, run=output) -> None:

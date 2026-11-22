@@ -442,10 +442,12 @@ release commits, it enforces four trust-boundary rules:
 - **Identity & pre-PR compatibility:** its packages are versioned like a
   canary's (`X.Y.Z+commit.<stamp>`, the stamped Windows quad, Debian
   `X.Y.Z~commit.<stamp>-1`) while keeping the `Commit<sha7>` application
-  identity and `source: commit-build`, so every updater refuses them. Commits
-  predating commit-claim tag support still build cleanly through the tagless
-  `--commit` path while the default-branch controller records, smokes and
-  stages them under the claim archive.
+  identity and `source: commit-build`, so every updater refuses them. A commit
+  whose tree doesn't declare a claim build in
+  `scripts/releases/commit_claim_build.txt` (every commit predating commit-claim
+  packaging) still builds cleanly through the tagless `--commit` path while the
+  default-branch controller records, smokes and stages it under the claim
+  archive; a declared contract the controller doesn't know is refused.
 - **Publication:** none. Its only publication job, `publish-commit`, renders
   the accepted candidate's full downloadable assets (`.msixbundle`, per-arch
   `.msix`, macOS `.dmg` and `.zip`, and Termux `.deb`) at

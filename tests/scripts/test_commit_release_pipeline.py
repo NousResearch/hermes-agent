@@ -57,6 +57,26 @@ def _write_msix(path: Path, *, arch: str, version: str, identity: str, stamp: di
         archive.writestr("app/resources/install-stamp.json", json.dumps(stamp))
 
 
+def _tree(files: dict[str, str]):
+    """A fake ``git`` over one claimed commit's tree: ls-tree lists, show prints, else it fails."""
+    def git(argv):
+        if argv[:3] == ["git", "ls-tree", "--name-only"]:
+            return argv[-1] if argv[-1] in files else ""
+        if argv[:2] == ["git", "show"] and argv[2].split(":", 1)[1] in files:
+            return files[argv[2].split(":", 1)[1]]
+        raise subprocess.CalledProcessError(128, argv, stderr="fatal: bad object")
+    return git
+
+
+# The claim readers' source text as the PR's first commit (bd507fa031) had it: before its
+# packaging could build a claim, so it must still build through the tagless path.
+READERS_WITHOUT_PACKAGING = {
+    "hermes_cli/update_channel.py": "def is_commit_tag(tag): return True\n",
+    "scripts/msix-shared.mjs": "export const COMMIT_TAG_RE = /commit/\n",
+    "scripts/termux/deb_version.py": 'r"^(?:(?P<kind>canary|commit)\\."\n',
+}
+
+
 def test_verify_detects_pre_pr_commit_and_emits_legacy_flag(tmp_path, monkeypatch):
     claim = {
         "claim_tag": COMMIT_TAG, "claim_object": "b" * 40, "claim_epoch": 1793037600,
@@ -66,43 +86,38 @@ def test_verify_detects_pre_pr_commit_and_emits_legacy_flag(tmp_path, monkeypatc
     }
     monkeypatch.setattr(stable, "stable_context", lambda _env: (COMMIT_TAG, COMMIT, claim))
 
-    def old_git(argv):
-        assert argv[:2] == ["git", "show"]
-        if argv[2].endswith("update_channel.py"):
-            return "def release_version(tag): ...\n"
-        if argv[2].endswith("msix-shared.mjs"):
-            return "export const CANARY_TAG_RE = /canary/\n"
-        return "CHANNEL = 'stable'\n"
+    def verified(name, tree):
+        out = tmp_path / name
+        stable.verify({"GITHUB_OUTPUT": str(out), "BUNDLE_ENV_JSON": json.dumps(claim["bundle_env"])},
+                      run=_tree(tree))
+        return dict(line.split("=", 1) for line in out.read_text(encoding="utf-8").splitlines())
 
-    out_old = tmp_path / "old-output"
-    stable.verify({
-        "GITHUB_OUTPUT": str(out_old),
-        "BUNDLE_ENV_JSON": json.dumps(claim["bundle_env"]),
-    }, run=old_git)
-    parsed_old = dict(line.split("=", 1) for line in out_old.read_text(encoding="utf-8").splitlines())
+    parsed_old = verified("old-output", {"hermes_cli/update_channel.py": "def release_version(tag): ...\n"})
     assert parsed_old["legacy-commit-build"] == "true"
     assert parsed_old["core-version"] == "0.33.0"
     assert parsed_old["channel"] == "commit"
+    # Claim readers without the declaration are not a claim build.
+    assert verified("readers-output", READERS_WITHOUT_PACKAGING)["legacy-commit-build"] == "true"
 
-    def new_git(argv):
-        if argv[2].endswith("update_channel.py"):
-            return "def is_commit_tag(tag): return True\n"
-        if argv[2].endswith("msix-shared.mjs"):
-            return "export const COMMIT_TAG_RE = /commit/\n"
-        return 'r"^(?:(?P<kind>canary|commit)\\."\n'
-
-    out_new = tmp_path / "new-output"
-    stable.verify({
-        "GITHUB_OUTPUT": str(out_new),
-        "BUNDLE_ENV_JSON": json.dumps(claim["bundle_env"]),
-    }, run=new_git)
-    parsed_new = dict(line.split("=", 1) for line in out_new.read_text(encoding="utf-8").splitlines())
+    new_tree = {stable.CLAIM_BUILD_FILE: "# the contract\n1\n"}
+    parsed_new = verified("new-output", new_tree)
     assert parsed_new["legacy-commit-build"] == "false"
     assert parsed_new["core-version"] == "0.33.0"
 
     # Mismatched bundle defaults are refused before any build runs.
     with pytest.raises(ValueError, match="Bundle environment differs"):
-        stable.verify({"GITHUB_OUTPUT": str(tmp_path / "bad"), "BUNDLE_ENV_JSON": "{}"}, run=new_git)
+        stable.verify({"GITHUB_OUTPUT": str(tmp_path / "bad"), "BUNDLE_ENV_JSON": "{}"}, run=_tree(new_tree))
+
+
+def test_claim_support_refuses_a_failed_read_or_an_unknown_contract():
+    """Neither a git failure nor a contract this controller can't build passes for an old commit."""
+    def unreadable(argv):
+        raise subprocess.CalledProcessError(128, argv, stderr="fatal: bad object")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        stable.commit_supports_claim_tag(COMMIT, run=unreadable)
+    with pytest.raises(ValueError, match="declares commit-claim build"):
+        stable.commit_supports_claim_tag(COMMIT, run=_tree({stable.CLAIM_BUILD_FILE: "2\n"}))
 
 
 @pytest.mark.platforms("linux")

@@ -1424,11 +1424,17 @@ def list_tasks(
     tenant: Optional[str] = None, session_id: Optional[str] = None, include_archived: bool = False,
     limit: Optional[int] = None, order_by: Optional[str] = None,
     workflow_template_id: Optional[str] = None, current_step_key: Optional[str] = None,
+    include_system: bool = False,
 ) -> list[Task]:
     if status is not None and status not in VALID_STATUSES:
         raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
     query = "SELECT * FROM tasks WHERE 1=1"
     params: list[Any] = []
+    if not include_system:
+        # Kernel-managed rows (ADR 0020 §4.1 board-liveness sentinels, ``board:<slug>:liveness``)
+        # exist so board-level events have a task to anchor to; they are not work, so board
+        # listings stay user-visible only. ``include_system=True`` is the forensic opt-in.
+        query += " AND id NOT LIKE 'board:%:liveness'"
     for col, val in (
         ("assignee", _canonical_assignee(assignee)), ("status", status), ("tenant", tenant),
         ("session_id", session_id), ("workflow_template_id", workflow_template_id),

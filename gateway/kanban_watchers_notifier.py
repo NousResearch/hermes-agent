@@ -44,17 +44,21 @@ def _pin_first():
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
-# ``chain_broke`` (ADR-0020 §2.4) rides the same route as ``completed``: a
-# completion that promised a successor and created none must notify, not go
-# quiet — it is primary attention, never diagnostic.
-TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested", "chain_broke")
+# ADR 0020 liveness — TERMINAL_KINDS union of chain_broke + stall/board signals
+TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested", "chain_broke", "stalled_suspect", "board_dead_quiet", "board_quiet_by_design")
 # Kinds that hand a decision back to the origin, which must take a turn.
-# status/archived/unblocked are bookkeeping.
-_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+# status/archived/unblocked are bookkeeping. ``board_dead_quiet`` wakes the board's route (an
+# operator/butler turn can unblock it); ``stalled_suspect`` and ``board_quiet_by_design`` inform
+# without demanding a turn (ADR §2.4: quiet-by-design must not manufacture alert fatigue).
+_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected", "board_dead_quiet")
 
 
 def diagnostic_event(ev) -> bool:
     """Infrastructure attention is distinct from an explicit owner decision."""
+    if ev.kind in ("stalled_suspect", "board_dead_quiet", "board_quiet_by_design"):
+        # ADR 0020 §2.4: these are primary attention, not infrastructure noise — never suppress
+        # them behind the diagnostic filter or the fix is invisible exactly where it matters.
+        return False
     if ev.kind in {"crashed", "timed_out", "gave_up"}:
         return True
     if ev.kind in {"blocked", "block_loop_detected"}:
@@ -504,6 +508,47 @@ def _fmt_timed_out(ev, n) -> tuple:
     return t("gateway.kanban.ping.timed_out", head=n.head, span=span), None, None
 
 
+def _fmt_stalled_suspect(ev, n) -> tuple:
+    """ADR 0020 §3.6: name the mitigation, not just the symptom.
+
+    The worker is alive (its claim heartbeat proves it); what is missing is a human-readable
+    milestone note. The ping therefore tells the reader the one-line fix that silences the next
+    window, so the alert is cheap to satisfy and cheap to ignore when it is wrong.
+    """
+    silence = int(_payload(ev, "silence_s") or 0)
+    minutes = max(1, round(silence / 60)) if silence else 0
+    window = int(_payload(ev, "window_s") or 0)
+    span = f"{minutes} min" if minutes else "a window"
+    msg = (
+        f"⏳ {n.title}: running {span} with no progress note (claim heartbeats are still "
+        f"arriving, so nothing else would notice). Post a line starting `NOTE: still working — …` "
+        f"to reset the {window}s window, or `kanban_block` if you are stuck."
+    )
+    return msg, None, None
+
+
+def _fmt_board_dead_quiet(ev, n) -> tuple:
+    """ADR 0020 §2.3 DEAD: open goals exist and nothing can advance them."""
+    open_goals = _payload(ev, "open_goals")
+    reason = str(_payload(ev, "reason") or "open goals exist, nothing running or promotable")[:220]
+    board = n.board_slug or "this board"
+    count = f"{open_goals} open card(s), " if open_goals not in (None, "") else ""
+    msg = (
+        f"🚨 Board {board} is dead-quiet: {count}nothing running and nothing promotable — {reason}"
+    )
+    return msg, f"Board {board} dead-quiet: {reason}", None
+
+
+def _fmt_board_quiet_by_design(ev, n) -> tuple:
+    """ADR 0020 §3.4 QUIET_BY_DESIGN: informational, deliberately quieter, never a wake."""
+    open_goals = _payload(ev, "open_goals")
+    board = n.board_slug or "this board"
+    reason = str(_payload(ev, "reason") or "all open cards wait on an operator decision")[:160]
+    count = f"{open_goals} open card(s); " if open_goals not in (None, "") else ""
+    msg = f"💤 Board {board} idle by design: {count}everything open waits on you or a timer — {reason}."
+    return msg, None, None
+
+
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
@@ -521,6 +566,11 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, _KanbanNotification], tuple]] = {
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
     "block_loop_detected": _fmt_block_loop_detected,
+    # ADR 0020 liveness signals. Plain strings, not i18n keys: ``t()`` falls back to the bare key
+    # on a miss, so shipping these before the catalog lands would print "gateway.kanban.ping.…".
+    "stalled_suspect": _fmt_stalled_suspect,
+    "board_dead_quiet": _fmt_board_dead_quiet,
+    "board_quiet_by_design": _fmt_board_quiet_by_design,
 }
 
 

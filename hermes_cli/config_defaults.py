@@ -1936,6 +1936,28 @@ DEFAULT_CONFIG = {
             "intent_denylist": None,
             "routers": {},
         },
+        # ADR 0020 §2.2/§3.2 — note-stall (build card t_68d5b5a4). A running card pumps
+        # ``kanban_heartbeat`` every ~60 s to hold its claim, so heartbeat liveness can never see
+        # a worker that is stuck but still heartbeating (SPECIMEN-14: ~75 min, zero notes).
+        # ``window_seconds`` is the silence budget before a ``stalled_suspect`` event fires; a
+        # milestone note (``NOTE:``/``STILL-WORKING:``/``HANDOFF:``/``RECHECK:`` prefix) resets it,
+        # so the mitigation is a one-line comment, and the replay harness compresses the window
+        # per card via ``task_runs.metadata.note_stall_window_seconds`` instead of sleeping.
+        # ``by_board`` overrides for legitimately long-running boards (``{slug: seconds}``).
+        "note_stall": {
+            "enabled": True,
+            "window_seconds": 1800,
+            "by_board": {},
+        },
+        # ADR 0020 §2.3/§3.4 — board-liveness invariant. "Open goals, nothing running, nothing
+        # promotable, nobody noticed" is a board-level predicate, so it is checked on its own beat
+        # rather than per card: ``DEAD`` (open todo/ready that nothing can promote) alerts daily,
+        # ``QUIET_BY_DESIGN`` (everything waiting on an operator decision or triage) alerts once
+        # per open-goal set, and a scheduled-only board is silent — the wake driver owns that clock.
+        "board_liveness": {
+            "enabled": True,
+            "interval_seconds": 300,
+        },
         # Running tasks with no heartbeat (last_heartbeat_at) for this many seconds are reclaimed to
         # ready on the next tick; a still-running local worker is terminated first. 0 = off.
         "dispatch_stale_timeout_seconds": 14400,

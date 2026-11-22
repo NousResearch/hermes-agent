@@ -132,6 +132,9 @@ class _KanbanDispatcher:
         self.kb = kb
         self.settings = settings
         self.disabled_corrupt_boards: dict[str, tuple[tuple[str, int | None, int | None], float]] = {}
+        # ADR 0020 §2.3: board liveness runs on its own (longer) beat than the dispatch tick,
+        # so remember when each board was last evaluated — wall clock, monotonic per process.
+        self._liveness_last: dict[str, float] = {}
 
     def _board_slugs(self) -> list:
         return _board_slugs(self.kb)
@@ -192,7 +195,12 @@ class _KanbanDispatcher:
             from hermes_cli import kanban_db as _kb
             with _kb.pin_first_board_resolution():
                 conn = _kbc().connect(board=slug)
-                return _kbd().dispatch_once(conn, board=slug, **kwargs)
+                result = _kbd().dispatch_once(conn, board=slug, **kwargs)
+                # ADR 0020 B+C: the two "board went quiet" watchers run right after the claim /
+                # orphan accounting they complement, on the same connection and board pin. They
+                # are strictly best-effort: a watcher bug must never fail a dispatch tick.
+                self.liveness_tick(conn, slug)
+                return result
         except Exception as exc:
             if self.is_corrupt_board_db_error(exc):
                 self.disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
@@ -211,6 +219,55 @@ class _KanbanDispatcher:
             if conn is not None:
                 with contextlib.suppress(Exception):
                     conn.close()
+
+    def liveness_tick(self, conn: Any, slug: str) -> None:
+        """ADR 0020 §2.2/§2.3 scheduler: note-stall every tick, board liveness on its own beat.
+
+        Both watchers are pure-DB helpers that never touch the gateway, so the container replay
+        calls them directly and this method is only the production scheduler. Each is gated by
+        its own ``enabled`` knob and each failure is logged at debug and swallowed: losing one
+        stall signal is cheaper than losing the dispatch tick that runs the board.
+        """
+        try:
+            from hermes_cli import kanban_note_stall as _nsw
+
+            if _nsw.note_stall_enabled(slug):
+                pinged = _nsw.check_running_notes(conn, board=slug)
+                for verdict in pinged:
+                    logger.info(
+                        "kanban note-stall: %s on board %s — %d min of heartbeats with no "
+                        "milestone note (window %ds); emitted stalled_suspect=%s",
+                        verdict["task_id"], slug, max(1, round(verdict["silence_s"] / 60)),
+                        verdict["window_s"], verdict["emitted"],
+                    )
+        # Losing one stall signal is cheaper than losing the dispatch tick that runs the board,
+        # so the scheduler keeps this boundary blind and logs the traceback instead.
+        # health: allow BLE001 -- scheduler boundary: a watcher failure must not fail dispatch
+        except Exception:  # pragma: no cover - defensive: never fail the dispatch tick
+            logger.exception("kanban note-stall: check failed on board %s; skipped", slug)
+
+        try:
+            from hermes_cli import kanban_board_liveness as _bl
+
+            if not _bl.board_liveness_enabled():
+                return
+            interval = _bl.board_liveness_interval_seconds()
+            now = time.monotonic()
+            if now - self._liveness_last.get(slug, 0.0) < interval:
+                return
+            self._liveness_last[slug] = now
+            result = _bl.check_and_emit_board_liveness(conn, board=slug)
+            if result.actionable:
+                logger.warning(
+                    "kanban board-liveness: board %s is %s — %s (open=%s running=%s ready=%s "
+                    "promotable=%s)", slug, result.state, result.reason,
+                    result.counts.get("open_goals"), result.counts.get("running"),
+                    result.counts.get("ready"), result.counts.get("promotable"),
+                )
+        # Same contract as the note-stall leg above: the beat may fail, the board may not.
+        # health: allow BLE001 -- scheduler boundary: a watcher failure must not fail dispatch
+        except Exception:  # pragma: no cover - defensive: never fail the dispatch tick
+            logger.exception("kanban board-liveness: check failed on board %s; skipped", slug)
 
     def tick_once(self) -> list[tuple[str, Optional[object]]]:
         """Run one dispatch_once per board. Returns (slug, result) pairs."""

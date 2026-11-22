@@ -217,4 +217,3 @@ def voice_available() -> bool:
     from gateway.config import Platform
     return any(Platform.DISCORD in (m or {}) for m in
                [getattr(runner, "adapters", None), *((getattr(runner, "_profile_adapters", None) or {}).values())])
-

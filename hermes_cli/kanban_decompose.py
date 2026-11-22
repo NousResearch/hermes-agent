@@ -94,9 +94,9 @@ Rules:
     context — be specific about goal, approach, and acceptance criteria.
   - Overall acceptance is owned by the ROOT task: when every child is done
     it returns to its orchestrator to judge completion, so do not add a
-    child whose only job is to re-judge the original request. DO add a
-    task that executes mechanical checks the work produces (run the new
-    test suite, build, confirm promised artifacts exist), with the
+    child whose only job is to re-judge the original request. Where the
+    work produces something checkable, consider a task that executes mechanical checks the work
+    produces (run the new test suite, build, confirm promised artifacts exist), with the
     producing tasks as its "parents" — that puts pass/fail evidence in
     the graph instead of leaving claims for the root review to take on
     faith.

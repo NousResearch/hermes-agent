@@ -140,3 +140,41 @@ def test_a_language_without_its_own_entry_keeps_the_payload_text(tmp_path, monke
     finally:
         i18n.reset_language_cache()
     assert seen == [("card", "recursive delete (payload); SQL DROP (eo fixture)")]
+
+
+def test_a_child_under_another_profile_raises_reasons_in_the_chats_language(profiles):
+    """Codex review: a delegated child routed to profile B (fr) raises its approval in profile A's (de)
+    chat from B's scope. The card must render in A's language, and the child's own scope (what its
+    approval policy and grants run under) must be left as it was."""
+    from tools.delegate_tool_routes import delegated_profile_scope
+
+    seen, child_view = [], {}
+
+    class Adapter:
+        def pause_typing_for_chat(self, chat_id):
+            pass
+
+        async def send_exec_approval(self, **kwargs):
+            seen.append(kwargs["description"])
+            return SimpleNamespace(success=True, error=None, message_id=None)
+
+    approval = {"command": "rm -rf build/", "description": "english description",
+                "reasons": [{"slug": "recursive_delete", "text": "recursive delete"}]}
+
+    def child(turn):
+        with delegated_profile_scope(profiles["fr"]):
+            turn._approval_notify_sync(approval)
+            child_view["language"] = i18n.get_language()
+
+    async def exercise():
+        ctx = SimpleNamespace(_status_adapter=Adapter(), _status_chat_id="fixture", _status_thread_metadata=None,
+                              session_key="reason-fixture", _loop_for_step=asyncio.get_running_loop(),
+                              stream_consumer_holder=[None])
+        with _routed(profiles["de"]):
+            turn = TurnRunner(SimpleNamespace(), ctx)  # built inside the chat's routed scope, as in a turn
+            await asyncio.to_thread(child, turn)
+
+    asyncio.run(exercise())
+    assert seen == ["rekursives Loeschen (Fixture)"]
+    assert child_view["language"] == "fr"  # the child's scope was not switched by the render
+    assert approval["reasons"] == [{"slug": "recursive_delete", "text": "recursive delete"}]

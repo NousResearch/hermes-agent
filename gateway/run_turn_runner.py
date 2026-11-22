@@ -19,7 +19,7 @@ from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from agent.i18n import t
+from agent.i18n import get_language, t
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import canonicalize_replay_history
 from gateway.config import Platform
@@ -29,6 +29,7 @@ from gateway.platforms.base_exec_approval import ea_default_reason_text
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from hermes_cli.plugins_dispatch import stream_held
+from hermes_constants import get_hermes_home
 from tools.approval_reason_catalog import render_reasons
 from utils import is_truthy_value
 
@@ -239,10 +240,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     # adapters without a canonical session) publishes no execution events and takes no
     # controls snapshot. Class-level so every publish/snapshot seam can read it unconditionally.
     _approval_owner = None
+    # ``(home, language)`` of the chat's profile, read where the turn is built (inside its routed
+    # scope). A delegated child under another profile raises approvals in this chat from its own
+    # scope, so reasons render from this snapshot; ``(None, None)`` reads the ambient profile.
+    _origin_locale: tuple = (None, None)
 
     def __init__(self, runner: GatewayRunner, ctx: TurnContext) -> None:
         self._runner = runner
         self._ctx = ctx
+        self._origin_locale = (str(get_hermes_home()), get_language())
         from gateway.session_authorities import active_authority
         authority = active_authority(runner)
         if authority is not None:
@@ -815,7 +821,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # Structured reasons render in this profile's language, each falling back to its redacted
         # English text; a payload without them (other gates, older producers) keeps the description.
         reasons = approval_data.get("reasons")
-        desc = (render_reasons(reasons, _redact_approval_command) if reasons
+        origin_home, origin_lang = self._origin_locale
+        desc = (render_reasons(reasons, _redact_approval_command, lang=origin_lang, home=origin_home) if reasons
                 else _redact_approval_command(approval_data.get("description"))) or ea_default_reason_text()
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.

@@ -359,11 +359,28 @@ def sandbox_env(job: dict, run_dir: Path, key: str) -> dict:
         "OPENCODE_CONFIG_CONTENT": json.dumps(job["opencode_config"]),
         "OMNIROUTE_API_KEY": key,
     }
+    plainboard = take_plainboard_token(run_dir)
+    if plainboard:
+        env["PLAINBOARD_MCP_TOKEN"] = plainboard
     if job.get("lean", True):
         # ~2,000 installed skills otherwise ride along in every step (~90k tokens).
         env["OPENCODE_DISABLE_EXTERNAL_SKILLS"] = "1"
         env["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] = "1"
     return env
+
+
+def take_plainboard_token(run_dir: Path) -> str:
+    """The caller's PlainBoard bridge token written by opencode_task; read once, then removed."""
+    path = run_dir / "plainboard.token"
+    try:
+        token = path.read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return ""
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return token
 
 
 def take_key(run_dir: Path) -> str:

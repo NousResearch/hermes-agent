@@ -13,7 +13,7 @@ OPENCODE_REAL_BIN="__OPENCODE_REAL_BIN__"
 OPENCODE_SLOT_DIR="__OPENCODE_SLOT_DIR__"
 OPENCODE_KEY_FILE="__OPENCODE_KEY_FILE__"
 OPENCODE_MAX_SLOTS="${OPENCODE_MAX_SLOTS:-12}"
-OPENCODE_DEFAULT_MODEL="omniroute/auto/best-coding"
+OPENCODE_DEFAULT_MODEL="omniroute/synthwave-auto"
 
 if [ -n "${OPENCODE_RECURSION_GUARD:-}" ]; then
   echo "opencode: nested invocation blocked by recursion guard. You are already running inside an opencode session: perform the task directly with your own tools instead of delegating to a new 'opencode run'." >&2
@@ -24,6 +24,13 @@ export OPENCODE_RECURSION_GUARD=1
 if [ -z "${OMNIROUTE_API_KEY:-}" ] && [ -r "$OPENCODE_KEY_FILE" ]; then
   OMNIROUTE_API_KEY="$(head -n 1 "$OPENCODE_KEY_FILE")"
   export OMNIROUTE_API_KEY
+fi
+# 2026-11-22 PlainBoard bridge token for the MCP server "plainboard" in opencode.jsonc (600 file,
+# the host user's own token; opencode_task passes each caller's own token instead).
+OPENCODE_PLAINBOARD_TOKEN_FILE="${OPENCODE_PLAINBOARD_TOKEN_FILE:-$(dirname "$OPENCODE_KEY_FILE")/plainboard.token}"
+if [ -z "${PLAINBOARD_MCP_TOKEN:-}" ] && [ -r "$OPENCODE_PLAINBOARD_TOKEN_FILE" ]; then
+  PLAINBOARD_MCP_TOKEN="$(head -n 1 "$OPENCODE_PLAINBOARD_TOKEN_FILE")"
+  export PLAINBOARD_MCP_TOKEN
 fi
 
 if [ "${1:-}" = "run" ]; then

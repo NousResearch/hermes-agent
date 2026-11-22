@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
@@ -8,6 +8,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type * as ConfigApi from '@/api/config'
 import { $settingsRequestProfile } from '@/store/settings-scope'
 import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
+import { stubMenuDomApis } from '@/test/jsdom'
 
 import type { ConfigSettings as ConfigSettingsType } from './config-settings'
 
@@ -29,7 +30,8 @@ vi.mock('@/hermes', async () => ({
   // suite passes.
   profileScopeKey: (scope?: unknown) => (typeof scope === 'string' && scope.trim()) || 'default',
   getHermesConfigRecord: (profile?: string) => getHermesConfigRecord(profile),
-  getHermesConfigSchema: () => getHermesConfigSchema(),
+  getHermesConfigSchema: (profile?: string) => getHermesConfigSchema(profile),
+  getProfiles: async () => ({ profiles: [] }),
   saveHermesConfig: (config: unknown, profile?: string) => saveHermesConfig(config, profile),
   getElevenLabsVoices: () => getElevenLabsVoices(),
   setApiRequestProfile: () => {}
@@ -82,20 +84,84 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function renderConfigSettings(activeSectionId = 'safety') {
+function renderConfigSettings(activeSectionId = 'safety', subpage?: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const importInputRef = createRef<HTMLInputElement>()
 
   render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ConfigSettings activeSectionId={activeSectionId} importInputRef={importInputRef} />
+        <ConfigSettings activeSectionId={activeSectionId} importInputRef={importInputRef} subpage={subpage} />
       </QueryClientProvider>
     </MemoryRouter>
   )
 
-  return { importInputRef }
+  return { client, importInputRef }
 }
+
+describe('ConfigSettings terminal plugin backends', () => {
+  beforeAll(stubMenuDomApis)
+
+  it('offers newly discovered backends after a schema refresh and saves the selected plugin', async () => {
+    // Regression for #158928: the frontend enum must not mask dynamic schema options.
+    getHermesConfigRecord.mockResolvedValue({ terminal: { backend: 'local' } })
+    getHermesConfigSchema.mockResolvedValue({
+      fields: { 'terminal.backend': { type: 'select', options: ['local'] } }
+    })
+    const { client } = renderConfigSettings('advanced', 'terminal')
+
+    expect((await screen.findByRole('combobox')).textContent).toContain('Local')
+    getHermesConfigSchema.mockResolvedValue({
+      fields: { 'terminal.backend': { type: 'select', options: ['local', 'plugin_sandbox'] } }
+    })
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ['hermes-config-schema', 'default'] })
+    })
+
+    fireEvent.click(screen.getByRole('combobox'))
+    const plugin = await screen.findByRole('option', { name: 'Plugin Sandbox' })
+    expect(saveHermesConfig).not.toHaveBeenCalled()
+    fireEvent.click(plugin)
+
+    await waitFor(
+      () => expect(saveHermesConfig).toHaveBeenCalledWith({ terminal: { backend: 'plugin_sandbox' } }, 'default'),
+      { timeout: 5000 }
+    )
+  })
+
+  it('uses the selected profile schema without silently replacing an unavailable backend', async () => {
+    getHermesConfigRecord.mockImplementation((profile: string) =>
+      Promise.resolve({ terminal: { backend: profile === 'default' ? 'default_sandbox' : 'retired_sandbox' } })
+    )
+    getHermesConfigSchema.mockImplementation((profile: string) =>
+      Promise.resolve({
+        fields: {
+          'terminal.backend': {
+            type: 'select',
+            options: ['local', profile === 'default' ? 'default_sandbox' : 'research_sandbox']
+          }
+        }
+      })
+    )
+    renderConfigSettings('advanced', 'terminal')
+    expect((await screen.findByRole('combobox')).textContent).toContain('Default Sandbox')
+
+    act(() => scopeProfileMock.set('research'))
+    await waitFor(() => expect(getHermesConfigSchema).toHaveBeenCalledWith('research'))
+    fireEvent.click(await screen.findByRole('combobox'))
+
+    const plugin = await screen.findByRole('option', { name: 'Research Sandbox' })
+    expect(screen.queryByRole('option', { name: 'Default Sandbox' })).toBeNull()
+    expect(screen.queryByRole('option', { name: 'Retired Sandbox' })).toBeNull()
+    expect(saveHermesConfig).not.toHaveBeenCalled()
+    fireEvent.click(plugin)
+
+    await waitFor(
+      () => expect(saveHermesConfig).toHaveBeenCalledWith({ terminal: { backend: 'research_sandbox' } }, 'research'),
+      { timeout: 5000 }
+    )
+  })
+})
 
 describe('ConfigSettings autosave', () => {
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {

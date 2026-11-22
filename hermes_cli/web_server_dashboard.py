@@ -694,7 +694,8 @@ def _dashboard_name_taken(name: Any, plugin_dir: Path, source: str, spellings: f
     if others:
         _log.warning(
             "Dashboard plugin at %s is not registered: its dashboard name '%s' is the name of the plugin "
-            "installed at %s; change name in %s/dashboard/manifest.json to this plugin's own name",
+            "installed at %s; change name in %s/dashboard/manifest.json to this plugin's own name (until then "
+            "its dashboard tab, files and backend are not shown)",
             plugin_dir, name, others[0], plugin_dir,
         )
     return bool(others)

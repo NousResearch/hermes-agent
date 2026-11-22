@@ -594,6 +594,7 @@ def recover_with_credential_pool(
 
     def _rotate_and_swap(default_status: int, label: str) -> bool:
         """Rotate away from the failed credential; True when a new entry was swapped in."""
+        nonlocal pool
         rotate_status = status_code if status_code is not None else default_status
         kwargs = {
             "status_code": rotate_status,
@@ -611,8 +612,27 @@ def recover_with_credential_pool(
         if isinstance(model, str) and model.strip():
             kwargs["model"] = model
         next_entry = pool.mark_exhausted_and_rotate(**kwargs)
+        refreshed_pool = None
         if next_entry is None:
-            return False
+            # A long-lived session owns an in-memory pool snapshot. Another login or
+            # process may have added a healthy sibling since this agent was created;
+            # the persist above preserves that row on disk but cannot add it to this
+            # pool instance. Reload once after rotation is exhausted so Retry can see
+            # newly available credentials without requiring a new conversation.
+            try:
+                from agent.credential_pool import load_pool
+
+                refreshed_pool = load_pool(pool.provider)
+            except Exception:
+                _ra().logger.debug("Credential pool reload after exhausted rotation failed", exc_info=True)
+                return False
+            if not credential_pool_matches_provider(
+                refreshed_pool, current_provider, base_url=getattr(agent, "base_url", None)
+            ):
+                return False
+            next_entry = refreshed_pool.mark_exhausted_and_rotate(**kwargs)
+            if next_entry is None:
+                return False
         if not credential_pool_entry_serves_endpoint(next_entry, getattr(agent, "base_url", None)):
             # Mixed same-provider pool (#68237): the entry serves another endpoint and _swap_credential
             # would rebind this session to it. Treat as no recovery, like a rotation that yields nothing.
@@ -621,6 +641,13 @@ def recover_with_credential_pool(
                 rotate_status, label, getattr(next_entry, "id", "?"),
             )
             return False
+        if refreshed_pool is not None:
+            pool = refreshed_pool
+            agent._credential_pool = refreshed_pool
+            _ra().logger.info(
+                "Credential %s (%s) — reloaded pool and found entry %s",
+                rotate_status, label, getattr(next_entry, "id", "?"),
+            )
         _ra().logger.info(
             "Credential %s (%s) — rotated to pool entry %s",
             rotate_status, label, getattr(next_entry, "id", "?"),

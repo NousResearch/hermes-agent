@@ -114,9 +114,9 @@ class Parser:
             while j < min(i + 4, self.n) and p[j] in "01234567":
                 j += 1
             self.i = j
-        elif nxt.isdigit():  # a backreference (or a 3-digit octal escape; not worth telling apart)
+        elif "0" <= nxt <= "9":  # a backreference (or a 3-digit octal escape; not worth telling apart)
             j = i + 2
-            while j < min(i + 4, self.n) and p[j].isdigit():
+            while j < min(i + 4, self.n) and "0" <= p[j] <= "9":
                 j += 1
             self.i = j
             return Node("other", i)

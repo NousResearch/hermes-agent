@@ -60,8 +60,8 @@ def parse(template, groups, names):
                 raise error(f"octal escape value \\{text[i + 1:j]} outside of range 0-0o377", template)
             literal.append(chr(code))
             i = j
-        elif nxt.isdigit():
-            j = i + 3 if text[i + 2:i + 3].isdigit() else i + 2
+        elif "0" <= nxt <= "9":  # ASCII only, as stdlib: a non-ASCII digit after `\1` is literal text
+            j = i + 3 if "0" <= text[i + 2:i + 3] <= "9" else i + 2
             group_ref(int(text[i + 1:j]))
             i = j
         elif nxt in _ESCAPES:

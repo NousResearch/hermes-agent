@@ -104,3 +104,18 @@ def test_build_all_wide_checks_a_wide_form_that_matching_already_built():
     finally:
         _engine.MAX_MEM = real
         hre.purge()
+
+
+def test_a_non_ascii_digit_after_a_backslash_is_never_a_group_or_octal_digit():
+    arabic_one = "\u0661"  # str.isdigit() is true for it; stdlib's parser reads only ASCII 0-9
+    for pattern, template, subject in (
+        (r"(a)", "\\1" + arabic_one, "a"),  # group 1, then the literal digit
+        (r"(a)" * 12, "\\1" + arabic_one, "a" * 12),  # not group 11
+        (r"(a)", "\\" + arabic_one, "a"),  # no group at all: the escape stays literal
+    ):
+        assert hre.sub(pattern, template, subject) == std.sub(pattern, template, subject)
+    for pattern, subject in (
+        ("x\\b[\\" + arabic_one + "]", "x" + arabic_one),  # an escaped Arabic digit in a class is a word character
+        ("(?<=\\" + arabic_one + ")b", arabic_one + "b"),  # a one-character lookbehind guard, not a backreference
+    ):
+        assert [m.span() for m in hre.finditer(pattern, subject)] == [m.span() for m in std.finditer(pattern, subject)]

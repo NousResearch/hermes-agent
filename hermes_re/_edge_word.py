@@ -43,7 +43,7 @@ def _tokens(member: str):
             end = member.find("}", i) + 1 or n
             yield "chr", None
             i = end
-        elif nxt.isdigit():
+        elif "0" <= nxt <= "9":  # an escaped non-ASCII digit is the digit itself (the literal branch)
             end = i + 1
             while end < min(i + 4, n) and member[end] in "01234567":
                 end += 1

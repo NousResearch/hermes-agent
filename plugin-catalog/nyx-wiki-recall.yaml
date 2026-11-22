@@ -9,7 +9,7 @@ tier: community
 category: memory
 # Catalog card image: 1200x600 (2:1) PNG at docs/banner.png, pinned to this sha.
 # Host is raw.githubusercontent.com, as required by the catalog README and validator.
-image: https://raw.githubusercontent.com/blacksmithFF/NyxWikiRecall/65ef3757d690ee63dc6013393a892f82459c54ef/docs/banner.png
+image: https://raw.githubusercontent.com/blacksmithFF/NyxWikiRecall/3921463a66fd559a4f43f81d21d3c63c51efbafc/docs/banner.png
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/blacksmithFF/NyxWikiRecall#readme
 readme: true

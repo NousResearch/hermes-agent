@@ -88,14 +88,17 @@ class Match:
     @property
     def lastindex(self):
         # The group that closed last: of those ending latest, the one whose `)` is last in the pattern.
+        # A group inside a trailing lookahead closes when the lookahead runs, at the end of the
+        # match (``stop``), however far past it the group's text reaches.
         pattern = self.re
         ranks = pattern._ranks
         if ranks is None:
             source = pattern.pattern
             ranks = pattern._ranks = _close_ranks(source if pattern._is_str else source.decode("latin-1"))
         best, best_key = None, (-1, -1)
+        stop = self._spans[0][1]
         for index in range(1, pattern.groups + 1):
-            end = self._spans[index][1]
+            end = min(self._spans[index][1], stop)
             if end >= 0 and (end, ranks[index]) > best_key:
                 best, best_key = index, (end, ranks[index])
         return best

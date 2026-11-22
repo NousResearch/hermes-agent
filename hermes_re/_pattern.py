@@ -391,7 +391,7 @@ class Pattern:
         data, mode, start, end, offsets, _, _ = self._open(string, 0, sys.maxsize)
         take, raw = self._texts(string, data, mode, offsets)
         out, last, done = [], 0, 0
-        for spans in self._spans(data, mode, start, end):
+        for spans in self._spans(data, mode, start, end) if maxsplit >= 0 else ():  # as stdlib: negative splits nothing
             a, e = spans[0]
             out.append(take(slice(last, a)))
             out.extend(take(slice(ga, ge)) if ga >= 0 else None for ga, ge in spans[1:])
@@ -406,14 +406,15 @@ class Pattern:
         take, raw = self._texts(string, data, mode, offsets)
         fill = repl if callable(repl) else _template(repl, self)
         out, last, done = [], 0, 0
-        for spans in self._spans(data, mode, start, end):
+        for spans in self._spans(data, mode, start, end) if count >= 0 else ():  # as stdlib: negative replaces nothing
             a, e = spans[0]
             out.append(take(slice(last, a)))
             if callable(fill):
                 piece = fill(Match(self, string, data, mode, spans, 0, sys.maxsize, offsets))
             else:
                 piece = fill
-            out.append(piece.encode("utf-8") if raw else piece)
+            if piece is not None:  # as stdlib: a callback returning None removes the match
+                out.append(piece.encode("utf-8") if raw else piece)
             last, done = e, done + 1
             if done == count:
                 break

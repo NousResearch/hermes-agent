@@ -310,17 +310,19 @@ def test_claim_staging_runs_the_controller_recorder_on_the_built_artifacts(
         ditto.write_text("#!/usr/bin/env bash\nset -e\n[ \"$1\" = -x ] && [ \"$2\" = -k ] && mkdir -p \"$4/Hermes.app\"\n", encoding="utf-8")
         ditto.chmod(0o755)
     receipts = tmp_path / "receipts.jsonl"
-    (step,) = [s for s in stager["steps"] if "scripts.releases.handoff stage" in s.get("run", "")]
-    replay = {**step, "env": {**stager.get("env", {}), **step.get("env", {}),
-                              "GITHUB_WORKSPACE": str(controller), "STAGING_RECEIPTS": str(receipts),
-                              "PATH": f"{extra_bin}{os.pathsep}{os.environ['PATH']}"}}
     context = {
         "inputs": _candidate_dispatch(COMMIT_TAG),
         "needs": {"validate": {"result": "success", "outputs": {
             "sha": SHA, "channel-build": "", "archive-tag": COMMIT_TAG, "legacy-commit-build": legacy}}},
         "github": {"workspace": str(controller)},
     }
-    workflow_steps.outputs(replay, context, cwd=controller)
+    # The record step, then the R2 upload, in the job's order.
+    for step in [s for s in stager["steps"] if any(module in s.get("run", "") for module in (
+            "scripts.bundles.release_artifacts record", "scripts.releases.handoff stage"))]:
+        replay = {**step, "env": {**stager.get("env", {}), **step.get("env", {}),
+                                  "GITHUB_WORKSPACE": str(controller), "STAGING_RECEIPTS": str(receipts),
+                                  "PATH": f"{extra_bin}{os.pathsep}{os.environ['PATH']}"}}
+        workflow_steps.outputs(replay, context, cwd=controller)
 
     calls = [json.loads(line) for line in receipts.read_text(encoding="utf-8").splitlines()]
     assert {call["module"] for call in calls} == {"scripts.bundles.release_artifacts", "scripts.releases.handoff"}
@@ -333,6 +335,25 @@ def test_claim_staging_runs_the_controller_recorder_on_the_built_artifacts(
                 assert path.is_relative_to(staged.resolve()), (flag, call)
     (record,) = [call for call in calls if call["module"] == "scripts.bundles.release_artifacts"]
     assert ("--legacy-commit-build" in record["argv"]) == (legacy == "true")
+
+
+@pytest.mark.parametrize("target", [*NATIVE_TARGETS, "termux"])
+def test_claim_staging_reads_the_unreviewed_packages_without_the_r2_secrets(target):
+    """Unzipping and recording the build leg's packages runs in a step that holds no secret; the
+    R2 credentials reach only the step that uploads what that step recorded."""
+    jobs = _workflow("desktop-bundled-release.yml")["jobs"]
+    stager = jobs[commit_claim_stagers(jobs)[target]]
+    assert "secrets." not in json.dumps(stager.get("env") or {})
+    readers = [step for step in stager["steps"]
+               if any(tool in step.get("run", "") for tool in ("release_artifacts record", "ditto", "unzip"))]
+    assert readers, target
+    for step in readers:
+        assert "secrets." not in json.dumps(step), (target, step.get("name"))
+    for step in stager["steps"]:
+        if "secrets." in json.dumps(step.get("env") or {}):
+            commands = [line.strip() for line in step["run"].splitlines() if line.strip()]
+            assert commands[0].startswith("root=") and "scripts.releases.handoff stage" in commands[1], (target, step["name"])
+            assert len([line for line in commands if not line.startswith("--")]) == 2, (target, step["name"])
 
 
 def test_untrusted_commit_legs_disable_persisted_credentials_and_strip_write_scopes():

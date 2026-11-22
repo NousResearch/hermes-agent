@@ -1518,6 +1518,27 @@ def _azure_foundry_catalog(normalized: str, force_refresh: bool) -> Optional[lis
         return None
 
 
+def _vertex_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
+    """Live Vertex Model Garden catalog (native ``publishers/google/models``).
+
+    The OpenAI-compatible chat endpoint has no ``/models`` route, so the picker previously served only
+    a hand-maintained static list that lagged new Gemini releases (``gemini-4-carbon`` / ``neon``).
+    Query the native catalog and merge curated-first so the static floor (and its silent default) is
+    preserved while newly released models surface without a Hermes release. None on any miss keeps the
+    curated floor. Mirrors ``_bedrock_catalog``'s delegate-to-adapter shape.
+    """
+    try:
+        from agent.vertex_adapter import vertex_model_ids_or_none
+
+        live = vertex_model_ids_or_none()
+    except Exception:
+        return None
+    if not live:
+        return None
+    curated = list(static_catalog(normalized))
+    return _merge_unique(curated, live, key=_model_dedup_key) if curated else live
+
+
 # Per-provider catalog sources tried before the generic profile fetch (a profile's ``picker_catalog``
 # hook fills the same slot, see ``_catalog_fetcher``). A fetcher returning None falls through to the
 # profile/curated path; a list is returned as-is (even empty).
@@ -1537,7 +1558,8 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
     "openai-api": _openai_catalog,
     "custom": _custom_catalog,
     "bedrock": _bedrock_catalog,
-    "azure-foundry": _azure_foundry_catalog}
+    "azure-foundry": _azure_foundry_catalog,
+    "vertex": _vertex_catalog}
 
 
 # ``-free`` slugs the relay still LISTS but no longer serves: the Go-only twin (``ox-alpha-free``)

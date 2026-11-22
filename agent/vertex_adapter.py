@@ -251,3 +251,86 @@ def has_explicit_vertex_config() -> bool:
         return True
     sa_path = _get_secret("VERTEX_CREDENTIALS_PATH")
     return bool(sa_path and os.path.isfile(sa_path) and os.access(sa_path, os.R_OK))
+
+
+# Non-chat Gemini families excluded from the chat/agentic model picker. The native Model Garden
+# catalog lists every publisher model (embeddings, TTS, transcribe, live, image, robotics); the
+# picker only offers text/chat generation models, mirroring the curated static floor.
+_VERTEX_NON_CHAT_MARKERS = (
+    "embedding", "tts", "transcribe", "live", "image", "nano-banana",
+    "robotics", "computer-use", "aqa", "text-", "bison", "codechat", "gecko",
+)
+_VERTEX_CHAT_STAGES = {"GA", "PUBLIC_PREVIEW"}
+
+
+def _vertex_catalog_hosts(region: str) -> list[str]:
+    """Model Garden catalog hosts to try, region-first with global fallback.
+
+    Multi-region ``us``/``eu`` are served from the ``aiplatform.{region}.rep.googleapis.com`` replica
+    host; regional locations use ``{region}-aiplatform.googleapis.com``; ``global`` uses the bare host.
+    """
+    if region == "global":
+        return ["aiplatform.googleapis.com"]
+    return [
+        f"{region}-aiplatform.googleapis.com",
+        f"aiplatform.{region}.rep.googleapis.com",
+        "aiplatform.googleapis.com",
+    ]
+
+
+def vertex_model_ids_or_none() -> Optional[list[str]]:
+    """Live Vertex Model Garden chat catalog as ``google/<model-id>`` ids, or None on any miss.
+
+    The OpenAI-compatible chat endpoint (:func:`build_vertex_base_url`) has no ``/models`` route, so
+    the picker historically fell back to a hand-maintained static list that lagged new Gemini releases
+    (e.g. ``gemini-4-carbon`` / ``gemini-4-neon``). This queries the native ``publishers/google/models``
+    REST catalog instead — a free metadata call (no inference, no billing). Gated on
+    :func:`has_explicit_vertex_config` so an ambient ``GOOGLE_APPLICATION_CREDENTIALS`` never triggers
+    egress from the picker. Returns None when unconfigured, credential-less, unreachable, or empty,
+    letting the curated static floor serve.
+    """
+    if not has_explicit_vertex_config():
+        return None
+    token, project_id = get_vertex_credentials()
+    if not token or not project_id:
+        return None
+    try:
+        import httpx
+    except ImportError:
+        return None
+    region = _resolve_region()
+    headers = {"Authorization": f"Bearer {token}", "x-goog-user-project": project_id}
+    for host in _vertex_catalog_hosts(region):
+        url = f"https://{host}/v1beta1/publishers/google/models"
+        ids: list[str] = []
+        page_token: Optional[str] = None
+        try:
+            for _ in range(20):  # pagination safety cap
+                params: dict[str, Any] = {"pageSize": 200}
+                if page_token:
+                    params["pageToken"] = page_token
+                resp = httpx.get(url, headers=headers, params=params, timeout=10.0)
+                if resp.status_code != 200:
+                    break
+                payload = resp.json()
+                for entry in payload.get("publisherModels", []) or []:
+                    name = str(entry.get("name") or "")
+                    model_id = name.rsplit("/", 1)[-1].strip()
+                    if not model_id or not model_id.startswith("gemini"):
+                        continue
+                    stage = str(entry.get("launchStage") or "").upper()
+                    if stage and stage not in _VERTEX_CHAT_STAGES:
+                        continue
+                    low = model_id.lower()
+                    if any(marker in low for marker in _VERTEX_NON_CHAT_MARKERS):
+                        continue
+                    ids.append(f"google/{model_id}")
+                page_token = payload.get("nextPageToken")
+                if not page_token:
+                    break
+            if ids:
+                return list(dict.fromkeys(ids))  # order-preserving dedupe
+        except Exception:
+            logger.debug("Vertex Model Garden catalog probe failed for %s", host, exc_info=True)
+            continue
+    return None

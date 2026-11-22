@@ -1,0 +1,45 @@
+/* The page hero (page-hero.tsx; DESIGN.md › Page hero): a band of artwork behind the top of a page's
+   stage, Figma's masked "interference tide" (agent history 18563:12855). Each art is ONE baked image
+   per theme with Figma's fade already in it, painted once with a single blend mode: dark screens a
+   navy-on-black image (black is a no-op), light multiplies a blue-on-white one (white is a no-op),
+   so the band fades into whatever veil the stage paints with no mask, filter or gradient at paint
+   time. It sits still while the page scrolls (no fixed attachment). A control drawn over the band
+   needs a solid fill of its own: a translucent one vanishes over the art's brightest part. Only the
+   redesign renders it; every rule gates on the root through :where(), which adds no specificity. */
+
+:where(:root[data-shell='portal']) .portal-page-hero {
+  /* The baked band: Figma's 1024px-wide image, the 536px of it the fade leaves visible. */
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: var(--page-stage-nav, 0px) 0;
+  min-width: 64rem;
+  aspect-ratio: 1024 / 536;
+  background: var(--page-hero-art) left top / cover no-repeat;
+  mix-blend-mode: var(--page-hero-blend);
+  pointer-events: none;
+}
+
+/* The content after the hero paints over it: positioned elements paint after in-flow ones, so the
+   stage's following children join it as positioned (relative) boxes. */
+:where(:root[data-shell='portal']) .portal-page-hero ~ :where(*) {
+  position: relative;
+}
+
+:where(:root[data-shell='portal'].dark) .portal-page-hero {
+  --page-hero-blend: screen;
+}
+
+:where(:root[data-shell='portal']:not(.dark)) .portal-page-hero {
+  --page-hero-blend: multiply;
+}
+
+/* Interference tide (18563:12855 dark; 18563:29970 light, where Figma excludes a grey cut of the art
+   from the panel and lightens it with the brand blue; the light asset is that result divided out of
+   the light panel). Dark is 1536x804 (1.5x), light 1024x536 (its Figma source is 1024 wide). */
+:where(:root[data-shell='portal'].dark) .portal-page-hero[data-art='tide'] {
+  --page-hero-art: url('../../assets/page-hero-tide-dark.avif');
+}
+
+:where(:root[data-shell='portal']:not(.dark)) .portal-page-hero[data-art='tide'] {
+  --page-hero-art: url('../../assets/page-hero-tide-light.avif');
+}

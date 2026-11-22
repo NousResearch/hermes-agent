@@ -37,6 +37,7 @@ import { useHermesConfigRecord } from '../hooks/use-config-record'
 import { openSession } from '../open-session'
 import { Panel } from '../overlays/panel'
 import { PageHeader, PageTabs } from '../redesign/page-header'
+import { PageHero } from '../redesign/page-hero'
 import { SETTINGS_ROUTE } from '../routes'
 import { useRoutinesPageLinks } from '../routines/agent-routines'
 import { getNested } from '../settings/helpers'
@@ -51,6 +52,7 @@ import { AgentHistory } from './history'
 import { agentMachine, rememberViewedAgent } from './landing'
 import { AgentOverviewActions } from './overview-actions'
 import { agentOverviewQueries } from './overview-queries'
+import { useAgentSettingsEditorCopy } from './settings-copy'
 import { agentCapabilityCounts } from './settings-counts'
 import { AgentSettingsEditor } from './settings-editor'
 import { AgentSettingsPanel, useInlineAgentSettingsMenu } from './settings-panel'
@@ -241,10 +243,10 @@ interface AgentManagementHeaderProps {
 }
 
 function AgentManagementHeader({ gateway, onOpenChat, owner, profile, tabs }: AgentManagementHeaderProps) {
-  const { t } = useI18n()
   const c = useAgentSettingsCopy()
+  const { generalPage } = useAgentSettingsEditorCopy()
   const colors = useStore($profileColors)
-  const machineState = useStore($gatewayState)
+  const connected = useStore($gatewayState) === 'open'
 
   return (
     <PageHeader
@@ -256,21 +258,17 @@ function AgentManagementHeader({ gateway, onOpenChat, owner, profile, tabs }: Ag
           <AgentOverviewActions owner={owner} profile={profile} />
         </>
       }
-      description={
-        <span className="agent-management-meta">
-          <span className="agent-management-machine">
-            <span
-              aria-label={machineState === 'open' ? c.connected : c.disconnected}
-              className="portal-machine-state"
-              data-connected={machineState === 'open'}
-              role="img"
-            />
-            {gateway}
-          </span>
-          {profile?.path && <PathText className="agent-management-path" path={profile.path} />}
-          {profile?.is_default && <span className="agent-management-default">{t.profiles.defaultBadge}</span>}
+      // The machine beside the name (18563:12863): green while this window's gateway is connected.
+      badge={
+        <span className="agent-management-machine" data-connected={connected}>
+          {gateway}
+          <span className="sr-only">{connected ? c.connected : c.disconnected}</span>
         </span>
       }
+      description={
+        profile?.is_default && <span className="agent-management-role">{generalPage.defaultAgent}</span>
+      }
+      eyebrow={profile?.path && <PathText className="agent-management-path" path={profile.path} />}
       leading={
         <FigmaAgentIcon
           className="agent-management-avatar [&>img]:brightness-0 dark:[&>img]:brightness-100"
@@ -471,6 +469,7 @@ function AgentSettingsContent({
       ) : (
         <AgentNavigation connectionId={connectionId} profile={owner.profile} />
       )}
+      <PageHero art="tide" />
       <AgentManagementHeader
         gateway={machine}
         onOpenChat={openChat}
@@ -486,6 +485,7 @@ function AgentSettingsContent({
               { id: 'settings', label: t.commandCenter.settings }
             ]}
             value={selectedTab}
+            variant="segmented"
           />
         }
       />

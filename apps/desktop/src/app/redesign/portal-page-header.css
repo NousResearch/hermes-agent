@@ -45,7 +45,47 @@
   grid-area: leading;
 }
 
-:where(:root[data-shell='portal']) .portal-page-header-title > h1 {
+/* An eyebrow line over the H1 (18563:12868): the actions centre on the eyebrow and H1 rows. */
+:where(:root[data-shell='portal']) .portal-page-header-title[data-eyebrow] {
+  grid-template-areas:
+    'eyebrow actions'
+    'title actions'
+    'description description';
+}
+
+:where(:root[data-shell='portal']) .portal-page-header-title[data-leading][data-eyebrow] {
+  grid-template-areas:
+    'leading eyebrow actions'
+    'leading title actions'
+    'leading description description';
+}
+
+:where(:root[data-shell='portal']) .portal-page-header-eyebrow {
+  display: flex;
+  min-width: 0;
+  grid-area: eyebrow;
+  margin-bottom: 0.25rem;
+  color: var(--ui-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-caption-size);
+  letter-spacing: var(--portal-tracking-caption);
+  line-height: 1.6;
+}
+
+/* The H1 with its chip beside it (18563:12861), the chip centred on the H1's line. */
+:where(:root[data-shell='portal']) .portal-page-header-name {
+  display: flex;
+  min-width: 0;
+  grid-area: title;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+:where(:root[data-shell='portal']) .portal-page-header-name > :not(h1) {
+  flex-shrink: 0;
+}
+
+:where(:root[data-shell='portal']) :is(.portal-page-header-title, .portal-page-header-name) > h1 {
   grid-area: title;
   min-width: 0;
   /* Clip the inline axis only: the display face's descenders reach below its 1.1 line box, and
@@ -138,6 +178,59 @@
   color: var(--ui-text-tertiary);
 }
 
+/* ── Segmented tabs (18563:12870) ──
+   One filled track (control fill, r6, 3px inset) whose selected tab is filled in the brand colour; the
+   tabs keep the equal widths and the 32px tab height, so the track is 36 (48 on touch). */
+
+:where(:root[data-shell='portal']) .portal-page-tabs[data-variant='segmented'] {
+  border-bottom: 0;
+}
+
+:where(:root[data-shell='portal']) .portal-page-tabs[data-variant='segmented'] .portal-page-tabs-list {
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--portal-radius-surface);
+  background-color: var(--portal-control-fill);
+}
+
+:where(:root[data-shell='portal']) .portal-page-tabs[data-variant='segmented'] .portal-page-tabs-list > [role='tab'] {
+  height: calc(var(--portal-page-tab-height) - 2px);
+  margin-bottom: 0;
+  padding: 0 0.75rem;
+  border-bottom: 0;
+  border-radius: var(--portal-radius-control);
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 600;
+}
+
+:where(:root[data-shell='portal'])
+  .portal-page-tabs[data-variant='segmented']
+  .portal-page-tabs-list
+  > [role='tab']:hover:not([aria-selected='true']) {
+  background-color: var(--portal-control-fill-hover);
+  color: var(--ui-text-primary);
+}
+
+:where(:root[data-shell='portal'])
+  .portal-page-tabs[data-variant='segmented']
+  .portal-page-tabs-list
+  > [aria-selected='true'] {
+  background-color: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
+}
+
+:where(:root[data-shell='portal'])
+  .portal-page-tabs[data-variant='segmented']
+  .portal-page-tabs-list
+  > [role='tab']:focus-visible {
+  outline-offset: var(--portal-focus-ring-outset);
+}
+
+:where(:root[data-shell='portal']) .portal-page-tabs[data-variant='segmented'] [aria-selected='true'] > .portal-page-tab-count {
+  color: inherit;
+}
+
 /* Compact (breakpoints.ts: max-width 639.98px): the actions take their own row under the titles and
    the tabs keep their own widths in one scrolling row. */
 @media (max-width: 639.98px) {
@@ -152,6 +245,22 @@
   :where(:root[data-shell='portal']) .portal-page-header-title[data-leading] {
     grid-template-columns: auto minmax(0, 1fr);
     grid-template-areas:
+      'leading title'
+      'leading description'
+      'actions actions';
+  }
+
+  :where(:root[data-shell='portal']) .portal-page-header-title[data-eyebrow] {
+    grid-template-areas:
+      'eyebrow'
+      'title'
+      'description'
+      'actions';
+  }
+
+  :where(:root[data-shell='portal']) .portal-page-header-title[data-leading][data-eyebrow] {
+    grid-template-areas:
+      'leading eyebrow'
       'leading title'
       'leading description'
       'actions actions';
@@ -179,5 +288,13 @@
 
   :where(:root[data-shell='portal']) .portal-page-tabs-list > [role='tab']:first-child {
     padding-inline-start: 0;
+  }
+}
+
+/* Compact keeps the segmented track content-sized (its tabs keep their own padding: the rules above
+   out-rank the compact tab insets). */
+@media (max-width: 639.98px) {
+  :where(:root[data-shell='portal']) .portal-page-tabs[data-variant='segmented'] .portal-page-tabs-list {
+    width: max-content;
   }
 }

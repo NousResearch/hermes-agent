@@ -1,6 +1,8 @@
 /* The column is the page stage contract's (portal-pages.css). No bottom padding: the scrollers run
    to the stage's edge and keep their own end space. */
 [data-page-surface] .management-panel.agent-management {
+  /* The page hero's containing block (page-hero.css). */
+  position: relative;
   padding-block: var(--portal-page-top) 0;
   font-family: var(--portal-font-body);
 }
@@ -18,27 +20,44 @@
   margin: auto;
 }
 
-/* Meta row (877:4183): status dot, machine at .6, path at .4, DEFAULT chip. */
-.agent-management-meta {
-  display: flex;
-  align-items: center;
-  white-space: nowrap;
-  gap: 8px;
-  color: var(--ui-text-quaternary);
-  font-size: var(--portal-type-ui-size);
-  letter-spacing: var(--portal-tracking-ui);
-  line-height: 1.4;
-}
-
-.agent-management-meta > span:not([data-slot='path-text']) {
-  flex-shrink: 0;
-}
-
+/* The machine chip beside the name (18563:12863): 10px caps on the status green, black ink, as the
+   sign-in steps' "ok" badge; the quiet waiting fill while this window's gateway is not connected. */
 .agent-management-machine {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  color: var(--ui-text-secondary);
+  padding: 0.1875rem 0.25rem;
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-badge-waiting-fill);
+  color: var(--portal-badge-waiting-ink);
+  font-size: var(--portal-type-caption-size);
+  font-weight: 500;
+  letter-spacing: var(--portal-tracking-caption);
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.agent-management-machine[data-connected='true'] {
+  background-color: var(--portal-badge-ok-fill);
+  color: var(--portal-badge-ink);
+}
+
+/* The overflow sits on the hero's brightest corner: it takes the solid floating fill (page-hero.css). */
+:root[data-shell='portal'] .agent-management .portal-page-header .portal-page-header-actions button[data-variant='secondary'] {
+  background-color: var(--portal-surface-elevated);
+}
+
+/* The description row is held for every agent (one 14px line at 1.4 and its 6px gap), so the tab
+   bar lands at one y whether the agent is the default (which fills it) or not. */
+:root[data-shell='portal'] .agent-management .portal-page-header-title {
+  grid-template-rows: auto auto minmax(1.6rem, auto);
+}
+
+/* "DEFAULT AGENT" under the name (18563:12868): the 10px caps caption at the quiet ink. */
+.agent-management-role {
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-caption-size);
+  letter-spacing: var(--portal-tracking-caption);
+  line-height: 1.6;
+  text-transform: uppercase;
 }
 
 /* Warning banner (877:4212, 878:7066): the danger tint and stroke, r4, orange warn glyph. */

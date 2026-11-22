@@ -172,7 +172,7 @@ export function HistoryPreview({
       <DialogContent
         blurBackdrop={false}
         bodyClassName="agent-history-preview-body"
-        className="agent-history-preview translate-x-0 translate-y-0"
+        className="agent-history-panel agent-history-preview translate-x-0 translate-y-0"
         overlayClassName="agent-history-preview-scrim"
         showCloseButton={false}
         style={{ '--titlebar-height': `${titlebarHeightNow()}px` } as CSSProperties}
@@ -511,10 +511,15 @@ export function HistoryCleanupDialog({ owner, current, onClose, onDeleted, initi
       }}
       open
     >
+      {/* A panel at the stage's trailing edge (18563:13123), as the preview is: the same dialog,
+          docked, so focus, Escape and the scrim behave as every dialog does. */}
       <DialogContent
         blurBackdrop={false}
-        className="agent-history-dialog agent-history-cleanup-dialog"
+        bodyClassName="agent-history-preview-body"
+        className="agent-history-panel agent-history-cleanup-dialog translate-x-0 translate-y-0"
+        overlayClassName="agent-history-preview-scrim"
         showCloseButton={false}
+        style={{ '--titlebar-height': `${titlebarHeightNow()}px` } as CSSProperties}
       >
         <DialogHeader>
           <DialogTitle>{c.cleanupTitle}</DialogTitle>

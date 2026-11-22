@@ -3,6 +3,8 @@ import { useLocation } from 'react-router'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { usePortalShell } from '@/store/shell-variant'
 
+import { PageHero } from '../redesign/page-hero'
+
 import { type PageFrameKind, PageHeaderSkeleton, usePageFrame } from './page-header-skeleton'
 import { PAGE_SIDEBAR_NARROW, PageSidebarPanel } from './page-sidebar'
 import { Panel } from './panel'
@@ -25,6 +27,7 @@ export function PageFrameFallback({ frame, onClose }: PageFrameFallbackProps) {
   return (
     <Panel contentClassName="page-frame-fallback page-stage" onClose={onClose}>
       {page.panel && <PageSidebarPanel title={page.panel}>{null}</PageSidebarPanel>}
+      {page.hero && <PageHero art={page.hero} />}
       <PageHeaderSkeleton frame={page} />
     </Panel>
   )

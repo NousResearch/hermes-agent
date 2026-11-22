@@ -16,6 +16,10 @@ interface PageHeaderProps extends Omit<ComponentProps<'header'>, 'title'> {
   description?: ReactNode
   /** A tile before the titles (the agent avatar); it spans the title and description rows. */
   leading?: ReactNode
+  /** A small line above the H1 (the agent's home path). */
+  eyebrow?: ReactNode
+  /** A chip beside the H1, outside the heading's name (the agent's machine). */
+  badge?: ReactNode
   /** Controls at the end of the H1 row. */
   actions?: ReactNode
   /** A `PageTabs` row. With tabs the title block always reserves its full height, so the tab bar
@@ -23,12 +27,36 @@ interface PageHeaderProps extends Omit<ComponentProps<'header'>, 'title'> {
   tabs?: ReactNode
 }
 
-export function PageHeader({ actions, className, description, leading, tabs, title, ...props }: PageHeaderProps) {
+export function PageHeader({
+  actions,
+  badge,
+  className,
+  description,
+  eyebrow,
+  leading,
+  tabs,
+  title,
+  ...props
+}: PageHeaderProps) {
+  const heading = <h1>{title}</h1>
+
   return (
     <header className={cn('portal-page-header', className)} data-tabs={tabs ? '' : undefined} {...props}>
-      <div className="portal-page-header-title" data-leading={leading ? '' : undefined}>
+      <div
+        className="portal-page-header-title"
+        data-eyebrow={eyebrow ? '' : undefined}
+        data-leading={leading ? '' : undefined}
+      >
         {leading && <div className="portal-page-header-leading">{leading}</div>}
-        <h1>{title}</h1>
+        {eyebrow && <div className="portal-page-header-eyebrow">{eyebrow}</div>}
+        {badge ? (
+          <div className="portal-page-header-name">
+            {heading}
+            {badge}
+          </div>
+        ) : (
+          heading
+        )}
         {description && <div className="portal-page-header-description">{description}</div>}
         {actions && <div className="portal-page-header-actions">{actions}</div>}
       </div>
@@ -47,6 +75,9 @@ export interface PageTab {
 interface PageTabsProps {
   /** The tab list's accessible name. */
   label: string
+  /** `underline` (default): tabs over a hairline rail. `segmented`: one filled track whose selected
+   *  tab is filled in the brand colour (the agent page, 18563:12870). Roles and keys are the same. */
+  variant?: 'segmented' | 'underline'
   tabs: readonly PageTab[]
   value: string
   onChange: (id: string) => void
@@ -65,7 +96,7 @@ const MIRRORED: Record<string, string> = { ArrowLeft: 'ArrowRight', ArrowRight: 
  *  selected one. Every tab takes the widest tab's width and a count reserves its room while it
  *  loads, so neither switching tabs nor a count arriving moves anything. Arrow keys, Home and End
  *  move between tabs and select them (WAI-ARIA tabs, automatic activation). */
-export function PageTabs({ label, onChange, tabs, value }: PageTabsProps) {
+export function PageTabs({ label, onChange, tabs, value, variant = 'underline' }: PageTabsProps) {
   const listRef = useRef<HTMLDivElement>(null)
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -84,7 +115,7 @@ export function PageTabs({ label, onChange, tabs, value }: PageTabsProps) {
   }
 
   return (
-    <div className="portal-page-tabs" data-tour="page-tabs">
+    <div className="portal-page-tabs" data-tour="page-tabs" data-variant={variant}>
       <div aria-label={label} className="portal-page-tabs-list" onKeyDown={onKeyDown} ref={listRef} role="tablist">
         {tabs.map(tab => {
           const selected = tab.id === value

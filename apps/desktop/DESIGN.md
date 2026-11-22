@@ -1169,6 +1169,11 @@ the content; without tabs the content follows after the page rhythm, 32. `PageTa
 tab list (arrows, Home, End; roving focus) whose tabs all take the widest tab's width, and a count
 reserves three digits while it loads, so switching tabs or a count arriving never moves a neighbour.
 On compact the actions take their own row and the tabs keep their own widths in one row that scrolls sideways when it must (44px on touch).
+Two optional slots extend the title block: `eyebrow` (a caption line over the H1, the agent's home
+path) and `badge` (a chip beside the H1 that stays out of the heading's accessible name, the agent's
+machine). `PageTabs variant="segmented"` (the agent page, 18563:12870) draws the same tab list as one
+filled track (control fill, r6, 3px inset, 36 tall) whose selected tab is filled in the brand colour;
+roles, roving focus and keys are the underline bar's.
 A page that loads in fills its first paint with placeholders shaped like the loaded content
 (`SettingsCardSkeleton`: the card's 64px rows and 48px add row), never arbitrary spacers.
 
@@ -1178,6 +1183,29 @@ inset; its sides keep `--page-content-inset` at least (16 on compact); the heade
 (24 under tabs, the page rhythm without), which the content under it never adds to; and a page
 scroller ends `--portal-page-end-space` above the floor. Global Settings keeps its own frame
 (`--portal-settings-*`), and a conversation keeps the chat column.
+
+### Page hero (`app/redesign/page-hero.tsx`)
+
+A band of artwork behind the top of a page's stage that fades into the page (agent History
+18563:12658; Account & Plan and Machines carry the same band with their own art). `<PageHero
+art="tide" />` takes the art as a variant (`PageHeroArt`) and renders one decorative, `aria-hidden`,
+pointer-transparent box. Mount it as a child of the stage, after the page sidebar panel and before
+the header: it is absolutely positioned at the stage's top from `--page-stage-nav` to the trailing
+edge, at least 1024px wide at Figma's 1024:536 aspect (wider stages scale it), and the stage must be
+its containing block (`position: relative`). Its following siblings become `position: relative` so
+they paint over it. The page frame placeholder carries it too (`PageFrame.hero`), so it does not pop
+in when the page's code lands.
+
+Each art is two baked images in `src/assets/` (`page-hero-<art>-dark.avif`, `-light.avif`) with
+Figma's fade already in them, painted with one blend mode and nothing else: dark `screen`s a
+navy-on-black image (black is a no-op), light `multiply`s a blue-on-white one (white is a no-op), so
+the band fades into whatever veil the stage paints. No mask, filter, gradient or fixed attachment at
+paint time; it sits still while the page scrolls. The light asset is Figma's light treatment (the art
+excluded from the panel, then lightened with the brand blue) divided back out of the light panel's
+ground. Keep each under ~150KB (tide: 101KB dark at 1.5x, 35KB light). A new art is a new
+`PageHeroArt` value plus its two `--page-hero-art` rules in `page-hero.css`. A control drawn over
+the band needs a solid fill of its own: a translucent ink fill vanishes over the art's brightest part
+(the agent header's overflow button takes `--portal-surface-elevated`).
 
 ### Routines (`app/routines/`)
 

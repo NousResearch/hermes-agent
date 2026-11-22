@@ -173,6 +173,23 @@ it('removes applied filter chips independently without resetting the other filte
   expect(screen.getByRole('button', { name: 'Filter' })).toBeTruthy()
 })
 
+it('reports a finished delete as a status naming only what happened, until it is dismissed', async () => {
+  vi.mocked(deleteHistorySelection).mockResolvedValue({ deleted: ['history-0'], running: [], changed: [], errors: [] })
+  renderHistory()
+  await screen.findByText('History entry 24')
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Selected: History entry 0' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+  const confirmation = await screen.findByRole('dialog')
+  fireEvent.click(within(confirmation).getByRole('button', { name: 'Delete 1 item' }))
+
+  const report = await screen.findByText('Deleted: 1')
+  const status = report.closest('[role="status"]') as HTMLElement
+  expect(status).toBeTruthy()
+  expect(within(status).queryByText(/Errors/)).toBeNull()
+  fireEvent.click(within(status).getByRole('button', { name: 'Close' }))
+  expect(screen.queryByText('Deleted: 1')).toBeNull()
+})
+
 it('shows partial selection and selects or clears the visible history together', async () => {
   renderHistory()
   await screen.findByText('History entry 24')

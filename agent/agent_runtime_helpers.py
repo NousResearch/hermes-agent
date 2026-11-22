@@ -398,6 +398,9 @@ def repair_message_sequence_with_cursor(agent, messages: list[dict]) -> int:
     return repairs
 
 
+_REASONING_BLOCK_TYPES = frozenset({"thinking", "reasoning", "redacted_thinking"})
+
+
 def _flatten_content_text(content: Any) -> str:
     """Flatten list/dict content (e.g. Anthropic-via-OpenRouter block lists) to text: a raw list
     hitting ``re.sub`` raises TypeError and the loop retries forever. Thinking/reasoning blocks
@@ -410,11 +413,13 @@ def _flatten_content_text(content: Any) -> str:
             for part in content
             if isinstance(part, str) or (
                 isinstance(part, dict)
-                and str(part.get("type") or "").strip().lower() not in {"thinking", "reasoning", "redacted_thinking"}
+                and str(part.get("type") or "").strip().lower() not in _REASONING_BLOCK_TYPES
                 and isinstance(part.get("text"), str) and part.get("text")
             )
         )
     if isinstance(content, dict):
+        if str(content.get("type") or "").strip().lower() in _REASONING_BLOCK_TYPES:
+            return ""
         return str(content.get("text") or content.get("content") or "")
     return str(content)
 

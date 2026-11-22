@@ -2710,6 +2710,19 @@ class TestHandleMaxIterations:
         assert result == "Retry summary."
         assert agent.client.chat.completions.create.call_count == 2
 
+    def test_summary_dict_reasoning_block_retries_once(self, agent):
+        """A single dict-shaped reasoning block reads as empty (never leaks thought text) and retries once."""
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content={"type": "reasoning", "content": "private thought"}),
+            _mock_response(content={"type": "text", "text": "Dict summary."}),
+        ]
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Dict summary."
+        assert agent.client.chat.completions.create.call_count == 2
+
     def test_summary_request_removes_orphan_tool_result(self, agent):
         """Regression: max-iterations summary request must NOT contain
         orphan tool results (tool_call_id with no matching assistant tool_call)."""

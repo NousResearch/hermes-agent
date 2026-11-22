@@ -19,6 +19,7 @@ from persistence.sqlite._schema_ddl import (
 from persistence.sqlite.conversation._store.sql_common import _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _in_one_read, _placeholders
 from functools import partial
 from persistence.sqlite.conversation._store.compaction_display import later_tool_copy_ids, not_a_later_tool_copy_sql
+from persistence.conversation.durable_redaction import redact_message_content, redact_message_text
 from persistence.sqlite.conversation._store.core import REACTIONS_METADATA_KEY, _CONTENT_JSON_PREFIX, _CONVERSATION_ROW_COLUMNS
 from persistence.sqlite.conversation._store.identity import (
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none,
@@ -184,25 +185,6 @@ def _check_transcript_write_guards(holder: StoreHolder, conn, session_id: str, c
         raise CompressionSessionClosedError(session_id)
 
 
-def _durable_content_for_storage(content: Any) -> Any:
-    """``content`` as it lands in the transcript: text masked, everything else untouched.
-
-    Late import: ``agent.redact`` loads the vault registry, which must not run at
-    ``persistence`` import time. The masking itself lives beside the redactor so the
-    log path, the dump path, the transcript and the plugin payload cannot drift apart.
-    """
-    from agent.redact import redact_message_content
-
-    return redact_message_content(content)
-
-
-def _durable_api_content(api_content: Any) -> Any:
-    """The ``api_content`` sidecar masked the same way (it is the bytes replay would resend)."""
-    from agent.redact import redact_message_text
-
-    return redact_message_text(api_content) if isinstance(api_content, str) else api_content
-
-
 def _message_row_params(holder: StoreHolder, session_id: str, role: str, msg: dict[str, Any], tool_calls: Any,
     message_timestamp: float, *, keep_reasoning: bool) -> tuple:
     """Bind values for ``_INSERT_MESSAGE_SQL`` from one message dict (*tool_calls* already parsed;
@@ -211,9 +193,9 @@ def _message_row_params(holder: StoreHolder, session_id: str, role: str, msg: di
     _str_or_none = lambda v: _scrub_surrogates(v) if isinstance(v, str) else None
     api_content = msg.get("api_content")
     if isinstance(api_content, str):
-        api_content = _durable_api_content(api_content)
+        api_content = redact_message_text(api_content)
     _reasoning = lambda key: msg.get(key) if keep_reasoning else None
-    encoded_content = _encode_content(_durable_content_for_storage(msg.get("content")))
+    encoded_content = _encode_content(redact_message_content(msg.get("content")))
     encoded_tool_calls = json.dumps(tool_calls) if tool_calls else None
     encoded_tool_name = _scrub_surrogates(msg.get("tool_name"))
     display_metadata = msg.get("display_metadata")

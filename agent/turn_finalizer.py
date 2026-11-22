@@ -492,7 +492,10 @@ def _hook_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     cost.
     """
     try:
-        from agent.redact import redact_message_content, redact_message_text
+        from persistence.conversation.durable_redaction import (
+            redact_message_content,
+            redact_message_text,
+        )
         from hermes_cli.lifecycle import has_hook
     except ImportError:
         return list(messages)

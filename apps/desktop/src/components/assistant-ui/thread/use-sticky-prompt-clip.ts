@@ -68,8 +68,18 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
         continue
       }
 
+      // Only a pinned (sticky) prompt owns an exclusion. Process notifications
+      // and agent deliveries share the prompt's data-slot but scroll in flow
+      // (computed `top: auto`); taken as the "later prompt" while crossing the
+      // top edge, one stretched the clip from the real card down to its own
+      // bottom: an opaque band over the transcript below the pinned card.
+      const stickyTop = Number.parseFloat(getComputedStyle(prompt).top)
+
+      if (Number.isNaN(stickyTop)) {
+        continue
+      }
+
       const promptRect = prompt.getBoundingClientRect()
-      const stickyTop = Number.parseFloat(getComputedStyle(prompt).top) || 0
 
       if (promptRect.top > viewportTop + stickyTop + 1 || promptRect.bottom <= viewportTop) {
         continue
@@ -148,7 +158,15 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
     }
   }
 
-  const sizes = new ResizeObserver(schedule)
+  // Size changes are delivered after layout and before paint, in the frame
+  // whose geometry they describe. Measuring there (not one rAF later) matters
+  // when the viewport itself resizes: the browser clamps scrollTop, the
+  // content moves under a clip still sized for the old position, and for one
+  // painted frame a band below the pinned card hid the transcript.
+  const sizes = new ResizeObserver(() => {
+    cancelAnimationFrame(frame)
+    measure()
+  })
 
   const intersections = new IntersectionObserver(
     entries => {

@@ -145,3 +145,76 @@ it('clips only visible covered siblings, follows resize, and releases styles and
   expect(visible.reply.style.getPropertyValue('--sticky-prompt-clip')).toBe('')
   expect(disconnect).toHaveBeenCalledTimes(2)
 })
+
+// A subagent transcript pinned its task prompt while background-process
+// notifications (and agent deliveries) streamed in the same turn. Those notes
+// share the prompt's data-slot but are not sticky; one crossing the top edge
+// was taken as the "later" prompt and stretched the clip from the pinned card
+// down to its own bottom: an opaque band hiding the transcript under the card.
+// A viewport resize also left the clip one frame stale (it waited for a rAF).
+it('ignores non-sticky prompt-like rows and re-measures in the resize delivery itself', () => {
+  const viewport = window.document.createElement('div')
+  const content = window.document.createElement('div')
+  viewport.append(content)
+  vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(rect(0, 500))
+
+  const group = window.document.createElement('div')
+  group.dataset.slot = 'aui_message-group'
+  const prompt = window.document.createElement('div')
+  prompt.dataset.slot = 'aui_user-message-root'
+  prompt.style.top = '5px'
+  const reply = window.document.createElement('div')
+  const note = window.document.createElement('div')
+  note.dataset.slot = 'aui_user-message-root'
+  const after = window.document.createElement('div')
+  group.append(prompt, reply, note, after)
+  content.append(group)
+
+  const promptRect = vi.spyOn(prompt, 'getBoundingClientRect').mockReturnValue(rect(5, 60))
+  vi.spyOn(reply, 'getBoundingClientRect').mockReturnValue(rect(-400, 420))
+  // The note straddles the top edge and reaches far below the pinned card.
+  vi.spyOn(note, 'getBoundingClientRect').mockReturnValue(rect(-20, 200))
+  vi.spyOn(after, 'getBoundingClientRect').mockReturnValue(rect(180, 300))
+  vi.spyOn(group, 'getBoundingClientRect').mockReturnValue(rect(-400, 900))
+
+  let resize: ResizeObserverCallback = () => {}
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+  )
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      constructor(callback: ResizeObserverCallback) {
+        resize = callback
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+  )
+  // Never run rAF callbacks: everything below must happen without one.
+  vi.stubGlobal('requestAnimationFrame', () => 1)
+  vi.stubGlobal('cancelAnimationFrame', () => undefined)
+
+  renderHook(props => useStickyPromptClip(props), {
+    initialProps: { scrollRef: { current: viewport }, contentRef: { current: content }, paneVisible: true, rows: 'r' }
+  })
+
+  // Exclusion ends at the pinned card (5 + 60 = 65), not at the note's bottom (180).
+  expect(reply.style.getPropertyValue('--sticky-prompt-clip')).toBe('420px')
+  expect(after.hasAttribute('data-sticky-prompt-clip')).toBe(false)
+  expect(note.style.getPropertyValue('--sticky-prompt-clip')).toBe('85px')
+
+  // The card grows (viewport resize / clamp): the ResizeObserver delivery
+  // re-measures synchronously, before paint, with no animation frame.
+  promptRect.mockReturnValue(rect(5, 90))
+  vi.mocked(reply.getBoundingClientRect).mockReturnValue(rect(-380, 420))
+  act(() => resize([], {} as ResizeObserver))
+  expect(reply.style.getPropertyValue('--sticky-prompt-clip')).toBe('420px')
+  expect(note.style.getPropertyValue('--sticky-prompt-clip')).toBe('115px')
+})

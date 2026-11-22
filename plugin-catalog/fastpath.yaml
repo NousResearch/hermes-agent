@@ -1,0 +1,19 @@
+name: fastpath
+title: fastpath
+repo: https://github.com/siavashmirtaheri/fastpath-plugin
+sha: 4c5044b1bb6c14af8885fdcc4c42df4fb7c98be8
+description: "Context-diet plugin: compresses oversized tool results (head 60% + tail 40% + omission marker) before they enter the model context, cutting tokens, latency and cost. Adds /fastpath status|on|off|limit N|reset. Disclosure — local-only: no network, no shell, no credentials, no telemetry; writes only ~/.hermes/fastpath/state.json."
+maintainer: siavashmirtaheri
+tier: community
+category: tools
+requires_hermes: ">=0.23"
+version: "1.0.0"
+docs_url: https://github.com/siavashmirtaheri/fastpath-plugin#readme
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - transform_tool_result
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

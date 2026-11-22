@@ -16,13 +16,15 @@ Defect 2: the drain signaled the launchctl-supervised PID, which under
 the current template is the osascript wrapper — not the gateway child.
 The wrapper died on SIGUSR1, the real gateway survived on pre-update
 code holding the socket, and the fresh-PID wait misread the wrapper's
-death as a completed restart. Siblings now drain the state-file gateway
-PID (liveness-checked), falling back to the supervised PID only when no
-live gateway process answers.
+death as a completed restart. Siblings now drain the home-scoped,
+identity-verified gateway PID (``live_gateway_pid_for_home``, #109680 —
+a state-file PID that merely exists is not identity), falling back to
+the supervised PID only when no live gateway process answers.
 """
 
 from __future__ import annotations
 
+import os
 import plistlib
 from types import SimpleNamespace
 
@@ -143,21 +145,29 @@ class TestRefreshSiblingLaunchdPlist:
 
 
 class TestLaunchdRealGatewayPid:
-    def test_returns_the_liveness_checked_state_file_pid(self, monkeypatch, tmp_path):
+    def test_returns_the_identity_verified_gateway_pid(self, monkeypatch, tmp_path):
         home = tmp_path / "sibling-home"
         home.mkdir()
-        (home / "gateway_state.json").write_text('{"pid": 4242}')
         import gateway.status as status
 
-        monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == 4242)
-        monkeypatch.setattr(status, "read_runtime_status", lambda path: {"pid": 4242})
+        monkeypatch.setattr(status, "live_gateway_pid_for_home", lambda path: 4242)
         assert _launchd_real_gateway_pid(str(home)) == 4242
+
+    def test_recycled_state_file_pid_is_not_trusted(self, monkeypatch, tmp_path):
+        """#109680 seam: a state-file PID that merely exists is not identity. A record
+        pointing at a live but unrelated (recycled) process must yield no drain target."""
+        home = tmp_path / "sibling-home"
+        home.mkdir()
+        (home / "gateway_state.json").write_text(f'{{"pid": {os.getpid()}}}')
+        import gateway.status as status
+
+        monkeypatch.setattr(status, "live_gateway_pid_for_home", lambda path: None)
+        assert _launchd_real_gateway_pid(str(home)) is None
 
     def test_dead_or_missing_gateway_is_none(self, monkeypatch, tmp_path):
         import gateway.status as status
 
-        monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
-        monkeypatch.setattr(status, "read_runtime_status", lambda path: None)
+        monkeypatch.setattr(status, "live_gateway_pid_for_home", lambda path: None)
         assert _launchd_real_gateway_pid(str(tmp_path / "no-such-home")) is None
 
 
@@ -229,9 +239,11 @@ class TestSiblingRestartUsesRealGatewayAndRefresh:
             (sibling_home / "gateway_state.json").write_text(f'{{"pid": {state_pid}}}')
         import gateway.status as status
 
-        monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == state_pid)
+        # The fleet pass resolves the drain target through the home-scoped identity
+        # validator (#109680); stub that seam, not the raw state-file reader.
         monkeypatch.setattr(
-            status, "read_runtime_status", lambda path: {"pid": state_pid}
+            status, "live_gateway_pid_for_home",
+            lambda path: state_pid if state_pid else None,
         )
         return drained, refreshed, rec
 

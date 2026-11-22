@@ -22,6 +22,9 @@ _SCHEMA_LIST_KEYS = frozenset({"anyOf", "oneOf", "allOf", "prefixItems"})
 _SCHEMA_NODE_KEYS = frozenset(
     {"items", "contains", "not", "additionalProperties", "propertyNames", "if", "then", "else"}
 )
+# Keywords whose nodes constrain an enclosing instance rather than defining a
+# standalone scalar type.
+_WRAPPER_SCHEMA_KEYS = frozenset({"if", "then", "else", "oneOf", "allOf", "anyOf", "not"})
 
 _SCALAR_TYPES = frozenset({"string", "integer", "number", "boolean"})
 # bool before int: bool is an int subclass.
@@ -50,6 +53,11 @@ def _repair_schema(node: Any) -> Any:
         else:
             repaired[key] = value
 
+    # Moonshot rejects the non-standard ``nullable`` keyword. Strip it before
+    # ``anyOf`` early returns so unions emitted by ``_normalize_type_array``
+    # (``anyOf`` + ``nullable: true``) or all-null unions do not retain it.
+    repaired.pop("nullable", None)
+
     # Rule 2, plus: Moonshot rejects null-type branches inside anyOf. Drop
     # them; a single surviving branch is promoted into this node and falls
     # through to rules 1/3/4, otherwise the pruned anyOf is returned as-is.
@@ -62,9 +70,6 @@ def _repair_schema(node: Any) -> Any:
             repaired["anyOf"] = non_null
             return repaired
         repaired = {**{k: v for k, v in repaired.items() if k != "anyOf"}, **non_null[0]}
-
-    # Moonshot also rejects the non-standard ``nullable`` keyword.
-    repaired.pop("nullable", None)
 
     # Rule 1 ($ref nodes take their type from the referenced definition).
     # Runs before rule 3 so enum cleanup can see the type.
@@ -105,9 +110,10 @@ def _fill_missing_type(node: dict[str, Any]) -> dict[str, Any]:
     A type list collapses to its first concrete member; otherwise
     ``properties``/``required``/``additionalProperties`` → object,
     ``items``/``prefixItems`` → array, ``enum`` → type of its first value,
-    else ``string`` (safest scalar). A bare ``if``/``then``/``else`` node
-    constrains whatever instance it is attached to rather than describing
-    its own type, so it is left untyped instead of defaulting to ``string``.
+    else ``string`` (safest scalar). A conditional or combinator wrapper node
+    (``if``/``then``/``else``/``oneOf``/``allOf``/``anyOf``/``not``) constrains
+    whatever instance it is attached to rather than describing a standalone
+    scalar type, so it is left untyped instead of defaulting to ``string``.
     """
     node_type = node.get("type")
     if isinstance(node_type, list):
@@ -123,7 +129,7 @@ def _fill_missing_type(node: dict[str, Any]) -> dict[str, Any]:
     elif isinstance(node.get("enum"), list) and node["enum"]:
         sample = node["enum"][0]
         inferred = next((t for cls, t in _ENUM_SAMPLE_TYPES if isinstance(sample, cls)), "string")
-    elif "if" in node or "then" in node or "else" in node:
+    elif any(key in node for key in _WRAPPER_SCHEMA_KEYS):
         return node
     else:
         inferred = "string"

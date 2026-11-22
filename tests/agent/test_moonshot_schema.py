@@ -12,6 +12,7 @@ These tests cover the repairs applied by ``agent/moonshot_schema.py``.
 
 from __future__ import annotations
 
+import jsonschema
 import pytest
 
 from agent.moonshot_schema import (
@@ -19,6 +20,7 @@ from agent.moonshot_schema import (
     sanitize_moonshot_tool_parameters,
     sanitize_moonshot_tools,
 )
+from tools.schema_sanitizer import sanitize_tool_schemas
 
 
 class TestMoonshotModelDetection:
@@ -397,3 +399,132 @@ class TestUnionTypeList:
         assert sort["type"] == "string"
         assert sort["enum"] == ["asc", "desc"]
         assert params["properties"]["sort"]["type"] == ["string", "null"]
+
+
+class TestNullableAndCombinatorWrappers:
+    """``nullable`` must be stripped across ``anyOf`` shapes and combinators stay untyped."""
+
+    def test_full_sanitizer_pipeline_strips_nullable_on_multi_type_union(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "set_limit",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "limit": {
+                                "type": ["number", "string", "null"],
+                                "description": "Numeric or named limit",
+                            },
+                        },
+                        "required": ["limit"],
+                    },
+                },
+            }
+        ]
+
+        normalized = sanitize_tool_schemas(tools)
+        repaired = sanitize_moonshot_tools(normalized)
+
+        limit = repaired[0]["function"]["parameters"]["properties"]["limit"]
+        assert "nullable" not in limit
+        assert "type" not in limit
+        assert limit["anyOf"] == [{"type": "number"}, {"type": "string"}]
+        assert jsonschema.Draft202012Validator(repaired[0]["function"]["parameters"]).is_valid(
+            {"limit": 10}
+        )
+        assert jsonschema.Draft202012Validator(repaired[0]["function"]["parameters"]).is_valid(
+            {"limit": "unlimited"}
+        )
+
+    def test_anyof_with_nullable_stripped_across_union_shapes(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "multi_no_null": {
+                    "anyOf": [{"type": "integer"}, {"type": "string"}],
+                    "nullable": True,
+                },
+                "multi_with_null_and_type": {
+                    "type": "string",
+                    "anyOf": [{"type": "number"}, {"type": "string"}, {"type": "null"}],
+                    "nullable": True,
+                },
+                "all_null": {
+                    "anyOf": [{"type": "null"}],
+                    "nullable": True,
+                },
+            },
+        }
+
+        out = sanitize_moonshot_tool_parameters(params)
+        props = out["properties"]
+
+        assert "nullable" not in props["multi_no_null"]
+        assert props["multi_no_null"]["anyOf"] == [{"type": "integer"}, {"type": "string"}]
+
+        assert "nullable" not in props["multi_with_null_and_type"]
+        assert "type" not in props["multi_with_null_and_type"]
+        assert props["multi_with_null_and_type"]["anyOf"] == [
+            {"type": "number"},
+            {"type": "string"},
+        ]
+
+        assert "nullable" not in props["all_null"]
+        assert props["all_null"]["anyOf"] == [{"type": "null"}]
+
+    def test_legitimate_nullable_property_name_and_literal_default_preserved(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "nullable": {
+                    "type": "boolean",
+                    "nullable": True,
+                    "default": {"nullable": True},
+                },
+            },
+        }
+
+        out = sanitize_moonshot_tool_parameters(params)
+
+        prop = out["properties"]["nullable"]
+        assert prop["type"] == "boolean"
+        assert "nullable" not in prop
+        assert prop["default"] == {"nullable": True}
+
+    def test_property_combinator_wrappers_not_given_synthetic_type(self):
+        params = {
+            "type": "object",
+            "$defs": {
+                "StrictId": {"type": "integer", "minimum": 1},
+            },
+            "properties": {
+                "identifier": {
+                    "oneOf": [
+                        {"type": "string", "minLength": 1},
+                        {"type": "integer"},
+                    ],
+                },
+                "ref_wrapper": {
+                    "allOf": [{"$ref": "#/$defs/StrictId"}],
+                },
+                "excluded_null": {
+                    "not": {"type": "null"},
+                },
+            },
+        }
+
+        out = sanitize_moonshot_tool_parameters(params)
+        props = out["properties"]
+
+        assert "type" not in props["identifier"]
+        assert "type" not in props["ref_wrapper"]
+        assert "type" not in props["excluded_null"]
+
+        validator = jsonschema.Draft202012Validator(out)
+        assert validator.is_valid({"identifier": 42, "ref_wrapper": 5, "excluded_null": 1})
+        assert validator.is_valid({"identifier": "abc", "ref_wrapper": 3, "excluded_null": {}})
+        assert not validator.is_valid({"identifier": 42, "ref_wrapper": 0})
+        assert not validator.is_valid({"excluded_null": None})
+

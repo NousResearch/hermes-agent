@@ -58,6 +58,8 @@ from tools.code_execution_tool import (
     _TOOL_DOC_LINES,
     _execute_remote,
     _format_interrupted_output,
+    _sandbox_tools_for,
+    _sandbox_failure_hint,
 )
 from tools.registry import registry
 
@@ -132,24 +134,25 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
             def execute(self, command, cwd=None, timeout=None):
                 self.commands.append((command, cwd, timeout))
                 if "command -v python3" in command:
-                    return {"output": "OK\n"}
+                    return {"output": "OK\n", "returncode": 0}
                 if "python3 script.py" in command:
                     return {"output": "hello\n", "returncode": 0}
-                return {"output": ""}
+                return {"output": "", "returncode": 0}
 
         env = FakeEnv()
         fake_thread = MagicMock()
 
         with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
              patch("tools.code_execution_tool._get_or_create_env", return_value=(env, "ssh")), \
-             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool._remote_write") as ship_mock, \
+             patch("tools.code_kernel_remote._remote_write"), \
              patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
             result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["exit_code"], 0)
         self.assertFalse(result["stdout_truncated"])
-        self.assertEqual(result["stdout_bytes_total"], len("hello\n".encode("utf-8")))
+        self.assertEqual(result["stdout_bytes_total"], len(b"hello\n"))
         # The session-kernel path runs first and fails open on this fake env
         # (no PID from nohup), so search for the per-call sandbox commands
         # rather than pinning positions.
@@ -159,12 +162,19 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         cleanup_cmd = next(cmd for cmd, _, _ in env.commands
                            if "rm -rf" in cmd and "hermes_exec_" in cmd)
         self.assertIn("mkdir -p /data/data/com.termux/files/usr/tmp/hermes_exec_", mkdir_cmd)
-        self.assertIn("HERMES_RPC_DIR=/data/data/com.termux/files/usr/tmp/hermes_exec_", run_cmd)
         self.assertIn("rm -rf /data/data/com.termux/files/usr/tmp/hermes_exec_", cleanup_cmd)
         self.assertNotIn("mkdir -p /tmp/hermes_exec_", mkdir_cmd)
+        # Env vars travel in the shipped sandbox.env (sourced by the remote
+        # shell), not on the command line.
+        self.assertIn(". ./sandbox.env", run_cmd)
+        env_ship = next(c for c in ship_mock.call_args_list
+                        if c.args[1].endswith("sandbox.env"))
+        self.assertIn("HERMES_RPC_DIR=/data/data/com.termux/files/usr/tmp/hermes_exec_",
+                      env_ship.args[2])
 
     def test_timezone_shell_quoted_in_remote_execution(self):
-        """HERMES_TIMEZONE must be shell-quoted in remote env_prefix to prevent injection."""
+        """HERMES_TIMEZONE must be shell-quoted in the sourced sandbox.env file
+        to prevent injection at source time."""
         class FakeEnv:
             def __init__(self):
                 self.commands = []
@@ -175,10 +185,10 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
             def execute(self, command, cwd=None, timeout=None):
                 self.commands.append((command, cwd, timeout))
                 if "command -v python3" in command:
-                    return {"output": "OK\n"}
+                    return {"output": "OK\n", "returncode": 0}
                 if "python3 script.py" in command:
                     return {"output": "hello\n", "returncode": 0}
-                return {"output": ""}
+                return {"output": "", "returncode": 0}
 
         env = FakeEnv()
         fake_thread = MagicMock()
@@ -189,7 +199,8 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
                    return_value={"timeout": 30, "max_tool_calls": 5}), \
              patch("tools.code_execution_tool._get_or_create_env",
                    return_value=(env, "ssh")), \
-             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool._remote_write") as ship_mock, \
+             patch("tools.code_kernel_remote._remote_write"), \
              patch("tools.code_execution_tool.threading.Thread",
                    return_value=fake_thread), \
              patch.dict(os.environ, {"HERMES_TIMEZONE": malicious_tz}):
@@ -197,12 +208,100 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
 
         self.assertEqual(result["status"], "success")
         run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 script.py" in cmd)
-        # The TZ value must be shell-quoted — it should NOT contain unescaped semicolons
-        self.assertNotIn("TZ=US/Eastern; echo PWNED", run_cmd,
+        # TZ travels in the shipped sandbox.env (sourced by the remote shell),
+        # never on the command line.
+        self.assertNotIn("TZ=", run_cmd)
+        env_ship = next(c for c in ship_mock.call_args_list
+                        if c.args[1].endswith("sandbox.env"))
+        env_content = env_ship.args[2]
+        # The TZ value must be shell-quoted in the sourced env file — an
+        # unescaped semicolon would inject a command at source time.
+        self.assertNotIn("TZ=US/Eastern; echo PWNED", env_content,
                          "TZ value with shell metacharacters must not appear unquoted")
-        # shlex.quote wraps values containing special characters in single quotes
-        self.assertIn("TZ='US/Eastern; echo PWNED'", run_cmd,
+        self.assertIn("TZ='US/Eastern; echo PWNED'", env_content,
                       "TZ value must be wrapped in single quotes by shlex.quote()")
+
+
+class TestRemoteSharedHostLockdown(unittest.TestCase):
+    """Shared-host hardening for remote backends: sandbox dirs must be
+    owner-only, remote writes owner-only, and the RPC token must never ride a
+    command line (the remote shell's argv is world-readable via ps)."""
+
+    def test_per_call_sandbox_locks_down_dirs_and_hides_token(self):
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def get_temp_dir(self):
+                return "/tmp"
+
+            def execute(self, command, cwd=None, timeout=None):
+                self.commands.append((command, cwd, timeout))
+                if "command -v python3" in command:
+                    return {"output": "OK\n", "returncode": 0}
+                if "python3 script.py" in command:
+                    return {"output": "hello\n", "returncode": 0}
+                return {"output": "", "returncode": 0}
+
+        env = FakeEnv()
+        with patch("tools.code_execution_tool._load_config",
+                   return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env",
+                   return_value=(env, "ssh")), \
+             patch("tools.code_execution_tool._remote_write") as ship_mock, \
+             patch("tools.code_kernel_remote._remote_write"), \
+             patch("tools.code_execution_tool.threading.Thread",
+                   return_value=MagicMock()):
+            result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
+
+        self.assertEqual(result["status"], "success")
+        commands = [c for c, _, _ in env.commands]
+        # The kernel path runs first and fails open here (no PID), so both the
+        # kernel.env and sandbox.env ships are recorded. Neither token may
+        # appear in any executed command.
+        ships, tokens = {}, {}
+        for env_name in ("kernel.env", "sandbox.env"):
+            env_ship = next((c for c in ship_mock.call_args_list
+                             if c.args[1].endswith(env_name)), None)
+            self.assertIsNotNone(env_ship, f"{env_name} was not shipped")
+            token_line = next(l for l in env_ship.args[2].splitlines()
+                              if l.startswith("HERMES_RPC_TOKEN="))
+            token = token_line.split("=", 1)[1].strip("'\"")
+            self.assertTrue(token)
+            self.assertFalse(any(token in c for c in commands),
+                             f"{env_name} token appeared in a remote command line")
+            ships[env_name], tokens[env_name] = env_ship, token
+        run_cmd = next(c for c in commands if "python3 script.py" in c)
+        self.assertNotIn("HERMES_RPC_TOKEN=", run_cmd)
+        if sys.platform == "win32":
+            return
+        # Behaviour, not command text: replay the recorded setup + launch
+        # commands through a real shell against a private temp root.
+        import shutil
+        import subprocess
+        import tempfile
+        mkdir_cmd = next(c for c in commands
+                         if "mkdir -p" in c and "hermes_exec_" in c)
+        env_ship, token = ships["sandbox.env"], tokens["sandbox.env"]
+        sandbox = env_ship.args[1].rsplit("/", 1)[0]
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        local = root + sandbox
+        sh = lambda c: subprocess.run(["bash", "-c", c.replace(sandbox, local)],
+                                      capture_output=True, text=True, check=False)
+        self.assertEqual(sh(mkdir_cmd).returncode, 0)
+        for d in (local, f"{local}/rpc"):
+            self.assertEqual(os.stat(d).st_mode & 0o777, 0o700, d)
+        with open(f"{local}/sandbox.env", "w") as fh:
+            fh.write(env_ship.args[2])
+        with open(f"{local}/script.py", "w") as fh:
+            fh.write("import os, sys\nprint(os.environ['HERMES_RPC_TOKEN'])\nsys.exit(7)\n")
+        # The env reaches the child, its exit code is the command's, and the
+        # token never leaks into the outer shell (the backend's session
+        # snapshot dump; issue #71296 class).
+        run = sh(run_cmd + ' ; echo "[${HERMES_RPC_TOKEN:-}]"')
+        self.assertEqual(run.stdout.splitlines(), [token, "[]"], run.stderr)
+        self.assertEqual(sh(run_cmd).returncode, 7)
 
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
@@ -387,7 +486,7 @@ class TestStubSchemaDrift(unittest.TestCase):
     # Parameters that are internal (injected by the handler, not user-facing)
     _INTERNAL_PARAMS = {"task_id", "user_task"}
     # Parameters intentionally blocked in the sandbox
-    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify", "notify_on_complete", "watch_patterns", "heartbeat"}
+    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify", "notify_on_complete", "watch_patterns", "heartbeat", "persist_on_release"}
 
     def test_stubs_cover_all_schema_params(self):
         """Every user-facing parameter in the real schema must appear in the
@@ -397,8 +496,8 @@ class TestStubSchemaDrift(unittest.TestCase):
 
         # Import the registry and trigger tool registration
         from tools.registry import registry
-        import tools.file_tools  # noqa: F401 - registers read_file, write_file, patch, search_files
-        import tools.web_tools  # noqa: F401 - registers web_search, web_extract
+        import tools.file_tools
+        import tools.web_tools
 
         for tool_name, (sig, doc, args_expr) in _TOOL_STUBS.items():
             entry = registry._tools.get(tool_name)
@@ -624,36 +723,106 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
                 self.assertIn("Python source as a string", result["error"])
                 self.assertNotIn("AttributeError", result["error"])
 
-    def test_windows_returns_error(self):
-        """When SANDBOX_AVAILABLE is False (e.g. when the backend deems
-        the sandbox unusable for this environment), execute_code returns
-        an error JSON with a readable message pointing the caller at
-        regular tool calls.  Previously this was a Windows-only gate;
-        execute_code now works on Windows via loopback TCP, so the
-        error is only emitted when SANDBOX_AVAILABLE is explicitly
-        flipped off (e.g. for future platform-specific disables)."""
-        with patch("tools.code_execution_tool.SANDBOX_AVAILABLE", False):
-            result = json.loads(execute_code("print('hi')", task_id="test"))
-            self.assertIn("error", result)
-            self.assertIn("unavailable", result["error"].lower())
+
+    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    def test_empty_enabled_tools_denies_all(self):
+        """``enabled_tools=[]`` is an explicit deny-all: no sandbox tool stubs
+        are generated, so ``from hermes_tools import terminal`` raises
+        ImportError. Previously ``[]`` was conflated with ``None`` and
+        broadened to every sandbox tool (#84271)."""
+        code = "from hermes_tools import terminal\nprint('should not reach')\n"
+        with patch("model_tools.handle_function_call",
+                   side_effect=_mock_handle_function_call):
+            result = json.loads(execute_code(
+                code, task_id="test-empty-deny-all",
+                enabled_tools=[],
+            ))
+        self.assertEqual(result["status"], "error", msg=result)
+        self.assertIn(
+            "ImportError",
+            result.get("error", "") + result.get("output", ""),
+        )
 
 
     @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
-    def test_nonoverlapping_tools_fallback(self):
-        """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS,
-        should fall back to all allowed tools."""
-        code = (
-            "from hermes_tools import terminal\n"
-            "print('fallback ok')\n"
-        )
+    def test_nonoverlapping_tools_deny_all(self):
+        """A non-empty ``enabled_tools`` with no sandbox overlap must not fall
+        back to every sandbox tool — the exact authenticated manifest is used,
+        and an empty intersection denies all (#84271)."""
+        code = "from hermes_tools import terminal\nprint('fallback')\n"
         with patch("model_tools.handle_function_call",
-                    return_value=json.dumps({"ok": True})):
+                   side_effect=_mock_handle_function_call):
             result = json.loads(execute_code(
                 code, task_id="test-nonoverlap",
                 enabled_tools=["vision_analyze", "browser_snapshot"],
             ))
-        self.assertEqual(result["status"], "success")
-        self.assertIn("fallback ok", result["output"])
+        self.assertEqual(result["status"], "error", msg=result)
+        self.assertIn(
+            "ImportError",
+            result.get("error", "") + result.get("output", ""),
+        )
+
+
+    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    def test_none_enabled_tools_legacy_default(self):
+        """``enabled_tools=None`` keeps the documented legacy default (every
+        sandbox tool) — the mode is explicit (``is None``), not derived from
+        truthiness, so the empty-list deny-all does not shadow it (#84271)."""
+        code = (
+            "from hermes_tools import terminal\n"
+            "r = terminal('echo hi')\n"
+            "print(r.get('output', ''))\n"
+        )
+        with patch("model_tools.handle_function_call",
+                   side_effect=_mock_handle_function_call):
+            result = json.loads(execute_code(
+                code, task_id="test-none-default",
+                enabled_tools=None,
+            ))
+        self.assertEqual(result["status"], "success", msg=result)
+        self.assertIn("mock output for: echo hi", result["output"])
+
+
+class TestResolveSandboxTools(unittest.TestCase):
+    """Shared helper used by both the local UDS and remote file-RPC paths."""
+
+    def test_none_is_legacy_default(self):
+        self.assertEqual(_sandbox_tools_for(None), SANDBOX_ALLOWED_TOOLS)
+
+    def test_empty_list_is_deny_all(self):
+        self.assertEqual(_sandbox_tools_for([]), frozenset())
+
+    def test_nonoverlapping_is_deny_all(self):
+        self.assertEqual(
+            _sandbox_tools_for(["vision_analyze", "browser_snapshot"]),
+            frozenset(),
+        )
+
+    def test_intersection_keeps_only_sandbox_tools(self):
+        self.assertEqual(
+            _sandbox_tools_for(["terminal", "vision_analyze"]),
+            frozenset(["terminal"]),
+        )
+
+
+class TestSandboxFailureHints(unittest.TestCase):
+    _IMPORT_ERROR = "ImportError: cannot import name 'terminal' from 'hermes_tools'"
+
+    def test_empty_grant_does_not_advertise_sandbox_tools(self):
+        hint = _sandbox_failure_hint(self._IMPORT_ERROR, enabled_tools=[])
+
+        assert hint is not None
+        self.assertIn("Importable tools here: none.", hint)
+
+    def test_partial_grant_advertises_only_the_intersection(self):
+        hint = _sandbox_failure_hint(
+            self._IMPORT_ERROR,
+            enabled_tools=["terminal", "vision_analyze"],
+        )
+
+        assert hint is not None
+        self.assertIn("Importable tools here: terminal.", hint)
+        self.assertNotIn("write_file", hint)
 
 
 # ---------------------------------------------------------------------------
@@ -744,16 +913,17 @@ class TestHeadTailTruncation(unittest.TestCase):
             def execute(self, command, cwd=None, timeout=None):
                 self.commands.append((command, cwd, timeout))
                 if "command -v python3" in command:
-                    return {"output": "OK\n"}
+                    return {"output": "OK\n", "returncode": 0}
                 if "python3 script.py" in command:
                     return {"output": "HEAD\n" + ("x" * 80_000) + "\nTAIL\n", "returncode": 0}
-                return {"output": ""}
+                return {"output": "", "returncode": 0}
 
         fake_thread = MagicMock()
 
         with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
              patch("tools.code_execution_tool._get_or_create_env", return_value=(FakeEnv(), "ssh")), \
-             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool._remote_write"), \
+             patch("tools.code_kernel_remote._remote_write"), \
              patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
             result = json.loads(_execute_remote("print('large')", "task-1", ["terminal"]))
 
@@ -773,6 +943,67 @@ class TestHeadTailTruncation(unittest.TestCase):
             body = f.read()
         self.assertIn("HEAD", body)
         self.assertIn("TAIL", body)
+
+    def test_remote_stdout_spill_is_sanitized_and_private(self):
+        """The spilled full output must not keep on disk the secrets the inline
+        result masked; the warning directs the model to read that file."""
+        import stat as stat_mod
+        secret = "ghp_" + "0123456789abcdef"
+
+        class FakeEnv:
+            def get_temp_dir(self):
+                return "/tmp"
+
+            def execute(self, command, cwd=None, timeout=None):
+                if "command -v python3" in command:
+                    return {"output": "OK\n", "returncode": 0}
+                if "python3 script.py" in command:
+                    return {"output": ("HEAD\n" + secret + "\n\x1b[31m"
+                                       + ("x" * 80_000) + "\x1b[0m\nTAIL\n"),
+                            "returncode": 0}
+                return {"output": "", "returncode": 0}
+
+        fake_thread = MagicMock()
+
+        with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env", return_value=(FakeEnv(), "ssh")), \
+             patch("tools.code_execution_tool._remote_write"), \
+             patch("tools.code_kernel_remote._remote_write"), \
+             patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
+            result = json.loads(_execute_remote("print('x')", "task-1", ["terminal"]))
+
+        self.assertEqual(result["status"], "success")
+        self.assertNotIn(secret, result["output"])  # inline copy is masked
+        spill = result["stdout_spill_path"]
+        with open(spill, encoding="utf-8") as f:
+            body = f.read()
+        from agent.redact import redact_sensitive_text
+        self.assertNotIn(secret, body)
+        # Masked remnant proves the pipeline ran; derive it so the mask format is not frozen.
+        self.assertIn(redact_sensitive_text(secret, code_file=True), body)
+        self.assertNotIn("\x1b[", body)       # ANSI-stripped like the inline copy
+        self.assertIn("TAIL", body)
+        if os.name == "posix":
+            self.assertEqual(stat_mod.S_IMODE(os.stat(spill).st_mode), 0o600)
+            self.assertEqual(stat_mod.S_IMODE(os.stat(os.path.dirname(spill)).st_mode), 0o700)
+
+    @pytest.mark.platforms("posix")
+    def test_spill_keeps_group_bits_of_existing_cache_dir(self):
+        """Tightening an existing cache/exec drops world bits only: a shared-group home
+        (HERMES_HOME_MODE=2770) keeps group access; the spill file itself is 0600."""
+        import stat as stat_mod
+        from hermes_constants import get_hermes_dir
+        from tools.code_execution_tool import _spill_full_stdout
+        cache_dir = get_hermes_dir("cache/exec", "exec_spill")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        # macOS gives a new dir its parent's group and drops setgid on chmod when the
+        # caller isn't in that group; own the group first, as a shared-group home does.
+        os.chown(cache_dir, -1, os.getegid())
+        os.chmod(cache_dir, 0o2777)
+        spill = _spill_full_stdout("group-shared spill\n")
+        self.assertTrue(spill)
+        self.assertEqual(os.stat(cache_dir).st_mode & 0o7777, 0o2770)
+        self.assertEqual(stat_mod.S_IMODE(os.stat(spill).st_mode), 0o600)
 
 
 class TestRpcTokenAuthorization(unittest.TestCase):
@@ -808,7 +1039,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
 
             def accept(self):
                 if self._served:
-                    raise socket.timeout()
+                    raise TimeoutError()
                 self._served = True
                 return self._conn, ("peer", 0)
 

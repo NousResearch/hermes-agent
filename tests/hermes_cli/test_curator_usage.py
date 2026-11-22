@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-
 def _fake_rows():
     return [
         {
@@ -33,10 +32,9 @@ def _fake_rows():
         },
     ]
 
-
 def test_usage_lists_all_provenances(monkeypatch, capsys):
     import hermes_cli.curator as curator_cli
-    import tools.skill_usage as skill_usage
+    from tools import skill_usage
 
     monkeypatch.setattr(skill_usage, "usage_report", _fake_rows)
     args = SimpleNamespace(sort="activity", provenance=None, json=False)
@@ -48,14 +46,11 @@ def test_usage_lists_all_provenances(monkeypatch, capsys):
     assert "bundled-skill" in out
     assert "hub-skill" in out
 
-
 def test_usage_empty(monkeypatch, capsys):
     import hermes_cli.curator as curator_cli
-    import tools.skill_usage as skill_usage
+    from tools import skill_usage
 
-    monkeypatch.setattr(skill_usage, "usage_report", lambda: [])
+    monkeypatch.setattr(skill_usage, "usage_report", list)
     args = SimpleNamespace(sort="activity", provenance=None, json=False)
     assert curator_cli._cmd_usage(args) == 0
     assert "no skills found" in capsys.readouterr().out
-
-

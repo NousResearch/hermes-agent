@@ -278,6 +278,8 @@ Custom endpoint pools are stored in `auth.json` under `credential_pool` with a `
 }
 ```
 
+A key added for a custom endpoint (`hermes auth add`, or the dashboard's credential pool) records the endpoint address it was entered for, and is only ever sent to that origin (scheme, host and port). If you change the endpoint's address, its pooled keys stay behind: the Desktop and dashboard editors ask for the new address's key (or an explicit blank for none) rather than reuse them. Keys added before addresses were recorded are bound to the endpoint's address the first time they are used. A built-in provider's keys (for example `DEEPSEEK_API_KEY` for a `providers.deepseek` entry) serve the entry only on that provider's own address, unless the entry names the variable as its `key_env` (for example `key_env: DEEPSEEK_API_KEY`); Hermes logs one warning per entry when it withholds them. This also covers a delegated subagent (`delegation.provider: deepseek`) and auxiliary tasks on that entry. A key added to a built-in provider's pool without an address belongs to that provider's own address, never to a same-named entry's. An origin is scheme, host and port only: two endpoints on the same host that differ only by path (`https://gw.example/tenantA/v1` and `https://gw.example/tenantB/v1`) count as one origin, so their pooled keys can serve each other.
+
 ## Auto-Discovery
 
 Hermes automatically discovers credentials from multiple sources and seeds the pool on startup:
@@ -319,7 +321,7 @@ This means subagents benefit from the same rate-limit resilience as the parent, 
 
 The credential pool uses a threading lock for all state mutations (`select()`, `mark_exhausted_and_rotate()`, `try_refresh_current()`, `mark_used()`). This ensures safe concurrent access when the gateway handles multiple chat sessions simultaneously.
 
-Across processes (many subagents, a gateway plus a CLI, cron jobs), OAuth refreshes are serialized through a file lock on `auth.json`. When one shared OAuth grant expires under many concurrent processes, exactly one process performs the refresh; the others detect that the on-disk token no longer matches the one that failed and adopt it instead of rotating the single-use refresh token again. A process that loses the lock race keeps its entry healthy and retries — lock contention is never recorded as a credential failure.
+Across processes (many subagents, a gateway plus a CLI, cron jobs), OAuth refreshes are serialized through a file lock on `auth.json`. When one shared OAuth grant expires under many concurrent processes, exactly one process performs the refresh; the others detect that the on-disk token no longer matches the one that failed and adopt it instead of rotating the single-use refresh token again. A process that loses the lock race keeps its entry healthy and retries — lock contention is never recorded as a credential failure. A session or process still holding an older copy of the pool never writes that copy's tokens back over a pair another one rotated since; it keeps the newer pair on disk and adopts it.
 
 ## Architecture
 

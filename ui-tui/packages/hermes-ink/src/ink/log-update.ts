@@ -26,6 +26,7 @@ import {
   setScrollRegion
 } from './termio/csi.js'
 import { LINK_END, link as oscLink } from './termio/osc.js'
+import { hasMultipleCodepoints } from './termio/parser.js'
 
 type State = {
   previousOutput: string
@@ -356,6 +357,26 @@ export class LogUpdate {
       moveCursorTo(screen, x, y)
 
       if (added) {
+        // Some terminals retain the previous combining-mark state when a
+        // multi-codepoint, single-column grapheme is overwritten in place.
+        // Clear the physical cell first, then return to it before drawing the
+        // replacement. Keep the common single-codepoint path byte-for-byte
+        // unchanged.
+        if (
+          removed &&
+          removed.width === CellWidth.Narrow &&
+          added.width === CellWidth.Narrow &&
+          removed.char !== added.char &&
+          (hasMultipleCodepoints(removed.char) || hasMultipleCodepoints(added.char)) &&
+          // An unwritten prev cell arrives as removed={' ', Narrow}; nothing to clear.
+          !isEmptyCellAt(prev.screen, x, y)
+        ) {
+          // No style/hyperlink reset: the glyph overwrites this space at once,
+          // so resetting would only break SGR/OSC8 coalescing across the run.
+          screen.diff.push({ type: 'stdout', content: ' ' })
+          screen.diff.push({ type: 'cursorTo', col: screen.cursor.x + 1 })
+        }
+
         const targetHyperlink = added.hyperlink
         currentHyperlink = transitionHyperlink(screen.diff, currentHyperlink, targetHyperlink)
         const styleStr = stylePool.transition(currentStyleId, added.styleId)

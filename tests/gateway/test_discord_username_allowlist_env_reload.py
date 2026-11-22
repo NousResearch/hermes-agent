@@ -19,12 +19,14 @@ adapter's resolved numeric IDs (``resolved_allowlist_user_ids()``) into the
 gateway-layer allowlist, so runtime resolution survives env reloads.
 """
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from gateway.session import Platform, SessionSource
+
 
 OPERATOR_ID = "387972437901312000"
 
@@ -143,25 +145,50 @@ class TestResolvedAllowlistSurvivesEnvReload:
         assert runner._is_user_authorized(_discord_source("666000666000666000")) is False
 
 
+PAIRED_ID = "111222333444555666"
+
+
+def _resolved_discord_adapter(entries, members):
+    """A real DiscordAdapter after connect: ``_allowed_user_ids`` holds the env entries and
+    ``_resolve_allowed_usernames`` runs against fake guild members."""
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    adapter = object.__new__(DiscordAdapter)
+    adapter.platform = Platform.DISCORD
+    adapter._allowed_user_ids = set(entries)
+    guild = SimpleNamespace(name="g", members=members, member_count=len(members))
+    adapter._client = SimpleNamespace(guilds=[guild])
+    asyncio.run(adapter._resolve_allowed_usernames())
+    return adapter
+
+
+def _member(uid, name):
+    return SimpleNamespace(id=int(uid), name=name, display_name=name, global_name=None, discriminator="0")
+
+
 class TestDiscordAdapterResolvedAccessor:
-    def _adapter(self, allowed_ids):
-        from plugins.platforms.discord.adapter import DiscordAdapter
-
-        adapter = object.__new__(DiscordAdapter)
-        adapter._allowed_user_ids = allowed_ids
-        return adapter
-
     def test_returns_numeric_ids_as_strings(self):
-        adapter = self._adapter({OPERATOR_ID, 111222333444555666})
-        assert adapter.resolved_allowlist_user_ids() == {
-            OPERATOR_ID,
-            "111222333444555666",
-        }
-
-    def test_filters_usernames_and_wildcard(self):
-        """Unresolved usernames and the '*' wildcard must not pass through:
-        usernames can't match numeric user_ids, and '*' would widen the
-        gateway layer to allow-everyone from adapter memory alone."""
-        adapter = self._adapter({"teknium", "*", OPERATOR_ID})
+        """Only IDs resolved from username entries pass through, as strings: not the '*' wildcard
+        (it would widen the gateway layer to allow-everyone from adapter memory alone), not an
+        unresolved username, and not a numeric entry (the gateway reads those live from the env)."""
+        adapter = _resolved_discord_adapter(
+            {"teknium", "ghost", "*", PAIRED_ID}, [_member(OPERATOR_ID, "teknium")])
         assert adapter.resolved_allowlist_user_ids() == {OPERATOR_ID}
 
+
+class TestRemovedNumericEntryIsNotResurrected:
+    """A numeric entry removed from DISCORD_ALLOWED_USERS after connect (``hermes pairing revoke``
+    from the CLI/dashboard process, or a hand edit) must stop authorizing once the env reloads,
+    not stay granted from the adapter's connect-time snapshot until a gateway restart."""
+
+    def test_revoked_paired_id_denied_after_env_reload(self, monkeypatch):
+        adapter = _resolved_discord_adapter(
+            {"teknium", PAIRED_ID}, [_member(OPERATOR_ID, "teknium")])
+        runner = _make_runner(adapter)
+        monkeypatch.setenv("DISCORD_ALLOWED_USERS", f"teknium,{PAIRED_ID}")
+        assert runner._is_user_authorized(_discord_source(PAIRED_ID)) is True
+        # Revoke wrote the file without PAIRED_ID; the per-turn reload restored it into the env.
+        monkeypatch.setenv("DISCORD_ALLOWED_USERS", "teknium")
+        assert runner._is_user_authorized(_discord_source(PAIRED_ID)) is False
+        # The username-resolved operator is still carried across the reload.
+        assert runner._is_user_authorized(_discord_source()) is True

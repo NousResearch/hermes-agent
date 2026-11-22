@@ -36,7 +36,6 @@ except ImportError:  # pragma: no cover - non-POSIX
 
 pytestmark = pytest.mark.skipif(fcntl is None, reason="flock semantics are POSIX-only")
 
-
 def _wait_until(predicate, timeout=10.0, interval=0.005):
     """Block until ``predicate()`` is truthy or ``timeout`` elapses."""
     deadline = time.monotonic() + timeout
@@ -47,9 +46,7 @@ def _wait_until(predicate, timeout=10.0, interval=0.005):
         time.sleep(interval)
     return predicate()
 
-
 # ── Fix 1: tick() must not swallow EMFILE as "another instance holds the lock" ─
-
 
 class TestTickLockEmfileNotSwallowed:
     def test_lock_open_emfile_raises_instead_of_silent_skip(self, monkeypatch):
@@ -84,10 +81,7 @@ class TestTickLockEmfileNotSwallowed:
         with patch.object(fcntl, "flock", side_effect=OSError(errno.EWOULDBLOCK, "Resource temporarily unavailable")):
             assert scheduler_mod.tick(verbose=False) == 0
 
-
-
 # ── Fix 2: ticker loop survives EMFILE, reclaims fds, backs off, self-heals ──
-
 
 class TestTickerEmfileBackoff:
     def test_emfile_tick_records_error_and_keeps_looping(self, monkeypatch):
@@ -188,9 +182,7 @@ class TestTickerEmfileBackoff:
         assert True in beats, "a successful tick must bump the success marker"
         clear.assert_called(), "a successful tick must clear the recorded error"
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
-
 
 class TestEmfileHelpers:
     def test_is_fd_exhaustion_errno(self):
@@ -205,5 +197,3 @@ class TestEmfileHelpers:
         assert scheduler_mod._is_fd_exhaustion(
             RuntimeError("Failed to read cron database: [Errno 24] Too many open files")
         )
-
-

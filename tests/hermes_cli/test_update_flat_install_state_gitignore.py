@@ -30,7 +30,7 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "state.db-journal",
     "state.db.retired-wal-20260914T000000Z-1234/manifest.json",
     # Dot-suffixed `<db>.db.*` runtime artifacts (#112974): cross-process lock
-    # files from hermes_state_dbfile / hermes_state_repair / hermes_state_common /
+    # files from the store's dbfile / repair / common modules (persistence/sqlite/_state/) /
     # hermes_cli/kanban_db_*, the repair-attempts ledger and malformed backups.
     "state.db.quarantine.lock",
     "state.db.repair.lock",
@@ -83,6 +83,10 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "google_token.json",
     "google_oauth_pending.json",
     "webhook_subscriptions.json",
+    "bws_cache.json",
+    "bws_cache.enc.json",
+    "op_cache.json",
+    "photon-sidecar.json",
     "channel_directory.json",
     "channel_aliases.json",
     "feishu_comment_pairing.json",
@@ -90,6 +94,7 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "profiles/work/config.yaml",
     "credentials/github_token",
     "mcp-tokens/server.json",
+    "webapp/session-token",
     "pairing/telegram.json",
     "platforms/pairing/x.json",
     "backups/2026-09-14T06-00-00-pre-update/state.db",
@@ -188,7 +193,7 @@ def test_untracked_autostash_leaves_open_wal_database_readable(flat_install_repo
         conn.close()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="fcntl is POSIX-only")
+@pytest.mark.platforms("posix")  # fcntl is POSIX-only
 def test_untracked_autostash_cannot_split_live_database_lock_inode(flat_install_repo):
     """The updater's real stash step must leave a held ``state.db.quarantine.lock``
     on its original inode (#112974). Unlinking a flocked path does not release the

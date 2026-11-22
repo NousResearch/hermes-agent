@@ -5,19 +5,12 @@ import pytest
 
 from hermes_cli import doctor_tools
 
-
 @pytest.fixture
 def issues():
     return []
 
-
 def _joined(capsys) -> str:
     return capsys.readouterr().out
-
-
-
-
-
 
 def test_docker_backend_ready_when_only_podman_resolves(monkeypatch, capsys, issues):
     """A podman-only machine runs the 'docker' backend, so doctor reports Podman as ready."""
@@ -29,9 +22,3 @@ def test_docker_backend_ready_when_only_podman_resolves(monkeypatch, capsys, iss
     assert "Podman (reachable)" in out
     assert not issues
     assert probed == [["/usr/bin/podman", "version"]]
-
-
-
-
-
-

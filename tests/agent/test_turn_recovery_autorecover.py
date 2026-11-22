@@ -73,7 +73,7 @@ class _Agent:
 def _settle(agent, err, retry=None):
     retry = retry or TurnRetryState(primary_recovery_attempted=True)
     classified = classify_api_error(err, provider=agent.provider)
-    with patch("agent.conversation_loop._is_copilot_provider", lambda a: False), \
+    with patch("agent.conversation_loop._credential_refresh_profile", lambda a: None), \
             patch("agent.conversation_loop._arm_fallback_restart", lambda a, m, s, r: s), \
             patch("agent.turn_recovery.interruptible_backoff_sleep", lambda agent, *a, **k: agent.sleep_outcome), \
             patch("agent.turn_api_error.max_retries_exhausted_result", lambda *a, **k: {"failed": True}), \
@@ -127,7 +127,7 @@ def test_ladder_is_bounded_and_yields_to_fallback_and_shuns_nonretryable():
 
 
 def test_ladder_schedule_honours_retry_after_and_platform_stop_hint(monkeypatch):
-    import agent.retry_utils as retry_utils
+    from agent import retry_utils
     calls = []
 
     def _recording_backoff(attempt, *, base_delay, max_delay, jitter_ratio):

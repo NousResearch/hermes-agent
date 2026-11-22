@@ -12,6 +12,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from hermes_cli._launchers import runtime_command
+
 
 @pytest.fixture
 def unprivileged(monkeypatch):
@@ -50,9 +52,9 @@ def _spawn(tmp_path, subcommand, *, sudo_ok: bool, targeted_only: bool = False, 
     web_server_gateway._ACTION_LOG_FILES.setdefault("probe", "probe.log")
     with patch.object(web_server_gateway, "_ACTION_LOG_DIR", tmp_path / "logs"), patch.object(
         web_server_gateway.subprocess, "run", side_effect=run
-    ), patch.object(web_server_gateway.subprocess, "Popen", return_value=child) as popen, patch.object(
-        web_server_gateway, "_dashboard_spawn_executable", return_value="/venv/bin/python"
-    ), patch("hermes_cli.web_server.PROJECT_ROOT", tmp_path):
+    ), patch.object(web_server_gateway.subprocess, "Popen", return_value=child) as popen, patch(
+        "hermes_cli.web_server.PROJECT_ROOT", tmp_path
+    ):
         web_server_gateway._spawn_hermes_action(subcommand, "probe")
     return popen.call_args.args[0]
 
@@ -75,7 +77,7 @@ def test_only_system_scope_lifecycle_verbs_are_spawned_under_sudo(
         user_unit.write_text("[Service]\n", encoding="utf-8")
     monkeypatch.setattr("hermes_cli.web_server_profiles._resolve_profile_dir", lambda name: tmp_path / name)
     argv = _spawn(tmp_path, subcommand, sudo_ok=True)
-    plain = ["/venv/bin/python", "-m", "hermes_cli.main", *subcommand]
+    plain = runtime_command(tmp_path, subcommand)
     assert argv == (["sudo", "-n", *plain] if elevated else plain)
 
 
@@ -90,6 +92,6 @@ def test_targeted_nopasswd_sudoers_still_elevates(unprivileged, system_scope_ins
     # inconclusive; the exact argv is then checked non-destructively (``sudo -n -l -- <argv>``).
     probes: list = []
     argv = _spawn(tmp_path, ["gateway", "restart"], sudo_ok=True, targeted_only=True, probes=probes)
-    plain = ["/venv/bin/python", "-m", "hermes_cli.main", "gateway", "restart"]
+    plain = runtime_command(tmp_path, ["gateway", "restart"])
     assert argv == ["sudo", "-n", *plain]
     assert probes == [["sudo", "-n", "true"], ["sudo", "-n", "-l", "--", *plain]]

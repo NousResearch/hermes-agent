@@ -19,9 +19,7 @@ import pytest
 from hermes_cli.profiles import _check_gateway_running
 from hermes_cli import web_server_sessions as wss
 
-pytestmark = pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="POSIX flock holder"
-)
+pytestmark = pytest.mark.platforms("posix")  # POSIX flock holder
 
 _HOLDER = (
     "import fcntl, sys, time\n"
@@ -33,13 +31,7 @@ _HOLDER = (
 )
 
 
-class _FakeDB:
-    def __init__(self, archived):
-        self._archived = archived
-
-    def maybe_auto_archive(self, **kwargs):
-        self._archived.append(kwargs)
-
+class _FakeStore:
     def close(self):
         pass
 
@@ -57,9 +49,16 @@ def archive_probe(tmp_path, monkeypatch):
 
     def _open(profile, *, read_only):
         opens.append(read_only)
-        return _FakeDB(archived)
+        return _FakeStore()
+
+    def _open_persistence(scope, **kwargs):
+        assert scope.profile_dir == tmp_path.resolve()
+        opens.append(False)  # the interface's writable door
+        return _FakeStore()
 
     monkeypatch.setattr(wss, "_open_session_db_for_profile", _open)
+    monkeypatch.setattr("persistence_assembly.open_persistence", _open_persistence)
+    monkeypatch.setattr("session_retention.run_auto_archive", lambda store, **kwargs: archived.append(kwargs))
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
         lambda *a, **k: {"sessions": {"auto_archive": True, "min_interval_hours": 0}},

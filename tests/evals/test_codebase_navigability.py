@@ -2,7 +2,7 @@
 
 Two invariants the harness relies on (and that a future refactor could silently break):
   1. a name imported from a facade that lives in a sibling resolves to the SIBLING (through the facade's
-     top-level `from sibling import name` or its PLUGIN-COMPAT lazy table);
+     top-level `from sibling import name`);
   2. a name defined in the facade itself resolves to the facade.
 Both are checked against real modules on the current tree, so they also pin the layout the eval documents.
 """

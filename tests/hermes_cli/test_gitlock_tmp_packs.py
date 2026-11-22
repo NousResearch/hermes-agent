@@ -102,7 +102,7 @@ def test_no_git_dir_is_a_noop(tmp_path):
 
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_readonly_debris_is_cleared(tmp_path, monkeypatch):
     """git renames its transfer temps into place read-only, and Windows refuses to unlink a
     read-only file with EACCES — the exact rule that let aborted-fetch debris survive this

@@ -112,6 +112,25 @@ class TestDumpSubagentTimeoutDiagnostic:
         # We assert no exception propagates — the return value is advisory.
         assert result is None or Path(result).exists()
 
+    def test_timeout_diagnostic_marks_long_goal_as_non_original(self, hermes_home):
+        # #121572: an elided goal must carry the non-imitable counted marker,
+        # never the bare "...[truncated]" the model could copy.
+        from agent.compression_marker import _COMPRESSION_MARKER_RE
+        from tools.delegate_tool import _dump_subagent_timeout_diagnostic
+        child = _StubChild()
+        path = _dump_subagent_timeout_diagnostic(
+            child=child,
+            task_index=0,
+            timeout_seconds=300.0,
+            duration_seconds=300.0,
+            worker_thread=None,
+            goal="g" * 1200,
+        )
+        text = Path(path).read_text(encoding="utf-8")
+        assert _COMPRESSION_MARKER_RE.search(text)
+        assert "g" * 100 in text
+        assert "...[truncated]" not in text
+
 
 # ── _run_single_child timeout branch wiring ───────────────────────────
 
@@ -123,7 +142,7 @@ class TestRunSingleChildTimeoutDump:
         """Run _run_single_child with a tiny timeout to force the timeout branch."""
         from tools import delegate_tool
         # Force a 0.3s timeout so the test is fast
-        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.3)
+        monkeypatch.setattr("tools.delegate_tool_child_run._get_child_timeout", lambda: 0.3)
 
         parent = MagicMock()
         parent._touch_activity = MagicMock()
@@ -159,7 +178,7 @@ class TestRunSingleChildTimeoutDump:
         """The metadata fields are timeout-specific — a child that raises
         must report them as None so consumers can key on presence."""
         from tools import delegate_tool
-        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 30.0)
+        monkeypatch.setattr("tools.delegate_tool_child_run._get_child_timeout", lambda: 30.0)
 
         child = _StubChild(api_call_count=1, hang_seconds=0.0)
 

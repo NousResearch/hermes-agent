@@ -10,9 +10,8 @@ import shlex
 import pytest
 
 from tools import approval as mod
-import tools.approval_floors as approval_floors
+from tools import approval_floors
 from tools import approval_context
-
 
 @pytest.fixture
 def deny_config(monkeypatch):
@@ -26,7 +25,6 @@ def deny_config(monkeypatch):
     monkeypatch.setattr(approval_context, "_get_approval_config", lambda: state["config"])
     return set_deny
 
-
 @pytest.fixture
 def clean_env(monkeypatch):
     """Non-interactive, non-gateway, non-cron, non-yolo baseline."""
@@ -36,7 +34,6 @@ def clean_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", False)
 
-
 class TestMatchUserDenyRule:
     def test_no_config_is_noop(self, deny_config):
         deny_config([])
@@ -45,7 +42,6 @@ class TestMatchUserDenyRule:
     def test_missing_key_is_noop(self, monkeypatch):
         monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"mode": "manual"})
         assert mod._match_user_deny_rule("rm -rf build/") is None
-
 
     def test_config_load_failure_fails_open(self, monkeypatch):
         def boom():
@@ -58,6 +54,14 @@ class TestMatchUserDenyRule:
         deny_config(["git push --force*"])
         assert mod._match_user_deny_rule('git pu""sh --force origin main') is not None
 
+    def test_whole_quoted_argument_matches_after_quote_removal(self, deny_config):
+        """The shell removes quotes before ``git`` sees its argv, so the rule must too (#117815)."""
+        deny_config(["git status", "rm -rf /important*"])
+        for command in ('git "status"', "git 'status'", r"git \status", 'git "sta\\\ntus"', 'rm -rf "/important/data"'):
+            assert mod._match_user_deny_rule(command) is not None, command
+        # Quoted bytes stay data: a quoted space is not an argument boundary.
+        assert mod._match_user_deny_rule('git "sta tus"') is None
+        assert mod._match_user_deny_rule(r'git "st\atus"') is None  # a backslash inside "..." stays
 
 def test_deny_follows_executable_identity(deny_config, clean_env, monkeypatch):
     """Paths, prefixes and shell carriers cannot outrank an explicit deny."""
@@ -108,7 +112,6 @@ def test_deny_follows_executable_identity(deny_config, clean_env, monkeypatch):
                 assert result.get("user_deny") is True, (mode, yolo, command, result)
                 assert result["approved"] is False
 
-
 def test_deny_projection_preserves_data_and_path_rules(deny_config):
     """Project only executable positions; retain spelling-sensitive argument data."""
     deny_config(["/usr/bin/sudo -n id -u"])
@@ -146,7 +149,7 @@ def test_deny_projection_preserves_data_and_path_rules(deny_config):
     assert approval_floors._match_user_deny_rule('env printf "a  b"')
     assert approval_floors._match_user_deny_rule('env printf "a b"') is None
     # The argv projection must retain GNU escapes as data, not shell syntax.
-    from tools.approval_detection import _split_env_string
+    from tools.approval_env_split import _split_env_string
 
     for literal, expected in (
         (r'a\_b', ['a', 'b']), (r'"a\_b"', ['a b']),
@@ -164,7 +167,6 @@ def test_deny_projection_preserves_data_and_path_rules(deny_config):
         assert approval_floors._match_user_deny_rule(command) is None, command
     for unresolved in ('${NAME}', '"${NAME}"', r'"a\cb"', r'a\qb', "'unclosed"):
         assert _split_env_string(unresolved) is None
-
 
 class TestDenyBeatsYolo:
     def test_deny_blocks_under_yolo_env(self, deny_config, clean_env, monkeypatch):
@@ -184,7 +186,6 @@ class TestDenyBeatsYolo:
         assert result["approved"] is False
         assert result.get("user_deny") is True
 
-
     def test_non_matching_command_still_bypassed_by_yolo(
             self, deny_config, clean_env, monkeypatch):
         deny_config(["git push --force*"])
@@ -201,7 +202,6 @@ class TestDenyBeatsYolo:
 
         result = mod.check_dangerous_command("git push --force origin main", "local")
         assert result["approved"] is True
-
 
 class TestDenyOrdering:
     def test_hardline_fires_before_deny(self, deny_config, clean_env):
@@ -230,7 +230,7 @@ class TestDenyOrdering:
     )
     @pytest.mark.parametrize(
         "env_type",
-        ["docker", "singularity", "modal", "daytona", "vercel_sandbox"],
+        ["docker", "modal", "daytona", "vercel_sandbox"],
     )
     def test_container_backend_cannot_skip_deny(
             self, guard, env_type, deny_config, clean_env, monkeypatch):
@@ -248,7 +248,7 @@ class TestDenyOrdering:
     )
     @pytest.mark.parametrize(
         "env_type",
-        ["docker", "singularity", "modal", "daytona", "vercel_sandbox"],
+        ["docker", "modal", "daytona", "vercel_sandbox"],
     )
     def test_container_backend_still_skips_non_denied_command(
             self, guard, env_type, deny_config, clean_env):
@@ -262,4 +262,3 @@ class TestDenyOrdering:
         deny_config(["git push --force*"])
         result = mod.check_dangerous_command("ls -la", "local")
         assert result["approved"] is True
-

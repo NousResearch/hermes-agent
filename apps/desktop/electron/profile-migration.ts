@@ -210,9 +210,8 @@ export function decideMigration(
 }
 
 /**
- * List named profile directory names under `profilesRoot`. A directory named
- * `default` is accepted if present (unusual) but production default is not a
- * child of this folder — see `withDefaultCandidate`.
+ * List named profile directory names under `profilesRoot`. A directory named `default` is accepted if present
+ * (unusual) but production default is not a child of this folder — see `withDefaultCandidate`.
  */
 export function listProfileDirs(deps: MigrationDeps): string[] {
   let entries: Dirent[]
@@ -270,11 +269,11 @@ export function readExistingPreference(
  * `--profile` instead of pinning `default`.
  */
 export function migrateActiveProfileIfMissing(desktopProfileConfigPath: string, deps: MigrationDeps): boolean {
-  const existing = deps.existsSync(desktopProfileConfigPath)
-    ? readExistingPreference(desktopProfileConfigPath, deps.readFileSync)
-    : null
+  const exists: boolean = deps.existsSync(desktopProfileConfigPath)
 
-  if (existing && !existing.migrated) {
+  const existing = exists ? readExistingPreference(desktopProfileConfigPath, deps.readFileSync) : null
+
+  if (exists && (!existing || !existing.migrated)) {
     return false
   }
 

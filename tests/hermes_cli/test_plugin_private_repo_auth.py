@@ -66,7 +66,7 @@ def test_private_clone_falls_back_to_auth_after_credential_required_error(tmp_pa
             argv = [a_ if a_ != target_url else str(tmp_path / "upstream.git") for a_ in argv]
         return real_run(argv, *a, **kw)
 
-    monkeypatch.setattr(plugins_cmd.subprocess, "run", spy_run)
+    monkeypatch.setattr(subprocess, "run", spy_run)
     monkeypatch.setattr(git_credentials, "resolve_git_basic_auth", lambda url: ("alice", "s3cret"))
 
     dest = tmp_path / "clone"
@@ -101,7 +101,7 @@ def test_public_clone_attempts_anonymously_when_credential_resolves(tmp_path, mo
             argv = [a_ if a_ != target_url else str(tmp_path / "upstream.git") for a_ in argv]
         return real_run(argv, *a, **kw)
 
-    monkeypatch.setattr(plugins_cmd.subprocess, "run", spy_run)
+    monkeypatch.setattr(subprocess, "run", spy_run)
     # Simulate exactly the failing user state from #114526: ``gh auth login`` has populated the
     # credential resolver, so for any https://github.com URL it returns a non-None basic auth pair.
     monkeypatch.setattr(git_credentials, "resolve_git_basic_auth",
@@ -151,7 +151,7 @@ def test_ref_fetch_and_update_pull_attach_credential_only_after_anonymous_refusa
                 argv, 128, stdout="", stderr=f"fatal: repository '{public_url}/' not found\n")
         return subprocess.CompletedProcess(argv, 0, stdout="Already up to date.\n", stderr="")
 
-    monkeypatch.setattr(plugins_cmd.subprocess, "run", spy_run)
+    monkeypatch.setattr(subprocess, "run", spy_run)
     if outcome == "not_found":
         monkeypatch.setattr(git_credentials, "resolve_git_basic_auth",
                             lambda url: pytest.fail("credential must not be resolved for a non-credential failure"))
@@ -172,7 +172,7 @@ def test_ref_fetch_and_update_pull_attach_credential_only_after_anonymous_refusa
     assert attempts == ([[], [f"Authorization: basic {expected}"]] if outcome == "refused" else [[]])
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell askpass stub + local HTTP server")
+@pytest.mark.platforms("posix")  # POSIX shell askpass stub + local HTTP server
 def test_anonymous_attempt_fails_fast_under_inherited_askpass(tmp_path, monkeypatch):
     """With an inherited ``GIT_ASKPASS`` (VS Code terminal, ksshaskpass) the anonymous attempt
     against a remote answering 401 must still fail fast with the classifiable "could not read
@@ -220,7 +220,7 @@ def test_anonymous_attempt_fails_fast_under_inherited_askpass(tmp_path, monkeypa
     assert all("GIT_ASKPASS" not in env for env in attempts)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell stub credential helper")
+@pytest.mark.platforms("posix")  # POSIX shell stub credential helper
 def test_credential_fill_uses_stored_helper_and_never_prompts(tmp_path, monkeypatch):
     helper = tmp_path / "helper.sh"
     helper.write_text("#!/bin/sh\n[ \"$1\" = get ] && printf 'username=bob\\npassword=pw-from-helper\\n'\n", encoding="utf-8")

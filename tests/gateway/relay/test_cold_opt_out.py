@@ -7,7 +7,7 @@ import sys
 import textwrap
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 @pytest.mark.parametrize("case", ["native", "url-only", "disabled", "managed", "managed-only", "scoped"])
@@ -57,7 +57,7 @@ def test_cold_fronted_platforms_is_read_only(tmp_path, case):
                           "changed_env": changed}))
     """)
     child = subprocess.run([sys.executable, "-c", code, case, str(scoped)],
-                           cwd=tmp_path, env=env, text=True, capture_output=True, timeout=45)
+                           cwd=tmp_path, env=env, text=True, capture_output=True, timeout=45, check=False)
     assert child.returncode == 0, child.stderr
     observed = json.loads(child.stdout.splitlines()[-1])
     assert observed == {"fronted": ["slack"] if case == "url-only" else [],

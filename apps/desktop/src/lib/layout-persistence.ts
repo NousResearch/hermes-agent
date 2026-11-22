@@ -17,6 +17,7 @@ export const LAYOUT_KEYS = {
   panes: 'hermes.desktop.paneStates.v1',
   dismissed: 'hermes.desktop.dismissedPanes.v1',
   shares: 'hermes.desktop.paneShare.v1',
+  sharePartners: 'hermes.desktop.paneSharePartners.v1',
   hiddenTabs: 'hermes.desktop.hiddenStripTabs.v1',
   placed: 'hermes.desktop.userPlacedPanes.v1',
   flipped: 'hermes.desktop.panesFlipped',
@@ -66,6 +67,7 @@ export function createLayoutPersistence(initialMode: InterfaceMode, persistent: 
   const snapshots = new Set<string>()
   let mode = initialMode
   let restoring = false
+  let held = false
 
   const legacy = persistent ? migrateLayoutScopes(initialMode) : new Map<string, string>()
 
@@ -75,7 +77,7 @@ export function createLayoutPersistence(initialMode: InterfaceMode, persistent: 
     if (!restoring) {
       snapshots.add(keyFor(key))
 
-      if (persistent) {
+      if (persistent && !held) {
         // Explicit empties keep migration retries from reviving cleared state.
         writeKey(keyFor(key), mode === 'simple' ? (raw ?? 'null') : raw)
       }
@@ -138,6 +140,11 @@ export function createLayoutPersistence(initialMode: InterfaceMode, persistent: 
     },
     get restoring() {
       return restoring
+    },
+    /** While held, layout changes stay in memory: a borrowed layout (the first-run demo) is never
+     *  written over the user's own, and a relaunch opens on the user's layout. */
+    hold(next: boolean) {
+      held = next
     },
     has(key: string) {
       return snapshots.has(keyFor(key))

@@ -1,12 +1,14 @@
 """hermes fallback — manage the fallback provider chain (tried in order when the primary fails).
 
-Subcommands: ``list`` (default), ``add`` (same picker as `hermes model`), ``remove``, ``clear``.
+Subcommands: ``list`` (default), ``add`` (same picker as `hermes model`), ``remove``, ``clear``, ``check``
+(readiness, in :mod:`hermes_cli.fallback_check`).
 """
 from __future__ import annotations
 
 import copy
 from typing import Any, Dict, List, Optional
 
+from hermes_cli.fallback_check import cmd_fallback_check
 from hermes_cli.fallback_config import get_fallback_chain
 
 # Normalized fallback chain (merges legacy ``fallback_model``); always a fresh copy.
@@ -16,25 +18,25 @@ _read_chain = get_fallback_chain
 _MISSING_ACTIVE_PROVIDER = object()
 
 
-def _identity(entry: Dict[str, Any]):
+def _identity(entry: dict[str, Any]):
     """BackendIdentity for a ``{provider, model, base_url?}`` entry."""
     from agent.backend_identity import BackendIdentity
     return BackendIdentity.build(provider=entry.get("provider"), model=entry.get("model"), base_url=entry.get("base_url"))
 
 
-def _write_chain(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:
+def _write_chain(config: dict[str, Any], chain: list[dict[str, Any]]) -> None:
     """Persist the chain to ``fallback_providers``; drop the legacy key so there is one source of truth."""
     config["fallback_providers"] = chain
     config.pop("fallback_model", None)
 
 
-def _format_entry(entry: Dict[str, Any]) -> str:
+def _format_entry(entry: dict[str, Any]) -> str:
     """One-line human-readable rendering of a fallback entry."""
     base = entry.get("base_url")
     return f"{entry.get('model', '?')}  (via {entry.get('provider', '?')}){f'  [{base}]' if base else ''}"
 
 
-def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[Dict[str, Any]]:
+def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[dict[str, Any]]:
     """Pull the ``{provider, model, base_url?, api_mode?}`` dict from a ``config["model"]`` snapshot."""
     if not isinstance(model_cfg, dict):
         return None
@@ -42,7 +44,7 @@ def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[Dict[str, Any]]
     model = (model_cfg.get("default") or model_cfg.get("model") or "").strip()  # the picker writes ``model.default``
     if not provider or not model:
         return None
-    entry: Dict[str, Any] = {"provider": provider, "model": model}
+    entry: dict[str, Any] = {"provider": provider, "model": model}
     entry.update({key: value for key in ("base_url", "api_mode") if (value := (model_cfg.get(key) or "").strip())})
     return entry
 
@@ -99,7 +101,7 @@ def _entries(n: int) -> str:
     return f"{n} {'entry' if n == 1 else 'entries'}"
 
 
-def _print_chain(heading: str, chain: List[Dict[str, Any]]) -> None:
+def _print_chain(heading: str, chain: list[dict[str, Any]]) -> None:
     print(f"  {heading} ({_entries(len(chain))}):")
     print("".join(f"    {i}. {_format_entry(entry)}\n" for i, entry in enumerate(chain, 1)))
 
@@ -114,7 +116,7 @@ def _load_chain(empty_message: str):
     return config, chain or None
 
 
-def _describe_primary(config: Dict[str, Any]) -> Optional[str]:
+def _describe_primary(config: dict[str, Any]) -> Optional[str]:
     """One-line description of the primary model for display purposes."""
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
@@ -124,7 +126,7 @@ def _describe_primary(config: Dict[str, Any]) -> Optional[str]:
     return model_cfg.strip() or None if isinstance(model_cfg, str) else None
 
 
-def cmd_fallback_list(args) -> None:  # noqa: ARG001
+def cmd_fallback_list(args) -> None:
     """Print the current fallback chain."""
     config, chain = _load_chain("  No fallback providers configured.")
     if chain is None:
@@ -194,7 +196,7 @@ def cmd_fallback_add(args) -> None:
     print("  Run `hermes fallback list` to view, or `hermes fallback remove` to delete.")
 
 
-def cmd_fallback_remove(args) -> None:  # noqa: ARG001
+def cmd_fallback_remove(args) -> None:
     """Pick an entry from the chain and remove it."""
     from hermes_cli.config import save_config
     config, chain = _load_chain("  No fallback providers configured — nothing to remove.")
@@ -214,7 +216,7 @@ def cmd_fallback_remove(args) -> None:  # noqa: ARG001
     print(f"  Chain is now {_entries(len(chain))} long.\n" if chain else "  Fallback chain is now empty.\n")
 
 
-def cmd_fallback_clear(args) -> None:  # noqa: ARG001
+def cmd_fallback_clear(args) -> None:
     """Remove all fallback entries (with confirmation)."""
     from hermes_cli.config import save_config
     config, chain = _load_chain("  No fallback providers configured — nothing to clear.")
@@ -241,7 +243,7 @@ def cmd_fallback(args) -> None:
     handler = _SUBCOMMANDS.get(sub)
     if handler is None:
         print(f"Unknown fallback subcommand: {sub}")
-        print("Use one of: list, add, remove, clear")
+        print("Use one of: list, add, remove, clear, check")
         raise SystemExit(2)
     handler(args)
 
@@ -249,4 +251,5 @@ def cmd_fallback(args) -> None:
 _SUBCOMMANDS = {
     **dict.fromkeys((None, "", "list", "ls"), cmd_fallback_list), "add": cmd_fallback_add,
     **dict.fromkeys(("remove", "rm"), cmd_fallback_remove), "clear": cmd_fallback_clear,
+    "check": cmd_fallback_check,
 }

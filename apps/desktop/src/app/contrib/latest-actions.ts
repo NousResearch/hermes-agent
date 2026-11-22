@@ -64,6 +64,7 @@ export function latestSidebarActions(actions: SidebarActions): SidebarActions {
     onDeleteSession: (...args) => actions.onDeleteSession(...args),
     onLoadMoreMessaging: latestOptional(() => actions.onLoadMoreMessaging),
     onLoadMoreSessions: (...args) => actions.onLoadMoreSessions(...args),
+    onRetrySessions: (...args) => actions.onRetrySessions(...args),
     onManageCronJob: (...args) => actions.onManageCronJob(...args),
     onNavigate: (...args) => actions.onNavigate(...args),
     onNewSessionInWorkspace: (...args) => actions.onNewSessionInWorkspace(...args),

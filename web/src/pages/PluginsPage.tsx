@@ -1,8 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { ExternalLink, RefreshCw, Trash2, Eye, EyeOff } from "lucide-react";
 import type { Translations } from "@/i18n/types";
 import { Link } from "react-router";
+import { externalUrlTarget } from "@hermes/shared";
 import { api } from "@/lib/api";
+import { runDashboardPluginUpdate } from "@/lib/plugin-update";
+import { InstalledPluginsHeader } from "@/pages/PluginsPage_updateAll";
+import { setupHasDetails, setupHasInstallableSteps } from "@/lib/memory-provider-setup";
 import type {
   CatalogEntry,
   CatalogRemovedEntry,
@@ -11,7 +15,6 @@ import type {
   MemoryProviderConfig,
   MemoryProviderField,
   MemoryProviderInfo,
-  MemoryProviderSetupInfo,
   MemoryProviderSetupResult,
   PluginsHubResponse,
 } from "@/lib/api";
@@ -64,23 +67,6 @@ function fieldIsVisible(field: MemoryProviderField, values: Record<string, Memor
     const current = values[key];
     return String(current ?? "") === String(expected);
   });
-}
-
-function setupHasDetails(setup?: MemoryProviderSetupInfo) {
-  if (!setup) return false;
-  return Boolean(
-    setup.external_dependencies?.length ||
-      setup.pip_dependencies?.length ||
-      setup.required_env?.length,
-  );
-}
-
-function setupHasInstallableSteps(setup?: MemoryProviderSetupInfo) {
-  if (!setup) return false;
-  return Boolean(
-    setup.external_dependencies?.some((dep) => dep.install) ||
-      setup.pip_dependencies?.length,
-  );
 }
 
 function SetupCommandBlock({ code, label }: { code: string; label: string }) {
@@ -445,7 +431,7 @@ export default function PluginsPage() {
     }
   }, [loadHub, showToast, t.pluginsPage.refreshDashboard]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setAfterTitle(
       <Button
         ghost
@@ -921,7 +907,7 @@ export default function PluginsPage() {
               {t.pluginsPage.catalogEmpty ?? "No catalog entries match."}{" "}
               <a
                 className="underline"
-                href="https://hermes-agent.nousresearch.com/docs/plugins"
+                href="https://hermes-agent.nousresearch.com/docs/user-guide/features/plugin-catalog"
                 target="_blank"
                 rel="noreferrer"
               >
@@ -947,9 +933,7 @@ export default function PluginsPage() {
 
         <div className="flex flex-col gap-3">
 
-          <h3 className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary">
-            {t.pluginsPage.pluginListHeading}
-          </h3>
+          <InstalledPluginsHeader pluginCount={rows.length} {...{ loading, loadHub, showToast, t }} />
 
           {loading ? (
 
@@ -1179,20 +1163,13 @@ function PluginRowCard(props: PluginRowCardProps) {
                 size="sm"
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
-                    const res = await api.updateAgentPlugin(row.name);
-                    if (res.consent_required) {
-                      // The new pin widens the plugin; the backend changed nothing until confirmed.
-                      const body = [
-                        (t.pluginsPage.updateConsentBody ?? en.pluginsPage.updateConsentBody!)(
-                          row.name,
-                          (res.sha ?? "").slice(0, 8),
-                        ),
-                        ...(res.delta_lines ?? []),
-                      ].join("\n");
-                      if (!window.confirm(body)) return;
-                      await api.updateAgentPlugin(row.name, true);
-                    }
-                    showToast(t.pluginsPage.updateGit, "success");
+                    const pp = t.pluginsPage;
+                    const applied = await runDashboardPluginUpdate(row.name, {
+                      consentBody: pp.updateConsentBody ?? en.pluginsPage.updateConsentBody!,
+                      scanBody: pp.updateScanBody ?? en.pluginsPage.updateScanBody!,
+                      scanBlocked: pp.updateScanBlocked ?? en.pluginsPage.updateScanBlocked!,
+                    });
+                    if (applied) showToast(pp.updateGit, "success");
                   });
                 }}
               >
@@ -1301,6 +1278,12 @@ interface CatalogEntryCardProps {
   t: Translations;
 }
 
+// The backend drops non-https docs_url; gate the href too so no catalog value becomes javascript:.
+function catalogDocsHref(url: string): string | null {
+  const target = externalUrlTarget(url);
+  return target?.kind === "web" ? target.url : null;
+}
+
 function CatalogEntryCard(props: CatalogEntryCardProps) {
   const { busy, entry, onInstall, removed, t } = props;
 
@@ -1313,6 +1296,7 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
   if (caps.requires_env.length) chips.push(`env: ${caps.requires_env.join(", ")}`);
 
   const isRemoved = removed !== null;
+  const docsHref = catalogDocsHref(entry.docs_url);
 
   return (
     <Card className={cn(busy ? "opacity-70" : undefined)}>
@@ -1321,7 +1305,7 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
             <span className="truncate font-semibold">{entry.name}</span>
 
-            <Badge tone={entry.tier === "official" ? "success" : "secondary"}>
+            <Badge tone={entry.tier === "community" ? "secondary" : "success"}>
               {entry.tier}
             </Badge>
 
@@ -1392,10 +1376,10 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
             <ExternalLink className="h-3 w-3 opacity-65" />
           </a>
 
-          {entry.docs_url ? (
+          {docsHref ? (
             <a
               className="inline-flex items-center gap-1 underline"
-              href={entry.docs_url}
+              href={docsHref}
               target="_blank"
               rel="noreferrer"
             >

@@ -444,11 +444,14 @@ let
           Python packages to add to PYTHONPATH for entry-point plugin discovery.
           These are pip-packaged plugins that register via the
           hermes_agent.plugins entry-point group. Each package must be built
-          with the same Python interpreter as hermes (python312).
+          with the same Python interpreter as hermes. The interpreter
+          major.minor is derived from pm/lock.json by nix/pythonLock.nix —
+          take packages from config.services.hermes-agent.package.python.pkgs so the set always
+          matches the interpreter hermes was built with.
         '';
         example = literalExpression ''
           [
-            (pkgs.python312Packages.buildPythonPackage {
+            (config.services.hermes-agent.package.python.pkgs.buildPythonPackage {
               pname = "rtk-hermes";
               version = "1.0.0";
               src = pkgs.fetchFromGitHub {
@@ -470,11 +473,16 @@ let
           the sealed Python venv. These are resolved by uv alongside core
           dependencies — no PYTHONPATH patching or collision risk.
 
+          They add to the groups `package` already ships (the default
+          package ships "messaging", "voice", "exa", ...); they never
+          replace them. For a smaller venv pick a smaller `package`
+          (`minimal`, `messaging`) or override its defaultDependencyGroups.
+
           Use this for optional extras already declared in hermes-agent's
-          pyproject.toml (e.g. "honcho", "voice").
+          pyproject.toml (e.g. "google-meet").
           Use extraPythonPackages for external packages not in pyproject.toml.
         '';
-        example = [ "honcho" ];
+        example = [ "google-meet" ];
       };
 
       # ── Service behaviour ──────────────────────────────────────────────
@@ -673,18 +681,31 @@ let
     '';
 
   # ── Package resolution ──────────────────────────────────────────────────
+  # The module's lists extend the package's own extras, never replace them.
+  # The shipped variants keep their groups in defaultDependencyGroups, but a
+  # custom `package` built with `.override { extraDependencyGroups = ...; }`
+  # carries its choices in the extras, and a plain attrset override here
+  # would drop them.
   effectivePackage =
     cfg:
     if cfg.extraPythonPackages == [ ] && cfg.extraDependencyGroups == [ ] then
       cfg.package
     else
-      cfg.package.override { inherit (cfg) extraPythonPackages extraDependencyGroups; };
+      cfg.package.override (prev: {
+        extraPythonPackages = (prev.extraPythonPackages or [ ]) ++ cfg.extraPythonPackages;
+        extraDependencyGroups = (prev.extraDependencyGroups or [ ]) ++ cfg.extraDependencyGroups;
+      });
 
   # ── The rendered config.yaml ────────────────────────────────────────────
   # YAML contains JSON, so the output of toJSON is a correct config.yaml.
   # terminal.cwd replaces the old MESSAGING_CWD environment variable. The
   # order of the recursiveUpdate lets an explicit settings.terminal.cwd
   # replace the default value.
+  #
+  # The file also carries the `_config_version` of the package. In managed
+  # mode Hermes refuses to write config.yaml, so it cannot stamp the version
+  # itself, and an unstamped file reads as version 0 at every boot. The build
+  # reads the version from DEFAULT_CONFIG so it always matches the package.
   mkConfigFiles =
     {
       pkgs,
@@ -692,9 +713,22 @@ let
       workingDirectory,
     }:
     let
-      generated = pkgs.writeText "hermes-config.yaml" (
-        builtins.toJSON (lib.recursiveUpdate { terminal.cwd = workingDirectory; } cfg.settings)
-      );
+      generated =
+        pkgs.runCommand "hermes-config.yaml"
+          {
+            settings = builtins.toJSON (lib.recursiveUpdate { terminal.cwd = workingDirectory; } cfg.settings);
+            passAsFile = [ "settings" ];
+          }
+          ''
+            HOME=$TMPDIR ${(effectivePackage cfg).hermesVenv}/bin/python3 - "$settingsPath" > $out <<'PY'
+            import json, sys
+            from hermes_cli.config_defaults import DEFAULT_CONFIG
+            with open(sys.argv[1]) as f:
+                settings = json.load(f)
+            settings.setdefault("_config_version", DEFAULT_CONFIG["_config_version"])
+            json.dump(settings, sys.stdout)
+            PY
+          '';
     in
     {
       inherit generated;
@@ -913,14 +947,17 @@ let
     ]
     ++ cfg.backend.extraArgs;
 
-  # The launcher that reads the session token, waits for the bind target,
-  # then starts the backend.
+  # The launcher that waits for the bind target, then starts the backend.
   #
-  # The token cannot go in the unit environment. A systemd `Environment=`
-  # value and a launchd EnvironmentVariables value both land in the Nix
-  # store, which all users can read. Thus the launcher reads the file at
-  # start time. launchd has no EnvironmentFile, so a script is the one shape
-  # that works on both hosts.
+  # The token never rides through this script: it travels as a file path in
+  # the unit environment (backendSessionEnvironment), which is not a secret,
+  # and hermes reads the file itself at startup
+  # as HERMES_DASHBOARD_SESSION_TOKEN=file:<path>, which hermes expands). A
+  # shell wrapper that read the file
+  # had to escapeShellArg the path, which froze any "${XDG_RUNTIME_DIR}"
+  # placeholder into a literal and crash-looped the unit (agenix's Home
+  # Manager module default). Set an absolute path instead; see the option
+  # description.
   #
   # `exec` on the last line keeps hermes as the MainPID of the unit. No shell
   # stays in the cgroup, and the restart logic of systemd sees the real
@@ -937,25 +974,6 @@ let
         _timeout=${toString cfg.backend.waitTimeout}
         _waited=0
 
-        ${lib.optionalString (cfg.backend.sessionTokenFile != null) ''
-          # Read the token, and never put it on a command line. A command
-          # line is visible to each process on the host.
-          _token_file=${lib.escapeShellArg cfg.backend.sessionTokenFile}
-
-          if [ ! -r "$_token_file" ]; then
-            echo "hermes-backend: cannot read the session token file '$_token_file'. The unit stops." >&2
-            echo "hermes-backend: backend.sessionTokenFile must name a runtime path that this user can read." >&2
-            exit 1
-          fi
-
-          HERMES_DASHBOARD_SESSION_TOKEN="$(${pkgs.coreutils}/bin/tr -d '\r\n' < "$_token_file")"
-          export HERMES_DASHBOARD_SESSION_TOKEN
-
-          if [ -z "$HERMES_DASHBOARD_SESSION_TOKEN" ]; then
-            echo "hermes-backend: the session token file '$_token_file' is empty. The unit stops." >&2
-            exit 1
-          fi
-        ''}
         ${
           if cfg.backend.waitFor == null then
             ''
@@ -1020,12 +1038,31 @@ let
       ''
     );
 
+  # The session token travels as a file path, never as the token itself. A
+  # path is not a secret, so it can sit in a systemd Environment= or a
+  # launchd EnvironmentVariables value without putting anything readable
+  # into the store. hermes expands the file: prefix of
+  # HERMES_DASHBOARD_SESSION_TOKEN and reads that file at startup, failing
+  # loudly when it is missing or empty.
+  #
+  # The path must be absolute. A "$XDG_RUNTIME_DIR"-style placeholder that a
+  # secret manager left for a shell to expand is passed through verbatim and
+  # nothing expands it here; agenix's home-manager module default is such a
+  # placeholder, so pin `age.secrets.<name>.path` to
+  # /run/user/<uid>/agenix/<name>.
+  backendSessionEnvironment =
+    { cfg }:
+    lib.optionalAttrs (cfg.backend.sessionTokenFile != null) {
+      HERMES_DASHBOARD_SESSION_TOKEN = "file:" + cfg.backend.sessionTokenFile;
+    };
+
   backendArgv =
     { pkgs, cfg }:
     # A plain argv is enough only when nothing must run before the backend.
-    # A wait needs the address at start time, and a token must be read from
-    # a file that the store must never hold. Either one needs the launcher.
-    if cfg.backend.waitFor == null && cfg.backend.sessionTokenFile == null then
+    # A wait needs the address at start time, so it needs the launcher. The
+    # token does not: it travels as a file path in the unit environment and
+    # hermes reads the file itself.
+    if cfg.backend.waitFor == null then
       backendCommand cfg cfg.backend.host
     else
       [ "${backendLauncher { inherit pkgs cfg; }}" ];
@@ -1145,6 +1182,7 @@ in
     backendArgv
     backendBindAssertions
     backendDescription
+    backendSessionEnvironment
     deepConfigType
     effectivePackage
     gatewayArgv

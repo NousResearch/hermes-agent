@@ -24,13 +24,13 @@ class TestParseInputImageArg:
     def test_without_name_defaults(self, tmp_path):
         f = tmp_path / "x.png"
         f.write_text("x", encoding="utf-8")
-        n, p = parse_input_image_arg(str(f))
+        n, _p = parse_input_image_arg(str(f))
         assert n == "image"
 
     def test_custom_name(self, tmp_path):
         f = tmp_path / "x.png"
         f.write_text("x", encoding="utf-8")
-        n, p = parse_input_image_arg(f"mask_image={f}")
+        n, _p = parse_input_image_arg(f"mask_image={f}")
         assert n == "mask_image"
 
 
@@ -62,7 +62,7 @@ class TestInjectParams:
     def test_randomize_seed_when_unset(self, sd15_workflow):
         schema = extract_schema(sd15_workflow)
         original = sd15_workflow["3"]["inputs"]["seed"]
-        wf, warnings = inject_params(sd15_workflow, schema, {}, randomize_seed_if_unset=True)
+        wf, _warnings = inject_params(sd15_workflow, schema, {}, randomize_seed_if_unset=True)
         assert wf["3"]["inputs"]["seed"] != original
         assert isinstance(wf["3"]["inputs"]["seed"], int)
 

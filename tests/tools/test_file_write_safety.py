@@ -66,6 +66,21 @@ class TestSshConfigApprovalGate:
         assert is_write_approval_required(str(tmp_path / "notes.txt")) is False
 
 
+class TestShellRcApprovalGate:
+    """Login shell rc files pair with the terminal gate (#85321)."""
+
+    def test_shell_rc_not_hard_denied(self):
+        from agent.file_safety import is_write_denied
+
+        assert is_write_denied(os.path.expanduser("~/.bashrc")) is False
+
+    def test_shell_rc_is_approval_required(self):
+        from agent.file_safety import is_write_approval_required
+
+        for name in (".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile"):
+            assert is_write_approval_required(os.path.expanduser(f"~/{name}")) is True, name
+
+
 
 class TestSafeWriteRoot:
     """HERMES_WRITE_SAFE_ROOT should sandbox writes to a specific subtree."""
@@ -232,22 +247,27 @@ class TestSafeRootDenialMessageIntegration:
 class TestCheckSensitivePathMacOSBypass:
     """Verify _check_sensitive_path blocks /private/etc paths (issue #8734)."""
 
+    @pytest.mark.platforms("linux")
     def test_etc_hosts_blocked(self):
         from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/etc/hosts") is not None
 
+    @pytest.mark.platforms("linux")
     def test_private_etc_hosts_blocked(self):
         from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/hosts") is not None
 
+    @pytest.mark.platforms("linux")
     def test_private_etc_ssh_config_blocked(self):
         from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/ssh/sshd_config") is not None
 
+    @pytest.mark.platforms("linux")
     def test_private_var_blocked(self):
         from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/private/var/db/something") is not None
 
+    @pytest.mark.platforms("linux")
     def test_boot_still_blocked(self):
         from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/boot/grub/grub.cfg") is not None
@@ -291,6 +311,7 @@ class TestAtomicWrite:
         assert [p for p in os.listdir(tmp_path) if ".hermes-tmp" in p] == []
 
 
+    @pytest.mark.platforms("linux")
     def test_patch_routes_through_atomic_write(self, ops, tmp_path: Path):
         target = tmp_path / "edit.py"
         target.write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
@@ -364,6 +385,245 @@ class TestBomHandling:
         assert raw.startswith(self.BOM.encode("utf-8")), "BOM lost on V4A update"
         assert b"print('world')" in raw
 
+
+    def test_v4a_update_keeps_terminal_escape_bytes_on_untouched_lines(self, ops, tmp_path: Path):
+        # read_file_raw feeds the V4A write-back: every byte on a line the patch never touched
+        # survives, including OSC escapes, BEL and literal fence-marker text.
+        target = tmp_path / "prompt.sh"
+        original = (b'set_title() { printf "\x1b]0;%s\x07" "$1"; }\n'
+                    b'beep() { printf "\x07"; }\n'
+                    b'SENTINEL = "__HERMES_FENCE_a9f7b3__\x07"  # marker text is file content too\n'
+                    b'VERSION=1\n')
+        target.write_bytes(original)
+        patch = (
+            "*** Begin Patch\n"
+            f"*** Update File: {target}\n"
+            "@@\n"
+            "-VERSION=1\n"
+            "+VERSION=2\n"
+            "*** End Patch"
+        )
+        res = ops.patch_v4a(patch)
+        assert res.success, res.error
+        assert target.read_bytes() == original.replace(b"VERSION=1", b"VERSION=2")
+
+    @pytest.mark.parametrize("mode", ["replace", "v4a"])
+    def test_edit_keeps_bytes_utf8_cannot_decode_on_untouched_lines(self, ops, tmp_path: Path, mode):
+        # Both edit paths write back every line they did not touch, so their source read must be
+        # byte-exact: the text transport decodes with errors="replace", which turned this legacy
+        # latin-1 byte into U+FFFD on disk. (Past the 1000-byte sample, where V4A reads it as text.)
+        target = tmp_path / "legacy.py"
+        original = (b"# -*- coding: latin-1 -*-\n" + b"# " + b"x" * 1100 + b"\n"
+                    b"name = 'caf\xe9'\n"
+                    b"x = 1\n")
+        target.write_bytes(original)
+        if mode == "replace":
+            res = ops.patch_replace(str(target), "x = 1", "x = 2")
+        else:
+            res = ops.patch_v4a(f"*** Begin Patch\n*** Update File: {target}\n@@\n-x = 1\n+x = 2\n*** End Patch")
+        assert res.success, res.error
+        assert target.read_bytes() == original.replace(b"x = 1", b"x = 2")
+        # The file declares its encoding, so it is valid Python and lints clean.
+        lints = res.lint.values() if mode == "v4a" else [res.lint]
+        assert [lint["status"] for lint in lints] == ["ok"], res.lint
+
+    @staticmethod
+    def _noisy_env():
+        """A real shell whose merged stdout carries a connect banner, as remote backends do."""
+        from tools.environments.local import LocalEnvironment
+
+        class Env(LocalEnvironment):
+            def execute(self, command, *args, **kwargs):
+                result = super().execute(command, *args, **kwargs)
+                if isinstance(result, dict):
+                    result = dict(result)
+                    result["output"] = "TERM\n" + (result.get("output") or "")
+                return result
+        return Env
+
+    def test_byte_exact_read_fences_backend_stdout_noise(self, tmp_path: Path, monkeypatch):
+        # The edit paths write this read straight back, so noise in the backend's merged stdout must
+        # never reach the decode. "TERM" is four base64 characters: unfenced it decodes to b"LDL" and
+        # lands at the head of the file. Remote backends announce things on connect, so the local
+        # native fast path is off here and the base64 transport is what runs.
+        from tools.file_operations import ShellFileOperations
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+
+        target = tmp_path / "conf.txt"
+        original = b"HEADER\nVERSION=1\n"
+        target.write_bytes(original)
+        ops = ShellFileOperations(self._noisy_env()(cwd=str(tmp_path)), cwd=str(tmp_path))
+
+        assert ops._read_exact_bytes(str(target)) == (original, None)
+        ops.patch_replace(str(target), "VERSION=1", "VERSION=2")
+        assert target.read_bytes() == original.replace(b"VERSION=1", b"VERSION=2")
+
+    def test_binary_admission_sample_fences_backend_stdout_noise(self, tmp_path: Path, monkeypatch):
+        # The same transport gap one step EARLIER: _sample_file_bytes is the binary-admission gate
+        # in front of the byte-exact read, so backend noise joined onto its base64 decides whether a
+        # file is editable at all and what a refusal reports about it. The sample must be the file's
+        # own leading bytes, not the backend's banner decoded into them.
+        from tools.file_operations import ShellFileOperations
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+
+        target = tmp_path / "head.bin"
+        original = b"\x00\x01\x02binary payload\n"
+        target.write_bytes(original)
+        ops = ShellFileOperations(self._noisy_env()(cwd=str(tmp_path)), cwd=str(tmp_path))
+
+        assert ops._sample_file_bytes(str(target)) == original
+
+    @staticmethod
+    def _env_without(*missing: str):
+        """A real shell where only the named BINARIES are absent (busybox, distroless)."""
+        import re as _re
+        from tools.environments.local import LocalEnvironment
+        stub = "( echo 'sh: not found' >&2; exit 127 )"  # a SUBSHELL: `exit` must not kill the shell
+
+        class Env(LocalEnvironment):
+            def execute(self, command, *args, **kwargs):
+                for name in missing:
+                    command = _re.sub(rf"\b{name} <", f"{stub} <", command)
+                    command = _re.sub(rf"\b{name}\b(?! <)", stub, command)
+                return super().execute(command, *args, **kwargs)
+        return Env
+
+    def test_byte_exact_read_falls_back_to_hex_without_base64(self, tmp_path: Path, monkeypatch):
+        # base64 is not on every backend. The sample path already degrades when it is missing
+        # (_detect_binary), so the byte-exact read must too, and byte-exactly.
+        from tools.file_operations import ShellFileOperations
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        target = tmp_path / "conf.txt"
+        original = b"HEADER\nVERSION=1\n"
+        target.write_bytes(original)
+        ops = ShellFileOperations(self._env_without("base64")(cwd=str(tmp_path)), cwd=str(tmp_path))
+
+        assert ops._read_exact_bytes(str(target)) == (original, None)
+        assert ops.patch_replace(str(target), "VERSION=1", "VERSION=2").success
+        assert target.read_bytes() == original.replace(b"VERSION=1", b"VERSION=2")
+
+    def test_add_file_refuses_when_the_read_failed_rather_than_the_path_being_free(
+            self, tmp_path: Path, monkeypatch):
+        # `Add File` uses read_file_raw's error as its existence check. A backend with no byte
+        # transport at all makes that read FAIL, which must not read as "the path is free" —
+        # that writes the Add payload over the file the check exists to protect.
+        from tools.file_operations import ShellFileOperations
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        target = tmp_path / "KEEP.txt"
+        precious = b"KEEP ME\n"
+        target.write_bytes(precious)
+        ops = ShellFileOperations(self._env_without("base64", "od")(cwd=str(tmp_path)), cwd=str(tmp_path))
+
+        read = ops.read_file_raw(str(target))
+        assert read.error and not read.not_found  # a failed read, NOT an absent path
+        res = ops.patch_v4a(f"*** Begin Patch\n*** Add File: {target}\n+clobbered\n*** End Patch")
+        assert not res.success
+        assert target.read_bytes() == precious
+
+    def test_move_refuses_a_destination_it_could_not_read_before_any_op_applies(
+            self, tmp_path: Path, monkeypatch):
+        # Validation must keep "the read failed" apart from "the path is absent" for a Move
+        # destination too, and the apply must re-check it before `mv` replaces whatever is there.
+        from tools.file_operations import ShellFileOperations
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        dst = tmp_path / "dst.txt"
+        dst.write_bytes(b"PRECIOUS DESTINATION\n")
+        ops = ShellFileOperations(self._env_without("base64", "od")(cwd=str(tmp_path)), cwd=str(tmp_path))
+
+        res = ops.patch_v4a(
+            "*** Begin Patch\n"
+            f"*** Add File: {tmp_path / 'new-src.txt'}\n+SOURCE\n"
+            f"*** Move File: {tmp_path / 'new-src.txt'} -> {dst}\n"
+            "*** End Patch")
+        assert not res.success
+        assert dst.read_bytes() == b"PRECIOUS DESTINATION\n"
+        assert not (tmp_path / "new-src.txt").exists()
+
+    @pytest.mark.parametrize("transport,noise", [("base64", "TERM"), ("od", "4c 44")])
+    def test_output_inside_the_byte_exact_read_never_reaches_a_write(
+            self, tmp_path: Path, monkeypatch, transport, noise):
+        # The fence drops noise around the read, not noise printed WHILE it runs: a BASH_ENV DEBUG
+        # hook firing for the transport command alone puts text inside the payload that still
+        # decodes ("TERM" is b"LDL"; "4c 44" is hex). Such a read must fail, and no edit may write.
+        from tools.file_operations import ShellFileOperations
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        hook = tmp_path / "hook.sh"
+        hook.write_text(f"trap '[[ $BASH_COMMAND == {transport}* ]] && echo \"{noise}\"' DEBUG\n")
+        target = tmp_path / "conf.txt"
+        original = b"HEADER\nVERSION=1\n"
+        target.write_bytes(original)
+        missing = ("base64",) if transport == "od" else ()
+        env = self._env_without(*missing)(cwd=str(tmp_path), env={"BASH_ENV": str(hook)})
+        ops = ShellFileOperations(env, cwd=str(tmp_path))
+
+        assert ops._read_exact_bytes(str(target))[0] is None
+        assert not ops.patch_replace(str(target), "VERSION=1", "VERSION=2").success
+        assert not ops.patch_v4a(
+            f"*** Begin Patch\n*** Update File: {target}\n@@\n-VERSION=1\n+VERSION=2\n*** End Patch").success
+        assert target.read_bytes() == original
+
+    @pytest.mark.parametrize("op", ["add", "move"])
+    def test_a_dangling_symlink_destination_is_occupied(self, ops, tmp_path: Path, op):
+        # `[ -f ]` and `[ -e ]` follow the link, so a dangling one read as an absent path: Add
+        # followed it and created its target, Move replaced the link. The entry is there.
+        link = tmp_path / "link.txt"
+        link.symlink_to(tmp_path / "gone.txt")
+        (tmp_path / "src.txt").write_bytes(b"SOURCE\n")
+        body = (f"*** Add File: {link}\n+X\n" if op == "add"
+                else f"*** Move File: {tmp_path / 'src.txt'} -> {link}\n")
+        res = ops.patch_v4a(f"*** Begin Patch\n{body}*** End Patch")
+        assert not res.success
+        assert link.is_symlink() and os.readlink(link) == str(tmp_path / "gone.txt")
+        assert not (tmp_path / "gone.txt").exists()
+        assert (tmp_path / "src.txt").read_bytes() == b"SOURCE\n"
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX only: needs os.mkfifo and SIGALRM")
+    def test_native_byte_exact_read_never_opens_a_non_regular_file(self, tmp_path: Path, monkeypatch):
+        # The native fast path bypasses the backend timeout, so a blocking open there hangs the
+        # thread with nothing to interrupt it. The shell path below has a timeout and is allowed
+        # to take a FIFO; the native path must hand it over instead of opening it. Stubbing the
+        # shell read keeps this about the native branch: if it opens the FIFO the test hangs.
+        import signal
+        from tools.file_operations import ExecuteResult, ShellFileOperations
+        from tools.environments.local import LocalEnvironment
+        fifo = tmp_path / "pipe"
+        os.mkfifo(fifo)  # no writer: a blocking open never returns
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+        monkeypatch.setattr(ops, "_exec",
+                            lambda *a, **k: ExecuteResult(stdout="handed to the shell", exit_code=1))
+
+        def _bail(*_args):
+            raise TimeoutError("the native read opened a FIFO and blocked")
+        previous = signal.signal(signal.SIGALRM, _bail)
+        signal.alarm(5)
+        try:
+            data, failed = ops._read_exact_bytes(str(fifo))
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+        assert data is None and failed is not None and "handed to the shell" in failed.stdout
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX bash xtrace via BASH_ENV")
+    def test_byte_exact_read_survives_a_real_xtrace_shell(self, tmp_path: Path, monkeypatch):
+        # A user rc / BASH_ENV with `set -x` must not break byte-exact reads, or every edit fails
+        # its read. (The post-write sha256 check under noisy stdout is a separate issue.)
+        import shutil
+        from tools.file_operations import ShellFileOperations
+        from tools.environments.local import LocalEnvironment
+        if not shutil.which("bash"):
+            pytest.skip("bash not installed")
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        hook = tmp_path / "xtrace.sh"
+        hook.write_text("set -x\n")
+        target = tmp_path / "conf.txt"
+        original = b"HEADER\n\x1b]0;osc\x07\n" + b"line\n" * 250 + b"VERSION=1 \xff\n"
+        target.write_bytes(original)
+        env = LocalEnvironment(cwd=str(tmp_path), env={"BASH_ENV": str(hook)})
+        ops = ShellFileOperations(env, cwd=str(tmp_path))
+
+        assert ops._sample_file_bytes(str(target)) == original[:1000]
+        raw = ops.read_file_raw(str(target))
+        assert raw.error is None and raw.content.encode("utf-8", "surrogateescape") == original
 
 
 class TestProtectedInstructionFiles:
@@ -490,8 +750,28 @@ class TestProtectedInstructionFiles:
         res = self._write(tmp_path / "rules.mdc")
         assert res.get("error") and "BLOCKED" in res["error"]
 
+    @pytest.mark.parametrize("name", ["AGENT\u017f.md", "\u017foul.md", ".cur\u017forrule\u017f"])
+    def test_case_fold_spellings_are_gated(self, name):
+        """APFS folds long s to s, so these open the protected file (CERT/CC VU#604762)."""
+        import tools.file_tools_write_guards as ft
+        assert ft._protected_instruction_reason(f"/repo/{name}", enabled=True, extra_patterns=[]) == name
+
+    def test_extra_patterns_match_folded_and_nfd_names(self):
+        import tools.file_tools_write_guards as ft
+        reason = ft._protected_instruction_reason
+        assert reason("/repo/Gro\u00dfe.md", enabled=True, extra_patterns=["grosse.md"])
+        assert reason("/repo/fu\u0308r.md", enabled=True, extra_patterns=["f\u00fcr.md"])
+        assert reason("/repo/notes.md", enabled=True, extra_patterns=["grosse.md"]) is None
+
+    @pytest.mark.parametrize("pattern", ["?.md", "[\u00df].md"])
+    def test_folding_keeps_existing_pattern_matches(self, pattern):
+        """Folding only adds matches: ``?.md`` still gates ``ß.md`` although its folded key is ``ss.md``."""
+        import tools.file_tools_write_guards as ft
+        assert ft._protected_instruction_reason("/repo/\u00df.md", enabled=True, extra_patterns=[pattern])
+
     # ---- adversarial path shapes ----------------------------------------
 
+    @pytest.mark.require_symlinks
     def test_symlink_to_protected_file_is_gated(self, tmp_path, approvals):
         """#41351 lesson: realpath first — innocent name, protected target."""
         real = tmp_path / "AGENTS.md"
@@ -554,6 +834,33 @@ class TestProtectedInstructionFiles:
         res = self._write(fake_home / "notes" / "scratch.txt", "ok")
         assert not res.get("error"), res
         assert approvals["calls"] == []
+
+    def test_instruction_files_in_real_hermes_home_are_gated(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        """#92146: the home exemption must not skip the basename / extra-pattern
+        match. The LIVE SOUL.md / AGENTS.md and operator-listed cron scripts in the
+        home steer the agent; denied writes stay unwritten."""
+        import tools.file_tools_write_guards as ft
+        fake_home = tmp_path / ".hermes"
+        (fake_home / "scripts").mkdir(parents=True)
+        monkeypatch.setattr(
+            ft, "_get_real_hermes_home", lambda: str(fake_home.resolve())
+        )
+        monkeypatch.setattr(
+            ft, "_protected_instruction_config", lambda: (True, ["*.py"])
+        )
+        approvals["answer"] = "deny"
+        for target in (fake_home / "SOUL.md", fake_home / "AGENTS.md",
+                       fake_home / "scripts" / "prerun.py"):
+            res = self._write(target)
+            assert res.get("error") and "BLOCKED" in res["error"], target
+            assert not target.exists()
+        assert len(approvals["calls"]) == 3
+        # Ordinary home files remain out of this gate.
+        res = self._write(fake_home / "state.json", "{}")
+        assert not res.get("error"), res
+        assert len(approvals["calls"]) == 3
 
     # ---- patch tool -----------------------------------------------------
 
@@ -688,9 +995,6 @@ class TestProfileHomeExemptsHermesRoot:
         monkeypatch.setattr(
             ft, "_protected_instruction_config", lambda: (True, [])
         )
-        # The resolved-home slot is filled once per process; keep the fixture honest.
-        monkeypatch.setattr(ft, "_real_hermes_home_loaded", False)
-        monkeypatch.setattr(ft, "_real_hermes_home_cached", None)
         yield
 
     @pytest.fixture
@@ -730,8 +1034,11 @@ class TestProfileHomeExemptsHermesRoot:
         token = set_hermes_home_override(str(profile))
         try:
             assert os.path.realpath(str(root)) in ft._hermes_exempt_homes()
-            for name in ("LEDGER.md", "MEMORY.md", "SOUL.md", "AGENTS.md"):
+            for name in ("LEDGER.md", "MEMORY.md", "USER.md"):
                 assert ft._protected_instruction_reason(str(root / name)) is None, name
+            # The root's own instruction files stay gated (#92146).
+            for name in ("SOUL.md", "AGENTS.md"):
+                assert ft._protected_instruction_reason(str(root / name)) == name
             res = self._write(root / "LEDGER.md", "caliber fixed")
         finally:
             reset_hermes_home_override(token)
@@ -746,7 +1053,7 @@ class TestProfileHomeExemptsHermesRoot:
         import tools.file_tools_write_guards as ft
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-        root, profile = self._profile_layout(tmp_path)
+        _root, profile = self._profile_layout(tmp_path)
         repo = tmp_path / "repo"
         (repo / ".hermes").mkdir(parents=True)
         monkeypatch.delenv("HERMES_HOME", raising=False)
@@ -832,3 +1139,25 @@ class TestMultiplexProfileWriteGuardsAreProfileScoped:
             reset_hermes_home_override(tok)
         assert err is not None
         assert "Refusing to write to Hermes config file" in err
+
+
+def test_config_hard_block_follows_file_identity_not_spelling(tmp_path):
+    """A second name for config.yaml (a differently-cased spelling on a case-insensitive
+    filesystem, or here a hard link) is still the config file (#117815)."""
+    import tools.file_tools_write_guards as ft
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("approvals:\n  mode: manual\n", encoding="utf-8")
+    alias = tmp_path / "alias.yaml"
+    os.link(home / "config.yaml", alias)
+    (tmp_path / "other.yaml").write_text("x: 1\n", encoding="utf-8")
+    tok = set_hermes_home_override(str(home))
+    try:
+        err = ft._check_sensitive_path(str(alias), "default")
+        other = ft._check_sensitive_path(str(tmp_path / "other.yaml"), "default")
+    finally:
+        reset_hermes_home_override(tok)
+    assert err is not None and "Refusing to write to Hermes config file" in err
+    assert other is None

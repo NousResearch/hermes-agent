@@ -2,7 +2,7 @@
 // Build-time only: the shipped app never needs clang or Xcode tools.
 import { execFileSync } from 'node:child_process'
 import { chmodSync, mkdirSync, renameSync, rmSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { macosSysroot, xcrunClangArgv } from './macos-sysroot.mjs'
 
@@ -12,14 +12,19 @@ const root = resolve(dirname(script), '..')
 // `platform` and `sysroot` are injectable so tests can exercise the branches
 // without redefining process.platform or shelling out to xcode-select.
 export function buildCommandScreenshotMonitor({
-  distDir = resolve(root, 'dist'),
+  source = resolve(root, '../..'),
+  distDir = resolve(source, 'apps/desktop/dist'),
   platform = process.platform,
   sysroot,
 } = {}) {
   if (platform !== 'darwin') return null
   const output = resolve(distDir, 'native/command-screenshot-monitor')
-  const staging = `${output}.${process.pid}.tmp`
-  mkdirSync(dirname(output), { recursive: true })
+  // ld64 signs the Mach-O ad hoc with its output FILE NAME as the identifier, so a pid-suffixed
+  // staging name made every build's bytes differ and the native-deps input never compared
+  // equal. Stage under the final name inside a private directory instead.
+  const stagingDir = `${output}.${process.pid}.tmp`
+  const staging = join(stagingDir, basename(output))
+  mkdirSync(stagingDir, { recursive: true })
   const sdk = sysroot === undefined ? macosSysroot() : sysroot
   try {
     execFileSync('xcrun', [
@@ -27,7 +32,7 @@ export function buildCommandScreenshotMonitor({
       '-arch', 'arm64', '-arch', 'x86_64', '-mmacosx-version-min=11.0',
       '-fobjc-arc', '-fblocks', '-O2', '-Wall', '-Wextra',
       '-framework', 'Cocoa', '-framework', 'CoreGraphics',
-      resolve(root, 'electron/native/command-screenshot-monitor.m'), '-o', staging,
+      resolve(source, 'apps/desktop/electron/native/command-screenshot-monitor.m'), '-o', staging,
     ], { stdio: 'inherit', timeout: 120_000 })
     chmodSync(staging, 0o755)
     renameSync(staging, output)
@@ -35,7 +40,7 @@ export function buildCommandScreenshotMonitor({
     console.log(`built ${output} (arm64 + x86_64)`)
     return output
   } finally {
-    rmSync(staging, { force: true })
+    rmSync(stagingDir, { recursive: true, force: true })
   }
 }
 

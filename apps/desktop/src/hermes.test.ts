@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS,
   AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS,
+  AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS,
   AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS,
   AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS,
   audioSpeakRequestTimeoutMs,
@@ -27,7 +28,9 @@ import {
   resetSidebarBatchCapability,
   setApiRequestConnection,
   setApiRequestProfile,
+  setSttLease,
   speakText,
+  transcribeAudio,
   triggerCronJob
 } from './hermes'
 import { $transcriptTailBySessionId, transcriptTailState } from './store/transcript-tail'
@@ -179,6 +182,7 @@ describe('Hermes REST helpers', () => {
 
   it('preserves ambient and explicit-local ownership for session and profile requests', async () => {
     setApiRequestConnection('remote-a')
+    api.mockResolvedValue({ ...emptySessionsResponse, exists: true, runtime_revision: 9, runtime_generation: 2 })
 
     await getSession('ambient-session')
     await getSessionMessages('ambient-session')
@@ -406,6 +410,46 @@ describe('Hermes REST helpers', () => {
     expect(result.recents.sessions).toEqual([])
   })
 
+  it('keeps the endpoint-missing verdict on the gateway that 404d, not the one picked next', async () => {
+    api.mockImplementation(({ connectionId, path }: { connectionId?: string; path: string }) =>
+      path.startsWith('/api/profiles/sessions/sidebar') && connectionId === 'old-gateway'
+        ? Promise.reject(new Error('404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}'))
+        : Promise.resolve(
+            path.startsWith('/api/profiles/sessions/sidebar')
+              ? { recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } }
+              : emptySessionsResponse
+          )
+    )
+
+    const req = {
+      recentsProfile: 'all' as const,
+      recentsLimit: 20,
+      recentsExclude: [],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: []
+    }
+
+    const batchedProbesOn = (connectionId: string) =>
+      api.mock.calls.filter(call => {
+        const arg = call[0] as { connectionId?: string; path: string }
+
+        return arg.connectionId === connectionId && arg.path.startsWith('/api/profiles/sessions/sidebar')
+      })
+
+    setApiRequestConnection('old-gateway')
+    await listSidebarSessions(req)
+    // A sidebar gateway pick re-scopes requests in place; nothing resets.
+    setApiRequestConnection('new-gateway')
+    await listSidebarSessions(req)
+    await listSidebarSessions(req)
+    setApiRequestConnection('old-gateway')
+    await listSidebarSessions(req)
+
+    expect(batchedProbesOn('new-gateway')).toHaveLength(2)
+    expect(batchedProbesOn('old-gateway')).toHaveLength(1)
+  })
+
   it('does NOT fall back on transient failures — only endpoint-missing shapes trigger legacy mode', async () => {
     api.mockRejectedValue(new Error('Request timed out after 60000ms'))
 
@@ -463,6 +507,21 @@ describe('Hermes REST helpers', () => {
     const call = api.mock.calls[0]?.[0] as { path: string; timeoutMs?: number }
     expect(call.path).toBe('/api/status')
     expect(call.timeoutMs).toBeUndefined()
+  })
+
+  it('bounds the live model metadata probe so a dead provider cannot hold the settings page', async () => {
+    api.mockResolvedValue({})
+    api.mockClear()
+
+    await getGlobalModelInfo()
+
+    // /api/model/info resolves the live context window by probing the
+    // configured provider; it carries its own short budget rather than the
+    // 60s startup timeout so Model Settings degrades instead of hanging
+    // when the provider backend is unreachable (#63214).
+    const call = api.mock.calls[0]?.[0] as { path: string; timeoutMs?: number }
+    expect(call.path).toBe('/api/model/info')
+    expect(call.timeoutMs).toBe(5_000)
   })
 
   // Explicit profile/connection writes (deleting a profile) carry the foreground
@@ -632,6 +691,89 @@ describe('Hermes REST helpers', () => {
     )
     expect(audioTranscribeRequestTimeoutMs('x'.repeat(3_000_000))).toBeLessThan(AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS)
     expect(audioTranscribeRequestTimeoutMs('x'.repeat(9_000_000))).toBe(AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS)
+  })
+
+  it('uses an extended timeout for blocking transcription', async () => {
+    api.mockResolvedValueOnce({
+      ok: true,
+      provider: 'openai',
+      text: 'transcribed text'
+    })
+
+    await expect(transcribeAudio('data:audio/webm;base64,AA==', 'audio/webm')).resolves.toEqual({
+      ok: true,
+      provider: 'openai',
+      text: 'transcribed text'
+    })
+
+    expect(api).toHaveBeenCalledWith({
+      body: { data_url: 'data:audio/webm;base64,AA==', mime_type: 'audio/webm' },
+      method: 'POST',
+      path: '/api/audio/transcribe',
+      timeoutMs: AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS
+    })
+  })
+
+  it('routes STT lease acquire/release to the stt-lease endpoint with a warm-up budget', async () => {
+    api.mockResolvedValueOnce({ ok: true })
+    api.mockResolvedValueOnce({ ok: true })
+
+    await setSttLease('desktop:voice-input:abc', true, { connectionId: null, profile: null })
+    await setSttLease('desktop:voice-input:abc', false, { connectionId: null, profile: null })
+
+    expect(api).toHaveBeenNthCalledWith(1, {
+      body: { active: true, lease: 'desktop:voice-input:abc' },
+      method: 'POST',
+      path: '/api/audio/stt-lease',
+      timeoutMs: AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS
+    })
+    expect(api).toHaveBeenNthCalledWith(2, {
+      body: { active: false, lease: 'desktop:voice-input:abc' },
+      method: 'POST',
+      path: '/api/audio/stt-lease',
+      timeoutMs: AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS
+    })
+  })
+
+  it('sends an STT lease to its resolved owner verbatim — never the ambient selection', async () => {
+    // #128668 review: the owner is resolved once per voice operation. A later
+    // gateway/profile switch must not re-route it, and its untagged halves
+    // must stay untagged instead of re-reading the ambient scope.
+    setApiRequestConnection('gateway-b')
+    setApiRequestProfile('worker_beta')
+    api.mockResolvedValue({ ok: true })
+
+    await setSttLease('desktop:voice-input:abc', true, { connectionId: 'gateway-a', profile: 'worker_alpha' })
+    await setSttLease('desktop:voice-input:abc', false, { connectionId: null, profile: null })
+
+    expect(api).toHaveBeenNthCalledWith(1, {
+      body: { active: true, lease: 'desktop:voice-input:abc' },
+      connectionId: 'gateway-a',
+      method: 'POST',
+      path: '/api/audio/stt-lease',
+      priority: 'foreground',
+      profile: 'worker_alpha',
+      timeoutMs: AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS
+    })
+    expect(api).toHaveBeenNthCalledWith(2, {
+      body: { active: false, lease: 'desktop:voice-input:abc' },
+      method: 'POST',
+      path: '/api/audio/stt-lease',
+      timeoutMs: AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS
+    })
+  })
+
+  it('transcribes on the recording owner when one is given', async () => {
+    setApiRequestConnection('gateway-b')
+    setApiRequestProfile('worker_beta')
+    api.mockResolvedValue({ ok: true, transcript: 'hi' })
+
+    await transcribeAudio('data:audio/webm;base64,AAAA', 'audio/webm', { connectionId: 'gateway-a', profile: null })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: 'gateway-a', path: '/api/audio/transcribe' })
+    )
+    expect(api.mock.calls.at(-1)?.[0]).not.toHaveProperty('profile')
   })
 
   it('defaults model options to configured providers only', async () => {

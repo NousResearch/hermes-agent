@@ -3,11 +3,12 @@ import { useEffect, useMemo, useState } from 'react'
 
 import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
-import { desktopGit } from '@/lib/desktop-git'
+import { desktopGit, desktopGitFor } from '@/lib/desktop-git'
 import { mapPool } from '@/lib/pool'
 import { $sidebarWorkspaceNodeOpen, toggleWorkspaceNodeCollapsed } from '@/store/layout'
 import { $worktreeRefreshToken } from '@/store/projects'
 
+import { projectOwnerRoute } from './gateway-project-rows'
 import { sessionRecency, type SidebarProjectTree } from './workspace-groups'
 
 // Page size when revealing more already-loaded rows within a workspace group.
@@ -15,6 +16,25 @@ export const SIDEBAR_GROUP_PAGE = 5
 
 // Recent sessions previewed under each project in the overview.
 export const PROJECT_PREVIEW_COUNT = 3
+
+// Rows each "Show more" adds once a project's full list is open (an expanded
+// overview row, an entered lane, entered Home). Large enough that 50+ sessions
+// are a click or two away, small enough that a 5000-chat Home never mounts
+// every row at once.
+export const PROJECT_SESSION_PAGE = 50
+
+// Reveal `rows` a page at a time: the first `first`, then PROJECT_SESSION_PAGE
+// per `showMore()`. `more` is the next step's size (0 once everything shows).
+export function useRevealedRows<T>(rows: T[], first: number): { more: number; shown: T[]; showMore: () => void } {
+  const [count, setCount] = useState(first)
+  const shown = rows.length > count ? rows.slice(0, count) : rows
+
+  return {
+    more: Math.min(PROJECT_SESSION_PAGE, rows.length - shown.length),
+    shown,
+    showMore: () => setCount(current => current + PROJECT_SESSION_PAGE)
+  }
+}
 
 // Max concurrent `git worktree list` probes when a project spans many repos.
 const WORKTREE_PROBE_CONCURRENCY = 4
@@ -132,16 +152,24 @@ export function orderProjectsByIds(projects: SidebarProjectTree[], orderIds: str
 // payload currently loaded in memory.
 export function useRepoWorktreeMap(
   repoPaths: string[],
-  enabled: boolean
+  enabled: boolean,
+  /** The project the repos belong to: another gateway's are listed on that gateway. */
+  project?: Pick<SidebarProjectTree, 'connectionId' | 'profile'>
 ): [Record<string, HermesGitWorktree[]>, boolean] {
   const [map, setMap] = useState<Record<string, HermesGitWorktree[]>>({})
   const [loading, setLoading] = useState(false)
   const key = useMemo(() => pathListKey(repoPaths), [repoPaths])
   // Refetch when a worktree is added/removed so a new lane shows immediately.
   const refreshToken = useStore($worktreeRefreshToken)
+  const owner = project && projectOwnerRoute(project)
+  const ownerConnection = owner?.connectionId
+  const ownerProfile = owner?.profile
 
   useEffect(() => {
-    const git = desktopGit()
+    const git =
+      ownerConnection && ownerProfile
+        ? desktopGitFor({ connectionId: ownerConnection, profile: ownerProfile })
+        : desktopGit()
 
     if (!enabled || !repoPaths.length || !git?.worktreeList) {
       setMap({})
@@ -167,7 +195,7 @@ export function useRepoWorktreeMap(
     return () => {
       cancelled = true
     }
-  }, [enabled, key, repoPaths, refreshToken])
+  }, [enabled, key, ownerConnection, ownerProfile, repoPaths, refreshToken])
 
   return [map, loading]
 }

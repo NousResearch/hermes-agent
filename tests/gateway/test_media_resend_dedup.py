@@ -27,6 +27,7 @@ import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from urllib.parse import unquote
 
 import pytest
 
@@ -382,7 +383,6 @@ async def test_history_lookup_saturation_fails_open_without_new_worker(monkeypat
             if calls == 2:
                 two_started.set()
         release.wait(timeout=10)
-        return None
 
     monkeypatch.setattr(adapter, "_history_media_paths_for_session", blocked_lookup)
     first = asyncio.create_task(adapter._bounded_history_media_paths_for_session("one"))
@@ -496,7 +496,7 @@ async def test_streamed_explicit_media_resend_is_delivered(tmp_path, monkeypatch
 
     adapter.send_multiple_images.assert_awaited_once()
     sent_paths = [p for p, _cap in adapter.send_multiple_images.await_args.kwargs["images"]]
-    assert str(img) in sent_paths[0]
+    assert str(img) in unquote(sent_paths[0])
 
 
 

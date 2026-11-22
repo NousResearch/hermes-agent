@@ -4,7 +4,7 @@ One ``CDPSupervisor`` per Hermes ``task_id`` with a reachable CDP endpoint: one
 persistent WebSocket, ``Page`` / ``Runtime`` / ``Target`` events on every attached
 session (top page + auto-attached OOPIF / worker targets), pending dialogs + frame
 tree exposed via a thread-safe snapshot. Not in the tool schema — output reaches the
-agent via ``browser_snapshot`` / ``browser_dialog``. Dialog capture and frame tracking
+agent via ``browser_dialog``. Dialog capture and frame tracking
 are mixins (``browser_supervisor_dialogs`` / ``browser_supervisor_frames``).
 Design spec: ``website/docs/developer-guide/browser-supervisor.md``.
 """
@@ -29,6 +29,8 @@ from tools.browser_supervisor_frames import FrameInfo, FrameTrackingMixin
 # ``websockets`` costs ~22 ms at import and is only needed once a supervisor connects.
 if TYPE_CHECKING:
     from websockets.asyncio.client import ClientConnection
+
+    from tools.browser_supervisor_capture import CapturedCDP
 
 logger = logging.getLogger(__name__)
 
@@ -66,11 +68,14 @@ def _schedule(coro, loop, *, timeout: float):
     return fut.result(timeout=timeout)
 
 
-def _fail(error: str) -> Dict[str, Any]:
-    return {"ok": False, "error": error}
+def _fail(error: str, *, code: str = "") -> dict[str, Any]:
+    return {"ok": False, "error": error, **({"code": code} if code else {})}
 
 
-def _err(exc: BaseException) -> Dict[str, Any]:
+_SESSION_CHANGED = "the page session changed since it was validated"
+
+
+def _err(exc: BaseException) -> dict[str, Any]:
     return _fail(f"{type(exc).__name__}: {exc}")
 
 
@@ -78,16 +83,16 @@ def _err(exc: BaseException) -> Dict[str, Any]:
 class SupervisorSnapshot:
     """Read-only snapshot of supervisor state for tool handlers."""
 
-    pending_dialogs: Tuple[PendingDialog, ...]
-    recent_dialogs: Tuple[DialogRecord, ...]
-    frame_tree: Dict[str, Any]
+    pending_dialogs: tuple[PendingDialog, ...]
+    recent_dialogs: tuple[DialogRecord, ...]
+    frame_tree: dict[str, Any]
     active: bool  # False if supervisor is detached/stopped
     cdp_url: str
     task_id: str
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialize for inclusion in ``browser_snapshot`` output."""
-        out: Dict[str, Any] = {"pending_dialogs": [d.to_dict() for d in self.pending_dialogs], "frame_tree": self.frame_tree}
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize for inclusion in tool output."""
+        out: dict[str, Any] = {"pending_dialogs": [d.to_dict() for d in self.pending_dialogs], "frame_tree": self.frame_tree}
         if self.recent_dialogs:
             out["recent_dialogs"] = [d.to_dict() for d in self.recent_dialogs]
         return out
@@ -110,9 +115,9 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
 
         # State protected by ``_state_lock`` for cross-thread reads.
         self._state_lock = threading.Lock()
-        self._pending_dialogs: Dict[str, PendingDialog] = {}
-        self._recent_dialogs: List[DialogRecord] = []
-        self._frames: Dict[str, FrameInfo] = {}
+        self._pending_dialogs: dict[str, PendingDialog] = {}
+        self._recent_dialogs: list[DialogRecord] = []
+        self._frames: dict[str, FrameInfo] = {}
         self._active = False
         # Supervisor loop machinery — populated in start().
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -122,11 +127,17 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         self._stop_requested = False
         # CDP call tracking (runs on supervisor loop only).
         self._next_call_id = 1
-        self._pending_calls: Dict[int, asyncio.Future] = {}
+        self._pending_calls: dict[int, asyncio.Future] = {}
         self._ws: Optional[ClientConnection] = None
         self._page_session_id: Optional[str] = None
+        # Per page session: how many top-level documents it has committed (``Page.frameNavigated``).
+        # ``evaluate_runtime`` reports the count its script was sent under; ``insert_text`` refuses
+        # once it moved, so a keystroke checked on one document never lands in the next one.
+        self._documents: dict[str, int] = {}
+        # The tab the task's browser_exec daemon last drove (``set_driven_target``); ``focus_page`` prefers it.
+        self._driven_target_id: Optional[str] = None
         # Dialog auto-dismiss watchdog handles (per dialog id) + id generator.
-        self._dialog_watchdogs: Dict[str, asyncio.TimerHandle] = {}
+        self._dialog_watchdogs: dict[str, asyncio.TimerHandle] = {}
         self._dialog_seq = 0
 
     # ── Public sync API ──────────────────────────────────────────────────────
@@ -177,7 +188,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             )
 
     def respond_to_dialog(self, action: str, *, prompt_text: Optional[str] = None,
-                          dialog_id: Optional[str] = None, timeout: float = 10.0) -> Dict[str, Any]:
+                          dialog_id: Optional[str] = None, timeout: float = 10.0) -> dict[str, Any]:
         """Accept/dismiss a pending dialog (sync bridge onto the supervisor loop). Returns
         ``{"ok": True, "dialog"}`` or ``{"ok": False, "error"}`` for recoverable errors."""
         if action not in {"accept", "dismiss"}:
@@ -209,30 +220,44 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         return {"ok": True, "dialog": dialog.to_dict()}
 
     def evaluate_runtime(self, expression: str, *, return_by_value: bool = True,
-                         await_promise: bool = True, timeout: float = 10.0) -> Dict[str, Any]:
+                         await_promise: bool = True, timeout: float = 10.0,
+                         session_id: Optional[str] = None) -> dict[str, Any]:
         """Evaluate ``expression`` in the page's Runtime context over the live WS.
-        Returns ``{"ok": True, "result", "result_type"}`` or ``{"ok": False, "error"}``.
+        Returns ``{"ok": True, "result", "result_type", "document"}`` or ``{"ok": False, "error"}``;
+        ``document`` names the top-level document the script was sent to (see ``insert_text``).
         ``return_by_value=True`` JSON-serializes the result (DevTools-console
-        semantics); non-serializable objects come back as a description string."""
+        semantics); non-serializable objects come back as a description string.
+
+        ``session_id`` pins the call to a page session the caller validated
+        (``current_page_session``), as ``insert_text`` does: it is refused once the supervisor
+        has moved to another session. None = the session the supervisor is on now."""
         loop = self._loop
         if loop is None or not loop.is_running():
             return _fail("supervisor loop is not running")
         with self._state_lock:
-            active, session_id = self._active, self._page_session_id
+            active, current = self._active, self._page_session_id
         if not active:
             return _fail("supervisor is not active")
-        if not session_id:
+        if not current:
             return _fail("supervisor has no attached page session")
+        if session_id is not None and session_id != current:
+            return _fail(_SESSION_CHANGED, code="session_changed")
+        session_id = current
 
-        def _run_eval(by_value: bool) -> Dict[str, Any]:
+        async def _eval(params: dict[str, Any]) -> tuple[dict[str, Any], int]:
+            # The document count is read on the loop BEFORE the script is sent: a navigation whose
+            # event lands later (before or after the script ran) moves the count past it.
+            document = self._document_of(session_id)
+            return await self._cdp("Runtime.evaluate", params, session_id=session_id, timeout=timeout), document
+
+        def _run_eval(by_value: bool) -> tuple[dict[str, Any], int]:
             # userGesture: clipboard / fullscreen APIs need user activation.
             params = {"expression": expression, "returnByValue": by_value,
                       "awaitPromise": await_promise, "userGesture": True}
-            coro = self._cdp("Runtime.evaluate", params, session_id=session_id, timeout=timeout)
-            return _schedule(coro, loop, timeout=timeout + 1)
+            return _schedule(_eval(params), loop, timeout=timeout + 1)
 
         try:
-            response = _run_eval(return_by_value)
+            response, document = _run_eval(return_by_value)
         except Exception as exc:
             # Deep-serializing live DOM nodes / NodeLists / Window can blow past
             # CDP's recursion guard (``Object reference chain is too long``).
@@ -240,7 +265,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             if not (return_by_value and "reference chain is too long" in str(exc).lower()):
                 return _err(exc)
             try:
-                response = _run_eval(False)
+                response, document = _run_eval(False)
             except Exception as exc2:
                 return _err(exc2)
 
@@ -261,15 +286,89 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         else:
             # Non-serializable (functions, DOM nodes…) — give the model the browser's description.
             value = result_obj.get("description") or result_obj.get("unserializableValue")
-        return {"ok": True, "result": value, "result_type": result_type}
+        return {"ok": True, "result": value, "result_type": result_type, "document": document}
 
-    def focus_page(self, origin: str, *, accept: Optional[str] = None, timeout: float = 10.0) -> Dict[str, Any]:
+    def _document_of(self, session_id: Optional[str]) -> int:
+        with self._state_lock:
+            return self._documents.get(session_id or "", 0)
+
+    def current_page_session(self) -> Optional[str]:
+        """The CDP session id of the page the supervisor is attached to now (None: none attached).
+
+        A caller that validates a page (``insert_text``'s focus check) pins this id and passes it
+        back, so a later ``focus_page`` or reconnect cannot silently move the keystrokes elsewhere.
+        """
+        with self._state_lock:
+            return self._page_session_id if self._active else None
+
+    def insert_text(self, text: str, *, session_id: str, document: int, timeout: float = 5.0) -> dict[str, Any]:
+        """Type ``text`` into the element that holds focus in page session ``session_id``, as TRUSTED
+        browser input.
+
+        ``Input.insertText`` is the CDP-level equivalent of a user keystroke: the page sees the
+        same ``input`` events a human would trigger, so framework-controlled inputs (React/Vue/MUI)
+        accept the value instead of reverting it — and a page cannot tell the value apart from
+        a human typing it.
+
+        TRUSTED INPUT IS ADDRESSED TO WHATEVER HOLDS FOCUS. This method does not know which
+        element that is and does not check: the caller MUST assert focus first (see
+        ``agent.vault_login_classifier.build_focus_js``) and abort if the focus is not the
+        intended field. Typing a secret into the wrong focused element leaks it.
+
+        ``session_id`` is the page session the caller validated (``current_page_session``). The
+        frame is sent on that session only, and refused when the supervisor has since moved to
+        another page session: the focus check no longer describes the page that would get the text.
+        ``document`` is what the focus check's ``evaluate_runtime`` reported: once that session has
+        committed another top-level document (a redirect, a submit) the text is refused too. Both are
+        checked on the supervisor loop immediately before the frame is sent. What remains is the
+        browser's side of the socket: a navigation that commits after the frame left, or whose event is
+        still in flight, is not seen here; the caller's read-back (origin-guarded) reports it after.
+
+        Returns ``{"ok": True}`` or ``{"ok": False, "error": <str>, "code"?}`` (``session_changed`` /
+        ``document_changed`` when the page moved). Never raises.
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return _fail("supervisor loop is not running")
+        with self._state_lock:
+            active, current = self._active, self._page_session_id
+        if not active:
+            return _fail("supervisor is not active")
+        if not session_id or session_id != current:
+            return _fail(_SESSION_CHANGED, code="session_changed")
+
+        async def _type() -> Optional[dict[str, Any]]:
+            with self._state_lock:
+                moved = self._page_session_id != session_id or self._documents.get(session_id, 0) != document
+            if moved:
+                return None
+            return await self._cdp("Input.insertText", {"text": text}, session_id=session_id, timeout=timeout)
+
+        try:
+            response = _schedule(_type(), loop, timeout=timeout + 1)
+            if response is None:
+                return _fail("the page navigated or moved since it was checked", code="document_changed")
+        except Exception as exc:  # health: allow BLE001 -- trusted typing must report failure, never raise into a fill
+            return _err(exc)
+        if isinstance(response, dict) and response.get("error"):
+            return _fail(f"Input.insertText failed: {response['error']}")
+        return {"ok": True}
+
+    def set_driven_target(self, target_id: Optional[str]) -> None:
+        """Record the CDP target the task's browser_exec session drives (None: unknown)."""
+        with self._state_lock:
+            self._driven_target_id = target_id
+
+    def focus_page(self, origin: str, *, accept: Optional[str] = None, timeout: float = 10.0) -> dict[str, Any]:
         """Re-attach the supervisor's page session to an open page target on ``origin``
         (``scheme://host[:port]``). The initial attach picks the FIRST page target, but tools
         that open their own tabs (browser_exec) put the login form somewhere else. With
         ``accept`` (a JS expression) the first same-origin tab where it evaluates truthy wins,
-        so a login and a checkout tab on one site resolve to the right one. Returns
-        ``{"ok": True, "url"}`` or ``{"ok": False, "error"}``; on failure the previous session stays."""
+        so a login and a checkout tab on one site resolve to the right one. When the tab browser_exec
+        drives (``set_driven_target``) is on ``origin`` it is the only candidate, probe or not: on a shared
+        CDP browser the first same-origin tab can be another session's or a stale one. Returns
+        ``{"ok": True, "url", "session_id"}`` (the session it attached, for the caller to pin) or
+        ``{"ok": False, "error"}``; on failure the previous session stays."""
         loop = self._loop
         if loop is None or not loop.is_running():
             return _fail("supervisor loop is not running")
@@ -281,7 +380,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             await self._install_dialog_bridge(sid)
             return sid
 
-        async def _focus() -> Dict[str, Any]:
+        async def _focus() -> dict[str, Any]:
             from agent.vault_store import normalize_origin
             targets = (await self._cdp("Target.getTargets", timeout=timeout)).get("result", {}).get("targetInfos", [])
             candidates = []
@@ -294,17 +393,24 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                         candidates.append((t["targetId"], url))
                 except Exception:
                     continue
+            with self._state_lock:
+                driven = self._driven_target_id
+            probe = accept
+            if own := [c for c in candidates if c[0] == driven]:
+                # Focus our own tab even before its form renders (the fill then finds no field) rather
+                # than let the probe fall through to another session's tab on the same origin.
+                candidates, probe = own, None
             for target_id, url in candidates:
                 sid = await _attach(target_id)
-                if accept:
-                    probe = await self._cdp("Runtime.evaluate", {"expression": accept, "returnByValue": True},
-                                            session_id=sid, timeout=timeout)
-                    if not probe.get("result", {}).get("result", {}).get("value"):
+                if probe:
+                    probed = await self._cdp("Runtime.evaluate", {"expression": probe, "returnByValue": True},
+                                             session_id=sid, timeout=timeout)
+                    if not probed.get("result", {}).get("result", {}).get("value"):
                         await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
                         continue
                 with self._state_lock:
                     self._page_session_id = sid
-                return {"ok": True, "url": url}
+                return {"ok": True, "url": url, "session_id": sid}
             return _fail(f"no open page on {origin or 'any site'}" + (" with the expected form" if accept and candidates else ""))
 
         try:
@@ -321,7 +427,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         try:
             asyncio.set_event_loop(loop)
             loop.run_until_complete(self._run())
-        except BaseException as e:  # noqa: BLE001 — propagate via _start_error
+        except BaseException as e:
             if not self._fail_start(e):
                 logger.warning("CDP supervisor %s crashed: %s", self.task_id, e)
         finally:
@@ -367,7 +473,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
 
     async def _run(self) -> None:
         """Top-level reconnecting supervisor coroutine. Browserbase tears down the CDP
-        socket whenever a short-lived client (agent-browser's per-command CDP client)
+        socket whenever a short-lived client (a per-call browser_cdp or harness CDP connection)
         disconnects, so on drop we reset per-session ids, re-attach, and keep going.
         A failure before the first successful attach is fatal for ``start()``."""
         reconnect_failures, last_success_at, backoff = 0, 0.0, 0.5
@@ -422,6 +528,12 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                     handle.cancel()
                 self._dialog_watchdogs.clear()
                 await self._close_ws()
+                # Replies to calls still in flight died with the socket: fail them now
+                # instead of letting each caller sit out its full timeout.
+                for fut in self._pending_calls.values():
+                    if not fut.done():
+                        fut.set_exception(ConnectionError("CDP connection closed before reply"))
+                self._pending_calls.clear()
 
             if self._stop_requested:
                 return
@@ -440,13 +552,13 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         await self._enable_page_domains(sid, timeout=10.0)
         await self._install_dialog_bridge(sid)
 
-    async def _cdp(self, method: str, params: Optional[Dict[str, Any]] = None, *,
-                   session_id: Optional[str] = None, timeout: float = 10.0) -> Dict[str, Any]:
+    async def _cdp(self, method: str, params: Optional[dict[str, Any]] = None, *,
+                   session_id: Optional[str] = None, timeout: Optional[float] = 10.0) -> dict[str, Any]:
         """Send a CDP command and await its response."""
         if self._ws is None:
             raise RuntimeError("supervisor WebSocket is not connected")
         call_id, self._next_call_id = self._next_call_id, self._next_call_id + 1
-        payload: Dict[str, Any] = {"id": call_id, "method": method}
+        payload: dict[str, Any] = {"id": call_id, "method": method}
         payload.update({k: v for k, v in (("params", params), ("sessionId", session_id)) if v})
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending_calls[call_id] = fut
@@ -485,7 +597,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
 
     # CDP event → handler(self, params, session_id). Async handlers return an
     # awaitable that ``_read_loop`` awaits; sync handlers return None.
-    _EVENT_HANDLERS: Dict[str, Callable[..., Any]] = {
+    _EVENT_HANDLERS: dict[str, Callable[..., Any]] = {
         **DialogSupervisionMixin.EVENT_HANDLERS, **FrameTrackingMixin.EVENT_HANDLERS
     }
 
@@ -495,7 +607,8 @@ class _SupervisorRegistry:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._by_task: Dict[str, CDPSupervisor] = {}
+        self._by_task: dict[str, CDPSupervisor] = {}
+        self._home_by_task: dict[str, str] = {}  # profile home that started it (``stop_home``)
 
     def get(self, task_id: str) -> Optional[CDPSupervisor]:
         with self._lock:
@@ -503,12 +616,22 @@ class _SupervisorRegistry:
 
     def _pop(self, task_id: str) -> Optional[CDPSupervisor]:
         with self._lock:
+            self._home_by_task.pop(task_id, None)
             return self._by_task.pop(task_id, None)
+
+    def capture(self, task_id: str, *, timeout: float = 10.0) -> CapturedCDP:
+        """Public CDP seam for trusted in-process plugins: a handle pinned to this task's
+        current connection and default page session (``tools.browser_supervisor_capture``)."""
+        from tools.browser_supervisor_capture import capture
+
+        return capture(self, task_id, timeout=timeout)
 
     def get_or_start(self, task_id: str, cdp_url: str, *, dialog_policy: str = DEFAULT_DIALOG_POLICY,
                      dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S, start_timeout: float = 15.0) -> CDPSupervisor:
         """Idempotently ensure a supervisor runs for ``(task_id, cdp_url)``; one bound to a
         different ``cdp_url`` or unhealthy (dead thread / stopped loop) is stopped and replaced."""
+        from hermes_constants import hermes_home_key
+        home = hermes_home_key()
         with self._lock:
             existing = self._by_task.get(task_id)
             if existing is not None:
@@ -530,6 +653,7 @@ class _SupervisorRegistry:
                 supervisor.stop()
                 return already
             self._by_task[task_id] = supervisor
+            self._home_by_task[task_id] = home
         return supervisor
 
     def stop(self, task_id: str) -> None:
@@ -537,11 +661,19 @@ class _SupervisorRegistry:
         if supervisor is not None:
             supervisor.stop()
 
+    def stop_home(self, home_key: str) -> None:
+        """Stop the supervisors one profile home started (``/browser connect`` on a multiplexed gateway)."""
+        with self._lock:
+            tasks = [task for task, home in self._home_by_task.items() if home == home_key]
+        for task_id in tasks:
+            self.stop(task_id)
+
     def stop_all(self) -> None:
         """Stop every running supervisor. For shutdown / test teardown."""
         with self._lock:
             items = list(self._by_task.values())
             self._by_task.clear()
+            self._home_by_task.clear()
         for supervisor in items:
             supervisor.stop()
 
@@ -549,43 +681,4 @@ class _SupervisorRegistry:
 SUPERVISOR_REGISTRY = _SupervisorRegistry()
 
 
-__all__ = ["CDPSupervisor", "SUPERVISOR_REGISTRY", "SupervisorSnapshot", "_SupervisorRegistry"]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-CONSOLE_HISTORY_MAX = 50
-
-@dataclass
-class ConsoleEvent:
-    """Ring buffer entry for console + exception traffic."""
-
-    ts: float
-    level: str  # "log" | "error" | "warning" | "exception"
-    text: str
-    url: Optional[str] = None
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DIALOG_BRIDGE_HOST': ('tools.browser_supervisor_dialogs', 'DIALOG_BRIDGE_HOST'),
-    'DIALOG_BRIDGE_URL_PATTERN': ('tools.browser_supervisor_dialogs', 'DIALOG_BRIDGE_URL_PATTERN'),
-    'DIALOG_POLICY_AUTO_ACCEPT': ('tools.browser_supervisor_dialogs', 'DIALOG_POLICY_AUTO_ACCEPT'),
-    'DIALOG_POLICY_AUTO_DISMISS': ('tools.browser_supervisor_dialogs', 'DIALOG_POLICY_AUTO_DISMISS'),
-    'DIALOG_POLICY_MUST_RESPOND': ('tools.browser_supervisor_dialogs', 'DIALOG_POLICY_MUST_RESPOND'),
-    'FRAME_TREE_MAX_ENTRIES': ('tools.browser_supervisor_frames', 'FRAME_TREE_MAX_ENTRIES'),
-    'FRAME_TREE_MAX_OOPIF_DEPTH': ('tools.browser_supervisor_frames', 'FRAME_TREE_MAX_OOPIF_DEPTH'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----
+__all__ = ["SUPERVISOR_REGISTRY", "CDPSupervisor", "SupervisorSnapshot", "_SupervisorRegistry"]

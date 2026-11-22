@@ -9,7 +9,6 @@ from gateway.sticker_cache import (
     build_sticker_injection,
 )
 
-
 class TestLoadSaveCache:
 
     def test_load_corrupt_file(self, tmp_path):
@@ -17,7 +16,6 @@ class TestLoadSaveCache:
         bad_file.write_text("not json{{{")
         with patch("gateway.sticker_cache.CACHE_PATH", bad_file):
             assert _load_cache() == {}
-
 
 class TestCacheSticker:
     def test_cache_and_retrieve(self, tmp_path):
@@ -32,16 +30,10 @@ class TestCacheSticker:
         assert result["set_name"] == "Dogs"
         assert "cached_at" in result
 
-
 class TestBuildStickerInjection:
-
 
     def test_set_name_without_emoji_ignored(self):
         """set_name alone (no emoji) produces no context — only emoji+set_name triggers 'from' clause."""
         result = build_sticker_injection("A cat", set_name="MyPack")
         assert "A cat" in result
         assert "MyPack" not in result
-
-
-
-

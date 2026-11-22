@@ -6,7 +6,6 @@ from hermes_cli.update_cmd import (
     _hermes_holder_subcommand,
 )
 
-
 class TestHolderSubcommand:
     @pytest.mark.parametrize(
         ("cmdline", "expected"),
@@ -29,6 +28,10 @@ class TestHolderSubcommand:
             # unhinted) subcommand candidates — pin that shape honestly
             (r"python -m hermes_cli.main -c mysession serve", "serve"),
             (r"C:\bin\hermes.exe dashboard", "dashboard"),
+            # `dashboard password` sets the sign-in and exits: not a dashboard server
+            (r"python.exe -m hermes_cli.main dashboard password --password-stdin", "dashboard-password"),
+            (r"C:\bin\hermes.exe -p work dashboard password", "dashboard-password"),
+            (r"C:\bin\hermes.exe dashboard --host password", "dashboard"),
             (r"/usr/local/bin/hermes serve", "serve"),
             # no hermes entry at all
             (r"python -c import time; time.sleep(3)", None),
@@ -39,4 +42,13 @@ class TestHolderSubcommand:
     def test_parses_subcommand(self, cmdline, expected):
         assert _hermes_holder_subcommand(cmdline) == expected
 
+    def test_shlex_joined_store_launcher_bootstrap_is_inventoried(self):
+        """launchd ProgramArguments arrive ``shlex.join``ed (single-quoted source); the dashboard
+        inventory must still read the subcommand behind the bootstrap."""
+        import shlex
+        from pathlib import Path
 
+        from hermes_cli._launchers import runtime_command
+
+        cmdline = shlex.join(runtime_command(Path("/opt/hermes-agent"), ["dashboard"], python="/opt/store/python"))
+        assert _hermes_holder_subcommand(cmdline) == "dashboard"

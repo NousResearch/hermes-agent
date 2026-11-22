@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-
 def _seed_auth_file(tmp_path):
     """Drop a placeholder auth.json into the test HERMES_HOME.
 
@@ -23,7 +22,6 @@ def _seed_auth_file(tmp_path):
     auth = tmp_path / "auth.json"
     auth.write_text(json.dumps({"providers": {}}), encoding="utf-8")
     return auth
-
 
 def test_get_nous_auth_status_caches_consecutive_calls(tmp_path, monkeypatch):
     """A second call within the TTL skips re-computing the snapshot."""
@@ -55,5 +53,3 @@ def test_get_nous_auth_status_caches_consecutive_calls(tmp_path, monkeypatch):
     assert "mutated" not in auth_mod.get_nous_auth_status()
 
     auth_mod.invalidate_nous_auth_status_cache()
-
-

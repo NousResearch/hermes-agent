@@ -91,7 +91,7 @@ def test_kill_with_dead_tree_still_reports_killed():
     s.process.poll.return_value = -15
     reg._running[s.id] = s
     try:
-        _, _, save = _paused_registry_calls()
+        _, _, _save = _paused_registry_calls()
         with patch.object(ProcessRegistry, "_host_pid_is_ours", return_value=False), \
              patch("psutil.Process", side_effect=Exception("gone")):
             result = reg.kill_process(s.id)
@@ -104,7 +104,8 @@ def test_kill_with_dead_tree_still_reports_killed():
     assert s.id in reg._finished
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal escalation; Windows uses taskkill")
+@pytest.mark.platforms("posix")  # POSIX signal escalation; Windows uses taskkill
+@pytest.mark.live_system_guard_bypass  # SIGKILL may target a snapshotted child after it is reparented
 def test_escalated_kill_of_sigterm_ignoring_child_reports_killed(tmp_path, monkeypatch):
     """The #115490 scenario itself: a child that ignores SIGTERM is SIGKILLed after the grace
     window, and the verification must give the kernel a moment to reap it — poll() right

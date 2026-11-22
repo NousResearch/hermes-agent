@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 _POOL_PROVIDER = "xai-oauth"
 
 # OpenAI-compatible endpoints; ``/responses`` because the native xAI runtime uses codex_responses.
-_ALLOWED_PATHS: FrozenSet[str] = frozenset(
+_ALLOWED_PATHS: frozenset[str] = frozenset(
     {"/responses", "/chat/completions", "/completions", "/embeddings", "/models"}
 )
 
@@ -38,7 +38,7 @@ class XAIGrokAdapter(UpstreamAdapter):
         return "xAI Grok OAuth"
 
     @property
-    def allowed_paths(self) -> FrozenSet[str]:
+    def allowed_paths(self) -> frozenset[str]:
         return _ALLOWED_PATHS
 
     def is_authenticated(self) -> bool:

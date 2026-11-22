@@ -1,15 +1,24 @@
 name: hermes-town
 repo: https://github.com/sxuff/hermes-town
-sha: 83aae757264b8cbae541830ba91834eed067c31a
+sha: f3b89401fafde0cd3ebaaccf01ea9e658bc66ff9
 subdir: integrations/hermes-town-plugin
-description: Local pixel-art town where every Hermes session is a resident and every tool call walks to a building. Passive lifecycle bridge to a loopback-only server; prompts, arguments, and output never leave the process.
+description: >-
+  Local pixel-art town where every Hermes session is a resident and every tool call walks to a
+  building. Passive lifecycle bridge to a loopback-only server; prompts, arguments, and output never
+  leave the process. Disclosure — version 0.3.0 bundles the Town Node server and a prebuilt browser
+  app inside the plugin directory and adds a hermes town setup/start/status/stop/open command tree.
+  Nothing is downloaded and no npm install runs at any point; node (^20.19 or >=22.12) must already be
+  installed and is launched only by the explicit hermes town start command, bound to 127.0.0.1 only.
+  Runtime state, a 0600 bridge token, a bounded event journal and rotated server logs are written
+  under HERMES_HOME/hermes-town/runtime/. On start the server also reads HERMES_HOME/cron/jobs.json
+  (job id and enabled flag only) to place one resident per enabled scheduled job.
 maintainer: sxuff
 tier: community
 category: tools
 requires_hermes: ">=0.21"
 docs_url: https://github.com/sxuff/hermes-town#readme
-version: "0.2.0"
-image: https://raw.githubusercontent.com/sxuff/hermes-town/83aae757264b8cbae541830ba91834eed067c31a/artifacts/catalog-banner.png
+version: "0.3.0"
+image: https://raw.githubusercontent.com/sxuff/hermes-town/f3b89401fafde0cd3ebaaccf01ea9e658bc66ff9/artifacts/catalog-banner.png
 capabilities:
   provides_tools: []
   provides_hooks:

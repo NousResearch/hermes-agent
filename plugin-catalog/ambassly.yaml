@@ -1,0 +1,18 @@
+name: ambassly
+title: Ambassly
+repo: https://github.com/MelMayssonOwen/hermes-plugins
+sha: f203c3f897784d731ef48bc0974104a4d08cf5f8
+subdir: ambassly
+description: "Run Stripe-based affiliate programs, per-content links, referrals and commission review through Ambassly's hosted MCP server, with a workflow skill bundled. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/). Disclosure: every tool call goes to https://ambassly.com/api/mcp and needs an Ambassly account with a scoped API key in AMBASSLY_API_KEY, sent as a Bearer header. Company-key tools can create programs and affiliates, approve or reject commissions and add Stripe webhook signing secrets; the package marks the server untrusted so Hermes asks before write-capable calls, and the skill requires a person to decide each commission. Affiliate and commission data returned by tools reach the model provider. The tool list comes from the server at run time and is not covered by the pinned sha."
+maintainer: MelMayssonOwen
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/MelMayssonOwen/hermes-plugins/blob/f203c3f897784d731ef48bc0974104a4d08cf5f8/ambassly/README.md
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: ["AMBASSLY_API_KEY"]

@@ -1,11 +1,48 @@
+import base64
 import json
 from unittest.mock import patch
+
+import pytest
 
 from hermes_cli.codex_models import (
     _FORWARD_COMPAT_TEMPLATE_MODELS,
     DEFAULT_CODEX_MODELS,
     get_codex_model_ids,
 )
+
+
+@pytest.mark.parametrize("model", ["openai/gpt-6.2-sol", "openai/gpt-6.2-astra"])
+@pytest.mark.parametrize("filename", ["config.toml", "models_cache.json"])
+def test_prefixed_codex_hint_does_not_set_offline_default(monkeypatch, tmp_path, model, filename):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    content = f'model = "{model}"\n' if filename == "config.toml" else json.dumps({"models": [{"slug": model}]})
+    (tmp_path / filename).write_text(content, encoding="utf-8")
+    models = get_codex_model_ids()
+    assert models[0] == "gpt-6-sol"
+    assert model not in models
+
+
+@pytest.mark.parametrize("model", ["gpt-6.2-sol", "openai/gpt-6.2-astra"])
+def test_saved_gpt62_is_not_injected_into_codex_picker(model):
+    from hermes_cli.model_switch_providers import _finalize_picker_rows
+
+    for provider in ("openai-codex", "openai-api"):
+        rows = [{"slug": provider, "is_current": True, "total_models": 1, "models": ["gpt-6-sol"]}]
+        choices = _finalize_picker_rows(rows, {}, model)[0]["models"]
+        assert choices == (["gpt-6-sol"] if provider == "openai-codex" else [model, "gpt-6-sol"])
+
+
+def _codex_jwt(subject: str) -> str:
+    """JWT-shaped test stand-in: the live catalog path gates on the token parsing as a JWT
+    (a custom base's gateway key must stay off chatgpt.com, #121486)."""
+    enc = lambda raw: base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+    header = enc(b'{"alg":"RS256"}')
+    payload = enc(json.dumps({"sub": subject}).encode())
+    return f"{header}.{payload}.test-signature"
+
+
+# dummy fixture value (not a real credential): a gateway pool key is opaque, never a JWT
+_GATEWAY_POOL_KEY = "dummy-gateway-pool-key"
 
 
 def _pro_slugs(model_ids):
@@ -25,7 +62,7 @@ def test_codex_catalog_never_offers_chatgpt_rejected_pro_slugs(monkeypatch, tmp_
     # synthesis rule; none of what it adds may be -pro.
     templates = list(dict.fromkeys(t for _, ts in _FORWARD_COMPAT_TEMPLATE_MODELS for t in ts))
     monkeypatch.setattr(
-        "hermes_cli.codex_models._fetch_models_from_api", lambda access_token: templates
+        "hermes_cli.codex_models._fetch_models_from_api", lambda access_token, **_kw: templates
     )
     live = get_codex_model_ids(access_token="codex-access-token")
     assert {synthetic for synthetic, _ in _FORWARD_COMPAT_TEMPLATE_MODELS} <= set(live)
@@ -60,6 +97,22 @@ def test_picker_never_synthesizes_900k_for_pro_or_unknown_slugs():
     out = _finalize_codex_models(["gpt-5.6-sol-pro", "gpt-5.6-nova"])
     assert "gpt-5.6-sol-pro-900k" not in out
     assert "gpt-5.6-nova-900k" not in out
+
+
+def test_catalog_identity_stays_stable_for_rotation_but_changes_with_route(monkeypatch):
+    from hermes_cli import auth, codex_models
+    import agent.credential_pool as pool
+
+    credentials = {"api_key": "first-token", "base_url": "https://first.example/codex/"}
+    monkeypatch.setattr(auth, "resolve_codex_runtime_credentials", lambda **_: dict(credentials))
+    monkeypatch.setattr(auth, "_codex_access_token_is_expiring", lambda *_: False)
+    monkeypatch.setattr(pool, "_codex_principal_identity", lambda _: ("account", "subject"))
+    first = codex_models.codex_catalog_credential_identity()
+    credentials["api_key"] = "rotated-token"
+    credentials["base_url"] = "https://first.example/codex"
+    assert codex_models.codex_catalog_credential_identity() == first
+    credentials["base_url"] = "https://second.example/codex"
+    assert codex_models.codex_catalog_credential_identity() != first
 
 
 
@@ -99,7 +152,7 @@ def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
 
-    models = codex_models._fetch_models_from_api(access_token="tok")
+    models = codex_models._fetch_models_from_api(access_token=_codex_jwt("acct"))
 
     assert "gpt-5.5" in models
     assert "gpt-5.3-codex-spark" in models
@@ -121,7 +174,7 @@ def test_astra_requires_live_codex_account_discovery(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    monkeypatch.setattr(codex_models, "_fetch_models_from_api", lambda _token: [])
+    monkeypatch.setattr(codex_models, "_fetch_models_from_api", lambda _token, **_kw: [])
 
     assert "gpt-6-astra" not in get_codex_model_ids(access_token="stale-token")
     assert "openai/gpt-6-astra" not in get_codex_model_ids(access_token="stale-token")
@@ -131,7 +184,7 @@ def test_astra_requires_live_codex_account_discovery(monkeypatch, tmp_path):
     monkeypatch.setattr(
         codex_models,
         "_fetch_models_from_api",
-        lambda _token: codex_models._finalize_codex_models(["gpt-6-astra"]),
+        lambda _token, **_kw: codex_models._finalize_codex_models(["gpt-6-astra"]),
     )
     entitled = get_codex_model_ids(access_token="entitled-token")
     assert entitled[entitled.index("gpt-6-astra") + 1] == "gpt-6-astra-900k"
@@ -164,7 +217,7 @@ def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypa
     monkeypatch.setattr("hermes_cli.auth._login_openai_codex", _fake_login)
     monkeypatch.setattr(
         "hermes_cli.codex_models.get_codex_model_ids",
-        lambda access_token=None: ["gpt-5.4", "gpt-5.5"],
+        lambda access_token=None, **_kw: ["gpt-5.4", "gpt-5.5"],
     )
     monkeypatch.setattr(
         "hermes_cli.auth._prompt_model_selection",
@@ -299,11 +352,10 @@ def test_catalog_requests_ask_as_the_newest_client(monkeypatch):
     seen_urls = []
     get = _gated_codex_catalog(seen_urls)
     monkeypatch.setitem(sys.modules, "httpx", type("_FakeHttpx", (), {"get": staticmethod(get)}))
-    assert "gpt-6-sol" in codex_models._fetch_models_from_api(access_token="tok")
-    monkeypatch.setattr(model_metadata, "requests", type("_FakeRequests", (), {"get": staticmethod(get)}))
-    monkeypatch.setattr(model_metadata, "_ensure_requests", lambda: None)
+    assert "gpt-6-sol" in codex_models._fetch_models_from_api(access_token=_codex_jwt("acct"))
+    monkeypatch.setattr(model_metadata.model_metadata_http, "get", get)
     monkeypatch.setattr(model_metadata, "_codex_oauth_context_cache", {})
-    live, fresh = model_metadata._fetch_codex_oauth_context_lengths_with_source("tok")
+    live, fresh = model_metadata._fetch_codex_oauth_context_lengths_with_source(_codex_jwt("acct"))
     assert fresh and "gpt-6-sol" in live
 
     assert len(seen_urls) == 2  # one request per site: the newest-client answer was non-empty
@@ -311,6 +363,44 @@ def test_catalog_requests_ask_as_the_newest_client(monkeypatch):
         parsed = urlparse(url)
         assert parsed.netloc == "chatgpt.com" and parsed.path == "/backend-api/codex/models"
         assert parse_qs(parsed.query)["client_version"] != ["0.0.0"]
+
+
+def test_gateway_key_is_never_sent_to_the_direct_catalog(monkeypatch):
+    """A ``HERMES_CODEX_BASE_URL`` gateway's key is not a ChatGPT token; the picker must not
+    send it to chatgpt.com (a service it does not belong to, #121486). Discovery declines
+    and falls back to the offline sources instead of firing a doomed request."""
+    import sys
+    from hermes_cli import codex_models
+
+    calls = {"n": 0}
+
+    def _count(_url, **_kwargs):
+        calls["n"] += 1
+        raise RuntimeError("a gateway key must not reach any catalog endpoint")
+
+    monkeypatch.setitem(sys.modules, "httpx", type("_FakeHttpx", (), {"get": staticmethod(_count)}))
+    assert codex_models._fetch_models_from_api(access_token=_GATEWAY_POOL_KEY) == []
+    assert calls["n"] == 0
+
+
+def test_picker_catalog_honours_the_custom_codex_base(monkeypatch):
+    """With ``HERMES_CODEX_BASE_URL`` set, the picker's live discovery probes the gateway's
+    own ``/models``, not the hard-coded chatgpt.com host (#121486)."""
+    import sys
+    from urllib.parse import urlparse
+
+    from hermes_cli import codex_models
+
+    seen_urls = []
+    get = _gated_codex_catalog(seen_urls)
+    monkeypatch.setitem(sys.modules, "httpx", type("_FakeHttpx", (), {"get": staticmethod(get)}))
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://codex-gw.example/backend-api/codex")
+
+    assert "gpt-6-sol" in codex_models._fetch_models_from_api(access_token=_codex_jwt("acct"))
+    assert seen_urls, "discovery must still run for a JWT credential"
+    for url in seen_urls:
+        parsed = urlparse(url)
+        assert parsed.netloc == "codex-gw.example" and parsed.path == "/backend-api/codex/models"
 
 
 def test_catalog_falls_back_to_the_ungated_sentinel_when_newest_client_is_rejected():

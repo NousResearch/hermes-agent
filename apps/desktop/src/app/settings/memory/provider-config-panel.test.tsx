@@ -22,6 +22,13 @@ vi.mock('@/store/notifications', () => ({
   notifyError: vi.fn()
 }))
 
+// Load the panel once at module scope, outside every test timeout. The first
+// in-test `await import` paid the whole transform + import inside test one's
+// 15s budget — the recurring CI timeout — and the late-finishing import could
+// leak its first render into the next test ("multiple Honcho settings
+// buttons").
+const { ProviderConfigPanel } = await import('./provider-config-panel')
+
 function honchoSchema(): MemoryProviderConfig {
   return {
     name: 'honcho',
@@ -108,9 +115,7 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-async function renderPanel(provider = 'honcho') {
-  const { ProviderConfigPanel } = await import('./provider-config-panel')
-
+function renderPanel(provider = 'honcho') {
   return render(<ProviderConfigPanel provider={provider} />)
 }
 

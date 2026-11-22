@@ -17,7 +17,6 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli.plugins import get_plugin_manager
 
-
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
@@ -26,7 +25,6 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
-
 
 @pytest.fixture
 def captured_updates(monkeypatch):
@@ -96,5 +94,3 @@ def test_raising_callback_does_not_break_assign(kanban_home):
             conn.close()
     finally:
         mgr._hooks = saved
-
-

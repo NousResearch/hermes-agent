@@ -7,9 +7,12 @@ export interface FindInPageState {
   query: string
   matchOrdinal: number
   matchCount: number
+  /** Bumped when openFindBar() is called while the bar is already visible, so
+   *  FindBar can refocus without treating the chord as a fresh open. */
+  focusRequest: number
 }
 
-const EMPTY: FindInPageState = { active: false, query: '', matchOrdinal: 0, matchCount: 0 }
+const EMPTY: FindInPageState = { active: false, query: '', matchOrdinal: 0, matchCount: 0, focusRequest: 0 }
 
 export const $findInPage = atom<FindInPageState>({ ...EMPTY })
 
@@ -25,6 +28,17 @@ export const $findInPage = atom<FindInPageState>({ ...EMPTY })
  * "current view" predicate (#81726).
  */
 export function openFindBar(): void {
+  const prev = $findInPage.get()
+
+  if (prev.active) {
+    // Already visible: keep the typed query and the captured scope. A fresh
+    // EMPTY write would clear the query, and captureFindScope() would tear
+    // down the highlight observer.
+    $findInPage.set({ ...prev, focusRequest: prev.focusRequest + 1 })
+
+    return
+  }
+
   $findInPage.set({ ...EMPTY, active: true })
   captureFindScope()
 }

@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Mapping
 from urllib.parse import unquote, urlparse
 
+from agent.i18n import t
+
 # Log-record parity with the origin module.
 logger = logging.getLogger("cli")
 
@@ -140,7 +142,7 @@ def _file_drop_result(path: Path, remainder: str) -> dict:
     return {"path": path, "is_image": path.suffix.lower() in _IMAGE_EXTENSIONS, "remainder": remainder}
 
 
-def _detect_file_drop(user_input: str) -> "dict | None":
+def _detect_file_drop(user_input: str) -> dict | None:
     """Detect a dragged/pasted file path at the start of *user_input* -> ``{path, is_image, remainder}`` or None."""
     from cli import _file_drop_result, _resolve_attachment_path, _split_path_input
     if not isinstance(user_input, str):
@@ -191,7 +193,7 @@ def _format_image_attachment_badges(attached_images: list[Path], image_counter: 
     if width < 52:
         if len(attached_images) == 1:
             return f"[📎 {_trunc(attached_images[0].name, 20)}]"
-        return f"[📎 {len(attached_images)} images attached]"
+        return t("cli.terminal.image_badge_count", count=len(attached_images))
 
     if width < 80:
         if len(attached_images) == 1:
@@ -199,7 +201,7 @@ def _format_image_attachment_badges(attached_images: list[Path], image_counter: 
         return f"[📎 {_trunc(attached_images[0].name, 20)}] [+{len(attached_images) - 1}]"
 
     base = image_counter - len(attached_images) + 1
-    return " ".join(f"[📎 Image #{base + i}]" for i in range(len(attached_images)))
+    return " ".join(t("cli.terminal.image_badge_numbered", index=base + i) for i in range(len(attached_images)))
 
 
 def _should_auto_attach_clipboard_image_on_paste(pasted_text: str) -> bool:
@@ -296,7 +298,7 @@ def _apply_bracketed_paste_timeout_patch() -> None:
         _vt100_mod.Vt100Parser.feed = _patched_vt100_feed
         _vt100_mod._hermes_bp_timeout_patched = True
         logger.debug("Applied Vt100Parser bracketed-paste timeout patch (#16263)")
-    except Exception as exc:  # noqa: BLE001 — defensive: never break startup
+    except Exception as exc:
         logger.debug("Bracketed-paste timeout patch skipped: %s", exc)
 
 
@@ -411,7 +413,7 @@ def _enable_extended_enter_keys(output=None, env: Optional[Mapping[str, str]] = 
     return False
 
 
-def _cli_multiline_shortcuts_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
+def _cli_multiline_shortcuts_enabled(config: Optional[dict[str, Any]] = None) -> bool:
     """``display.cli_multiline_shortcuts`` (default on: Ctrl+J = newline; off restores the legacy c-j submit)."""
     if config is None:
         config = _cli().CLI_CONFIG
@@ -451,7 +453,7 @@ def _preserve_ctrl_enter_newline() -> bool:
     # WSL env vars can be scrubbed under sudo; also peek /proc.
     for p in ("/proc/version", "/proc/sys/kernel/osrelease"):
         try:
-            with open(p, "r", encoding="utf-8", errors="ignore") as f:
+            with open(p, "r", encoding="utf-8-sig", errors="ignore") as f:
                 if "microsoft" in f.read().lower():
                     return True
         except OSError:

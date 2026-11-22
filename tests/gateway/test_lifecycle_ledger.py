@@ -67,7 +67,7 @@ def _exit_diag_records(home: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="/proc is Linux-only")
+@pytest.mark.platforms("linux")  # /proc is Linux-only
 def test_sample_memory_has_expected_keys_on_linux() -> None:
     sample = sample_memory()
     assert sample.get("rss_kib", 0) > 0

@@ -100,6 +100,40 @@ def test_agent_session_project_switch_keeps_profile_active_pointer(monkeypatch, 
     assert workspace_moves == [("session-background", "/work/background", "Background")]
 
 
+def test_session_without_workspace_callback_switch_sets_profile_active_pointer(monkeypatch, tmp_path):
+    """CLI/messaging agents pass a task_id but have no GUI workspace to move — the pointer is the switch."""
+    db_path, connect_closing = _use_projects_db(monkeypatch, tmp_path)
+    with connect_closing(db_path=db_path) as conn:
+        active_id = pdb.create_project(conn, name="Active", folders=["/work/active"])
+        target_id = pdb.create_project(conn, name="Target", folders=["/work/target"])
+        pdb.set_active(conn, active_id)
+
+    result = json.loads(project_tools.project_switch(target_id, task_id="cli-session"))
+
+    with connect_closing(db_path=db_path) as conn:
+        assert pdb.get_active_id(conn) == target_id
+    assert result["success"] is True
+
+
+def test_session_switch_to_pathless_project_sets_profile_active_pointer(monkeypatch, tmp_path):
+    db_path, connect_closing = _use_projects_db(monkeypatch, tmp_path)
+    with connect_closing(db_path=db_path) as conn:
+        active_id = pdb.create_project(conn, name="Active", folders=["/work/active"])
+        pathless_id = pdb.create_project(conn, name="Pathless")
+        pdb.set_active(conn, active_id)
+
+    workspace_moves: list[tuple[str, str, str]] = []
+    project_tools.set_project_workspace_callback(lambda *args: workspace_moves.append(args))
+    try:
+        json.loads(project_tools.project_switch(pathless_id, task_id="session-a"))
+    finally:
+        project_tools.set_project_workspace_callback(None)
+
+    with connect_closing(db_path=db_path) as conn:
+        assert pdb.get_active_id(conn) == pathless_id
+    assert workspace_moves == []
+
+
 @pytest.fixture
 def gui_sessions(monkeypatch):
     """Live GUI sessions wired through the real gateway workspace callback."""
@@ -173,6 +207,24 @@ def test_project_list_reports_no_project_for_a_detached_session(gui_sessions, tm
     assert not any(p["active"] for p in listed["projects"])
     # A caller the gateway never registered keeps reading the profile-global pointer.
     assert _tool("list")["active_id"] == active
+
+
+def test_project_list_keeps_the_sessions_project_on_unmounted_docker(gui_sessions, tmp_path, monkeypatch):
+    """Unmounted Docker registers no host cwd for the terminal, but the chat is still in its folder."""
+    from tui_gateway import server
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")
+    folder = tmp_path / "project"
+    folder.mkdir()
+    with pdb.connect_closing() as conn:
+        project = pdb.create_project(conn, name="Project", folders=[str(folder)])
+    session = gui_sessions("docker-tab", str(folder))
+    session["explicit_cwd"] = True
+    server._register_session_cwd(session)
+
+    assert terminal_tool.resolve_task_overrides("docker-tab")["cwd"] == ""
+    assert _tool("list", "docker-tab")["active_id"] == project
 
 
 def test_idempotent_create_from_a_session_keeps_profile_active_pointer(gui_sessions, tmp_path):

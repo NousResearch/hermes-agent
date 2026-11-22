@@ -8,7 +8,7 @@ import threading
 import time
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 @pytest.fixture
@@ -200,7 +200,7 @@ def test_actual_background_tasks_reach_chat_completions(
         quiet_mode=True,
     )
     assert (
-        compressor._call_summary_llm("Summarize this conversation.", time.monotonic())
+        compressor._call_summary_llm([{"role": "user", "content": "Summarize this conversation."}], time.monotonic())
         == "The task is complete."
     )
     response = asyncio.run(

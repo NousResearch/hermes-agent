@@ -5,7 +5,6 @@ content loss, that chunks are synthesized in order, and that the delivery
 packing respects platform upload limits.
 """
 
-
 import pytest
 
 from tools.tts_tool import _build_audio_delivery_files, _split_text_for_tts
@@ -14,7 +13,6 @@ from tools.tts_tool_delivery import (
     _pack_audio_files_for_delivery,
     _split_oversized_sentence,
 )
-
 
 class TestSplitTextForTts:
     def test_short_text_returns_single_chunk(self):
@@ -46,19 +44,14 @@ class TestSplitTextForTts:
         assert all(len(c) <= 30 for c in chunks)
         assert "".join(chunks) == text
 
-
 class TestSplitOversizedSentence:
     def test_short_sentence_returns_as_is(self):
         assert _split_oversized_sentence("Hello world.", 100) == ["Hello world."]
-
 
     def test_word_boundary_split(self):
         words = " ".join(["word"] * 50)
         chunks = _split_oversized_sentence(words, 30)
         assert all(len(c) <= 30 for c in chunks)
-
-
-
 
 class TestPackAudioFilesForDelivery:
     def test_single_file_returns_one_group(self, tmp_path):
@@ -91,7 +84,6 @@ class TestPackAudioFilesForDelivery:
         groups = _pack_audio_files_for_delivery([str(f1), str(f2)], profile)
         assert len(groups) == 2
 
-
 class TestBuildAudioDeliveryFiles:
     def test_single_file_passes_through(self, tmp_path):
         f = tmp_path / "chunk.mp3"
@@ -109,4 +101,3 @@ class TestBuildAudioDeliveryFiles:
         profile = AudioDeliveryProfile(platform="default", max_file_bytes=50)
         with pytest.raises(ValueError, match="exceeds"):
             _build_audio_delivery_files([str(f)], out, profile)
-

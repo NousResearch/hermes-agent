@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Full A/B eval: N models x 2 arms x 9 tasks x R reps.
 #
 # Usage:

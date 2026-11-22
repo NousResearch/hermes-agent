@@ -30,7 +30,11 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.windows_only
+from gateway.control_socket import identify_gateway
+from tests.live_process_fixtures import sleeper_script_path
+from tests.waiting import wait_until
+
+pytestmark = pytest.mark.platforms("windows")  # live Windows named-pipe E2E
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -102,8 +106,14 @@ def live_server(tmp_path: Path):
         _kill_tree(proc)
         pytest.fail(f"pipe server child failed to start: {line!r} {err}")
     server_pid = int(line.split()[1])
-    yield proc, home, server_pid
-    _kill_tree(proc)
+    # The pipe is bound now, but the first ``identify`` resolves the server's code identity (the
+    # uncached git provenance walk): 3-4.5 s on a loaded Windows runner, which ate a single 5 s
+    # probe. Ready means answering, so wait for that before any test asserts on it.
+    try:
+        wait_until(lambda: identify_gateway(home, timeout=10.0), timeout=60, what="pipe server's first identify")
+        yield proc, home, server_pid
+    finally:
+        _kill_tree(proc)
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
@@ -112,12 +122,13 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         subprocess.run(
             ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
             capture_output=True,
+            check=False,
         )
         proc.wait()
 
 
 def test_named_pipe_identify_status_and_fleet_consumer(live_server, monkeypatch):
-    proc, home, server_pid = live_server
+    _proc, home, server_pid = live_server
     from gateway.control_socket import identify_gateway, query_gateway_control
 
     ident = identify_gateway(home, timeout=5.0)
@@ -137,7 +148,7 @@ def test_named_pipe_identify_status_and_fleet_consumer(live_server, monkeypatch)
     import hermes_cli.update_receipt as ur
 
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": ident.get("code_sha") or "X", "version": "t"},
     )
     monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
@@ -152,7 +163,7 @@ def test_named_pipe_identify_status_and_fleet_consumer(live_server, monkeypatch)
 
 @pytest.mark.spawns_gateway_lookalike
 def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
-    proc, home, server_pid = live_server
+    proc, home, _server_pid = live_server
     from gateway.control_socket import identify_gateway
 
     assert identify_gateway(home, timeout=5.0) is not None
@@ -170,7 +181,7 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
     import hermes_cli.update_receipt as ur
 
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "NEW", "version": "t"},
     )
     monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
@@ -190,7 +201,11 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
         )
 
     standin = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(120)", "hermes", "gateway", "run"],
+        # Use the real interpreter: a Windows venv's python.exe can be a shim
+        # whose PID differs from the process running the command line. The
+        # stand-in runs a SCRIPT, not `-c`: gateway identity is no longer
+        # inferred from inline `-c` source (#107002).
+        [sys._base_executable, sleeper_script_path(), "hermes", "gateway", "run"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

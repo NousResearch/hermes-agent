@@ -9,7 +9,7 @@ unescaped ``key.split(".")``:
 * #91095 — creation targets under a ``custom_providers`` list index where the
   dotted model key already exists (``custom_providers.0.models.qwen3.5:4b``).
 * #91607 — ``model_overrides.zai.glm-5.3`` via
-  ``utils.py::atomic_roundtrip_yaml_update`` (a second split site).
+  ``utils.files.atomic_roundtrip_yaml_update`` (a second split site).
 * #99124 — dotted leaf keys (``glm-5.3-flash``) across set/get/unset.
 
 Two complementary behaviors are covered:
@@ -24,7 +24,7 @@ import os
 from unittest.mock import patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.config import (
     _MISSING,

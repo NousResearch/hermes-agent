@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import concurrent.futures as cf
 import copy
+import importlib.util
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -246,8 +247,10 @@ CASES: list[Case] = [
          profiles=_profile_work),
     Case("aux_bare_custom_never_reaches_env_openai_base_url",
          [Leg(Q, ("named",), {"named": 1}, "named")], _aux_bare_custom),
-    Case("aux_title_endpoint_separate_from_main",
-         [Leg(Q, ("main", "aux"), {"main": 1, "aux": 1}, "main")], _aux_title_endpoint),
+    # A one-shot sends no title call (#151820), so a pinned title endpoint must see nothing; the
+    # interactive twin is test_tui_gateway_title_call_uses_its_pinned_endpoint.
+    Case("oneshot_sends_no_title_call_to_aux_endpoint",
+         [Leg(Q, ("main",), {"main": 1}, "main")], _aux_title_endpoint),
     Case("delegation_endpoint_child_routed",
          [Leg(Q, ("main", "deleg"), {"main": 2, "deleg": 1}, "main")], _delegation_endpoint),
     Case("delegation_named_provider_child_routed",
@@ -338,6 +341,11 @@ class Switch:
     keyless: bool = False  # the host may also see NO credential (withholding a key is not a leak)
 
 
+def _titled(gw: TuiGateway, sid: str, title: str) -> Callable[[dict[str, Any]], bool]:
+    is_title = gw.event("session.title", sid)
+    return lambda m: is_title(m) and ((m.get("params") or {}).get("payload") or {}).get("title") == title
+
+
 def test_tui_gateway_model_switch_routing(tmp_path: Path, request: pytest.FixtureRequest) -> None:
     """One live session walks the switch matrix; after every switch the next turn lands on
     exactly the selected host with exactly its key, and nothing reaches any other host.
@@ -364,7 +372,10 @@ def test_tui_gateway_model_switch_routing(tmp_path: Path, request: pytest.Fixtur
             Switch("model-legacy --provider custom:legacy-host", "legacy"),
             Switch("alias-env", "alias"),
             Switch("model-alias --provider named-host", "named"),
-            Switch("builtin-label-lan", "alias", ok=False, keyless=True),
+            # PM keeps runtime extras out of the test env; without the SDK the switch is refused
+            # before any request leaves, so there is no egress to route.
+            *([Switch("builtin-label-lan", "alias", ok=False, keyless=True)]
+              if importlib.util.find_spec("anthropic") is not None else []),
             Switch("model-legacy --provider custom:legacy-host", "legacy"),
             Switch("model-pool --provider pool-host", "pool", ok=False),
             Switch(None, "pool"),
@@ -377,7 +388,13 @@ def test_tui_gateway_model_switch_routing(tmp_path: Path, request: pytest.Fixtur
             pool_state["fail"] = leg.host == "pool" and not leg.ok
             done = gw.turn(sid, f"turn {i}")
             if i == 0:
-                gw.seen_or_wait(gw.event("session.title", sid), timeout=120)  # first-turn aux call settles
+                # Turn 0 titles the session twice: an instant ``derived`` title at turn START (the
+                # first session.title event), then a model upgrade on a background thread started as
+                # the turn settles (custom is self-hosted, #117296). That upgrade snapshots and
+                # validates main's runtime before any switch, so its aux request is THIS leg's
+                # traffic: wait for the upgraded title main's aux endpoint answered, or a slow
+                # runner lands the request after leg 1's marks and it reads as a leak.
+                gw.seen_or_wait(_titled(gw, sid, "aux-from-main"), timeout=120)
             log = fleet.since(marks)
             payload = (done.get("params") or {}).get("payload") or {}
             ctx = f"leg {i} ({leg.value!r} -> {leg.host}): {done.get('params', {}).get('type')} {str(payload)[:300]}\n{describe(log)}"
@@ -386,6 +403,32 @@ def test_tui_gateway_model_switch_routing(tmp_path: Path, request: pytest.Fixtur
             assert_routing(check_routing(fleet, log, {leg.host: allowed}, {leg.host: 1}), ctx)
             if leg.ok:
                 assert payload.get("text") == f"answer-from-{leg.host}", ctx
+    finally:
+        gw.close()
+        fleet.stop()
+        trap.stop()
+
+
+def test_tui_gateway_title_call_uses_its_pinned_endpoint(tmp_path: Path) -> None:
+    """An interactive session's title call goes to ``auxiliary.title_generation``'s own host with
+    that host's key, and the turn stays on main (the one-shot twin above sends no title call)."""
+    fleet = Fleet(ROLES).start()
+    trap = EgressTrap()
+    home = tmp_path / "home"
+    config, env = base_config(fleet)
+    _aux_title_endpoint(config, env, fleet)
+    write_home(home / ".hermes", config, env)
+    gw = TuiGateway(home, proxy=trap.url)
+    try:
+        gw.wait(gw.event("gateway.ready"), timeout=120)
+        sid = gw.call("session.create", {"cols": 100})["result"]["session_id"]
+        done = gw.turn(sid, "hello")
+        gw.seen_or_wait(_titled(gw, sid, "aux-from-aux"), timeout=120)
+        log = fleet.since()
+        ctx = f"{describe(log)}\n{done}"
+        assert_routing(check_routing(fleet, log, {"main": fleet.keys["main"], "aux": fleet.keys["aux"]},
+                                     {"main": 1, "aux": 1}), ctx)
+        assert ((done.get("params") or {}).get("payload") or {}).get("text") == "answer-from-main", ctx
     finally:
         gw.close()
         fleet.stop()

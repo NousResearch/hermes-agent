@@ -27,8 +27,19 @@ export interface SendDiagnosticsState {
    *  to the bundle as error-context.txt, redacted server-side). */
   errorContext?: string
   error?: string
+  /** Client-side files (label → text) the requesting surface attaches, e.g.
+   *  the update output it showed. Redacted and size-capped server-side. */
+  extraFiles?: Record<string, string>
+  /** The requesting surface renders the flow itself (the update error box
+   *  shows the link where the failure is), so the global modal stays closed. */
+  inline?: boolean
   phase: 'consent' | 'done' | 'error' | 'uploading'
   result?: SendDiagnosticsResult
+}
+
+export interface SendDiagnosticsOptions {
+  extraFiles?: Record<string, string>
+  inline?: boolean
 }
 
 export const $sendDiagnostics = atom<SendDiagnosticsState | null>(null)
@@ -42,9 +53,9 @@ export const $sendDiagnostics = atom<SendDiagnosticsState | null>(null)
 let generation = 0
 
 /** Open the consent modal. No network I/O happens until the user confirms. */
-export function requestSendDiagnostics(errorContext?: string): void {
+export function requestSendDiagnostics(errorContext?: string, options: SendDiagnosticsOptions = {}): void {
   generation += 1
-  $sendDiagnostics.set({ errorContext, phase: 'consent' })
+  $sendDiagnostics.set({ errorContext, phase: 'consent', ...options })
 }
 
 export function dismissSendDiagnostics(): void {
@@ -100,7 +111,7 @@ export async function confirmSendDiagnostics(): Promise<void> {
       throw new Error('Hermes gateway unavailable')
     }
 
-    const extraFiles = await collectLocalExtras()
+    const extraFiles = { ...(await collectLocalExtras()), ...current.extraFiles }
 
     if (!stillCurrent()) {
       return

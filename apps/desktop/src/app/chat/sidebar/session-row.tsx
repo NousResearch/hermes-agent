@@ -11,6 +11,7 @@ import { openSession } from '@/app/open-session'
 import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { RowButton } from '@/components/ui/row-button'
 import { OverflowTip, Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
@@ -39,9 +40,10 @@ import { $todoProgressBySession } from '@/store/todos'
 import { SessionStatusDot } from '../session-status-dot'
 
 import {
+  SIDEBAR_FOCUS_VISIBLE,
   SIDEBAR_ROW_CARD_MIN_H,
   SIDEBAR_TRUNCATED_LEADING,
-  SidebarRowBody,
+  SidebarRowCluster,
   SidebarRowGrab,
   SidebarRowLabel,
   SidebarRowLead,
@@ -110,11 +112,10 @@ function disarmMarquee(event: React.PointerEvent<HTMLElement>) {
   delete event.currentTarget.dataset.marquee
 }
 
-// The last thing in the trailing slot hands its place to the ⋯ button on hover,
-// and is never narrower than the button that has to cover it. A PR chip is the
-// exception while the pointer is on it: it's a link, and the kebab sits
-// absolute over this space, so it has to stop taking clicks too, not just fade.
-const TAIL_HIDES = 'session-row-tail min-w-5 transition-opacity group-hover:opacity-0'
+// The last trailing figure yields its space to the actions button on hover or
+// keyboard focus. The sidebar's tail swap styles keep real PR actions visible
+// while they are hovered or focused.
+const TAIL_HIDES = 'session-row-tail min-w-5 transition-opacity'
 const KEBAB_YIELDS = 'session-row-kebab'
 
 function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
@@ -233,9 +234,8 @@ function SidebarSessionRowImpl({
               <Tip label={absoluteAge} side="top">
                 <time
                   aria-label={`${age}, ${absoluteAge}`}
-                  className="pointer-events-auto focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
+                  className="pointer-events-auto"
                   dateTime={timestampDate.toISOString()}
-                  tabIndex={0}
                 >
                   {age}
                 </time>
@@ -300,7 +300,21 @@ function SidebarSessionRowImpl({
   // shell column would span the card's full height and shave every line,
   // when only the header shares its line with the age and kebab.
   const actionsNode = (
-    <div className="relative z-2 flex shrink-0 items-center justify-end gap-1" data-row-actions>
+    <div
+      className="relative z-2 flex shrink-0 items-center justify-end gap-1"
+      data-row-actions
+      // Radix renders the menu content in a portal, but React still bubbles its
+      // events through this logical parent (#85163): in card (Inbox) mode this
+      // cluster renders INSIDE the row body whose onClick resumes, so an
+      // Archive menu click also fired the row's resume. This container-level
+      // gate is deliberate: every action owns its gesture instead of inheriting
+      // row resume/drag semantics. A future child that needs row semantics must
+      // move outside this boundary rather than weakening it for every menu
+      // action. Flat rows already achieve this structurally (actions render
+      // outside the row button via the shell's `actions` column).
+      onClick={event => event.stopPropagation()}
+      onPointerDown={event => event.stopPropagation()}
+    >
       {trailing.map(({ key, node }, index) => (
         <span
           className={
@@ -312,6 +326,7 @@ function SidebarSessionRowImpl({
         </span>
       ))}
       <SessionActionsMenu
+        archived={Boolean(session.archived)}
         onArchive={onArchive}
         onBranch={onBranch}
         onDelete={onDelete}
@@ -326,10 +341,11 @@ function SidebarSessionRowImpl({
         <Button
           aria-label={r.sessionActions}
           className={cn(
-            'size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!',
+            'size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!',
             trailing.length > 0 && 'absolute right-0',
             pr && KEBAB_YIELDS
           )}
+          data-session-actions
           size="icon"
           variant="ghost"
         >
@@ -341,6 +357,7 @@ function SidebarSessionRowImpl({
 
   return (
     <SessionContextMenu
+      archived={Boolean(session.archived)}
       onArchive={onArchive}
       onBranch={onBranch}
       onDelete={onDelete}
@@ -414,7 +431,14 @@ function SidebarSessionRowImpl({
         {...rest}
       >
         {showsRunningArc(dotState) && <span aria-hidden="true" className="arc-border arc-row" />}
-        <SidebarRowBody
+        {/* #38072 finding 3: the row's body is a DIV, not a button — the
+            reorder grabber (dnd-kit role="button" + tabIndex, kept for
+            keyboard reorder, #83617) and the ⋯ trigger must be SIBLINGS of
+            the row's primary action, never nested inside it (axe
+            nested-interactive). The title below is the row's real button:
+            its click bubbles to this div's handlers, preserving pointer
+            activation while the grabber and actions retain separate stops. */}
+        <SidebarRowCluster
           // Every trailing figure lives in the actions slot, which the row
           // measures — so the title needs a gap from it and nothing else. Hover
           // changes what you can see in that slot, never how wide it is. The
@@ -422,7 +446,10 @@ function SidebarSessionRowImpl({
           // ending at the shell's own trailing inset), and keeping the gap
           // would pull the header in past every line below it.
           className={cn(
-            'z-0',
+            // cursor-pointer: the body is a div now (see #38072 note above);
+            // buttons earn this from the base layer's interactive-control
+            // rule, a div doesn't.
+            'z-0 w-full cursor-pointer',
             card && 'pr-0',
             branchStem && 'pl-3.5',
             // The card is a grid with ONE spacing knob: --card-gap. Every row
@@ -505,15 +532,25 @@ function SidebarSessionRowImpl({
                   <SessionRowSlot area={SESSION_ROW_AREAS.leading} sessionId={sessionPinId(session)} />
                   {handoffBadge}
                   <span className="min-w-0 flex-1 self-center">
-                    <OverflowTip label={title} placement="row">
-                      <SidebarRowLabel
-                        className="hover-marquee block font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
-                        onPointerEnter={armMarquee}
-                        onPointerLeave={disarmMarquee}
-                      >
-                        <span className="hover-marquee-inner">{title}</span>
-                      </SidebarRowLabel>
-                    </OverflowTip>
+                    {/* The row's primary action (#38072 finding 3): the title
+                        is the session row's real button — the grabber and ⋯
+                        sit beside it as siblings, never inside it. No onClick
+                        of its own: the click bubbles to the body div's
+                        resolver, so modifier-clicks and plain clicks behave
+                        exactly as they did on the old full-row button. The
+                        OverflowTip stays on the truncating label so its
+                        scrollWidth measurement is unchanged. */}
+                    <RowButton className={cn('block w-full rounded-sm text-left', SIDEBAR_FOCUS_VISIBLE)}>
+                      <OverflowTip label={title} placement="row">
+                        <SidebarRowLabel
+                          className="hover-marquee block font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
+                          onPointerEnter={armMarquee}
+                          onPointerLeave={disarmMarquee}
+                        >
+                          <span className="hover-marquee-inner">{title}</span>
+                        </SidebarRowLabel>
+                      </OverflowTip>
+                    </RowButton>
                     {/* Session-list density (#68119): comfortable adds one
                         deterministic metadata line; detailed adds the initial
                         request preview. Compact keeps today's one-line row. */}
@@ -568,18 +605,23 @@ function SidebarSessionRowImpl({
                 {/* Title + preview: ONE grouped cell with its own tight
                     internal gap — it does not inherit the card's rhythm. */}
                 <div className="flex min-w-0 flex-col gap-[0.15rem]">
-                  <OverflowTip label={title} placement="row">
-                    <SidebarRowLabel
-                      className={cn(
-                        'hover-marquee text-[0.8125rem] font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground',
-                        SIDEBAR_TRUNCATED_LEADING
-                      )}
-                      onPointerEnter={armMarquee}
-                      onPointerLeave={disarmMarquee}
-                    >
-                      <span className="hover-marquee-inner">{title}</span>
-                    </SidebarRowLabel>
-                  </OverflowTip>
+                  {/* #38072 finding 3: the card's title line is the row's real
+                      button (same contract as the flat row: no onClick of its
+                      own — the click bubbles to the body div's resolver). */}
+                  <RowButton className={cn('block w-full rounded-sm text-left', SIDEBAR_FOCUS_VISIBLE)}>
+                    <OverflowTip label={title} placement="row">
+                      <SidebarRowLabel
+                        className={cn(
+                          'hover-marquee text-[0.8125rem] font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground',
+                          SIDEBAR_TRUNCATED_LEADING
+                        )}
+                        onPointerEnter={armMarquee}
+                        onPointerLeave={disarmMarquee}
+                      >
+                        <span className="hover-marquee-inner">{title}</span>
+                      </SidebarRowLabel>
+                    </OverflowTip>
+                  </RowButton>
                   {session.preview && rowMeta.includes('preview') ? (
                     <span
                       className={cn(
@@ -610,7 +652,7 @@ function SidebarSessionRowImpl({
               </>
             )
           })()}
-        </SidebarRowBody>
+        </SidebarRowCluster>
       </SidebarRowShell>
     </SessionContextMenu>
   )

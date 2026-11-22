@@ -22,12 +22,35 @@ mock_start() {
   local workroot="${1:?mock_start needs a workroot}"
   MOCK_PIDFILE="$workroot/mock.pid"
   MOCK_URLFILE="$workroot/mock.url"
+
+  # Idempotent: a mock that is still live from earlier in this run is REUSED. Its
+  # URL is what the install is already configured with, so re-writing the config
+  # below leaves .env byte-identical -- a NEW instance would take a new port, and
+  # the user-state verifier would report that as the upgrade rewriting .env
+  # (an equal-size OPENAI_BASE_URL swap, invisible in the file hash).
+  if [ -s "$MOCK_URLFILE" ] && [ -s "$MOCK_PIDFILE" ] \
+      && kill -0 "$(cat "$MOCK_PIDFILE" 2>/dev/null)" 2>/dev/null; then
+    local live_url
+    live_url="$(cat "$MOCK_URLFILE")"
+    export HERMES_E2E_MOCK_URL="$live_url"
+    ok "mock inference server already live: $live_url"
+    # The config write is NOT optional: this is what re-points the app at a live
+    # endpoint, and callers that only want that (the app-update flow, whose app
+    # reads config.yaml/.env rather than the env var) depend on it.
+    mock_configure_provider "$live_url"
+    return 0
+  fi
+
+  # A dead mock's URL is still what a gateway that outlived its step froze at boot:
+  # the new instance rebinds that port when free (mock-provider.mjs <prior-url>).
+  local prior_url
+  prior_url="$(cat "$MOCK_URLFILE" 2>/dev/null || true)"
   rm -f "$MOCK_PIDFILE" "$MOCK_URLFILE"
 
   # Bare `node file.ts` type-stripping works on node >=22.18 (the images
   # ship 22.22+; the installed managed node is >=26) - same contract as
   # the repo's own `dev:mock` script.
-  node "$ASSETS/mock-provider.mjs" "$MOCK_URLFILE" > "$LOG_DIR/mock.log" 2>&1 &
+  node "$ASSETS/mock-provider.mjs" "$MOCK_URLFILE" "$prior_url" > "$LOG_DIR/mock.log" 2>&1 &
   echo $! > "$MOCK_PIDFILE"
 
   local _i
@@ -41,26 +64,15 @@ mock_start() {
   fi
   local url
   url="$(cat "$MOCK_URLFILE")"
+  export HERMES_E2E_MOCK_URL="$url"
   ok "mock inference server: $url"
+  mock_configure_provider "$url"
+}
 
-  # The provider config, byte-compatible with writeMockConfig() in
-  # tests-js/scripts/mock-server.ts.
-  cat > "$HERMES_HOME/config.yaml" <<EOF
-model:
-  default: mock-model
-  provider: mock
-providers:
-  mock:
-    api: $url/v1
-    name: Mock
-    api_mode: chat_completions
-    key_env: MOCK_API_KEY
-    models:
-      mock-model: {}
-    context_length: 64000
-EOF
-  printf 'MOCK_API_KEY=e2e-mock-key\n' >> "$HERMES_HOME/.env"
-  ok "provider 'mock' configured in $HERMES_HOME (api $url/v1)"
+mock_configure_provider() {
+  local url="${1:?mock_configure_provider needs a url}"
+  node "$ASSETS/../../../tests-js/scripts/mock-provider-config.ts" "$HERMES_HOME" "$url" || fail "mock provider config failed"
+  ok "configured in $HERMES_HOME as an OpenAI-compatible endpoint (api $url/v1)"
 }
 
 mock_stop() {

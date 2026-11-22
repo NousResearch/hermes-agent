@@ -33,9 +33,10 @@ the issue/PR that decided the flip in the module docstring above, extending
 the flip history. Do not "fix" a failure here by inverting an assertion
 without that citation.
 
-Tests drive the REAL ``cron.scheduler.run_job`` path and capture the actual
-kwargs the scheduler passes to AIAgent (patched at ``run_agent.AIAgent``,
-matching tests/cron/test_scheduler.py's pattern). The ON direction (default
+Tests drive the REAL owner bridge (``gateway.session_cron.execute``, the path
+``cron.scheduler.run_job`` hands a fire to) and capture the actual kwargs the
+scheduler passes to AIAgent (patched at ``run_agent.AIAgent``, matching
+tests/cron/test_scheduler.py's pattern). The ON direction (default
 skip_memory=False, memory not denylisted, per-job memory toolset kept) is
 already pinned by tests/cron/test_scheduler.py::test_run_job_*memory*; this
 module pins the OFF direction and the "no per-job knob" rule.
@@ -46,8 +47,7 @@ from __future__ import annotations
 import contextlib
 from unittest.mock import MagicMock, patch
 
-from cron.scheduler import run_job
-
+from tests.cron.test_scheduler import _run_owned_job, close_storage_handles
 
 @contextlib.contextmanager
 def _run_job_patches(tmp_path):
@@ -60,7 +60,7 @@ def _run_job_patches(tmp_path):
     toggles).
     """
     fake_db = MagicMock()
-    fake_db.get_compression_tip.side_effect = lambda session_id: session_id
+    fake_db.lineage.tip.side_effect = lambda session_id: session_id
     mock_agent = MagicMock()
     mock_agent.run_conversation.return_value = {"final_response": "ok"}
     base = [
@@ -68,7 +68,7 @@ def _run_job_patches(tmp_path):
         patch("cron.scheduler_delivery._resolve_origin", return_value=None),
         patch("hermes_cli.env_loader.load_hermes_dotenv"),
         patch("hermes_cli.env_loader.reset_secret_source_cache"),
-        patch("hermes_state_registry.acquire", return_value=fake_db),
+        patch("persistence_assembly.open_persistence", return_value=fake_db),
         patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             return_value={
@@ -83,9 +83,6 @@ def _run_job_patches(tmp_path):
     with contextlib.ExitStack() as stack:
         entered = [stack.enter_context(cm) for cm in base]
         yield fake_db, entered[-1]
-
-
-
 
 class TestCronMemoryContractOff:
     """Direction (b): the supported OFF switch stays off."""
@@ -107,11 +104,10 @@ class TestCronMemoryContractOff:
             "prompt": "hi",
             "enabled_toolsets": ["memory", "file"],
         }
-        with _run_job_patches(tmp_path) as (_db, agent_cls):
-            run_job(job)
+        with _run_job_patches(tmp_path) as (fake_db, agent_cls):
+            _run_owned_job(job, tmp_path, fake_db)
         kwargs = agent_cls.call_args.kwargs
         assert "memory" in (kwargs["disabled_toolsets"] or []), (
             "config.yaml agent.disabled_toolsets must propagate 'memory' into "
             "the cron agent's denylist — the OFF direction of the contract"
         )
-

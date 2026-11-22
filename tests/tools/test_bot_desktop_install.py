@@ -19,7 +19,8 @@ def _isolated_host(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
     monkeypatch.setattr(runtime, "install_command", lambda: "sudo apt-get install -y tigervnc-standalone-server")
     yield
-    install._running.clear()
+    for key in list(install._slot_files):
+        install.release(key)
 
 
 def test_empty_password_cancels_without_spawning(monkeypatch):
@@ -47,7 +48,7 @@ def test_second_install_for_same_profile_is_refused(monkeypatch):
         install.install_packages(ask_password=lambda: "pw", on_line=lambda _l: None)
     gate.set()
     worker.join(5)
-    install.assert_not_running()  # slot released once the run finishes
+    install.release(install.claim())  # slot released once the run finishes
 
 
 def test_claim_is_atomic_and_refuses_a_second_claim():
@@ -63,7 +64,7 @@ def test_claim_is_atomic_and_refuses_a_second_claim():
     install.release(key)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_timeout_kills_the_package_managers_whole_process_group(monkeypatch):
     """sudo forks the package manager into the same (new) session; killing sudo alone leaves apt/dnf
     holding the dpkg lock as root. The timeout must take the group."""
@@ -139,7 +140,7 @@ def test_passwordless_sudo_runs_the_install_without_asking_for_a_password(monkey
     assert "Done" in lines
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_timeout_returns_and_frees_the_slot_even_when_a_descendant_survives(monkeypatch):
     """From an unprivileged Hermes, killpg reaches the sudo leader but not a root-owned apt child; that
     child keeps the pipe's write end open, so draining stdout never sees EOF and the profile slot stays
@@ -239,12 +240,9 @@ def test_timeout_finishes_the_group_when_only_the_leader_dies_on_term(monkeypatc
 
 
 def _alive(pid: int) -> bool:
-    import os
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+    import psutil
+
+    return psutil.pid_exists(pid)
 
 
 def test_install_slot_is_held_across_processes(tmp_path):
@@ -256,10 +254,10 @@ def test_install_slot_is_held_across_processes(tmp_path):
     key = install.claim()
     try:
         probe = subprocess.run([sys.executable, "-c",
-            "import fcntl,sys\nfh=open(sys.argv[1],'a+')\n"
+            "import fcntl,sys\nfh=open(sys.argv[1],'a+',encoding='utf-8')\n"
             "try:\n    fcntl.flock(fh.fileno(), fcntl.LOCK_EX|fcntl.LOCK_NB); print('free')\n"
             "except OSError:\n    print('held')", str(runtime.state_dir() / "install.lock")],
-            capture_output=True, text=True)
+            capture_output=True, text=True, check=False)
         assert probe.stdout.strip() == "held", probe
     finally:
         install.release(key)

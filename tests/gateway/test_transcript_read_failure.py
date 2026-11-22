@@ -28,32 +28,31 @@ import pytest
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from gateway.session_transcript import TranscriptReadError
-
+from persistence.core.errors import CorruptStoreError
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 @pytest.fixture
 def store(tmp_path):
     return SessionStore(sessions_dir=tmp_path / "gw", config=GatewayConfig())
-
 
 # --------------------------------------------------------------------------
 # A. read failure != empty transcript (landed on main via #100910; kept as
 #    the contract the slash-command handlers below rely on)
 # --------------------------------------------------------------------------
 
-
 class TestLoadTranscriptReadFailure:
     def test_read_failure_raises_instead_of_returning_empty(self, store, monkeypatch):
-        db = store._db
+        db = store.persistence
         assert db is not None
-        db.create_session("s1", "telegram", session_key="telegram:1")
-        db.append_message("s1", "user", "the conversation we must not forget")
+        seed_session(db, "s1", "telegram", session_key="telegram:1")
+        seed_messages(db, "s1", {"role": "user", "content": "the conversation we must not forget"})
 
-        boom = sqlite3.DatabaseError("database disk image is malformed")
+        boom = CorruptStoreError("database disk image is malformed")
 
         def _raise(*_args, **_kwargs):
             raise boom
 
-        monkeypatch.setattr(db, "get_messages_as_conversation", _raise)
+        monkeypatch.setattr(store.persistence.messages, "read_conversation", _raise)
 
         with pytest.raises(TranscriptReadError) as excinfo:
             store.load_transcript("s1")
@@ -62,9 +61,9 @@ class TestLoadTranscriptReadFailure:
         assert excinfo.value.__cause__ is boom
 
     def test_genuinely_empty_session_still_returns_empty_list(self, store):
-        db = store._db
+        db = store.persistence
         assert db is not None
-        db.create_session("s2", "telegram", session_key="telegram:2")
+        seed_session(db, "s2", "telegram", session_key="telegram:2")
 
         assert store.load_transcript("s2") == []
 
@@ -74,13 +73,11 @@ class TestLoadTranscriptReadFailure:
         store._db = None
         assert store.load_transcript("nope") == []
 
-
 # --------------------------------------------------------------------------
 # B. slash-command handlers surface the failure instead of dying silently.
 #    Before: the handler raised, base.py's dispatch wrapper logged
 #    "Command '/x' dispatch failed" and the user got NO reply at all.
 # --------------------------------------------------------------------------
-
 
 class TestSlashCommandsOnUnreadableTranscript:
 
@@ -91,7 +88,7 @@ class TestSlashCommandsOnUnreadableTranscript:
         so this path raised NameError (#102117 follow-up)."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from gateway.slash_commands_status import HISTORY_UNREADABLE
+        from gateway.slash_commands_status import history_unreadable
         from tests.gateway.test_background_command import _make_event, _make_runner
 
         runner = _make_runner()
@@ -102,5 +99,4 @@ class TestSlashCommandsOnUnreadableTranscript:
         runner._async_session_store = store
 
         result = await runner._handle_btw_command(_make_event(text="/btw what?"))
-        assert result == HISTORY_UNREADABLE
-
+        assert result == history_unreadable()

@@ -11,7 +11,6 @@ import logging
 import agent.auxiliary_client as ac
 from agent.auxiliary_client import resolve_provider_client
 
-
 class TestUnknownProviderDedup:
     def setup_method(self):
         ac._LOGGED_UNKNOWN_PROVIDER_KEYS.clear()
@@ -41,14 +40,12 @@ class TestUnknownProviderDedup:
         # Three calls, one log line — dedup suppressed the repeats.
         assert len(recs) == 1
 
-
-
 class TestUnhandledAuthTypeDedup:
     def setup_method(self):
         ac._LOGGED_UNHANDLED_AUTHTYPE_KEYS.clear()
 
     def test_unhandled_auth_type_logs_debug_once_not_warning(self, caplog, monkeypatch):
-        import hermes_cli.auth as auth
+        from hermes_cli import auth
         from hermes_cli.auth import ProviderConfig
 
         # A registered provider whose auth_type matches no handled branch →
@@ -75,5 +72,3 @@ class TestUnhandledAuthTypeDedup:
         assert len(recs) == 1
         assert recs[0].levelno == logging.DEBUG
         assert not any(r.levelno >= logging.WARNING for r in recs)
-
-

@@ -23,10 +23,12 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from hermes_state import SessionDB
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _build_agent_with_db(db: SessionDB, session_id: str, **compressor_kwargs):
+def _build_agent_with_db(db, session_id: str, **compressor_kwargs):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
@@ -35,7 +37,7 @@ def _build_agent_with_db(db: SessionDB, session_id: str, **compressor_kwargs):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -66,6 +68,24 @@ def _build_agent_with_db(db: SessionDB, session_id: str, **compressor_kwargs):
     return agent
 
 
+def _timeout_after_entry(monkeypatch, started):
+    """Start the real timeout wait after the engine reached its blocking point."""
+    from agent import conversation_compression as cc
+
+    wait = cc._await_worker_within_budget
+    futures = []
+
+    def after_entry(future, fence, **_kwargs):
+        futures.append(future)
+        assert started.wait(timeout=10)
+        fence.touch_progress()
+        return wait(future, fence, idle=0.1, ceiling=1.0, wait_started=time.monotonic())
+
+    monkeypatch.setattr(cc, "resolve_context_compression_timeouts", lambda cfg=None: (30, 60))
+    monkeypatch.setattr(cc, "_await_worker_within_budget", after_entry)
+    return futures
+
+
 def test_f3_mutating_engine_cannot_touch_live_transcript_after_timeout(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -74,21 +94,16 @@ def test_f3_mutating_engine_cannot_touch_live_transcript_after_timeout(
     Byte-identity is asserted WHILE the worker is still blocked inside the
     engine; the worker is released only after those assertions.
     """
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     session_id = "F3_ISOLATION"
-    db.create_session(session_id, source="cli")
+    seed_session(db, session_id, "cli")
     agent = _build_agent_with_db(db, session_id)
     agent._cached_system_prompt = "sys"
-
-    # Fast host timeout for the owned wrapper.
-    monkeypatch.setattr(
-        "agent.conversation_compression.resolve_context_compression_timeouts",
-        lambda cfg=None: (0.6, 1.2),
-    )
 
     engine_started = threading.Event()
     release_engine = threading.Event()
     mutated_lists = []
+    futures = _timeout_after_entry(monkeypatch, engine_started)
 
     def _mutating_engine(msgs, **_kwargs):
         # Legacy/plugin-engine contract: mutate the input list IN PLACE.
@@ -122,10 +137,12 @@ def test_f3_mutating_engine_cannot_touch_live_transcript_after_timeout(
         assert live == baseline
     finally:
         release_engine.set()
+        for future in futures:
+            future.result(timeout=10)
     # After the late worker finishes, the live transcript must STILL be
     # untouched (publication only on admitted commit — which was cancelled).
     deadline = time.time() + 5
-    while time.time() < deadline and db.get_compression_lock_holder(session_id):
+    while time.time() < deadline and db.coordination.get_compression_lock_holder(session_id=session_id):
         time.sleep(0.02)
     assert live == baseline
 
@@ -152,19 +169,15 @@ def test_host_timeout_releases_pool_slot_while_protected_provider_is_still_block
     with cc._compress_admission_lock:
         assert cc._compress_admitted_count == 0
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     session_id = "F3_PROVIDER_OWNER_RELEASE"
-    db.create_session(session_id, source="cli")
+    seed_session(db, session_id, "cli")
     agent = _build_agent_with_db(db, session_id)
     agent._cached_system_prompt = "sys"
-    monkeypatch.setattr(
-        "agent.conversation_compression.resolve_context_compression_timeouts",
-        # Allow provider-thread startup under the parallel runner before timing out.
-        lambda cfg=None: (2.0, 4.0),
-    )
 
     provider_started = threading.Event()
     release_provider = threading.Event()
+    futures = _timeout_after_entry(monkeypatch, provider_started)
 
     def _blocked_provider(_kwargs):
         provider_started.set()
@@ -183,10 +196,10 @@ def test_host_timeout_releases_pool_slot_while_protected_provider_is_still_block
             live, "sys", approx_tokens=120_000
         )
         assert returned is live
-        assert provider_started.wait(timeout=5)
+        assert provider_started.wait(timeout=10)
         assert not release_provider.is_set()
 
-        deadline = time.time() + 5
+        deadline = time.time() + 10
         while time.time() < deadline:
             with cc._compress_admission_lock:
                 if cc._compress_admitted_count == 0:
@@ -199,6 +212,8 @@ def test_host_timeout_releases_pool_slot_while_protected_provider_is_still_block
             )
     finally:
         release_provider.set()
+        for future in futures:
+            future.result(timeout=10)
         deadline = time.time() + 5
         while time.time() < deadline:
             with cc._compress_admission_lock:
@@ -223,10 +238,10 @@ def test_f4_five_step_stale_holder_regression(tmp_path: Path) -> None:
         run_compress_context_with_progress_timeout,
     )
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     session_id = "F4_FIVE_STEP"
-    db.create_session(session_id, source="telegram")
-    db.append_message(session_id, "user", "original durable")
+    seed_session(db, session_id, "telegram")
+    seed_messages(db, session_id, {"role": "user", "content": "original durable"})
 
     agent = _build_agent_with_db(db, session_id)
     agent.compression_in_place = True
@@ -276,7 +291,7 @@ def test_f4_five_step_stale_holder_regression(tmp_path: Path) -> None:
     deadline = time.time() + 5
     acquired = False
     while time.time() < deadline:
-        if db.try_acquire_compression_lock(session_id, new_holder, ttl_seconds=60):
+        if db.coordination.try_acquire_compression_lock(session_id=session_id, holder=new_holder, ttl_seconds=60):
             acquired = True
             break
         time.sleep(0.02)
@@ -285,16 +300,16 @@ def test_f4_five_step_stale_holder_regression(tmp_path: Path) -> None:
         "the timed-out worker is still blocked in its summary"
     )
     assert not release_summary.is_set()  # provably still step-3 state
-    assert db.get_compression_lock_holder(session_id) == new_holder
+    assert db.coordination.get_compression_lock_holder(session_id=session_id) == new_holder
 
-    pre_release_rows = db.get_messages_as_conversation(session_id)
+    pre_release_rows = conversation(db, session_id)
 
     # Step 4: release the old worker.
     release_summary.set()
     # Wait for the late worker to fully unwind (it must NOT touch the lock).
     deadline = time.time() + 5
     while time.time() < deadline:
-        if db.get_compression_lock_holder(session_id) != new_holder:
+        if db.coordination.get_compression_lock_holder(session_id=session_id) != new_holder:
             break  # would be a failure — checked below
         if cooldown_cleared:
             break
@@ -306,15 +321,15 @@ def test_f4_five_step_stale_holder_regression(tmp_path: Path) -> None:
         "late cancelled worker cleared the compression failure cooldown"
     )
     # Step 5b: it cannot release the NEW holder's lease (holder-qualified).
-    assert db.get_compression_lock_holder(session_id) == new_holder, (
+    assert db.coordination.get_compression_lock_holder(session_id=session_id) == new_holder, (
         "late worker released the replacement holder's durable lease (ABA)"
     )
     # Step 5c: it cannot publish stale state — transcript unchanged, no
     # in-place compaction landed, session id did not rotate.
-    post_release_rows = db.get_messages_as_conversation(session_id)
+    post_release_rows = conversation(db, session_id)
     assert post_release_rows == pre_release_rows
     assert agent.session_id == session_id
-    db.release_compression_lock(session_id, new_holder)
+    db.coordination.release_compression_lock(session_id=session_id, holder=new_holder)
 
 
 def test_f5_session_contextvar_rebound_after_rotation(
@@ -327,9 +342,9 @@ def test_f5_session_contextvar_rebound_after_rotation(
         set_session_vars,
     )
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     parent_sid = "F5_CTXVAR_PARENT"
-    db.create_session(parent_sid, source="telegram")
+    seed_session(db, parent_sid, "telegram")
     agent = _build_agent_with_db(db, parent_sid)
     agent.compression_in_place = False  # rotation mode
     agent._cached_system_prompt = "sys"

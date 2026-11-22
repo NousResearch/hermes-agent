@@ -11,7 +11,7 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 from tools import mcp_tool_config
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_delete_profile_after_stdio_probe(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     home = tmp_path / ".hermes"

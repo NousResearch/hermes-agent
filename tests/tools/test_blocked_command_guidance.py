@@ -23,14 +23,16 @@ class TestParserLimitRecovery:
         assert saved.exists()
         body = saved.read_text()
         assert cmd in body
-        assert body.startswith("#!/bin/bash")
-        assert f"bash {saved}" in r["message"]
+        assert body.startswith("#!/usr/bin/env bash")
+        # `bash <saved>` would run a script the guard never read: the hint must not offer it.
+        assert f"bash {saved}" not in r["message"] and f"bash {saved}" not in body
+        assert "Do not run the payload from a file" in r["message"]
 
-    def test_save_failure_falls_back_to_manual_recipe(self, monkeypatch):
+    def test_save_failure_still_gives_the_recovery_steps(self, monkeypatch):
         monkeypatch.setattr(approval_floors, "_save_blocked_payload", lambda c: None)
         r = _hardline_block_result(_PARSER_LIMIT_DESCRIPTION, "python3 -c 'x'")
-        assert "write_file" in r["message"]
-        assert "bash /path/script.sh" in r["message"]
+        assert "RECOVERY" in r["message"] and "smaller commands" in r["message"]
+        assert "bash /path/script.sh" not in r["message"] and "write_file" not in r["message"]
 
 
 

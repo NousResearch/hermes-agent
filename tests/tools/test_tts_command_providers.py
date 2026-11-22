@@ -117,17 +117,21 @@ class TestCommandTtsEnv:
 
         class Proc:
             returncode = 0
+            pid = 4242
             stdout = _Stream()
             stderr = _Stream()
 
             def wait(self, timeout=None):
                 return 0
 
+            def poll(self):
+                return 0
+
         def fake_popen(command, **kwargs):
             captured["env"] = kwargs["env"]
             return Proc()
 
-        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("tools.tts_command_provider.spawn_owned", fake_popen)
 
         result = _run_command_tts("echo hi", timeout=1)
 
@@ -138,6 +142,23 @@ class TestCommandTtsEnv:
         assert "OPENAI_API_KEY" not in env
         assert env["MY_SAFE_TTS_VAR"] == "keep"
 
+
+    def test_env_passthrough_forwards_the_served_profiles_value(self, monkeypatch):
+        """Under the multiplexer os.environ holds the launch profile's .env; a served profile's
+        command provider must get its own declared key, never the launch profile's."""
+        from agent import secret_scope as ss
+
+        monkeypatch.setenv("MY_TTS_TOKEN", "tok-launch")
+        command = _shell_command(sys.executable, "-c", "import os; print(os.environ.get('MY_TTS_TOKEN'))")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"MY_TTS_TOKEN": "tok-work"})
+        try:
+            result = _run_command_tts(command, timeout=30, env_passthrough=["MY_TTS_TOKEN"])
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        assert result.stdout.strip() == "tok-work"
 
 class TestGetNamedProviderConfig:
     def test_providers_block_wins(self):
@@ -304,6 +325,73 @@ class TestRenderCommandTtsTemplate:
         )
         assert '"bob\'s voice"' in rendered
 
+    def test_backslash_adjacent_placeholder_stays_literal(self):
+        """A placeholder directly preceded by a backslash is never substituted (#138361).
+
+        Substituting would splice the template's backslash into the emitted escape
+        sequence and un-escape the value, so the renderer must treat it as literal."""
+        placeholders = {
+            "input_path": "$(echo PWNED)", "text_path": "/tmp/in.txt",
+            "output_path": "/tmp/out.mp3", "format": "mp3",
+            "voice": "", "model": "", "speed": "1.0",
+        }
+        for template in (r'echo "\{input_path}"', r"echo \{input_path}"):
+            rendered = _render_command_tts_template(template, placeholders, os_name="posix")
+            assert "\\{input_path}" in rendered
+            assert "$(echo PWNED)" not in rendered
+
+    @pytest.mark.platforms("posix")  # POSIX sh execution proof
+    def test_backslash_adjacent_placeholder_cannot_resurrect_substitution(self):
+        """End-to-end on /bin/sh: the old renderer emitted "\\$(...)" — a double
+        backslash that un-escapes the value — so command substitution executed."""
+        rendered = _render_command_tts_template(
+            r'echo "\{input_path}"',
+            {"input_path": "$(echo PWNED)"},
+        )
+        proc = subprocess.run(
+            ["/bin/sh", "-c", rendered], capture_output=True, text=True, timeout=10,
+            check=False,
+        )
+        assert "PWNED" not in proc.stdout
+
+
+    @pytest.mark.parametrize("value", [
+        r"C:\tmp\a&b.mp3", r"C:\tmp\a|b.mp3", r"C:\tmp\a^b.mp3", r"C:\tmp\a>b.mp3",
+        r"C:\tmp\%TEMP%.mp3", r"C:\tmp\a!b.mp3", r'C:\tmp\a"b.mp3', "a\nb",
+        r"C:\tmp\a<b.mp3", "a\rb",
+    ])
+    @pytest.mark.parametrize("template", ["tts --out {output_path}", 'tts --out "{output_path}"'])
+    def test_windows_refuses_cmd_metacharacters_in_values(self, template, value):
+        """cmd.exe has no reliable escape for these under ``cmd /c`` (#138361): fail closed."""
+        with pytest.raises(ValueError, match="cmd.exe"):
+            _render_command_tts_template(template, {"output_path": value}, os_name="nt")
+
+    def test_windows_substitutes_a_placeholder_after_a_path_backslash(self):
+        rendered = _render_command_tts_template(
+            r"piper -m C:\voices\{voice}.onnx --out {output_path}",
+            {"voice": "en_US-amy", "output_path": r"C:\out.wav"}, os_name="nt")
+        assert r"C:\voices\en_US-amy.onnx" in rendered
+        assert "{voice}" not in rendered
+
+    def test_posix_keeps_a_placeholder_after_a_backslash_literal(self):
+        rendered = _render_command_tts_template(r"echo \{voice}", {"voice": "x"}, os_name="posix")
+        assert rendered == r"echo \{voice}"
+
+    def test_windows_still_quotes_plain_paths(self):
+        rendered = _render_command_tts_template(
+            "tts --out {output_path}", {"output_path": r"C:\Users\Me\My Audio\out.mp3"}, os_name="nt")
+        assert rendered == r'tts --out "C:\Users\Me\My Audio\out.mp3"'
+
+    def test_windows_double_quoted_value_is_not_posix_escaped(self):
+        rendered = _render_command_tts_template(
+            'tts --out "{output_path}" --dir "{voice}"',
+            {"output_path": r"C:\Users\a$b`c\out.mp3", "voice": "C:\\voices dir\\"}, os_name="nt")
+        assert rendered == r'tts --out "C:\Users\a$b`c\out.mp3" --dir "C:\voices dir\\"'
+
+    def test_posix_keeps_quoting_cmd_metacharacters(self):
+        rendered = _render_command_tts_template(
+            "tts --out {output_path}", {"output_path": "/tmp/a&b%c!.mp3"}, os_name="posix")
+        assert rendered == "tts --out '/tmp/a&b%c!.mp3'"
 
 # ---------------------------------------------------------------------------
 # _run_command_tts idle/progress timeout behavior
@@ -351,11 +439,29 @@ class TestGenerateCommandTts:
         assert result == str(out)
         assert out.exists()
         # The command copied the input text file over to output, so it
-        # contains the original UTF-8 text.
-        assert out.read_text(encoding="utf-8") == "hello world"
+        # contains the original UTF-8 text. utf-8-sig reads BOM'd and
+        # BOM-less alike (repo policy: reads utf-8-sig).
+        assert out.read_text(encoding="utf-8-sig") == "hello world"
+
+    @pytest.mark.platforms("posix")  # POSIX sh execution proof
+    @pytest.mark.parametrize("template", [
+        "sh -c 'cp {input_path} {output_path}'",
+        'sh -c "cp {input_path} {output_path}"',
+        "sh -c 'cp {input_path} `echo {output_path}`'",
+    ])
+    def test_model_chosen_output_path_never_reaches_the_shell(self, tmp_path, template):
+        """A template that re-parses its placeholders (``sh -c '...'``) cannot be protected by
+        quoting, so the caller's ``output_path`` is never put in the command: the command writes
+        a Hermes-named file that is moved to the requested path afterwards."""
+        marker = tmp_path / "pwned"
+        out = tmp_path / f"x$(touch {marker}).mp3"
+        result = _generate_command_tts("hello world", str(out), "nested-sh", {"command": template}, {})
+        assert not marker.exists()
+        assert result == str(out)
+        assert out.read_text(encoding="utf-8-sig") == "hello world"
 
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX-only timeout semantics")
+    @pytest.mark.platforms("posix")  # POSIX-only timeout semantics
     def test_timeout_raises_runtime(self, tmp_path):
         config = {
             "command": f'"{sys.executable}" -c "import time; time.sleep(10)"',
@@ -402,6 +508,18 @@ class TestTextToSpeechToolWithCommandProvider:
         assert data["provider"] == "py-copy"
         assert data["voice_compatible"] is False
         assert Path(data["file_path"]).exists()
+
+    @pytest.mark.platforms("posix")  # POSIX sh execution proof
+    def test_tool_output_path_with_shell_syntax_does_not_execute(self, tmp_path):
+        marker = tmp_path / "pwned"
+        cfg = {"provider": "nested", "providers": {"nested": {
+            "type": "command", "command": "sh -c 'cp {input_path} {output_path}'", "output_format": "mp3"}}}
+        out = tmp_path / f"x$(touch {marker}).mp3"
+        with patch("tools.tts_tool._load_tts_config", return_value=cfg):
+            data = json.loads(text_to_speech_tool(text="hi", output_path=str(out)))
+        assert not marker.exists()
+        assert data["success"] is True, data
+        assert data["file_path"] == str(out) and out.exists()
 
     def test_voice_compatible_opt_in_toggles_flag(self, tmp_path):
         """voice_compatible=true is reflected in the response when the
@@ -469,17 +587,21 @@ class TestCommandTtsEnvPassthrough:
 
         class Proc:
             returncode = 0
+            pid = 4242
             stdout = _Stream()
             stderr = _Stream()
 
             def wait(self, timeout=None):
                 return 0
 
+            def poll(self):
+                return 0
+
         def fake_popen(command, **kwargs):
             captured["env"] = kwargs["env"]
             return Proc()
 
-        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("tools.tts_command_provider.spawn_owned", fake_popen)
 
         result = _run_command_tts(
             "echo hi", timeout=1, env_passthrough=["MY_TTS_API_KEY"]
@@ -498,3 +620,154 @@ class TestCommandTtsEnvPassthrough:
         ) == ["A_KEY", "B_KEY"]
         assert _command_provider_env_passthrough({}) == []
         assert _command_provider_env_passthrough({"env_passthrough": "A_KEY"}) == []
+
+    def test_allowlist_refuses_hermes_provider_credentials(self):
+        """Provider config cannot smuggle Hermes-managed credentials back into the
+        scrubbed command child env (#138361, GHSA-rhgp-j443-p4rf policy)."""
+        from tools.tts_command_provider import command_env_passthrough as _command_provider_env_passthrough
+
+        assert _command_provider_env_passthrough(
+            {"env_passthrough": ["MY_TTS_API_KEY", "OPENAI_API_KEY", "anthropic_api_key"]}
+        ) == ["MY_TTS_API_KEY"]
+
+
+class TestCommandProviderSpawnGroupKwargs:
+    """The command-provider shell's process-group/no-console spawn kwargs.
+
+    On Windows the spawn routes through ``cmd.exe`` (``shell=True``); without
+    ``CREATE_NO_WINDOW`` that child allocates a visible console window flash on
+    every provider run from a windowless host (pythonw gateway, TUI, Desktop).
+    The platform branch is keyed on ``os.name``, so the pure helper takes the
+    platform as data (assertable on every host) and the spawn-site tests run
+    only where the branch is real (``platforms`` gating).
+    """
+
+    def test_nt_branch_hides_the_console_window(self, monkeypatch):
+        from hermes_cli import _subprocess_compat
+        from tools.tts_command_provider import provider_popen_group_kwargs
+
+        # Pin the compat module's host probe so the nt data branch is assertable
+        # on every host (the helper caches IS_WINDOWS from the real platform).
+        monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+        kwargs = provider_popen_group_kwargs("nt")
+        # CREATE_NEW_PROCESS_GROUP (0x200) | CREATE_NO_WINDOW (0x08000000):
+        # group so the idle-timeout kill can signal the tree, no window so
+        # the cmd.exe shim doesn't flash a console.
+        assert kwargs["creationflags"] == 0x08000000 | 0x00000200
+        assert "start_new_session" not in kwargs
+
+    def test_nt_branch_matches_the_shared_detach_bundle(self, monkeypatch):
+        from hermes_cli import _subprocess_compat
+        from tools.tts_command_provider import provider_popen_group_kwargs
+
+        monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+        assert provider_popen_group_kwargs("nt")["creationflags"] == (
+            _subprocess_compat.windows_detach_flags_without_breakaway()
+        )
+
+    def test_posix_branch_leaves_the_group_to_spawn_owned(self):
+        from tools.tts_command_provider import provider_popen_group_kwargs
+
+        # spawn_owned makes the child a session/group leader (and ties the group to our life).
+        assert provider_popen_group_kwargs("posix") == {}
+
+    @pytest.mark.platforms("windows")
+    def test_popen_kwargs_hide_console_window_windows(self, monkeypatch):
+        captured = {}
+
+        class _Stream:
+            def read(self, size):
+                return ""
+
+        class Proc:
+            returncode = 0
+            pid = 4242
+            stdout = _Stream()
+            stderr = _Stream()
+
+            def wait(self, timeout=None):
+                return 0
+
+            def poll(self):
+                return 0
+
+        def fake_popen(command, **kwargs):
+            captured.update(kwargs)
+            return Proc()
+
+        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
+
+        result = _run_command_tts("echo hi", timeout=1)
+
+        assert result.returncode == 0
+        # Own process group (tree-kill on idle timeout) AND a hidden console.
+        assert captured["creationflags"] & 0x08000000, "CREATE_NO_WINDOW missing"
+        assert captured["creationflags"] & 0x00000200, "CREATE_NEW_PROCESS_GROUP missing"
+        assert "start_new_session" not in captured
+
+    @pytest.mark.platforms("posix")
+    def test_posix_spawn_is_owned_and_has_no_console_flags(self, monkeypatch):
+        captured = {}
+
+        class _Stream:
+            def read(self, size):
+                return ""
+
+        class Proc:
+            returncode = 0
+            pid = 4242
+            stdout = _Stream()
+            stderr = _Stream()
+
+            def wait(self, timeout=None):
+                return 0
+
+            def poll(self):
+                return 0
+
+        def fake_spawn_owned(command, *, purpose, **kwargs):
+            captured.update(kwargs, purpose=purpose)
+            return Proc()
+
+        monkeypatch.setattr("tools.tts_command_provider.spawn_owned", fake_spawn_owned)
+
+        result = _run_command_tts("echo hi", timeout=1)
+
+        assert result.returncode == 0
+        assert captured["purpose"] == "tts-command"
+        assert "creationflags" not in captured
+
+
+class TestIdleKillConsoleHidden:
+    """The idle-timeout process-tree kill must not flash a console either.
+
+    On Windows ``terminate_command_process_tree`` shells out to ``taskkill``
+    (a console-subprocess) without ``CREATE_NO_WINDOW`` — the same bug class
+    as the provider spawn itself, one code path later.
+    """
+
+    @pytest.mark.platforms("windows")
+    def test_idle_kill_taskkill_hides_console_windows(self, monkeypatch):
+        import tools.tts_command_provider as mod
+
+        runs = []
+        real_run = subprocess.run
+
+        def fake_run(cmd, **kwargs):
+            if "taskkill" in cmd:
+                runs.append(kwargs)
+            return real_run(["cmd", "/c", "exit", "0"], **{k: v for k, v in kwargs.items() if k != "capture_output"})
+
+        class Proc:
+            pid = 4242
+            returncode = 0
+
+            def poll(self):
+                return None
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        mod.terminate_command_process_tree(Proc())
+
+        assert runs, "taskkill was not invoked"
+        assert runs[0].get("creationflags", 0) & 0x08000000, "CREATE_NO_WINDOW missing on taskkill"

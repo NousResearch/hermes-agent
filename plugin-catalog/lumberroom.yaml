@@ -1,0 +1,23 @@
+name: lumberroom
+repo: https://github.com/lumberroom/lumberroom-hermes
+sha: 87c697f31e0015c64900c2cc40f88beb3ead4a11
+version: "1.0.2"
+description: lumberroom memory provider. One durable store shared with every agent you use, recalled on
+  every turn and written through the engine's own memory_write. Self-hosted open-source engine or
+  lumberroom.cloud; OAuth or a static token. Maintained by the lumberroom team. Disclosure — when
+  active, every non-trivial user message (first 1,000 characters) and the absolute git-root path of
+  the working directory are sent on each turn to the configured lumberroom engine, which defaults to
+  https://mcp.lumberroom.cloud (operated by Cybersapien Technologies, India) unless base_url names a
+  self-hosted engine; the model is instructed to store decisions, preferences and facts there through
+  memory_write, the engine's live tool descriptions and server instructions are injected into the
+  system prompt each session, and setup switches off Hermes' built-in MEMORY.md/USER.md store.
+maintainer: lumberroom
+tier: community
+category: memory
+requires_hermes: ">=0.21.3"
+docs_url: https://github.com/lumberroom/lumberroom-hermes#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

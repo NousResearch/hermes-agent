@@ -22,6 +22,7 @@ from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_swarm as ks
+from hermes_cli import kanban_workflow
 from hermes_cli.kanban_output import (
     _ATTACHMENT_FIELDS, _RUNS_RUN_FIELDS, _SHOW_RUN_FIELDS, _bulk_apply, _err,
     _fmt_counts, _fmt_task_line, _fmt_ts, _json_out, _obj_dict, _print_json,
@@ -31,7 +32,7 @@ from hermes_cli.kanban_boards import _dispatch_boards
 from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
 )
-from hermes_cli.kanban_parser import build_parser  # noqa: F401  (re-exported: hermes_cli.main, run_slash)
+from hermes_cli.kanban_parser import build_parser
 
 
 # --- Flag parsing helpers ---
@@ -340,7 +341,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
         return _err("kanban: --body and --body-file are mutually exclusive", 2)
     if body_file is not None:
         try:
-            body = sys.stdin.read() if body_file == "-" else Path(body_file).read_text(encoding="utf-8")
+            body = sys.stdin.read() if body_file == "-" else Path(body_file).read_text(encoding="utf-8-sig")
         except OSError as exc:
             return _err(f"kanban: --body-file: {exc}", 2)
 
@@ -1139,7 +1140,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     if _json_out(args, stats):
         return 0
     print("By status:")
-    for k in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
+    for k in kanban_workflow.DEFAULT_WORKFLOW.keys():
         print(f"  {k:8s}  {stats['by_status'].get(k, 0)}")
     if stats["by_assignee"]:
         print("\nBy assignee:")
@@ -1151,6 +1152,23 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def _caller_identity_for_target(platform: str, chat_id: str, thread_id, user_id, user_id_alt) -> tuple:
+    """``(user_id, user_id_alt)`` for a subscription, the calling gateway session's sender filled
+    in when the target IS that session's chat and no id was given. An agent running this command
+    from a group chat omits ``--user-id``; under ``group_sessions_per_user`` the wake would then key
+    a second, participant-less session (#147522). Another chat's (or topic's) subscription is
+    never stamped with the caller's identity."""
+    if user_id or user_id_alt:  # an explicit recipient is never paired with the caller's other id
+        return user_id, user_id_alt
+    from gateway.session_context import get_session_env
+    if (str(get_session_env("HERMES_SESSION_PLATFORM", "")).lower() != str(platform or "").lower()
+            or str(get_session_env("HERMES_SESSION_CHAT_ID", "")) != str(chat_id or "")
+            or str(get_session_env("HERMES_SESSION_THREAD_ID", "")) != str(thread_id or "")):
+        return user_id, user_id_alt
+    return (get_session_env("HERMES_SESSION_USER_ID", "") or None,
+            get_session_env("HERMES_SESSION_USER_ID_ALT", "") or None)
+
+
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
     delivery_metadata = {
         key: value
@@ -1160,19 +1178,22 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
         )
         if value
     }
+    from hermes_cli.kanban_notify_thread import resolve_subscribe_thread
     with kbc.connect_closing() as conn:
         if kb.get_task(conn, args.task_id) is None:
             return _err(f"no such task: {args.task_id}")
+        thread_id = resolve_subscribe_thread(conn, args)
+        user_id, user_id_alt = _caller_identity_for_target(
+            args.platform, args.chat_id, thread_id, args.user_id, getattr(args, "user_id_alt", None))
         kbn.add_notify_sub(
             conn, task_id=args.task_id, platform=args.platform, chat_id=args.chat_id,
-            chat_type=args.chat_type, thread_id=args.thread_id, user_id=args.user_id,
-            user_id_alt=getattr(args, "user_id_alt", None),
+            chat_type=args.chat_type, thread_id=thread_id, user_id=user_id,
+            user_id_alt=user_id_alt,
             notifier_profile=args.notifier_profile or _profile_author(),
             delivery_mode=getattr(args, "delivery_mode", None),
             delivery_metadata=delivery_metadata or None,
         )
-    print(f"Subscribed {args.platform}:{args.chat_id}" + (f":{args.thread_id}" if args.thread_id else "")
-          + f" to {args.task_id}")
+    print(f"Subscribed {args.platform}:{args.chat_id}" + (f":{thread_id}" if thread_id else "") + f" to {args.task_id}")
     return 0
 
 
@@ -1198,9 +1219,10 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_unsubscribe(args: argparse.Namespace) -> int:
+    from hermes_cli.kanban_notify_thread import resolve_unsubscribe_thread
     with kbc.connect_closing() as conn:
         ok = kbn.remove_notify_sub(conn, task_id=args.task_id, platform=args.platform, chat_id=args.chat_id,
-                                  thread_id=args.thread_id)
+                                  thread_id=resolve_unsubscribe_thread(conn, args))
     return _ok_or_err(ok, "(no such subscription)", f"Unsubscribed from {args.task_id}")
 
 
@@ -1371,9 +1393,20 @@ def run_slash(rest: str) -> str:
     stdout/stderr. Shared by the interactive CLI and the gateway so formatting is identical."""
     import io
 
-    tokens = shlex.split(rest) if rest and rest.strip() else []
-    # Bare ``/kanban`` / ``help`` / ``-h``: curated short block, not argparse's full tree (garbage
-    # in a chat bubble). ``/kanban foo -h`` still works.
+    # Non-posix split (Windows) keeps backslashes as path separators but
+    # leaves quote characters in the tokens — strip a fully wrapping pair
+    # so `"my task"` reaches argparse as `my task`, not `"my task"`.
+    tokens = []
+    if rest and rest.strip():
+        for tok in shlex.split(rest, posix=os.name == "posix"):
+            if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in ("'", '"'):
+                tok = tok[1:-1]
+            tokens.append(tok)
+
+    # Bare ``/kanban`` or ``/kanban help`` / ``--help`` / ``-h`` / ``?``:
+    # show the curated short-help block instead of dumping argparse's full
+    # usage tree (which is enormous and reads as garbage in a chat
+    # bubble).  Per-subcommand help still works via ``/kanban foo -h``.
     if not tokens or tokens[0] in {"help", "--help", "-h", "?"}:
         return _SLASH_KANBAN_HELP
     # build_parser() needs a subparsers action to attach to: build a throwaway one and drive
@@ -1422,11 +1455,3 @@ def run_slash(rest: str) -> str:
     if err and out:
         return f"{out}\n{err}"
     return err if err else (out or "(no output)")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Any  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

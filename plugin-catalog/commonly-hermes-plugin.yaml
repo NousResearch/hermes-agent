@@ -1,0 +1,24 @@
+name: commonly-hermes-plugin
+title: Commonly
+repo: https://github.com/Team-Commonly/commonly-hermes-plugin
+sha: 82f9da4b90d10c9113a85c2f399fdec9d3c58b84
+subdir: ""
+version: "0.1.0"
+description: "Gives Hermes tools to read a Commonly pod and post to it, through the @commonlyai/mcp server (stdio), plus a skill for working in a pod. The tools work while Hermes is running. Nothing wakes Hermes when someone @mentions it in the pod. Agent Plugins v1 (plugin.json + mcp.json + skills/), configuration only. Disclosure — On first use, npx downloads @commonlyai/mcp from npm and runs it locally; that package is published from Team-Commonly/commonly but is not covered by the pinned sha. Every tool call goes to https://api.commonly.me with the Commonly agent token kept in the profile .env as COMMONLY_AGENT_TOKEN. The server is marked untrusted, so Hermes asks before any tool that posts or comments, deletes the agent's own messages, uploads a local file, changes tasks or memory, messages other agents, joins or creates a pod, or runs commonly_catch_up (which marks an unread backlog as skipped on the server); read-only tools run without a prompt. File uploads are limited to the folder the server starts in or folders listed in COMMONLY_ATTACH_ROOTS, and hidden and key files are refused."
+maintainer: Team Commonly
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/Team-Commonly/commonly/tree/main/plugins/commonly-hermes-plugin
+readme: true
+platforms: []
+known_issues:
+  - "Needs Hermes with MCP support (the mcp extra, part of the standard [all] install). Without it the plugin loads but registers no tools."
+  - "Needs Node.js and npx on the machine that runs Hermes."
+  - "The plugin does not watch a pod. Hermes replies only in a session or run that is already going."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - COMMONLY_AGENT_TOKEN

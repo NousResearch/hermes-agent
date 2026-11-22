@@ -42,14 +42,55 @@ const config: Config = {
   ],
 
   plugins: [
-    // Static /plugins/<name> and /plugins/by/<author> pages generated from the catalog JSON.
-    './plugins/plugin-catalog-pages',
     [
       '@docusaurus/plugin-client-redirects',
       {
         // Static-host redirects for renamed doc pages (GitHub Pages can't
         // do server-side redirects). Paths are relative to baseUrl (/docs/).
         redirects: [
+          {
+            // Skill pages that moved from bundled/ to optional/ when the skill
+            // graduated (08a7c25eec). The bundled URLs still rank and inbound
+            // links still point here, so keep them working.
+            from: '/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode',
+            to: '/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-opencode',
+          },
+          {
+            from: '/user-guide/skills/bundled/creative/creative-design-md',
+            to: '/user-guide/skills/optional/creative/creative-design-md',
+          },
+          {
+            from: '/user-guide/skills/bundled/media/media-gif-search',
+            to: '/user-guide/skills/optional/media/media-gif-search',
+          },
+          {
+            from: '/user-guide/skills/bundled/media/media-songsee',
+            to: '/user-guide/skills/optional/media/media-songsee',
+          },
+          {
+            from: '/user-guide/skills/bundled/productivity/productivity-box',
+            to: '/user-guide/skills/optional/productivity/productivity-box',
+          },
+          {
+            from: '/user-guide/skills/bundled/research/research-llm-wiki',
+            to: '/user-guide/skills/optional/research/research-llm-wiki',
+          },
+          {
+            from: '/user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring',
+            to: '/user-guide/skills/optional/software-development/software-development-hermes-agent-skill-authoring',
+          },
+          {
+            from: '/user-guide/skills/bundled/software-development/software-development-inspecting-hermes-desktop-dom',
+            to: '/user-guide/skills/optional/software-development/software-development-inspecting-hermes-desktop-dom',
+          },
+          {
+            from: '/user-guide/skills/bundled/software-development/software-development-node-inspect-debugger',
+            to: '/user-guide/skills/optional/software-development/software-development-node-inspect-debugger',
+          },
+          {
+            from: '/user-guide/skills/bundled/software-development/software-development-python-debugpy',
+            to: '/user-guide/skills/optional/software-development/software-development-python-debugpy',
+          },
           {
             // Renamed in #44470 (Automation Blueprints terminology rebrand)
             from: '/guides/automation-templates',
@@ -89,6 +130,12 @@ const config: Config = {
           beforeDefaultRemarkPlugins: [[relativeDocLinks, {siteDir: __dirname}]],
         },
         blog: false,
+        sitemap: {
+          // The public host 308s /docs/plugins/* to /marketplace/* and
+          // robots.txt disallows /docs/search, so neither belongs in the
+          // sitemap; /docs/skills is a redirect to /docs/user-guide/skills.
+          ignorePatterns: ['/docs/plugins/**', '/docs/search', '/docs/skills*'],
+        },
         theme: {
           customCss: './src/css/custom.css',
         },
@@ -127,6 +174,7 @@ const config: Config = {
       logo: {
         alt: 'Hermes Agent',
         src: 'img/logo.png',
+        srcDark: 'img/logo-dark.png',
       },
       items: [
         {
@@ -136,13 +184,8 @@ const config: Config = {
           label: 'Docs',
         },
         {
-          to: '/skills',
-          label: 'Skills',
-          position: 'left',
-        },
-        {
-          to: '/plugins',
-          label: 'Plugins',
+          href: 'https://hermes-agent.nousresearch.com/marketplace',
+          label: 'Marketplace',
           position: 'left',
         },
         {
@@ -195,6 +238,7 @@ const config: Config = {
           title: 'More',
           items: [
             { label: 'Desktop Download', href: 'https://hermes-agent.nousresearch.com/' },
+            { label: 'Compare Hermes Agent', href: 'https://hermes-agent.nousresearch.com/compare' },
             { label: 'GitHub', href: 'https://github.com/NousResearch/hermes-agent' },
             { label: 'Nous Research', href: 'https://nousresearch.com' },
           ],

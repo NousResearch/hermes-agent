@@ -13,7 +13,7 @@ from collections.abc import Mapping, MutableSequence
 from pathlib import Path
 from typing import Any
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_constants import get_hermes_home
 
@@ -53,7 +53,7 @@ def _merge_phrase_mapping(catalog: dict[str, list[str]], section: Mapping[str, A
 
 def _merge_phrase_file(catalog: dict[str, list[str]], path: Path, *, inherited_mode: str | None = None) -> None:
     try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
     except Exception:
         return
     if isinstance(loaded, Mapping):

@@ -28,7 +28,6 @@ will mutate, and is idempotent: a second run finds nothing.
 """
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -50,7 +49,8 @@ class Store:
 
     @property
     def db_path(self) -> Path:
-        return self.home / "state.db"
+        from persistence_assembly import profile_scope, store_location
+        return store_location(profile_scope(home=self.home))
 
 
 @dataclass
@@ -61,13 +61,13 @@ class Finding:
     detail: str
     action: Optional[str] = None      # what --apply does; None = report only
     reason: Optional[str] = None      # why it is report only
-    _fix: Optional[Callable[["_Session"], Dict[str, int]]] = field(default=None, repr=False, compare=False)
+    _fix: Optional[Callable[[_Session], dict[str, int]]] = field(default=None, repr=False, compare=False)
 
     @property
     def repairable(self) -> bool:
         return self._fix is not None
 
-    def as_dict(self) -> Dict[str, Any]:
+    def as_dict(self) -> dict[str, Any]:
         return {"kind": self.kind, "store": self.store, "subject": self.subject, "detail": self.detail,
                 "action": self.action, "reason": self.reason}
 
@@ -77,28 +77,22 @@ class _Session:
 
     def __init__(self, *, read_only: bool) -> None:
         self.read_only = read_only
-        self._dbs: Dict[Path, Any] = {}
+        self._dbs: dict[Path, Any] = {}
 
     def db(self, store: Store):
-        """The store's SessionDB. Read-only runs never create a file: a live profile that has no
-        ``state.db`` yet reads as empty; an apply run opens it for real when a move lands there."""
+        """The store's crossed-profile repair handle. Read-only runs never create a file: a live profile that has
+        no ``state.db`` yet reads as empty; an apply run opens it for real when a move lands there. A backend
+        without the admin capability reads as empty."""
         path = store.db_path
         if path not in self._dbs:
-            if self.read_only:
-                from hermes_state import SessionDB
-                self._dbs[path] = SessionDB(path, read_only=True) if path.exists() else _EMPTY_STORE
-            else:
-                from hermes_state_registry import acquire
-                self._dbs[path] = acquire(path)
+            from persistence.core.admin import AdminUnsupported
+            from persistence_assembly import open_profile_repair, profile_scope
+            repair = (open_profile_repair(profile_scope(home=store.home), read_only=self.read_only)
+                      if path.exists() or not self.read_only else _EMPTY_STORE)
+            self._dbs[path] = _EMPTY_STORE if isinstance(repair, AdminUnsupported) else repair
         return self._dbs[path]
 
     def close(self) -> None:
-        from hermes_state_registry import release_or_close
-        for db in self._dbs.values():
-            if db is _EMPTY_STORE:
-                continue
-            with contextlib.suppress(Exception):
-                release_or_close(db) if not self.read_only else db.close()
         self._dbs.clear()
 
 
@@ -122,7 +116,7 @@ _EMPTY_STORE = _EmptyStore()
 
 # ── enumeration ───────────────────────────────────────────────────────────────
 
-def enumerate_stores() -> List[Store]:
+def enumerate_stores() -> list[Store]:
     """Default root plus every live named profile (a live profile claims its namespace whether or not
     it has written a ``state.db`` yet). The root store owns the routing index: the multiplexer's
     ``_routing_home`` is its launch home, the root."""
@@ -144,7 +138,7 @@ def _gateway_multiplexes(root: Path) -> bool:
         return False
 
 
-def live_gateway_homes(stores: Iterable[Store]) -> List[Tuple[str, int]]:
+def live_gateway_homes(stores: Iterable[Store]) -> list[tuple[str, int]]:
     from gateway.status import live_gateway_pid_for_home
     live = []
     for store in stores:
@@ -157,28 +151,28 @@ def live_gateway_homes(stores: Iterable[Store]) -> List[Tuple[str, int]]:
 # ── scan ──────────────────────────────────────────────────────────────────────
 
 class RepairPlan:
-    def __init__(self, stores: List[Store], *, legacy_main: str = "report") -> None:
+    def __init__(self, stores: list[Store], *, legacy_main: str = "report") -> None:
         if legacy_main not in _LEGACY_MAIN_CHOICES:
             raise ValueError(f"legacy_main must be one of {_LEGACY_MAIN_CHOICES}")
         self.stores = stores
         self.by_profile = {s.profile: s for s in stores}
-        self.claimed: Set[str] = set(self.by_profile)
+        self.claimed: set[str] = set(self.by_profile)
         self.routing_store = next((s for s in stores if s.routing), None)
         self.legacy_main = legacy_main
         self.multiplexes = _gateway_multiplexes(self.routing_store.home) if self.routing_store else False
-        self.findings: List[Finding] = []
-        self._moves: Dict[Tuple[Path, Path], "_MoveBatch"] = {}
+        self.findings: list[Finding] = []
+        self._moves: dict[tuple[Path, Path], _MoveBatch] = {}
 
     # -- helpers --
     def _add(self, finding: Finding) -> None:
         self.findings.append(finding)
 
     @property
-    def repairable(self) -> List[Finding]:
+    def repairable(self) -> list[Finding]:
         return [f for f in self.findings if f.repairable]
 
     # -- scan --
-    def scan(self, session: _Session) -> "RepairPlan":
+    def scan(self, session: _Session) -> RepairPlan:
         for store in self.stores:
             self._scan_sessions(session, store)
             self._scan_topics(session, store)
@@ -192,8 +186,16 @@ class RepairPlan:
     def _scan_sessions(self, session: _Session, store: Store) -> None:
         db = session.db(store)
         crossed = db.find_crossed_profile_sessions(store.profile)
-        moving: Set[str] = set()
+        moving: set[str] = set()
+        held = _ledgered_lineages([r for r in crossed["foreign"] if self._would_move(store, r)])
         for row in crossed["foreign"]:
+            if row["id"] in held:
+                moving.add(row["id"])  # neither relabelled nor severed in place: it is a stray
+                self._add(Finding(
+                    "wrong_store", store.profile, row["id"],
+                    f"key {row['session_key']!r} ({row['message_count']} messages) sits in the "
+                    f"{store.profile} store", reason=held[row["id"]]))
+                continue
             self._plan_foreign_row(store, row, moving)
         for row in crossed["mislabelled"]:
             if row["id"] in moving:
@@ -213,7 +215,13 @@ class RepairPlan:
                 f"{row['parent_profile']!r}", action="sever parent_session_id",
                 _fix=lambda s, st=store, sid=row["id"]: {"severed": s.db(st).sever_crossed_parents([sid])}))
 
-    def _plan_foreign_row(self, store: Store, row: Dict[str, Any], moving: Set[str]) -> None:
+    def _would_move(self, store: Store, row: dict[str, Any]) -> bool:
+        """Mirror of :meth:`_plan_foreign_row`: does the plan copy this row to another store?"""
+        if row["key_profile"] == "default" and store.profile != "default":
+            return self.legacy_main == "move" and self.routing_store is not None
+        return row["key_profile"] in self.claimed
+
+    def _plan_foreign_row(self, store: Store, row: dict[str, Any], moving: set[str]) -> None:
         key_profile, sid = row["key_profile"], row["id"]
         detail = f"key {row['session_key']!r} ({row['message_count']} messages) sits in the {store.profile} store"
         if key_profile == "default" and store.profile != "default":
@@ -230,7 +238,7 @@ class RepairPlan:
             "wrong_store", store.profile, sid, detail, action=f"move to the {key_profile} store",
             _fix=self._move_batch(store, self.by_profile[key_profile]).fix_for(sid)))
 
-    def _plan_legacy_main_row(self, store: Store, row: Dict[str, Any], moving: Set[str]) -> None:
+    def _plan_legacy_main_row(self, store: Store, row: dict[str, Any], moving: set[str]) -> None:
         sid = row["id"]
         detail = (f"legacy default-namespace key {row['session_key']!r} ({row['message_count']} messages) "
                   f"in the {store.profile} store")
@@ -249,7 +257,7 @@ class RepairPlan:
                 reason="either a standalone gateway's own history (--legacy-main rekey) or a default "
                        "chat that leaked in (--legacy-main move); the row cannot say which"))
 
-    def _move_batch(self, src: Store, dst: Store) -> "_MoveBatch":
+    def _move_batch(self, src: Store, dst: Store) -> _MoveBatch:
         return self._moves.setdefault((src.db_path, dst.db_path), _MoveBatch(src, dst))
 
     def _scan_topics(self, session: _Session, store: Store) -> None:
@@ -262,7 +270,7 @@ class RepairPlan:
                 _fix=lambda s, st=store, r=row: s.db(st).relabel_telegram_topic_rows([r])))
 
     def _scan_routing(self, session: _Session, store: Store) -> None:
-        from hermes_state_profile_repair import session_key_profile
+        from persistence.core.keys import session_key_profile
         rows = session.db(store).list_gateway_routing_rows()
         for row in rows:
             key_profile = session_key_profile(row["session_key"])
@@ -290,7 +298,7 @@ class RepairPlan:
                 _fix=lambda s, st=store, r=row, rs=routing_store: self._move_routing_row(s, st, rs, r)))
 
     def _move_routing_row(self, session: _Session, store: Store, routing_store: Store,
-                          row: Dict[str, Any]) -> Dict[str, int]:
+                          row: dict[str, Any]) -> dict[str, int]:
         adopted = session.db(routing_store).insert_gateway_routing_rows_if_absent(
             [(row["scope"], row["session_key"], row["entry_json"], row["updated_at"])])
         deleted = session.db(store).delete_gateway_routing_rows([(row["scope"], row["session_key"])])
@@ -299,14 +307,14 @@ class RepairPlan:
     def _scan_voice_modes(self, session: _Session, store: Store) -> None:
         path = store.home / _VOICE_MODE_FILE
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return
         if not isinstance(data, dict):
             return
         for key in sorted(k for k in data if isinstance(k, str) and k.count(":") == 1):
             platform, chat_id = key.split(":", 1)
-            owners: Set[str] = set()
+            owners: set[str] = set()
             for st in self.stores:
                 owners |= session.db(st).key_profiles_for_chat(platform, chat_id)
             if not owners or "default" in owners:
@@ -325,10 +333,10 @@ class RepairPlan:
                 _fix=lambda s, p=path, k=key, o=owner: _rekey_voice_mode_entry(p, k, o)))
 
     def _scan_sessions_json(self, store: Store) -> None:
-        from hermes_state_profile_repair import session_key_profile
+        from persistence.core.keys import session_key_profile
         path = store.home / "sessions" / "sessions.json"
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return
         if not isinstance(data, dict):
@@ -344,12 +352,12 @@ class RepairPlan:
                 _fix=lambda s, p=path, k=key: _drop_sessions_json_entry(p, k)))
 
     # -- apply --
-    def apply(self, session: _Session, *, snapshot: Callable[[Store], Optional[str]]) -> Dict[str, Any]:
+    def apply(self, session: _Session, *, snapshot: Callable[[Store], Optional[str]]) -> dict[str, Any]:
         """Run every repairable fix; snapshots every store first. Fixes are independent and each
         re-checks its precondition, so a partial run leaves a state the next run completes."""
         snapshots = {s.profile: snapshot(s) for s in self.stores if s.db_path.exists()}
-        totals: Dict[str, int] = {}
-        failures: List[Dict[str, str]] = []
+        totals: dict[str, int] = {}
+        failures: list[dict[str, str]] = []
         for finding in self.repairable:
             fix = finding._fix
             assert fix is not None
@@ -357,9 +365,10 @@ class RepairPlan:
                 for key, count in (fix(session) or {}).items():
                     totals[key] = totals.get(key, 0) + int(count)
             except Exception as exc:  # one bad row must not abandon the rest of the plan
+                from storage_user_copy import error_type_name
                 logger.warning("repair-profiles: %s on %s failed", finding.kind, finding.subject, exc_info=True)
                 failures.append({"kind": finding.kind, "subject": finding.subject,
-                                 "error": f"{type(exc).__name__}: {exc}"})
+                                 "error": f"{error_type_name(exc)}: {exc}"})
         return {"snapshots": snapshots, "totals": totals, "failures": failures}
 
 
@@ -374,27 +383,34 @@ class _MoveBatch:
 
     def __init__(self, src: Store, dst: Store) -> None:
         self.src, self.dst = src, dst
-        self.ids: List[str] = []
-        self._result: Optional[Dict[str, Dict[str, int]]] = None
-        self._errors: Dict[str, Exception] = {}
+        self.ids: list[str] = []
+        self._result: Optional[dict[str, dict[str, int]]] = None
+        self._errors: dict[str, Exception] = {}
 
-    def fix_for(self, sid: str) -> Callable[[_Session], Dict[str, int]]:
+    def fix_for(self, sid: str) -> Callable[[_Session], dict[str, int]]:
         self.ids.append(sid)
         return lambda session: self._outcome(session, sid)
 
-    def _outcome(self, session: _Session, sid: str) -> Dict[str, int]:
+    def _outcome(self, session: _Session, sid: str) -> dict[str, int]:
         result = self.run(session)
         if sid in self._errors:
             raise self._errors[sid]
         return result.get(sid, {"missing": 1})
 
-    def run(self, session: _Session) -> Dict[str, Dict[str, int]]:
+    def run(self, session: _Session) -> dict[str, dict[str, int]]:
         if self._result is not None:
             return self._result
         src_db, dst_db = session.db(self.src), session.db(self.dst)
-        payloads = {sid: src_db.export_session_for_move(sid) for sid in self.ids}
+        from persistence import SessionLedgered
+        payloads: dict[str, Optional[dict[str, Any]]] = {}
+        for sid in self.ids:
+            try:
+                payloads[sid] = src_db.export_session_for_move(sid)
+            except SessionLedgered as exc:  # gained ledger rows since the scan: never copied
+                self._errors[sid] = exc
         ordered = _parents_first([p for p in payloads.values() if p is not None])
-        result: Dict[str, Dict[str, int]] = {sid: {"missing": 1} for sid, p in payloads.items() if p is None}
+        result: dict[str, dict[str, int]] = {sid: {"missing": 1} for sid, p in payloads.items()
+                                             if p is None and sid not in self._errors}
         for payload in ordered:
             sid, parent = payload["session"]["id"], payload["session"].get("parent_session_id")
             if parent in self._errors:
@@ -429,11 +445,35 @@ class _MoveBatch:
         return result
 
 
-def _parents_first(payloads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _ledgered_lineages(foreign: list[dict[str, Any]]) -> dict[str, str]:
+    """Stray rows that must stay put, each with the reason. A row the gateway ledger references
+    (admissions/workers, ``ON DELETE RESTRICT``) cannot be deleted from its store, so copying it
+    would leave the session in both; the stray rows linked to it by ``parent_session_id`` stay
+    with it, since moving a parent detaches the child left behind and a moved child loses its
+    parent. Whether a move should carry the ledger is a separate policy decision."""
+    by_id = {row["id"]: row for row in foreign}
+    groups: dict[str, set[str]] = {sid: {sid} for sid in by_id}
+    for row in foreign:
+        parent = row.get("parent_session_id")
+        if parent in by_id and groups[parent] is not groups[row["id"]]:
+            merged = groups[parent] | groups[row["id"]]
+            for sid in merged:
+                groups[sid] = merged
+    held: dict[str, str] = {}
+    for sid, row in by_id.items():
+        anchors = sorted(m for m in groups[sid] if by_id[m].get("ledgered"))
+        if row.get("ledgered"):
+            held[sid] = "has gateway admission/worker history, which a move cannot carry"
+        elif anchors:
+            held[sid] = f"its lineage holds {anchors[0]}, which has gateway admission/worker history"
+    return held
+
+
+def _parents_first(payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Order moved sessions so every parent in the batch precedes its children (a cycle, impossible
     for a well-formed store, falls back to insertion order)."""
     pending = {p["session"]["id"]: p for p in payloads}
-    ordered: List[Dict[str, Any]] = []
+    ordered: list[dict[str, Any]] = []
     while pending:
         ready = [sid for sid, p in pending.items() if p["session"].get("parent_session_id") not in pending]
         if not ready:
@@ -443,9 +483,9 @@ def _parents_first(payloads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return ordered
 
 
-def _rekey_voice_mode_entry(path: Path, key: str, owner: str) -> Dict[str, int]:
+def _rekey_voice_mode_entry(path: Path, key: str, owner: str) -> dict[str, int]:
     from utils import atomic_json_write
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
     if key not in data:
         return {}
     data.setdefault(f"{owner}:{key}", data.pop(key))
@@ -454,9 +494,9 @@ def _rekey_voice_mode_entry(path: Path, key: str, owner: str) -> Dict[str, int]:
     return {"voice_rekeyed": 1}
 
 
-def _drop_sessions_json_entry(path: Path, key: str) -> Dict[str, int]:
+def _drop_sessions_json_entry(path: Path, key: str) -> dict[str, int]:
     from utils import atomic_json_write
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
     if key not in data:
         return {}
     del data[key]
@@ -466,8 +506,8 @@ def _drop_sessions_json_entry(path: Path, key: str) -> Dict[str, int]:
 
 # ── entry points ──────────────────────────────────────────────────────────────
 
-def scan_stores(stores: Optional[List[Store]] = None, *, legacy_main: str = "report",
-                read_only: bool = True) -> Tuple[RepairPlan, _Session]:
+def scan_stores(stores: Optional[list[Store]] = None, *, legacy_main: str = "report",
+                read_only: bool = True) -> tuple[RepairPlan, _Session]:
     """Open every store and build the plan. The caller owns the returned session (close it)."""
     stores = enumerate_stores() if stores is None else stores
     session = _Session(read_only=read_only)

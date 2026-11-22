@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Extract plugin-catalog entries into website/static/api/plugins.json.
 
-Feeds the Plugin Catalog page at /docs/plugins (website/src/pages/plugins/).
+Feeds /docs/api/plugins.json, which the Hermes Marketplace, Desktop and the CLI read.
 
 Data source: ``plugin-catalog/*.yaml`` at the repo root — one YAML file per
 catalog entry (see plugin-catalog/README.md for the entry schema), plus
@@ -31,20 +31,21 @@ import re
 import subprocess
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import yaml
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+import hermes_yaml as yaml
+
 DEFAULT_CATALOG_DIR = REPO_ROOT / "plugin-catalog"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "website" / "static" / "api"
 # Written by fetch-plugin-stars.py (at most one GitHub probe per day); absent → no ranking data.
 DEFAULT_STARS_FILE = DEFAULT_OUTPUT_DIR / "plugin-stars.json"
 _GITHUB_REPO_RE = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s#?]+?)(?:\.git)?/?$")
 
-CATALOG_TIERS = ("official", "community")
+CATALOG_TIERS = ("official", "verified", "community")
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # Keep in sync with scripts/validate_plugin_catalog.py (cosmetic fields attached to the pin).
@@ -67,6 +68,16 @@ def _is_allowed_image_url(url: str) -> bool:
     return parts.scheme == "https" and bool(host) and (host in IMAGE_HOSTS or host.endswith(IMAGE_HOST_SUFFIX))
 
 
+def _is_https_url(url: str) -> bool:
+    # docs_url is the one catalog field rendered as a link on the docs site, so any
+    # https host is fine — but a javascript:/data: value must never reach the href.
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # "https://[": dropped like any other invalid docs_url, never fatal
+        return False
+    return parts.scheme == "https" and bool((parts.hostname or "").strip())
+
+
 def _cosmetic(value, accept, file_name: str, entry: str, key: str) -> str:
     """A cosmetic field is dropped, never fatal: the site must not lose an entry a reviewer merged."""
     text = str(value or "").strip()
@@ -77,7 +88,7 @@ def _cosmetic(value, accept, file_name: str, entry: str, key: str) -> str:
 
 
 def maintainer_slug(maintainer: str) -> str:
-    """URL segment for the author page (/docs/plugins/by/<slug>); shared by every entry of one maintainer."""
+    """URL segment for the Marketplace author page (/marketplace/by/<slug>); shared by every entry of one maintainer."""
     return _SLUG_RE.sub("-", maintainer.strip().lower()).strip("-") or "unknown"
 
 
@@ -256,7 +267,7 @@ def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None,
             "requiresHermes": str(raw.get("requires_hermes") or "").strip(),
             "platforms": _str_list(raw.get("platforms")),
             "capabilities": _normalize_capabilities(raw.get("capabilities")),
-            "docsUrl": str(raw.get("docs_url") or "").strip(),
+            "docsUrl": _cosmetic(raw.get("docs_url"), _is_https_url, path.name, name, "docs_url"),
             "version": _cosmetic(raw.get("version"), VERSION_RE.match, path.name, name, "version"),
             "image": _cosmetic(raw.get("image"), _is_allowed_image_url, path.name, name, "image"),
             "screenshots": _screenshots(raw.get("screenshots"), path.name, name),
@@ -318,6 +329,17 @@ def load_raw_entries(catalog_dir: Path) -> list[dict]:
     return entries
 
 
+def load_featured(curation_file: Path | None = None) -> list[str]:
+    """Curated hero picks (plugin names, in rotation order); empty when the file is absent."""
+    try:
+        path = curation_file or REPO_ROOT / "apps" / "shared" / "src" / "catalog-curation.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    picks = data.get("featured", {}).get("plugins") if isinstance(data, dict) else None
+    return [p for p in picks if isinstance(p, str)] if isinstance(picks, list) else []
+
+
 def main(catalog_dir: Path = DEFAULT_CATALOG_DIR, output_dir: Path = DEFAULT_OUTPUT_DIR,
          stars_file: Path | None = None) -> int:
     if not catalog_dir.is_dir():
@@ -329,12 +351,17 @@ def main(catalog_dir: Path = DEFAULT_CATALOG_DIR, output_dir: Path = DEFAULT_OUT
     stars_path = stars_file if stars_file is not None else output_dir / "plugin-stars.json"
     stars = load_stars(stars_path)
     entries = load_catalog_entries(catalog_dir, stars, load_git_dates(catalog_dir))
+    featured = load_featured()
+    for entry in entries:
+        # 1-based curated hero rank; the site and the app rotate through these.
+        if entry["name"] in featured:
+            entry["featured"] = featured.index(entry["name"]) + 1
     removed_count = count_removed(catalog_dir)
 
     by_tier = Counter(e["tier"] for e in entries)
     by_category = Counter(e["category"] for e in entries)
     meta = {
-        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "generatedAt": datetime.now(UTC).isoformat(),
         "total": len(entries),
         "byTier": {tier: by_tier.get(tier, 0) for tier in CATALOG_TIERS},
         "byCategory": {c: by_category.get(c, 0) for c in CATALOG_CATEGORIES if by_category.get(c)},

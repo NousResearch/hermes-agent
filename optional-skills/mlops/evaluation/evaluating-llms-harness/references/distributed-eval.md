@@ -324,7 +324,7 @@ Memory per GPU = Total Memory / TP
 
 **Submit job**:
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 #SBATCH --nodes=4
 #SBATCH --gpus-per-node=8
 #SBATCH --ntasks-per-node=1

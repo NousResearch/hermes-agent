@@ -20,7 +20,6 @@ from tools import delegate_tool
 
 _CAP_SECONDS = 0.4
 
-
 class _SlowButLiveChild:
     """A provider serving multi-minute completions: the runtime outlasts the cap, but progress never stops.
 
@@ -76,16 +75,14 @@ class _SlowButLiveChild:
     def close(self):
         pass
 
-
 def _run(child, monkeypatch, cap=_CAP_SECONDS):
     parent = SimpleNamespace(
         session_id="parent", _current_task_id=None, _active_children=[child],
         _active_children_lock=threading.Lock(), _touch_activity=lambda _d: None, _interrupt_requested=False,
     )
-    monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: cap)
-    monkeypatch.setattr(delegate_tool, "_get_worktree_isolation", lambda: False)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_child_timeout", lambda: cap)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_worktree_isolation", lambda: False)
     return delegate_tool._run_single_child(0, "watch the slow provider", child=child, parent_agent=parent)
-
 
 def test_progressing_child_outlives_a_cap_shorter_than_its_runtime(monkeypatch):
     child = _SlowButLiveChild(total_seconds=1.2, advance=True)
@@ -100,7 +97,6 @@ def test_progressing_child_outlives_a_cap_shorter_than_its_runtime(monkeypatch):
     # Progress kept resetting the window, so the 80% budget warning never had cause to fire.
     assert child.steers == [], child.steers
 
-
 def test_frozen_child_is_still_abandoned_when_the_cap_elapses(monkeypatch):
     """The reported death shape: calls completed earlier, then the child stops moving entirely."""
     child = _SlowButLiveChild(total_seconds=1.2, advance=False, initial_calls=49)
@@ -112,5 +108,3 @@ def test_frozen_child_is_still_abandoned_when_the_cap_elapses(monkeypatch):
     assert entry["timeout_seconds"] == _CAP_SECONDS
     assert entry["last_event_age"] is not None and entry["last_event_age"] > 0.3, entry
     assert child.interrupted.is_set()
-
-

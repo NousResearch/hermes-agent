@@ -9,15 +9,11 @@ without overriding run().
 
 from __future__ import annotations
 
-
-
-
 def _make_cli():
     """Bare HermesCLI (no __init__): the layout hooks need no init state."""
     from cli import HermesCLI
 
     return HermesCLI.__new__(HermesCLI)
-
 
 class TestExtensionHookSubclass:
     def test_extra_widgets_inserted_before_status_bar(self):
@@ -47,4 +43,3 @@ class TestExtensionHookSubclass:
         assert children[spacer_idx + 2] == "mini-player"
         assert children[spacer_idx + 3] == "status"
         assert status_idx == spacer_idx + 3
-

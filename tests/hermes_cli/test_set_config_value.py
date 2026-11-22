@@ -6,7 +6,7 @@ import os
 from unittest.mock import patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.config import (
     config_command,
@@ -148,7 +148,7 @@ class TestConfigYamlRouting:
     ):
         set_config_value("terminal.docker_shared_container_key", "off")
 
-        import yaml
+        import hermes_yaml as yaml
 
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["terminal"]["docker_shared_container_key"] == "off"
@@ -202,7 +202,7 @@ class TestConfigGetUnset:
         args = argparse.Namespace(config_command="unset", key="terminal.backend")
         config_command(args)
 
-        import yaml
+        import hermes_yaml as yaml
         reloaded = yaml.safe_load(_read_config(_isolated_hermes_home)) or {}
         assert reloaded == {}
         assert "TERMINAL_ENV=" not in _read_env(_isolated_hermes_home)
@@ -221,7 +221,7 @@ class TestConfigGetUnset:
         args = argparse.Namespace(config_command="unset", key="platforms.teams.extra.access_token")
         config_command(args)
 
-        import yaml
+        import hermes_yaml as yaml
         reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert "access_token" not in reloaded["platforms"]["teams"]["extra"]
         assert reloaded["platforms"]["teams"]["extra"]["tenant_id"] == "tenant"
@@ -251,14 +251,14 @@ class TestConfigGetPhantomKeyNotice:
     def test_unseeded_live_key_notice_hedges_instead_of_asserting_unread(
         self, _isolated_hermes_home, capsys
     ):
-        # The check is a DEFAULT_CONFIG walk; ``browser.cloud_provider`` is deliberately unseeded
-        # yet read by tools/browser_tool_cloud.py, so the notice must not claim it is never read.
-        (_isolated_hermes_home / "config.yaml").write_text("browser:\n  cloud_provider: local\n")
+        # The check is a DEFAULT_CONFIG walk; ``gateway.proxy_url`` is deliberately unseeded
+        # yet read by gateway/run_turn.py, so the notice must not claim it is never read.
+        (_isolated_hermes_home / "config.yaml").write_text("gateway:\n  proxy_url: http://127.0.0.1:1\n")
 
-        config_command(argparse.Namespace(config_command="get", key="browser.cloud_provider", json=False))
+        config_command(argparse.Namespace(config_command="get", key="gateway.proxy_url", json=False))
 
         captured = capsys.readouterr()
-        assert captured.out.strip() == "local"
+        assert captured.out.strip() == "http://127.0.0.1:1"
         assert "may not read it" in captured.err
         assert "does not read it" not in captured.err
 
@@ -309,13 +309,17 @@ class TestListNavigation:
 
         set_config_value("custom_providers.0.api_key", "new-a")
 
-        import yaml
+        import hermes_yaml as yaml
         reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
         # The list must still be a list
         assert isinstance(reloaded["custom_providers"], list)
         assert len(reloaded["custom_providers"]) == 2
         # Entry 0 was updated
-        assert reloaded["custom_providers"][0]["api_key"] == "new-a"
+        # The secret moved to .env (#77471); the entry holds the reference.
+        from hermes_cli.config_secret_refs import endpoint_api_key_env
+        env_name = endpoint_api_key_env("https://a.example.com")
+        assert reloaded["custom_providers"][0]["api_key"] == f"${{{env_name}}}"
+        assert f"{env_name}=new-a" in _read_env(_isolated_hermes_home)
         assert reloaded["custom_providers"][0]["name"] == "provider-a"
         assert reloaded["custom_providers"][0]["base_url"] == "https://a.example.com"
         # Entry 1 is untouched
@@ -337,10 +341,11 @@ class TestListNavigation:
 
         set_config_value("custom_providers.0.api_key", "rotated")
 
-        import yaml
+        import hermes_yaml as yaml
         reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
         entry = reloaded["custom_providers"][0]
-        assert entry["api_key"] == "rotated"
+        from hermes_cli.config_secret_refs import endpoint_api_key_env
+        assert entry["api_key"] == f"${{{endpoint_api_key_env('https://a.example.com')}}}"
         assert entry["name"] == "provider-a"
         assert entry["base_url"] == "https://a.example.com"
         assert set(entry["models"].keys()) == {"foo", "bar"}
@@ -362,7 +367,7 @@ class TestListNavigation:
         # the canonical path.
         set_config_value("telegram.allowlist.1.role", "admin")
 
-        import yaml
+        import hermes_yaml as yaml
         reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
         allowlist = reloaded["telegram"]["allowlist"]
         assert isinstance(allowlist, list)
@@ -381,7 +386,7 @@ class TestStringTypedConfigValues:
         """Values stay strings when DEFAULT_CONFIG declares the leaf as a string."""
         set_config_value("approvals.mode", value)
 
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["approvals"]["mode"] == value
         assert isinstance(saved["approvals"]["mode"], str)
@@ -395,7 +400,7 @@ class TestStringTypedConfigValues:
     ):
         set_config_value(key, value)
 
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         node = saved
         for part in key.split("."):
@@ -408,7 +413,7 @@ class TestStringTypedConfigValues:
         # (schema validation, #34067); coercion behavior is unchanged.
         set_config_value("custom.enabled", "off", force=True)
 
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["custom"]["enabled"] is False
 
@@ -460,6 +465,45 @@ class TestSecretRedactionInDisplay:
         assert secret not in captured.out
         assert "Set model.api_key" in captured.out
 
+    def test_redact_config_value_masks_all_digit_secret(self):
+        from hermes_cli.config import redact_config_value
+        # YAML loads an unquoted all-digit password as an int, not a str.
+        cfg = yaml.safe_load(
+            "env:\n  DB_PASSWORD: 48213977261\n  DB_SECRET: 4821.3977\n  USE_TOKEN: true\n  PORT: 5432\n")
+
+        out = redact_config_value(cfg)
+
+        assert "48213977261" not in str(out)
+        assert "4821.3977" not in str(out)
+        assert out["env"]["USE_TOKEN"] is True
+        assert out["env"]["PORT"] == 5432
+
+    def test_set_and_get_mask_all_digit_secret(self, _isolated_hermes_home, capsys):
+        secret = "48213977261"
+        set_config_value("mcp_servers.db.env.DB_PASSWORD", secret)
+        set_output = capsys.readouterr().out
+
+        config_command(argparse.Namespace(
+            config_command="get", key="mcp_servers.db.env.DB_PASSWORD", json=False))
+        leaf_output = capsys.readouterr().out
+        config_command(argparse.Namespace(
+            config_command="get", key="mcp_servers.db", json=False))
+        section_output = capsys.readouterr().out
+
+        assert "Set mcp_servers.db.env.DB_PASSWORD" in set_output
+        for out in (set_output, leaf_output, section_output):
+            assert secret not in out
+
+    def test_set_mapping_value_masks_nested_secret(self, _isolated_hermes_home, capsys):
+        secret = "48213977261"
+        set_config_value("mcp_servers.db.env", f'{{"DB_PASSWORD": {secret}, "PORT": 5432}}')
+        out = capsys.readouterr().out
+
+        assert secret not in out
+        assert "5432" in out
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["mcp_servers"]["db"]["env"]["DB_PASSWORD"] == int(secret)
+
 
 
 # ---------------------------------------------------------------------------
@@ -497,9 +541,9 @@ class TestSchemaValidation:
         assert f"Did you mean: {suggestion}" in err
 
     @pytest.mark.parametrize("key,value,expected,suggestion", [
-        # ``stt.provider`` is read at runtime (tools/transcription_tools.py) but has no seeded
-        # default: a stored value is an explicit user pick, so the schema walk must not refuse it.
-        ("stt.provider", "whisper", "whisper", None),
+        # ``gateway.proxy_url`` is read at runtime (gateway/run_turn.py) but has no seeded
+        # default, so the schema walk must not refuse it.
+        ("gateway.proxy_url", "http://127.0.0.1:1", "http://127.0.0.1:1", None),
         # TRADE-OFF made explicit: a same-section typo (``agent.max_turnz``) is indistinguishable
         # from an unseeded key, so it is written too — the user gets the sibling suggestion
         # (``agent.max_turns``) instead of a refusal.
@@ -592,7 +636,7 @@ class TestValidateConfigKey:
         """The underscore escape only applies to the FIRST segment. A real
         typo in a sub-key (e.g. agent._max_turns) is still caught."""
         from hermes_cli.config import _validate_config_key
-        is_known, suggestion = _validate_config_key("agent._max_turns")
+        is_known, _suggestion = _validate_config_key("agent._max_turns")
         assert not is_known, "Sub-key typo under a known top-level key must still be flagged"
 
 
@@ -653,8 +697,8 @@ class TestMappingGuard:
     """
 
     def _write_config(self, tmp_path, data: dict):
-        import yaml as _yaml
-        (tmp_path / "config.yaml").write_text(_yaml.dump(data))
+        import hermes_yaml as _yaml
+        (tmp_path / "config.yaml").write_text(_yaml.safe_dump(data))
 
     def test_bare_model_shorthand_preserves_siblings(self, _isolated_hermes_home):
         """hermes config set model <id> → model.default, siblings survive."""
@@ -668,7 +712,7 @@ class TestMappingGuard:
         })
         set_config_value("model", "claude-sonnet-4-20250514")
         config_text = _read_config(_isolated_hermes_home)
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         parsed = _yaml.safe_load(config_text)
         assert parsed["model"]["default"] == "claude-sonnet-4-20250514"
         assert parsed["model"]["provider"] == "openai-api"
@@ -679,6 +723,44 @@ class TestMappingGuard:
         """Bare model shorthand still works when config is empty (legacy behaviour)."""
         set_config_value("model", "gpt-5.6-sol")
         assert "gpt-5.6-sol" in _read_config(_isolated_hermes_home)
+
+    @pytest.mark.parametrize("start, literal", [
+        ({"model": {"default": "glm-5.3-flash", "provider": "zai"}},
+         '{"provider": "openai-codex", "default": "gpt-6.1-sol"}'),
+        ({}, "[a, b]"),
+        ({"model": "gpt-4o"}, "[a, b]"),
+    ])
+    def test_bare_model_container_literal_is_refused(self, _isolated_hermes_home, start, literal):
+        """A JSON/YAML mapping/list under bare ``model`` must be refused, not redirected (#131435).
+
+        ``model`` is seeded as a string default, so the generic coerce kept the literal
+        verbatim and the shorthand wrote the raw JSON text into ``model.default`` as the
+        model id — a route every runtime reader then fails to resolve, while
+        ``config get`` echoes it back. Fail closed instead, like #114471 did for
+        container slots. A list has no reader even when no model section exists yet."""
+        self._write_config(_isolated_hermes_home, start)
+        with pytest.raises(SystemExit) as exc:
+            set_config_value("model", literal)
+        assert exc.value.code == 1
+        assert yaml.safe_load(_read_config(_isolated_hermes_home)) == start
+
+    def test_bare_model_mapping_force_replaces_section(self, _isolated_hermes_home):
+        """--force keeps its documented meaning for mappings too: replace the whole
+        model section with the validated literal instead of refusing."""
+        self._write_config(_isolated_hermes_home, {
+            "model": {
+                "default": "gpt-4o",
+                "provider": "openai-api",
+                "context_length": 128_000,
+            }
+        })
+        set_config_value(
+            "model", '{"provider": "openrouter", "default": "z-ai/glm-5.3-flash"}', force=True)
+        parsed = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert parsed["model"] == {
+            "provider": "openrouter",
+            "default": "z-ai/glm-5.3-flash",
+        }
 
     def test_non_model_mapping_is_refused(self, _isolated_hermes_home):
         """hermes config set terminal bash → refuse, terminal has sub-keys."""
@@ -702,7 +784,7 @@ class TestMappingGuard:
             }
         })
         set_config_value("terminal", "zsh", force=True)
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         parsed = _yaml.safe_load(_read_config(_isolated_hermes_home))
         assert parsed["terminal"] == "zsh"
 
@@ -715,7 +797,7 @@ class TestMappingGuard:
             }
         })
         set_config_value("model.default", "claude-opus-4")
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         parsed = _yaml.safe_load(_read_config(_isolated_hermes_home))
         assert parsed["model"]["default"] == "claude-opus-4"
         assert parsed["model"]["provider"] == "openai-api"
@@ -730,7 +812,7 @@ class TestMappingGuard:
             }
         })
         set_config_value("model", "claude-opus-4", force=True)
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         parsed = _yaml.safe_load(_read_config(_isolated_hermes_home))
         assert parsed["model"] == "claude-opus-4"
 
@@ -740,7 +822,7 @@ class TestScalarModelSubKeyPreservation:
 
     def test_scalar_model_id_preserved_after_provider_write(self, _isolated_hermes_home):
         """Seed model: gpt-4o, then set model.provider → model.default must survive."""
-        import yaml
+        import hermes_yaml as yaml
 
         set_config_value("model", "gpt-4o")
         set_config_value("model.provider", "openai")
@@ -753,16 +835,15 @@ class TestScalarModelSubKeyPreservation:
 
     def test_scalar_model_id_preserved_after_api_key_write(self, _isolated_hermes_home):
         """model.api_key must also preserve the existing scalar model id."""
-        import yaml
+        import hermes_yaml as yaml
 
         set_config_value("model", "claude-sonnet")
-        # model.api_key is a sub-key (has a dot), so it stays in config.yaml
         set_config_value("model.api_key", "sk-test")
 
         raw = _read_config(_isolated_hermes_home)
         parsed = yaml.safe_load(raw)
         assert parsed["model"]["default"] == "claude-sonnet"
-        assert parsed["model"]["api_key"] == "sk-test"
+        assert parsed["model"]["api_key"] == "${HERMES_MODEL_API_KEY}"
 
 class TestMalformedYAMLConfigPreservation:
     """#75431: config.yaml with YAML syntax errors must not be overwritten."""
@@ -815,7 +896,7 @@ class TestLiteralDotKeyEscaping:
     """
 
     def _write_config(self, tmp_path, data: dict):
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         (tmp_path / "config.yaml").write_text(_yaml.safe_dump(data, sort_keys=False))
 
     def test_split_key_path_escaped_dot(self):
@@ -845,7 +926,7 @@ class TestLiteralDotKeyEscaping:
             '{"Wafer-ZDR": "required"}',
         )
 
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         providers = saved["providers"]
         # No bogus ``qwen3`` nesting was created; the existing entry was updated.
@@ -874,7 +955,7 @@ class TestLiteralDotKeyEscaping:
         )
         config_command(args)
 
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert "qwen3.5-397b-wafer-non-zdr" not in saved["providers"]
         assert saved["providers"]["openrouter"] == {"api_key": "or-keep"}
@@ -896,7 +977,7 @@ class TestLiteralDotKeyEscaping:
         )
         config_command(args)
 
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         target = saved["providers"]["qwen3.5-397b-wafer-non-zdr"]
         assert "extra_headers" not in target
@@ -920,7 +1001,7 @@ class TestLiteralDotKeyEscaping:
         """Nesting semantics for plain dotted keys are untouched."""
         set_config_value("terminal.backend", "docker")
 
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["terminal"]["backend"] == "docker"
 
@@ -996,7 +1077,7 @@ class TestContainerTypeRefusal:
     echoed it back."""
 
     def _write_config(self, tmp_path, data: dict):
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         (tmp_path / "config.yaml").write_text(_yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
     def test_string_where_schema_wants_list_is_refused(self, _isolated_hermes_home, capsys):
@@ -1022,7 +1103,7 @@ class TestContainerTypeRefusal:
         # --force keeps its documented meaning: replace a whole mapping section.
         set_config_value("model.aliases", "replaced", force=True)
 
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         saved = _yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["custom_providers"] == [{"name": "ok", "base_url": "http://h/v1"}]
         assert saved["model"] == {"default": "bar", "aliases": "replaced"}
@@ -1036,7 +1117,7 @@ class TestContainerTypeRefusal:
         with pytest.raises(SystemExit):
             set_config_value(key, "notacontainer")
 
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         saved = _yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved == {"model": {"default": "m"}}
 
@@ -1046,7 +1127,7 @@ class TestContainerTypeRefusal:
 
         set_config_value("agent.disabled_toolsets", "web")
 
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         saved = _yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["agent"]["disabled_toolsets"] == ["web"]
 
@@ -1096,3 +1177,84 @@ class TestProviderSwitchClearsBaseUrl:
         assert "Cleared" not in out
         # Unknown host: kept, but the user is told the old route still applies (from #113725).
         assert ("still applies" in out) == ("proxy.internal" in seed["base_url"])
+
+
+class TestAuxiliaryProviderSwitchClearsStaleRoute:
+    """``config set auxiliary.<task>.provider X`` must drop the previous provider's route exactly
+    like the ``model.provider`` switch does (#141832): a leftover ``base_url`` overrides the new
+    provider (config_defaults: "base_url overrides provider"), so the aux call would post X's
+    credential to the old provider's endpoint — the hazard #113719/#40862 guarded for ``model``."""
+
+    def _seed(self, tmp_path, aux):
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump(
+            {"model": {"provider": "openai"}, "auxiliary": aux}))
+
+    def test_switch_drops_stale_aux_route(self, _isolated_hermes_home, capsys):
+        target = "anthropic"
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "openai-api", "base_url": "https://api.openai.com/v1",
+            "api_mode": "chat_completions"}})
+        set_config_value("auxiliary.vision.provider", target)
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": target}
+        out = capsys.readouterr().out
+        assert "Cleared" in out and "openai-api" in out
+        assert "auxiliary.vision.base_url (https://api.openai.com/v1)" in out
+
+    def test_route_owned_by_target_is_kept(self, _isolated_hermes_home, capsys):
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "opencode-go", "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_mode": "codex_responses"}})
+        set_config_value("auxiliary.vision.provider", "openai-codex")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": "openai-codex",
+                          "base_url": "https://chatgpt.com/backend-api/codex",
+                          "api_mode": "codex_responses"}
+        out = capsys.readouterr().out
+        assert "Cleared" not in out
+
+    def test_switch_drops_old_endpoints_key(self, _isolated_hermes_home, capsys):
+        # An aux api_key/key_env is passed to whatever provider the block names, so once the
+        # route is gone the old endpoint's key would be sent to the new provider.
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "openai-api", "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-openai-old", "key_env": "OLD_KEY"}})
+        set_config_value("auxiliary.vision.provider", "anthropic")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": "anthropic"}
+        assert "auxiliary.vision.api_key" in capsys.readouterr().out
+
+    def test_key_set_before_first_provider_is_kept(self, _isolated_hermes_home):
+        # No previous provider and no route: the key just set belongs to the provider set next.
+        # The key itself lives in .env; config.yaml keeps its reference (#77471).
+        self._seed(_isolated_hermes_home, {"vision": {"provider": "auto"}})
+        set_config_value("auxiliary.vision.api_key", "sk-new")
+        set_config_value("auxiliary.vision.provider", "anthropic")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": "anthropic", "api_key": "${AUXILIARY_VISION_API_KEY}"}
+        assert "AUXILIARY_VISION_API_KEY=sk-new" in _read_env(_isolated_hermes_home)
+
+    # llm.example.com: unknown host, kept with a warning; api.openai.com: dropped, "Cleared" notice.
+    @pytest.mark.parametrize("host", ["llm.example.com", "api.openai.com"])
+    def test_notice_masks_url_credentials(self, _isolated_hermes_home, capsys, host):
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "custom", "base_url": f"https://bob:hunter2secret@{host}/v1"}})
+        set_config_value("auxiliary.vision.provider", "anthropic")
+        out = capsys.readouterr().out
+        assert "auxiliary.vision.base_url" in out and "hunter2secret" not in out
+
+    def test_auto_block_with_dropped_route_loses_its_key(self, _isolated_hermes_home):
+        # auto + base_url + api_key is a live custom route (the resolver pairs them); once the switch
+        # drops that base_url, the key belongs to the dropped endpoint, not the provider being set.
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "auto", "base_url": "https://api.openai.com/v1", "api_key": "sk-old"}})
+        set_config_value("auxiliary.vision.provider", "anthropic")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": "anthropic"}
+
+    def test_kept_route_keeps_its_key(self, _isolated_hermes_home):
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "opencode-go", "base_url": "https://chatgpt.com/backend-api/codex", "key_env": "CODEX_KEY"}})
+        set_config_value("auxiliary.vision.provider", "openai-codex")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision["key_env"] == "CODEX_KEY"

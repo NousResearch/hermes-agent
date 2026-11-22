@@ -13,7 +13,6 @@ import pytest
 
 from gateway.config import Platform
 
-
 @pytest.fixture(autouse=True)
 def _whatsapp_open_optin(monkeypatch):
     """Opt into WhatsApp allow-all so ``dm_policy: open`` dispatch tests run.
@@ -23,7 +22,6 @@ def _whatsapp_open_optin(monkeypatch):
     ``_dm_policy = "open"`` as a stand-in for "process this DM".
     """
     monkeypatch.setenv("WHATSAPP_ALLOW_ALL_USERS", "true")
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -63,7 +61,6 @@ def _make_adapter():
     adapter._group_allow_from = set()
     return adapter
 
-
 class _AsyncCM:
     """Minimal async context manager returning a fixed value."""
 
@@ -76,14 +73,12 @@ class _AsyncCM:
     async def __aexit__(self, *exc):
         return False
 
-
 # ---------------------------------------------------------------------------
 # format_message tests
 # ---------------------------------------------------------------------------
 
 class TestFormatMessage:
     """WhatsApp markdown conversion."""
-
 
     def test_strikethrough(self):
         adapter = _make_adapter()
@@ -102,7 +97,6 @@ class TestFormatMessage:
         assert adapter.format_message("# **Title**") == "*Title*"
         assert adapter.format_message("## __Strong__") == "*Strong*"
 
-
     def test_already_whatsapp_italic(self):
         """Markdown *italic* converts to WhatsApp _italic_ (PR #58704)."""
         adapter = _make_adapter()
@@ -110,14 +104,12 @@ class TestFormatMessage:
         # Already-WhatsApp _italic_ passes through unchanged
         assert adapter.format_message("_italic_") == "_italic_"
 
-
 # ---------------------------------------------------------------------------
 # MAX_MESSAGE_LENGTH tests
 # ---------------------------------------------------------------------------
 
 class TestMessageLimits:
     """WhatsApp message length limits."""
-
 
     def test_chunk_limit_reserves_default_self_chat_prefix(self, monkeypatch):
         adapter = _make_adapter()
@@ -127,7 +119,6 @@ class TestMessageLimits:
         assert adapter._outgoing_chunk_limit() == (
             adapter.MAX_MESSAGE_LENGTH - len(adapter.DEFAULT_REPLY_PREFIX)
         )
-
 
 # ---------------------------------------------------------------------------
 # send() chunking tests
@@ -180,7 +171,6 @@ class TestSendChunking:
             payload = call.kwargs.get("json") or call[1].get("json")
             final_text = adapter.DEFAULT_REPLY_PREFIX + payload["message"]
             assert len(final_text) <= adapter.MAX_MESSAGE_LENGTH
-
 
 # ---------------------------------------------------------------------------
 # bridge event metadata
@@ -351,9 +341,6 @@ class TestBridgeEventMetadata:
         assert event.media_urls == [str(image)]
         assert event.media_types == ["image/png"]
 
-
 # ---------------------------------------------------------------------------
 # display_config tier classification
 # ---------------------------------------------------------------------------
-
-

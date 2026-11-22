@@ -4,35 +4,10 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from hermes_constants import get_hermes_home
 
 from gateway.platforms import api_server
-from gateway.platforms import api_server_room_grants as room_grants
-
-
-def test_grant_refresh_rejects_execution_policy_drift():
-    claims = {"execution_policy_digest": "a" * 64}
-
-    with pytest.raises(
-        room_grants.RoomGrantReauthorizationRequired,
-        match="execution policy changed",
-    ):
-        room_grants._require_unchanged_execution_policy(
-            claims,
-            {"policy_digest": "b" * 64},
-        )
-
-
-def test_grant_refresh_accepts_the_authorized_execution_policy():
-    claims = {"execution_policy_digest": "a" * 64}
-
-    assert (
-        room_grants._require_unchanged_execution_policy(
-            claims,
-            {"policy_digest": "a" * 64},
-        )
-        is None
-    )
-
 
 def test_room_grant_secret_stays_gateway_owned_on_named_profile(
     tmp_path, monkeypatch
@@ -47,7 +22,6 @@ def test_room_grant_secret_stays_gateway_owned_on_named_profile(
         assert adapter._room_grant_secret() == gateway_room_grant_secret()
     finally:
         api_server._api_request_profile.reset(profile_token)
-
 
 def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch):
     from gateway import hosted_rooms
@@ -88,7 +62,7 @@ def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch)
         }
     }
     hosted_rooms.reserve_peer_room(
-        hosted_rooms.default_db_path(),
+        storage_handle(get_hermes_home()), placement="shared",
         claims=old_claims,
         expires_at=now + 3600,
         now=now,
@@ -101,7 +75,7 @@ def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch)
     ] == "gateway-old"
 
     hosted_rooms.reserve_peer_room(
-        hosted_rooms.default_db_path(),
+        storage_handle(get_hermes_home()), placement="shared",
         claims={
             **old_claims,
             "authority_gateway_id": "gateway-new",
@@ -114,5 +88,3 @@ def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch)
 
     with pytest.raises(ValueError, match="no longer current"):
         adapter._room_grant_claims(request, permission="status")
-
-

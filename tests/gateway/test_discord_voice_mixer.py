@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# numpy ships only in the optional "voice" extra (not [all,dev]); the mixer
+# numpy ships only in the optional "audio-io" extra (not [all,dev]); the mixer
 # math needs it, so skip this whole module when it isn't installed.
 np = pytest.importorskip("numpy")
 
@@ -26,7 +26,7 @@ _DISCORD_DIR = os.path.join(
 if _DISCORD_DIR not in sys.path:
     sys.path.insert(0, _DISCORD_DIR)
 
-import voice_mixer as vm  # noqa: E402
+import voice_mixer as vm
 
 
 # =====================================================================

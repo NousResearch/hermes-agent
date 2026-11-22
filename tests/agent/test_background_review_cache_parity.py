@@ -493,20 +493,26 @@ def test_same_model_fork_inherits_parent_cache_scope_gateway_key(tmp_path):
         declared_conversation_scope,
         resolve_prompt_cache_scope,
     )
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
         agent = _make_agent_stub(run_agent.AIAgent)
         # Gateway parent shape: declared key, real DB row behind it.
         agent._gateway_session_key = "gw-key-1"
         agent._session_db = db
-        db.create_session("sess-123", source="test")
+        agent.persistence = db
+        seed_session(db, "sess-123", "test")
 
         with patch.object(run_agent, "AIAgent", _make_recorder_class()):
             fork, _rt, routed = build_cache_parity_fork(agent, max_iterations=5)
+            btw, _rt, _ = build_cache_parity_fork(agent, max_iterations=5, write_origin="side_question")
 
         assert not routed
+        # Only the review fork may derive its own xAI scope after compacting; /btw never does.
+        tags = [getattr(f, "_prompt_cache_fork_tag", None) for f in (fork, btw)]
+        assert tags == ["review", None], tags
         parent_scope = resolve_prompt_cache_scope(agent)
         assert parent_scope.startswith("gwk_"), parent_scope
         # The fork stamps the parent's resolved scope; both resolvers honor it.
@@ -528,16 +534,17 @@ def test_same_model_fork_inherits_parent_cache_scope_rotated_lineage(tmp_path):
     import run_agent
     from agent.background_review import build_cache_parity_fork
     from agent.prompt_cache_scope import declared_conversation_scope, resolve_prompt_cache_scope
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
         agent = _make_agent_stub(run_agent.AIAgent)
         agent._session_db = db
+        agent.persistence = db
         # Legacy compression rotation: parent row ends, child inherits its lineage.
-        db.create_session("root-sid", source="test")
-        db.end_session("root-sid", "compression")
-        db.create_session("sess-123", source="test", parent_session_id="root-sid")
+        seed_session(db, "root-sid", "test", end_reason="compression")
+        seed_session(db, "sess-123", "test", parent_session_id="root-sid")
         agent.session_id = "sess-123"
 
         with patch.object(run_agent, "AIAgent", _make_recorder_class()):

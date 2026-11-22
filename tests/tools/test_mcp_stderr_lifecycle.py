@@ -1,5 +1,6 @@
 """MCP shutdown releases only the selected profile's cached stderr handle."""
 
+import io
 from pathlib import Path
 
 from hermes_constants import (
@@ -7,7 +8,8 @@ from hermes_constants import (
     reset_hermes_home_override,
     set_hermes_home_override,
 )
-from tools.mcp_tool_config import _get_mcp_stderr_log
+from hermes_cli.logs import _parse_line_timestamp
+from tools.mcp_tool_config import _StderrTee, _get_mcp_stderr_log, _write_stderr_log_header
 from tools.mcp_tool_lifecycle import shutdown_mcp_servers
 
 
@@ -65,3 +67,24 @@ def test_rename_profile_releases_cached_log_handle(tmp_path, monkeypatch):
         assert new_dir.is_dir() and not old_dir.exists()
     finally:
         handle.close()
+
+
+def test_every_mcp_log_line_carries_a_stamp_hermes_logs_since_reads(tmp_path):
+    token = set_hermes_home_override(tmp_path)
+    try:
+        _write_stderr_log_header("probe")
+        log = io.StringIO()
+        tee = _StderrTee(log)
+        # A line split across writes, a CRLF line and a last line with no newline.
+        for chunk in (b"first half ", b"second half\n", b"crlf line\r\n", b"no newline at exit"):
+            tee.sink.write(chunk)
+        assert tee.close() == "first half second half\ncrlf line\r\nno newline at exit"
+        banner = (tmp_path / "logs" / "mcp-stderr.log").read_text().strip()
+    finally:
+        reset_hermes_home_override(token)
+        shutdown_mcp_servers(scope=hermes_home_key(tmp_path))
+    lines = log.getvalue().splitlines()
+    assert [line[24:] for line in lines] == ["first half second half", "crlf line", "no newline at exit"]
+    for line in [banner, *lines]:
+        assert _parse_line_timestamp(line) is not None, line
+    assert banner.endswith("===== starting MCP server 'probe' =====")

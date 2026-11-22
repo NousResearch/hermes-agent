@@ -23,11 +23,22 @@ TESTS_ROOT = REPO_ROOT / "tests"
 
 # tests/<name>/ directories that do not mirror a source directory but are
 # legitimate homes: cross-cutting suites, fixtures, and script-family tests.
+# "compat": frozen pre-PM updater import surface (tests/compat/README.md) — the
+# audited names live only in history, so there is no source package to mirror.
+# "installation": python driver for the tests/install shell e2e assets.
+# "_fixtures": topic modules tests/conftest.py is split into — suite-wide
+# plumbing (env filtering, live-system guard, platform gating), not tests.
+# "contracts": the storage contract suites, run against every backend of the
+# contracts in persistence/ through one fixture registry.
+# "neutral": the backend-neutral helper modules (session_rules and the modules
+# beside it that import no application package).
+# "persistence_sqlite": the SQLite backend, persistence/sqlite/.
 _NON_MIRROR_DIRS = {
+    "compat", "installation", "_fixtures", "contracts", "neutral", "persistence_sqlite",
     "ci", "conformance", "dashboard", "desktop", "docker", "e2e", "evals",
-    "fakes", "fixtures", "honcho_plugin", "install", "integration", "manual",
-    "monitoring", "openviking_plugin", "perf_guards", "scripts", "secret_sources",
-    "security", "skills", "verify", "website", "computer_use", "hermes_state",
+    "fakes", "fixtures", "install", "integration", "manual",
+    "monitoring", "perf_guards", "scripts", "secret_sources",
+    "security", "skills", "verify", "website", "computer_use",
 }
 
 # Root-level modules whose tests sit directly in tests/ (no package to mirror).

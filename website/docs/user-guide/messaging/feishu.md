@@ -6,6 +6,10 @@ description: "Set up Hermes Agent as a Feishu or Lark bot"
 
 # Feishu / Lark Setup
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](../../reference/package-management.md#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Hermes Agent integrates with Feishu and Lark as a full-featured bot. Once connected, you can chat with the agent in direct messages or group chats, receive cron job results in a home chat, and send text, images, audio, and file attachments through the normal gateway flow.
 
 The integration supports both connection modes:
@@ -204,7 +208,7 @@ This key is found in the **Event Subscriptions** section of your Feishu app conf
 SHA256(timestamp + nonce + encrypt_key + body)
 ```
 
-The computed hash is compared against the `x-lark-signature` header using timing-safe comparison. Requests with invalid or missing signatures are rejected with HTTP 401.
+The computed hash is compared against the `x-lark-signature` header using timing-safe comparison, and the signed `x-lark-request-timestamp` must be within 5 minutes of the gateway's clock, so a captured request cannot be replayed later. Requests with invalid or missing signatures, or a stale timestamp, are rejected with HTTP 401.
 
 :::tip
 In WebSocket mode, signature verification is handled by the SDK itself, so `FEISHU_ENCRYPT_KEY` is optional. In webhook mode, it is strongly recommended for production.
@@ -289,6 +293,10 @@ When users click buttons or interact with interactive cards sent by the bot, the
 Gateway-driven update prompts use a native Feishu `Yes` / `No` card instead of falling back to plain text replies. When `hermes update --gateway` needs confirmation, the adapter records the selected answer in Hermes's `.update_response` file and replaces the card inline with a resolved state.
 
 Card action events are dispatched with `MessageType.COMMAND`, so they flow through the normal command processing pipeline.
+
+**Clarify questions** use cards too: when the agent asks a multiple-choice question with the `clarify` tool, the card shows the options with one numbered button each plus "✏️ Other (type answer)". A tap answers at once and the card updates in place for everyone in the chat; "Other" switches to text capture, so your next message is the answer. Typing a number or the option text instead of tapping also works. Open-ended questions arrive as plain text. The same authorization as approval buttons applies: only an allowed user can answer.
+
+**Finite-choice slash commands** (`/reasoning`, `/fast`) send a card picker: one tap applies the setting, the card settles with the selection, and the command's confirmation follows in the chat.
 
 This is also how **command approval** works — when the agent needs to run a dangerous command, it sends an interactive card with Allow Once / Session / Always / Deny buttons. The user clicks a button, and the card action callback delivers the approval decision back to the agent.
 
@@ -470,6 +478,8 @@ In webhook mode, the adapter enforces per-IP rate limiting to protect against ab
 
 Requests that exceed the limit receive HTTP 429 (Too Many Requests).
 
+Only requests that pass the verification-token and signature checks count toward the limit, so forged traffic can't use up the window for real Feishu callbacks. An unsigned `url_verification` challenge counts only when a verification token authenticated it.
+
 ### Webhook Anomaly Tracking
 
 The adapter tracks consecutive error responses per IP address. After 25 consecutive errors from the same IP within a 6-hour window, a warning is logged. This helps detect misconfigured clients or probing attempts.
@@ -577,14 +587,14 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 
 | Problem | Fix |
 |---------|-----|
-| `lark-oapi not installed` | Install the SDK: `pip install lark-oapi` |
-| `websockets not installed; websocket mode unavailable` | Install websockets: `pip install websockets` |
-| `aiohttp not installed; webhook mode unavailable` | Install aiohttp: `pip install aiohttp` |
+| `lark-oapi not installed` | Install the SDK: `python -c "import pm; pm.sync_venv(['feishu'], explicit=True)"` |
+| `websockets not installed; websocket mode unavailable` | Install websockets: `hermes pm repair` |
+| `aiohttp not installed; webhook mode unavailable` | Install aiohttp: `python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"` |
 | `FEISHU_APP_ID or FEISHU_APP_SECRET not set` | Set both env vars or configure via `hermes gateway setup` |
 | `Another local Hermes gateway is already using this Feishu app_id` | Only one Hermes instance can use the same app_id at a time. Stop the other gateway first. |
 | Bot doesn't respond in groups | Ensure the bot is @mentioned, check `FEISHU_GROUP_POLICY`, and verify the sender is in `FEISHU_ALLOWED_USERS` if policy is `allowlist` |
 | `Webhook rejected: invalid verification token` | Ensure `FEISHU_VERIFICATION_TOKEN` matches the token in your Feishu app's Event Subscriptions config |
-| `Webhook rejected: invalid signature` | Ensure `FEISHU_ENCRYPT_KEY` matches the encrypt key in your Feishu app config |
+| `Webhook rejected: invalid signature` | Ensure `FEISHU_ENCRYPT_KEY` matches the encrypt key in your Feishu app config, and that the gateway host's clock is in sync (a timestamp more than 5 minutes off is refused as a replay) |
 | Post messages show as plain text | The Feishu API rejected the post payload; this is normal fallback behavior. Check logs for details. |
 | Images/files not received by bot | Grant `im:message` and `im:resource` permission scopes to your Feishu app |
 | Bot identity not auto-detected | Usually a transient network issue reaching Feishu's bot info endpoint. Set `FEISHU_BOT_OPEN_ID` and `FEISHU_BOT_NAME` manually as a workaround. |
@@ -592,7 +602,7 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 | Peer bots show as `ou_xxxxxx` instead of by name | Grant the `application:bot.basic_info:read` scope. |
 | Error 200340 (also seen as 220340) when clicking approval buttons | Feishu has no valid card callback for the published app version: add `card.action.trigger` under the **Callback Configuration** tab (not Event Configuration), pick Long Connection / the request URL, enable **Interactive Card**, then publish a new version. See [Required Feishu App Configuration](#required-feishu-app-configuration). The click never reaches Hermes, so nothing appears in `gateway.log`. |
 | Error 200342 / 200343 when clicking approval buttons | Webhook mode: Feishu cannot connect to / resolve the callback request URL. Fix the URL or switch to Long Connection. |
-| `Webhook rate limit exceeded` | More than 120 requests/minute from the same IP. This is usually a misconfiguration or loop. |
+| `Webhook rate limit exceeded` | More than 120 authenticated requests/minute from the same IP. This is usually a misconfiguration or loop. |
 
 ## Toolset
 

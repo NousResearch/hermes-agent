@@ -1,6 +1,6 @@
 # agent/ — AIAgent, turn loop, prompt, compression
 
-Applies on top of the root `AGENTS.md` (prompt-caching invariant, facade + siblings rules).
+Applies on top of the root `AGENTS.md` (prompt-caching invariant, package and Python-shape rules).
 
 ## Shape
 
@@ -39,10 +39,11 @@ Each phase of an iteration is its own sibling, so a change to (say) overflow han
 ~600-line file: `turn_preflight*`, `turn_iteration_prep`, `turn_request_assembly`/`turn_api_request`,
 `turn_api_call`, `turn_api_error`, `turn_response_intake`/`turn_response_check`,
 `turn_empty_response`, `turn_tool_round`/`turn_tool_validation`, `turn_overflow`,
-`turn_truncation`, `turn_context_compaction`, `turn_recovery`, `turn_recovery_autorecover`
+`turn_truncation`, `turn_scripted_prelude` (tool calls a prompt built-in plays before the first model
+call), `turn_context_compaction`, `turn_recovery`, `turn_recovery_autorecover`
 (post-exhaustion wait-and-retry ladder), `turn_retry_state`,
 `turn_stop_gates`, `turn_liveness`, `turn_usage`, `turn_final_response`, `turn_finalizer`,
-`turn_summary`. Find the phase with `grep -rn "def X" agent/turn_*.py`.
+`turn_summary`. Find the phase with `search_files` for `def X`, `file_glob="turn_*.py"`, in `agent/`.
 
 Messages use OpenAI format `{"role": "system|user|assistant|tool", ...}`; reasoning content is stored
 in `assistant_msg["reasoning"]`.
@@ -105,6 +106,19 @@ cache break — keep it the only one. Full detail:
 - Fallback models and credential pools are resolution-chain code: E2E them with real imports
   against a temp `HERMES_HOME`, not mocks (root rubric).
 
+## i18n (`agent/i18n.py` + `i18n_layers.py` + `i18n_languages.py`)
+
+`t(key)` resolves plugin packs (last registered wins) → user overlay `<home>/locales/<lang>.yaml`
+(profile-scoped) → bundled `locales/<lang>.yaml` → the same for `en` → bare key; every layer is flat
+dotted keys and may be partial. One merged dict per `(home, lang)` is cached; `reset_language_cache()`
+(called by every pack registration and by `config set display.language`) drops everything.
+`supported_languages()` is the live set (bundled ∪ overlay ∪ packs) and is what `display.language`
+validation and `_normalize_lang` accept; `SUPPORTED_LANGUAGES` stays the bundled tuple. `.tui.yaml` /
+`.desktop.yaml` pack files are opaque here beyond parse/flatten/serve (`surface_catalog`, RPC
+`i18n.catalog`); for the `tui` surface the bundled `locales/<lang>.tui.yaml` is the bottom layer of what
+`surface_catalog` serves (the TUI ships English only in TS). Endonyms for bundled ids live in `i18n_languages.py` and must agree with
+`apps/shared/src/i18n.ts`.
+
 ## Memory, context engines, curator
 
 `agent/memory_provider.py` (ABC) + `agent/memory_manager.py` (orchestrator) drive memory-provider
@@ -128,8 +142,7 @@ providers intentionally do not run during cron.
 
 ## Tests
 
-Loop/phase tests go in `tests/agent/`; patch the binding the phase actually reads (siblings often
-`from run_agent import X` inside the function — root "patch where production reads"). Assert
+Loop/phase tests go in `tests/agent/`; patch the binding the phase actually reads. Assert
 message-shape invariants (alternation, byte-stable system prompt) rather than snapshotting prompt
 text.
 

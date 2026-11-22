@@ -32,8 +32,7 @@ from gateway.platforms.base import (
     build_session_key,
 )
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner  # noqa: E402
-
+from gateway.run import GatewayRunner
 
 def _make_event(text: str = "hello", chat_id: str = "123") -> MessageEvent:
     source = SessionSource(
@@ -49,13 +48,10 @@ def _make_event(text: str = "hello", chat_id: str = "123") -> MessageEvent:
         message_id="msg1",
     )
 
-
 def _make_runner(*, session_id: str = "parent-session") -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._busy_ack_ts = {}
     runner._draining = False
     runner.adapters = {}
     runner.config = MagicMock()
@@ -67,18 +63,17 @@ def _make_runner(*, session_id: str = "parent-session") -> GatewayRunner:
     runner._busy_input_mode = "interrupt"
     session_key = build_session_key(_make_event().source)
     entry = SimpleNamespace(session_key=session_key, session_id=session_id)
+    coordination = MagicMock()
+    coordination.get_compression_lock_holder.return_value = None
     session_store = SimpleNamespace(
         _lock=threading.Lock(),
         _entries={session_key: entry},
         switch_session=MagicMock(),
+        persistence=SimpleNamespace(coordination=coordination),
     )
     session_store._ensure_loaded_locked = lambda: None
     runner.session_store = session_store
-    runner._session_db = MagicMock()
-    runner._session_db._db = MagicMock()
-    runner._session_db._db.get_compression_lock_holder.return_value = None
     return runner
-
 
 def _make_adapter() -> MagicMock:
     adapter = MagicMock()
@@ -88,7 +83,6 @@ def _make_adapter() -> MagicMock:
     adapter.config.extra = {}
     adapter.platform = MagicMock(value="telegram")
     return adapter
-
 
 def _make_parent_no_subagents() -> MagicMock:
     parent = MagicMock()
@@ -101,9 +95,6 @@ def _make_parent_no_subagents() -> MagicMock:
     }
     return parent
 
-
-
-
 class TestBusyHandlerDemotesInterruptForCompression:
     @pytest.mark.asyncio
     async def test_does_not_interrupt_when_compression_in_flight(self) -> None:
@@ -114,13 +105,10 @@ class TestBusyHandlerDemotesInterruptForCompression:
         parent = _make_parent_no_subagents()
         runner._running_agents[sk] = parent
         runner.adapters[event.source.platform] = adapter
-        runner._session_db._db.get_compression_lock_holder.return_value = "compressing"
+        runner.session_store.persistence.coordination.get_compression_lock_holder.return_value = "compressing"
 
         handled = await runner._handle_active_session_busy_message(event, sk)
 
         assert handled is True
         parent.interrupt.assert_not_called()
         assert adapter._pending_messages.get(sk) is event
-
-
-

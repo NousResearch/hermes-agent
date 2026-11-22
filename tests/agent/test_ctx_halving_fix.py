@@ -25,9 +25,6 @@ separate.
 
 from unittest.mock import MagicMock
 
-
-
-
 # ---------------------------------------------------------------------------
 # parse_available_output_tokens_from_error — unit tests
 # ---------------------------------------------------------------------------
@@ -49,13 +46,10 @@ class TestParseAvailableOutputTokens:
         )
         assert self._parse(msg) == 10000
 
-
-
     def test_available_tokens_natural_language(self):
         """'available tokens: N' wording (no underscore)."""
         msg = "max_tokens must be at most 10000 given your prompt (available tokens: 10000)"
         assert self._parse(msg) == 10000
-
 
     # ── Should NOT detect (returns None) ─────────────────────────────────
 
@@ -64,15 +58,10 @@ class TestParseAvailableOutputTokens:
         msg = "prompt is too long: 205000 tokens > 200000 maximum"
         assert self._parse(msg) is None
 
-
-
     def test_no_max_tokens_keyword(self):
         """Error not related to max_tokens at all."""
         msg = "invalid_api_key: the API key is invalid"
         assert self._parse(msg) is None
-
-
-
 
 # ---------------------------------------------------------------------------
 # Context-overflow recovery — only trust provider-reported limits
@@ -114,7 +103,6 @@ class TestContextOverflowLimitSelection:
 
         assert get_context_length_from_provider_error(error_msg, 272_000) is None
 
-
 # ---------------------------------------------------------------------------
 # build_anthropic_kwargs — output cap clamping
 # ---------------------------------------------------------------------------
@@ -141,14 +129,10 @@ class TestBuildAnthropicKwargsClamping:
         kwargs = self._build("claude-opus-4-6", context_length=200_000)
         assert kwargs["max_tokens"] == _get_anthropic_max_output("claude-opus-4-6") < 200_000
 
-
-
     def test_explicit_max_tokens_clamped_when_exceeds_window(self):
         """Explicit max_tokens larger than a small window is clamped."""
         kwargs = self._build("claude-opus-4-6", max_tokens=32_768, context_length=16_000)
         assert kwargs["max_tokens"] == 15_999
-
-
 
 # ---------------------------------------------------------------------------
 # Ephemeral max_tokens mechanism — _build_api_kwargs
@@ -202,11 +186,6 @@ class TestEphemeralMaxOutputTokens:
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert kwargs["max_tokens"] != 5_000
 
-
-
-
 # ---------------------------------------------------------------------------
 # Integration: error handler does NOT halve context_length for output-cap errors
 # ---------------------------------------------------------------------------
-
-

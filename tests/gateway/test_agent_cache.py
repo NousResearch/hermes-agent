@@ -14,8 +14,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
-from tools import browser_tool_lifecycle as bt_lifecycle
-
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from tools import browser_session_lifecycle as bt_lifecycle
 
 def _make_runner():
     """Create a minimal GatewayRunner with just the cache infrastructure."""
@@ -26,10 +27,8 @@ def _make_runner():
     runner._agent_cache_lock = threading.Lock()
     return runner
 
-
 class TestAgentConfigSignature:
     """Config signature produces stable, distinct keys."""
-
 
     def test_model_change_different_signature(self):
         from gateway.run import GatewayRunner
@@ -81,7 +80,6 @@ class TestAgentConfigSignature:
             GatewayRunner._agent_config_signature("gpt-5.6", plain, [], "")
         )
 
-
     def test_default_gateway_runtime_forwards_filtered_capabilities(self, monkeypatch):
         """Configured provider capabilities must reach a newly created gateway agent."""
         from gateway.run import _resolve_runtime_agent_kwargs
@@ -102,7 +100,7 @@ class TestAgentConfigSignature:
                 },
             },
         )
-        monkeypatch.setattr(runtime_provider, "_get_model_config", lambda: {})
+        monkeypatch.setattr(runtime_provider, "_get_model_config", dict)
 
         runtime = _resolve_runtime_agent_kwargs()
 
@@ -111,7 +109,6 @@ class TestAgentConfigSignature:
     # ---------------------------------------------------------------
     # cache_keys (compression/context config cache-busting)
     # ---------------------------------------------------------------
-
 
     def test_compression_threshold_change_busts_cache(self):
         from gateway.run import GatewayRunner
@@ -126,7 +123,6 @@ class TestAgentConfigSignature:
             cache_keys={"compression.threshold": 0.75},
         )
         assert sig1 != sig2
-
 
     def test_cache_keys_key_order_does_not_matter(self):
         """Signature must be stable regardless of dict key insertion order."""
@@ -143,13 +139,9 @@ class TestAgentConfigSignature:
         )
         assert sig_a == sig_b
 
-
 class TestExtractCacheBustingConfig:
     """Verify _extract_cache_busting_config pulls the documented subset of
     config values that must invalidate the cached agent on change."""
-
-
-
 
     def test_missing_keys_yield_the_shipped_default(self):
         """An absent key carries the value in force — DEFAULT_CONFIG's — for every documented key."""
@@ -159,16 +151,16 @@ class TestExtractCacheBustingConfig:
         for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
             assert out[f"{section}.{key}"] == cfg_get(DEFAULT_CONFIG, section, key)
 
-    def test_explicit_null_differs_from_absent_when_default_is_set(self):
-        """`threshold_tokens: null` opts out of the shipped cap; the signature must keep it distinct from
-        'absent' (= the default) so the opt-out rebuilds the cached agent instead of waiting for a restart."""
+    def test_explicit_cap_differs_from_absent(self):
+        """Setting or clearing `threshold_tokens` rebuilds the cached agent (the signature changes), while
+        absent and an explicit default build the same agent (the signature matches)."""
         from gateway.run import GatewayRunner
 
         default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
-        assert default_cap is not None  # the premise: a non-None default whose opt-out is null
-        sig = lambda cfg: GatewayRunner._extract_cache_busting_config(cfg)["compression.threshold_tokens"]  # noqa: E731
+        other_cap = (default_cap or 0) + 100_000
+        sig = lambda cfg: GatewayRunner._extract_cache_busting_config(cfg)["compression.threshold_tokens"]
         assert sig({}) == sig({"compression": {"threshold_tokens": default_cap}}) == default_cap
-        assert sig({"compression": {"threshold_tokens": None}}) is None
+        assert sig({"compression": {"threshold_tokens": other_cap}}) == other_cap != sig({})
 
     def test_legacy_checkpoints_bool_carries_defaults_for_the_other_keys(self):
         """`checkpoints: true` builds the agent with DEFAULT_CONFIG's limits (`_checkpoint_agent_kwargs`), so
@@ -277,11 +269,8 @@ class TestExtractCacheBustingConfig:
         assert "tools.registry_generation" in out
         assert calls == ([] if provider is None else [("p", False)])
 
-
 class TestAgentCacheLifecycle:
     """End-to-end cache behavior with real AIAgent construction."""
-
-
 
     def test_evict_on_session_reset(self):
         """_evict_cached_agent removes the entry."""
@@ -303,7 +292,6 @@ class TestAgentCacheLifecycle:
 
         with runner._agent_cache_lock:
             assert session_key not in runner._agent_cache
-
 
 class TestAgentCacheBoundedGrowth:
     """LRU cap and idle-TTL eviction prevent unbounded cache growth."""
@@ -327,7 +315,6 @@ class TestAgentCacheBoundedGrowth:
             import time as _t
             m._last_activity_ts = _t.time()
         return m
-
 
     def test_cap_commits_memory_before_soft_release(self, monkeypatch):
         """LRU eviction commits the transcript before releasing clients."""
@@ -361,9 +348,6 @@ class TestAgentCacheBoundedGrowth:
         # Memory committed with the live transcript, THEN client released.
         assert commit_calls == [[{"role": "user", "content": "hi"}]]
         assert old_agent in release_calls
-
-
-
 
 class TestAgentCacheActiveSafety:
     """Safety: eviction must not tear down agents currently mid-turn.
@@ -428,7 +412,6 @@ class TestAgentCacheActiveSafety:
         assert "session-idle-b" in runner._agent_cache
         assert runner._cleanup_agent_resources.call_count == 0
 
-
     def test_idle_sweep_skips_active_agent(self, monkeypatch):
         """Idle-TTL sweep must not tear down an active agent even if 'stale'."""
         from gateway import run as gw_run
@@ -446,7 +429,6 @@ class TestAgentCacheActiveSafety:
         assert evicted == 0
         assert "s1" in runner._agent_cache
         assert runner._cleanup_agent_resources.call_count == 0
-
 
 class TestAgentCacheSpilloverLive:
     """Live E2E: fill cache with real AIAgent instances and stress it."""
@@ -505,7 +487,6 @@ class TestAgentCacheSpilloverLive:
             except Exception:
                 pass
 
-
 class TestAgentCacheIdleResume:
     """End-to-end: idle-TTL-evicted session resumes cleanly with task state.
 
@@ -528,7 +509,6 @@ class TestAgentCacheIdleResume:
         runner._agent_cache_lock = threading.Lock()
         runner._running_agents = {}
         return runner
-
 
     def test_release_clients_does_not_touch_terminal_or_browser(self, monkeypatch):
         """release_clients must not call cleanup_vm or cleanup_browser."""
@@ -567,7 +547,6 @@ class TestAgentCacheIdleResume:
             f"release_clients() tore down browser session — user's open "
             f"tabs and cookies gone on resume. Calls: {browser_calls}"
         )
-
 
     def test_close_vs_release_full_teardown_difference(self, monkeypatch):
         """close() tears down task state; release_clients() does not.
@@ -616,9 +595,7 @@ class TestAgentCacheIdleResume:
         assert "hard-session" in vm_calls
         assert "soft-session" not in vm_calls
 
-
 _FAKE_NOW = 10_000.0  # Fixed epoch for deterministic time assertions
-
 
 class TestCachedAgentInactivityReset:
     """Inactivity-clock reset must be gated on _interrupt_depth == 0.
@@ -659,7 +636,6 @@ class TestCachedAgentInactivityReset:
         assert agent._last_activity_ts > old_ts, (
             "Stale idle time should be cleared so the new turn gets a fresh window"
         )
-
 
     def test_fresh_turn_resets_provenance(self):
         """interrupt_depth=0: provenance resets with ts/desc (#72039)."""
@@ -714,7 +690,6 @@ class TestCachedAgentInactivityReset:
 
         assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
 
-
     def test_fresh_turn_resets_flush_cursor(self):
         """interrupt_depth=0: _last_flushed_db_idx resets so new-turn
         messages are fully persisted to the session DB (#44327)."""
@@ -732,9 +707,6 @@ class TestCachedAgentInactivityReset:
             "_flush_messages_to_session_db starts from index 0"
         )
 
-
-
-
 class TestAgentCacheMessageCountRebaseline:
     """The cross-process coherence guard (#45966) must NOT invalidate the
     cache on this process's OWN writes.
@@ -748,15 +720,27 @@ class TestAgentCacheMessageCountRebaseline:
     ``_refresh_agent_cache_message_count`` re-baselines the stored count to
     the now-current value after each turn, so the guard fires ONLY when a
     different process changed the transcript.  These tests pin both halves of
-    the invariant against the REAL SessionDB + the REAL guard condition.
+    the invariant against the REAL store + the REAL guard condition.
     """
 
-    def _runner_with_db(self, db):
-        from hermes_state import AsyncSessionDB
+    @pytest.fixture
+    def attach_store(self, monkeypatch):
+        from persistence_assembly import open_persistence, profile_scope
 
+        opened = []
+
+        def attach(runner, home):
+            opened.append(open_persistence(profile_scope(home=home)))
+            monkeypatch.setattr(type(runner), "persistence", opened[-1])
+
+        yield attach
+        for store in opened:
+            store.close()
+
+    def _runner_with_db(self, db, attach_store):
         runner = _make_runner()
-        # The gateway holds the async facade; the production refresh awaits it.
-        runner._session_db = AsyncSessionDB(db)
+        # The production refresh awaits the storage interface handle over the same state.db.
+        attach_store(runner, db.scope.profile_dir)
         return runner
 
     @staticmethod
@@ -767,8 +751,8 @@ class TestAgentCacheMessageCountRebaseline:
         the cached agent (or either side is None / it's a legacy 2-tuple).
         """
         try:
-            row = runner._session_db._db.get_session(session_id)
-            live = row.get("message_count", 0) if row else None
+            row = runner.persistence.sessions.get(session_id)
+            live = row.message_count if row else None
         except Exception:
             live = None
         with runner._agent_cache_lock:
@@ -781,41 +765,37 @@ class TestAgentCacheMessageCountRebaseline:
         )
         return not invalidate
 
-
     @pytest.mark.asyncio
-    async def test_cross_process_write_still_invalidates(self, tmp_path):
+    async def test_cross_process_write_still_invalidates(self, tmp_path, attach_store):
         """After the re-baseline, a DIFFERENT process appending to the same
         session must still flip the guard to rebuild (the #45966 fix holds).
         """
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "sessions.db")
-        db.create_session("s1", source="telegram")
-        runner = self._runner_with_db(db)
+        db = storage_handle(tmp_path)
+        seed_session(db, "s1", "telegram")
+        runner = self._runner_with_db(db, attach_store)
         agent = object()
 
         with runner._agent_cache_lock:
-            _row = db.get_session("s1")
+            _row = db.sessions.get("s1")
             runner._agent_cache["telegram:s1"] = (
-                agent, "sig", (_row.get("message_count", 0) if _row else 0),
+                agent, "sig", (_row.message_count if _row else 0),
             )
 
         # Our own turn + re-baseline -> reuse next turn.
-        db.append_message("s1", role="user", content="u")
-        db.append_message("s1", role="assistant", content="a")
+        seed_messages(db, "s1", {"role": "user", "content": "u"})
+        seed_messages(db, "s1", {"role": "assistant", "content": "a"})
         await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
         assert self._guard_would_reuse(runner, "telegram:s1", "s1") is True
 
         # ANOTHER process (e.g. the desktop dashboard backend) appends a turn
         # to the SAME session in the shared DB — we have NOT re-baselined for it.
-        db.append_message("s1", role="user", content="external from dashboard")
+        seed_messages(db, "s1", {"role": "user", "content": "external from dashboard"})
 
         # Guard must now reject reuse so the agent rebuilds from fresh disk.
         assert self._guard_would_reuse(runner, "telegram:s1", "s1") is False
 
-
     @pytest.mark.asyncio
-    async def test_in_band_followup_reuses_cached_agent(self, tmp_path):
+    async def test_in_band_followup_reuses_cached_agent(self, tmp_path, attach_store):
         """Behavioral regression for the in-band queued (/queue) follow-up.
 
         #46237 re-baselines the snapshot only on the EXTERNAL-turn boundary
@@ -833,22 +813,20 @@ class TestAgentCacheMessageCountRebaseline:
         cache-hit guard, which reads ``get_session(session_id)`` with the same
         ``session_id`` the recursive ``_run_agent`` call is given.
         """
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "sessions.db")
-        db.create_session("s1", source="telegram")
-        runner = self._runner_with_db(db)
+        db = storage_handle(tmp_path)
+        seed_session(db, "s1", "telegram")
+        runner = self._runner_with_db(db, attach_store)
         agent = object()
 
         # First turn: cache miss -> build. Snapshot is the pre-turn count.
-        _row = db.get_session("s1")
-        build_count = _row.get("message_count", 0) if _row else 0
+        _row = db.sessions.get("s1")
+        build_count = _row.message_count if _row else 0
         with runner._agent_cache_lock:
             runner._agent_cache["telegram:s1"] = (agent, "sig", build_count)
 
         # First turn flushes its own user + assistant rows.
-        db.append_message("s1", role="user", content="u")
-        db.append_message("s1", role="assistant", content="a")
+        seed_messages(db, "s1", {"role": "user", "content": "u"})
+        seed_messages(db, "s1", {"role": "assistant", "content": "a"})
 
         # Bug reproduction: re-entering the guard at the in-band follow-up
         # boundary WITHOUT the re-baseline sees the grown count and rebuilds.
@@ -861,5 +839,3 @@ class TestAgentCacheMessageCountRebaseline:
         assert self._guard_would_reuse(runner, "telegram:s1", "s1") is True
         with runner._agent_cache_lock:
             assert runner._agent_cache["telegram:s1"][0] is agent
-
-

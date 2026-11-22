@@ -20,12 +20,11 @@ import contextlib
 import io
 from pathlib import Path
 
-
 from hermes_constants import get_hermes_home
-from hermes_state import SessionDB
 from run_agent import AIAgent
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
-from agent.agent_init import (
+from agent.agent_init_compression_notice import (
     _codex_gpt55_autoraise_notice_marker,
     _codex_gpt55_autoraise_notice_seen,
     _record_codex_gpt55_autoraise_notice,
@@ -33,7 +32,6 @@ from agent.agent_init import (
 
 # The dict agent_init stashes when the Codex gpt-5.5 override fires.
 AUTORAISE = {"model": "gpt-5.5", "from": 0.50, "to": 0.85}
-
 
 def _config(*, show_notice: bool) -> dict:
     return {
@@ -51,7 +49,6 @@ def _config(*, show_notice: bool) -> dict:
         "bedrock": {},
     }
 
-
 def _make_codex_agent(monkeypatch, tmp_path: Path, *, show_notice: bool):
     """Construct a real Codex gpt-5.5 agent under an isolated config."""
     from hermes_cli import config as config_mod
@@ -59,7 +56,7 @@ def _make_codex_agent(monkeypatch, tmp_path: Path, *, show_notice: bool):
     monkeypatch.setattr(config_mod, "load_config", lambda: _config(show_notice=show_notice))
 
     monkeypatch.setattr(config_mod, "load_config_readonly", lambda: _config(show_notice=show_notice))
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     stdout = io.StringIO()
 
     with contextlib.redirect_stdout(stdout):
@@ -72,24 +69,17 @@ def _make_codex_agent(monkeypatch, tmp_path: Path, *, show_notice: bool):
             disabled_toolsets=[],
             quiet_mode=False,
             skip_memory=True,
-            session_db=db,
+            persistence=db,
             session_id="codex-notice-test",
         )
 
     return agent, stdout.getvalue()
 
-
 def _threshold_ratio(agent: AIAgent) -> float:
-    compressor = getattr(agent, "context_compressor")
+    compressor = agent.context_compressor
     return round(compressor.threshold_tokens / compressor.context_length, 2)
 
-
 # ── config display gate ──────────────────────────────────────────────────────
-
-
-
-
-
 
 def test_codex_gpt55_autoraise_notice_deduped_across_agent_inits(monkeypatch, tmp_path):
     # Gateway spam scenario (#54432): the gateway rebuilds the agent per
@@ -97,27 +87,18 @@ def test_codex_gpt55_autoraise_notice_deduped_across_agent_inits(monkeypatch, tm
     # silent because the per-profile marker was recorded.
     agent1, stdout1 = _make_codex_agent(monkeypatch, tmp_path, show_notice=True)
     assert "auto-compaction was raised" in stdout1
-    assert getattr(agent1, "_compression_warning") is not None
+    assert agent1._compression_warning is not None
 
     agent2, stdout2 = _make_codex_agent(monkeypatch, tmp_path, show_notice=True)
     assert _threshold_ratio(agent2) == 0.85  # autoraise still applies
     assert "auto-compaction was raised" not in stdout2
-    assert getattr(agent2, "_compression_warning") is None
-
+    assert agent2._compression_warning is None
 
 # ── per-profile dedupe marker (#54432) ───────────────────────────────────────
-
 
 def test_marker_lives_under_hermes_home() -> None:
     marker = _codex_gpt55_autoraise_notice_marker()
     assert marker.parent == get_hermes_home()
-
-
-
-
-
-
-
 
 def test_changed_threshold_renotifies_once() -> None:
     _record_codex_gpt55_autoraise_notice(AUTORAISE)
@@ -129,13 +110,3 @@ def test_changed_threshold_renotifies_once() -> None:
     assert _codex_gpt55_autoraise_notice_seen(changed) is True
     # And the old state is now considered unseen (marker moved forward).
     assert _codex_gpt55_autoraise_notice_seen(AUTORAISE) is False
-
-
-
-
-
-
-
-
-
-

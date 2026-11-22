@@ -88,7 +88,9 @@ class _AsyncStream(_Stream):
 # ── The fence must publish the deadline it already owns ──────────────────
 
 
-def test_commit_fence_publishes_its_shared_deadline():
+def test_commit_fence_publishes_its_shared_deadline(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr("agent.conversation_compression.time.monotonic", lambda: now[0])
     fence = CompressionCommitFence()
     assert fence.deadline_monotonic is None
 
@@ -99,7 +101,7 @@ def test_commit_fence_publishes_its_shared_deadline():
     assert not fence.deadline_exceeded
 
     fence.set_total_ceiling_seconds(0.001)
-    time.sleep(0.01)
+    now[0] += 1.0
     assert fence.deadline_exceeded
     assert fence.deadline_monotonic <= time.monotonic()
 
@@ -114,7 +116,7 @@ def test_streamed_summary_stops_at_an_elapsed_host_deadline():
         with pytest.raises(TimeoutError) as excinfo:
             aux._aggregate_chat_stream(stream, model="m", total_ceiling=2400.0)
 
-    # "timed out" keeps _is_timeout_error classification identical to a
+    # "timed out" keeps the classifier's timeout verdict identical to a
     # request timeout, so the existing recovery chains are unchanged.
     assert "timed out" in str(excinfo.value)
     # Stopped on the first frame instead of draining the whole stream, and the

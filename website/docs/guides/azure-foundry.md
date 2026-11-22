@@ -6,6 +6,10 @@ description: "Use Hermes Agent with Microsoft Foundry — OpenAI-style and Anthr
 
 # Microsoft Foundry
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](../reference/package-management.md#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Hermes Agent's `azure-foundry` provider supports Microsoft Foundry (formerly Azure AI Foundry) and Azure OpenAI. A single Foundry resource can host models with two different wire formats:
 
 - **OpenAI-style** — `POST /v1/chat/completions` on endpoints like `https://<resource>.openai.azure.com/openai/v1`. Used for GPT-4.x, GPT-5.x, Llama, Mistral, and most open-weight models.
@@ -101,7 +105,7 @@ The wizard runs a bounded preflight probe (10 s timeout). On failure it offers t
 `azure-identity` is installed automatically on first use via Hermes' lazy-install path. To pre-install:
 
 ```bash
-pip install azure-identity
+python -c "import pm; pm.sync_venv(['azure-identity'], explicit=True)"
 ```
 
 ### Configuration written to `config.yaml`
@@ -268,6 +272,8 @@ model:
 ```
 
 With `AZURE_ANTHROPIC_KEY` set in `~/.hermes/.env`. Hermes detects `azure.com` in the base URL and short-circuits around the Claude Code OAuth token chain so the Azure key is used directly with `x-api-key` auth.
+
+Hermes never sends the Claude Code OAuth token to an `azure.com` host, from the runtime resolver (under `anthropic`, `claude` or `claude-code`, with `model.base_url`, `--base-url` or `delegation.base_url`) or model discovery: with no Azure key the resolver stops with `No Azure Anthropic API key found`. Keys added with `hermes auth add anthropic` are recorded for `api.anthropic.com` and do not serve a Foundry URL; use `model.api_key`, `key_env` or `AZURE_ANTHROPIC_KEY`. Detection is by the `azure.com` host suffix only: sovereign-cloud hosts (`*.azure.us`, `*.azure.cn`) and proxies in front of Foundry are not recognised.
 
 `key_env` is the canonical snake_case field name; `api_key_env` (and the camelCase `keyEnv` / `apiKeyEnv`) are accepted as aliases. If both `key_env` and `AZURE_ANTHROPIC_KEY`/`ANTHROPIC_API_KEY` are set, the `key_env`-named env var wins.
 

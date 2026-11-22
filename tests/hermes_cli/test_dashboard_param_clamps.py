@@ -9,10 +9,12 @@ unbounded/inverted ``days`` forces full-history InsightsEngine work.
 
 from __future__ import annotations
 
+from contextlib import closing
+
 import pytest
 
 fastapi = pytest.importorskip("fastapi")
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
 
 @pytest.fixture()
@@ -20,8 +22,14 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "clamp-test-token")
     from hermes_cli import web_server
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
-    with TestClient(web_server.app, raise_server_exceptions=False) as c:
+    # The owner initializes storage, not GET requests or an unrelated lifespan.
+    with open_persistence(profile_scope()) as store:
+        seed_session(store, "clamp-session", "cli")
+
+    with closing(TestClient(web_server.app, raise_server_exceptions=False)) as c:
         c.headers["Authorization"] = "Bearer clamp-test-token"
         yield c
 
@@ -46,6 +54,8 @@ class TestSessionPaginationClamps:
     def test_in_range_limit_accepted(self, client):
         r = client.get("/api/sessions", params={"limit": 50})
         assert r.status_code == 200
+        assert r.json()["limit"] == 50
+        assert [row["id"] for row in r.json()["sessions"]] == ["clamp-session"]
 
 
 class TestAnalyticsDaysClamps:

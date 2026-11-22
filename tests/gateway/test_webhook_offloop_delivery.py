@@ -28,7 +28,7 @@ def fake_gh(tmp_path, monkeypatch):
     if sys.platform.startswith("win"):
         pytest.skip("POSIX shell stub")
     gh = tmp_path / "gh"
-    gh.write_text("#!/bin/bash\nsleep 1\necho posted\nexit 0\n", encoding="utf-8")
+    gh.write_text("#!/usr/bin/env bash\nsleep 1\necho posted\nexit 0\n", encoding="utf-8")
     gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
     return gh
@@ -60,7 +60,7 @@ class TestGithubCommentDeliveryOffLoop:
         stop = True
         try:
             await asyncio.wait_for(task, timeout=2)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             task.cancel()
 
         assert result.success is True

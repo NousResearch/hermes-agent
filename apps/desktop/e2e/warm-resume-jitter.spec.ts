@@ -27,22 +27,21 @@
  * must not rebuild the kept-alive transcript: zero additive bursts and zero
  * reconciles.
  *
- * Prerequisite: `npm run build` must have been run so dist/ exists.
+ * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  */
 
-import { expect, test } from './test'
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
+import { startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import {
+  buildAppEnv,
+  createSandbox,
+  launchDesktop,
   type MockBackendFixture,
   waitForAppReady,
-  createSandbox,
-  writeMockProviderConfig,
-  writeEnvFile,
-  buildAppEnv,
-  launchDesktop,
 } from './fixtures'
-import { startMockServer } from '../../../tests-js/scripts/mock-server'
 import { RealSessionBuilder } from './real-session-builder'
+import { expect, test } from './test'
 
 const SESSION_TITLE = 'E2E Warm Resume Jitter Test'
 
@@ -121,7 +120,7 @@ async function setupSeededMockBackend(): Promise<MockBackendFixture> {
   writeEnvFile(sandbox.hermesHome)
 
   // 3. Produce all 16 user/assistant pairs through the real TUI gateway,
-  // AIAgent, mock provider, and SessionDB persistence path before desktop starts.
+  // AIAgent, mock provider, and session-store persistence path before desktop starts.
   const builder = await RealSessionBuilder.start(sandbox.hermesHome)
   try {
     await builder.createSession({ title: SESSION_TITLE, turns: generateSessionTurns() })

@@ -8,9 +8,7 @@ exist (agent/agent_init.py); these tests pin the gateway wiring:
 config -> signature -> AIAgent kwargs.
 """
 
-
 from gateway.run import GatewayRunner
-
 
 class TestSkipContextFilesSignature:
     """A toggled skip_context_files must invalidate the agent cache."""
@@ -53,5 +51,3 @@ class TestSkipContextFilesSignature:
             skip_context_files=False,
         )
         assert sig_default == sig_false
-
-

@@ -2,7 +2,7 @@ import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import hermes_cli.memory_setup as memory_setup
+from hermes_cli import memory_setup
 from hermes_cli.memory_setup import _CANCELLED
 
 
@@ -54,39 +54,39 @@ def test_cmd_setup_generic_choice_cancel_writes_nothing(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _provider_pip_dependencies — mode-aware dep expansion (#70636)
+# provider extras — mode-aware expansion (#70636)
 # ---------------------------------------------------------------------------
 
 
 
 
 
-def test_install_dependencies_force_reinstalls_versioned_specs(tmp_path, monkeypatch):
-    """force=True hands every declared spec (version ranges intact) to pip,
-    so a downgraded/stripped bridge package is restored on hermes update."""
-    import yaml as _yaml
+def test_install_dependencies_prepares_declared_extra_even_if_importable(tmp_path, monkeypatch):
+    """PM, not ambient importability, decides whether constraints are current."""
+    import hermes_yaml as _yaml
 
     plugin_dir = tmp_path / "mem0"
     plugin_dir.mkdir()
     (plugin_dir / "plugin.yaml").write_text(
-        _yaml.safe_dump({"pip_dependencies": ["mem0ai>=2.0.10,<3"]}), encoding="utf-8"
+        _yaml.safe_dump({"extra": "mem0"}), encoding="utf-8"
     )
     monkeypatch.setattr(
         "plugins.memory.find_provider_dir", lambda name: plugin_dir
     )
 
-    installed = []
+    synced = []
 
-    def fake_install_specs(specs, timeout=120):
-        installed.append(list(specs))
-        return SimpleNamespace(ok=True, blocked=False, reason="", stderr="")
+    import pm
 
-    monkeypatch.setattr("tools.lazy_deps.install_specs", fake_install_specs)
+    monkeypatch.setattr(pm, "available", lambda extra: True)
+    monkeypatch.setattr(
+        pm, "sync_venv",
+        lambda extras=None, explicit=False: synced.append((list(extras or []), explicit)),
+    )
 
-    memory_setup._install_dependencies("mem0", force=True)
+    memory_setup._install_dependencies("mem0")
 
-    assert installed, "force=True must reach the install step"
-    assert any("mem0ai>=2.0.10,<3" in specs for specs in installed)
+    assert synced == [(["mem0"], True)]
 
 
 def test_cmd_status_memory_tool_gate_disabled(capsys, monkeypatch):
@@ -97,7 +97,7 @@ def test_cmd_status_memory_tool_gate_disabled(capsys, monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config_readonly", lambda: _cfg, raising=False
     )
-    monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: [])
+    monkeypatch.setattr(memory_setup, "_get_available_providers", list)
 
     memory_setup.cmd_status(SimpleNamespace())
 
@@ -114,7 +114,7 @@ def test_cmd_status_memory_tool_gate_enabled(capsys, monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config_readonly", lambda: _cfg, raising=False
     )
-    monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: [])
+    monkeypatch.setattr(memory_setup, "_get_available_providers", list)
 
     memory_setup.cmd_status(SimpleNamespace())
 

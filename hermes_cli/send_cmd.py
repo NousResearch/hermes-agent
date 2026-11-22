@@ -33,7 +33,7 @@ def _read_message_body(positional: Optional[str], file_path: Optional[str]) -> O
         if file_path == "-":
             return sys.stdin.read()
         try:
-            return Path(file_path).read_text(encoding="utf-8")
+            return Path(file_path).read_text(encoding="utf-8-sig")
         except UnicodeDecodeError:
             _fail(
                 f"hermes send: {file_path} is not a text file. --file reads the "
@@ -70,6 +70,8 @@ def _emit_result(result_json: str, *, json_mode: bool, quiet: bool) -> int:
     if json_mode:
         print(json.dumps(payload, indent=2))
     elif not quiet:
+        for warning in payload.get("warnings") or ():  # the cause behind an error, or a partial send
+            print(f"hermes send: warning: {warning}", file=sys.stderr)
         if payload.get("error"):
             print(f"hermes send: {payload['error']}", file=sys.stderr)
         elif payload.get("success"):
@@ -156,6 +158,7 @@ def _load_hermes_env() -> None:
     the profile's external secret sources over it — so it is authoritative as-is; replaying raw
     ``.env`` over it would let a stale user value beat the secret-manager one for this request.
     """
+    from hermes_cli.config_backend import config_exists
     import os
     try:
         from hermes_cli.config import get_hermes_home
@@ -179,16 +182,15 @@ def _load_hermes_env() -> None:
     # Bridge top-level scalars the user (or the managed layer) actually wrote — never DEFAULT_CONFIG —
     # into the environment, without overriding existing values.
     config_path = home / "config.yaml"
-    if not config_path.exists():
+    if not config_exists(config_path):
         return
     try:
         from hermes_cli.config_effective import load_user_config_effective
         cfg = load_user_config_effective(config_path)
     except Exception:
         return
-    for key, val in cfg.items():
-        if isinstance(val, (str, int, float, bool)) and key not in target:
-            target[key] = str(val)
+    from hermes_cli.env_loader import bridge_config_scalars
+    bridge_config_scalars(cfg, target)
 
 
 def cmd_send(args: argparse.Namespace) -> None:
@@ -229,7 +231,7 @@ def cmd_send(args: argparse.Namespace) -> None:
         message = f"{subject}\n\n{message.lstrip()}"
 
     # Lazy import keeps `hermes send --help` fast (no tool registry / gateway config stack).
-    from tools.send_message_tool import send_message_tool
+    from gateway.outbound.send import send_message_tool
 
     # Routes to the platform adapter (bot-token path for built-ins, live-adapter path for plugin
     # platforms); takes the standard tool-call dict and returns a JSON string.

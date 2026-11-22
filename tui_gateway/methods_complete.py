@@ -18,6 +18,17 @@ def _item(text: str, meta: str, display: str | None = None) -> dict:
     return {"text": text, "display": display if display is not None else text, "meta": meta}
 
 
+def _relpath(pth, path: str, start: str) -> str:
+    """``relpath`` that never raises: on Windows a word on another drive (D:\\hub from an F:\\ cwd) makes
+    ``os.path.relpath`` raise ValueError, which killed the whole ``complete.path`` dispatch and dropped the
+    client's WebSocket. Nothing relative can be said about another drive, so the absolute path is the answer."""
+    try:
+        return pth.relpath(path, start).replace(os.sep, "/")
+    except ValueError:
+        return path.replace(os.sep, "/")
+
+
+
 def _catch(fail_code: int):
     """Handler body exceptions → ``_err(rid, fail_code, str(e))``."""
 
@@ -213,12 +224,12 @@ def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is
         if prefix_tag and (prefix_tag == "folder") != is_dir:  # explicit `@folder:`/`@file:` skip the other kind
             continue
         full = pth.join(search_dir, entry)
-        rel = pth.relpath(full, root).replace(os.sep, "/")
+        rel = _relpath(pth, full, root)
         suffix = "/" if is_dir else ""
         if is_context:
             text = f"@{prefix_tag or ('folder' if is_dir else 'file')}:{rel}{suffix}"
         elif word.startswith("~"):
-            text = "~/" + pth.relpath(full, os.path.expanduser("~") if local else "~") + suffix
+            text = "~/" + _relpath(pth, full, os.path.expanduser("~") if local else "~") + suffix
         else:
             text = ("./" if word.startswith("./") else "") + rel + suffix
         items.append(_item(text, "dir" if is_dir else "", entry + suffix))

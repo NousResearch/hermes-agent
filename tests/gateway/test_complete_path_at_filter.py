@@ -358,3 +358,26 @@ def test_completion_ignores_real_terminal_cwd(tmp_path, monkeypatch):
     )
 
 
+
+
+# ── Cross-drive word: the completion must not fail the whole call ──
+
+
+def test_absolute_word_on_another_drive_does_not_fail_the_call(tmp_path, monkeypatch):
+    r"""`D:\hub` typed from an `F:\` cwd made ``os.path.relpath`` raise ValueError, which the
+    handler's ``_catch`` turned into an error frame and the client dropped the WebSocket. Nothing
+    relative can be said about another drive, so the absolute path is the answer."""
+    monkeypatch.chdir(tmp_path)
+    _fixture(tmp_path)
+
+    def cross_drive(path, start=None):
+        raise ValueError("path is on mount 'D:', start on mount 'F:'")
+
+    monkeypatch.setattr(os.path, "relpath", cross_drive)
+
+    resp = server.handle_request({"id": "1", "method": "complete.path",
+                                  "params": {"word": str(tmp_path) + os.sep}})
+
+    assert "result" in resp, resp
+    texts = [it["text"] for it in resp["result"]["items"]]
+    assert any(t.endswith("readme.md") for t in texts), texts

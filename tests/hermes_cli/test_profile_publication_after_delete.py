@@ -114,11 +114,12 @@ def test_an_import_waits_for_a_create_of_the_same_name_in_this_process(profile_e
         worker = threading.Thread(target=lambda: (profiles.import_profile(str(archive), name="racer"), done.set()))
         worker.start()
         assert asked.wait(10)
-        assert not done.wait(0.3) and _leftovers() == []  # held at the lock: nothing staged yet
+        assert not done.wait(2) and _leftovers() == []  # held at the lock: nothing staged yet
     worker.join(10)
     assert done.is_set() and (profiles.get_profile_dir("racer") / "MARK_IMPORTED").exists()
 
 
+@pytest.mark.platforms("posix")
 def test_an_import_stages_privately_until_its_files_are_tightened(profile_env, monkeypatch):
     archive = _archive(profile_env)
     real, modes = profiles_initialization.prepare_imported_tree, []

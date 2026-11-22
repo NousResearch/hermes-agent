@@ -119,14 +119,17 @@ def release_command(env: Mapping[str, str]) -> list[str] | None:
     baked = facts["bundle_env"]
     if not isinstance(baked, dict):
         return None
-    if facts["kind"] == "commit":
-        from scripts.releases.commit_build import tagless_dispatch_command
-
-        return tagless_dispatch_command(commit, str(repository), branch, baked or None)
     from scripts.releases.channel_build import dispatch_command
+    from scripts.releases.commit_build import tagless_dispatch_command
 
-    return dispatch_command(str(facts["channel"]), commit, str(repository), branch, baked or None,
-                            str(facts["branding"]))
+    # A malformed input has no replay: admission, the next step, refuses it with its own error.
+    try:
+        if facts["kind"] == "commit":
+            return tagless_dispatch_command(commit, str(repository), branch, baked or None)
+        return dispatch_command(str(facts["channel"]), commit, str(repository), branch, baked or None,
+                                str(facts["branding"]))
+    except ValueError:
+        return None
 
 
 def receipt_shape(facts: Mapping[str, object]) -> str | None:

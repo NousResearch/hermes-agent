@@ -3,9 +3,7 @@ title: Claudexor
 repo: https://github.com/razzant/claudexor
 sha: "6bc0ed57c0012bd6a636ab46865389df3269be9d"
 subdir: plugins/hermes
-description: >-
-  Ask another coding agent from Hermes or delegate work on a project you
-  select through your local Claudexor CLI. Integration by Ouroboros.
+description: "Ask another coding agent from Hermes or delegate work on a project you select through your local Claudexor CLI. Integration by Ouroboros. Disclosure — Runs your separately installed, unpinned Claudexor CLI as an MCP server; it can start a local daemon and third-party coding agents (Claude Code, Codex, Cursor, OpenCode) that send prompts and selected project files to their providers, spend subscription quota or money, and, once you approve a call, write to your project."
 maintainer: ouroboros-agent
 tier: community
 category: tools

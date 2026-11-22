@@ -67,6 +67,13 @@ def _list_native_chat_models(base_url: str, api_key: str, timeout: float) -> lis
     return None
 
 
+def _is_ai_studio_native_base_url(base_url: str) -> bool:
+    """Native AI Studio REST host (not its ``/openai`` subpath, not Vertex express or a proxy): the only
+    surface whose ``models.list`` carries ``supportedGenerationMethods``."""
+    normalized = base_url.strip().rstrip("/").lower()
+    return urllib.parse.urlsplit(normalized).hostname == "generativelanguage.googleapis.com" and not normalized.endswith("/openai")
+
+
 class GeminiProfile(ProviderProfile):
     """Gemini — translate reasoning_config to thinking_config in extra_body."""
 
@@ -85,10 +92,8 @@ class GeminiProfile(ProviderProfile):
         keep the OpenAI-compatible listing. Ids lose Google's ``models/`` prefix either way, and the
         result flows through the shared curated merge in ``hermes_cli.models``.
         """
-        from agent.gemini_native_adapter import is_native_gemini_base_url, is_vertex_express_base_url
-
         effective_base = (base_url or self.base_url or "").rstrip("/")
-        if is_native_gemini_base_url(effective_base) and not is_vertex_express_base_url(effective_base):
+        if _is_ai_studio_native_base_url(effective_base):
             return _list_native_chat_models(effective_base, api_key, timeout) if api_key else None
         models = super().fetch_models(api_key=api_key, base_url=effective_base or None, timeout=timeout)
         return [_bare_model_id(m) for m in models] if models else models

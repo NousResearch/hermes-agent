@@ -251,6 +251,23 @@ export function useSessionStateCache({
       const existing = sessionStateCache.get(sessionId)
 
       if (existing) {
+        // Canonical gateway events (`session.info` from SessionAuthority._publish_pending) always
+        // echo the immutable logical owner (`stored_session_id === sessionId`). When the user has
+        // opened a physical continuation tip (`existing.storedSessionId !== sessionId`), that echo
+        // is NOT a forward compression rotation — treating it as one rekeys the tile backwards and
+        // navigates the reader out of the active conversation mid-read.
+        const isCanonicalLogicalOwnerEcho =
+          Boolean(existing.storedSessionId) &&
+          Boolean(storedSessionId) &&
+          storedSessionId === sessionId &&
+          existing.storedSessionId !== sessionId
+
+        if (isCanonicalLogicalOwnerEcho && storedSessionId) {
+          runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
+
+          return existing
+        }
+
         if (storedSessionId !== undefined && storedSessionId !== existing.storedSessionId) {
           // Stored id changed (e.g. auto-compression rotated it). Create a NEW
           // state object rather than mutating in place — updateSessionState needs

@@ -1439,6 +1439,45 @@ describe('useSessionStateCache — parked tiles release their warm transcript (#
     expect(cache.sessionStateByRuntimeIdRef.current.has(runtime)).toBe(true)
     expect($sessionStates.get()[runtime]?.messages.length).toBe(2)
   })
+
+  it('ignores canonical logical-owner echo instead of rotating backwards mid-read', () => {
+    let cache!: Cache
+    const logicalOwner = '20260917_210011_0daed7'
+    const physicalTip = '20261121_093957_ea61b7af'
+
+    setActiveSessionId(logicalOwner)
+    setSelectedStoredSessionId(physicalTip)
+    render(
+      <Harness
+        activeSessionId={logicalOwner}
+        onReady={value => (cache = value)}
+        selectedStoredSessionId={physicalTip}
+      />
+    )
+
+    // Resume binds runtime logicalOwner -> physicalTip (the tip the user opened).
+    act(() => {
+      cache.updateSessionState(
+        logicalOwner,
+        state => ({ ...state, messages: transcriptForCache('tip-history') }),
+        physicalTip
+      )
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toBeNull()
+    expect(cache.sessionStateByRuntimeIdRef.current.get(logicalOwner)?.storedSessionId).toBe(physicalTip)
+
+    // Subsequent canonical session.info echoes stored_session_id === logicalOwner.
+    // Must NOT rotate backwards, rekey, or fire $activeSessionStoredIdRotation!
+    act(() => {
+      cache.updateSessionState(logicalOwner, state => ({ ...state, busy: false }), logicalOwner)
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toBeNull()
+    expect(cache.sessionStateByRuntimeIdRef.current.get(logicalOwner)?.storedSessionId).toBe(physicalTip)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get(physicalTip)).toBe(logicalOwner)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get(logicalOwner)).toBe(logicalOwner)
+  })
 })
 
 function PublishingHarness({ onReady }: { onReady: (cache: Cache) => void }) {

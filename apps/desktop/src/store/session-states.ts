@@ -738,7 +738,18 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
   // route. Re-validate against the current route/selection, not just the
   // runtime id, so a fast A -> B switch while A is still busy does not get
   // pulled back to A's new tip (#86106).
-  if (previous?.storedSessionId && next.storedSessionId && previous.storedSessionId !== next.storedSessionId) {
+  const isCanonicalLogicalOwnerEcho =
+    Boolean(previous?.storedSessionId) &&
+    Boolean(next.storedSessionId) &&
+    next.storedSessionId === runtimeId &&
+    previous?.storedSessionId !== runtimeId
+
+  if (
+    previous?.storedSessionId &&
+    next.storedSessionId &&
+    previous.storedSessionId !== next.storedSessionId &&
+    !isCanonicalLogicalOwnerEcho
+  ) {
     if (runtimeId === $activeSessionId.get() && isSessionInForeground(previous.storedSessionId)) {
       setActiveSessionStoredIdRotation({
         nextStoredSessionId: next.storedSessionId,

@@ -49,6 +49,18 @@ def _asking(monkeypatch, answer, late=False):
     return asked
 
 
+def test_create_card_names_context_sources_without_reading_their_contents(cron_store, monkeypatch):
+    source = cron_store.create_job(name="Build check", schedule="every 2h", prompt="Private source instructions")
+    asked = _asking(monkeypatch, "deny")
+    payload = registry.dispatch("cronjob_manage", {**_CREATE, "context_from": [source["id"], "SeLf"]})
+    assert isinstance(payload, str)
+    result = json.loads(payload)
+    assert result["declined"] and len(cron_store.load_jobs()) == 1
+    [(kind, preview)] = asked
+    assert kind == "schedule" and source["id"] in preview
+    assert "its own previous output" in preview and source["prompt"] not in preview
+
+
 def _local(iso):
     from hermes_time import now as hermes_now
     return datetime.fromisoformat(iso).astimezone(hermes_now().tzinfo).strftime("%a %b %d %H:%M %Z")

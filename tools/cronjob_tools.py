@@ -1315,6 +1315,10 @@ def _approval_task(job: dict[str, Any]) -> str:
         task = f"{task} (after running script {script})" if script else task
     extras = [f"checks {label} {job[key]} first each run" for key, label in
               (("monitor_script", "script"), ("monitor_url", "URL")) if job.get(key)]
+    if job.get("context_from") and not job.get("no_agent"):
+        sources = ["its own previous output" if ref.strip().lower() == "self" else f"output of job {ref}"
+                   for ref in job["context_from"]]
+        extras.append(f"reads {', '.join(sources)} when available")
     extras.append(f"results go to {_audience(job, job.get('deliver'))}")
     if job.get("failure_deliver") and job["failure_deliver"] != job.get("deliver"):
         extras.append(f"failure notices go to {_audience(job, job['failure_deliver'])}")

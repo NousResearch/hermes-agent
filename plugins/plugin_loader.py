@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
@@ -132,6 +133,48 @@ def read_plugin_description(plugin_dir: Path) -> str:
         return meta.get("description", "")
     except Exception:
         return ""
+
+
+@dataclass(frozen=True)
+class PluginChoice:
+    """What config.yaml says about one category's user plugins, read once per listing: the provider
+    the category key selects and the ``plugins.enabled`` / ``plugins.disabled`` lists. An unreadable
+    config means nothing is selected, enabled or disabled."""
+
+    selected: str = ""
+    enabled: frozenset = frozenset()
+    disabled: frozenset = frozenset()
+
+    def allows_import(self, plugin_dir: Path, name: str) -> bool:
+        """A user plugin's code may run for a listing only when it is turned on: selected for this
+        category or in ``plugins.enabled``, and not in ``plugins.disabled``."""
+        from pm.plugins_state import plugin_spellings
+
+        spellings = plugin_spellings(plugin_dir, name)
+        if spellings & self.disabled:
+            return False
+        return name == self.selected or bool(spellings & self.enabled)
+
+
+def read_plugin_choice(*selection_key: str) -> PluginChoice:
+    """One read-only config read for a listing; *selection_key* is the category's config path
+    (``"memory", "provider"``), none when only the plugin lists matter."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        config = load_config()
+        selected = cfg_get(config, *selection_key) if selection_key else ""
+        lists = [cfg_get(config, "plugins", key) for key in ("enabled", "disabled")]
+    except Exception:  # health: allow BLE001 -- same boundary as the memory check it replaces: an unreadable config.yaml turns nothing on or off
+        return PluginChoice()
+    enabled, disabled = (frozenset(v for v in value if isinstance(v, str)) if isinstance(value, list)
+                         else frozenset() for value in lists)
+    return PluginChoice(selected.strip() if isinstance(selected, str) else "", enabled, disabled)
+
+
+def describe_without_import(name: str, plugin_dir: Path) -> tuple[str, str, bool]:
+    """A listing row for a user plugin that is not turned on: manifest description, not available."""
+    return name, read_plugin_description(plugin_dir), False
 
 
 def _new_module(name: str, file: Path, search_locations: Optional[list[str]] = None) -> Optional[Any]:

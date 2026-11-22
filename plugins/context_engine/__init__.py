@@ -41,10 +41,19 @@ def _iter_engine_dirs() -> list[tuple[str, Path]]:
 
 
 def discover_context_engines() -> list[tuple[str, str, bool]]:
-    """Return ``[(name, description, is_available), ...]`` for every bundled and user engine."""
+    """Return ``[(name, description, is_available), ...]`` for every bundled and user engine. A user
+    engine's code runs only when it is turned on (``context.engine`` or ``plugins.enabled``, not
+    ``plugins.disabled``); any other is listed from its manifest as not available."""
+    choice = _loader.read_plugin_choice("context", "engine")
     return [(name, _loader.read_plugin_description(child),
              _loader.probe_availability(lambda c=child: _load_engine_from_dir(c)))
+            if _is_bundled(child) or choice.allows_import(child, name)
+            else _loader.describe_without_import(name, child)
             for name, child in _iter_engine_dirs()]
+
+
+def _is_bundled(engine_dir: Path) -> bool:
+    return _loader.is_direct_child(engine_dir, _CONTEXT_ENGINE_PLUGINS_DIR)
 
 
 def find_engine_dir(name: str) -> Optional[Path]:
@@ -74,7 +83,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional[ContextEngine]:
     """Import an engine module and extract its ContextEngine (register(ctx) or subclass)."""
     from agent.context_engine import ContextEngine
     name = engine_dir.name
-    is_bundled = _loader.is_direct_child(engine_dir, _CONTEXT_ENGINE_PLUGINS_DIR)
+    is_bundled = _is_bundled(engine_dir)
     module_name = f"{__package__}.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
     from hermes_cli.plugin_isolation import user_plugin_host
     host = None if is_bundled else user_plugin_host()

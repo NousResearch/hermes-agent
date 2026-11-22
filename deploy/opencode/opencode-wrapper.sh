@@ -13,7 +13,7 @@ OPENCODE_REAL_BIN="__OPENCODE_REAL_BIN__"
 OPENCODE_SLOT_DIR="__OPENCODE_SLOT_DIR__"
 OPENCODE_KEY_FILE="__OPENCODE_KEY_FILE__"
 OPENCODE_MAX_SLOTS="${OPENCODE_MAX_SLOTS:-12}"
-OPENCODE_DEFAULT_MODEL="omniroute/synthwave-auto"
+OPENCODE_DEFAULT_MODEL="synthwave/auto"  # provider synthwave in ~/.config/opencode/opencode.jsonc
 
 if [ -n "${OPENCODE_RECURSION_GUARD:-}" ]; then
   echo "opencode: nested invocation blocked by recursion guard. You are already running inside an opencode session: perform the task directly with your own tools instead of delegating to a new 'opencode run'." >&2

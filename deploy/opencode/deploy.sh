@@ -10,6 +10,11 @@
 #   deploy.sh --apply --restart   same, then restart hermes-mux-gateway and the WebUI
 #   deploy.sh --wrapper-only  (re)install only the wrapper (after `npm i -g @opencode/cli@<version>`)
 #   deploy.sh --rollback      undo using the state file written by --apply
+#
+# OpenCode 2 (npm @opencode/cli). Default model synthwave/auto: the host config
+# ~/.config/opencode/opencode.jsonc needs provider "synthwave" (OmniRoute, model
+# "auto" with modelID "synthwave-auto"); opencode_task brings its own. After an
+# npm update also relink opencode2 to the wrapper. Web UI: opencode-web.service.
 set -euo pipefail
 
 HOME_DIR="$(getent passwd "$(id -un)" | cut -d: -f6)"

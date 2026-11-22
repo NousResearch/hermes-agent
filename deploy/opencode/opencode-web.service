@@ -1,0 +1,21 @@
+# OpenCode 2 web UI for platform admins on the Synthwave VPS (22 Nov 2026).
+# Install: cp to ~/.config/systemd/user/, create ~/.config/opencode/web.env (600) with
+#   OPENCODE_PASSWORD=<long random>, OMNIROUTE_API_KEY=<key>, PLAINBOARD_MCP_TOKEN=<token>,
+#   OPENCODE_DISABLE_AUTOUPDATE=1
+# then `systemctl --user enable --now opencode-web` and expose it on the tailnet only:
+#   sudo tailscale serve --bg --https=8157 http://127.0.0.1:18157
+# Browser: "Use password". Super Agent tile: SP_APP_LINKS key "opencode".
+[Unit]
+Description=OpenCode 2 web UI for platform admins (127.0.0.1:18157, tailnet https :8157)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h
+EnvironmentFile=%h/.config/opencode/web.env
+# Through the Synthwave wrapper: recursion guard for everything the agents start.
+ExecStart=%h/.npm-global/bin/opencode serve --hostname 127.0.0.1 --port 18157
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

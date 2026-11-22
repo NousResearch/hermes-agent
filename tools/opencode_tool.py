@@ -51,7 +51,7 @@ from tools.registry import registry, tool_error
 logger = logging.getLogger(__name__)
 
 TOOL_NAME = "opencode_task"
-DEFAULT_MODEL = "omniroute/synthwave-auto"
+DEFAULT_MODEL = "synthwave/auto"
 # PlainBoard (the agent team on this VPS): its MCP bridge takes one bearer token per caller and acts as
 # that caller's own PlainBoard account. The token lives in the caller's profile .env.
 PLAINBOARD_MCP_URL = "http://127.0.0.1:18156/mcp"
@@ -160,7 +160,7 @@ OPENCODE_TASK_SCHEMA = {
         "properties": {
             "task": {"type": "string", "description": "Self-contained instructions: goal, files, constraints, how to verify."},
             "workdir": {"type": "string", "description": "Absolute path of the repository or folder to work in."},
-            "model": {"type": "string", "description": f"provider/model for OpenCode (default {DEFAULT_MODEL})."},
+            "model": {"type": "string", "description": f"provider/model for OpenCode (default {DEFAULT_MODEL}; others: omniroute/synthpulse-opus, omniroute/synthpulse-sonnet)."},
             "background": {"type": "boolean", "description": "Run in the background and notify on completion (default true)."},
             "worktree": {"type": "boolean", "description": "Work in a separate git worktree on branch opencode/<id> instead of the live tree (default false). Use it for parallel jobs in one repository, or when the live tree has work in progress."},
             "test_command": {"type": "string", "description": "Optional command run in the workdir after OpenCode, e.g. 'pytest -q tests/x'."},
@@ -428,6 +428,13 @@ def opencode_config(deny_patterns: list[str], lean: bool = True, plainboard: boo
         "$schema": "https://opencode.ai/config.json",
         "update": "disable",
         "providers": {
+            # synthwave/auto: the Synthwave name for OmniRoute's synthwave-auto combo (the default).
+            "synthwave": {
+                "package": "aisdk:@ai-sdk/openai-compatible",
+                "name": "Synthwave (OmniRoute)",
+                "settings": {"baseURL": "http://127.0.0.1:20128/v1", "apiKey": "{env:OMNIROUTE_API_KEY}"},
+                "models": {"auto": {"modelID": "synthwave-auto", "name": "Synthwave auto"}},
+            },
             "omniroute": {
                 "package": "aisdk:@ai-sdk/openai-compatible",
                 "name": "OmniRoute (Synthwave gateway)",

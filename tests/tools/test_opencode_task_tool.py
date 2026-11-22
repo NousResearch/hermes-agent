@@ -266,11 +266,11 @@ def test_wrapper_guard_default_model_key_and_slots(tmp_path):
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
     done = subprocess.run([str(wrapper), "run", "hello"], env=env, capture_output=True, text=True, timeout=20, check=False)
     assert done.returncode == 0, done.stderr
-    assert "-m omniroute/synthwave-auto" in done.stdout
+    assert "-m synthwave/auto" in done.stdout
     assert "KEY:secret-key" in done.stdout
     explicit = subprocess.run([str(wrapper), "run", "-m", "omniroute/auto/coding", "hi"], env=env,
                               capture_output=True, text=True, timeout=20, check=False)
-    assert "synthwave-auto" not in explicit.stdout
+    assert "synthwave/auto" not in explicit.stdout
     nested = subprocess.run([str(wrapper), "run", "x"], env={**env, "OPENCODE_RECURSION_GUARD": "1"},
                             capture_output=True, text=True, timeout=20, check=False)
     assert nested.returncode == 1 and "recursion guard" in nested.stderr
@@ -485,7 +485,10 @@ def test_plainboard_mcp_stays_on_when_lean_and_is_off_without_token(monkeypatch)
     monkeypatch.setattr(opencode_tool, "host_mcp_servers", lambda: {"twenty": host["twenty"]})
     assert opencode_tool.opencode_config([], lean=False, plainboard=False)["mcp"]["servers"] == {}
     models = opencode_tool.opencode_config([])["providers"]["omniroute"]["models"]
-    assert "synthwave-auto" in models and opencode_tool.DEFAULT_MODEL == "omniroute/synthwave-auto"
+    assert "synthwave-auto" in models and opencode_tool.DEFAULT_MODEL == "synthwave/auto"
+    synthwave = opencode_tool.opencode_config([])["providers"]["synthwave"]
+    assert synthwave["models"]["auto"]["modelID"] == "synthwave-auto"
+    assert synthwave["settings"]["apiKey"] == "{env:OMNIROUTE_API_KEY}"
 
 
 def test_stream_facts_and_readable_output():

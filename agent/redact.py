@@ -762,6 +762,9 @@ _SIGNAL_PHONE_RE = re.compile(r"(?<![0-9A-Za-z_.])(\+[1-9]\d{6,14})(?![A-Za-z0-9
 # (DB protocols are covered by _DB_CONNSTR_RE).
 _URL_WITH_QUERY_RE = re.compile(r"(https?|wss?|ftp)://([^\s/?#]+)([^\s?#]*)\?([^\s#]+)(#\S*)?")
 _URL_USERINFO_RE = re.compile(r"(https?|wss?|ftp)://([^/\s:@]+):([^/\s@]+)@")
+# Token-in-path CDP gateways (``https://cdp.example.com/<token>``, or urllib3's ``with url: /<token>/...``): mask a 32+ char path
+# segment, never the host after ``//``; keep Chrome's own ``/devtools/<kind>/<id>``, whose id is a UUID or 32 hex chars.
+_CDP_PATH_TOKEN_RE = re.compile(r"(/devtools/[a-z_]+/(?:[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{32}))(?![^/\s?#'\"<>])|(?<=/)(?<!://)[^/\s?#'\"<>]{32,}")
 
 # Strict provider-egress URL redaction: delimiters stay in capture groups so the
 # query/fragment layout is preserved byte-for-byte; the key is decoded
@@ -1242,7 +1245,7 @@ def redact_cdp_url(value: object) -> str:
 
     Unlike ``redact_sensitive_text`` (which passes web-URL query params and
     ``user:pass@`` through for OAuth callbacks / magic links), CDP discovery
-    tokens are pure credentials, so this opts INTO both URL redactors.
+    tokens are pure credentials, so this opts INTO both URL redactors and masks long path segments.
     """
     text = redact_sensitive_text("" if value is None else str(value))
     if not text:
@@ -1251,6 +1254,7 @@ def redact_cdp_url(value: object) -> str:
         lambda m: f"{m.group(1)}://{m.group(2)}{m.group(3)}?{_redact_query_string(m.group(4))}{m.group(5) or ''}",
         text,
     )
+    text = _CDP_PATH_TOKEN_RE.sub(lambda m: m.group(1) or "***", text)
     return _URL_USERINFO_RE.sub(lambda m: f"{m.group(1)}://{m.group(2)}:***@", text)
 
 

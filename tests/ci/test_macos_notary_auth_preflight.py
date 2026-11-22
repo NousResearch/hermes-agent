@@ -111,6 +111,7 @@ def test_validate_p8_pem_accepts_pkcs8_and_rejects_malformed_keys():
     p256 = _der(0x30, bytes.fromhex("06072a8648ce3d0201 06082a8648ce3d030107"))
     fields = _der(0x02, b"\x00") + p256 + _der(0x04, b"\x00")
     for bad in (
+        _pem(b"\x30"),  # SEQUENCE tag without its length byte
         "\n".join(lost_line),
         # The wrong key in the secret: well-formed PKCS#8, but RSA (a Developer ID key, say) or P-384.
         pkcs8(rsa.generate_private_key(public_exponent=65537, key_size=2048)),

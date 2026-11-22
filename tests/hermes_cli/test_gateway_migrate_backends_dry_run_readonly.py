@@ -147,14 +147,16 @@ def test_the_dry_run_changes_no_file_unit_config_or_process(scratch):
 
 
 @pytest.mark.parametrize("scratch", [False], indirect=True, ids=["serve-by-hand"])
-def test_apply_without_dry_run_exits_2_and_changes_nothing(scratch):
+def test_status_and_restore_without_a_migration_change_nothing(scratch):
+    """The other entry points that never change a home without a migration. (A real ``--apply`` is not run
+    here: on this machine it would install a gateway service; the engine's tests drive it on a fake host.)"""
     user, env, old, port, _with_unit = scratch
     assert _settled(env).returncode == 0
     before = _snapshot(user)
 
-    result = _hermes(env, "--apply")
+    status = _hermes(env, "--status", "--json")
+    restore = _hermes(env, "--restore", "--yes")
 
-    assert result.returncode == 2
-    assert "--apply needs --dry-run in this version: it prints the migration plan and changes nothing." in result.stderr
-    assert result.stdout == ""
+    assert status.returncode == 0 and json.loads(status.stdout)["state"] == "none"
+    assert restore.returncode == 3 and "Nothing to restore: no migration recorded" in restore.stdout
     assert _snapshot(user) == before and old.poll() is None and _status(port) is not None

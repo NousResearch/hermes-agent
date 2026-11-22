@@ -323,7 +323,7 @@ def test_cli_json_mode_exits_zero_and_never_applies(host, no_writes, capsys):
     (backend,) = report["backends"]
     assert not {"would", "advice"} & backend.keys()
     assert backend["argv"] == _argv("dashboard", "--port", "9119")
-    assert "migration is not available yet" in backend["not_applied"]
+    assert backend["not_applied"] == "Report only: changes no service."  # --apply exists: no "not available"
 
     gm.cmd_migrate(SimpleNamespace(backends=True, json=False, dry_run=True, yes=False, multiplex=False))
     text = capsys.readouterr().out

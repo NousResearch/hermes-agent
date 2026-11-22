@@ -319,7 +319,8 @@ def test_overlapping_joins_do_not_borrow_each_others_binding(runner):
 
     async def _join(source, guild_id):
         if source.user_id == "first":
-            await asyncio.sleep(0.05)  # still awaiting when an unlocked second request would run
+            for _ in range(20):  # still awaiting when an unlocked second request would run
+                await asyncio.sleep(0)
             return "not in voice"
         adapter._voice_sources[guild_id] = source.to_dict()
         adapter.is_in_voice_channel = MagicMock(return_value=True)

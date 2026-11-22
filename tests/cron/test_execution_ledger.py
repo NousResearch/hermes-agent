@@ -7,7 +7,10 @@ import os
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
+
+import pytest
 
 
 def _point_ledger(monkeypatch, tmp_path):
@@ -514,3 +517,181 @@ def test_history_orders_by_instant_across_dst_fall_back(monkeypatch, tmp_path):
     ]
     page = executions.list_executions(job_id="dst-job", before_claimed_at=later["claimed_at"])
     assert [r["id"] for r in page] == [earlier["id"]]
+
+
+def _readonly_then_real_connect(executions, monkeypatch, readonly_opens):
+    """Make the first ``readonly_opens`` ledger connections read-only handles, the way Windows
+    SQLite falls back when another process holds the file without FILE_SHARE_WRITE."""
+    real_connect = executions._connect
+    opened = []
+
+    def connect():
+        if len(opened) < readonly_opens:
+            conn = sqlite3.connect(f"{executions.EXECUTIONS_FILE.as_uri()}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            opened.append(conn)
+            return conn
+        return real_connect()
+
+    monkeypatch.setattr(executions, "_connect", connect)
+    monkeypatch.setattr(executions, "_LEDGER_READONLY_RETRY_DELAYS", (0.0, 0.0, 0.0), raising=False)
+    return opened
+
+
+def _assert_closed(connections):
+    for conn in connections:
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
+
+
+def _status_on_disk(executions, execution_id):
+    with closing(sqlite3.connect(executions.EXECUTIONS_FILE)) as conn:
+        return conn.execute("SELECT status FROM executions WHERE id=?", (execution_id,)).fetchone()[0]
+
+
+def test_readonly_open_is_reopened_before_the_write(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("ro-job", source="builtin")
+    opened = _readonly_then_real_connect(executions, monkeypatch, readonly_opens=2)
+    connected, closed = _count_open_connections(executions, monkeypatch)
+
+    running = executions.mark_execution_running(record["id"])
+
+    assert running is not None and running["status"] == "running"
+    assert len(opened) == 2
+    _assert_closed(opened)
+    assert len(connected) == 3 and sorted(connected) == sorted(closed)
+
+
+def test_ledger_still_readonly_after_retries_raises_with_detail(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("ro-job", source="builtin")
+    opened = _readonly_then_real_connect(executions, monkeypatch, readonly_opens=99)
+
+    with pytest.raises(sqlite3.OperationalError, match="readonly") as info:
+        executions.mark_execution_running(record["id"])
+
+    notes = " ".join(getattr(info.value, "__notes__", []))
+    assert "still read-only after 3 reopen(s)" in notes
+    assert "SQLITE_READONLY" in notes
+    assert str(executions.EXECUTIONS_FILE) in notes
+    assert len(opened) == 4
+    _assert_closed(opened)
+    assert _status_on_disk(executions, record["id"]) == "claimed"
+
+
+def test_failed_reopen_raises_the_open_error(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("ro-job", source="builtin")
+    readonly = sqlite3.connect(f"{executions.EXECUTIONS_FILE.as_uri()}?mode=ro", uri=True)
+    opens = []
+
+    def connect():
+        opens.append(1)
+        if len(opens) == 1:
+            return readonly
+        raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr(executions, "_connect", connect)
+    monkeypatch.setattr(executions, "_LEDGER_READONLY_RETRY_DELAYS", (0.0, 0.0, 0.0), raising=False)
+
+    with pytest.raises(sqlite3.OperationalError, match="unable to open database file"):
+        executions.mark_execution_running(record["id"])
+
+    _assert_closed([readonly])
+
+
+def test_ledger_this_user_cannot_write_is_not_retried(monkeypatch, tmp_path):
+    """Waiting cannot fix a file without write permission, and the retry sleeps hold the lock
+    every profile's ledger calls share."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("ro-job", source="builtin")
+    path = executions.EXECUTIONS_FILE
+    real_connect = executions._connect
+    opens = []
+
+    def connect():
+        opens.append(1)
+        return real_connect()
+
+    monkeypatch.setattr(executions, "_connect", connect)
+    path.chmod(0o444)
+    try:
+        if os.access(path, os.W_OK):
+            pytest.skip("this user can write read-only files")
+        with pytest.raises(sqlite3.OperationalError, match="readonly") as info:
+            executions.mark_execution_running(record["id"])
+    finally:
+        path.chmod(0o644)
+
+    assert len(opens) == 1
+    assert "cannot write" in " ".join(getattr(info.value, "__notes__", []))
+
+
+def test_readonly_error_after_a_write_is_not_retried(monkeypatch, tmp_path):
+    """A reopen would drop the rows already written in this transaction and commit the rest."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("ro-job", source="builtin")
+    real_connect = executions._connect
+    opens = []
+
+    def connect():
+        opens.append(1)
+        return real_connect()
+
+    monkeypatch.setattr(executions, "_connect", connect)
+
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        with executions._transaction() as conn:
+            conn.execute("UPDATE executions SET status='running' WHERE id=?", (record["id"],))
+            conn.execute("PRAGMA query_only=ON")
+            conn.execute("UPDATE executions SET error='late' WHERE id=?", (record["id"],))
+
+    assert len(opens) == 1
+    assert _status_on_disk(executions, record["id"]) == "claimed"
+
+
+_SHARE_LOCK_HOLDER = """
+import ctypes, sys
+from ctypes import wintypes
+k = ctypes.WinDLL("kernel32", use_last_error=True)
+k.CreateFileW.restype = wintypes.HANDLE
+h = k.CreateFileW(sys.argv[1], 0x80000000, 1, None, 3, 0, None)  # GENERIC_READ, FILE_SHARE_READ
+print("failed" if h in (None, wintypes.HANDLE(-1).value) else "held", flush=True)
+sys.stdin.readline()
+k.CloseHandle(wintypes.HANDLE(h))
+print("released", flush=True)
+"""
+
+
+@pytest.mark.platforms("windows")
+def test_windows_share_lock_on_ledger_file_is_ridden_out(monkeypatch, tmp_path):
+    """A process holding executions.db without FILE_SHARE_WRITE makes SQLite open it read-only;
+    the ledger reopens once the holder lets go."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("share-lock-job", source="builtin")
+    real_connect = executions._connect
+    opens = []
+    with subprocess.Popen(
+        [sys.executable, "-c", _SHARE_LOCK_HOLDER, str(executions.EXECUTIONS_FILE)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    ) as holder:
+
+        def connect():
+            if opens:  # the reopen: the holder lets go of the file first
+                holder.stdin.write("\n")
+                holder.stdin.flush()
+                assert holder.stdout.readline().strip() == "released"
+            opens.append(1)
+            return real_connect()
+
+        monkeypatch.setattr(executions, "_connect", connect)
+        monkeypatch.setattr(executions, "_LEDGER_READONLY_RETRY_DELAYS", (0.0, 0.0, 0.0), raising=False)
+        try:
+            assert holder.stdout.readline().strip() == "held"
+            running = executions.mark_execution_running(record["id"])
+        finally:
+            holder.kill()
+
+    assert len(opens) == 2  # the first open fell back to read-only
+    assert running is not None and running["status"] == "running"

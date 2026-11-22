@@ -47,6 +47,10 @@ _PROCESS_ID = uuid.uuid4().hex
 
 # --- executions ledger --------------------------------------------------------------------------
 
+def _ledger_path() -> Path:
+    return EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
+
+
 def _connect() -> sqlite3.Connection:
     # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
     # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
@@ -54,7 +58,7 @@ def _connect() -> sqlite3.Connection:
     from cron.jobs import _ensure_cron_dir
     from hermes_cli.sqlite_util import open_db
 
-    path = EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
+    path = _ledger_path()
     _ensure_cron_dir(path.parent)
     return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
 
@@ -133,15 +137,88 @@ def _widen_status_check(conn: sqlite3.Connection) -> None:
         raise
 
 
+# When SQLite cannot open executions.db for writing, it silently falls back to a read-only handle:
+# reads succeed and the first write fails with SQLITE_READONLY. On Windows this happens for a
+# moment whenever another process (antivirus, search indexer, backup) holds the file without
+# FILE_SHARE_WRITE as one of the ledger's short-lived connections opens it. Nothing has been
+# written on such a handle yet, so the failed statement is re-run on a freshly opened connection.
+_LEDGER_READONLY_RETRY_DELAYS = (0.2, 0.5, 1.0)
+
+
+def _ledger_is_readonly_error(exc: sqlite3.OperationalError) -> bool:
+    return (exc.sqlite_errorcode & 0xFF) == sqlite3.SQLITE_READONLY
+
+
+def _readonly_give_up_reason(attempt: int, detail: str) -> Optional[str]:
+    """Why reopening the read-only ledger cannot help now, or None to reopen it again.
+
+    Waiting fixes a file another process holds for a moment, never one this user cannot write, and
+    the reopen delays hold ``_lock``, which every profile's ledger calls in this process share."""
+    path = _ledger_path()
+    if not (os.access(path, os.W_OK) and os.access(path.parent, os.W_OK)):
+        return (f"cron ledger: this user cannot write {path} or its folder ({detail}); check the "
+                "owner, permissions, read-only attribute or mount")
+    if attempt < len(_LEDGER_READONLY_RETRY_DELAYS):
+        return None
+    return (f"cron ledger: {path} still read-only after {attempt} reopen(s) ({detail}). Either this "
+            "user cannot write the file or its folder (check the owner, permissions, read-only "
+            "attribute or mount), or another process (on Windows: antivirus, search indexer, "
+            "backup) holds it without write sharing (exclude the cron folder from that program)")
+
+
+class _LedgerConnection:
+    """The transaction's connection; swaps a read-only handle for a fresh one on its first write."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+        self._changes_at_open = conn.total_changes
+
+    def execute(self, sql: str, parameters: Any = ()) -> sqlite3.Cursor:
+        attempt = 0
+        while True:
+            try:
+                cursor = self.conn.execute(sql, parameters)
+                if attempt:
+                    logger.info("cron ledger: %s writable again after %d reopen(s)", _ledger_path(), attempt)
+                return cursor
+            except sqlite3.OperationalError as exc:
+                if not _ledger_is_readonly_error(exc) or self.conn.total_changes != self._changes_at_open:
+                    raise  # not the open-time fallback, or this transaction already wrote rows
+                detail = f"{exc.sqlite_errorname}, code {exc.sqlite_errorcode}"
+                reason = _readonly_give_up_reason(attempt, detail)
+                if reason is not None:
+                    logger.error("%s", reason)
+                    exc.add_note(reason)
+                    raise
+                logger.warning("cron ledger: %s opened read-only (%s); reopening in %.1fs",
+                               _ledger_path(), detail, _LEDGER_READONLY_RETRY_DELAYS[attempt])
+                time.sleep(_LEDGER_READONLY_RETRY_DELAYS[attempt])
+                attempt += 1
+                # Open before closing: if the reopen raises, the transaction still holds a live
+                # handle to roll back, and the caller sees the open error.
+                fresh = _connect()
+                self.conn.close()
+                self.conn = fresh
+                self._changes_at_open = fresh.total_changes
+
+
 @contextmanager
-def _transaction() -> Iterator[sqlite3.Connection]:
-    from hermes_cli.sqlite_util import transaction
+def _transaction() -> Iterator[_LedgerConnection]:
+    # Same contract as hermes_cli.sqlite_util.transaction (commit on success, roll back on error,
+    # always close), applied to whichever connection the wrapper ends up holding.
+    with _lock:
+        ledger = _LedgerConnection(_connect())
+        try:
+            yield ledger
+            ledger.conn.commit()
+        except BaseException:
+            ledger.conn.rollback()
+            raise
+        finally:
+            ledger.conn.close()
 
-    with _lock, transaction(_connect()) as conn:
-        yield conn
 
-
-def _fetch(conn: sqlite3.Connection, execution_id: str) -> Optional[dict[str, Any]]:
+def _fetch(conn: _LedgerConnection, execution_id: str) -> Optional[dict[str, Any]]:
     row = conn.execute("SELECT * FROM executions WHERE id=?", (execution_id,)).fetchone()
     return dict(row) if row is not None else None
 
@@ -233,7 +310,7 @@ def touch_execution_progress(execution_id: str) -> bool:
         return cur.rowcount == 1
 
 
-def _prune_unlocked(conn: sqlite3.Connection) -> None:
+def _prune_unlocked(conn: _LedgerConnection) -> None:
     conn.execute(
         """DELETE FROM executions WHERE id IN (
              SELECT id FROM executions

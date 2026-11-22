@@ -714,7 +714,8 @@ def _discover_dashboard_plugins(search_dirs: Optional[list] = None) -> list:
     plugins = []
     seen_names: set = set()
     roots = _dashboard_plugin_search_dirs() if search_dirs is None else search_dirs
-    owners = _PluginNameOwners([root for root, _source in roots])
+    # A project plugin (opt-in, ships with the CWD) may be refused a name but never takes one from a user or bundled one.
+    owners = _PluginNameOwners([root for root, source in roots if source != "project"])
     for plugins_root, source in roots:
         try:
             if not plugins_root.is_dir():

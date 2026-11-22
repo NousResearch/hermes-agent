@@ -269,6 +269,9 @@ _DEFAULT_EXPORT_INCLUDE_ROOT = frozenset({
     "system_prompt.md", "AGENTS.md", "CLAUDE.md", ".cursorrules",
     # Desktop appearance overlay (written/applied by the desktop app's export/import).
     "desktop.json",
+    # MCP server definitions and sync agents: part of a reproducible setup, not runtime state.
+    # Secrets inside mcp.json are redacted by scrub_export_secrets before packing.
+    "mcp.json", "import-sync.json", "profile.yaml",
     # User-facing skill, cron, and session artifacts
     "skills", "cron", "scripts", "sessions",
     # Plugin / memory surfaces (per-profile overrides live here)

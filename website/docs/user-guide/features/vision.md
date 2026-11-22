@@ -225,6 +225,20 @@ For text-only main models (or providers whose tool-result channel doesn't carry 
 
 Every other tool that hands the model an image uses this same decision: browser screenshots, `computer_use` captures (which are described by the auxiliary vision model when the main model can't take them natively), and [MCP image results](mcp.md#image-results). `agent.image_input_mode: text` therefore keeps pixels out of all of them.
 
+### Native video fast-path (`agent.video_input_mode`)
+
+`video_analyze` follows the same dual-route pattern for video-capable main models on routes that accept video media in tool results (currently native Gemini 3+ via both the Interactions API and `generateContent`).
+
+To override the automatic choice, set `agent.video_input_mode` in `config.yaml`:
+
+| Value | Behavior |
+|-------|----------|
+| `auto` (default) | Native video tool-result delivery when the main model declares video input support (`models.dev` or `model.supports_video: true`), its active route accepts native video tool results, and no explicit `auxiliary.vision` backend (or `AUXILIARY_VIDEO_MODEL`) is configured; falls back to the auxiliary describer otherwise. |
+| `native` | Force native video delivery whenever the active route accepts video tool results (non-supporting providers such as Anthropic or OpenAI still fall back safely to the auxiliary describer). |
+| `auxiliary` (alias `text`) | Always analyze videos through the configured auxiliary vision/video model and return plain text. |
+
+Native inline video embeds are capped at **20 MB** (base64) to keep multi-turn session history bounded; on native Gemini 3+ routes, public YouTube URLs are passed directly as URI references without downloading or inflating session size. If a session later switches or falls back to a model that does not support video input, historical video parts are replaced with a short text note on the outbound request copy without altering persisted history.
+
 ### SVG and other non-raster images on Responses backends
 
 Responses-style backends (for example `openai-codex`) accept only inline JPEG, PNG, GIF and WebP; any other `data:image/*` part makes them reject the **whole** request, and because the part stays in history every later turn fails the same way. Hermes handles this at the send layer: an inline **SVG** is rasterized to PNG when a rasterizer is installed (`cairosvg`, `svglib`+`reportlab`, `rsvg-convert`, or `inkscape` — the same soft dependencies `vision_analyze` uses), so the model still sees the drawing. Without a rasterizer, an SVG — and any other unsupported inline format such as BMP or TIFF — is replaced by a short text placeholder (`[image omitted: image/svg+xml is not a supported image format]`) while the valid images in the same message are still sent.

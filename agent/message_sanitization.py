@@ -18,7 +18,7 @@ from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER, h
 from agent.message_metadata import DB_ROW_SNAPSHOT
 from agent.vision_message_prep import _provider_model_key
 from session_rules.turns import _tc_field, coalesce_tool_call_id
-from session_rules.turns import _IMAGE_PART_TYPES
+from session_rules.turns import _IMAGE_PART_TYPES, _VIDEO_PART_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -372,13 +372,14 @@ def _strip_images_from_messages(messages: list) -> bool:
     from agent.context_compressor import _DB_PERSISTED_MARKER
     from session_rules.turns import drop_stale_api_content
 
+    media_types = _IMAGE_PART_TYPES | _VIDEO_PART_TYPES
     found = False
     to_delete = []
     for i, msg in enumerate(messages):
         content = msg.get("content") if isinstance(msg, dict) else None
         if not isinstance(content, list):
             continue
-        new_parts = [p for p in content if not (isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES)]
+        new_parts = [p for p in content if not (isinstance(p, dict) and p.get("type") in media_types)]
         if len(new_parts) < len(content):
             found = True
             if new_parts:
@@ -386,7 +387,7 @@ def _strip_images_from_messages(messages: list) -> bool:
                 # Rewriting a stamped live dict stales its persisted row; pop the marker.
                 msg.pop(_DB_PERSISTED_MARKER, None)
             elif msg.get("role") == "tool" or msg.get("tool_calls"):
-                msg["content"] = "[image content removed — server does not support images]"
+                msg["content"] = "[media content removed — server does not support media input]"
                 msg.pop(_DB_PERSISTED_MARKER, None)
             else:
                 to_delete.append(i)
@@ -457,10 +458,11 @@ def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
 
 
 def _messages_carry_images(messages: Any) -> bool:
-    """True when any message holds an image part in Hermes's own message format."""
+    """True when any message holds an image or video part in Hermes's own message format."""
+    media_types = _IMAGE_PART_TYPES | _VIDEO_PART_TYPES
     return isinstance(messages, list) and any(
         isinstance(m, dict) and isinstance(m.get("content"), list)
-        and any(isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES for p in m["content"])
+        and any(isinstance(p, dict) and p.get("type") in media_types for p in m["content"])
         for m in messages
     )
 

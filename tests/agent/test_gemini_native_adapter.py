@@ -1097,3 +1097,179 @@ def test_stream_finish_in_a_later_event_than_the_call_still_maps_the_reason(raw,
     last = translate_stream_event({"candidates": [{"content": {"parts": []}, "finishReason": raw}]},
                                   model="gemini-2.5-flash", tool_call_indices=slots)
     assert last[-1].choices[0].finish_reason == mapped
+
+
+def test_normalize_youtube_url_handles_variants_and_rejects_non_videos():
+    """YouTube watch/shorts/live/embed/youtu.be URLs normalize; playlists and non-YouTube URLs return None."""
+    from agent.gemini_native_adapter import normalize_youtube_url
+
+    expected = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    for raw in (
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://www.youtube.com/watch?feature=share&v=dQw4w9WgXcQ&t=42s",
+        "https://youtu.be/dQw4w9WgXcQ?si=abc123",
+        "https://youtu.be/dQw4w9WgXcQ/",
+        "https://m.youtube.com/shorts/dQw4w9WgXcQ",
+        "https://m.youtube.com/shorts/dQw4w9WgXcQ/",
+        "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://www.youtube.com/live/dQw4w9WgXcQ",
+        "https://www.youtube.com/embed/dQw4w9WgXcQ",
+        "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
+    ):
+        assert normalize_youtube_url(raw) == expected, raw
+
+    for invalid in (
+        "https://www.youtube.com/playlist?list=PL123456",
+        "https://www.youtube.com/@NousResearch",
+        "https://youtu.be/shorts/dQw4w9WgXcQ",
+        "https://www.youtube.com/live/channel?v=dQw4w9WgXcQ",
+        "https://example.com/video.mp4",
+        "",
+    ):
+        assert normalize_youtube_url(invalid) is None, invalid
+
+
+def test_inline_data_part_rejects_non_base64_and_non_media_mime():
+    """Data URLs without ;base64 or with non-image/video MIME types (e.g. text/html) are rejected."""
+    import base64
+    from agent.gemini_native_adapter import _inline_data_part
+
+    b64_html = base64.b64encode(b"<html>bad</html>").decode("ascii")
+    assert _inline_data_part({"type": "video_url", "video_url": {"url": f"data:text/html;base64,{b64_html}"}}) is None
+    assert _inline_data_part({"type": "video_url", "video_url": {"url": "data:video/mp4,not-base64"}}) is None
+    assert _inline_data_part({"type": "video_url", "video_url": {"url": "data:video/mp4;base64,!!!invalid!!!"}}) is None
+
+
+def test_build_gemini_request_translates_inline_video_and_youtube_file_data():
+    """Native Gemini adapter translates video_url/input_video data URLs to inlineData and YouTube URLs to fileData."""
+    import base64
+    from agent.gemini_native_adapter import build_gemini_request
+
+    b64_video = base64.b64encode(b"\x00\x00\x00\x14ftypmp42").decode("ascii")
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Inspect both videos"},
+                {"type": "video_url", "video_url": {"url": f"data:video/mp4;base64,{b64_video}"}},
+                {"type": "input_video", "input_video": {"url": f"data:video/webm;base64,{b64_video}"}},
+                {"type": "video_url", "video_url": {"url": "https://youtu.be/dQw4w9WgXcQ?t=10"}},
+            ],
+        }
+    ]
+    req = build_gemini_request(messages=messages, model="gemini-3.8-flash")
+    parts = req["contents"][0]["parts"]
+    assert parts[0] == {"text": "Inspect both videos"}
+    assert parts[1]["inlineData"] == {"mimeType": "video/mp4", "data": b64_video}
+    assert parts[2]["inlineData"] == {"mimeType": "video/webm", "data": b64_video}
+    assert parts[3]["fileData"] == {
+        "fileUri": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "mimeType": "video/mp4",
+    }
+
+
+def test_tool_result_video_inline_and_youtube_file_data_placement():
+    """Gemini 3+/4.x places inlineData in functionResponse.parts and YouTube fileData as a sibling user Part (v1beta-safe); Gemini 2.x omits both."""
+    import base64
+    from agent.gemini_native_adapter import build_gemini_request
+
+    b64_video = base64.b64encode(b"\x00\x00\x00\x14ftypmp42").decode("ascii")
+    inline_messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call_vid_1", "type": "function", "function": {"name": "video_analyze", "arguments": "{}"}}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_vid_1",
+            "name": "video_analyze",
+            "content": [
+                {"type": "text", "text": "Video loaded natively"},
+                {"type": "video_url", "video_url": {"url": f"data:video/mp4;base64,{b64_video}"}},
+            ],
+        },
+    ]
+    req_g4 = build_gemini_request(messages=inline_messages, model="gemini-4-argon")
+    fr_g4 = req_g4["contents"][1]["parts"][0]["functionResponse"]
+    assert fr_g4["parts"] == [{"inlineData": {"mimeType": "video/mp4", "data": b64_video}}]
+
+    req_g2 = build_gemini_request(messages=inline_messages, model="gemini-2.5-flash")
+    fr_g2 = req_g2["contents"][1]["parts"][0]["functionResponse"]
+    assert "parts" not in fr_g2
+
+    yt_messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call_yt_1", "type": "function", "function": {"name": "video_analyze", "arguments": "{}"}}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_yt_1",
+            "name": "video_analyze",
+            "content": [
+                {"type": "text", "text": "YouTube video attached"},
+                {"type": "video_url", "video_url": {"url": "https://youtu.be/dQw4w9WgXcQ"}},
+            ],
+        },
+    ]
+    req_yt = build_gemini_request(messages=yt_messages, model="gemini-3.8-flash")
+    turn_parts = req_yt["contents"][1]["parts"]
+    assert "functionResponse" in turn_parts[0]
+    assert "parts" not in turn_parts[0]["functionResponse"]
+    assert turn_parts[1] == {
+        "fileData": {"fileUri": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "mimeType": "video/mp4"}
+    }
+
+    req_yt_g2 = build_gemini_request(messages=yt_messages, model="gemini-2.5-flash")
+    assert len(req_yt_g2["contents"][1]["parts"]) == 1
+
+    # gemini-flash-latest also retains inlineData and sibling fileData on generateContent.
+    req_latest_inline = build_gemini_request(messages=inline_messages, model="gemini-flash-latest")
+    assert req_latest_inline["contents"][1]["parts"][0]["functionResponse"]["parts"] == [
+        {"inlineData": {"mimeType": "video/mp4", "data": b64_video}}
+    ]
+    req_latest_yt = build_gemini_request(messages=yt_messages, model="gemini-flash-latest")
+    assert req_latest_yt["contents"][1]["parts"][1] == {
+        "fileData": {"fileUri": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "mimeType": "video/mp4"}
+    }
+
+
+def test_parallel_tool_calls_with_youtube_file_data_merge_into_one_user_turn():
+    """Parallel tool calls mixing YouTube video_analyze and a text tool merge cleanly into one user turn."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_yt", "type": "function", "function": {"name": "video_analyze", "arguments": "{}"}},
+                {"id": "call_txt", "type": "function", "function": {"name": "read_file", "arguments": "{}"}},
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_yt",
+            "name": "video_analyze",
+            "content": [
+                {"type": "text", "text": "YouTube attached"},
+                {"type": "video_url", "video_url": {"url": "https://youtu.be/dQw4w9WgXcQ/"}},
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_txt",
+            "name": "read_file",
+            "content": "plain text result",
+        },
+    ]
+    req = build_gemini_request(messages=messages, model="gemini-3.8-flash")
+    assert len(req["contents"]) == 2
+    assert req["contents"][1]["role"] == "user"
+    parts = req["contents"][1]["parts"]
+    assert sum(1 for p in parts if "functionResponse" in p) == 2
+    assert sum(1 for p in parts if "fileData" in p) == 1
+
+

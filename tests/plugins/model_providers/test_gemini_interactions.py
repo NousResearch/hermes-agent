@@ -619,3 +619,83 @@ def test_gemini_api_is_a_known_providers_key(caplog):
         _normalize_custom_provider_entry({"base_url": "https://generativelanguage.googleapis.com/v1beta", "gemini_api": "interactions"},
                                          provider_key="gemini-known-key-probe")
     assert "unknown config keys" not in caplog.text
+
+
+def test_interactions_translates_video_inline_and_youtube_in_user_and_tool_results(gemini):
+    """Interactions API translates video_url/input_video data URLs and YouTube URLs into video blocks in user_input and function_result."""
+    import base64
+
+    _, wire = gemini
+    b64_video = base64.b64encode(b"\x00\x00\x00\x14ftypmp42").decode("ascii")
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Watch this"},
+                {"type": "video_url", "video_url": {"url": f"data:video/mp4;base64,{b64_video}"}},
+                {"type": "video_url", "video_url": {"url": "https://youtu.be/dQw4w9WgXcQ?t=5"}},
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call_v1", "type": "function", "function": {"name": "video_analyze", "arguments": "{}"}}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_v1",
+            "name": "video_analyze",
+            "content": [
+                {"type": "text", "text": "Video loaded natively"},
+                {"type": "video_url", "video_url": {"url": f"data:video/mp4;base64,{b64_video}"}},
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call_yt1", "type": "function", "function": {"name": "video_analyze", "arguments": "{}"}}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_yt1",
+            "name": "video_analyze",
+            "content": [
+                {"type": "text", "text": "YouTube video attached"},
+                {"type": "video_url", "video_url": {"url": "https://www.youtube.com/shorts/dQw4w9WgXcQ"}},
+            ],
+        },
+    ]
+    steps, _ = wire.build_input_steps(messages)
+    user_blocks = steps[0]["content"]
+    assert user_blocks[1] == {"type": "video", "mime_type": "video/mp4", "data": b64_video}
+    assert user_blocks[2] == {"type": "video", "uri": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}
+
+    fn_results = [s for s in steps if s["type"] == "function_result"]
+    assert len(fn_results) == 2
+    assert {"type": "video", "mime_type": "video/mp4", "data": b64_video} in fn_results[0]["result"]
+    assert {"type": "video", "uri": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"} in fn_results[1]["result"]
+
+
+def test_interactions_video_content_negative_and_boundary_cases(gemini):
+    """Interactions _video_content rejects non-base64, disallowed MIME, malformed base64, and non-YouTube URLs; accepts input_video & youtube-nocookie."""
+    import base64
+
+    _, wire = gemini
+    b64_ok = base64.b64encode(b"\x00\x00\x00\x14ftypmp42").decode("ascii")
+    assert wire._video_content({"type": "input_video", "input_video": {"url": f"data:video/webm;base64,{b64_ok}"}}) == {
+        "type": "video", "mime_type": "video/webm", "data": b64_ok,
+    }
+    assert wire._video_content({"type": "video_url", "video_url": {"url": "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ/"}}) == {
+        "type": "video", "uri": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    }
+    for bad in (
+        {"type": "video_url", "video_url": {"url": f"data:text/html;base64,{b64_ok}"}},
+        {"type": "video_url", "video_url": {"url": f"data:video/ogg;base64,{b64_ok}"}},
+        {"type": "video_url", "video_url": {"url": "data:video/mp4,raw-not-base64"}},
+        {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,!!!not-b64!!!"}},
+        {"type": "video_url", "video_url": {"url": "https://example.com/clip.mp4"}},
+        {"type": "video_url", "video_url": {"url": "https://youtu.be/shorts/dQw4w9WgXcQ"}},
+    ):
+        assert wire._video_content(bad) is None, bad
+
+

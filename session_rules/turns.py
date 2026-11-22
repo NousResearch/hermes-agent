@@ -35,7 +35,7 @@ def sanitize_context(text: str) -> str:
     return text
 
 
-_NON_TEXT_PART_TYPES = {"image", "image_url", "input_image", "audio", "input_audio"}
+_NON_TEXT_PART_TYPES = {"image", "image_url", "input_image", "audio", "input_audio", "video", "video_url", "input_video"}
 _TEXT_KEYS = ("text", "content", "input_text", "output_text", "summary_text")
 
 
@@ -968,6 +968,7 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
 )
 
 _IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
+_VIDEO_PART_TYPES = {"video", "video_url", "input_video"}
 
 
 def _is_ephemeral_scaffolding(msg: Any) -> bool:
@@ -975,16 +976,20 @@ def _is_ephemeral_scaffolding(msg: Any) -> bool:
     return isinstance(msg, dict) and any(msg.get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS)
 
 
+def _media_marker(part: dict) -> str:
+    return "[video]" if part.get("type") in _VIDEO_PART_TYPES else _image_marker(part)
+
+
 def _durable_content(content: Any) -> Any:
-    """Text-only DB projection: multimodal envelopes → summary; part lists keep text, images → ``[screenshot]``."""
+    """Text-only DB projection: multimodal envelopes → summary; part lists keep text, images → ``[screenshot]``, videos → ``[video]``."""
     if _is_multimodal_tool_result(content):
         return _multimodal_text_summary(content)
     if not isinstance(content, list):
         return content
     txt = [
-        str(p.get("text", "")) if p.get("type") == "text" else _image_marker(p)
+        str(p.get("text", "")) if p.get("type") == "text" else _media_marker(p)
         for p in content
-        if isinstance(p, dict) and (p.get("type") == "text" or p.get("type") in _IMAGE_PART_TYPES)
+        if isinstance(p, dict) and (p.get("type") == "text" or p.get("type") in _IMAGE_PART_TYPES or p.get("type") in _VIDEO_PART_TYPES)
     ]
     return "\n".join(txt) if txt else None
 

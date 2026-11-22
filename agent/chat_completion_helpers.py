@@ -54,7 +54,7 @@ from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
-from session_rules.turns import _IMAGE_PART_TYPES
+from session_rules.turns import _IMAGE_PART_TYPES, _VIDEO_PART_TYPES
 
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
@@ -384,7 +384,7 @@ def _payload_chars(value: Any, image_cost: int) -> int:
         part_type = value.get("type")
         # JSON-Schema nodes may hold a sub-schema (``properties.type``) or a multi-type list
         # under the "type" key; only scalar content-part types can ever match (#104793).
-        if isinstance(part_type, str) and part_type in _IMAGE_PART_TYPES and any(k in value for k in ("image_url", "image", "source", "file_id")):
+        if isinstance(part_type, str) and (part_type in _IMAGE_PART_TYPES or part_type in _VIDEO_PART_TYPES) and any(k in value for k in ("image_url", "image", "video_url", "input_video", "video", "source", "file_id")):
             return _image_part_chars(value, image_cost)
         return sum(len(str(k)) + 6 + _payload_chars(v, image_cost) for k, v in value.items())
     if isinstance(value, list):
@@ -1390,7 +1390,7 @@ def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config
 
 def _build_bedrock_kwargs(agent, api_messages, tools_for_api, reasoning_config):
     # Bedrock Converse — the adapter converts messages/tools and calls boto3 directly.
-    return agent._get_transport().build_kwargs(model=agent.model, messages=api_messages, tools=tools_for_api,
+    return agent._get_transport().build_kwargs(model=agent.model, messages=agent._prepare_messages_for_non_vision_model(api_messages), tools=tools_for_api,
         max_tokens=agent.max_tokens, region=getattr(agent, "_bedrock_region", None) or "us-east-1",
         guardrail_config=getattr(agent, "_bedrock_guardrail_config", None), reasoning_config=reasoning_config)
 
@@ -2175,7 +2175,7 @@ def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
 def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
     def _attempt(retry_count: int) -> str:
         ant_kw = agent._get_transport().build_kwargs(
-            model=agent.model, messages=api_messages, tools=None, max_tokens=agent.max_tokens,
+            model=agent.model, messages=agent._prepare_anthropic_messages_for_api(api_messages), tools=None, max_tokens=agent.max_tokens,
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
         ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw, api_messages)

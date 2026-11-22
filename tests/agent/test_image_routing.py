@@ -69,7 +69,13 @@ class TestDecideImageInputMode:
     def test_auto_unset_aux_backend_native_remains_default(self):
         """No configured aux backend -> native for vision-capable mains
         (the unconfigured-install default is unchanged)."""
-        for cfg in ({}, {"auxiliary": {}}, {"auxiliary": {"vision": {"provider": "auto"}}}):
+        for cfg in (
+            {},
+            {"auxiliary": {}},
+            {"auxiliary": {"vision": {"provider": "auto"}}},
+            {"auxiliary": {"vision": {"provider": "", "model": "auto"}}},
+            {"auxiliary": {"vision": {"provider": "auto", "model": "auto"}}},
+        ):
             with patch("agent.image_routing._lookup_supports_vision", return_value=True):
                 assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
 

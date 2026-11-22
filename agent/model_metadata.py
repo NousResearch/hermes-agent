@@ -33,7 +33,7 @@ from agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque
 from agent.model_metadata_token_memo import (  # _MSG_TOKENS_CACHE: tests and benches read it here
     _MSG_TOKENS_CACHE, MemoPins, lookup_message_tokens, remember_message_tokens,
 )
-from session_rules.turns import _IMAGE_PART_TYPES
+from session_rules.turns import _IMAGE_PART_TYPES, _VIDEO_PART_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -2479,14 +2479,14 @@ def _count_image_tokens(msg: dict[str, Any], cost_per_image: int) -> int:
     if not isinstance(msg, dict):
         return 0
     content = msg.get("content")
-    count = _count_parts(content, _IMAGE_PART_TYPES)
+    count = _count_parts(content, _IMAGE_PART_TYPES | _VIDEO_PART_TYPES)
     count += _count_parts(msg.get("_anthropic_content_blocks"), {"image"})
     # Multimodal tool results that haven't been converted yet.
     if isinstance(content, dict) and content.get("_multimodal"):
-        count += _count_parts(content.get("content"), {"image", "image_url"})
+        count += _count_parts(content.get("content"), _IMAGE_PART_TYPES | _VIDEO_PART_TYPES)
     # Responses ``function_call_output`` items carry converted tool-result
     # parts under ``output`` (the converter moves chat ``content`` there).
-    count += _count_parts(msg.get("output"), _IMAGE_PART_TYPES)
+    count += _count_parts(msg.get("output"), _IMAGE_PART_TYPES | _VIDEO_PART_TYPES)
     return count * cost_per_image
 
 
@@ -2518,7 +2518,7 @@ def _wire_message_shadow(msg: dict[str, Any]) -> dict[str, Any]:
         elif k == "content" and isinstance(v, list):
             shadow[k] = [
                 {"type": part.get("type"), "image": "[stripped]"}
-                if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+                if isinstance(part, dict) and (part.get("type") in _IMAGE_PART_TYPES or part.get("type") in _VIDEO_PART_TYPES)
                 else part
                 for part in v
             ]
@@ -2530,7 +2530,7 @@ def _wire_message_shadow(msg: dict[str, Any]) -> dict[str, Any]:
             # priced by the flat per-image model, never as text.
             shadow[k] = [
                 {"type": part.get("type"), "image": "[stripped]"}
-                if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+                if isinstance(part, dict) and (part.get("type") in _IMAGE_PART_TYPES or part.get("type") in _VIDEO_PART_TYPES)
                 else part
                 for part in v
             ]

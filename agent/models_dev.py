@@ -77,6 +77,8 @@ class ModelInfo:
         return "pdf" in self.input_modalities
     def supports_audio_input(self) -> bool:
         return "audio" in self.input_modalities
+    def supports_video_input(self) -> bool:
+        return "video" in self.input_modalities
     def format_capabilities(self) -> str:
         """Human-readable capabilities, e.g. 'reasoning, tools, vision, PDF'."""
         flags = (
@@ -102,6 +104,7 @@ class ModelCapabilities:
     """Structured capability metadata for a model from models.dev."""
     supports_tools: bool = True
     supports_vision: Optional[bool] = None
+    supports_video: Optional[bool] = None
     supports_reasoning: Optional[bool] = None
     context_window: int = 200000
     max_output_tokens: Optional[int] = None
@@ -807,9 +810,11 @@ def _default_override_context(provider: str) -> Optional[int]:
     return _override_int(default, "context_window") if default is not None else None
 
 
-def _override_to_catalog_shape(override: dict[str, Any]) -> tuple[dict[str, Any], Optional[bool]]:
-    """Translate canonical override keys into a models.dev-shaped patch. Returns ``(patch, vision)`` —
-    vision is out-of-band because it maps onto the ``modalities.input`` list rather than a scalar field."""
+def _override_to_catalog_shape(
+    override: dict[str, Any],
+) -> tuple[dict[str, Any], Optional[bool], Optional[bool]]:
+    """Translate canonical override keys into a models.dev-shaped patch. Returns ``(patch, vision, video)`` —
+    vision/video are out-of-band because they map onto the ``modalities.input`` list rather than scalar fields."""
     patch: dict[str, Any] = {}
     limit = {
         catalog_key: value for catalog_key, override_key in (("context", "context_window"),)
@@ -823,27 +828,37 @@ def _override_to_catalog_shape(override: dict[str, Any]) -> tuple[dict[str, Any]
     vision: Optional[bool] = None
     if "supports_vision" in override:
         vision = patch["attachment"] = bool(override["supports_vision"])
+    video: Optional[bool] = None
+    if "supports_video" in override:
+        raw_video = override["supports_video"]
+        if isinstance(raw_video, bool):
+            video = raw_video
+        elif isinstance(raw_video, int) and raw_video in (0, 1):
+            video = bool(raw_video)
+        elif isinstance(raw_video, str) and raw_video.strip().lower() in ("true", "yes", "on", "1", "false", "no", "off", "0"):
+            video = raw_video.strip().lower() in ("true", "yes", "on", "1")
     if "model_family" in override:
         patch["family"] = str(override["model_family"] or "")
-    return patch, vision
+    return patch, vision, video
 
 
 def _merge_catalog_entry_with_override(raw: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Patch a catalog entry with a canonical-schema override. Sub-dicts (``limit``, ``modalities``) are
     merged, not clobbered — setting only ``context_window`` must not wipe the catalog's ``limit.output``."""
-    shaped, vision_override = _override_to_catalog_shape(override)
+    shaped, vision_override, video_override = _override_to_catalog_shape(override)
     merged = dict(raw)
     limit_patch = shaped.pop("limit", None)
     if limit_patch:
         merged["limit"] = {**_dict_or_empty(raw.get("limit")), **limit_patch}
-    if vision_override is not None:
+    if vision_override is not None or video_override is not None:
         base_mods = dict(_dict_or_empty(raw.get("modalities")))
         input_mods = base_mods.get("input")
         input_mods = list(input_mods) if isinstance(input_mods, list) else []
-        if vision_override and "image" not in input_mods:
-            input_mods.append("image")
-        elif not vision_override and "image" in input_mods:
-            input_mods.remove("image")
+        for flag, token in ((vision_override, "image"), (video_override, "video")):
+            if flag is True and token not in input_mods:
+                input_mods.append(token)
+            elif flag is False and token in input_mods:
+                input_mods.remove(token)
         base_mods["input"] = input_mods
         merged["modalities"] = base_mods
     merged.update(shaped)
@@ -905,6 +920,12 @@ def _entry_supports_vision(entry: dict[str, Any]) -> bool:
     return "image" in input_mods if isinstance(input_mods, list) else bool(entry.get("attachment", False))
 
 
+def _entry_supports_video(entry: dict[str, Any]) -> Optional[bool]:
+    """True/False when ``modalities.input`` is explicitly declared; None when absent."""
+    input_mods = _dict_or_empty(entry.get("modalities", {})).get("input")
+    return "video" in input_mods if isinstance(input_mods, list) else None
+
+
 def get_model_capabilities(
     provider: str, model: str, *, allow_network: bool = False, config: Optional[dict[str, Any]] = None,
 ) -> Optional[ModelCapabilities]:
@@ -933,6 +954,7 @@ def get_model_capabilities(
             if unknown_base and "attachment" not in raw and "modalities" not in raw
             else _entry_supports_vision(raw)
         ),
+        supports_video=None if unknown_base and "modalities" not in raw else _entry_supports_video(raw),
         supports_reasoning=None if unknown_base and "reasoning" not in raw else bool(raw.get("reasoning", False)),
         context_window=_extract_limit(raw, "context") or 200000,
         max_output_tokens=_extract_limit(raw, "output"),

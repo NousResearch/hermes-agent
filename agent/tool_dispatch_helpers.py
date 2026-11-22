@@ -410,7 +410,13 @@ def _trajectory_normalize_msg(msg: dict[str, Any]) -> dict[str, Any]:
         return {**msg, "content": _multimodal_text_summary(content)}
     if isinstance(content, list):
         return {**msg, "content": [
-            {"type": "text", "text": "[screenshot]"} if isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"} else p
+            {"type": "text", "text": "[screenshot]"}
+            if isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}
+            else (
+                {"type": "text", "text": "[video]"}
+                if isinstance(p, dict) and p.get("type") in {"video", "video_url", "input_video"}
+                else p
+            )
             for p in content
         ]}
     return msg

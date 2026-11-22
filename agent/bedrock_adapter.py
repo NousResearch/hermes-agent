@@ -754,6 +754,8 @@ def _convert_content_to_converse(content) -> list[dict]:
             image_url = part.get("image_url", {})
             url = image_url.get("url", "") if isinstance(image_url, dict) else ""
             blocks.append(_image_block_from_data_url(url) if url.startswith("data:") else {"text": f"[Image: {url}]"})
+        elif isinstance(part, dict) and part.get("type", "") in ("video_url", "input_video", "video"):
+            blocks.append({"text": "[Video attached earlier in this conversation — omitted because Bedrock Converse does not support inline video blocks.]"})
     return blocks or [dict(_PLACEHOLDER_BLOCK)]
 
 

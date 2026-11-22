@@ -18,6 +18,10 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
+
+from hermes_constants import hermes_home_key
 from tools.registry import tool_error
 
 # 256 KB keeps a 1568px screenshot cheap enough to ride the session (#92699); the clamp keeps one
@@ -31,7 +35,7 @@ _MAX_EMBED_TARGET_BYTES = 4 * 1024 * 1024
 _SUBAGENT_REPEAT_CAP = 3
 _REPEAT_COUNTS_MAX_KEYS = 4096
 
-_repeat_counts: dict[tuple[str, str], int] = {}
+_repeat_counts: dict[tuple[str, str, str], int] = {}
 _repeat_lock = threading.Lock()
 
 
@@ -72,47 +76,83 @@ def resolve_repeat_cap() -> int:
     return _SUBAGENT_REPEAT_CAP if is_delegated_child_process_context() else 0
 
 
+def _file_uri_to_local_path(raw: str) -> str:
+    parsed = urlparse(raw)
+    path = url2pathname(unquote(parsed.path))
+    if parsed.netloc and parsed.netloc.lower() != "localhost":
+        return f"//{parsed.netloc}{path}"
+    return path
+
+
 def _image_key(image_url: str) -> str:
-    """Stable identity for an image source: local paths resolve (symlinks, ``~``, ``file://``),
-    URLs drop their fragment, data URLs hash. Region crops are NOT part of the key — the incident
-    loop alternated full loads and crops of the same files, and both re-embed the image."""
+    """Stable identity for a media source: local paths resolve (symlinks, ``~``, ``file://``),
+    YouTube URLs canonicalize, other URLs drop their fragment, data URLs hash. Region crops
+    are NOT part of the key — the incident loop alternated full loads and crops of the same files."""
     if image_url.startswith("data:"):
         return "data:" + hashlib.sha256(image_url.encode("utf-8", "ignore")).hexdigest()[:32]
-    stripped = image_url.split("#", 1)[0].removeprefix("file://")
+    from agent.gemini_native_adapter import normalize_youtube_url
+    if yt_url := normalize_youtube_url(image_url):
+        return "url:" + yt_url
+    stripped = image_url.split("#", 1)[0].strip()
+    if stripped.lower().startswith("file://"):
+        return "file:" + str(Path(os.path.expanduser(_file_uri_to_local_path(stripped))).resolve())
     if "://" in stripped:
         return "url:" + stripped
     return "file:" + str(Path(os.path.expanduser(stripped)).resolve())
 
 
-def _count_key(image_url: str) -> tuple[str, str]:
+def _count_key(image_url: str) -> tuple[str, str, str]:
     from gateway.session_context import get_session_env
-    return get_session_env("HERMES_SESSION_ID", ""), _image_key(image_url)
+    return hermes_home_key(), get_session_env("HERMES_SESSION_ID", ""), _image_key(image_url)
 
 
-def repeat_refusal(image_url: str) -> Optional[str]:
-    """Reserve one native embed of ``image_url`` for the current session; tool-error JSON when the
-    per-session cap is already spent, else ``None``. Check and count are ONE lock section: a
-    parallel tool batch on the same image (the incident's 4 concurrent calls) must not all pass a
-    check taken before any of them recorded. Callers ``release_embed`` when the embed then fails."""
+def reserve_embed(
+    image_url: str, *, tool_name: str = "vision_analyze", media_label: str = "image",
+) -> tuple[Optional[str], Optional[tuple[str, str, str]]]:
+    """Atomically check cap and reserve one embed slot; returns ``(refusal_json, reserved_key)``.
+    Computing cap and key once prevents config-reload or symlink-unlink leaks on release."""
     cap = resolve_repeat_cap()
     if cap <= 0:
-        return None
+        return None, None
     key = _count_key(image_url)
     with _repeat_lock:
         count = _repeat_counts.get(key, 0)
         if count < cap:
             _record_embed_locked(key)
-            return None
-    return tool_error(
-        f"vision_analyze refused: this image has already been loaded into context {count} time(s) "
-        "in this session (region crops of the same file count too), and every native load re-sends "
-        "the full image on each later API call. Answer from what you can already see, or ask the "
+            return None, key
+    extra = " (region crops of the same file count too)" if media_label == "image" else ""
+    refusal = tool_error(
+        f"{tool_name} refused: this {media_label} has already been loaded into context {count} time(s) "
+        f"in this session{extra}, and every native load re-sends "
+        f"the full {media_label} on each later API call. Answer from what you already have, or ask the "
         f"user. (vision.max_calls_per_image = {cap}; 0 = unlimited)",
         success=False,
     )
+    return refusal, None
 
 
-def _record_embed_locked(key: tuple[str, str]) -> None:
+def release_embed_key(key: Optional[tuple[str, str, str]]) -> None:
+    """Undo a reservation returned by :func:`reserve_embed` when the embed fails before returning."""
+    if key is None:
+        return
+    with _repeat_lock:
+        count = _repeat_counts.get(key, 0)
+        if count <= 1:
+            _repeat_counts.pop(key, None)
+        else:
+            _repeat_counts[key] = count - 1
+
+
+def repeat_refusal(
+    image_url: str, *, tool_name: str = "vision_analyze", media_label: str = "image",
+) -> Optional[str]:
+    """Reserve one native embed of ``image_url`` for the current session; tool-error JSON when the
+    per-session cap is already spent, else ``None``. Callers ``release_embed`` when the embed fails."""
+    refusal, _ = reserve_embed(image_url, tool_name=tool_name, media_label=media_label)
+    return refusal
+
+
+def _record_embed_locked(key: tuple[str, str, str]) -> None:
     _repeat_counts[key] = _repeat_counts.get(key, 0) + 1
     # Bound long-lived gateway memory: evict the oldest (session, image) entries.
     while len(_repeat_counts) > _REPEAT_COUNTS_MAX_KEYS:

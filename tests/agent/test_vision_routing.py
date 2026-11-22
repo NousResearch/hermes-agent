@@ -264,7 +264,7 @@ auxiliary:
     def test_native_vision_main_advertises_image_tools_but_not_video(self, isolated_home, monkeypatch):
         """A vision-capable main model on a provider the aux resolver cannot serve (OAuth, local vLLM)
         still gets vision_analyze — its handler attaches pixels natively — while
-        video_analyze, whose handler has no native path, stays hidden (#47149)."""
+        video_analyze stays hidden when the active route has no native video path (#47149)."""
         from unittest.mock import patch
 
         _write_config(isolated_home, """

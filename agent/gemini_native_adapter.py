@@ -133,6 +133,11 @@ def gemini_uses_thinking_level(model: str) -> bool:
     return (bare.startswith("gemini-") and bare.endswith("-latest")) or _gemini_version(bare) >= (3, 0)
 
 
+def gemini_supports_multimodal_tool_responses(model: str) -> bool:
+    """True for Gemini 3+/4.x and ``gemini-*-latest`` aliases that accept multimodal tool-result parts."""
+    return gemini_requires_tool_call_ids(model) or gemini_uses_thinking_level(model)
+
+
 def gemini_sampling_deprecated(model: str) -> bool:
     """Gemini 3.6+ (Gemini 4 Argon included) ignores ``temperature``/``top_p``/``top_k`` and Google
     slated them for removal; older families (2.x, 3.0-3.5) keep them."""
@@ -300,17 +305,59 @@ def _coerce_content_to_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
+_MEDIA_URL_PART_TYPES = frozenset({"image_url", "input_image", "video_url", "input_video"})
+_STRICT_BASE64_RE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
+_YOUTUBE_VIDEO_ID_RE = re.compile(
+    r"^https?://(?:(?:www|m|music)\.)?"
+    r"(?:youtube\.com/(?:watch\?(?:[^#\s]*&)?v=([A-Za-z0-9_-]{11})(?:[&#].*)?|"
+    r"(?:shorts|live|embed)/([A-Za-z0-9_-]{11})/?(?:[?#&].*)?)|"
+    r"youtube-nocookie\.com/embed/([A-Za-z0-9_-]{11})/?(?:[?#&].*)?|"
+    r"youtu\.be/([A-Za-z0-9_-]{11})/?(?:[?#&].*)?)$",
+    re.IGNORECASE,
+)
+
+
+def normalize_youtube_url(url: str) -> Optional[str]:
+    """Canonical ``https://www.youtube.com/watch?v=<id>`` for a YouTube video URL; None otherwise."""
+    if not isinstance(url, str):
+        return None
+    match = _YOUTUBE_VIDEO_ID_RE.match(url.strip())
+    if not match:
+        return None
+    video_id = next((g for g in match.groups() if g), "")
+    return f"https://www.youtube.com/watch?v={video_id}" if video_id else None
+
+
+def _clean_strict_base64(encoded: str) -> Optional[str]:
+    """Validate canonical base64 without allocating a decoded multi-megabyte buffer per turn."""
+    cleaned = "".join(encoded.split()) if ("\n" in encoded or "\r" in encoded or " " in encoded) else encoded
+    if not cleaned or len(cleaned) % 4 != 0 or not _STRICT_BASE64_RE.fullmatch(cleaned):
+        return None
+    return cleaned
+
+
 def _inline_data_part(item: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """``inlineData`` part for an ``image_url`` item carrying a ``data:`` URL; None otherwise."""
-    url = (item.get("image_url") or {}).get("url") or ""
-    if item.get("type") != "image_url" or not isinstance(url, str) or not url.startswith("data:"):
+    """``inlineData`` part for an ``image_url``/``input_image``/``video_url``/``input_video`` item carrying a
+    base64 ``data:`` URL, or ``fileData`` for a public YouTube video URL; None otherwise."""
+    part_type = item.get("type")
+    if part_type not in _MEDIA_URL_PART_TYPES:
         return None
-    try:
-        header, encoded = url.split(",", 1)
-        data = base64.b64encode(base64.b64decode(encoded)).decode("ascii")
-        return {"inlineData": {"mimeType": header.split(":", 1)[1].split(";", 1)[0], "data": data}}
-    except Exception:
+    payload = item.get(part_type)
+    url = (payload.get("url") if isinstance(payload, dict) else payload) or item.get("url") or ""
+    if not isinstance(url, str):
         return None
+    if yt_url := normalize_youtube_url(url):
+        return {"fileData": {"fileUri": yt_url, "mimeType": "video/mp4"}}
+    if not url.startswith("data:"):
+        return None
+    header, sep, encoded = url.partition(",")
+    if not sep or ";base64" not in header.lower():
+        return None
+    mime = header[5:].split(";", 1)[0].strip().lower()
+    if not mime.startswith(("image/", "video/")):
+        return None
+    cleaned = _clean_strict_base64(encoded)
+    return {"inlineData": {"mimeType": mime, "data": cleaned}} if cleaned else None
 
 
 def _multimodal_part(item: Any) -> Optional[dict[str, Any]]:
@@ -364,7 +411,12 @@ def _looks_like_json_schema(node: Any) -> bool:
 
 
 def _translate_tool_result_to_gemini(
-    message: dict[str, Any], tool_name_by_call_id: Optional[dict[str, str]] = None, include_ids: bool = False, *, is_gemini3: bool = False,
+    message: dict[str, Any],
+    tool_name_by_call_id: Optional[dict[str, str]] = None,
+    include_ids: bool = False,
+    *,
+    is_gemini3: bool = False,
+    preextracted_inline: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     tool_call_id = str(message.get("tool_call_id") or "")
     # functionResponse.name must echo the matching functionCall.name, so the call-id
@@ -384,10 +436,33 @@ def _translate_tool_result_to_gemini(
     function_response: dict[str, Any] = {"name": name, "response": parsed if structured else {"output": content}}
     if include_ids and tool_call_id:
         function_response["id"] = tool_call_id
-    # Gemini 3.x accepts images inside functionResponse.parts; 2.x rejects the field.
-    if image_parts := [p for p in _extract_multimodal_parts(raw_content) if "inlineData" in p] if is_gemini3 else []:
-        function_response["parts"] = image_parts
+    # Gemini 3.x+ / latest accepts inlineData inside functionResponse.parts; 2.x rejects the field.
+    # fileData (e.g. YouTube fileUri) is not in v1beta's FunctionResponsePart union, so it is
+    # emitted as a sibling Part in the same user turn by _translate_tool_result_parts_to_gemini.
+    if is_gemini3:
+        inline_parts = (
+            preextracted_inline
+            if preextracted_inline is not None
+            else [p for p in _extract_multimodal_parts(raw_content) if "inlineData" in p]
+        )
+        if inline_parts:
+            function_response["parts"] = inline_parts
     return {"functionResponse": function_response}
+
+
+def _translate_tool_result_parts_to_gemini(
+    message: dict[str, Any], tool_name_by_call_id: Optional[dict[str, str]] = None, include_ids: bool = False, *, is_gemini3: bool = False,
+) -> list[dict[str, Any]]:
+    """FunctionResponse part plus any sibling ``fileData`` parts (single-pass, v1beta-safe on Gemini 3+/latest)."""
+    if not is_gemini3:
+        return [_translate_tool_result_to_gemini(message, tool_name_by_call_id, include_ids, is_gemini3=False)]
+    extracted = _extract_multimodal_parts(message.get("content"))
+    inline_parts = [p for p in extracted if "inlineData" in p]
+    file_parts = [p for p in extracted if "fileData" in p]
+    fr = _translate_tool_result_to_gemini(
+        message, tool_name_by_call_id, include_ids, is_gemini3=True, preextracted_inline=inline_parts,
+    )
+    return [fr, *file_parts]
 
 
 def _has_function_response(content: dict[str, Any]) -> bool:
@@ -440,8 +515,8 @@ def _build_gemini_contents(
             system_text_parts.append(_coerce_content_to_text(msg.get("content")))
             continue
         if role in {"tool", "function"}:
-            part = _translate_tool_result_to_gemini(msg, tool_name_by_call_id, include_tool_call_ids, is_gemini3=is_gemini3)
-            contents.append({"role": "user", "parts": [part]})
+            tool_parts = _translate_tool_result_parts_to_gemini(msg, tool_name_by_call_id, include_tool_call_ids, is_gemini3=is_gemini3)
+            contents.append({"role": "user", "parts": tool_parts})
             continue
         parts = _extract_multimodal_parts(msg.get("content"))
         tool_calls = msg.get("tool_calls") or []
@@ -568,7 +643,10 @@ def build_gemini_request(
 ) -> dict[str, Any]:
     # Gemini 3+ both requires tool-call ids and accepts multimodal functionResponse parts.
     is_gemini3 = gemini_requires_tool_call_ids(model)
-    contents, system_instruction = _build_gemini_contents(messages, include_tool_call_ids=is_gemini3, is_gemini3=is_gemini3)
+    multimodal_tool_parts = gemini_supports_multimodal_tool_responses(model)
+    contents, system_instruction = _build_gemini_contents(
+        messages, include_tool_call_ids=is_gemini3, is_gemini3=multimodal_tool_parts,
+    )
     gemini_tools = _translate_tools_to_gemini(tools, json_schema=tools_as_json_schema)
     tool_config = _translate_tool_choice_to_gemini(tool_choice)
     optional = (("systemInstruction", system_instruction), ("tools", gemini_tools), ("toolConfig", tool_config))

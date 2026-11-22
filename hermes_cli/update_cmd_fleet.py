@@ -1008,16 +1008,19 @@ def _refresh_sibling_launchd_plist(hermes_home: str) -> bool:
 
 
 def _launchd_real_gateway_pid(hermes_home: str) -> int | None:
-    """The gateway process ``hermes_home`` actually runs (its state-file PID,
-    liveness-checked), or None when no live gateway answers — never the launchctl
-    supervised PID, which under the plist template is the osascript wrapper rather
-    than the gateway child (#126883).
+    """The gateway process ``hermes_home`` actually runs (identity-verified), or None
+    when no live gateway answers — never the launchctl supervised PID, which under the
+    plist template is the osascript wrapper rather than the gateway child (#126883).
+
+    Identity comes from the same home-scoped, process-identity-aware validator every
+    cross-home reader uses (``live_gateway_pid_for_home``, #109680): a state-file PID
+    that merely exists is not enough — a recycled PID must not receive the sibling's
+    drain signal.
     """
     with suppress(Exception):
-        from gateway.status import _pid_exists, read_runtime_status
-        record = read_runtime_status(Path(hermes_home) / "gateway_state.json") or {}
-        pid = record.get("pid")
-        if isinstance(pid, int) and pid > 0 and _pid_exists(pid):
+        from gateway.status import live_gateway_pid_for_home
+        pid = live_gateway_pid_for_home(Path(hermes_home))
+        if isinstance(pid, int) and pid > 0:
             return pid
     return None
 

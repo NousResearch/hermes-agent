@@ -24,6 +24,9 @@
   --portal-radius-settings-card: var(--portal-radius-frame);
   /* The Settings column's Agent settings card (16292:16428). */
   --portal-radius-settings-link: 9px;
+  /* The Settings column's rows and its search tile (18563:12472, 18563:12431). */
+  --portal-radius-settings-nav-row: 9px;
+  --portal-radius-settings-search: var(--portal-radius-surface);
   --portal-shadow-settings-link: 0 1px 4px var(--portal-raw-shadow-20);
   /* Switch tracks, swatches, dots. */
   --portal-radius-round: 999px;

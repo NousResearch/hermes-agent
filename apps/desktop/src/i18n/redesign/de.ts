@@ -273,6 +273,10 @@ export const deRedesign: RedesignOverlay = {
       intro:
         'Standardmäßig lokal. Verwenden Sie Remote, wenn diese App Hermes an einem anderen Ort ausführen soll. Verbinden Sie einen Rechner, um seine Agenten zu entdecken.',
       localTitle: 'Lokaler Rechner',
+      localDesc: 'Hermes läuft auf diesem Computer.',
+      cloudDesc: 'Für Sie gehostet. Nichts zu installieren.',
+      remoteDesc: 'Hermes auf einem Server, den Sie betreiben.',
+      sshDesc: 'Mit einem Rechner über SSH verbinden.',
       remoteTitle: 'Remote-Rechner',
       remoteAuthHint:
         'Gehostete Rechner verwenden OAuth oder Benutzername und Passwort; selbst gehostete können ein Session-Token verwenden.',
@@ -308,8 +312,6 @@ export const deRedesign: RedesignOverlay = {
       envOverrideTitle: 'Diese Verbindung wurde durch den Start von Hermes festgelegt.',
       cloudSignedInDesc:
         'Sie sind angemeldet. Wählen Sie unten einen Agenten; die Session wird automatisch aktualisiert.',
-      sshDesc:
-        'Hermes wird per SSH auf dem Remote-Rechner gestartet und in diese App getunnelt – Sie müssen nichts selbst starten oder freigeben. Erfordert funktionierenden, schlüsselbasierten SSH-Zugriff auf den Host.'
     },
     profileScope: {
       editsProfile: profile => `Änderungen auf dieser Seite gelten für den Agenten „${profile}“.`

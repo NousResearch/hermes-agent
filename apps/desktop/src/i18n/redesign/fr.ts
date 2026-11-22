@@ -304,6 +304,10 @@ export const frRedesign: RedesignOverlay = {
       intro:
         'Local par défaut. Utilisez distant quand cette application doit exécuter Hermes ailleurs. Connectez une machine pour découvrir ses agents.',
       localTitle: 'Machine locale',
+      localDesc: 'Hermes tourne sur cet ordinateur.',
+      cloudDesc: 'Hébergé pour vous. Rien à installer.',
+      remoteDesc: 'Hermes sur un serveur que vous gérez.',
+      sshDesc: 'Connectez-vous à une machine via SSH.',
       remoteTitle: 'Machine distante',
       remoteAuthHint:
         'Les machines hébergées utilisent OAuth ou un nom d’utilisateur et un mot de passe ; les machines auto-hébergées peuvent utiliser un jeton de session.',

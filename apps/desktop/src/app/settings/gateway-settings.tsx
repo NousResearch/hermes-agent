@@ -8,7 +8,6 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Tip } from '@/components/ui/tooltip'
 import type {
   DesktopCloudAgent,
   DesktopCloudOrg,
@@ -22,18 +21,13 @@ import { hostHas } from '@/lib/host-capabilities'
 import {
   AlertCircle,
   Check,
-  Cloud,
   FileText,
   Globe,
-  HelpCircle,
   Loader2,
   LogIn,
-  Monitor,
-  RefreshCw,
-  Terminal
+  RefreshCw
 } from '@/lib/icons'
 import { coerceRemoteUrlScheme } from '@/lib/remote-url'
-import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
 import {
   $activeConnectionId,
@@ -48,17 +42,18 @@ import { usePortalShell } from '@/store/shell-variant'
 import { cloudTeamChanged, reconnectMovedCloudAgent } from './cloud-team-change'
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
+import { type GatewayMode, GatewayModeSection } from './gateway-mode-section'
 import { KeychainEncryptionSetting, useKeychainEncryption } from './keychain-encryption-setting'
 import { ManagedUpdatesSection } from './managed-updates-section'
 import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton } from './primitives'
-import { SettingsCard, SettingsGroup, SettingsPageDescription } from './settings-card'
+import { SettingsCard, SettingsPageDescription } from './settings-card'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { useSettingsPagesCopy } from './settings-pages-copy'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
 import { useSettingDeepLink } from './use-setting-deep-link'
 import { WebappGatewaySettings } from './webapp-gateway-settings'
 
-type Mode = 'local' | 'remote' | 'cloud' | 'ssh'
+type Mode = GatewayMode
 type AuthMode = 'oauth' | 'token'
 // Hermes Cloud discovery lifecycle for the cloud-mode panel.
 type CloudDiscoverStatus = 'idle' | 'loading' | 'done' | 'error'
@@ -121,75 +116,6 @@ export function normalizeGatewaySettingsState(
 
 export function savedCloudConnectionUrl(config: Pick<GatewaySettingsState, 'mode' | 'remoteUrl'>): string {
   return config.mode === 'cloud' ? config.remoteUrl.trim().replace(/\/+$/, '').toLowerCase() : ''
-}
-
-interface ModeCardProps {
-  active: boolean
-  description: string
-  disabled?: boolean
-  hint?: string
-  icon: typeof Monitor
-  onSelect: () => void
-  title: string
-}
-
-// Classic reads local-first; the redesign leads with the hosted option (856:5142).
-const CLASSIC_MODE_ORDER: readonly Mode[] = ['local', 'cloud', 'remote', 'ssh']
-const REDESIGN_MODE_ORDER: readonly Mode[] = ['cloud', 'remote', 'ssh', 'local']
-
-function ModeHint({ hint }: { hint: string }) {
-  return (
-    <Tip label={hint}>
-      <span
-        className="grid size-3.5 shrink-0 cursor-help place-items-center text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)"
-        onClick={event => event.stopPropagation()}
-      >
-        <HelpCircle className="size-3.5" />
-      </span>
-    </Tip>
-  )
-}
-
-function ModeCard({ active, description, disabled, hint, icon: Icon, onSelect, title }: ModeCardProps) {
-  const redesign = usePortalShell()
-
-  // Redesign (856:5142): an art tile where Figma draws a spot illustration, then title and description.
-  if (redesign) {
-    return (
-      <button aria-pressed={active} className="gateway-mode-card" disabled={disabled} onClick={onSelect} type="button">
-        <span aria-hidden className="gateway-mode-card-art">
-          <Icon />
-        </span>
-        <span className="gateway-mode-card-title">
-          {title}
-          {hint ? <ModeHint hint={hint} /> : null}
-        </span>
-        <span className="gateway-mode-card-description">{description}</span>
-      </button>
-    )
-  }
-
-  return (
-    <button
-      className={cn(
-        'flex h-full min-h-0 w-full flex-col p-3 text-left disabled:cursor-not-allowed disabled:opacity-50',
-        selectableCardClass({ active, prominent: true })
-      )}
-      disabled={disabled}
-      onClick={onSelect}
-      type="button"
-    >
-      <div className="flex items-center gap-1.5">
-        <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 text-[length:var(--conversation-text-font-size)] font-medium">{title}</span>
-        {hint ? <ModeHint hint={hint} /> : null}
-        {active ? <Check className="ml-auto size-3.5 shrink-0 text-primary" /> : null}
-      </div>
-      <p className="mt-1.5 flex-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-        {description}
-      </p>
-    </button>
-  )
 }
 
 interface GatewaySettingsProps {
@@ -1474,50 +1400,6 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
         title={g.plainTextConfirmTitle}
       />
     </SettingsContent>
-  )
-}
-
-interface GatewayModeSectionProps {
-  mode: Mode
-  disabled: boolean
-  onSelect: (mode: Mode) => void
-}
-
-/** The four connection-mode cards: classic's caption + grid, or the redesign's titled card row. */
-function GatewayModeSection({ mode, disabled, onSelect }: GatewayModeSectionProps) {
-  const { t } = useI18n()
-  const g = t.settings.gateway
-  const pages = useSettingsPagesCopy()
-  const redesign = usePortalShell()
-
-  const cards: Record<Mode, Omit<ModeCardProps, 'active' | 'disabled' | 'onSelect'>> = {
-    local: { description: g.localDesc, icon: Monitor, title: g.localTitle },
-    cloud: { description: g.cloudDesc, icon: Cloud, title: g.cloudTitle },
-    remote: { description: g.remoteDesc, hint: g.remoteAuthHint, icon: Globe, title: g.remoteTitle },
-    ssh: { description: g.sshDesc, hint: g.sshTrustHint, icon: Terminal, title: g.sshTitle }
-  }
-
-  const render = (id: Mode) => (
-    <ModeCard {...cards[id]} active={mode === id} disabled={disabled} key={id} onSelect={() => onSelect(id)} />
-  )
-
-  if (redesign) {
-    return (
-      <SettingsGroup id={settingElementId(SETTING_IDS.gateway.connectionMode)} title={pages.gateway.connectionMode}>
-        <div className="gateway-mode-cards">{REDESIGN_MODE_ORDER.map(render)}</div>
-      </SettingsGroup>
-    )
-  }
-
-  return (
-    <div className="mb-5 grid gap-2" id={settingElementId(SETTING_IDS.gateway.connectionMode)}>
-      <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
-        {g.modeTitle}
-      </div>
-      <div className="grid auto-rows-fr grid-cols-1 gap-2 sm:grid-cols-2 min-[72rem]:grid-cols-4">
-        {CLASSIC_MODE_ORDER.map(render)}
-      </div>
-    </div>
   )
 }
 

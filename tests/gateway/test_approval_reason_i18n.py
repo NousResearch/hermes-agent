@@ -178,3 +178,27 @@ def test_a_child_under_another_profile_raises_reasons_in_the_chats_language(prof
     assert seen == ["rekursives Loeschen (Fixture)"]
     assert child_view["language"] == "fr"  # the child's scope was not switched by the render
     assert approval["reasons"] == [{"slug": "recursive_delete", "text": "recursive delete"}]
+
+
+def test_catalog_supplied_reason_text_is_redacted_like_the_description(tmp_path, monkeypatch):
+    """Codex review: a translation or joiner from a user overlay / plugin pack is display input from
+    outside the core, so a credential-shaped value or a bidi control character in it must be scrubbed
+    on every surface (card, typed fallback) exactly like the legacy description."""
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    home = _home(tmp_path, "delta", "de",
+                 "gateway:\n  exec_approval:\n    reason_joiner: \" \\u202E| \"\n    reasons:\n"
+                 f"      recursive_delete: \"rekursiv {_FAKE_GHP} \\u202Eende\"\n")
+    i18n.reset_language_cache()
+    approval = {"command": "rm -rf build/", "description": "unused",
+                "reasons": [{"slug": "recursive_delete", "text": "recursive delete"},
+                            {"slug": None, "text": "second"}]}
+    try:
+        with _routed(home):
+            seen = _render(approval, card_success=False)
+    finally:
+        i18n.reset_language_cache()
+    assert [kind for kind, _ in seen] == ["card", "text"]
+    for _kind, text in seen:
+        assert "rekursiv" in text and "second" in text
+        assert _FAKE_GHP not in text
+        assert "\u202e" not in text

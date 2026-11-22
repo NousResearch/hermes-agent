@@ -48,19 +48,24 @@ def render_reasons(items: Iterable[Mapping], redact: Callable[[str], str], *,
     ``lang``/``home`` name the chat's profile when the caller is not running in it (a delegated
     child under another profile raising an approval in its parent's chat).
 
+    ``home`` without ``lang`` is refused (see :func:`agent.i18n.lookup`).
+
     The language is resolved once so every item and the joiner agree. An unknown slug, or a slug the
-    active language does not translate itself, falls back to that item's own text, passed through the
-    surface's display redaction like the legacy ``description`` string."""
+    active language does not translate itself, falls back to that item's own text. The joined string
+    goes through the surface's display redaction as a whole, like the legacy ``description``: catalog
+    text (a user overlay, a plugin pack) is display input from outside the core too."""
+    if home is not None and not lang:
+        raise ValueError("render_reasons(home=...) needs lang=: the active language belongs to the bound profile")
     lang = lang or get_language()
     parts = []
     for item in items:
         slug = item.get("slug")
         key = REASON_KEY_PREFIX + slug if slug in _KNOWN_SLUGS else None
         localized = lookup(key, lang, home) if key else None
-        parts.append(localized or redact(str(item.get("text") or "")))
+        parts.append(localized or str(item.get("text") or ""))
     # Not t(): on a catalog that predates the key (an older HERMES_BUNDLED_LOCALES) it returns the raw key.
     joiner = lookup(_JOINER_KEY, lang, home) or lookup(_JOINER_KEY, DEFAULT_LANGUAGE, home) or "; "
-    return joiner.join(p for p in parts if p)
+    return redact(joiner.join(p for p in parts if p))
 
 
 __all__ = ["REASON_KEY_PREFIX", "REASON_SLUGS", "reason_items", "render_reasons"]

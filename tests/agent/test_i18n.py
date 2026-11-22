@@ -176,3 +176,31 @@ def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
     assert result.name == "locales"
 
 
+
+
+def test_lookup_for_another_home_needs_an_explicit_language(tmp_path, monkeypatch):
+    """The active language belongs to the BOUND profile; resolving it for another home would pair (and
+    cache) the wrong language with that home's catalog. A cross-profile lookup must name the language."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    bound, other = tmp_path / "bound", tmp_path / "other"
+    for home, lang in ((bound, "de"), (other, "fr")):
+        (home / "locales").mkdir(parents=True)
+        (home / "config.yaml").write_text(f"display:\n  language: {lang}\n", encoding="utf-8")
+        (home / "locales" / f"{lang}.yaml").write_text(f"fixture:\n  key: \"{lang} value\"\n", encoding="utf-8")
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    i18n.reset_language_cache()
+    token = set_hermes_home_override(bound)
+    try:
+        with pytest.raises(ValueError):
+            i18n.lookup("fixture.key", home=str(other))
+        assert i18n.lookup("fixture.key", lang="fr", home=str(other)) == "fr value"
+        assert i18n.lookup("fixture.key") == "de value"
+    finally:
+        reset_hermes_home_override(token)
+    other_token = set_hermes_home_override(other)
+    try:
+        assert i18n.get_language() == "fr"  # nothing cached the bound profile's language for this home
+    finally:
+        reset_hermes_home_override(other_token)
+        i18n.reset_language_cache()

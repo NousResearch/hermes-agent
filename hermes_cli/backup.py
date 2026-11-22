@@ -7,6 +7,7 @@ import shutil
 import stat
 import sys
 import time
+import re
 import zipfile
 import zlib
 from contextlib import contextmanager, suppress
@@ -106,6 +107,34 @@ _EXCLUDED_ROOT_DIRS = LOCAL_RUNTIME_ROOT_DIRS | (PM_RUNTIME_ROOT_DIRS - {"cache"
 # the secret caches and Photon sidecar token. Root-scoped like models/ — a skill's own browser_profiles/ is
 # user data. Backup-only: do not fold into LOCAL_RUNTIME_ROOT_DIRS (clone-all identity contract).
 _EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles", *SECRET_CACHE_FILES})
+# Chromium user-data dirs are named per-lane, and no single hardcoded name covers them. A machine
+# that drives several automation lanes ends up with `headless-profiles/`, `agent-chrome-profile/`,
+# `acme-headless-profile/`, `site-cdp-profile/`, … and only the singular `browser-profile/` and the
+# underscored `browser_profiles/` above matched — so every one of the hyphenated variants walked
+# into the archive, carrying `Default/Login Data` + `Default/Cookies` and gigabytes of Service
+# Worker / Code Cache blobs. Upstream already declares this class of file "a credential store that
+# must NOT enter an archive"; the gap is the NAME, not the policy.
+#
+# Matched on a conjunction ("profile" AND a Chromium/automation hint) so a user directory such as
+# `profiles-archive/` or `profile-exports/` stays in the archive. Root-scoped, like every other
+# runtime root here, so a skill's own profile dir remains user data.
+_BROWSER_PROFILE_ROOT_RE = re.compile(r"profile", re.IGNORECASE)
+_BROWSER_PROFILE_HINT_RE = re.compile(
+    r"chrome|chromium|browser|headless|cdp|playwright|selenium", re.IGNORECASE
+)
+# Non-"profile"-named Chromium trees that must be caught by the same rule.
+_BROWSER_ROOT_EXACT = frozenset({"chrome-for-testing", "chromium", "puppeteer", "playwright"})
+
+
+def _is_browser_profile_root(root_entry: str) -> bool:
+    """True for a profile-home root entry that is a regenerable browser/CDP user-data dir."""
+    if root_entry in _BROWSER_ROOT_EXACT:
+        return True
+    return bool(
+        _BROWSER_PROFILE_ROOT_RE.search(root_entry)
+        and _BROWSER_PROFILE_HINT_RE.search(root_entry)
+    )
+
 
 # ``cache/`` at those same roots mixes regenerable state (model/plugin catalogs, stamps, browser
 # profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media
@@ -119,6 +148,8 @@ def _in_excluded_root_dir(rel_path: Path) -> bool:
     """True when *rel_path* is inside a regenerable tree at a profile-home root, or is the bridge log."""
     root_entry = profile_root_entry(rel_path.parts)
     if root_entry in _EXCLUDED_ROOT_DIRS or root_entry in _EXCLUDED_BACKUP_ROOT_DIRS:
+        return True
+    if root_entry is not None and _is_browser_profile_root(root_entry):
         return True
     parts = rel_path.parts
     if len(parts) >= 3 and parts[0] == "profiles":

@@ -635,12 +635,79 @@ def _dashboard_plugin_entry(data: dict[str, Any], name: str, dashboard_dir: Path
     }
 
 
+def _installed_plugin_dirs(root: Path, prefix: str = "") -> list[tuple[Path, str]]:
+    """``(directory, key)`` of every plugin installed under one plugins root, keyed as the plugin
+    loader keys it: flat ``<name>``, or ``<category>/<name>`` one level into a manifest-less dir."""
+    from hermes_cli.plugins_discovery import is_skipped_plugin_dir
+    found: list[tuple[Path, str]] = []
+    try:
+        children = sorted(p for p in root.iterdir() if p.is_dir() and not is_skipped_plugin_dir(p.name))
+    except OSError:
+        return found
+    markers = ("plugin.yaml", "plugin.yml", "plugin.json", "dashboard/manifest.json")
+    for child in children:
+        key = f"{prefix}/{child.name}" if prefix else child.name
+        try:
+            is_plugin = any((child / marker).exists() for marker in markers)
+        except OSError:  # an unsearchable directory is no installed plugin anyone could enable
+            continue
+        if is_plugin:
+            found.append((child, key))
+        elif not prefix:
+            found.extend(_installed_plugin_dirs(child, key))
+    return found
+
+
+class _PluginNameOwners:
+    """Which installed plugin directories answer to a name (directory, key or ``plugin.yaml`` name)
+    across the scanned roots, read lazily from the manifests: no plugin code runs."""
+
+    def __init__(self, roots: list[Path]) -> None:
+        self._roots, self._owners = roots, None
+
+    def others(self, name: str, plugin_dir: Path) -> list[Path]:
+        """Directories of other installed plugins that answer to ``name``. A same-named directory in
+        another root is the same plugin (the documented override of a bundled copy), not another."""
+        from pm.plugins_state import plugin_spellings
+        if self._owners is None:
+            self._owners = {}
+            for root in self._roots:
+                for directory, key in _installed_plugin_dirs(root):
+                    for spelling in plugin_spellings(directory, key):
+                        self._owners.setdefault(spelling, []).append(directory)
+        return [d for d in self._owners.get(name, []) if d.name != plugin_dir.name]
+
+
+def _dashboard_name_taken(name: Any, plugin_dir: Path, spellings: frozenset, owners: _PluginNameOwners) -> bool:
+    """Whether ``name`` (from the plugin's dashboard/manifest.json) is another installed plugin's: then
+    this entry is not registered, so it neither borrows that plugin's enable state nor hides its tab."""
+    if name in spellings or not isinstance(name, str):
+        return False
+    others = owners.others(name, plugin_dir)
+    if others:
+        _log.warning(
+            "Dashboard plugin at %s is not registered: its dashboard name '%s' is the name of the plugin "
+            "installed at %s; change name in %s/dashboard/manifest.json to this plugin's own name",
+            plugin_dir, name, others[0], plugin_dir,
+        )
+    return bool(others)
+
+
 def _discover_dashboard_plugins(search_dirs: Optional[list] = None) -> list:
     """Scan ``<plugins root>/*/dashboard/manifest.json`` across user, bundled and (opt-in)
-    project plugin sources — same three sources as ``hermes_cli.plugins`` — or ``search_dirs``."""
+    project plugin sources — same three sources as ``hermes_cli.plugins`` — or ``search_dirs``.
+
+    Each entry also records the plugin's install identity (``_key``, its directory name, and
+    ``_spellings``, every name the plugin loader accepts for it) so the enable check matches the
+    loader's. A dashboard name that is another installed plugin's name is skipped (see
+    :func:`_dashboard_name_taken`).
+    """
+    from pm.plugins_state import plugin_spellings
     plugins = []
     seen_names: set = set()
-    for plugins_root, source in (_dashboard_plugin_search_dirs() if search_dirs is None else search_dirs):
+    roots = _dashboard_plugin_search_dirs() if search_dirs is None else search_dirs
+    owners = _PluginNameOwners([root for root, _source in roots])
+    for plugins_root, source in roots:
         try:
             if not plugins_root.is_dir():
                 continue
@@ -658,8 +725,12 @@ def _discover_dashboard_plugins(search_dirs: Optional[list] = None) -> list:
                 name = data.get("name", child.name)
                 if name in seen_names:
                     continue
+                spellings = frozenset(plugin_spellings(child, child.name))
+                if _dashboard_name_taken(name, child, spellings, owners):
+                    continue
                 seen_names.add(name)
-                plugins.append(_dashboard_plugin_entry(data, name, child / "dashboard", source))
+                entry = _dashboard_plugin_entry(data, name, child / "dashboard", source)
+                plugins.append({**entry, "_key": child.name, "_spellings": spellings})
             except OSError as exc:
                 _log.warning("Skipping unreadable dashboard plugin %s: %s", manifest_file, exc)
                 continue
@@ -875,11 +946,17 @@ def _plugin_api_mount_skip_reason(plugin: dict[str, Any], enabled_set: set, disa
     Python runs (GHSA-mcfc-hp25-cjv7); bundled plugins are trusted but respect an explicit
     disable; project plugins (``./.hermes/plugins/``) ship with the CWD and are
     attacker-controlled when opening a malicious repo — never auto-imported (GHSA-5qr3-c538-wm9j).
+
+    A user plugin answers to every name the plugin loader accepts for it (``_spellings`` from
+    discovery: directory, key, ``plugin.yaml`` name) as well as its dashboard name, which discovery
+    only registers when no other installed plugin has that name. A project plugin needs no enable
+    entry, but a disabled one stays off like any other.
     """
     source, plugin_name = plugin.get("source"), plugin.get("name", "")
-    if source in ("user", "bundled") and plugin_name in disabled_set:
+    names = {plugin_name, *plugin.get("_spellings", ())} if source in ("user", "project") else {plugin_name}
+    if source in ("user", "bundled", "project") and names & disabled_set:
         return "explicitly disabled"
-    if source == "user" and plugin_name not in enabled_set:
+    if source == "user" and not names & enabled_set:
         return "not in plugins.enabled"
     return None
 

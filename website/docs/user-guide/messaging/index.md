@@ -700,6 +700,26 @@ journalctl -u hermes-gateway -f
 
 Use the user service on laptops and dev boxes. Use the system service on VPS or headless hosts that should come back at boot without relying on systemd linger.
 
+#### Limit repeated gateway starts
+
+Hermes can regenerate the base systemd unit on install, start, or restart when its definition differs from the generated one. Put local changes in a drop-in so they survive a base-unit refresh.
+
+The generated unit sets `StartLimitIntervalSec=0`, which disables systemd's start-rate limit. It uses `RestartPreventExitStatus=78` to stop automatic restarts after a fatal configuration exit. If you also want to cap retries for transient failures, edit a drop-in for the gateway unit:
+
+```bash
+systemctl --user edit hermes-gateway.service
+```
+
+For a system service, use `sudo systemctl edit hermes-gateway.service`. For a named profile, use its actual unit name (for example, `hermes-gateway-work.service`). Add the following under `[Unit]`, choosing an interval and burst appropriate for your deployment:
+
+```ini
+[Unit]
+StartLimitIntervalSec=120
+StartLimitBurst=5
+```
+
+The example allows five starts in 120 seconds, including manual starts. If the service hits the limit, inspect its journal and resolve the cause before starting it again. To retry immediately after fixing the cause, use `systemctl --user reset-failed hermes-gateway.service` before starting the service, using the same scope and unit name as for the drop-in.
+
 :::danger Don't add a custom `ExecStopPost` kill drop-in
 The unit Hermes installs already shuts the gateway down cleanly with `KillMode=mixed` + `KillSignal=SIGTERM`, and uses `Restart=always` with `RestartForceExitStatus` so updates and `/restart` respawn correctly. Do **not** add a systemd drop-in such as `ExecStopPost=/bin/kill -9 $MAINPID` — `ExecStopPost` fires on *every* stop, including clean restarts, so it `SIGKILL`s the freshly spawned instance before it stabilizes and `Restart=always` immediately respawns it. The result is an infinite restart loop (and, on Telegram, a flood of restart messages). If you've added such a drop-in, remove it: `systemctl --user edit hermes-gateway` (or `sudo systemctl edit hermes-gateway` for a system service) and delete the `ExecStopPost` line, then `systemctl --user daemon-reload`.
 :::

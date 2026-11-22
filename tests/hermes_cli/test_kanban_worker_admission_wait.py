@@ -51,9 +51,12 @@ async def test_a_slow_admission_answer_is_awaited_not_failed(monkeypatch, tmp_pa
     monkeypatch.setattr(session_kanban, 'worker_result', lambda db, params: {'exit_code': 0, 'last_output': 'done'})
     owner = _Owner()
     params = {'board': 'b', 'task_id': 't1', 'run_id': 1, 'claim_lock': 'lock'}
+    claim = kanban_worker_client._Claim(answered=0.0)
     async with GatewayClient(owner) as client:
-        receipt = await kanban_worker_client._await_receipt(client, params, str(tmp_path / 'kanban.db'), kanban_worker_client._Claim(answered=0.0))
-    code = kanban_worker_client._exit_code(receipt, params, str(tmp_path / 'kanban.db'))
+        receipt = await kanban_worker_client._await_receipt(client, params, str(tmp_path / 'kanban.db'), claim)
+    # The settled receipt is read against the claim that produced it (the owner's printed session
+    # lives on the claim), so the guard hands over the same one the wait ran on.
+    code = kanban_worker_client._exit_code(receipt, params, str(tmp_path / 'kanban.db'), claim)
     assert code == 0
     # One submission: the wait never resends the claim, and the budget never goes on the wire.
     assert [r['method'] for r in owner.sent] == ['kanban.run']
@@ -85,8 +88,15 @@ async def test_an_owner_that_stalls_after_admitting_fails_the_wait_within_the_lo
     monkeypatch.setattr(asyncio, 'wait_for', scaled)
     owner = _StalledOwner()
     params = {'board': 'b', 'task_id': 't1', 'run_id': 1, 'claim_lock': 'lock'}
+    from hermes_cli.kanban_db_transport import KANBAN_TURN_UNKNOWN_EXIT_CODE, submitter_exit_code
     async with GatewayClient(owner) as client:
-        with pytest.raises(TimeoutError):
+        # The wait ends inside the budget with a bare TimeoutError: the frame reached the owner and
+        # only its answer is missing, so the claim may be admitted with nobody watching it. What the
+        # transport lane changes is what that BOOKS as -- the submitter exits on the reconcile lane
+        # (rc 70, recorded and never counted, retry resumes the printed session) where it used to
+        # return rc 1, a counted card crash. `run` does the same routing when it catches this error.
+        with pytest.raises(TimeoutError) as exc:
             # The outer 5 s guard only stops an unbounded wait from hanging the test.
             await real_wait_for(kanban_worker_client._await_receipt(client, params, str(tmp_path / 'kanban.db'), kanban_worker_client._Claim(answered=0.0)), 5)
+    assert submitter_exit_code(exc.value) == KANBAN_TURN_UNKNOWN_EXIT_CODE
     assert budgets == [budget] and [r['method'] for r in owner.sent] == ['kanban.run']

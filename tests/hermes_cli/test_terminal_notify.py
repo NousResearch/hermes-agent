@@ -86,7 +86,13 @@ def test_program_status_follows_the_screen_through_one_owner(monkeypatch):
     cli._connection_state = {"phase": "url"}
     cli._sync_program_status()
     cli._sync_program_status()  # unchanged: no repeat report
-    assert states() == ["state=blocked:kind=permission", "state=working", "state=blocked:kind=auth"]
+    cli._connection_state = None
+    cli._slash_confirm_state = {"title": "Out of credits"}  # billing wall / slash confirm
+    cli._sync_program_status()
+    cli._slash_confirm_state = None
+    cli._sync_program_status()
+    assert states() == ["state=blocked:kind=permission", "state=working", "state=blocked:kind=auth",
+                        "state=blocked:kind=question", "state=working"]
 
     cli._connection_state, cli._agent_running = None, False
     cli._program_turn_outcome = None  # monitor gave up on a still-running agent

@@ -266,29 +266,24 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     ``classify_api_error`` verdict and the copy table in ``scheduler_failure_copy``."""
     from cron.scheduler_failure_copy import (
         classify_cron_failure_reason, generic_failure_notice, inactivity_notice,
-        provider_failure_notice, script_timeout_notice)
+        provider_failure_notice, script_timeout_notice, is_source_failure, source_failure_notice)
 
     job_name = job.get("name") or job.get("id") or "cron job"
     job_id = job.get("id") or job_name
     text = (error or "unknown error").strip()
     lower = text.lower()
 
-    # Script runner contract ("Script timed out after {n}s: {path}") — also for agent jobs with a
-    # context script. Must precede provider classification so it never claims a model failure.
-    # See #78503, #82460.
+    # Script contracts run before the model; HTTP/DNS text is not provider evidence.
     if lower.startswith("script timed out"):
         return script_timeout_notice(job_name, job_id)
+    if is_source_failure(text):
+        return source_failure_notice(job_name, job_id, text)
 
-    # Scheduler inactivity watchdog ("idle for {n}s (limit {m}s)"): the job's OWN tool call went
-    # quiet, no model service involved. Its text may still contain "timed out", so it must be
-    # recognised before the classifier (field-reported: a stuck `terminal` call was blamed on the
-    # provider and the operator debugged the wrong system).
+    # A stuck tool call is not a model-service failure either.
     if re.search(r"idle for \d+s\s*\(limit \d+s\)", lower):
         return inactivity_notice(job_name, job_id)
 
-    # no_agent jobs never reach a model, so provider errors are structurally impossible for them:
-    # gate on job MODE before classifying, or a script's own wording ("429", "timed out") would
-    # blame the wrong subsystem.
+    # no_agent jobs structurally cannot have provider failures.
     if not job.get("no_agent"):
         notice = provider_failure_notice(
             job_name, job_id, classify_cron_failure_reason(text),
@@ -367,9 +362,11 @@ def _upsert_incident_for_failure(
     as if none existed."""
     try:
         from cron.incidents import get_incident, upsert_incident
+        from cron.scheduler_failure_copy import is_source_failure
 
         incident_id, _is_new = upsert_incident(
-            job["id"], str(error or ""), job_name=job.get("name"), output_file=output_file)
+            job["id"], str(error or ""), job_name=job.get("name"), output_file=output_file,
+            **({"failure_type": "script"} if is_source_failure(str(error or "")) else {}))
         incident = get_incident(incident_id)
         state = incident.get("state") if incident else None
         withheld = state == "closed" or (state == "alerted" and _repeat_alert_withheld(incident))
@@ -1541,7 +1538,7 @@ def _apply_monitor_gate(
             f"Time: {_mon_now}"
         )
         return (
-            False, f"{header}**Status:** monitor source failed\n\n{_mon.error}\n", _mon_alert, _mon.error,
+            False, f"{header}**Status:** monitor source failed\n\n{_mon.error}\n", _mon_alert, f"[monitor_source_failed] {_mon.error}",
         ), extra_prompt, None
     if not _mon.changed:
         # Unchanged: silent no_change tick (ledger doc kept; SILENT_MARKER blocks delivery).
@@ -2899,7 +2896,8 @@ def _compose_run_delivery(
         incident_acked, failure_incident_id = _upsert_incident_for_failure(
             job, error or "", output_file=output_file
         )
-        if incident_acked:
+        from cron.scheduler_failure_copy import defer_transient_source_notice
+        if incident_acked or (not agent_declared and defer_transient_source_notice(job, err)):
             deliver_content = ""
         elif agent_declared:
             # The agent already diagnosed the failure in prose; the summarizer's substring

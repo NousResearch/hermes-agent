@@ -47,5 +47,12 @@
     "path": "tests/godotinstall.test.mjs",
     "sha256": "5ed7b16d794ff07b88270e74de780cde95d180ae9f6fd4bc476d82b2605711bb",
     "why": "unit tests for engine/godotinstall.mjs against an injected fake fetch and temp folders; downloads nothing and writes only test temp files (PR #154007)"
+  },
+  {
+    "repo": "https://github.com/Rollstack/skills",
+    "sha": "9aeb65628cb94adf8c709db8aa091a5d81a37bc1",
+    "path": "scripts/build-index.mjs",
+    "sha256": "cd12c6965b0ae35ba0f171a39d7b2ae26e31099456748cd30ddc9f5d6f0f058e",
+    "why": "repo-maintenance script that writes .well-known/agent-skills/index.json from the repo's own skills/*/SKILL.md; the raw.githubusercontent.com string is only the URL it records in that index, it fetches nothing, and Hermes never runs it (PR #157088)"
   }
 ]

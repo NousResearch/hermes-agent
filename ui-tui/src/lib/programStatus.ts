@@ -8,7 +8,8 @@ import type { OverlayState } from '../app/interfaces.js'
 
 export type ProgramState = 'blocked' | 'done' | 'error' | 'idle' | 'working'
 export type BlockedKind = 'auth' | 'permission' | 'question'
-export type TurnOutcome = 'done' | 'error' | 'idle' | null
+// How a turn ended; an error keeps its reason so the terminal can say why, as the classic CLI does.
+export type TurnOutcome = { msg?: string; state: 'done' | 'error' | 'idle' } | null
 
 const MSG_LIMIT_BYTES = 2048
 // The spec discards a whole report whose decoded msg carries C0, DEL or C1 controls.
@@ -48,14 +49,26 @@ export function clearProgramStatus(write: (seq: string) => void): boolean {
 }
 
 // A cancelled turn reports idle (the spec's rule for user interrupts); a reply-less failure is error.
-export function completionOutcome(interrupted: boolean, payload: { partial?: unknown; status?: unknown }): TurnOutcome {
+export function completionOutcome(
+  interrupted: boolean,
+  payload: { error?: unknown; partial?: unknown; status?: unknown; text?: unknown }
+): TurnOutcome {
   // The backend's own verdict too: a voice barge-in interrupts without the TUI's local flag.
   if (interrupted || payload.status === 'interrupted') {
-    return 'idle'
+    return { state: 'idle' }
   }
 
-  return payload.status === 'error' && !payload.partial ? 'error' : 'done'
+  if (payload.status === 'error' && !payload.partial) {
+    // The shared gateway's frame carries the failure as its text (no partial = no answer in it).
+    return errorOutcome(payload.error || payload.text)
+  }
+
+  return { state: 'done' }
 }
+
+// `done` never carries a msg (never the reply); `error` carries the failure when there is one.
+export const errorOutcome = (reason: unknown): TurnOutcome =>
+  typeof reason === 'string' && reason.trim() ? { msg: reason, state: 'error' } : { state: 'error' }
 
 export function encodeProgramStatus(state: ProgramState, kind?: BlockedKind, msg = ''): string {
   const pairs = [`state=${state}`, 'app=hermes']
@@ -132,5 +145,5 @@ export function deriveProgramStatus(
     return { state: 'working' }
   }
 
-  return { state: outcome ?? 'idle' }
+  return outcome?.msg ? { msg: outcome.msg, state: outcome.state } : { state: outcome?.state ?? 'idle' }
 }

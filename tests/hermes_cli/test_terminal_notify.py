@@ -126,6 +126,24 @@ def test_quit_clears_the_reported_record_once_and_late_turn_ends_stay_silent(mon
     assert written == []
 
 
+def test_one_shot_exit_clears_the_reported_record(monkeypatch):
+    """A non-quiet `-q` turn reports done/error; its exit path, not /quit, must clear the record."""
+    import cli as cli_module
+    written = []
+    monkeypatch.setattr(terminal_notify, "write_tty", written.append)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    for name in ("_flush_one_shot_session_store", "_notify_single_query_session_finalize",
+                 "_shutdown_agent_memory_provider", "_wait_for_oneshot_background_completions", "_run_cleanup"):
+        monkeypatch.setattr(cli_module, name, lambda *a, **k: None)
+    one_shot = HermesCLI.__new__(HermesCLI)
+    one_shot.program_status_enabled, one_shot._agent_running = True, False
+    one_shot._release_active_session = lambda: None
+    one_shot._program_turn_outcome = ("done", "")
+    one_shot._sync_program_status()
+    cli_module._finalize_single_query(one_shot)
+    assert written[-1] == "\x1b]7501;state=clear\x1b\\"
+
+
 def test_quit_clear_respects_display_program_status_false(monkeypatch):
     written = []
     monkeypatch.setattr(terminal_notify, "write_tty", written.append)

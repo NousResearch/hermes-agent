@@ -39,7 +39,10 @@ describe('OSC 7501 program status', () => {
 
     patchOverlayState({ approval: null })
     expect(deriveProgramStatus(true, getOverlayState(), null)).toEqual({ state: 'working' })
-    expect(deriveProgramStatus(false, getOverlayState(), 'error')).toEqual({ state: 'error' })
+    expect(deriveProgramStatus(false, getOverlayState(), { msg: 'HTTP 401', state: 'error' })).toEqual({
+      msg: 'HTTP 401',
+      state: 'error'
+    })
     expect(deriveProgramStatus(false, getOverlayState(), null)).toEqual({ state: 'idle' })
   })
 
@@ -53,7 +56,13 @@ describe('OSC 7501 program status', () => {
       kind: 'auth',
       state: 'blocked'
     })
-    expect(completionOutcome(false, { status: 'interrupted' })).toBe('idle')
+    expect(completionOutcome(false, { status: 'interrupted' })).toEqual({ state: 'idle' })
+    expect(completionOutcome(false, { error: 'HTTP 429', status: 'error' })).toEqual({ msg: 'HTTP 429', state: 'error' })
+    expect(completionOutcome(false, { status: 'error', text: 'HTTP 401: bad key' })).toEqual({
+      msg: 'HTTP 401: bad key',
+      state: 'error'
+    })
+    expect(completionOutcome(false, { error: 'HTTP 429', partial: true, status: 'error' })).toEqual({ state: 'done' })
   })
 
   it('a clarify prompt carries its first unanswered question, like the classic CLI', () => {
@@ -71,7 +80,7 @@ describe('OSC 7501 program status', () => {
 
   it('a confirm dialog such as the billing wall blocks with its title', () => {
     patchOverlayState({ confirm: { onConfirm: () => {}, title: 'Out of credits' } })
-    expect(deriveProgramStatus(false, getOverlayState(), 'error')).toEqual({
+    expect(deriveProgramStatus(false, getOverlayState(), { state: 'error' })).toEqual({
       kind: 'question',
       msg: 'Out of credits',
       state: 'blocked'

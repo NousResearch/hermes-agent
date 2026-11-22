@@ -250,3 +250,31 @@ def test_termux_chat_shortcut_leaves_subcommands_to_dispatch(monkeypatch, argv):
     monkeypatch.delenv("HERMES_TERMUX_DISABLE_FAST_CLI", raising=False)
     monkeypatch.setattr(sys, "argv", ["hermes", *argv])
     assert main._try_termux_fast_cli_launch() is False
+
+
+def test_version_fast_path_has_no_implicit_update_check(monkeypatch):
+    import hermes_cli._startup_fast as fast
+
+    called = []
+    monkeypatch.setattr(fast, "is_global_fast_version_argv", lambda argv: argv == ["--version"])
+    monkeypatch.setattr(fast, "container_mode_may_be_active", lambda: False)
+    monkeypatch.setattr(fast, "print_fast_version_info",
+                        lambda *, check_updates: called.append(check_updates))
+    assert fast.try_fast_version(["--version"])
+    assert called == [False]
+
+
+def test_version_update_requires_explicit_opt_in(monkeypatch, capsys):
+    import hermes_cli._startup_fast as fast
+
+    monkeypatch.delenv("HERMES_EXPLICIT_UPDATE_STATUS", raising=False)
+    # No source-check import or external update probe should be reached.
+    from types import ModuleType
+
+    fake = ModuleType("hermes_cli.source_check")
+    fake.check_for_updates = lambda **_kwargs: (_ for _ in ()).throw(
+        AssertionError("forbidden implicit update call")
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.source_check", fake)
+    fast.print_fast_version_info(check_updates=True)
+    assert "Install directory:" in capsys.readouterr().out

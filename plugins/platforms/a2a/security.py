@@ -14,6 +14,7 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import Optional
 from agent.proxy_bypass import is_loopback_host
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
@@ -281,6 +282,7 @@ _REJECTION_PER_SOURCE = 20
 _REJECTION_GLOBAL = 200
 _REJECTION_DECISIONS = frozenset({"rejected_bad_token", "rejected_untrusted_peer"})
 _rejection_events: list[tuple[float, str]] = []
+_audit_lock = Lock()
 
 
 def _sanitize_audit_task_id(task_id: object) -> str | None:
@@ -316,10 +318,11 @@ def _allow_rejection_audit(ip: str | None) -> bool:
 
 def _rotate_audit_file(path: Path) -> None:
     try:
-        if path.exists() and path.stat().st_size >= _MAX_AUDIT_FILE_BYTES:
-            path.replace(path.with_suffix(path.suffix + ".1"))
-    except OSError:
+        size = path.stat().st_size
+    except FileNotFoundError:
         return
+    if size >= _MAX_AUDIT_FILE_BYTES:
+        path.replace(path.with_suffix(path.suffix + ".1"))
 
 
 def audit(
@@ -339,24 +342,25 @@ def audit(
     traffic. ``ip`` is the caller's address when known.
     """
     try:
-        if decision in _REJECTION_DECISIONS and not _allow_rejection_audit(ip):
-            return
-        rec: dict[str, object] = {
-            "ts": time.time(),
-            "direction": direction,  # "inbound" | "outbound" | "push"
-            "peer": peer,
-            "task_id": _sanitize_audit_task_id(task_id),
-            "summary": (summary or "")[:500],
-        }
-        if decision is not None:
-            rec["decision"] = decision
-        if status is not None:
-            rec["status"] = status
-        if ip is not None:
-            rec["ip"] = ip
-        path = _audit_path()
-        _rotate_audit_file(path)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        with _audit_lock:
+            if decision in _REJECTION_DECISIONS and not _allow_rejection_audit(ip):
+                return
+            rec: dict[str, object] = {
+                "ts": time.time(),
+                "direction": direction,  # "inbound" | "outbound" | "push"
+                "peer": peer,
+                "task_id": _sanitize_audit_task_id(task_id),
+                "summary": (summary or "")[:500],
+            }
+            if decision is not None:
+                rec["decision"] = decision
+            if status is not None:
+                rec["status"] = status
+            if ip is not None:
+                rec["ip"] = ip
+            path = _audit_path()
+            _rotate_audit_file(path)
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         logger.debug("A2A: audit write failed", exc_info=True)

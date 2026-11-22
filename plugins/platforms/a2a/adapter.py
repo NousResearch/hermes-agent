@@ -229,10 +229,11 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         adapter = self.adapter
         # Identity comes from the credential (or the socket in localhost-only mode) — never the body.
-        identity = adapter._security_context.authenticate(self.headers.get("Authorization"), self._client_ip())
         client_ip = self._client_ip()
+        identity = adapter._security_context.authenticate(self.headers.get("Authorization"), client_ip)
         if identity is None:
-            security.audit(
+            adapter._scope_ctx.copy().run(
+                security.audit,
                 "inbound",
                 None,
                 None,
@@ -273,7 +274,8 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
                 if code == protocol.ERR_RATE_LIMITED:
                     protocol.metrics.rate_limit_triggers += 1
                 if code == protocol.ERR_UNTRUSTED_PEER:
-                    security.audit(
+                    adapter._scope_ctx.copy().run(
+                        security.audit,
                         "inbound",
                         identity,
                         req_id,

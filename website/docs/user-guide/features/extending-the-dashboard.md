@@ -820,6 +820,8 @@ The dashboard scans three directories for `dashboard/manifest.json`:
 | 2 | `<repo>/plugins/<name>/dashboard/` | `bundled` |
 | 3 | `./.hermes/plugins/<name>/dashboard/` | `project` — only when `HERMES_ENABLE_PROJECT_PLUGINS` is set |
 
+A user plugin's tab, files and backend are served only while it is turned on with `hermes plugins enable <directory name>` (its `plugin.yaml` name, or its dashboard `name` when no other installed plugin has that name, also counts), and a plugin in `plugins.disabled` is never served. A dashboard `name` that is another installed plugin's name is not registered, so give each plugin its own `name` in `dashboard/manifest.json`.
+
 On a gateway serving several profiles, a request for a profile other than the one the gateway started
 with sees that profile's own `plugins/<name>/dashboard/`, then the root `~/.hermes/plugins/<name>/dashboard/`
 (as a standalone `hermes --profile <name> dashboard` did; the profile's own copy wins a same-name

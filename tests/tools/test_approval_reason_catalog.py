@@ -112,3 +112,22 @@ def test_scan_incomplete_reason_is_carried_and_stays_one_shot(gateway):
 def test_an_unmapped_finding_travels_with_its_english_text(gateway):
     _result, data = gateway("psql -c 'TRUNCATE fixture'", "deny")
     assert data["reasons"] == [{"slug": None, "text": data["description"]}]
+
+
+def test_a_catalog_without_the_joiner_key_still_joins_readably(tmp_path, monkeypatch):
+    """An older bundled catalog (HERMES_BUNDLED_LOCALES) may predate ``reason_joiner``: never the raw key."""
+    from agent import i18n
+    from tools.approval_reason_catalog import render_reasons
+
+    old = tmp_path / "locales"
+    old.mkdir()
+    (old / "en.yaml").write_text("gateway:\n  exec_approval:\n    default_reason: \"dangerous command\"\n",
+                                 encoding="utf-8")
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    monkeypatch.setattr(i18n, "_locales_dir", lambda: old)
+    i18n.reset_language_cache()
+    try:
+        text = render_reasons([{"slug": None, "text": "first"}, {"slug": "recursive_delete", "text": "second"}], str)
+    finally:
+        i18n.reset_language_cache()
+    assert text == "first; second"

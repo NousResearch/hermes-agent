@@ -13,9 +13,10 @@ from __future__ import annotations
 
 from typing import Callable, Iterable, Mapping
 
-from agent.i18n import get_language, lookup, t
+from agent.i18n import DEFAULT_LANGUAGE, get_language, lookup
 
 REASON_KEY_PREFIX = "gateway.exec_approval.reasons."
+_JOINER_KEY = "gateway.exec_approval.reason_joiner"
 
 # Detector key (the English description, verbatim) -> catalog slug. Literal strings keep this module
 # free of the detector import; a test pins every key to a finding the detectors really produce. A
@@ -53,7 +54,9 @@ def render_reasons(items: Iterable[Mapping], redact: Callable[[str], str]) -> st
         key = REASON_KEY_PREFIX + slug if slug in _KNOWN_SLUGS else None
         localized = lookup(key, lang) if key else None
         parts.append(localized or redact(str(item.get("text") or "")))
-    return t("gateway.exec_approval.reason_joiner", lang=lang).join(p for p in parts if p)
+    # Not t(): on a catalog that predates the key (an older HERMES_BUNDLED_LOCALES) it returns the raw key.
+    joiner = lookup(_JOINER_KEY, lang) or lookup(_JOINER_KEY, DEFAULT_LANGUAGE) or "; "
+    return joiner.join(p for p in parts if p)
 
 
 __all__ = ["REASON_KEY_PREFIX", "REASON_SLUGS", "reason_items", "render_reasons"]

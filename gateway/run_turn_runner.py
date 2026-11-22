@@ -841,7 +841,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     # Without this, a card whose timer runs out keeps live buttons and nobody
                     # learns the command did NOT run (only the TUI registered a settle hook).
                     register_timeout_notice(
-                        self, approval_data, command=cmd,
+                        self, approval_data, command=cmd, reason=desc,
                         card_message_id=getattr(fut.result(timeout=0), "message_id", None))
                     return
                 if outcome == "ambiguous":
@@ -910,7 +910,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                            approval_data.get("request_id"), ctx.session_key)
                 # No card to edit on the text path: the prompt has no buttons to drop and carries
                 # the /approve instructions, so the timeout notice is posted as a new message.
-                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+                register_timeout_notice(self, approval_data, command=cmd, reason=desc, card_message_id=None)
             if background and outcome not in ("sent", "ambiguous"):
                 # Nobody else can still show a background child's prompt: undelivered fails it closed.
                 raise RuntimeError("Approval notification was not delivered")

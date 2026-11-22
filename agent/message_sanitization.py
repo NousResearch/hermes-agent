@@ -153,8 +153,9 @@ _sanitize_messages_surrogates = partial(_sanitize_messages, fix=_sanitize_surrog
 _sanitize_structure_non_ascii = partial(_sanitize_structure, fix=_strip_non_ascii)
 _sanitize_messages_non_ascii = partial(_sanitize_messages, fix=_strip_non_ascii, deep=False)
 _sanitize_tools_non_ascii = _sanitize_structure_non_ascii
-# Deep: a marker quoted inside tool_call arguments wedges the prompt exactly as one in
-# message content does.
+# Same deep coverage as the surrogate fixer: content, name and tool_call arguments
+# (shallow already walks those) plus tool_call ids, function names and nested non-core
+# fields — a marker anywhere in the wire payload wedges the prompt.
 _sanitize_messages_media_markers = partial(_sanitize_messages, fix=_neutralize_media_markers, deep=True)
 
 

@@ -74,3 +74,21 @@ def test_auxiliary_kwargs_builder_neutralizes_markers():
     kwargs = _build_call_kwargs("custom", "qwen-27b", messages, base_url="http://192.168.1.21:30068")
     assert RANDOM_MARKER not in kwargs["messages"][1]["content"]
     assert kwargs["messages"][0]["content"] == "dump props"
+
+
+def test_marker_inside_tool_call_arguments_is_neutralized():
+    """The deep pass must reach tool_call arguments, not just message content."""
+    messages = [
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "c1", "type": "function",
+            "function": {"name": "shell", "arguments": f'{{"cmd": "cat {RANDOM_MARKER}"}}'},
+        }]},
+    ]
+    assert _sanitize_messages_media_markers(messages) is True
+    assert RANDOM_MARKER not in messages[0]["tool_calls"][0]["function"]["arguments"]
+
+
+def test_sanitizer_is_idempotent():
+    messages = [{"role": "tool", "tool_call_id": "c1", "content": RANDOM_MARKER}]
+    assert _sanitize_messages_media_markers(messages) is True
+    assert _sanitize_messages_media_markers(messages) is False

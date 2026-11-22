@@ -1,15 +1,7 @@
 name: agentiker-scout
 repo: https://github.com/IVRZ-da/agentiker-scout
 sha: eaec69744815810f073a3d285071c1f4a571c577
-description: >-
-  Unified analysis, bug-hunt and web-research toolkit for the local codebase:
-  71 bug/security patterns, dead-code and UI-gap inspection, framework and
-  dependency-risk analysis, git-history triage plus cited web research, all
-  bundled into three namespace dispatchers (analysis, bughunt, research) with
-  an op parameter so the schema cost per turn stays small. Read-mostly: scans
-  files in the session workspace, keeps its own data under the Hermes
-  plugin-data directory (exports are confined there too), and uses configured
-  search providers only when you ask it to.
+description: "Unified analysis, bug-hunt and web-research toolkit for the local codebase: 71 bug/security patterns, dead-code and UI-gap inspection, framework and dependency-risk analysis, git-history triage plus cited web research, all bundled into three namespace dispatchers (analysis, bughunt, research) with an op parameter so the schema cost per turn stays small. Read-mostly: scans files in the session workspace, keeps its own data under the Hermes plugin-data directory (exports are confined there too), and uses configured search providers only when you ask it to. Disclosure — Analysis runs save a short summary to your Honcho memory through Hermes when Honcho is set up (on by default, `persist: false` turns it off); research auto-mode sends search queries to the Firecrawl server you configure (default a local one at 127.0.0.1:3002); research verify sends HEAD requests to the public source URLs saved in a research result; the UI-inspect op drives your Chrome DevTools MCP to the URL it is given; it logs each of its tool calls (tool, op, session id) to a local usage file."
 maintainer: IVRZ-da
 tier: community
 category: tools

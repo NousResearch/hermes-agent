@@ -37,7 +37,7 @@ export function useSwitchSendTarget(): null | string {
     const owner = knownOwnerForSession(runtimeId) ?? knownOwnerForSession(storedId)
 
     // An unresolved existing session must never borrow the new-chat pin.
-    return typeof owner === 'string' ? owner : (owner?.targetProfile || owner?.profile) ?? null
+    return typeof owner === 'string' ? owner : ((owner?.targetProfile || owner?.profile) ?? null)
   }
 
   return draftRoute?.targetProfile || draftRoute?.profile || draftProfile || normalizeProfileKey(activeProfile)

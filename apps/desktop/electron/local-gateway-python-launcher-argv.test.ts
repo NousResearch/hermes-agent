@@ -9,16 +9,19 @@ const spawned = vi.hoisted(() => [] as { command: string; args: string[]; option
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof ChildProcessAPI>()
 
-  return { ...actual, spawn: (command: string, args: string[], options: any) => {
-    spawned.push({ command, args, options })
-    const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), kill: () => true })
-    setImmediate(() => {
-      child.stdout.end(JSON.stringify([process.execPath, '-I', '-c', 'bootstrap']))
-      child.emit('close', 0)
-    })
+  return {
+    ...actual,
+    spawn: (command: string, args: string[], options: any) => {
+      spawned.push({ command, args, options })
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), kill: () => true })
+      setImmediate(() => {
+        child.stdout.end(JSON.stringify([process.execPath, '-I', '-c', 'bootstrap']))
+        child.emit('close', 0)
+      })
 
-    return child
-  } }
+      return child
+    }
+  }
 })
 
 const { ticketRuntimeFor } = await import('./local-gateway-python')
@@ -39,8 +42,10 @@ test('a .cmd override in a path with spaces asks its launcher for the runtime as
   const command = 'C:\\Users\\John Doe\\AppData\\Local\\hermes\\bin\\hermes.cmd'
   const root = 'C:\\Users\\John Doe\\AppData\\Local\\hermes\\hermes-agent'
 
-  await expect(ticketRuntimeFor({ command, kind: 'command', shell: true, root }))
-    .resolves.toEqual({ command: process.execPath, env: { PYTHONPATH: root } })
+  await expect(ticketRuntimeFor({ command, kind: 'command', shell: true, root })).resolves.toEqual({
+    command: process.execPath,
+    env: { PYTHONPATH: root }
+  })
   expect(spawned).toHaveLength(1)
   expect(spawned[0].command).toBe(`"${command}"`)
   expect(spawned[0].args).toEqual(['--print-runtime-command'])

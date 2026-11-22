@@ -20,9 +20,17 @@ const remote = {
 // asking with no profile, against a global remote primary whose inherited
 // profile ('windows-only') that gateway does not serve.
 function rendererRequest(profile: string | undefined, pin: PrimaryProfilePin) {
-  const route = resolveDesktopConnectionRequest(profile, null, pin.resolve(() => 'windows-only'))
+  const route = resolveDesktopConnectionRequest(
+    profile,
+    null,
+    pin.resolve(() => 'windows-only')
+  )
 
-  return primaryBootRequest(route.profile, pin.resolve(() => 'windows-only'), desktopConnectionRequestInheritsPrimary(profile, null))
+  return primaryBootRequest(
+    route.profile,
+    pin.resolve(() => 'windows-only'),
+    desktopConnectionRequestInheritsPrimary(profile, null)
+  )
 }
 
 const routeFor = (pin: PrimaryProfilePin) => (key: string) =>

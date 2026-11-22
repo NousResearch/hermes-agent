@@ -1,7 +1,13 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
-import { $programStatusEnabled, $turnOutcome, deriveProgramStatus, encodeProgramStatus, markProgramStatusReported } from '../lib/programStatus.js'
+import {
+  $programStatusEnabled,
+  $turnOutcome,
+  deriveProgramStatus,
+  encodeProgramStatus,
+  markProgramStatusReported
+} from '../lib/programStatus.js'
 
 import { $connectionOperation } from './connectionOperationStore.js'
 import { $overlayState } from './overlayStore.js'

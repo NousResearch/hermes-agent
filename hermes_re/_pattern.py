@@ -28,7 +28,8 @@ Fork: RE2 guards each program's DFA cache with a mutex, and a thread of the pare
 at the moment of ``fork()``; in the child that mutex is never released. ``_after_fork`` (run in
 the child, registered when the first program is built) therefore makes every live Pattern unbuilt again and
 parks the inherited programs where nothing touches or frees them; the child builds its own on
-first use.
+first use. A match iterator suspended across the fork notices ``_forks`` change and fetches the
+child's programs before its next step.
 """
 from __future__ import annotations
 
@@ -52,6 +53,7 @@ _LAZY = frozenset(("_anchors", "_edge", "_rx"))  # slots filled by the build
 # Patterns (the same source compiled again after ``purge``) are separate objects with programs of their own.
 _live = weakref.WeakValueDictionary()
 _parked = []  # programs inherited through fork(): kept alive, never used, never freed
+_forks = 0  # how many fork()s this process descends from: a suspended iterator fetches its programs again when it changes
 _fork_hook = []  # holds one item once ``_after_fork`` is registered with the interpreter
 
 
@@ -63,22 +65,6 @@ def live() -> list:
         except RuntimeError:
             continue
     return list(_live.values())
-
-
-def _iterate(scan, unanchored, data, direct, start, end):
-    """Successive RE2 span lists of a plain pattern; an empty match advances one character."""
-    while start <= end:
-        spans = scan(unanchored, data, start, end)
-        first, last = spans[0]
-        if first < 0:
-            return
-        yield spans
-        if last > first:
-            start = last
-        elif direct or last >= end:
-            start = last + 1
-        else:
-            start = step(data, last)
 
 
 def _aligned(edge, rx, unanchored, data, start, end):
@@ -106,17 +92,6 @@ def _aligned(edge, rx, unanchored, data, start, end):
         while start < size and data[start] & 0xC0 == 0x80:
             start += 1
     return None
-
-
-def _iterate_aligned(edge, rx, unanchored, data, start, end):
-    """``_iterate`` for a pattern with `\\B` on a non-ASCII subject (see ``_aligned``)."""
-    while start <= end:
-        spans = _aligned(edge, rx, unanchored, data, start, end)
-        if spans is None:
-            return
-        yield spans
-        first, last = spans[0]
-        start = last if last > first else last + 1 if last >= end else step(data, last)
 
 
 def _window(string, pos, endpos):
@@ -349,15 +324,36 @@ class Pattern:
         return self._one(2, string, pos, endpos)
 
     def _spans(self, data, mode, start, end):
-        """An iterator of successive match span lists, in the caller's group numbering."""
-        rx = self._rx
-        if self._special:
-            edge, rx = self._for(mode)
-            if self._nonb and mode != DIRECT:
-                return _iterate_aligned(edge, rx, self._anchors[0], data, start, end)
-            if edge is not None:
-                return edge.iterate(data, mode == DIRECT, start, end)
-        return _iterate(rx.Match, self._anchors[0], data, mode == DIRECT, start, end)
+        """Successive match span lists, in the caller's group numbering. An empty match advances
+        one character; the next search begins at the END OF THE USER'S MATCH (never after a
+        consumed suffix), so the last character of one match can be the guard character of the next.
+
+        A generator can be suspended across ``fork()`` (``finditer``, a ``sub`` callback that
+        forks): it fetches its programs from the Pattern again whenever ``_forks`` changed, so a
+        child never matches with an inherited one (see the module docstring)."""
+        direct, forks = mode == DIRECT, -1
+        while start <= end:
+            if forks != _forks:
+                forks = _forks
+                edge, rx = self._for(mode) if self._special else (self._edge, self._rx)
+                aligned, unanchored = self._nonb and not direct, self._anchors[0]
+                scan = rx.Match if edge is None and not aligned else None
+            if scan is not None:
+                spans = scan(unanchored, data, start, end)
+                if spans[0][0] < 0:
+                    return
+            else:
+                spans = _aligned(edge, rx, unanchored, data, start, end) if aligned else edge.find(data, direct, start, end)
+                if spans is None:
+                    return
+            yield spans
+            first, last = spans[0]
+            if last > first:
+                start = last
+            elif direct or last >= end:
+                start = last + 1
+            else:
+                start = step(data, last)
 
     def finditer(self, string, pos=0, endpos=sys.maxsize):
         data, mode, start, end, offsets, shift, _ = self._open(string, pos, endpos)  # argument errors raise now
@@ -452,6 +448,8 @@ def cached(kind, pattern, flags) -> Pattern:
 
 def _after_fork() -> None:
     """In a forked child: no inherited RE2 program may be used (see the module docstring)."""
+    global _forks
+    _forks += 1
     for compiled in live():
         _parked.extend(compiled._unbuild())
     _budget.recount()

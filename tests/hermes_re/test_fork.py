@@ -52,3 +52,72 @@ print(ROUNDS * 4, hung, wrong)
 def test_a_forked_child_builds_its_own_programs_and_never_hangs_on_an_inherited_one():
     forks, hung, wrong = fresh_interpreter("import warnings; warnings.simplefilter('ignore')\n" + STRESS, timeout=600)
     assert (forks, hung, wrong) == ("48", "0", "0")
+
+
+RESUME = r'''
+import os, signal
+import hermes_re as re
+
+
+class Spy:
+    """Stands in for an inherited runner or program and records every use."""
+    def __init__(self, inner, calls):
+        self._inner, self._calls = inner, calls
+
+    def __getattr__(self, name):
+        found = getattr(self._inner, name)
+        if not callable(found):
+            self._calls.append(name)
+            return found
+
+        def call(*args, **kwargs):  # a bound method taken before the fork still reports each use
+            self._calls.append(name)
+            return found(*args, **kwargs)
+        return call
+
+
+def spy(compiled, subject):
+    compiled.search(subject)  # builds everything matching this subject uses
+    calls = []
+    runners = [compiled._edge, compiled._rx]
+    if compiled._wide.__class__ is tuple:
+        runners += compiled._wide
+    if compiled._rx is not None:
+        compiled._rx = Spy(compiled._rx, calls)
+    if compiled._wide.__class__ is tuple and compiled._wide[1] is not None:
+        compiled._wide = (compiled._wide[0], Spy(compiled._wide[1], calls))
+    for edge in {id(r): r for r in runners if r is not None and hasattr(r, "scan")}.values():
+        for slot in ("scan", "start", "exact"):  # the RE2 programs an edge runner matches with
+            if getattr(edge, slot) is not None:
+                setattr(edge, slot, Spy(getattr(edge, slot), calls))
+    return calls
+
+
+CASES = (
+    (r"\d+", "1 22 333 4444"),                              # plain program
+    (r"(?<![\w-])\d+", "1 -22 333 x4444 55"),               # edge runner
+    (r"\b\w+\b", "\u00e9t\u00e9 a b\u00e9 c"),              # wide (Unicode `\b`) form
+    (r"\B", "ab cd\u00e9 ef"),                              # `\B` on a non-ASCII subject
+)
+for source, subject in CASES:
+    compiled = re.compile(source)
+    expected = [m.span() for m in compiled.finditer(subject)]
+    calls = spy(compiled, subject)
+    matches = compiled.finditer(subject)
+    first = next(matches).span()
+    assert calls  # the spy sees the runner the iterator uses
+    pid = os.fork()
+    if pid == 0:
+        signal.alarm(20)  # bounded: a child stuck on an inherited lock dies by SIGALRM
+        del calls[:]
+        rest = [m.span() for m in matches]
+        os._exit(0 if calls == [] and [first, *rest] == expected else 3)
+    status = os.waitpid(pid, 0)[1]
+    print(os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status))
+    assert [first, *(m.span() for m in matches)] == expected  # the parent goes on with its own programs
+'''
+
+
+@pytest.mark.platforms("posix")
+def test_an_iterator_resumed_in_a_forked_child_switches_to_the_childs_own_programs():
+    assert fresh_interpreter(RESUME, timeout=120) == ["0", "0", "0", "0"]

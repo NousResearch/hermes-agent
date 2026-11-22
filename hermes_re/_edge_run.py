@@ -165,20 +165,3 @@ class Edge:
             if self._refused(tests, kind):
                 return None
             before = begin
-
-    def iterate(self, data, direct, pos, end):
-        """Successive matches. The next search begins at the END OF THE USER'S MATCH (never
-        after the consumed suffix), and ``find`` steps one character back from there, so the
-        last character of one match can be the guard character of the next."""
-        while pos <= end:
-            spans = self.find(data, direct, pos, end)
-            if spans is None:
-                return
-            yield spans
-            first, last = spans[0]
-            if last > first:
-                pos = last
-            elif direct or last >= end:
-                pos = last + 1
-            else:
-                pos = step(data, last)

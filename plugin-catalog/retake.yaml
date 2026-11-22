@@ -3,7 +3,7 @@ title: Retake
 repo: "https://github.com/wevial/retake"
 sha: "fd0ae37d586f876cfe2b0297e363bfe0f23a8d3b"
 maintainer: "wevial"
-description: Image-generation workspace for Hermes Desktop. Generate or upload an image, mark regions, request a reference-guided revision, compare versions and download.
+description: "Image-generation workspace for Hermes Desktop. Generate or upload an image, mark regions, request a reference-guided revision, compare versions and download. Disclosure — images, region notes and revision references you send are passed to your configured Hermes image provider, which may use credits or allowance; generated result links are downloaded from that provider; projects and image versions are stored in a local database in your Hermes profile."
 tier: community
 category: desktop
 requires_hermes: ">=0.23.1"

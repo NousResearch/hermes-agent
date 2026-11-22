@@ -467,11 +467,10 @@ def test_runner_release_turn_lease_is_token_scoped_and_bare_safe():
 
     async def scenario():
         runner._turn_leases = SessionTurnLeaseRegistry()
-        runner._turn_lease_tokens = {}
         token = await runner._turn_leases.acquire(
             "sess-r", owner_key="key-a", generation=1, timeout=5
         )
-        runner._turn_lease_tokens[("key-a", 1)] = token
+        runner._session_state("key-a").turn.lease_tokens[1] = token
         # Wrong generation: pops nothing, releases nothing.
         assert runner._release_turn_lease("key-a", 2) is False
         assert runner._turn_leases._leases["sess-r"].holder is token

@@ -16,6 +16,8 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
+from agent.codex_responses_adapter import extract_developer_prompt
+
 logger = logging.getLogger(__name__)
 
 PRE_AUXILIARY_CALL = "pre_auxiliary_call"
@@ -45,6 +47,9 @@ def _parent_turn_identity() -> dict[str, str]:
 def _system_prompt(messages: Any, kwargs: dict[str, Any]) -> str:
     if isinstance(kwargs.get("system"), str):  # Anthropic
         return kwargs["system"]
+    dev_prompt = extract_developer_prompt(messages)
+    if dev_prompt is not None:
+        return dev_prompt
     if isinstance(kwargs.get("instructions"), str):  # Responses
         return kwargs["instructions"]
     if isinstance(messages, list) and messages and isinstance(messages[0], dict):
@@ -236,9 +241,11 @@ def finish_aux_call_hooks(
 def run_with_aux_hooks(
     call: Callable[[], Any], *, aux_task: str, metadata: dict[str, Any], client: Any,
     kwargs: dict[str, Any], provider: str, model: str, api_mode: str, streaming: bool = False,
+    normalized: Optional[Callable[[Any], Any]] = None,
 ) -> Any:
     """Run one synchronous provider attempt between ``pre_auxiliary_call`` and
-    ``post_auxiliary_call``; the exception (if any) is reported in ``post`` and re-raised."""
+    ``post_auxiliary_call``; the exception (if any) is reported in ``post`` and re-raised.
+    ``normalized(response)``, when given, builds the hooks' normalized view only when a hook listens."""
     hooks = start_aux_call_hooks(aux_task=aux_task, metadata=metadata, client=client, kwargs=kwargs,
                            provider=provider, model=model, api_mode=api_mode, streaming=streaming)
     try:
@@ -246,7 +253,10 @@ def run_with_aux_hooks(
     except BaseException as exc:
         finish_aux_call_hooks(hooks, error=exc)
         raise
-    finish_aux_call_hooks(hooks, response=response)
+    if hooks is not None and normalized is not None:
+        finish_aux_call_hooks(hooks, response, normalized=normalized(response))
+    else:
+        finish_aux_call_hooks(hooks, response=response)
     return response
 
 
@@ -264,3 +274,36 @@ async def arun_with_aux_hooks(
         raise
     finish_aux_call_hooks(hooks, response=response)
     return response
+
+
+# An agent whose whole turn loop is auxiliary work (a plugin session fork) sets
+# ``_loop_aux_task = (aux_task, metadata)``: each loop request then reports through
+# pre/post_auxiliary_call instead of the turn-scoped pre/post_api_request.
+
+def begin_loop_aux_attempt(agent: Any, api_kwargs: dict[str, Any], api_request_id: str) -> bool:
+    """Fire ``pre_auxiliary_call`` for the loop request about to go out; False (nothing done) for a
+    normal agent. An attempt still open here failed without a response (provider error, retry):
+    its pair is closed first."""
+    identity = getattr(agent, "_loop_aux_task", None)
+    if not identity:
+        return False
+    end_loop_aux_attempt(agent, error=ConnectionError("attempt ended without a response"))
+    aux_task, metadata = identity
+    agent._loop_aux_hooks = start_aux_call_hooks(
+        aux_task=aux_task, metadata={**metadata, "api_request_id": api_request_id}, client=agent.client,
+        kwargs=api_kwargs, provider=str(agent.provider or ""), model=str(agent.model or ""),
+        api_mode=str(agent.api_mode or ""), streaming=False,
+    )
+    return True
+
+
+def end_loop_aux_attempt(
+    agent: Any, response: Any = None, error: Optional[BaseException] = None, *,
+    normalized: Optional[tuple[Any, Any, Optional[dict[str, Any]]]] = None,
+) -> None:
+    """Close the open :func:`begin_loop_aux_attempt` pair, if any (idempotent)."""
+    hooks = getattr(agent, "_loop_aux_hooks", None)
+    if hooks is None:
+        return
+    agent._loop_aux_hooks = None
+    finish_aux_call_hooks(hooks, response, error, normalized=normalized)

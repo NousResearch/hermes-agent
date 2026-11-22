@@ -23,6 +23,28 @@
 import type { PluginContext } from '@hermes/plugin-sdk'
 import { vi } from 'vitest'
 
+import type { DurableGroupChat } from './types'
+
+export const HELD_GROUP_ROOM: DurableGroupChat = {
+  log: [{ id: 'm1', thread: 't1', at: 1, from: { kind: 'user', name: 'You' }, text: '@alpha stop' }],
+  holdDetection: false,
+  heldMessages: { alpha: ['m1'] },
+  watermarks: { 't1::alpha': 1 },
+  sessions: { alpha: 'sid-alpha' },
+  sessionOwners: { alpha: { name: 'alpha', connectionId: 'owner' } },
+  stranded: { beta: 0 },
+  holds: { alpha: { at: 1 } },
+  externalCursors: { beta: 3 },
+  members: [{ name: 'alpha' }, { name: 'beta' }],
+  roomId: 'room-held',
+  engine: 'desktop',
+  image: 'data:image/png;base64,AA',
+  rosterOrder: 2,
+  pinned: true,
+  sectionId: 'work',
+  syncRevision: 4
+}
+
 /** One message in a scripted session transcript, in the gateway's own shape. */
 export interface ScriptedMessage {
   content: string
@@ -458,6 +480,7 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
   const { Textarea } = await import('@/components/ui/textarea')
   const { cn } = await import('@/lib/utils')
   const { randomUuid } = await import('@hermes/shared')
+  const { LruCache } = await import('@/lib/lru-cache')
 
   // The gateway Group Chat row's right-click menu (#143571) renders the real one.
   const { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } =
@@ -483,8 +506,18 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     createBudgetedLoop: undefined,
     gatewayActivationEpoch: () => 0,
     GlyphSpinner: () => null,
+    // The room views' shared parts (group-room-ui.tsx) wear the main composer's classes.
+    Codicon: () => null,
+    profileColor: () => '#8b5cf6',
+    GHOST_ICON_BTN: '',
+    PRIMARY_ICON_BTN: '',
+    composerInputBacking: '',
+    composerSurfaceRing: '',
+    relativeTime: (ms: number) => new Date(ms).toISOString(),
+    Tip: ({ children }: { children: unknown }) => children,
     useGatewayActivationEpoch: () => 0,
     host,
+    LruCache,
     randomUuid,
     CapabilitiesView: undefined,
     MessageTextContent: undefined,

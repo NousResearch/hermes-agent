@@ -3,6 +3,12 @@ import { zhHantThemePicker } from './zh-hant_theme_picker'
 
 export const zhHantAssistant = {
   assistant: {
+    mcpSetup: {
+      launchCommand: target => `將執行：${target}`,
+      launchRemote: target => `將連線：${target}`,
+      launchEnv: keys => `環境變數：${keys}`,
+      launchCwd: dir => `工作目錄：${dir}`
+    },
     catalogInstall: {
       preparing: '正在準備安裝…',
       install: '安裝',
@@ -270,6 +276,7 @@ export const zhHantAssistant = {
       readAloud: '朗讀',
       copyFullResponse: '複製完整回覆',
       readAloudFullResponseHint: '按住 Shift 點擊：朗讀完整回覆',
+      contentRefusedNotice: '此訊息被模型的安全篩選器拒絕 — 請改用其他問題重試。',
       editMessage: '編輯訊息',
       stop: '停止',
       restorePrevious: '還原至上一個檢查點',

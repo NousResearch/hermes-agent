@@ -45,7 +45,8 @@ def writable_copy(name: str, *, realize: bool = True, explicit: bool = False,
     """
     from pm import paths
     from pm.filesystem import long_root
-    from pm.install import _install, _installed_location, _lockfile, _refuse_lazy, lazy_installs_allowed
+    from pm.install import (_install, _installed_location, _lockfile, _refresh_found_env, _refuse_lazy,
+                            lazy_installs_allowed)
     from pm.lock import Facts
     from pm.registry import get_package
     from pm.store import Store, current_target
@@ -59,6 +60,9 @@ def writable_copy(name: str, *, realize: bool = True, explicit: bool = False,
     if location[1].root == writable:
         return location
     copied = _installed_location(package, lockfile, target, verify=explicit, roots=(writable,))
+    if copied is not None and realize:
+        # Another install's copy of this pin: running on it makes this checkout an owner (#149497).
+        _refresh_found_env(package, copied, target, None)
     if copied is not None or not realize:
         return copied
     if not explicit and not lazy_installs_allowed():

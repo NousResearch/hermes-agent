@@ -1,0 +1,27 @@
+name: shorguard
+repo: https://github.com/Akanimoh12/shorguard
+sha: ad949b682249e5c9401eaf3b5c0ffe244d668b33
+subdir: shorguard
+description: "Post-quantum crypto guard. Stops the agent from writing quantum-vulnerable public-key crypto (RSA, ECDSA, ECDH, EdDSA, X25519, DH, DSA) before it lands: pre_tool_call checks write_file, patch, terminal and execute_code and, in the default block mode, refuses calls that ADD classical crypto, returning the NIST replacement (ML-KEM / ML-DSA / SLH-DSA) with working cryptography>=48 code so the agent rewrites it (approve mode routes to Hermes's approval gate instead; warn mode only annotates). Tools shorguard_scan / shorguard_explain, /shorguard (status, mode, scan, explain) and `hermes shorguard scan` give a post-quantum readiness grade with text, JSON or SARIF output and CI exit codes. 52 rules across Python, JS/TS, Go, JVM, Rust, .NET, shell/CI, TLS config, PEM keys and JWT algorithms, mapped to NIST IR 8547 (deprecated after 2030, disallowed after 2035). Disclosure — reads the content of inspected tool calls, the file a write_file is about to overwrite (to flag only newly added crypto) and paths you ask it to scan; writes its own plugin state (counters and the last 50 events: time, action, tool, file name, rule ids — never code or arguments) and its own settings when changed via /shorguard; writes a report only with --output. No network, subprocesses, credentials, telemetry or background work."
+maintainer: Akanimoh12
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Akanimoh12/shorguard/tree/ad949b682249e5c9401eaf3b5c0ffe244d668b33#readme
+version: "0.1.0"
+title: "Shorguard — post-quantum crypto guard"
+image: https://raw.githubusercontent.com/Akanimoh12/shorguard/ad949b682249e5c9401eaf3b5c0ffe244d668b33/docs/banner.png
+platforms: []
+known_issues:
+  - "Pattern-based: it sees crypto your code calls directly, not crypto inside dependencies or a library's TLS defaults. A clean grade means no obvious classical crypto, not a certification."
+  - "approve mode uses Hermes's approval gate, which auto-approves under YOLO; use block mode for enforcement."
+  - "With plugins.isolation: host the `hermes shorguard` CLI subcommand is not available; use /shorguard scan or the shorguard_scan tool."
+capabilities:
+  provides_tools:
+    - shorguard_scan
+    - shorguard_explain
+  provides_hooks:
+    - pre_tool_call
+    - transform_tool_result
+  provides_middleware: []
+  requires_env: []

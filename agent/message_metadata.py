@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from time import time as wall_time
-from uuid import uuid4
 from typing import Any, List, Mapping, MutableMapping, Optional, TypeVar
 
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
+from session_rules.turns import (
+    _display_metadata_str, index_tool_call_uids, message_uid_or_none, mint_uid, resolve_tool_call_uid,
+    withheld_prompt_text,
+)
 
 
 # These fields describe Hermes' durable record and timeline display, not
@@ -25,7 +27,7 @@ CANONICAL_ROW = "_canonical_row"
 RESTORED_FROM_STORE = "_restored_from_store"
 REPAIR_BOOKKEEPING_FIELDS = frozenset({DB_ROW_SNAPSHOT, CANONICAL_ROW, RESTORED_FROM_STORE})
 # Unanswered text a merged user row held before the current turn was absorbed
-# (agent_runtime_helpers._merge_consecutive_users); the persist override keeps it.
+# (session_rules.turns._merge_consecutive_users); the persist override keeps it.
 # It repeats the row's own content, so pricing it would double the estimate.
 MERGED_TURN_PREFIX = "_merged_turn_prefix"
 # The durable per-message id (``messages.message_uid``): minted once at the row's first insert and kept by
@@ -58,6 +60,12 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
 DATA_USE = "data_use"
 
 
+def _set_display_metadata_key(message: MutableMapping[str, Any], key: str, value: Any) -> None:
+    """Set *key* in *message*'s ``display_metadata`` as a new dict (a non-dict value starts empty)."""
+    metadata = message.get("display_metadata")
+    message["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), key: value}
+
+
 def data_use_requirement(messages: Any) -> frozenset[str]:
     """The union of ``data_use`` over *messages*: what the model receiving them must guarantee."""
     return frozenset(r for m in messages or () if isinstance(m, Mapping) for r in m.get(DATA_USE) or ())
@@ -65,12 +73,11 @@ def data_use_requirement(messages: Any) -> frozenset[str]:
 
 def stamp_data_use(message: MutableMapping[str, Any], requires: list[str]) -> None:
     """Mark a tool message with its requirement. The ``display_metadata`` copy is the durable one: that
-    column already rides every writer, branch and compaction copy, and replay lifts it back (SessionDB)."""
+    column already rides every writer, branch and compaction copy, and replay lifts it back (the session store)."""
     if not requires:
         return
     message[DATA_USE] = list(requires)
-    metadata = message.get("display_metadata")
-    message["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), DATA_USE: list(requires)}
+    _set_display_metadata_key(message, DATA_USE, list(requires))
 
 
 # What the user typed on a turn a ``pre_llm_call`` hook vetoed, kept inside ``display_metadata``. The row's
@@ -81,26 +88,21 @@ WITHHELD_PROMPT = "withheld_prompt"
 PRE_LLM_BLOCK_WITHHELD_PROMPT = "[Message withheld: a pre_llm_call policy hook blocked it.]"
 
 
-def withheld_prompt_text(message: Any) -> Optional[str]:
-    """The typed text a transcript view shows for a vetoed user row, else None."""
-    metadata = message.get("display_metadata") if isinstance(message, Mapping) else None
-    text = metadata.get(WITHHELD_PROMPT) if isinstance(metadata, Mapping) else None
-    return text if isinstance(text, str) else None
+# The ask of a multimodal turn (the text of its persisted parts: image-path hints, not ``[screenshot]``), kept inside
+# ``display_metadata`` when the turn's injected context (recalled memory, ``pre_llm_call`` and gateway notes)
+# is appended to ``content`` as a text part: the DB stores that content as one flattened string, so nothing
+# else can tell the ask from the injection.
+TYPED_ASK = "typed_ask"
 
 
-def typed_prompt_content(content: Any, message: Any) -> Any:
-    """*content* (a rewind's live view of *message*) with the withheld placeholder swapped back for what
-    the user typed: ``/retry`` re-submits the real ask so the hook decides again, and ``/undo`` restores it
-    to the composer. Never the placeholder as a new prompt."""
-    typed = withheld_prompt_text(message)
-    if typed is None:
-        return content
-    if isinstance(content, str):
-        return content.replace(PRE_LLM_BLOCK_WITHHELD_PROMPT, typed)
-    if isinstance(content, list):
-        return [{**part, "text": part["text"].replace(PRE_LLM_BLOCK_WITHHELD_PROMPT, typed)}
-                if isinstance(part, dict) and isinstance(part.get("text"), str) else part for part in content]
-    return content
+def stamp_typed_ask(message: MutableMapping[str, Any], text: str) -> None:
+    """Record *text* as the ask ``previous_message`` reads for *message*."""
+    _set_display_metadata_key(message, TYPED_ASK, text)
+
+
+def typed_ask_text(message: Any) -> Optional[str]:
+    """The typed ask stamped on *message*, else None."""
+    return _display_metadata_str(message, TYPED_ASK)
 
 
 def without_withheld_prompts(messages: Any) -> Any:
@@ -122,10 +124,51 @@ def lift_data_use(message: MutableMapping[str, Any]) -> None:
         message[DATA_USE] = list(metadata[DATA_USE])
 
 
+# Reasoning tokens the provider billed for an assistant turn (``usage.*_tokens_details.reasoning_tokens``),
+# kept inside ``display_metadata`` so it rides every writer, branch and compaction copy without a column.
+# Encrypted reasoning (Codex/xAI ``encrypted_content``, Claude ``signature``) cannot be sized from its
+# bytes, but the provider bills its replay as input at almost exactly this count (live A/B: gpt-5.6-sol
+# 2,765 reported -> +2,767 billed; claude-opus-5.5 3,959 -> +3,959 while its summary text was ~1,016).
+REPLAYED_REASONING_TOKENS = "reasoning_tokens"
+# The same count on a per-call request copy: ``build_api_messages`` drops ``display_metadata`` from every
+# outgoing copy, so the request estimate would lose it. ``assemble_api_request`` pops this key from the
+# request once it is measured; it never reaches a provider.
+REQUEST_REASONING_TOKENS = "_replayed_reasoning_tokens"
+
+
+def stamp_reasoning_tokens(message: MutableMapping[str, Any], tokens: Any) -> None:
+    """Record *tokens* as the provider-reported reasoning size of assistant *message*. An unknown or
+    zero count clears any earlier stamp: it priced reasoning the row no longer carries."""
+    if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0:
+        _set_display_metadata_key(message, REPLAYED_REASONING_TOKENS, tokens)
+        return
+    metadata = message.get("display_metadata")
+    if isinstance(metadata, dict) and REPLAYED_REASONING_TOKENS in metadata:
+        message["display_metadata"] = {k: v for k, v in metadata.items() if k != REPLAYED_REASONING_TOKENS}
+
+
+def stamped_reasoning_tokens(message: Any) -> int:
+    """The provider-reported reasoning size stamped on *message* (stored row or request copy), else 0."""
+    if not isinstance(message, Mapping):
+        return 0
+    value = message.get(REQUEST_REASONING_TOKENS)
+    if value is None:
+        metadata = message.get("display_metadata")
+        value = metadata.get(REPLAYED_REASONING_TOKENS) if isinstance(metadata, Mapping) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def drop_request_reasoning_tokens(messages: Any) -> None:
+    """Pop the request-only reasoning count from every request copy in *messages* (in place)."""
+    for message in messages if isinstance(messages, list) else ():
+        if isinstance(message, dict):
+            message.pop(REQUEST_REASONING_TOKENS, None)
+
+
 # Replay carriers the preflight estimate prices at 0, exactly as the compaction tail walk does (opaque signatures,
 # duplicate reasoning copies, ordered sidecars); a mismatch between the two estimates loops compaction.
 _UNPRICED_CORE_FIELDS = frozenset({"_anthropic_content_blocks", "reasoning_details", "extra_content",
-                                   "bedrock_content_blocks", DATA_USE})
+                                   "bedrock_content_blocks", DATA_USE, REQUEST_REASONING_TOKENS})
 
 
 def unpriced_replay_fields() -> frozenset[str]:
@@ -144,23 +187,6 @@ def without_persistence_fields(msg: Mapping[str, Any]) -> Mapping[str, Any]:
     return {k: v for k, v in msg.items() if k not in PERSISTENCE_ONLY_MESSAGE_FIELDS}
 
 
-def mint_uid() -> str:
-    """A fresh durable id (message or tool-call occurrence): random, never derived from content."""
-    return uuid4().hex
-
-
-def uid_list(value: Any) -> list[str]:
-    """The unique non-empty string uids of a live list, in order; anything else is ``[]``."""
-    return list(dict.fromkeys(u for u in (value if isinstance(value, list) else ()) if isinstance(u, str) and u))
-
-
-def message_uid_or_none(msg: Mapping[str, Any]) -> Optional[str]:
-    """The dict's ``message_uid`` when it is a non-empty string, else ``None`` (never coerced: an int or a
-    blank would be a bug upstream of the write, not an identity)."""
-    uid = msg.get(MESSAGE_UID)
-    return uid if isinstance(uid, str) and uid else None
-
-
 def stamp_message_uid(msg: MutableMapping[str, Any]) -> str:
     """The dict's ``message_uid``, minting one (``mint_uid``) when it carries none.
 
@@ -175,14 +201,13 @@ def stamp_message_uid(msg: MutableMapping[str, Any]) -> str:
 
 
 # Producer-owned provenance for the compressor's standalone in-flight-task restatement. It rides in
-# display_metadata (persisted by SessionDB, popped from every wire copy) so gateway replay can send the
+# display_metadata (persisted by the session store, popped from every wire copy) so gateway replay can send the
 # row unstamped, as the compaction turn did; a human pasting the header text carries no flag.
 INFLIGHT_TASK_RESTATEMENT = "compaction_inflight_task_restatement"
 
 
 def mark_inflight_restatement(msg: MutableMapping[str, Any]) -> None:
-    metadata = msg.get("display_metadata")
-    msg["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), INFLIGHT_TASK_RESTATEMENT: True}
+    _set_display_metadata_key(msg, INFLIGHT_TASK_RESTATEMENT, True)
 
 
 def scaffolding_replay_fields(msg: Mapping[str, Any]) -> dict:
@@ -192,6 +217,22 @@ def scaffolding_replay_fields(msg: Mapping[str, Any]) -> dict:
     fields: dict = {"_compressed_summary": True} if msg.get("_compressed_summary") else {}
     if isinstance(metadata, dict) and metadata.get(INFLIGHT_TASK_RESTATEMENT):
         fields["display_metadata"] = {INFLIGHT_TASK_RESTATEMENT: True}
+    return fields
+
+
+def typed_ask_fields(msg: Mapping[str, Any]) -> Optional[dict]:
+    """``{TYPED_ASK: ...}`` when *msg* carries the stamp, else None: the only key a row rewrite that backfills
+    the stamp writes (merge-patched, so other writers' keys stay as committed)."""
+    typed = typed_ask_text(msg)
+    return None if typed is None else {TYPED_ASK: typed}
+
+
+def replay_metadata_fields(msg: Mapping[str, Any]) -> dict:
+    """``scaffolding_replay_fields`` plus the typed-ask stamp (``previous_message`` must not read a
+    multimodal turn's flattened injected context back)."""
+    fields = scaffolding_replay_fields(msg)
+    if (typed := typed_ask_text(msg)) is not None:
+        fields["display_metadata"] = {**fields.get("display_metadata", {}), TYPED_ASK: typed}
     return fields
 
 
@@ -226,102 +267,6 @@ def message_identity(msg: MutableMapping[str, Any], *, with_tool_uids: bool = Fa
     return identity
 
 
-def record_absorbed_message(
-    survivor: MutableMapping[str, Any], dropped: Mapping[str, Any], *, dropped_leads: bool = False,
-) -> None:
-    """Merge-witness bookkeeping for every host fold of *dropped* into *survivor*.
-
-    The composite keeps the uid of the constituent whose text comes first and records every other
-    constituent's uid in ``_absorbed_message_uids`` (text order, no repeats). By default the survivor's
-    text leads; with *dropped_leads* the dropped dict's text was put first (the real user anchor folded
-    into a scaffolding turn), so its uid becomes the survivor's and the survivor's former uid is recorded.
-    A dict without a uid (unflushed, scaffolding, engine-authored) contributes nothing; an empty result
-    leaves the survivor untouched.
-    """
-    survivor_uid = message_uid_or_none(survivor)
-    dropped_uid = message_uid_or_none(dropped)
-    own = uid_list(survivor.get(ABSORBED_MESSAGE_UIDS))
-    theirs = uid_list(dropped.get(ABSORBED_MESSAGE_UIDS))
-    if dropped_leads and dropped_uid:
-        survivor[MESSAGE_UID] = dropped_uid
-        ordered = theirs + ([survivor_uid] if survivor_uid else []) + own
-    else:
-        ordered = own + ([dropped_uid] if dropped_uid else []) + theirs
-    if absorbed := [uid for uid in dict.fromkeys(ordered) if uid != survivor.get(MESSAGE_UID)]:
-        survivor[ABSORBED_MESSAGE_UIDS] = absorbed
-
-
-def merge_tool_call_uids(into: Mapping[str, Any], extra: Mapping[str, Any]) -> dict:
-    """Union two ``_tool_call_uids`` maps without losing an occurrence. Folding two assistant turns that
-    reuse a provider id (llama.cpp-style constant ids) leaves both calls in ``tool_calls``; the id then maps
-    to every occurrence's uid, in call order, as a list. Provider ids themselves are never rewritten."""
-    merged = dict(into)
-    for call_id, uid in extra.items():
-        merged[call_id] = _uid_occurrences(merged[call_id]) + _uid_occurrences(uid) if call_id in merged else uid
-    return merged
-
-
-def _uid_occurrences(value: Any) -> list:
-    return list(value) if isinstance(value, list) else [value]
-
-
-def per_occurrence_tool_call_uids(uids: Mapping[str, Any], tool_calls: list[Mapping[str, Any]]) -> dict:
-    """*uids* with every provider id this row names more than once spelled out as one uid per occurrence. A
-    single response that repeats an id shares ONE uid (its results carry it, so every call stays paired);
-    before a fold appends another turn's occurrences, the shared uid must fill each of this row's slots or
-    the appended uids would align with the wrong calls."""
-    from agent.message_sanitization import coalesce_tool_call_id
-
-    counts = Counter(call_id for tc in tool_calls if (call_id := coalesce_tool_call_id(tc)))
-    expanded = dict(uids)
-    for call_id, count in counts.items():
-        if count > 1 and isinstance(uid := uids.get(call_id), str):
-            expanded[call_id] = [uid] * count
-    return expanded
-
-
-def index_tool_call_uids(index: MutableMapping[str, str], assistant: Mapping[str, Any]) -> frozenset:
-    """Register an assistant dict's ``_tool_call_uids`` under every pairing-id variant of its tool calls, so a
-    later tool-result row can be resolved by any spelling of its ``tool_call_id``. Provider ids repeat, so
-    every id this assistant names first shadows an earlier occurrence's entry: a result pairs with the
-    NEAREST preceding call, and a call without a uid (a legacy row) pairs its result with nothing. A
-    provider id repeated inside one row (two folded turns) maps each call to its own occurrence's uid.
-    Returns every pairing-id variant the assistant names."""
-    from agent.message_sanitization import coalesce_tool_call_id, tool_call_id_variants
-
-    calls = [(tc, tool_call_id_variants(tc)) for tc in assistant.get("tool_calls") or ()]
-    named = frozenset(variant for _, variants in calls for variant in variants)
-    for variant in named:
-        index.pop(variant, None)
-    uids = assistant.get(TOOL_CALL_UIDS)
-    if not isinstance(uids, dict) or not uids:
-        return named
-    occurrence: dict = {}  # provider id -> calls seen so far: a list value holds one uid per occurrence
-    for tc, variants in calls:
-        call_id = coalesce_tool_call_id(tc)
-        uid = uids.get(call_id)
-        if isinstance(uid, list):
-            nth = occurrence[call_id] = occurrence.get(call_id, -1) + 1
-            uid = uid[nth] if nth < len(uid) else None
-        if isinstance(uid, str) and uid:
-            for variant in variants:
-                index[variant] = uid
-    return named
-
-
-def resolve_tool_call_uid(index: MutableMapping[str, str], tool_call_id: Any) -> Optional[str]:
-    """The uid an indexed assistant dict minted for ``tool_call_id`` (any variant), else ``None``."""
-    from agent.message_sanitization import tool_result_id_variants
-
-    if not index or not isinstance(tool_call_id, str) or not tool_call_id:
-        return None
-    for variant in tool_result_id_variants(tool_call_id):
-        uid = index.get(variant)
-        if uid:
-            return uid
-    return None
-
-
 def tool_call_uid_from_history(messages: list[dict], tool_index: int, owners: dict) -> Optional[str]:
     """Resolve a tool-result dict's uid from the nearest preceding assistant dict in ``messages`` that
     named its ``tool_call_id`` (the cross-flush case: the assistant row landed in an earlier batch).
@@ -330,7 +275,7 @@ def tool_call_uid_from_history(messages: list[dict], tool_index: int, owners: di
     tool_call_id = messages[tool_index].get("tool_call_id")
     if not isinstance(tool_call_id, str) or not tool_call_id:
         return None
-    from agent.message_sanitization import tool_result_id_variants
+    from session_rules.turns import tool_result_id_variants
 
     result_variants = set(tool_result_id_variants(tool_call_id))
     for prior_index in range(tool_index - 1, -1, -1):  # no messages[:i] copy: this runs per flushed result

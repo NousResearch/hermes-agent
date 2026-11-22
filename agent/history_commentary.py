@@ -29,13 +29,15 @@ COMMENTARY_WITHHELD = "commentary_withheld"
 
 
 def visible_commentary(text: str, *, strip_thinking=None) -> str:
-    """Use the same think stripping and secret redaction as live delivery."""
+    """Use the same think stripping, memory-context fence and secret redaction as live delivery."""
+    from agent.memory_context import fence_recalled_context
+
     if strip_thinking is None:
         from agent.agent_runtime_helpers import strip_think_blocks
 
         strip_thinking = lambda value: strip_think_blocks(None, value)
 
-    visible = strip_thinking(text).strip()
+    visible = fence_recalled_context(strip_thinking(text).strip())
     return redact_sensitive_text(visible) if visible else visible
 
 
@@ -62,13 +64,13 @@ def _phase_message_items(message: dict, phases: frozenset[str | None]) -> list[s
         normalized_phase = phase.strip().lower() if isinstance(phase, str) else None
         if normalized_phase not in phases or not isinstance(content, list):
             continue
+        # Keep whitespace-only parts, as live delivery does: a newline can make the next tag a block.
         text = "".join(
             part["text"]
             for part in content
             if isinstance(part, dict)
             and part.get("type") == "output_text"
             and isinstance(part.get("text"), str)
-            and part["text"].strip()
         ).strip()
         if text:
             result.append(text)

@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from cli import HermesCLI
 from tests.fixtures.gateway_owner import GatewayOwner
 from tests.fixtures.storage_seed import seed_messages
 
@@ -267,3 +268,28 @@ class TestBranchPreservesReasoningFields:
         assert assistant["reasoning_details"] == REASONING_DETAILS
         assert assistant["codex_reasoning_items"] == CODEX_REASONING_ITEMS
         assert assistant["codex_message_items"] == CODEX_MESSAGE_ITEMS
+
+
+class TestBranchImageProjection:
+    def test_an_image_result_is_copied_as_the_flush_text(self, owner, gateway_cli, store):
+        """The branch stores what the per-tool flush stores (#148146): the vision result's row holds the text
+        projection, never the base64, while the live history keeps the image."""
+        from session_rules.turns import _durable_content
+        from cli import HermesCLI
+
+        image = [{"type": "text", "text": "Image loaded into your context."},
+                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo"}}]
+        gateway_cli.conversation_history = [
+            {"role": "user", "content": "what is on this label?"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "vision_analyze", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_1", "tool_name": "vision_analyze", "content": image},
+            {"role": "assistant", "content": "The label says 42."},
+        ]
+
+        _persist_history(owner, gateway_cli)
+        HermesCLI._handle_branch_command(gateway_cli, "/branch")
+
+        messages = store.get_messages_as_conversation(gateway_cli.session_id)
+        assert [m["content"] for m in messages if m["role"] == "tool"] == [_durable_content(image)]
+        assert gateway_cli.conversation_history[2]["content"] == image

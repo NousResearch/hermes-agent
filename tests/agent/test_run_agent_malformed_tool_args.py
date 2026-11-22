@@ -27,7 +27,7 @@ class TestMalformedToolArguments:
         agent.client.chat.completions.create.side_effect = responses
         with (
             patch("model_tools.handle_function_call", return_value="search result") as dispatch,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session") as self.persist,
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -48,6 +48,25 @@ class TestMalformedToolArguments:
         assert result["failure_retryable"] is False
         assert agent.model in result["final_response"] and "/model" in result["final_response"]
         dispatch.assert_not_called()
+
+    def test_changing_malformed_arguments_share_one_budget(self, agent):
+        shapes = ["{'query': 'x'}", "[1, 2]", '{"query": "x",}', "42", '"just a string"']
+        responses = [self._tool_response(shapes[i % len(shapes)]) for i in range(50)]
+        result, dispatch = self._run_with_responses(agent, responses)
+        assert result["api_calls"] == 9
+        assert result["failure_reason"] == "malformed_tool_call"
+        dispatch.assert_not_called()
+
+    def test_exhausted_turn_persists_the_failure_and_exits_nonzero(self, agent):
+        from hermes_cli.turn_exit import turn_exit_code
+
+        result, _ = self._run_with_responses(agent, [self._tool_response("[1]")] * 50)
+        persisted = self.persist.call_args.args[0]
+        assert [m["role"] for m in persisted].count("user") == 1
+        assert persisted[-1]["role"] == "assistant"
+        assert persisted[-1]["content"].strip() == result["final_response"].strip()
+        assert turn_exit_code(result, kanban_worker=False) == 1
+        assert turn_exit_code(result, kanban_worker=True) == 1
 
     def test_malformed_tool_arguments_recover_after_error_results(self, agent):
         bad, good = self._tool_response("[1]"), self._tool_response('{"query": "x"}')

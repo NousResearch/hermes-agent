@@ -6,8 +6,10 @@ lefthook: "sh -c 'if test -f scripts/run-lefthook; then exec sh scripts/run-left
 
 # `just` for the jobs, resolved only for a job whose glob matched (scripts/hook-just), so a
 # commit no job matches never sets up an environment. Absolute: `root:` jobs run in a subdir.
+# GIT_DIR is dropped for the lookup: git exports it to hooks, and in a linked worktree a
+# GIT_DIR with no GIT_WORK_TREE makes --show-toplevel answer the cwd (the `root:` subdir).
 templates:
-  just: sh "$(git rev-parse --show-toplevel)/scripts/hook-just"
+  just: sh "$(unset GIT_DIR; git rev-parse --show-toplevel)/scripts/hook-just"
 
 pre-commit:
   jobs:

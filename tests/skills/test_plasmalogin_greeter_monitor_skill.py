@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -103,3 +104,13 @@ def test_cli_stage_refuses_invalid_json(tmp_path):
     bad.write_text("{not json")
     with pytest.raises(json.JSONDecodeError):
         go.main(["stage", str(bad)])
+
+
+def test_check_unreadable_config_fails_cleanly(tmp_path, capsys):
+    cfg = tmp_path / "locked.json"
+    cfg.write_text("[]")
+    cfg.chmod(0)
+    if os.access(cfg, os.R_OK):
+        pytest.skip("running as root")
+    assert go.main(["check", str(cfg)]) == 2
+    assert "cannot read" in capsys.readouterr().err

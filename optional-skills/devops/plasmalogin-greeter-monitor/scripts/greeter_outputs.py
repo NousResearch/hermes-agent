@@ -82,7 +82,15 @@ def main(argv=None) -> int:
 
     if args.cmd == "scan":
         print(json.dumps(scan(), indent=2))
-    elif args.cmd == "check":
+        return 0
+    try:
+        args.config.read_bytes()
+    except PermissionError:
+        print(f"error: cannot read {args.config} (root-owned greeter file?). "
+              "Read it with: pkexec cat <file> > copy.json, then check the copy.",
+              file=sys.stderr)
+        return 2
+    if args.cmd == "check":
         print(json.dumps(primaries(json.loads(args.config.read_text())), indent=2))
     else:
         json.loads(args.config.read_text())  # refuse to stage invalid JSON

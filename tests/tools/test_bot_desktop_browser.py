@@ -62,6 +62,21 @@ def test_dock_and_agent_share_browser_identity(tmp_path, monkeypatch):
     assert dock_exe == agent["executable"] == str(exe)
     assert dock_profile == agent["user_data_dir"] == str(tmp_path / "bot-desktop" / "browser-profile")
     assert agent["ephemeral"] is False, "the shared profile's logins must survive the agent's browser"
+    assert agent["headed"] is True, "shared Bot Desktop browser must launch headed when the screen is up"
+
+
+def test_bot_desktop_browser_launches_headed_even_when_browser_headed_config_is_false(tmp_path, monkeypatch):
+    """Regression for #158738: when Bot Desktop's Xvnc screen is up and browser.headed is False (default),
+    the agent's Chromium on the shared profile must still launch headed; otherwise Open Screen shows no
+    browser window and clicking the dock Browser icon aborts on SingletonLock."""
+    exe = tmp_path / "chrome"
+    exe.write_text("#!/bin/sh\n", encoding="utf-8")
+    exe.chmod(0o755)
+    _browser_config(monkeypatch, tmp_path / "home", executable_path=str(exe), headed=False)
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path / "bot-desktop")
+
+    agent = _agent_launch(monkeypatch)
+    assert agent["headed"] is True
 
 
 def test_user_pinned_profile_wins(tmp_path, monkeypatch):

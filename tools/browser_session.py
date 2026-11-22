@@ -177,7 +177,7 @@ def _bot_desktop_target() -> Optional[tuple[str, dict[str, Any]]]:
     from tools.bot_desktop import browser as _bd_browser
     udd = str(_bd_browser.profile_dir())
     return f"profile:{udd}", {"executable": _bd_browser.executable(), "user_data_dir": udd, "ephemeral": False,
-                              "extra_args": _bd_browser.SHARED_PROFILE_ARGS}
+                              "headed": True, "extra_args": _bd_browser.SHARED_PROFILE_ARGS}
 
 
 def _launch_target(cache_key: str) -> tuple[str, dict[str, Any], bool]:

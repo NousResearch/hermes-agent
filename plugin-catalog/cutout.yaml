@@ -3,7 +3,7 @@ title: Cutout
 image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-cutout/e58247e2806722c0132994f9d3c97471939af54c/assets/catalog-banner.png
 repo: https://github.com/TakeshiTGAL/hermes-plugin-cutout
 sha: e58247e2806722c0132994f9d3c97471939af54c
-description: 'Cutout returns one transparent PNG. Disclosure: reads the image you pass and writes one PNG in the folder you name, without overwriting an existing file. If HERMES_HOME/models/cutout/u2netp.onnx is absent, it downloads the 4574861-byte file from github.com (the rembg u2netp release, via release-assets.githubusercontent.com (GitHub)) and checks sha256 before use. The photo is not uploaded. Enable installs rembg and onnxruntime. A chat that attaches a file gains a MEDIA: line on the reply. A PNG written between two session changes in one turn gets no line. An empty final reply is not passed to transform_llm_output, so no line is added. A pre_llm_call hook forgets an earlier undelivered PNG. A terminal, SMS, ACP, and local gateway keep the path.'
+description: "Cutout returns one transparent PNG. Disclosure — on first use downloads the u2netp background model (about 4.6 MB) from rembg's GitHub release, checks its sha256 and keeps it in HERMES_HOME/models/cutout; the photo is processed on your machine and never uploaded. Each write asks for approval and creates one new PNG in any folder you name without overwriting an existing file. On chat platforms that can show files the reply gains a MEDIA line for that PNG. Enabling installs rembg and onnxruntime."
 maintainer: TakeshiTGAL
 tier: community
 category: tools

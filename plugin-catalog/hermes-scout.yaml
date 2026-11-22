@@ -1,0 +1,20 @@
+name: hermes-scout
+title: Hermes Scout
+repo: https://github.com/Shizoqua/hermes-scout
+sha: 0a35a00abd6e8117a8d348c3b4b7d00f55dcdb9c
+subdir: hermes_scout
+version: "0.1.0"
+description: "Search a folder of local notes, docs or code by meaning with one tool, semantic_search. Files are split into overlapping chunks, embedded through any OpenAI-compatible /embeddings endpoint (a local Ollama server by default) and ranked by cosine similarity; an incremental SQLite index re-embeds only changed files. Standard library only. Disclosure: sends file chunks and search queries to the configured embeddings endpoint (localhost by default; a hosted endpoint receives the text of the files searched); reads text files under the folder the model names, skipping hidden, dependency, binary and oversized files and every path Hermes's file tools refuse; writes only its index under the plugin's data folder; the optional SCOUT_API_KEY is read through Hermes's secret store and sent only to the configured endpoint."
+maintainer: Shizoqua
+tier: community
+category: tools
+requires_hermes: ">=0.21.0"
+docs_url: https://shizoqua.github.io/hermes-scout/
+image: https://raw.githubusercontent.com/Shizoqua/hermes-scout/0a35a00abd6e8117a8d348c3b4b7d00f55dcdb9c/docs/banner.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: [semantic_search]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -586,6 +586,20 @@ const de: KanbanMessages = {
   metaCreatedBy: 'Erstellt von',
   metaCreated: 'Erstellt',
   metaWorkerPid: 'Worker-PID',
+  blockKindTip: kind =>
+    kind === 'needs_input'
+      ? 'Der Worker bittet um eine menschliche Eingabe.'
+      : kind === 'capability'
+        ? 'Der Worker stößt an eine Grenze, die er selbst nicht überwinden kann.'
+        : kind === 'transient'
+          ? 'Der Worker ist an einem vorübergehenden Fehler gescheitert.'
+          : 'Der Worker hat eine Abhängigkeit gemeldet, auf die er warten muss.',
+  blockReason: 'Blockierungsart',
+  blockRecurrences: 'Blockierungen',
+  blockRecurrencesTip: 'Wie oft diese Aufgabe nach einer manuellen Freigabe aus demselben Grund erneut blockiert wurde.',
+  consecutiveFailures: 'Fehlschläge in Folge',
+  lastFailureError: 'Letzter Fehler',
+  unblockedMessage: id => `Blockierung von ${id} aufgehoben. Die Aufgabe ist für den nächsten Durchlauf bereit.`,
   readyUnassignedTitle: 'Bereit, aber ohne Bearbeiter — diese Karte wird nie ausgeführt.',
   readyUnassignedBody:
     'Der Dispatcher übernimmt nur Bereit-Karten mit Bearbeiter. Wähle ein Profil im Bearbeiter-Feld oben (oder setze einen Standard-Bearbeiter in den Orchestrierungseinstellungen), dann läuft es innerhalb einer Minute.',
@@ -663,6 +677,10 @@ const de: KanbanMessages = {
   renameDots: 'Umbenennen…',
   settingsDots: 'Einstellungen…',
   switchBoard: 'Board wechseln',
+  pinBoard: 'Board anheften',
+  unpinBoard: 'Anheftung des Boards lösen',
+  pinnedBoards: 'Angeheftete Boards',
+  pinnedBoardsHint: 'Ziehen zum Umsortieren oder Alt + Links/Rechts drücken',
   notify: {
     completedTitle: 'Aufgabe abgeschlossen',
     blockedTitle: 'Aufgabe blockiert — braucht deine Eingabe',

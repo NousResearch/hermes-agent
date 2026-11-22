@@ -1163,16 +1163,26 @@ def _mount_hosted_plugin_api(app, plugin: dict, api_file_name: str) -> None:
 
 def _hosted_plugin_for_request(name: str) -> Optional[tuple]:
     """``(plugin host, dashboard dir, api file)`` for plugin ``name`` in the active profile, or None
-    when that profile has no enabled user copy of it."""
+    when that profile has no enabled user copy of it.
+
+    The plugin list is the launch profile's cached discovery (the copy the route was mounted from),
+    rescanned once when it has no user copy of ``name`` (installed again since the last scan); the
+    enable check reads the requesting profile's lists on every request."""
     from hermes_cli.plugins import get_plugin_manager
     from hermes_cli.plugins_cmd import _get_disabled_set, _get_enabled_set
-    for plugin in _discover_dashboard_plugins():
-        if plugin.get("name") != name or not plugin.get("_api_file") or plugin.get("source") != "user":
-            continue
-        if _plugin_api_mount_skip_reason(plugin, _get_enabled_set(), _get_disabled_set()):
-            return None
-        return get_plugin_manager()._plugin_host(), str(plugin["_dir"]), str(plugin["_api_file"])
-    return None
+    from hermes_cli.web_server import _get_dashboard_plugins
+
+    def hosted_copy(plugins: list) -> Optional[dict]:
+        return next((p for p in plugins if p.get("name") == name and p.get("_api_file")
+                     and p.get("source") == "user"), None)
+
+    with _launch_profile_scope():
+        plugin = hosted_copy(_get_dashboard_plugins())
+        if plugin is None:
+            plugin = hosted_copy(_get_dashboard_plugins(force_rescan=True))
+    if plugin is None or _plugin_api_mount_skip_reason(plugin, _get_enabled_set(), _get_disabled_set()):
+        return None
+    return get_plugin_manager()._plugin_host(), str(plugin["_dir"]), str(plugin["_api_file"])
 
 
 def _mount_plugin_api_routes():

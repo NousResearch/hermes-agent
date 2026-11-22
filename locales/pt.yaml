@@ -215,6 +215,7 @@ gateway:
     invalid: "Objetivo inválido: {error}"
     set: "⊙ Objetivo definido (orçamento de {budget} turnos): {goal}\nVou continuar a trabalhar até o objetivo estar concluído, pausares/limpares ou o orçamento esgotar.\nControlos: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add exige um administrador do gateway configurado explicitamente (allow_admin_from para DMs, group_allow_admin_from para grupos)."
+    continuation_not_queued: "O objetivo continua ativo, mas o Hermes não conseguiu enfileirar o próximo turno."
   help:
     header: "📖 **Comandos do Hermes**\n"
     skill_header: "\n⚡ **Comandos de skill** ({count} ativos):"

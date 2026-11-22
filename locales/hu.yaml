@@ -218,6 +218,7 @@ gateway:
     invalid: "Érvénytelen cél: {error}"
     set: "⊙ Cél beállítva ({budget} körös keret): {goal}\nDolgozni fogok rajta, amíg a cél el nem készül, te nem szünetelteted/törlöd, vagy a keret ki nem merül.\nVezérlés: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ A /goal gate add parancshoz kifejezetten beállított átjáró-admin kell (allow_admin_from a DM-ekhez, group_allow_admin_from a csoportokhoz)."
+    continuation_not_queued: "A cél továbbra is aktív, de a Hermes nem tudta sorba állítani a következő kört."
   help:
     header: "📖 **Hermes parancsok**\n"
     skill_header: "\n⚡ **Készségparancsok** ({count} aktív):"

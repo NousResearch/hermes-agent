@@ -12,8 +12,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.session_authority import initialize_session_authority
 from gateway.session_ingress_context import native_callback, register_transport_home
 from hermes_cli import goals
-from hermes_state import SessionDB
-from hermes_state_runtime import list_session_admissions
+from persistence_assembly import open_persistence
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.waiting import async_wait_until
 
@@ -26,11 +25,8 @@ async def test_recovered_human_goal_turn_admits_continuation_on_authority(tmp_pa
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "42")
     monkeypatch.setattr(gr, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     runner = gr.GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
-    db = SessionDB(tmp_path / "state.db")
-    runner.session_store._db = runner._session_db = db
-    authority = await initialize_session_authority(
-        runner, profile_id="default", instance_id="recovered-goal", db=db,
-    )
+    authority = await initialize_session_authority(runner, profile_id="default", instance_id="recovered-goal")
+    db = open_persistence(runner.session_store.persistence.scope)
     monkeypatch.setattr(goals, "_get_session_db", lambda: db)
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fixture", typing_indicator=False))
     adapter.gateway_runner, runner.adapters = runner, {Platform.TELEGRAM: adapter}
@@ -82,10 +78,10 @@ async def test_recovered_human_goal_turn_admits_continuation_on_authority(tmp_pa
         assert receipt.admission_id not in authority.native_waiters
         await authority.sessions[sid].task
 
-        rows = list_session_admissions(db, session_id=authority.logical_owner(sid), pending_only=False)
-        assert len(rows) == 3, [(row["request_id"], row["outcome"]) for row in rows]
-        assert [row["outcome"] for row in rows] == ["completed"] * 3
-        assert "goal-continuation" in rows[2]["request_id"]
+        rows = authority.persistence.admissions.list(session_id=authority.logical_owner(sid), pending_only=False)
+        assert len(rows) == 3, [(row.request_id, row.outcome) for row in rows]
+        assert [row.outcome for row in rows] == ["completed"] * 3
+        assert "goal-continuation" in rows[2].request_id
         assert len(calls) == 3
         assert "[Continuing toward your standing goal]" in calls[2]
         assert route not in adapter._pending_messages

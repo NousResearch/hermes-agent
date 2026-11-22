@@ -215,6 +215,7 @@ gateway:
     invalid: "Недопустимая цель: {error}"
     set: "⊙ Цель задана (бюджет {budget} ходов): {goal}\nЯ продолжу работу, пока цель не будет достигнута, вы её не приостановите/очистите, или бюджет не исчерпается.\nУправление: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add требует явно настроенного администратора шлюза (allow_admin_from для ЛС, group_allow_admin_from для групп)."
+    continuation_not_queued: "Цель всё ещё активна, но Hermes не смог поставить следующий ход в очередь."
   help:
     header: "📖 **Команды Hermes**\n"
     skill_header: "\n⚡ **Команды навыков** (активных: {count}):"

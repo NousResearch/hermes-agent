@@ -215,6 +215,7 @@ gateway:
     invalid: "Неприпустима ціль: {error}"
     set: "⊙ Ціль встановлено (бюджет {budget} ходів): {goal}\nЯ продовжуватиму працювати, доки ціль не буде досягнута, ви її не призупините/очистите, або бюджет не вичерпається.\nКерування: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add потребує явно налаштованого адміністратора шлюзу (allow_admin_from для приватних чатів, group_allow_admin_from для груп)."
+    continuation_not_queued: "Ціль досі активна, але Hermes не зміг поставити наступний хід у чергу."
   help:
     header: "📖 **Команди Hermes**\n"
     skill_header: "\n⚡ **Команди навичок** ({count} активних):"

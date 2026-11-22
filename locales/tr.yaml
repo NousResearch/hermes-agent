@@ -215,6 +215,7 @@ gateway:
     invalid: "Geçersiz hedef: {error}"
     set: "⊙ Hedef ayarlandı ({budget} turluk bütçe): {goal}\nHedef tamamlanana, siz duraklatana/temizleyene veya bütçe tükenene kadar çalışmaya devam edeceğim.\nKontroller: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add, açıkça yapılandırılmış bir gateway yöneticisi gerektirir (DM'ler için allow_admin_from, gruplar için group_allow_admin_from)."
+    continuation_not_queued: "Hedef hâlâ etkin, ancak Hermes bir sonraki turu kuyruğa alamadı."
   help:
     header: "📖 **Hermes Komutları**\n"
     skill_header: "\n⚡ **Skill Komutları** ({count} aktif):"

@@ -15,6 +15,7 @@ from contextlib import nullcontext, suppress
 from functools import partial
 from typing import TYPE_CHECKING, Any, Optional
 
+from agent.i18n import t
 from gateway.config import Platform
 from gateway.delivery import prime_revived_egress
 from gateway.platforms.event import MessageEvent, MessageType
@@ -345,6 +346,12 @@ class GatewayGoalsMixin:
         msg = decision.get("message") or ""
         prompt = decision.get("continuation_prompt") or ""
         continuing = bool(decision.get("should_continue") and prompt and source is not None)
+        if continuing and await asyncio.to_thread(self._goal_continuation_waiting, source, session_entry.session_id):
+            # A turn that ran while an earlier continuation was still queued (a message sent during
+            # a background-result turn) is judged too: queuing a second one would spend two goal
+            # turns on one step. The waiting continuation carries the goal on.
+            logger.info("goal continuation: one is already queued for this chat; not queuing another")
+            continuing = False
         durable = continuing and (authority_owned_wake or getattr(source, "platform", None) == Platform.LOCAL)
         if durable:
             # A producer without a native waiter has no adapter drain, just like a local turn.
@@ -358,8 +365,8 @@ class GatewayGoalsMixin:
                 logger.debug("goal continuation: authority admission failed", exc_info=True)
                 accepted = False
             if not accepted and authority_owned_wake:
-                logger.warning("goal continuation: no wake admitted for the background turn")
-                msg = "Goal is still active, but Hermes couldn’t queue the next turn."
+                logger.warning("goal continuation: no wake admitted for a turn without an adapter drainer")
+                msg = t("gateway.goal.continuation_not_queued")
         # Deferred until the visible final response is delivered, else "✓ Goal achieved" precedes it.
         if msg and source is not None:
             await self._defer_goal_status_notice_after_delivery(
@@ -405,8 +412,10 @@ class GatewayGoalsMixin:
         hooks = [("loop completion", self._post_turn_loop_completion)]
         if final_text.strip() and not failed:
             goal_hook = self._post_turn_goal_continuation
-            # Recovered human turns also lack an adapter waiter to drain their FIFO.
-            if executing_admission.get() and not getattr(event, "_adapter_drains_after", False):
+            # Recovered human turns also lack an adapter waiter to drain their FIFO. An API-server
+            # route takes no automation wake (``snapshot_automation`` refuses it): it keeps its path.
+            if (executing_admission.get() and not getattr(event, "_adapter_drains_after", False)
+                    and getattr(source, "platform", None) != Platform.API_SERVER):
                 goal_hook = partial(goal_hook, authority_owned_wake=True)
             hooks.insert(0, ("goal continuation", goal_hook))
         for label, hook in hooks:

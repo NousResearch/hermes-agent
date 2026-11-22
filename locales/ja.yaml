@@ -215,6 +215,7 @@ gateway:
     invalid: "無効な目標: {error}"
     set: "⊙ 目標を設定しました ({budget} ターンの予算): {goal}\n目標が完了するか、一時停止/解除されるか、予算が尽きるまで作業を続けます。\nコントロール: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add には、明示的に設定されたゲートウェイ管理者が必要です (DM は allow_admin_from、グループは group_allow_admin_from)。"
+    continuation_not_queued: "ゴールはまだ有効ですが、Hermes は次のターンをキューに入れられませんでした。"
   help:
     header: "📖 **Hermes コマンド**\n"
     skill_header: "\n⚡ **スキルコマンド** ({count} 件アクティブ):"

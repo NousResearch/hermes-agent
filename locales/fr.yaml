@@ -241,6 +241,7 @@ gateway:
     invalid: "Objectif invalide : {error}"
     set: "⊙ Objectif défini (budget de {budget} tours) : {goal}\nJe continuerai jusqu'à ce que l'objectif soit terminé, que vous le mettiez en pause/effaciez, ou que le budget soit épuisé.\nContrôles : /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add nécessite un admin du gateway explicitement configuré (allow_admin_from pour les messages privés, group_allow_admin_from pour les groupes)."
+    continuation_not_queued: "L’objectif est toujours actif, mais Hermes n’a pas pu mettre le tour suivant en file d’attente."
   help:
     header: "📖 **Commandes Hermes**\n"
     skill_header: "\n⚡ **Commandes de skill** ({count} actives) :"

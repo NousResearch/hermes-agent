@@ -947,6 +947,27 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
     return entry, release
 
 
+def queued_route_wake(runner, source, producer):
+    """Whether ``source``'s route already holds a ``producer`` wake (``admit_route_wake``) that is
+    still queued, i.e. not yet claimed. Blocking store read: call off the event loop."""
+    from gateway.session_authorities import active_authority
+    from gateway.session_detached import route_entry
+    authority = active_authority(runner)
+    entry = route_entry(authority, runner._session_key_for_source(source)) if authority is not None else None
+    if entry is None:
+        return False
+    for row in authority_persistence(authority).admissions.list(session_id=_route_owner(authority, entry)):
+        if row.status != 'queued':
+            continue
+        try:
+            identity = json.loads(row.request_id)
+        except ValueError:
+            continue
+        if isinstance(identity, list) and identity[:1] == [producer]:
+            return True
+    return False
+
+
 async def admit_route_wake(runner, adapter, source, text, producer, metadata=None, *, request_id=None, replay=None):
     """Commit a producer wake (Kanban push wake, /loop tick) for ``source``'s route into the
     authority FIFO, like heartbeats and process completions, instead of a classic turn that

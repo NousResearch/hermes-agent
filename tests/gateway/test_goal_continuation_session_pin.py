@@ -28,7 +28,7 @@ async def test_fifo_goal_continuation_never_runs_in_a_reset_session(
     from gateway.session_authority import initialize_session_authority
     from gateway.session_ingress_context import register_transport_home
     from hermes_cli import goals
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence
     from plugins.platforms.telegram.adapter import TelegramAdapter
     from tests.waiting import async_wait_until
 
@@ -36,10 +36,9 @@ async def test_fifo_goal_continuation_never_runs_in_a_reset_session(
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "42")
     monkeypatch.setattr(gr, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     runner = gr.GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
-    db = SessionDB(tmp_path / "state.db")
-    runner.session_store._db = runner._session_db = db
     if with_authority:  # native admission (production); else the classic in-process resolver
-        await initialize_session_authority(runner, profile_id="default", instance_id="goal-pin", db=db)
+        await initialize_session_authority(runner, profile_id="default", instance_id="goal-pin")
+    db = open_persistence(runner.session_store.persistence.scope)
     monkeypatch.setattr(goals, "_get_session_db", lambda: db)
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fixture", typing_indicator=False))
     adapter.gateway_runner, runner.adapters = runner, {Platform.TELEGRAM: adapter}

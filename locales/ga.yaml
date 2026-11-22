@@ -215,6 +215,7 @@ gateway:
     invalid: "Sprioc neamhbhailí: {error}"
     set: "⊙ Sprioc socraithe (buiséad {budget} seal): {goal}\nLeanfaidh mé ag obair go dtí go bhfuil an sprioc críochnaithe, go gcuirfidh tú ar sos / go nglanfaidh tú í, nó go n-úsáidfear an buiséad.\nSmacht: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ Teastaíonn riarthóir gateway atá cumraithe go sainráite le /goal gate add (allow_admin_from do DMs, group_allow_admin_from do ghrúpaí)."
+    continuation_not_queued: "Tá an sprioc fós gníomhach, ach níorbh fhéidir le Hermes an chéad sealaíocht eile a chur sa scuaine."
   help:
     header: "📖 **Orduithe Hermes**\n"
     skill_header: "\n⚡ **Orduithe Scileanna** ({count} gníomhach):"

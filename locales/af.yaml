@@ -215,6 +215,7 @@ gateway:
     invalid: "Ongeldige doelwit: {error}"
     set: "⊙ Doelwit gestel ({budget}-beurt-begroting): {goal}\nEk sal aanhou werk totdat die doelwit klaar is, jy dit pouseer/verwyder, of die begroting opgebruik is.\nBeheer: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add vereis 'n uitdruklik opgestelde gateway-administrateur (allow_admin_from vir privaatgesprekke, group_allow_admin_from vir groepe)."
+    continuation_not_queued: "Die doel is steeds aktief, maar Hermes kon nie die volgende beurt in die tou plaas nie."
   help:
     header: "📖 **Hermes-opdragte**\n"
     skill_header: "\n⚡ **Vaardigheidsopdragte** ({count} aktief):"

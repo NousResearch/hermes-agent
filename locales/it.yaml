@@ -215,6 +215,7 @@ gateway:
     invalid: "Obiettivo non valido: {error}"
     set: "⊙ Obiettivo impostato (budget di {budget} turni): {goal}\nContinuerò a lavorare finché l'obiettivo non sarà completato, lo metterai in pausa/lo cancellerai, oppure il budget sarà esaurito.\nControlli: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add richiede un admin del gateway configurato esplicitamente (allow_admin_from per i DM, group_allow_admin_from per i gruppi)."
+    continuation_not_queued: "L’obiettivo è ancora attivo, ma Hermes non è riuscito ad accodare il turno successivo."
   help:
     header: "📖 **Comandi Hermes**\n"
     skill_header: "\n⚡ **Comandi skill** ({count} attivi):"

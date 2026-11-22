@@ -213,8 +213,7 @@ async def test_telegram_background_completion_continues_goal_without_user_nudge(
     from gateway.session_authority import initialize_session_authority
     from gateway.session_ingress_context import register_transport_home
     from hermes_cli import goals
-    from hermes_state import SessionDB
-    from hermes_state_runtime import list_session_admissions
+    from persistence_assembly import open_persistence
     from plugins.platforms.telegram.adapter import TelegramAdapter
     from tests.waiting import async_wait_until
 
@@ -222,9 +221,8 @@ async def test_telegram_background_completion_continues_goal_without_user_nudge(
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "42")
     monkeypatch.setattr(gr, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     runner = gr.GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
-    db = SessionDB(tmp_path / "state.db")
-    runner.session_store._db = runner._session_db = db
-    authority = await initialize_session_authority(runner, profile_id="default", instance_id="goal-return", db=db)
+    authority = await initialize_session_authority(runner, profile_id="default", instance_id="goal-return")
+    db = open_persistence(runner.session_store.persistence.scope)
     monkeypatch.setattr(goals, "_get_session_db", lambda: db)
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fixture", typing_indicator=False))
     adapter.gateway_runner, runner.adapters = runner, {Platform.TELEGRAM: adapter}
@@ -280,17 +278,17 @@ async def test_telegram_background_completion_continues_goal_without_user_nudge(
         }) is True
         await live.task
 
-        rows = list_session_admissions(db, session_id=authority.logical_owner(sid), pending_only=False)
+        rows = authority.persistence.admissions.list(session_id=authority.logical_owner(sid), pending_only=False)
         expected_turns = 3 if route_available else 2
-        assert len(rows) == expected_turns, [(row["request_id"], row["outcome"]) for row in rows]
-        assert "deleg_fixture" in rows[1]["request_id"]
-        assert [row["outcome"] for row in rows] == ["completed"] * expected_turns
+        assert len(rows) == expected_turns, [(row.request_id, row.outcome) for row in rows]
+        assert "deleg_fixture" in rows[1].request_id
+        assert [row.outcome for row in rows] == ["completed"] * expected_turns
         assert len(calls) == expected_turns
         assert sent.count(("42", "worker result read")) == 1
         assert route not in adapter._pending_messages
         manager.refresh()
         if route_available:
-            assert "goal-continuation" in rows[2]["request_id"]
+            assert "goal-continuation" in rows[2].request_id
             assert "[Continuing toward your standing goal]" in calls[-1]
             assert sent.count(("42", "final read completed")) == 1
             assert sent[-2:] == [("42", "final read completed"), ("42", "✓ Goal achieved: the read is complete")]
@@ -304,3 +302,135 @@ async def test_telegram_background_completion_continues_goal_without_user_nudge(
             assert manager.state.status == "active"
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["continues", "paused_while_queued", "gate_failed_paused_while_queued",
+                                  "second_judge_while_queued"])
+async def test_topic_process_completion_turn_continues_goal_once(tmp_path, monkeypatch, case):
+    """The production shape of #145865: a standing /goal in a Telegram forum topic whose judged
+    turn was started by a background *process* completion (not a delegation). The continuation
+    runs without a user message; a /goal pause after it was queued stops it; a second judgment
+    while it is still queued (a message answered meanwhile) does not queue another one."""
+    import gateway.run as gr
+    from gateway import session_automation
+    from gateway.config import GatewayConfig
+    from gateway.platforms.base import SendResult
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_ingress_context import register_transport_home
+    from hermes_cli import goals
+    from persistence_assembly import open_persistence
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from tests.waiting import async_wait_until
+
+    marker = "[Continuing toward your standing goal"  # both the plain and the gate-failed prompt
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "42")
+    monkeypatch.setattr(gr, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    runner = gr.GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    authority = await initialize_session_authority(runner, profile_id="default", instance_id="goal-proc")
+    db = open_persistence(runner.session_store.persistence.scope)
+    monkeypatch.setattr(goals, "_get_session_db", lambda: db)
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fixture", typing_indicator=False))
+    adapter.gateway_runner, runner.adapters = runner, {Platform.TELEGRAM: adapter}
+    runner._wire_adapter_handlers(adapter)
+    register_transport_home(runner, None, tmp_path)
+    sent = []
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        sent.append((chat_id, content))
+        return SendResult(success=True, message_id=str(len(sent)))
+
+    monkeypatch.setattr(adapter, "send", send)
+    calls = []
+
+    async def respond(**kw):
+        message = kw["message"]
+        calls.append(message)
+        if marker in message:
+            reply = "remaining proof done"
+        elif "Background process proc_fixture completed" in message:
+            reply = "review result read"
+        else:
+            reply = "route ready"
+        return {"final_response": reply, "messages": [], "tools": [], "history_offset": 0, "last_prompt_tokens": 0}
+
+    verdicts = iter([("continue", "one proof remains", False, None, False)]
+                    + ([("continue", "still one proof", False, None, False)] if case == "second_judge_while_queued" else [])
+                    + [("done", "all proofs shown", False, None, False)])
+    monkeypatch.setattr(runner, "_run_agent", respond)
+    monkeypatch.setattr(goals, "judge_goal", lambda *a, **k: next(verdicts))
+    if case.startswith("gate_failed"):
+        gate_prompt = ("[Continuing toward your standing goal — a quality gate failed]\n"
+                       "Goal: finish the decision file\nFix the failing gate, then continue.")
+        monkeypatch.setattr(goals.GoalManager, "next_continuation_prompt", lambda self: gate_prompt)
+    source = adapter.build_source(chat_id="-1001", chat_type="group", user_id="42", thread_id="60208")
+    route = runner._session_key_for_source(source)
+    real_wake = session_automation.admit_route_wake
+
+    async def wake_then(*args, **kwargs):
+        accepted = await real_wake(*args, **kwargs)
+        if case.endswith("paused_while_queued"):
+            goals.GoalManager(sid).pause()
+        elif case == "second_judge_while_queued":
+            entry = await runner.async_session_store.get_or_create_session(source, touch_activity=False)
+            await runner._post_turn_goal_continuation(session_entry=entry, source=source, final_response="answered")
+        return accepted
+
+    monkeypatch.setattr(session_automation, "admit_route_wake", wake_then)
+
+    try:
+        await adapter.handle_message(MessageEvent(text="seed the topic route", source=source, message_id="1"))
+        await async_wait_until(lambda: len(calls) == 1 and not adapter._background_tasks, what="human turn delivered")
+        sid = runner.session_store.peek_session_id(route)
+        manager = goals.GoalManager(sid)
+        manager.set("finish the decision file")
+        live = authority.sessions[sid]
+        assert await runner._inject_watch_notification(
+            "[IMPORTANT: Background process proc_fixture completed normally (exit code 0).]", {
+                "type": "completion", "session_id": "proc_fixture", "started_at": 1.0, "exit_code": 0,
+                "session_key": route, "parent_session_id": sid, "platform": "telegram", "chat_type": "group",
+                "chat_id": "-1001", "thread_id": "60208", "user_id": "42", "output": "review finished",
+            }) is True
+        await live.task
+
+        rows = authority.persistence.admissions.list(session_id=authority.logical_owner(sid), pending_only=False)
+        wakes = [row for row in rows if "goal-continuation" in row.request_id]
+        manager.refresh()
+        assert route not in adapter._pending_messages
+        assert len(wakes) == 1, [(row.request_id[:40], row.outcome) for row in rows]
+        assert [row.outcome for row in rows] == ["completed"] * len(rows)
+        continuation_runs = [c for c in calls if marker in c]
+        if case.endswith("paused_while_queued"):
+            assert continuation_runs == [], calls
+            assert manager.state.status == "paused"
+        else:
+            assert len(continuation_runs) == 1, calls
+            assert sent.count(("-1001", "remaining proof done")) == 1
+            assert manager.state.status == "done"
+    finally:
+        db.close()
+
+
+def test_waiting_continuation_counts_only_for_the_judged_session():
+    """A slot continuation pinned to another session (compressed or reset since) is dropped when
+    it drains, so it must not stop the current session's judgment from queuing its own."""
+    from types import SimpleNamespace
+
+    from gateway.run_busy import GatewayBusySessionMixin
+
+    key = "agent:main:telegram:group:-1001:60208"
+    text = "[Continuing toward your standing goal]\nGoal: ship"
+    slot = {}
+    stub = SimpleNamespace(
+        _session_key_for_source=lambda source: key,
+        _delivery_adapter_for=lambda source: SimpleNamespace(_pending_messages=slot),
+        _overflow_queue=lambda session_key: [],
+        _is_goal_continuation_event=GatewayBusySessionMixin._is_goal_continuation_event,
+    )
+    waiting = GatewayBusySessionMixin._goal_continuation_waiting
+    slot[key] = SimpleNamespace(text=text, metadata={"gateway_session_id": "old-root"})
+    assert waiting(stub, object(), "compressed-child") is False
+    assert waiting(stub, object(), "old-root") is True
+    slot[key] = SimpleNamespace(text=text.replace("]", " — a quality gate failed]", 1), metadata={})
+    assert waiting(stub, object(), "compressed-child") is True

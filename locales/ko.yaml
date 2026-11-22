@@ -215,6 +215,7 @@ gateway:
     invalid: "잘못된 목표: {error}"
     set: "⊙ 목표 설정됨 ({budget}회 예산): {goal}\n목표가 완료되거나, 일시정지/삭제하거나, 예산이 소진될 때까지 계속 작업하겠습니다.\n제어: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add는 명시적으로 설정된 게이트웨이 관리자가 필요해요(DM은 allow_admin_from, 그룹은 group_allow_admin_from)."
+    continuation_not_queued: "목표는 아직 활성 상태이지만 Hermes가 다음 턴을 대기열에 넣지 못했습니다."
   help:
     header: "📖 **Hermes 명령**\n"
     skill_header: "\n⚡ **스킬 명령** ({count}개 활성):"

@@ -215,6 +215,7 @@ gateway:
     invalid: "無效目標：{error}"
     set: "⊙ 目標已設定（{budget} 輪預算）：{goal}\n我會持續工作直到目標完成、你暫停／清除目標，或預算耗盡。\n控制指令：/goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add 需要明確設定的閘道管理員（私訊用 allow_admin_from，群組用 group_allow_admin_from）。"
+    continuation_not_queued: "目標仍處於啟用狀態，但 Hermes 無法將下一輪加入佇列。"
   help:
     header: "📖 **Hermes 指令**\n"
     skill_header: "\n⚡ **技能指令**（{count} 個作用中）："

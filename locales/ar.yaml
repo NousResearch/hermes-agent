@@ -215,6 +215,7 @@ gateway:
     invalid: "هدف غير صالح: {error}"
     set: "⊙ حُدِّد الهدف (ميزانية {budget} دور): {goal}\nسأواصل العمل حتى يكتمل الهدف، أو توقفه/تمسحه، أو تنفد الميزانية.\nالتحكم: /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ يتطلّب /goal gate add مشرف بوّابة مضبوطًا صراحةً (allow_admin_from للرسائل الخاصة، group_allow_admin_from للمجموعات)."
+    continuation_not_queued: "الهدف لا يزال نشطًا، لكن Hermes لم يتمكن من وضع الدور التالي في قائمة الانتظار."
   help:
     header: "📖 **أوامر Hermes**\n"
     skill_header: "\n⚡ **أوامر المهارات** ({count} نشطة):"

@@ -161,9 +161,11 @@ export const jaRedesign: RedesignOverlay = {
       intro:
         'Hermes Desktop はデフォルトでこのマシン上の Hermes に接続します。別のマシンや信頼できるプロキシの背後で動作する Hermes を使用する場合は、リモートマシンに接続してください。マシンへの接続はこの端末の設定として保存され、エージェントは接続先のマシンから検出されます。',
       localTitle: 'ローカルマシン',
+      localDesc: 'このコンピューターで動く Hermes。',
+      cloudDesc: 'ホスティング済み。インストール不要。',
+      remoteDesc: 'ご自身で運用するサーバー上の Hermes。',
+      sshDesc: 'SSH でマシンに接続します。',
       remoteTitle: 'リモートマシン',
-      remoteDesc:
-        'このデスクトップシェルをリモートの Hermes バックエンドに接続します。ホスト型マシンは OAuth またはユーザー名とパスワードを使用します。自己ホスト型はセッショントークンを使用する場合があります。',
       probing: 'このマシンの認証方法を確認中…',
       probeError: 'このマシンにまだ到達できません。URL を確認してください。応答後に認証方法が表示されます。',
       authSignedInPassword:

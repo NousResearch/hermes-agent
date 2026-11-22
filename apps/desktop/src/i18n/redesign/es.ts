@@ -263,6 +263,10 @@ export const esRedesign: RedesignOverlay = {
       intro:
         'Local por predeterminado. Usa remoto cuando esta app deba ejecutar Hermes en otro lugar. Conecta una máquina para descubrir sus agentes.',
       localTitle: 'Máquina local',
+      localDesc: 'Hermes se ejecuta en este ordenador.',
+      cloudDesc: 'Alojado para ti. Nada que instalar.',
+      remoteDesc: 'Hermes en un servidor que gestionas.',
+      sshDesc: 'Conéctate a una máquina por SSH.',
       remoteTitle: 'Máquina remota',
       remoteAuthHint:
         'Las máquinas alojadas usan OAuth o usuario y contraseña; las autoalojadas pueden usar un token de sesión.',

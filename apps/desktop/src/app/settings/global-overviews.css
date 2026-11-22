@@ -390,64 +390,181 @@
   padding: 1rem;
 }
 
-/* Connection-mode cards (856:5142): four 186px r8 cards, an icon tile where Figma draws a spot
-   illustration, 14 Medium title, 13 tertiary description; the active mode takes the brand selection. */
+/* A saved connection's status (18563:12578): Nous/Uppercase Medium on its fill, 4px padding, r3; the
+   sign-in screens' badge fills (green CONNECTED, grey OFFLINE and CONNECTING) under their ink. */
+.gateway-status-badge {
+  flex: none;
+  padding: 0.25rem;
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-badge-waiting-fill);
+  color: var(--portal-badge-waiting-ink);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-caption-size);
+  font-weight: 500;
+  letter-spacing: var(--portal-tracking-caption);
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.gateway-status-badge[data-status='online'] {
+  background-color: var(--portal-badge-ok-fill);
+  color: var(--portal-badge-ink);
+}
+
+/* The list's closing actions (18563:12594): a 36px plus tile and the label on its own 36px fill, 12px
+   apart, on the row's 12px padding; the pair answers the pointer, not the row. */
+.gateway-connections-card > .global-settings-add-row {
+  gap: 0.75rem;
+  padding-block: var(--portal-settings-row-pad);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 600;
+}
+
+.gateway-connections-card > .global-settings-add-row > :is(.codicon, .global-settings-add-label) {
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-surface-control);
+}
+
+/* The glyph keeps its own 1em box (codicon.tsx); the tile is that box padded out to 36px. */
+.gateway-connections-card > .global-settings-add-row > .codicon {
+  box-sizing: content-box;
+  flex: none;
+  padding: 0.625rem;
+}
+
+.gateway-connections-card > .global-settings-add-row > .global-settings-add-label {
+  display: flex;
+  height: 2.25rem;
+  flex: 1;
+  align-items: center;
+  padding-inline: 0.75rem;
+}
+
+[data-slot='overlay-main'] .gateway-connections-card > .global-settings-add-row {
+  padding-inline: var(--portal-settings-inset);
+}
+
+.gateway-connections-card > .global-settings-add-row:hover:not(:disabled) {
+  background: none;
+}
+
+.gateway-connections-card
+  > .global-settings-add-row:hover:not(:disabled)
+  > :is(.codicon, .global-settings-add-label) {
+  background: var(--portal-surface-control-hover);
+}
+
+/* Connection-mode cards (18563:12326): four 200px tiles 20px apart, run 12px past the text inset
+   (20px in from the card column's edge); each mode's artwork across the top, fading out by the title,
+   then the 16px title and the meta-font description. The chosen mode takes a 2px brand ring over the
+   dark rim the artwork cards use (18695:18096). Dark lays the art over the card with lighten; light
+   paints the brand colour through the art's luminance, Figma's difference + blue lighten
+   (18563:29648). */
 .gateway-mode-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-  gap: 0.8125rem;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: 1.25rem;
+}
+
+[data-slot='overlay-main'] .gateway-mode-cards {
+  margin-inline: calc(1.25rem - var(--portal-settings-inset));
 }
 
 .gateway-mode-card {
+  position: relative;
+  isolation: isolate;
   display: flex;
-  min-height: 11.625rem;
+  overflow: hidden;
+  min-height: 12.5rem;
   flex-direction: column;
-  gap: 0.25rem;
-  padding: 0.75rem;
-  border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: var(--portal-radius-floating);
-  background: var(--ui-bg-card);
+  gap: 0.375rem;
+  padding: 1rem;
+  border-radius: var(--portal-radius-tile);
+  background: var(--portal-settings-card);
   color: var(--ui-text-primary);
   text-align: start;
 }
 
-.gateway-mode-card-art {
-  display: grid;
-  height: 4.5rem;
-  margin-bottom: 0.625rem;
-  place-items: center;
-  border-radius: var(--portal-radius-card);
-  background: var(--portal-raw-ink-4);
-  color: var(--ui-text-secondary);
+.gateway-mode-card[data-mode='cloud'] {
+  --gateway-mode-art: url('../../assets/gateway-mode-cloud.avif');
 }
 
-.gateway-mode-card-art > svg {
-  width: 1.5rem;
-  height: 1.5rem;
+.gateway-mode-card[data-mode='remote'] {
+  --gateway-mode-art: url('../../assets/gateway-mode-remote.avif');
+}
+
+.gateway-mode-card[data-mode='ssh'] {
+  --gateway-mode-art: url('../../assets/gateway-mode-ssh.avif');
+}
+
+.gateway-mode-card[data-mode='local'] {
+  --gateway-mode-art: url('../../assets/gateway-mode-local.avif');
+}
+
+/* Figma's 64px image slot; the art itself is the mask group around it, 139 x 97 at 135 wide. */
+.gateway-mode-card-art {
+  position: relative;
+  z-index: -1;
+  height: 4rem;
+  flex: none;
+}
+
+.gateway-mode-card-art::before {
+  content: '';
+  position: absolute;
+  /* token-exempt: Figma's mask group sits 18.36 / 17.19px outside the image slot (18563:12537). */
+  top: -1.074rem;
+  left: -1.1475rem;
+  width: calc(100% + 2.295rem);
+  aspect-ratio: 279 / 194;
+  background: var(--gateway-mode-art) 0 0 / 100% 100% no-repeat;
+  mix-blend-mode: lighten;
+}
+
+:root:not(.dark) .gateway-mode-card-art::before {
+  background: var(--portal-surface-brand);
+  mask: var(--gateway-mode-art) 0 0 / 100% 100% no-repeat luminance;
+  mix-blend-mode: normal;
 }
 
 .gateway-mode-card-title {
   display: flex;
-  align-items: center;
+  flex: 1;
+  align-items: flex-start;
   gap: 0.375rem;
-  font-size: var(--portal-type-body-size);
-  font-weight: 500;
-  line-height: 1.4;
+  font-size: var(--portal-settings-row-label-size);
+  line-height: var(--portal-settings-row-label-line);
+}
+
+.gateway-mode-card-title > span {
+  margin-top: 0.25rem;
 }
 
 .gateway-mode-card-description {
   color: var(--ui-text-tertiary);
+  font-family: var(--portal-settings-meta-font);
   font-size: var(--portal-type-ui-size);
-  line-height: 1.4;
+  line-height: 1.3;
+}
+
+.gateway-mode-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
 }
 
 .gateway-mode-card:hover:not(:disabled) {
-  background: var(--portal-surface-control-hover);
+  background:
+    linear-gradient(var(--portal-surface-row-hover), var(--portal-surface-row-hover)),
+    var(--portal-settings-card);
 }
 
-.gateway-mode-card[aria-pressed='true'] {
-  border-color: var(--portal-raw-brand-60);
-  background: var(--portal-selection-background);
+.gateway-mode-card[aria-pressed='true']::after {
+  box-shadow:
+    inset 0 0 0 2px var(--portal-surface-brand),
+    inset 0 0 0 4px var(--portal-choice-rim);
 }
 
 .gateway-mode-card:focus-visible {
@@ -670,6 +787,17 @@
   opacity: 0.8;
   mask-image: linear-gradient(to right, var(--portal-raw-black) 18%, transparent 56%);
   pointer-events: none;
+}
+
+/* Light draws the lattice in the brand colour through its luminance (18563:29459), as the
+   connection-mode cards do: lighten over a white card would leave nothing to see. */
+:root[data-shell='portal']:not(.dark) [data-page-surface] .settings-agent-link::before {
+  background: var(--portal-surface-brand);
+  mix-blend-mode: normal;
+  mask:
+    url('../../assets/settings-agent-lattice.avif') -9.55rem 50% / 18.175rem no-repeat luminance,
+    linear-gradient(to right, var(--portal-raw-black) 18%, transparent 56%);
+  mask-composite: intersect;
 }
 
 :root[data-shell='portal'] [data-page-surface] .settings-agent-link-text {

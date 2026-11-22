@@ -73,7 +73,7 @@ export function SettingsAddRow({ children, icon = 'add', ...props }: SettingsAdd
   return (
     <button className="global-settings-add-row" type="button" {...props}>
       <Codicon aria-hidden name={icon} />
-      {children}
+      <span className="global-settings-add-label">{children}</span>
     </button>
   )
 }

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { en } from '@/i18n/en'
 import { _resetFleetRosterForTests, refreshFleetRoster } from '@/store/fleet-roster'
-import { $connection } from '@/store/session'
+import { $connection, setGatewayState } from '@/store/session'
 import { $shellChoice } from '@/store/shell-variant'
 import { deferred } from '@/test/deferred'
 
@@ -508,6 +508,79 @@ describe('ConnectionsRegistrySection in the redesign', () => {
 
     fireEvent.click(screen.getByRole('button', { name: en.settings.connections.addConnection }))
     expect(await screen.findByRole('button', { name: en.settings.connections.save })).toBeTruthy()
+  })
+})
+
+describe('saved connection status in the redesign', () => {
+  const roster = (sources: { connectionId: string; reachable: boolean; error?: string }[], agents: string[] = []) => ({
+    agents: agents.map(connectionId => ({
+      connectionId,
+      connectionKind: 'remote' as const,
+      connectionLabel: connectionId,
+      handle: 'a',
+      profile: 'a'
+    })),
+    sources: sources.map(source => ({ ...source, kind: 'remote' as const, label: source.connectionId }))
+  })
+
+  const badgeFor = (label: string) =>
+    screen.getByText(label).parentElement?.querySelector('[data-slot="connection-status"]')?.textContent ?? null
+
+  afterEach(() => {
+    setGatewayState('idle')
+    _resetFleetRosterForTests()
+  })
+
+  it('reads the open socket for the current connection and the fleet probe for the others', async () => {
+    $shellChoice.set(true)
+    setGatewayState('open')
+
+    const getAgentRoster = vi
+      .fn()
+      .mockResolvedValue(roster([{ connectionId: 'local', reachable: false }], ['local', 'local']))
+
+    Object.assign(window.hermesDesktop!, { getAgentRoster })
+
+    render(<ConnectionsRegistrySection />)
+    await screen.findByText('Homelab')
+
+    // The page asks the probe itself; the window's own connection never waits on it.
+    await waitFor(() => expect(getAgentRoster).toHaveBeenCalled())
+    await waitFor(() => expect(badgeFor('This device')).toBe(en.shell.gatewayMenu.offline))
+    expect(badgeFor('Homelab')).toBe(en.shell.gatewayMenu.connected)
+
+    // An unreachable connection's agent count is not known, so none is claimed.
+    expect(screen.queryByText(/agents?$/)).toBeNull()
+  })
+
+  it('shows no status until the probe knows one, and counts the agents of a reachable connection', async () => {
+    $shellChoice.set(true)
+    setGatewayState('open')
+    const probe = deferred<ReturnType<typeof roster>>()
+    Object.assign(window.hermesDesktop!, { getAgentRoster: vi.fn(() => probe.promise) })
+
+    render(<ConnectionsRegistrySection />)
+    await screen.findByText('This device')
+    expect(badgeFor('This device')).toBeNull()
+
+    await act(async () => probe.resolve(roster([{ connectionId: 'local', reachable: true }], ['local', 'local'])))
+
+    expect(badgeFor('This device')).toBe(en.shell.gatewayMenu.connected)
+    expect(screen.getByText(/2 agents$/)).toBeTruthy()
+  })
+
+  it('leaves a connect-on-demand source without a guessed status', async () => {
+    $shellChoice.set(true)
+    Object.assign(window.hermesDesktop!, {
+      getAgentRoster: vi
+        .fn()
+        .mockResolvedValue(roster([{ connectionId: 'local', reachable: false, error: 'connect-on-demand' }]))
+    })
+
+    render(<ConnectionsRegistrySection />)
+    await screen.findByText('This device')
+    await waitFor(() => expect(window.hermesDesktop!.getAgentRoster).toHaveBeenCalled())
+    expect(badgeFor('This device')).toBeNull()
   })
 })
 

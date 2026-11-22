@@ -1,4 +1,5 @@
 import { type BundledLocale, isBundledLocale, useI18n } from '@/i18n'
+import { RU_PLURAL } from '@/i18n/ru_plural'
 import { hostHas } from '@/lib/host-capabilities'
 
 /** Copy the redesigned global Settings pages draw that classic never shows (Figma 856:*, 895:*):
@@ -28,6 +29,8 @@ export interface SettingsPagesCopy {
     savedDesc: string
     manage: string
     advancedDesc: string
+    /** A saved connection's agent count, after its address (18563:12580 "[host] · [n] agents"). */
+    agents: (count: number) => string
   }
   about: { whatsNew: string; checkForUpdates: string; gateway: string; detailsDesc: string }
   keybinds: { bindings: string; all: string; allDesc: string; reset: string }
@@ -100,7 +103,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       saved: 'Saved connections',
       savedDesc: 'Every machine running Hermes that this app can reach.',
       manage: 'Manage',
-      advancedDesc: 'Remote updates, startup and diagnostics'
+      advancedDesc: 'Remote updates, startup and diagnostics',
+      agents: count => (count === 1 ? '1 agent' : `${count} agents`)
     },
     about: {
       whatsNew: 'What’s new',
@@ -185,7 +189,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       saved: 'Connexions enregistrées',
       savedDesc: 'Chaque machine exécutant Hermes que cette app peut joindre.',
       manage: 'Gérer',
-      advancedDesc: 'Mises à jour distantes, démarrage et diagnostics'
+      advancedDesc: 'Mises à jour distantes, démarrage et diagnostics',
+      agents: count => (count < 2 ? `${count} agent` : `${count} agents`)
     },
     about: {
       whatsNew: 'Nouveautés',
@@ -272,7 +277,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       saved: 'Gespeicherte Verbindungen',
       savedDesc: 'Jeder Rechner mit Hermes, den diese App erreicht.',
       manage: 'Verwalten',
-      advancedDesc: 'Remote-Updates, Start und Diagnose'
+      advancedDesc: 'Remote-Updates, Start und Diagnose',
+      agents: count => `${count} ${count === 1 ? 'Agent' : 'Agents'}`
     },
     about: {
       whatsNew: 'Neuigkeiten',
@@ -356,7 +362,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       saved: 'Conexiones guardadas',
       savedDesc: 'Cada máquina con Hermes que esta app puede alcanzar.',
       manage: 'Gestionar',
-      advancedDesc: 'Actualizaciones remotas, inicio y diagnóstico'
+      advancedDesc: 'Actualizaciones remotas, inicio y diagnóstico',
+      agents: count => (count === 1 ? '1 agente' : `${count} agentes`)
     },
     about: {
       whatsNew: 'Novedades',
@@ -440,7 +447,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       saved: '保存済みの接続',
       savedDesc: 'このアプリが接続できる、Hermes が動作しているすべてのマシン。',
       manage: '管理',
-      advancedDesc: 'リモート更新、起動、診断'
+      advancedDesc: 'リモート更新、起動、診断',
+      agents: count => `${count} エージェント`
     },
     about: {
       whatsNew: '新機能',
@@ -519,7 +527,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       saved: '已保存的连接',
       savedDesc: '此应用能连接的每台运行 Hermes 的机器。',
       manage: '管理',
-      advancedDesc: '远程更新、启动和诊断'
+      advancedDesc: '远程更新、启动和诊断',
+      agents: count => `${count} 个代理`
     },
     about: {
       whatsNew: '新功能',
@@ -598,7 +607,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       saved: '已儲存的連線',
       savedDesc: '此 App 能連線的每台執行 Hermes 的機器。',
       manage: '管理',
-      advancedDesc: '遠端更新、啟動與診斷'
+      advancedDesc: '遠端更新、啟動與診斷',
+      agents: count => `${count} 個代理`
     },
     about: {
       whatsNew: '新功能',
@@ -677,7 +687,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       saved: 'Сохранённые подключения',
       savedDesc: 'Все компьютеры с Hermes, доступные этому приложению.',
       manage: 'Управлять',
-      advancedDesc: 'Удалённые обновления, запуск и диагностика'
+      advancedDesc: 'Удалённые обновления, запуск и диагностика',
+      agents: count => `${count} ${RU_PLURAL(count, 'агент', 'агента', 'агентов')}`
     },
     about: {
       whatsNew: 'Что нового',
@@ -763,7 +774,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       saved: 'الاتصالات المحفوظة',
       savedDesc: 'كل جهاز يشغّل Hermes يمكن لهذا التطبيق الوصول إليه.',
       manage: 'إدارة',
-      advancedDesc: 'التحديثات عن بُعد وبدء التشغيل والتشخيص'
+      advancedDesc: 'التحديثات عن بُعد وبدء التشغيل والتشخيص',
+      agents: count => `${count} ${count === 1 ? 'وكيل' : 'وكلاء'}`
     },
     about: {
       whatsNew: 'الجديد',

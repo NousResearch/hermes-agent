@@ -408,10 +408,25 @@
 
 /* The title on its 30px inset with the search button at the panel's end (Top 16292:16360). */
 :root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] .page-sidebar-head {
+  align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
-  margin: 0 0 calc(var(--portal-settings-nav-head-gap) - var(--portal-settings-nav-gap))
-    calc(var(--portal-settings-nav-inset) - var(--page-panel-inset));
+  margin: 0 calc(var(--portal-settings-nav-inset) - var(--page-panel-inset))
+    calc(var(--portal-settings-nav-head-gap) - var(--portal-settings-nav-gap));
+}
+
+/* Search (18563:12431): a light/5 tile, r6, top-aligned with the title on the column's 30px inset. */
+:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] .page-sidebar-head .portal-chrome-button {
+  border-radius: var(--portal-radius-settings-search);
+  background-color: var(--portal-surface-control);
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-tour='overlay-nav']
+  .page-sidebar-head
+  .portal-chrome-button:is(:hover, [data-state='open']):not(:disabled) {
+  background-color: var(--portal-surface-control-hover);
 }
 
 :root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] .page-sidebar-head .page-nav-title {
@@ -424,7 +439,7 @@
   button[data-tour^='nav-']:not([data-tour^='nav-toggle-'], [data-tour='nav-agent-settings']) {
   gap: 0.75rem;
   padding-inline: 0.75rem;
-  border-radius: var(--portal-radius-control);
+  border-radius: var(--portal-radius-settings-nav-row);
   font-size: var(--portal-type-ui-size);
   font-weight: 600;
 }

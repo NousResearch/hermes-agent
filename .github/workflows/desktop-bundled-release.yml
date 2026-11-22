@@ -2062,6 +2062,15 @@ jobs:
           fetch-depth: 0
           filter: blob:none
           fetch-tags: true
+          persist-credentials: false
+
+      - name: Check out controller Termux build action
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ github.sha }}
+          path: .build/termux-action
+          sparse-checkout: .github/actions/build-termux-deb
+          persist-credentials: false
 
       - name: Set up the locked build toolchain
         id: pm
@@ -2084,177 +2093,17 @@ jobs:
         run: |
           echo "channel=$(python3 scripts/termux/deb_version.py --channel "$TAG")" >> "$GITHUB_OUTPUT"
 
-      - name: Read the termux-docker digest pin
-        id: pins
-        shell: bash
-        # The digest is pinned in pm/lock.json (the termux-docker package)
-        # beside every other third-party pin; the build scripts re-read it
-        # themselves. This step surfaces the effective pin in the run log
-        # and fails fast if the lock row is missing.
-        run: |
-          echo "digest=$(python3 -c 'import sys; sys.path.insert(0, "."); from pm.lock import termux_docker_digest; print(termux_docker_digest())')" >> "$GITHUB_OUTPUT"
-
-      - name: Restore the CPython + node + uv payload builds
-        # Restore/save are split: the save runs right after staging (with
-        # `always()`), so a later phase's failure cannot throw away 20+
-        # minutes of builds. The exact key is content-only on pm/lock.json +
-        # the stagers, so it is stable across dispatches; the restore-keys
-        # prefix rescues the previous pin's builds when the lock moved.
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            termux-build/payload/python
-            termux-build/payload/node
-            termux-build/payload/uv
-            termux-build/payload/npm
-            termux-build/payload/ffmpeg
-            termux-build/payload/ripgrep
-            termux-build/payload/runtime-libs
-          key: termux-payload-${{ hashFiles('pm/lock.json', 'scripts/termux/build_cpython.sh', 'scripts/termux/build_node.sh', 'scripts/termux/build_uv.sh', 'scripts/termux/runtime_libs.json', 'scripts/termux/stage_runtime_libs.py') }}
-          restore-keys: |
-            termux-payload-
-
       - name: Preserve and retrieve pinned inputs
         shell: bash
         run: python -m scripts.ci.archive_inputs --target linux-arm64-bionic --payload termux-build/payload --store "$HERMES_RUNTIME_DIR"
 
-      - name: Build CPython into the payload
-        shell: bash
-        run: bash scripts/termux/build_cpython.sh termux-build/payload
-
-      - name: Build node into the payload
-        shell: bash
-        run: bash scripts/termux/build_node.sh termux-build/payload
-
-      - name: Stage the runtime libs into the payload
-        shell: bash
-        # The payload interpreters' runtime libs (python's C-extension deps,
-        # node's, uv's zstd) ship INSIDE the sealed deb: the device's termux
-        # tree may have none of them installed. Pin table derived from the
-        # suppliers' own Depends metadata (see runtime_libs.json).
-        run: python3 scripts/termux/stage_runtime_libs.py termux-build/payload
-
-      - name: Stage uv into the payload
-        shell: bash
-        # The wheelhouse resolver + runtime lazy-install tool: pm stages
-        # the bionic uv .deb beside python/node (no PATH install; the
-        # payload env composition exposes it, desktop payload model).
-        run: bash scripts/termux/build_uv.sh termux-build/payload
-
-      - name: Stage the remaining CLI runtime tools
-        shell: bash
-        run: |
-          for tool in npm ffmpeg ripgrep; do
-            bash scripts/termux/termux_pkg_build.sh "$tool" "$tool" termux-build/payload
-          done
-
-      - name: Save the payload builds
-        # Save regardless of the wheelhouse/deb phases' outcome: the staged
-        # tool payload is only stale when the lock or a stager changes, and
-        # losing it to a downstream failure re-pays the full stage cost.
-        if: always() && inputs.build_commit == '' && !startsWith(inputs.tag, 'commit.') && !startsWith(inputs.tag, 'channel.')
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Build the Termux payload, wheelhouse, and .deb
+        uses: ./.build/termux-action/.github/actions/build-termux-deb
         with:
-          path: |
-            termux-build/payload/python
-            termux-build/payload/node
-            termux-build/payload/uv
-            termux-build/payload/npm
-            termux-build/payload/ffmpeg
-            termux-build/payload/ripgrep
-            termux-build/payload/runtime-libs
-          key: termux-payload-${{ hashFiles('pm/lock.json', 'scripts/termux/build_cpython.sh', 'scripts/termux/build_node.sh', 'scripts/termux/build_uv.sh', 'scripts/termux/runtime_libs.json', 'scripts/termux/stage_runtime_libs.py') }}
-
-      - name: Ensure the derived builder image (toolchain pre-baked)
-        id: builder_image
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
-        # The pinned base and Dockerfile select the pre-baked toolchain.
-        # Recipe changes must not reuse an image built without those tools.
-        run: |
-          mkdir -p termux-build
-          # The builder script prints progress (build logs, smoke output)
-          # plus the image ref on the LAST line -- command substitution
-          # would swallow all of it into one $GITHUB_OUTPUT value.
-          bash scripts/termux/build_builder_image.sh | tee termux-build/.builder-image.log
-          img="$(tail -n1 termux-build/.builder-image.log)"
-          echo "builder image: $img"
-          echo "image=$img" >> "$GITHUB_OUTPUT"
-
-      - name: Restore the wheelhouse
-        # Reuse manufactured wheels only when the complete input identity
-        # and wheel hashes pass admission. A prefix hit alone is not proof.
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            termux-build/payload/wheelhouse
-            termux-build/payload/index.json
-            termux-build/payload/SHA256SUMS
-            termux-build/payload/.work/resolved.txt
-            termux-build/payload/.work/build_set.txt
-          key: termux-wheelhouse-${{ hashFiles('uv.lock', 'pyproject.toml', 'pm/lock.json', 'scripts/termux/runtime_libs.json', 'scripts/termux/build_config.sh', 'scripts/termux/build_wheels.py', 'scripts/termux/termux_build.sh', 'scripts/termux/retag_wheel.py', 'scripts/termux/python_linkage.py', 'scripts/termux/wheelhouse_cache.py', 'scripts/termux/build_environment.py', 'pm/environment.py', 'pm/build_operations.py', 'pm/operations.py', 'pm/pyproject.toml', 'pm/uv.lock', 'scripts/termux/termux-builder.Dockerfile') }}
-          restore-keys: |
-            termux-wheelhouse-
-
-      - name: Build the wheelhouse
-        shell: bash
-        env:
-          TERMUX_BUILDER_IMAGE: ${{ steps.builder_image.outputs.image }}
-        # termux_build.sh lands wheelhouse/ + index.json + SHA256SUMS in the
-        # payload root, where build_deb.sh's --no-index pip install finds it.
-        run: |
-          if [ -n "${HERMES_RELEASE_COMMIT:-}" ]; then
-            bash scripts/termux/termux_build.sh \
-              --repo . \
-              --tag "$HERMES_PAYLOAD_TAG" \
-              --release-commit "$HERMES_RELEASE_COMMIT" \
-              --out termux-build/payload
-          else
-            bash scripts/termux/termux_build.sh \
-              --repo . \
-              --tag "$HERMES_PAYLOAD_TAG" \
-              --out termux-build/payload
-          fi
-
-      - name: Save the wheelhouse
-        # Only proven wheels enter the cache. Saving before deb assembly
-        # preserves them if a later packaging step fails.
-        if: inputs.build_commit == '' && !startsWith(inputs.tag, 'commit.') && !startsWith(inputs.tag, 'channel.')
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            termux-build/payload/wheelhouse
-            termux-build/payload/index.json
-            termux-build/payload/SHA256SUMS
-            termux-build/payload/.work/resolved.txt
-            termux-build/payload/.work/build_set.txt
-          key: termux-wheelhouse-${{ hashFiles('uv.lock', 'pyproject.toml', 'pm/lock.json', 'scripts/termux/runtime_libs.json', 'scripts/termux/build_config.sh', 'scripts/termux/build_wheels.py', 'scripts/termux/termux_build.sh', 'scripts/termux/retag_wheel.py', 'scripts/termux/python_linkage.py', 'scripts/termux/wheelhouse_cache.py', 'scripts/termux/build_environment.py', 'pm/environment.py', 'pm/build_operations.py', 'pm/operations.py', 'pm/pyproject.toml', 'pm/uv.lock', 'scripts/termux/termux-builder.Dockerfile') }}
-
-      - name: Assemble the .deb
-        shell: bash
-        env:
-          TERMUX_BUILDER_IMAGE: ${{ steps.builder_image.outputs.image }}
-        # The driver prepares locked TUI dependencies and builds the shared
-        # TUI product before handing the staged bionic payload to build_deb.sh.
-        # Native dependency staging stays above; .deb validation still runs
-        # in a fresh pinned container with no opt-out.
-        run: |
-          if [ -n "${HERMES_RELEASE_COMMIT:-}" ]; then
-            python3 scripts/termux/build.py \
-              --repo . \
-              --tag "$HERMES_PAYLOAD_TAG" \
-              --release-commit "$HERMES_RELEASE_COMMIT" \
-              --payload termux-build/payload \
-              --out termux-build/deb
-          else
-            python3 scripts/termux/build.py \
-              --repo . \
-              --tag "$HERMES_PAYLOAD_TAG" \
-              --payload termux-build/payload \
-              --out termux-build/deb
-          fi
+          build-mode: release
+          save-caches: ${{ inputs.build_commit == '' && !startsWith(inputs.tag, 'commit.') && !startsWith(inputs.tag, 'channel.') }}
+          push-builder-image: 'true'
+          github-token: ${{ github.token }}
 
       - name: Retrieve the previous published Termux package from R2
         if: inputs.termux_upgrade_from_tag != ''
@@ -2377,6 +2226,14 @@ jobs:
           fetch-tags: false
           persist-credentials: false
 
+      - name: Check out controller Termux build action
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ github.sha }}
+          path: .build/termux-action
+          sparse-checkout: .github/actions/build-termux-deb
+          persist-credentials: false
+
       - name: Set up the locked build toolchain
         id: pm
         uses: ./.github/actions/setup-pm
@@ -2388,139 +2245,12 @@ jobs:
           save-tools-cache: false
           save-node-cache: false
 
-      - name: Read the termux-docker digest pin
-        id: pins
-        shell: bash
-        run: |
-          echo "digest=$(python3 -c 'import sys; sys.path.insert(0, "."); from pm.lock import termux_docker_digest; print(termux_docker_digest())')" >> "$GITHUB_OUTPUT"
-
-      - name: Restore the CPython + node + uv payload builds
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Build the Termux payload, wheelhouse, and .deb
+        uses: ./.build/termux-action/.github/actions/build-termux-deb
         with:
-          path: |
-            termux-build/payload/python
-            termux-build/payload/node
-            termux-build/payload/uv
-            termux-build/payload/npm
-            termux-build/payload/ffmpeg
-            termux-build/payload/ripgrep
-            termux-build/payload/runtime-libs
-          key: termux-payload-${{ hashFiles('pm/lock.json', 'scripts/termux/build_cpython.sh', 'scripts/termux/build_node.sh', 'scripts/termux/build_uv.sh', 'scripts/termux/runtime_libs.json', 'scripts/termux/stage_runtime_libs.py') }}
-          restore-keys: |
-            termux-payload-
-
-      - name: Build CPython into the payload
-        shell: bash
-        run: bash scripts/termux/build_cpython.sh termux-build/payload
-
-      - name: Build node into the payload
-        shell: bash
-        run: bash scripts/termux/build_node.sh termux-build/payload
-
-      - name: Stage the runtime libs into the payload
-        shell: bash
-        run: python3 scripts/termux/stage_runtime_libs.py termux-build/payload
-
-      - name: Stage uv into the payload
-        shell: bash
-        run: bash scripts/termux/build_uv.sh termux-build/payload
-
-      - name: Stage the remaining CLI runtime tools
-        shell: bash
-        run: |
-          for tool in npm ffmpeg ripgrep; do
-            bash scripts/termux/termux_pkg_build.sh "$tool" "$tool" termux-build/payload
-          done
-
-      - name: Ensure the derived builder image (toolchain pre-baked, no push)
-        id: builder_image
-        shell: bash
-        env:
-          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
-          TERMUX_BUILDER_NO_PUSH: '1'
-        run: |
-          mkdir -p termux-build
-          if grep -q 'TERMUX_BUILDER_NO_PUSH' scripts/termux/build_builder_image.sh 2>/dev/null; then
-            bash scripts/termux/build_builder_image.sh --no-push | tee termux-build/.builder-image.log
-          else
-            # Pre-PR commit checkout: reuse a published GHCR image if present,
-            # else build and smoke a job-local image without logging into or pushing to GHCR.
-            digest="$(python3 -c 'import sys; sys.path.insert(0, "."); from pm.lock import termux_docker_digest; print(termux_docker_digest())')"
-            base="termux/termux-docker@${digest}"
-            dockerfile="scripts/termux/termux-builder.Dockerfile"
-            short="$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(sys.argv[1].encode() + b"\0" + pathlib.Path(sys.argv[2]).read_bytes()).hexdigest()[:12])' "$base" "$dockerfile")"
-            owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
-            published="ghcr.io/${owner}/hermes-termux-builder:${short}"
-            if docker manifest inspect "$published" >/dev/null 2>&1; then
-              printf 'builder image already published: %s\n%s\n' "$published" "$published" | tee termux-build/.builder-image.log
-            else
-              local_img="hermes-termux-builder-local:${short}"
-              docker build -f "$dockerfile" --build-arg "BASE=${base}" -t "$local_img" scripts/termux
-              docker run --rm --platform linux/arm64 "$local_img" /data/data/com.termux/files/usr/bin/bash -c '
-                export PREFIX=/data/data/com.termux/files/usr
-                for tool in clang rustc cargo make; do
-                  command -v "$tool" >/dev/null 2>&1 || { echo "smoke FAIL: $tool"; exit 1; }
-                done
-                echo "builder image smoke OK"
-              '
-              printf 'built locally (push disabled): %s\n%s\n' "$local_img" "$local_img" | tee termux-build/.builder-image.log
-            fi
-          fi
-          img="$(tail -n1 termux-build/.builder-image.log)"
-          echo "builder image: $img"
-          echo "image=$img" >> "$GITHUB_OUTPUT"
-
-      - name: Restore the wheelhouse
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            termux-build/payload/wheelhouse
-            termux-build/payload/index.json
-            termux-build/payload/SHA256SUMS
-            termux-build/payload/.work/resolved.txt
-            termux-build/payload/.work/build_set.txt
-          key: termux-wheelhouse-${{ hashFiles('uv.lock', 'pyproject.toml', 'pm/lock.json', 'scripts/termux/runtime_libs.json', 'scripts/termux/build_config.sh', 'scripts/termux/build_wheels.py', 'scripts/termux/termux_build.sh', 'scripts/termux/retag_wheel.py', 'scripts/termux/python_linkage.py', 'scripts/termux/wheelhouse_cache.py', 'scripts/termux/build_environment.py', 'pm/environment.py', 'pm/build_operations.py', 'pm/operations.py', 'pm/pyproject.toml', 'pm/uv.lock', 'scripts/termux/termux-builder.Dockerfile') }}
-          restore-keys: |
-            termux-wheelhouse-
-
-      - name: Build the wheelhouse
-        shell: bash
-        env:
-          TERMUX_BUILDER_IMAGE: ${{ steps.builder_image.outputs.image }}
-        run: |
-          if [ -n "${HERMES_RELEASE_COMMIT:-}" ] && [ "${LEGACY_COMMIT_BUILD:-false}" != true ]; then
-            bash scripts/termux/termux_build.sh \
-              --repo . \
-              --tag "$HERMES_PAYLOAD_TAG" \
-              --release-commit "$HERMES_RELEASE_COMMIT" \
-              --out termux-build/payload
-          else
-            # Legacy tagless commit build or pre-claim commit: build against the exact SHA.
-            bash scripts/termux/termux_build.sh \
-              --repo . \
-              --commit "$HERMES_BUILD_COMMIT" \
-              --out termux-build/payload
-          fi
-
-      - name: Assemble the .deb
-        shell: bash
-        env:
-          TERMUX_BUILDER_IMAGE: ${{ steps.builder_image.outputs.image }}
-        run: |
-          if [ -n "${HERMES_RELEASE_COMMIT:-}" ] && [ "${LEGACY_COMMIT_BUILD:-false}" != true ]; then
-            python3 scripts/termux/build.py \
-              --repo . \
-              --tag "$HERMES_PAYLOAD_TAG" \
-              --release-commit "$HERMES_RELEASE_COMMIT" \
-              --payload termux-build/payload \
-              --out termux-build/deb
-          else
-            python3 scripts/termux/build.py \
-              --repo . \
-              --commit "$HERMES_BUILD_COMMIT" \
-              --payload termux-build/payload \
-              --out termux-build/deb
-          fi
+          build-mode: commit
+          save-caches: 'false'
+          push-builder-image: 'false'
 
       - name: Stage the commit-build deb to R2
         # Legacy tagless commit builds stage here; commit claims stage on stage-commit-termux.

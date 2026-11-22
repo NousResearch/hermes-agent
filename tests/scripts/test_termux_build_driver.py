@@ -171,7 +171,11 @@ def test_release_workflow_runs_the_shared_sequence(build_fixture, job_name, iden
     env.update(HERMES_BUILD_COMMIT=identity[1] if identity[0] == "--commit" else "",
                HERMES_PAYLOAD_TAG=identity[1] if identity[0] == "--tag" else "")
     workflow = YAML(typ="safe").load((ROOT / ".github/workflows/desktop-bundled-release.yml").read_text())
-    step = next(step for step in workflow["jobs"][job_name]["steps"]
+    call = next(step for step in workflow["jobs"][job_name]["steps"]
+                if str(step.get("uses", "")).endswith("/.github/actions/build-termux-deb"))
+    env["TERMUX_BUILD_MODE"] = str(call["with"]["build-mode"])
+    action = YAML(typ="safe").load((ROOT / ".github/actions/build-termux-deb/action.yml").read_text())
+    step = next(step for step in action["runs"]["steps"]
                 if step.get("name") == "Assemble the .deb")
     bash = shutil.which("bash")
     assert bash is not None

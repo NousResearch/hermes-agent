@@ -51,7 +51,10 @@ from tools.registry import registry, tool_error
 logger = logging.getLogger(__name__)
 
 TOOL_NAME = "opencode_task"
-DEFAULT_MODEL = "omniroute/auto/best-coding"
+DEFAULT_MODEL = "omniroute/synthwave-auto"
+# PlainBoard (the agent team on this VPS): its MCP bridge takes one bearer token per caller and acts as
+# that caller's own PlainBoard account. The token lives in the caller's profile .env.
+PLAINBOARD_MCP_URL = "http://127.0.0.1:18156/mcp"
 RUNNER = Path(__file__).resolve().with_name("opencode_task_runner.py")
 
 # Appended to every task. Kept short: OpenCode reads it on every job.
@@ -345,11 +348,33 @@ def user_mcp_names() -> list[str]:
     return sorted(names)
 
 
-def opencode_config(deny_patterns: list[str], lean: bool = True) -> dict:
+def plainboard_token(access) -> str:
+    """The caller's own PlainBoard bridge token, only when governance grants MCP 'plainboard'.
+
+    Read from this profile's .env (never from the shared process environment), so a partner's job
+    gets the partner's token and a caller without the grant gets none."""
+    if access is not None:
+        try:
+            if not access.allows("mcp_servers", "plainboard"):
+                return ""
+        except Exception:
+            return ""
+    try:
+        text = (get_hermes_home() / ".env").read_text(encoding="utf-8-sig")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        if line.startswith("PLAINBOARD_MCP_TOKEN="):
+            return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return ""
+
+
+def opencode_config(deny_patterns: list[str], lean: bool = True, plainboard: bool = False) -> dict:
     """Inline config (highest precedence): provider, the caller's denies, no edits outside the workdir.
 
     lean (07-11-2026): the host's MCP servers off. With the external skills also
-    off (runner env) a step costs ~13k input tokens instead of ~134k."""
+    off (runner env) a step costs ~13k input tokens instead of ~134k.
+    plainboard (22-11-2026): the PlainBoard bridge stays on, also when lean, with the caller's token."""
     rules = {"*": "allow"}
     bash_rules = {"*": "allow", "*opencode*run*": "deny"}
     for pattern in deny_patterns:
@@ -365,10 +390,11 @@ def opencode_config(deny_patterns: list[str], lean: bool = True) -> dict:
                 "name": "OmniRoute (Synthwave gateway)",
                 "options": {"baseURL": "http://127.0.0.1:20128/v1", "apiKey": "{env:OMNIROUTE_API_KEY}"},
                 "models": {m: {"name": m} for m in (
+                    "synthwave-auto", "synthpulse-sonnet", "synthpulse-opus",
                     "auto/best-coding", "auto/coding", "auto/best-coding-fast", "auto/best-reasoning")},
             }
         },
-        "mcp": {name: {"enabled": False} for name in user_mcp_names()} if lean else {},
+        "mcp": _mcp_section(lean, plainboard),
         "permission": {
             "external_directory": "deny",
             "read": dict(rules),
@@ -377,6 +403,18 @@ def opencode_config(deny_patterns: list[str], lean: bool = True) -> dict:
             "webfetch": "allow",
         },
     }
+
+
+def _mcp_section(lean: bool, plainboard: bool) -> dict:
+    host = user_mcp_names()
+    mcp: dict = {name: {"enabled": False} for name in host} if lean else {}
+    if plainboard:
+        mcp["plainboard"] = {"type": "remote", "url": PLAINBOARD_MCP_URL, "enabled": True, "oauth": False,
+                             "headers": {"Authorization": "Bearer {env:PLAINBOARD_MCP_TOKEN}"}}
+    elif "plainboard" in host:
+        # The host's own entry would run with the host user's token: never for a caller without the grant.
+        mcp["plainboard"] = {"enabled": False}
+    return mcp
 
 
 def resolve_continuation(continue_job: str, workdir: Optional[str]) -> tuple[Optional[dict], Optional[str]]:
@@ -500,7 +538,9 @@ def opencode_task(task: str, workdir: str, model: Optional[str] = None, backgrou
     job["mask_files"] = mask_files
     job["deny_patterns"] = deny_patterns
     job["lean"] = wants_lean(full_context, prev)
-    job["opencode_config"] = opencode_config(deny_patterns, lean=job["lean"])
+    pb_token = plainboard_token(access)
+    job["plainboard"] = bool(pb_token)
+    job["opencode_config"] = opencode_config(deny_patterns, lean=job["lean"], plainboard=job["plainboard"])
     job.update(home_layout(access))
 
     run_dir = get_hermes_home() / "cache/opencode-tasks" / job_id
@@ -512,6 +552,11 @@ def opencode_task(task: str, workdir: str, model: Optional[str] = None, backgrou
         fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(key)
+
+    if pb_token:
+        fd = os.open(run_dir / "plainboard.token", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(pb_token)
 
     command = f"{shlex.quote(sys.executable)} -I {shlex.quote(str(RUNNER))} {shlex.quote(str(run_dir))}"
     from tools.terminal_tool import terminal_tool

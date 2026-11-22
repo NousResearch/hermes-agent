@@ -249,11 +249,11 @@ def test_wrapper_guard_default_model_key_and_slots(tmp_path):
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
     done = subprocess.run([str(wrapper), "run", "hello"], env=env, capture_output=True, text=True, timeout=20, check=False)
     assert done.returncode == 0, done.stderr
-    assert "-m omniroute/auto/best-coding" in done.stdout
+    assert "-m omniroute/synthwave-auto" in done.stdout
     assert "KEY:secret-key" in done.stdout
     explicit = subprocess.run([str(wrapper), "run", "-m", "omniroute/auto/coding", "hi"], env=env,
                               capture_output=True, text=True, timeout=20, check=False)
-    assert "auto/best-coding" not in explicit.stdout
+    assert "synthwave-auto" not in explicit.stdout
     nested = subprocess.run([str(wrapper), "run", "x"], env={**env, "OPENCODE_RECURSION_GUARD": "1"},
                             capture_output=True, text=True, timeout=20, check=False)
     assert nested.returncode == 1 and "recursion guard" in nested.stderr
@@ -434,3 +434,44 @@ def test_lean_jobs_switch_off_host_mcp_servers_and_external_skills(tmp_path, mon
     assert "OPENCODE_DISABLE_EXTERNAL_SKILLS" not in runner.sandbox_env({**job, "lean": False}, tmp_path / "run", "k")
     assert opencode_tool.wants_lean(None, None) and not opencode_tool.wants_lean(True, None)
     assert not opencode_tool.wants_lean(None, {"lean": False})
+
+
+class _Access:
+    def __init__(self, allowed: bool):
+        self._allowed = allowed
+
+    def allows(self, dimension, value, *, path=False):
+        return self._allowed and dimension == "mcp_servers" and value == "plainboard"
+
+
+def test_plainboard_token_only_with_the_grant_and_from_the_profile_env(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text("OMNIROUTE_API_KEY=x\nPLAINBOARD_MCP_TOKEN=pbb_partner\n")
+    monkeypatch.setattr(opencode_tool, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("PLAINBOARD_MCP_TOKEN", "pbb_process_env_must_not_leak")
+    assert opencode_tool.plainboard_token(_Access(True)) == "pbb_partner"
+    assert opencode_tool.plainboard_token(_Access(False)) == ""
+    (tmp_path / ".env").write_text("OMNIROUTE_API_KEY=x\n")
+    assert opencode_tool.plainboard_token(_Access(True)) == ""
+
+
+def test_plainboard_mcp_stays_on_when_lean_and_is_off_without_token(monkeypatch):
+    monkeypatch.setattr(opencode_tool, "user_mcp_names", lambda: ["plainboard", "twenty"])
+    on = opencode_tool.opencode_config([], lean=True, plainboard=True)["mcp"]
+    assert on["twenty"] == {"enabled": False}
+    assert on["plainboard"]["enabled"] is True and on["plainboard"]["type"] == "remote"
+    assert on["plainboard"]["headers"]["Authorization"] == "Bearer {env:PLAINBOARD_MCP_TOKEN}"
+    assert opencode_tool.opencode_config([], lean=True, plainboard=False)["mcp"]["plainboard"] == {"enabled": False}
+    assert opencode_tool.opencode_config([], lean=False, plainboard=False)["mcp"] == {"plainboard": {"enabled": False}}
+    monkeypatch.setattr(opencode_tool, "user_mcp_names", lambda: ["twenty"])
+    assert opencode_tool.opencode_config([], lean=False, plainboard=False)["mcp"] == {}
+    models = opencode_tool.opencode_config([])["provider"]["omniroute"]["models"]
+    assert "synthwave-auto" in models and opencode_tool.DEFAULT_MODEL == "omniroute/synthwave-auto"
+
+
+def test_runner_passes_the_plainboard_token_once(tmp_path):
+    (tmp_path / "plainboard.token").write_text("pbb_caller\n")
+    job = {"home": str(tmp_path), "opencode_config": {}, "lean": True}
+    env = runner.sandbox_env(job, tmp_path, "k")
+    assert env["PLAINBOARD_MCP_TOKEN"] == "pbb_caller"
+    assert not (tmp_path / "plainboard.token").exists()
+    assert "PLAINBOARD_MCP_TOKEN" not in runner.sandbox_env(job, tmp_path, "k")

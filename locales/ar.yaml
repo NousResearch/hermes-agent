@@ -640,7 +640,7 @@ gateway:
       recursive_delete: "حذف تكراري"
       world_writable_permissions: "صلاحيات كتابة للجميع/للآخرين"
       sql_drop: "SQL DROP"
-      pipe_remote_to_shell: "تمرير محتوى بعيد إلى الصدفة"
+      pipe_remote_to_shell: "تمرير محتوى بعيد إلى مفسّر الأوامر"
       git_reset_hard: "git reset --hard (يُتلف التغييرات غير المُثبتة)"
       credential_upload: "رفع ملف سري أو ملف بيانات اعتماد عبر curl/wget (تسريب محتمل للبيانات)"
       invisible_unicode: "محرف تحكم Unicode غير مرئي أو ثنائي الاتجاه (تمويه محتمل)"

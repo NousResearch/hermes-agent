@@ -23,6 +23,15 @@ from tools.computer_use.cua_backend_parse import (
 
 logger = logging.getLogger("tools.computer_use.cua_backend")
 
+
+def _capture_status(out: dict[str, Any]) -> dict[str, Any]:
+    """Allowlisted driver diagnostics; never forward an unbounded raw structured payload."""
+    sc = out.get("structuredContent") or {}
+    return {key: sc[key] for key, typ in (
+        ("degraded", bool), ("degraded_reason", str), ("background_input", dict),
+        ("escalation", dict), ("code", str),
+    ) if isinstance(sc.get(key), typ)} if isinstance(sc, dict) else {}
+
 # Whole-screen intents: app="screen"/... -> composited `get_desktop_state` (pixels only); app="desktop" -> the OS
 # shell window via list_windows, WITH interactable elements (icons, taskbar).
 _FULL_SCREEN_SENTINELS = {"screen", "fullscreen", "full screen", "all"}
@@ -123,6 +132,13 @@ def _is_desktop_window(w: dict[str, Any], names: tuple[str, ...] = _DESKTOP_WIND
 class _CaptureMixin:
     """capture()/list_windows()/list_apps()/focus_app() and their window-discovery helpers."""
 
+    def _remember_capture_status(self, out: dict[str, Any]) -> None:
+        """Fallback pixels cannot erase lock evidence already observed in this capture."""
+        status = _capture_status(out)
+        previous = getattr(self, "_capture_metadata", {})
+        locked = CaptureResult(mode="ax", width=0, height=0, **previous).input_blocked
+        self._capture_metadata = {**status, **previous} if locked else {**previous, **status}
+
     @contextmanager
     def _disarming(self) -> Iterator[None]:
         """Forget the sticky target when the wrapped capture-stage step raises."""
@@ -135,12 +151,15 @@ class _CaptureMixin:
     def _failed_capture(self, mode: str, message: str = "") -> CaptureResult:
         """Return an empty capture after disarming any prior target context."""
         self._clear_active_target()
-        return CaptureResult(mode=mode, width=0, height=0, window_title=message)
+        return CaptureResult(mode=mode, width=0, height=0, window_title=message,
+                             **getattr(self, "_capture_metadata", {}))
 
     def _call_capture_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """Call a capture-stage tool and disarm state on transport or logical failure."""
         with self._disarming():
             out = self._session.call_tool(name, args)
+            if name in {"get_window_state", "screenshot", "get_desktop_state"}:
+                self._remember_capture_status(out)
             if out.get("isError") is True:
                 message = out.get("data")
                 raise RuntimeError(f"cua-driver {name} failed"
@@ -154,6 +173,8 @@ class _CaptureMixin:
         logger.warning(warning, *warning_args)
         try:
             cli_out = self._session._call_tool_via_cli(name, args, timeout)
+            if name in {"get_window_state", "screenshot", "get_desktop_state"}:
+                self._remember_capture_status(cli_out)
         except Exception as cli_exc:
             logger.error("cua-driver CLI re-fetch for %s failed: %s", what, cli_exc)
             return None
@@ -273,8 +294,9 @@ class _CaptureMixin:
         args = self._gws_args()
         args.pop("tree_format", None)
         if self._session._has_tool("screenshot") or not self._session.capabilities_discovered:
-            png_b64, image_mime_type = _image_from_tool_result(self._call_capture_tool("screenshot", {
-                "window_id": self._active_window_id, "format": "jpeg", "quality": 85, "session": self._session_id}))
+            shot_out = self._call_capture_tool("screenshot", {
+                "window_id": self._active_window_id, "format": "jpeg", "quality": 85, "session": self._session_id})
+            png_b64, image_mime_type = _image_from_tool_result(shot_out)
         if not png_b64:
             # "Unknown tool: screenshot" or an empty image part -> get_window_state. The title is cheap
             # and useful; `elements` stays empty by contract. Keep the compact default on both transports.
@@ -309,12 +331,21 @@ class _CaptureMixin:
                     else _parse_elements_from_tree(tree) if tree else [])
         # Elements-only responses omit the Markdown that previously supplied the title.
         window_title = window_title or next((e.label for e in elements if e.role == "AXWindow"), "")
-        # Tokens are tied to this snapshot: overwrite the whole map (and clear it when the new capture carries none).
-        self._snapshot_tokens = {e.index: e.element_token for e in elements if e.element_token}
         return *_image_from_tool_result(gws_out), elements, window_title
 
     def capture(self, mode: str = "som", app: Optional[str] = None, pid: Optional[int] = None,
                 window_id: Optional[int] = None) -> CaptureResult:
+        """Keep explicit lock diagnostics even when the driver refuses the observation."""
+        self._capture_metadata = {}
+        try:
+            return self._capture(mode, app, pid, window_id)
+        except RuntimeError as exc:
+            if not CaptureResult(mode=mode, width=0, height=0, **self._capture_metadata).input_blocked:
+                raise
+            return self._failed_capture(mode, str(exc))
+
+    def _capture(self, mode: str, app: Optional[str], pid: Optional[int],
+                 window_id: Optional[int]) -> CaptureResult:
         """Capture the frontmost on-screen window or an exact known target: `list_windows` +
         `get_window_state` (ax/som) or `screenshot` (vision). Only the structured
         ``structuredContent.windows`` shape is supported."""
@@ -330,16 +361,21 @@ class _CaptureMixin:
             return windows
         self._set_active_target(target := _select_capture_target(windows, app_requested=bool(app), exact_target=exact_target))
         app_name = target["app_name"]
-        # Record the resolved app so capture_after= follow-ups re-target the same app rather than falling back
-        # to the frontmost window.
-        if app or not self._last_app:
-            self._last_app = app_name or app or ""
         png_b64, image_mime_type, elements, window_title = (
             self._capture_vision() if mode == "vision" else self._capture_window_state())
+        # Reconnection invalidates the old target/tokens during the read. Only the successful fresh
+        # observation re-arms this exact target, never the preceding transport's element handles.
+        exact = (self._capture_metadata.get("background_input") or {}).get("exact_window")
+        if png_b64 or elements or (isinstance(exact, dict) and exact.get("status") == "matched"):
+            self._set_active_target(target)
+            self._snapshot_tokens = {e.index: e.element_token for e in elements if e.element_token}
+        if app or not self._last_app:
+            self._last_app = app_name or app or ""
         png_bytes_len, width, height = _png_metrics(png_b64, 0, 0) if png_b64 else (0, 0, 0)
         return CaptureResult(mode=mode, width=width, height=height, png_b64=png_b64, elements=elements, app=app_name,
                              window_title=window_title, png_bytes_len=png_bytes_len, image_mime_type=image_mime_type,
-                             ax_max_elements=0 if mode == "vision" else self._gws_args().get("max_elements", 0))
+                             ax_max_elements=0 if mode == "vision" else self._gws_args().get("max_elements", 0),
+                             **self._capture_metadata)
 
     def _capture_full_screen(self, mode: str) -> CaptureResult:
         """Composited PrtScn-style grab via `get_desktop_state` (the shell window would only show wallpaper + icons).
@@ -376,7 +412,7 @@ class _CaptureMixin:
                                                     int(sc.get("screenshot_height") or sc.get("screen_height") or 0))
         return CaptureResult(mode="vision", width=width, height=height, png_b64=png_b64, app="screen",
                              window_title="Full screen (composited)", png_bytes_len=png_bytes_len,
-                             image_mime_type=image_mime_type, note=_FULL_SCREEN_NOTE)
+                             image_mime_type=image_mime_type, note=_FULL_SCREEN_NOTE, **self._capture_metadata)
 
     def list_apps(self) -> list[dict[str, Any]]:
         out = self._session.call_tool("list_apps", {"session": self._session_id})

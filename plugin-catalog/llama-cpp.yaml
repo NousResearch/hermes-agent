@@ -1,32 +1,31 @@
 name: llama-cpp
 repo: https://github.com/Lazzdaycod/hermes-lang-it
-sha: 64adc98bcf46e858a8fc2354f19a5e06a2e4b4dd
+sha: 9e5d70c51458bd7077186b9bcc2c043ee89ce7f8
 subdir: plugins/llama-cpp
 title: llama.cpp GPU Manager
 description: >-
   Desktop page + FastAPI backend for the Hermes-managed llama.cpp runtime. It
   detects the GPU architecture (NVIDIA compute capability, AMD gfx bucket) and
-  matches the right build: Vulkan (any GPU), CUDA (NVIDIA sm_75+; CUDA 13
-  dropped Maxwell/Pascal/Volta) and ROCm via Lemonade (AMD). It lists local
-  GGUF models, edits and applies per-model presets, loads/unloads the active
-  model, and benchmarks generation and prefill tok/s with a leaderboard that
-  records the preset and the build used. The page updates a build only when the
-  GPU supports it, restores the previous installed build of the same variant,
-  selects/deletes installed builds, and stops/restarts the managed server. It
-  also registers the llama_server_status agent tool. Disclosure — it reads and
-  writes inside $HERMES_HOME (runtimes/llamacpp and the build store); it drives
-  the Hermes package manager (pm) and the runtime bootstrap for build
-  install/select/delete and stop/restart; POST /apply with set_active sets
-  model.default through Hermes's own save_config; build/version checks use
-  gh auth token when available. Benchmarks call only the local server. Local
-  endpoint discovery probes /models without credentials; no api_key is read
-  from config.yaml. No telemetry, no credentials in the UI.
+  lists local GGUF models, edits and applies per-model presets, loads/unloads
+  the active model, and benchmarks generation and prefill tok/s with a
+  leaderboard that records the preset and the build used. It also registers the
+  llama_server_status agent tool. Catalog build — the management controls
+  (update, stop/restart, build select/delete, restore) are not included to
+  comply with the catalog policy; use Settings → Local models for those
+  actions, or install the full version from Lazzdaycod/hermes-lang-it (main).
+  Disclosure — it reads and writes inside $HERMES_HOME (runtimes/llamacpp);
+  POST /apply with set_active sets model.default through Hermes's own
+  save_config; version checks read public GitHub release metadata and use a
+  GitHub token only if the user already set GH_TOKEN/GITHUB_TOKEN. Benchmarks
+  call only the local server. Local endpoint discovery probes /models without
+  credentials; no api_key is read from config.yaml. No telemetry, no
+  credentials in the UI.
 maintainer: Lazzdaycod
 tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/Lazzdaycod/hermes-lang-it/tree/main/plugins/llama-cpp
-version: "1.3.0"
+version: "1.2.0"
 platforms: []
 capabilities:
   provides_tools: [llama_server_status]

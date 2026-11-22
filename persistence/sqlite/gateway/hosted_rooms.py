@@ -31,6 +31,7 @@ from session_rules.hosted_rooms import (
 from session_rules.legacy_local import same_owner
 
 from .._backend import SQLiteStore, register_repository, translated
+from .._state.common import key_prefix_range
 from ._hosted_rooms_common import _epoch, fenced_update as _fenced_update, table_exists
 from ._hosted_rooms_legacy_import import _copy_rows
 from ._hosted_rooms_schema import ROOMS_STEP, _RETIRE_FROM_ROOMS
@@ -802,9 +803,10 @@ class SQLiteHostedRoomRepository:
 
     # The ids of every room with a recorded owner.
     def owned_rooms(self) -> frozenset[str]:
+        # Writers use OWNER_PREFIX exactly, as do owner()/probe_room_owner() equality reads.
         with translated(), self._store.holder()._read_ctx() as conn:
             return frozenset(r[0][len(OWNER_PREFIX):] for r in conn.execute(
-                'SELECT key FROM state_meta WHERE key LIKE ?', (OWNER_PREFIX + '%',)))
+                'SELECT key FROM state_meta WHERE key >= ? AND key < ?', key_prefix_range(OWNER_PREFIX)))
 
     # Probes the owner key with a short lock wait and no schema step.
     def probe_room_owner(self, room_id: str) -> bool:

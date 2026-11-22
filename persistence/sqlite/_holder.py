@@ -28,7 +28,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, TypeVar, cast
 
 from hermes_constants import mkdir_under_hermes_home
-from persistence.sqlite._state.common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
+from persistence.sqlite._state.common import (
+    escape_like as _escape_like, key_prefix_ranges_casefold, stat_db_file_identity as _stat_db_file_identity,
+)
 from persistence.sqlite._state.holders import read_only_db_uri
 from persistence.sqlite._state.health import (
     STORAGE_CORRUPT, mark_storage_corrupt, note_storage_error, storage_corrupt_reason, storage_state,
@@ -1442,14 +1444,27 @@ class StoreHolder:
             self._write_sql(sql, (key, value))
 
     def list_meta_prefix(self, prefix: str) -> list[tuple[str, str]]:
-        """``[(key, value), ...]`` for state_meta keys starting with the literal
-        ``prefix`` (LIKE wildcards escaped) — e.g. ``loop:<session_id>`` rows."""
+        """Literal prefix matches, ASCII case folded, in stored (rowid) order.
+
+        Index-bounded leading variants narrow the read; escaped LIKE is the exact filter.
+        """
         if not prefix:
             return []
+        ranges = key_prefix_ranges_casefold(prefix)
+        params = (_escape_like(prefix) + "%",)
+        if not ranges:
+            rows = self._read_all(
+                "SELECT key, value FROM state_meta WHERE key LIKE ? ESCAPE '\\'", params,
+            )
+            return [(row[0], row[1]) for row in rows]
+        bounds = " OR ".join("(key >= ? AND key < ?)" for _ in ranges)
         rows = self._read_all(
-            "SELECT key, value FROM state_meta WHERE key LIKE ? ESCAPE '\\'", (_escape_like(prefix) + "%",),
+            "SELECT rowid, key, value FROM state_meta WHERE key LIKE ? ESCAPE '\\' AND (" + bounds + ")",
+            (*params, *(bound for pair in ranges for bound in pair)),
         )
-        return [(row[0], row[1]) for row in rows]
+        # SQL ORDER BY rowid makes SQLite abandon the key index for a table scan.
+        rows.sort(key=lambda row: row[0])
+        return [(row[1], row[2]) for row in rows]
 
     def queue_token_counts(self, session_id: str, **kwargs) -> None:
         """Enqueue a token/cost delta for the background writer (same kwargs as

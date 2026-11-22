@@ -289,6 +289,20 @@ def test_commit_claim_staging_runs_on_fresh_controller_only_jobs_without_builder
         assert "name" not in download["with"] and "run_attempt" not in json.dumps(download), (stager_name, download)
 
 
+def _built_packages(staged: Path, target: str) -> None:
+    """What a commit build leg uploads for ``target``: the packages its stager may stage."""
+    if target == "termux":
+        names = ["deb/hermes-agent_0.33.0_aarch64.deb"]
+    elif target.startswith("darwin-"):
+        arch = target.split("-")[1]
+        names = [f"HermesBundled-0.33.0-mac-{arch}.{ext}" for ext in ("dmg", "zip", "dmg.blockmap", "zip.blockmap")]
+    else:
+        names = [f"HermesBundled-0.33.0-win-{target.split('-')[1]}.msix"]
+    for name in names:
+        (staged / name).parent.mkdir(parents=True, exist_ok=True)
+        (staged / name).write_bytes(b"package-fixture")
+
+
 @pytest.mark.parametrize("legacy", ["true", "false"])
 @pytest.mark.parametrize("target", [*NATIVE_TARGETS, "termux"])
 def test_claim_staging_runs_the_controller_recorder_on_the_built_artifacts(
@@ -304,15 +318,11 @@ def test_claim_staging_runs_the_controller_recorder_on_the_built_artifacts(
     (staged / "deb" if target == "termux" else staged).mkdir(parents=True)
     extra_bin = tmp_path / "bin"
     extra_bin.mkdir()
+    _built_packages(staged, target)
     if target == "darwin-arm64":
-        (staged / "HermesBundled-0.33.0-mac-arm64.zip").write_bytes(b"zip-fixture")
         ditto = extra_bin / "ditto"
         ditto.write_text("#!/usr/bin/env bash\nset -e\n[ \"$1\" = -x ] && [ \"$2\" = -k ] && mkdir -p \"$4/Hermes.app\"\n", encoding="utf-8")
         ditto.chmod(0o755)
-    elif target == "termux":
-        (staged / "deb/hermes-agent_0.33.0_aarch64.deb").write_bytes(b"deb-fixture")
-    else:
-        (staged / f"HermesBundled-0.33.0-win-{target.split('-')[1]}.msix").write_bytes(b"msix-fixture")
     receipts = tmp_path / "receipts.jsonl"
     context = {
         "inputs": _candidate_dispatch(COMMIT_TAG),
@@ -360,11 +370,14 @@ def test_claim_staging_reads_the_unreviewed_packages_without_the_r2_secrets(targ
             assert len([line for line in commands if not line.startswith("--")]) == 2, (target, step["name"])
 
 
-# What a build leg that rewrote its own upload could add: a sidecar the recorder would trust, a
-# metadata file the upload glob would stage, or a nested package.
-_PLANTED = {"win32-x64": ("version-info-x64.json", "nested/HermesBundled-0.33.0-win-x64.msix"),
+# What a build leg that rewrote its own upload could add next to its packages: a sidecar the
+# recorder would trust, a metadata file or a package the recorder never reads (Store, another
+# arch, a second DMG, a stray blockmap), or a nested package.
+_PLANTED = {"win32-x64": ("version-info-x64.json", "nested/HermesBundled-0.33.0-win-x64.msix",
+                          "Store-HermesBundled-0.33.0-win-x64.msix", "HermesBundled-0.33.0-win-arm64.msix"),
             "win32-arm64": ("version-info-arm64.json", "metadata-windows-arm64.json"),
-            "darwin-arm64": ("metadata-macos-arm64.json", "nested/HermesBundled-0.33.0-mac-arm64.zip"),
+            "darwin-arm64": ("metadata-macos-arm64.json", "nested/HermesBundled-0.33.0-mac-arm64.zip",
+                             "Other-0.33.0-mac-arm64.dmg", "HermesBundled-0.33.0-mac-x64.dmg", "evil.blockmap"),
             "termux": ("metadata-termux-aarch64.json", "deb/nested/hermes-agent_0.33.0_aarch64.deb")}
 
 
@@ -379,6 +392,7 @@ def test_claim_staging_refuses_anything_but_the_built_packages(tmp_path, target,
     module.parent.mkdir(parents=True)
     module.write_text(_STAGING_STUB.format(copy="controller"), encoding="utf-8")
     staged = controller / "staged-artifacts"
+    _built_packages(staged, target)
     (staged / planted).parent.mkdir(parents=True, exist_ok=True)
     (staged / planted).write_text("{}", encoding="utf-8")
     receipts = tmp_path / "receipts.jsonl"

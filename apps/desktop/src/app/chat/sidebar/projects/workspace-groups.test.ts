@@ -1503,4 +1503,44 @@ describe('project filter row rule (#97762)', () => {
     expect(sessionBucketId(stamped, projects, owners)).toBe(NO_PROJECT_ID)
     expect(sessionMatchesProjectFilter(stamped, [NO_PROJECT_ID], projects, owners)).toBe(true)
   })
+
+  // #159024: the tree reads a recency window, so an aged row (typically a pin)
+  // reaches the filter unnamed by the owner map. A cwd-only walk then names the
+  // cwd itself, a project no tree tier built: the backend's Home takes it.
+  describe('a row the tree window never named', () => {
+    const tree = [
+      projectNode({ id: NO_PROJECT_ID, isNoProject: true, sessionIds: ['owned'] }),
+      projectNode({ id: '/www/auto', isAuto: true, sessionIds: [] }),
+      projectNode({ id: 'p_app', path: '/www/app', sessionIds: [] })
+    ]
+
+    const owners = projectOwnerBySessionId(tree)
+    const treeIds = new Set(tree.map(node => node.id))
+
+    it('files a cwd-only row whose walk names no tree project under Home', () => {
+      const aged = makeCwdSession('/home/me', { id: 'aged', git_repo_root: null })
+
+      expect(sessionBucketId(aged, projects, owners, treeIds)).toBe(NO_PROJECT_ID)
+      expect(sessionMatchesProjectFilter(aged, [NO_PROJECT_ID], projects, owners, treeIds)).toBe(true)
+      expect(sessionMatchesProjectFilter(aged, ['p_app'], projects, owners, treeIds)).toBe(false)
+    })
+
+    it('keeps the walk when it names a tree project, explicit or auto', () => {
+      const explicit = makeCwdSession('/www/app/src', { git_repo_root: null })
+      const auto = makeCwdSession('/www/auto', { git_repo_root: null })
+
+      expect(sessionBucketId(explicit, projects, owners, treeIds)).toBe('p_app')
+      expect(sessionBucketId(auto, projects, owners, treeIds)).toBe('/www/auto')
+      expect(sessionMatchesProjectFilter(auto, [NO_PROJECT_ID], projects, owners, treeIds)).toBe(false)
+    })
+
+    it('keeps a git row in its repo, and fails open until the tree loads', () => {
+      const gitRow = makeCwdSession('/www/other/src', { git_repo_root: '/www/other' })
+      const aged = makeCwdSession('/home/me', { git_repo_root: null })
+
+      expect(sessionBucketId(gitRow, projects, owners, treeIds)).toBe('/www/other')
+      expect(sessionBucketId(aged, projects, owners, new Set())).toBe('/home/me')
+      expect(sessionBucketId(aged, projects, owners)).toBe('/home/me')
+    })
+  })
 })

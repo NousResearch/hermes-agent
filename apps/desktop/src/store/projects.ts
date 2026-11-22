@@ -82,6 +82,9 @@ export const $projectTreeLoading = atom(false)
 // sibling worktree the git probe assigned to its repo project never re-files
 // under an umbrella folder by cwd.
 export const $projectOwnerBySessionId = computed($projectTree, projectOwnerBySessionId)
+// The buckets the loaded tree actually built, so the filter can tell a real
+// auto project from one a cwd walk invented for a row past the tree's window.
+export const $projectTreeIds = computed($projectTree, tree => new Set(tree.map(project => project.id)))
 
 // False when the connected backend predates the projects.* JSON-RPC surface
 // (same semver label, older install). Null until the first probe.

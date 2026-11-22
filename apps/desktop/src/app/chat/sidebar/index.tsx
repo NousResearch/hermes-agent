@@ -50,7 +50,6 @@ import {
   $sidebarPrDataWanted,
   $sidebarPrFilter,
   $sidebarProfileFilter,
-  $sidebarProjectFilter,
   $sidebarProjectOrderIds,
   $sidebarRecentsOpen,
   $sidebarSessionOrderIds,
@@ -161,7 +160,7 @@ import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } 
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
-import { filterToSessionBearingProjects, resolveLiveProjectFilter } from './project-filter'
+import { filterToSessionBearingProjects } from './project-filter'
 import {
   enteredProjectLiveRows,
   excludeProjectSessions,
@@ -195,6 +194,7 @@ import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 import { useEnteredProjectSessions } from './use-entered-project-sessions'
+import { useLiveProjectFilter } from './use-live-project-filter'
 import { useServerSessionSearch } from './use-server-session-search'
 
 // Non-session groups (messaging platforms) stay compact: show a few rows up
@@ -461,7 +461,6 @@ export function ChatSidebar({
   const grouping = useStore($sidebarGrouping)
   const ordering = useStore($sidebarOrdering)
   const statusFilter = useStore($sidebarStatusFilter)
-  const persistedProjectFilter = useStore($sidebarProjectFilter)
   const profileFilter = useStore($sidebarProfileFilter)
   const prFilter = useStore($sidebarPrFilter)
   const prDataWanted = useStore($sidebarPrDataWanted)
@@ -526,15 +525,7 @@ export function ChatSidebar({
   const projects = useStore($projects)
   const projectTree = useStore($projectTree)
   const projectOwners = useStore($projectOwnerBySessionId)
-
-  // The persisted project filter's storage is shared across profiles, so ids
-  // picked in another profile don't resolve in the active one and the raw
-  // membership whitelist empties every tier of the sidebar (#96246). Narrow
-  // to ids the ACTIVE tree resolves; dead ids are inert, not fatal.
-  const projectFilter = useMemo(
-    () => resolveLiveProjectFilter(persistedProjectFilter, projectTree),
-    [persistedProjectFilter, projectTree]
-  )
+  const { projectFilter, projectTreeIds } = useLiveProjectFilter(projectTree)
 
   const projectTreeLoading = useStore($projectTreeLoading)
   const removedSessionIds = useStore($removedSessionIds)
@@ -634,8 +625,9 @@ export function ChatSidebar({
 
       // Same membership the sidebar groups and colors by (backend owner first,
       // cwd walk otherwise), so a filtered row lands in the lane the user
-      // picked it from.
-      return sessionMatchesProjectFilter(session, projectFilter, projects, projectOwners)
+      // picked it from. A row past the tree's window files where the tree can
+      // show it (#159024).
+      return sessionMatchesProjectFilter(session, projectFilter, projects, projectOwners, projectTreeIds)
     },
     [
       statusFilter,
@@ -646,6 +638,7 @@ export function ChatSidebar({
       pullRequests,
       projects,
       projectOwners,
+      projectTreeIds,
       dotStates
     ]
   )

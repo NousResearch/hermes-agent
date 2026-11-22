@@ -972,6 +972,8 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-radius-frame` | `15px` | ″ | The workspace frame: the one card the chat sidebar and the stage (or a page's nav and body) sit in, inset from the window (Content 16292:14463). Global Settings' cards round the same (Card 16292:16456). |
 | `--portal-radius-settings-card` | `var(--portal-radius-frame)` | ″ |  |
 | `--portal-radius-settings-link` | `9px` | ″ | The Settings column's Agent settings card (16292:16428). |
+| `--portal-radius-settings-nav-row` | `9px` | ″ | The Settings column's rows and its search tile (18563:12472, 18563:12431). |
+| `--portal-radius-settings-search` | `var(--portal-radius-surface)` | ″ |  |
 | `--portal-shadow-settings-link` | `0 1px 4px var(--portal-raw-shadow-20)` | ″ |  |
 | `--portal-radius-round` | `999px` | ″ | Switch tracks, swatches, dots. |
 | `--portal-focus-ring-width` | `2px` | ″ | The one focus ring: 2px of brand ink as an outline, so it never replaces a control's own stroke shadow. Outset by default; a context whose scroller or overflow would clip an outset ring (sidebar, page nav) sets --portal-focus-ring-offset to the inset value on its container and every control inside follows. |

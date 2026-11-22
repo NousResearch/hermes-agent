@@ -323,6 +323,10 @@ export const enRedesign: RedesignOverlay = {
       intro:
         'Local by default. Use remote when this app should run Hermes elsewhere. Connect a machine to discover its agents.',
       localTitle: 'Local machine',
+      localDesc: 'Hermes running on this computer.',
+      cloudDesc: 'Hosted for you. Nothing to install.',
+      remoteDesc: 'Hermes on a server you run.',
+      sshDesc: 'Connect to a machine over SSH.',
       remoteTitle: 'Remote machine',
       remoteAuthHint: 'Hosted machines use OAuth or a username and password; self-hosted ones may use a session token.',
       cloudSavedTitle: 'Saved Cloud machines',

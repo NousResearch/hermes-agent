@@ -1,3 +1,6 @@
+import { useStore } from '@nanostores/react'
+import { useEffect } from 'react'
+
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -12,8 +15,12 @@ import { useI18n } from '@/i18n'
 import { sameBackendPeerLabel } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Cloud, Globe, Loader2, Monitor, Pencil, RefreshCw, Terminal, Trash2 } from '@/lib/icons'
+import { $activeConnectionId } from '@/store/connections'
+import { $fleetRoster, refreshFleetRoster } from '@/store/fleet-roster'
+import { $gatewayState } from '@/store/session'
 import { usePortalShell } from '@/store/shell-variant'
 
+import { connectionAddress, connectionAgentCount, type ConnectionStatus, connectionStatus } from './connection-status'
 import { ListRow, Pill } from './primitives'
 import { useSettingsPagesCopy } from './settings-pages-copy'
 
@@ -69,23 +76,90 @@ export function ConnectionRow({ isCurrent, kindMeta, peers, ...actions }: Connec
   // Display-only: this connection is a second address for a backend already registered under
   // another entry (same install_id).
   const sameBackendPeer = sameBackendPeerLabel(conn, peers)
+  const peerHint = sameBackendPeer ? s.sameBackendHint(sameBackendPeer) : null
+
+  if (redesign) {
+    return <PortalConnectionRow {...actions} isCurrent={isCurrent} kindMeta={kindMeta} peerHint={peerHint} />
+  }
+
   const description = connectionDescription(conn, kindMeta)
 
   return (
     <ListRow
-      action={redesign ? <ConnectionManageMenu {...actions} /> : <ClassicConnectionActions {...actions} />}
-      description={sameBackendPeer ? `${description} · ${s.sameBackendHint(sameBackendPeer)}` : description}
+      action={<ClassicConnectionActions {...actions} />}
+      description={peerHint ? `${description} · ${peerHint}` : description}
       title={
-        // The redesign wraps its pills under a long name; classic keeps main's single truncating line.
-        <span className={redesign ? 'flex min-w-0 flex-wrap items-center gap-2' : 'flex items-center gap-2'}>
+        <span className="flex items-center gap-2">
           <Icon className="size-4 shrink-0 text-muted-foreground" />
-          <span className={redesign ? 'max-w-full truncate' : 'truncate'}>{conn.label}</span>
+          <span className="truncate">{conn.label}</span>
           {isCurrent && <Pill tone="primary">{s.currentPill}</Pill>}
           {isPrimary && <Pill>{s.primaryPill}</Pill>}
           {conn.kind === 'local' && <Pill>{s.managedPill}</Pill>}
         </span>
       }
     />
+  )
+}
+
+interface PortalConnectionRowProps extends ConnectionActions {
+  isCurrent: boolean
+  kindMeta: ConnectionKindMeta
+  peerHint: null | string
+}
+
+/** The redesign's row (18563:12574): name, its live status badge and state pills, then where it lives
+ *  and how many agents it serves; every action behind Manage. */
+function PortalConnectionRow({ isCurrent, kindMeta, peerHint, ...actions }: PortalConnectionRowProps) {
+  const { t } = useI18n()
+  const s = t.settings.connections
+  const pages = useSettingsPagesCopy()
+  const roster = useStore($fleetRoster)
+  const gatewayState = useStore($gatewayState)
+  const activeConnectionId = useStore($activeConnectionId)
+  const { conn, isPrimary } = actions
+  const Icon = KIND_ICONS[conn.kind]
+  const status = connectionStatus(conn.id, { activeConnectionId, gatewayState, roster })
+  const agents = connectionAgentCount(conn.id, roster)
+
+  // The status is the fleet probe's; it runs on demand (not on a timer), and this page asks for it.
+  useEffect(() => void refreshFleetRoster(), [])
+
+  const description = [
+    connectionAddress(conn) || kindMeta[conn.kind].desc,
+    agents === null ? null : pages.gateway.agents(agents),
+    peerHint
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
+  return (
+    <ListRow
+      action={<ConnectionManageMenu {...actions} />}
+      description={description}
+      title={
+        // The pills wrap under a long name.
+        <span className="flex min-w-0 flex-wrap items-center gap-2">
+          <Icon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+          <span className="max-w-full truncate">{conn.label}</span>
+          {status && <ConnectionStatusBadge status={status} />}
+          {isCurrent && <Pill tone="primary">{s.currentPill}</Pill>}
+          {isPrimary && <Pill>{s.primaryPill}</Pill>}
+          {conn.kind === 'local' && <Pill>{s.managedPill}</Pill>}
+        </span>
+      }
+    />
+  )
+}
+
+/** OFFLINE / CONNECTED (18563:12578): the status label on its fill, the sign-in screens' badge. */
+function ConnectionStatusBadge({ status }: { status: ConnectionStatus }) {
+  const copy = useI18n().t.shell.gatewayMenu
+  const label = { offline: copy.offline, online: copy.connected, pending: copy.connecting }[status]
+
+  return (
+    <span className="gateway-status-badge" data-slot="connection-status" data-status={status}>
+      {label}
+    </span>
   )
 }
 

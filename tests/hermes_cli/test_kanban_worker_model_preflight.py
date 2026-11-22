@@ -425,6 +425,33 @@ def test_a_card_deferred_by_a_config_plane_403_spawns_once_the_plane_is_back(dis
         assert [s[0] for s in result.spawned] == [task_id] and kb.get_task(conn, task_id).status == "running"
 
 
+def test_a_403_deferral_tied_with_a_reclaim_still_spawns_once_the_plane_is_back(dispatch_profile, monkeypatch):
+    """Runs end on whole seconds: a reclaim and the deferral right after it in one tick can tie, and the guard
+    must read the deferral, not the older reclaimed run."""
+    from hermes_cli import config_backend, kanban_db as kb, kanban_db_dispatch as dispatch
+    from hermes_cli.kanban_db_connect import connect_closing
+
+    profile, spawned = dispatch_profile
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+    (profile / "config.yaml").write_text("model:\n  provider: openrouter\n", encoding="utf-8")
+    backend = _plane_down(monkeypatch, profile, "Remote Config: HTTP 403 forbidden: instance token rejected")
+    with connect_closing(board="work") as conn:
+        task_id = kb.create_task(conn, title="needs a model", assignee="worker", board="work")
+        conn.execute("INSERT INTO task_runs (task_id, status, started_at, ended_at, outcome) "
+                     "VALUES (?, 'reclaimed', 1, 1, 'reclaimed')", (task_id,))
+        dispatch.dispatch_once(conn, board="work")
+        conn.execute("UPDATE task_runs SET ended_at = 2 WHERE task_id = ?", (task_id,))
+        assert not spawned
+        runs = conn.execute("SELECT outcome, ended_at, metadata FROM task_runs WHERE task_id = ? ORDER BY id",
+                            (task_id,)).fetchall()  # the tie the guard must break: reclaim first, then the deferral
+        assert [(r["outcome"], r["ended_at"]) for r in runs] == [("reclaimed", 2), ("spawn_failed", 2)]
+        assert kb._json_dict(runs[1]["metadata"]).get("infrastructure")
+        assert "403" in kb.get_task(conn, task_id).last_failure_error
+        monkeypatch.setattr(config_backend, "get_config_backend", lambda: backend)
+        result = dispatch.dispatch_once(conn, board="work")
+        assert [s[0] for s in result.spawned] == [task_id]
+
+
 def test_an_unreadable_profile_config_is_left_to_the_owner_not_refused(dispatch_profile, monkeypatch):
     """Broken YAML with no last-good copy must not read as an empty config: with a managed overlay naming
     a public custom route, that would be refused as "No model configured" and spend the retry budget."""

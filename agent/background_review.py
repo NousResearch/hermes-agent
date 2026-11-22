@@ -449,7 +449,14 @@ _MEMORY_ROUTING_BLOCK = (
     "communication and work style, personal details they revealed, and expectations about how you "
     "should behave.\n"
     "  • MEMORY.md (memory tool, target='memory'): facts about the ENVIRONMENT you operate in — "
-    "tool quirks, project conventions, config gotchas, paths and endpoints that matter.\n\n"
+    "tool quirks, config gotchas, and stable paths/endpoints that matter across ALL projects.\n\n"
+    "Route OUT of memory — if a candidate fact matches either shape, MEMORY.md is the wrong home:\n"
+    "  • A quirk WITH a remedy or playbook ('when X happens, do Y') is skill-layer material: "
+    "capture the workflow under the relevant skill in the skill review; memory may keep at most "
+    "the one-clause fact that X happens, never the remedy.\n"
+    "  • Project-scoped facts (one project's paths, conventions, round numbers, baselines, status) "
+    "belong in that project's own files, which this review cannot write — skip them entirely "
+    "rather than parking them in MEMORY.md.\n\n"
     "One fact goes to ONE store, never both — writing it to both bloats both files until they hit "
     "their size limits and crowds out the facts that matter; misrouting it puts it where the next "
     "session won't look. If the tool schema lists only one "
@@ -1457,6 +1464,30 @@ _PROMPT_NAME_BY_SCOPE = {
 }
 
 
+def _memory_budget_line(agent: Any) -> str:
+    # ponytail: degrade to "" on any store-shape surprise — a missing budget hint beats a broken review
+    try:
+        store = getattr(agent, "_memory_store", None)
+        if store is None:
+            return ""
+        m_lim = getattr(store, "memory_char_limit", 0) or 2200
+        u_lim = getattr(store, "user_char_limit", 0) or 1375
+        m_used = store._char_count("memory")
+        u_used = store._char_count("user")
+        # Mock/uninitialized stores yield non-int counts — degrade rather than append garbage.
+        if not (isinstance(m_used, int) and isinstance(u_used, int)):
+            return ""
+        def _pct(u, l):
+            return f"{u}/{l} chars ({u * 100 // l}%)"
+        return (
+            f"\n\nBudget: MEMORY.md {_pct(m_used, m_lim)}, USER.md {_pct(u_used, u_lim)}. "
+            "When a store is above 80%, writes to it must be net-neutral or shrinking "
+            "(patch, condense, or remove) — do not add content that grows the total."
+        )
+    except Exception:
+        return ""
+
+
 def spawn_background_review_thread(
     agent: Any, messages_snapshot: list[dict], review_memory: bool = False,
     review_skills: bool = False, focus: Optional[str] = None,
@@ -1474,6 +1505,8 @@ def spawn_background_review_thread(
     # Per-agent overrides (agent._MEMORY_REVIEW_PROMPT etc.) keep working.
     name = _PROMPT_NAME_BY_SCOPE[(review_memory, review_skills)]
     prompt = getattr(agent, name, globals()[name])
+    if review_memory:
+        prompt += _memory_budget_line(agent)
     if focus := (focus or "").strip():
         prompt = (
             f"{prompt}\n\nThe user explicitly requested this review with the following "

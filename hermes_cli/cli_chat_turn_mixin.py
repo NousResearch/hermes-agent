@@ -104,6 +104,9 @@ class CLIChatTurnMixin:
         clarify = getattr(self, "_clarify_state", None)
         if clarify:
             return "question", str(clarify.get("question") or "")
+        confirm = getattr(self, "_slash_confirm_state", None)
+        if confirm:  # billing wall, /reset and other slash confirmations; the TUI's `confirm` twin
+            return "question", str(confirm.get("title") or "")
         if getattr(self, "_sudo_state", None) or getattr(self, "_secret_state", None):
             return "auth", ""
         connection = getattr(self, "_connection_state", None)

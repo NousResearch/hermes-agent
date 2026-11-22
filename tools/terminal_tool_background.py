@@ -11,7 +11,7 @@ import sys
 import threading
 from typing import Any, List, Optional
 
-from tools.interrupt import is_thread_interrupted
+from tools import interrupt
 
 logger = logging.getLogger("tools.terminal_tool")
 
@@ -285,7 +285,7 @@ def yield_to_background_handler(
             session = process_registry.adopt_sandbox(env._foreground_commands[id(proc)], proc, **kwargs)
         else:
             session = process_registry.adopt_local(proc, **kwargs)
-        if is_thread_interrupted(caller_tid):
+        if interrupt.is_thread_interrupted(caller_tid):
             process_registry.kill_process(session.id, source="foreground_interrupt", consume_output=True)
             return None
         _stamp_routing_if_gateway(process_registry, session, session_key)

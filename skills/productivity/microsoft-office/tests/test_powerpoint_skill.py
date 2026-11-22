@@ -451,7 +451,7 @@ def test_duplicate_slide_preserves_explicit_background(workdir):
     assert str(prs.slides[1].background.fill.fore_color.rgb) == "112233"
 
 
-def test_iter_shapes_descends_into_groups():
+def test_contains_chart_descends_into_groups():
     import importlib.util
     from pathlib import Path
     from pptx.enum.shapes import MSO_SHAPE_TYPE
@@ -460,13 +460,16 @@ def test_iter_shapes_descends_into_groups():
         "pptx_edit", Path(SCRIPTS) / "pptx_edit.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    leaf = type("Leaf", (), {"shape_type": MSO_SHAPE_TYPE.AUTO_SHAPE})()
+    chart = type("Chart", (), {
+        "shape_type": MSO_SHAPE_TYPE.CHART,
+        "has_chart": True,
+    })()
     group = type("Group", (), {
         "shape_type": MSO_SHAPE_TYPE.GROUP,
-        "shapes": [leaf],
+        "shapes": [chart],
     })()
 
-    assert list(module.iter_shapes([group])) == [leaf]
+    assert module.contains_chart([group]) is True
 
 
 def test_create_polish_features(workdir):

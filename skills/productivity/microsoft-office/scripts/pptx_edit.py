@@ -110,13 +110,15 @@ def replace_in_text_frame(text_frame, old, new):
     return count
 
 
-def iter_shapes(shapes):
-    """Yield leaf shapes recursively, including shapes inside groups."""
+def contains_chart(shapes):
+    """Return whether any shape, including grouped children, is a chart."""
     for shape in shapes:
         if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-            yield from iter_shapes(shape.shapes)
-        else:
-            yield shape
+            if contains_chart(shape.shapes):
+                return True
+        elif shape.has_chart:
+            return True
+    return False
 
 
 def iter_text_frames(slide):
@@ -255,7 +257,7 @@ def duplicate_slide(prs, index):
     graph reliably is not supported — better to refuse than corrupt.
     """
     source = prs.slides[int(index)]
-    if any(sh.has_chart for sh in iter_shapes(source.shapes)):
+    if contains_chart(source.shapes):
         raise SystemExit(
             f"slide {index} contains a chart; duplication of chart slides "
             "is not supported (chart XML embeds a workbook part that "

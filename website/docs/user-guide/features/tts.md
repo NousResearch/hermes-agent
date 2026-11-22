@@ -103,7 +103,7 @@ tts:
     speed: 1.0                                  # 0.5 - 2.0
     clean_text: true                            # Expand numbers, currencies, units
   piper:
-    voice: en_US-lessac-medium                  # voice name (auto-downloaded) OR absolute path to .onnx
+    voice: ro_RO:liana-medium                   # Romanian Liana (default); "ro_RO-liana-medium" also works; OR absolute path to .onnx
     # voices_dir: ''                            # default: ~/.hermes/cache/piper-voices/
     # use_cuda: false                           # requires onnxruntime-gpu
     # length_scale: 1.0                         # 2.0 = twice as slow
@@ -272,7 +272,7 @@ is `python -c "import pm; pm.sync_venv(['piper'], explicit=True)"`. Platform mar
 tts:
   provider: piper
   piper:
-    voice: en_US-lessac-medium
+    voice: ro_RO:liana-medium
 ```
 
 On the first TTS call for a voice that isn't cached locally, Hermes runs `python -m piper.download_voices <name>` and downloads the model (~20-90MB depending on quality tier) into `~/.hermes/cache/piper-voices/`. Subsequent calls reuse the cached model.

@@ -342,7 +342,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
     'KittenML/kitten-tts-mini-0.8-int8'
   ],
   'tts.kittentts.voice': ['Jasper'],
-  'tts.piper.voice': ['en_US-lessac-medium', 'en_US-amy-medium', 'en_US-ryan-high', 'en_GB-alan-medium'],
+  'tts.piper.voice': ['ro_RO:liana-medium', 'ro_RO-liana-medium', 'en_US-lessac-medium', 'en_US-amy-medium', 'en_US-ryan-high', 'en_GB-alan-medium'],
   'tts.neutts.model': ['neuphonic/neutts-air-q4-gguf', 'neuphonic/neutts-air-q8-gguf', 'neuphonic/neutts-air'],
   // Text-to-speech backends — kept in sync with the built-in source of truth
   // (agent/tts_registry.py::_BUILTIN_NAMES / tools/tts_tool.py::

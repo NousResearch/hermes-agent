@@ -20,7 +20,7 @@ logger = logging.getLogger("tools.tts_tool")
 
 DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
 DEFAULT_KITTENTTS_VOICE = "Jasper"
-DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
+DEFAULT_PIPER_VOICE = "ro_RO:liana-medium"  # Romanian Liana, medium size/quality
 _NEUTTS_SAMPLES = Path(__file__).parent / "neutts_samples"
 
 # --- Bounded model caches ---
@@ -86,12 +86,18 @@ def _get_piper_voices_dir() -> Path:
 
 
 def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
-    """Resolve *voice* (an .onnx path or a name like ``en_US-lessac-medium``, downloaded into
-    *download_dir* on first use) to a concrete .onnx file; RuntimeError when it can't be."""
+    """Resolve *voice* (an .onnx path or a name like ``ro_RO-liana-medium``, downloaded into
+    *download_dir* on first use) to a concrete .onnx file; RuntimeError when it can't be.
+
+    Both ``ro_RO:liana-medium`` (locale:voice notation) and Piper's canonical
+    ``ro_RO-liana-medium`` are accepted; the former is normalised to the latter.
+    """
     voice = voice or DEFAULT_PIPER_VOICE
     candidate = Path(voice).expanduser()
     if candidate.suffix.lower() == ".onnx" and candidate.exists():
         return str(candidate)
+    if ":" in voice and candidate.suffix.lower() != ".onnx":
+        voice = voice.replace(":", "-")
     cached = download_dir / f"{voice}.onnx"
     if cached.exists() and (download_dir / f"{voice}.onnx.json").exists():
         return str(cached)

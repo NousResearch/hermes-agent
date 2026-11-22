@@ -102,7 +102,7 @@ _PYTHON_POST_SETUP_HOOKS: dict = {
                     "Models: KittenML/kitten-tts-nano-0.8-int8 (25MB), micro (41MB), mini (80MB)")),
     "piper": _python_hook(
         "piper", "piper", "piper-tts", "Installing piper-tts (~14MB wheel, voices downloaded on first use)...",
-        always=("Default voice: en_US-lessac-medium (downloaded on first TTS call)",
+        always=("Default voice: ro_RO:liana-medium, Romanian Liana (downloaded on first TTS call)",
                 "Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md",
                 "Switch voices by setting tts.piper.voice in config.yaml")),
     "ddgs": _python_hook(

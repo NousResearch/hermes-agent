@@ -88,7 +88,7 @@ tts:
     speed: 1.0                                  # 0.5 - 2.0
     clean_text: true                            # Expand numbers, currencies, units
   piper:
-    voice: en_US-lessac-medium                  # voice name (auto-downloaded) OR absolute path to .onnx
+    voice: ro_RO:liana-medium                   # Romanian Liana (default); "ro_RO-liana-medium" also works; OR absolute path to .onnx
     # voices_dir: ''                            # default: ~/.hermes/cache/piper-voices/
     # use_cuda: false                           # requires onnxruntime-gpu
     # length_scale: 1.0                         # 2.0 = twice as slow
@@ -194,7 +194,7 @@ Piper 是来自 Open Home Foundation（Home Assistant 维护者）的快速本�
 tts:
   provider: piper
   piper:
-    voice: en_US-lessac-medium
+    voice: ro_RO:liana-medium
 ```
 
 首次对未在本地缓存的声音进行 TTS 调用时，Hermes 会运行 `python -m piper.download_voices <name>` 并将模型（约 20-90MB，取决于质量等级）下载至 `~/.hermes/cache/piper-voices/`。后续调用将复用已缓存的模型。

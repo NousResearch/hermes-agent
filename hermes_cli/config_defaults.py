@@ -1064,7 +1064,8 @@ DEFAULT_CONFIG = {
     "tts": {
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
         # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
-        "provider": "edge",
+        # Romanian localisation default: Piper with the Romanian Liana medium voice.
+        "provider": "piper",
         # Seconds a local engine (Piper, KittenTTS) stays loaded after the last speech toggle
         # turns off, so a quick re-activation (wake word, voice-chat restart) skips the reload.
         # 0 unloads immediately.
@@ -1132,7 +1133,9 @@ DEFAULT_CONFIG = {
             # github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md. Optional keys: voices_dir
             # (~/.hermes/cache/piper-voices/), use_cuda, length_scale (2.0 = twice as slow),
             # noise_scale, noise_w_scale, volume, normalize_audio.
-            "voice": "en_US-lessac-medium",
+            # Colon notation (ro_RO:liana-medium) is accepted and normalised to Piper's
+            # canonical ro_RO-liana-medium file name by tools.tts_tool_local.
+            "voice": "ro_RO:liana-medium",
         },
         "deepinfra": {
             "model": "",  # empty = first tts-tagged model from the live catalog

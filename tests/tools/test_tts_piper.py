@@ -21,6 +21,10 @@ from tools.tts_tool import (
 )
 from tools.tts_tool_local import DEFAULT_PIPER_VOICE, _resolve_piper_voice_path
 
+# Piper stores voices as ``<name>.onnx``; "ro_RO:liana-medium" is normalised to
+# the canonical hyphenated file name before lookup/download.
+CANONICAL_DEFAULT_VOICE = DEFAULT_PIPER_VOICE.replace(":", "-")
+
 
 # ---------------------------------------------------------------------------
 # Registry / constants
@@ -47,10 +51,16 @@ class TestResolvePiperVoicePath:
 
 
     def test_empty_voice_falls_back_to_default_name(self, tmp_path):
-        (tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx").write_bytes(b"model")
-        (tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx.json").write_text("{}")
+        (tmp_path / f"{CANONICAL_DEFAULT_VOICE}.onnx").write_bytes(b"model")
+        (tmp_path / f"{CANONICAL_DEFAULT_VOICE}.onnx.json").write_text("{}")
         result = _resolve_piper_voice_path("", tmp_path)
-        assert result.endswith(f"{DEFAULT_PIPER_VOICE}.onnx")
+        assert result.endswith(f"{CANONICAL_DEFAULT_VOICE}.onnx")
+
+    def test_colon_voice_notation_normalises_to_canonical_name(self, tmp_path):
+        (tmp_path / "ro_RO-liana-medium.onnx").write_bytes(b"model")
+        (tmp_path / "ro_RO-liana-medium.onnx.json").write_text("{}")
+        result = _resolve_piper_voice_path("ro_RO:liana-medium", tmp_path)
+        assert result == str(tmp_path / "ro_RO-liana-medium.onnx")
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +103,7 @@ def _reset_piper_cache():
 
 
 class TestGeneratePiperTts:
-    def _prepare_voice_files(self, tmp_path, voice=DEFAULT_PIPER_VOICE):
+    def _prepare_voice_files(self, tmp_path, voice=CANONICAL_DEFAULT_VOICE):
         model = tmp_path / f"{voice}.onnx"
         model.write_bytes(b"model")
         (tmp_path / f"{voice}.onnx.json").write_text("{}")
@@ -171,9 +181,9 @@ class TestGeneratePiperTts:
 
 class TestTextToSpeechToolWithPiper:
     def test_dispatches_to_piper(self, tmp_path, monkeypatch):
-        model = tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx"
+        model = tmp_path / f"{CANONICAL_DEFAULT_VOICE}.onnx"
         model.write_bytes(b"model")
-        (tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx.json").write_text("{}")
+        (tmp_path / f"{CANONICAL_DEFAULT_VOICE}.onnx.json").write_text("{}")
 
         monkeypatch.setattr(tts_tool, "_import_piper", lambda: _StubPiperVoice)
 

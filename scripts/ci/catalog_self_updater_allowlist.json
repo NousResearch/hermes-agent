@@ -54,5 +54,12 @@
     "path": "scripts/build-index.mjs",
     "sha256": "cd12c6965b0ae35ba0f171a39d7b2ae26e31099456748cd30ddc9f5d6f0f058e",
     "why": "repo-maintenance script that writes .well-known/agent-skills/index.json from the repo's own skills/*/SKILL.md; the raw.githubusercontent.com string is only the URL it records in that index, it fetches nothing, and Hermes never runs it (PR #157088)"
+  },
+  {
+    "repo": "https://github.com/khaeransori/pstack-hermes",
+    "sha": "a977cb559d72e02528241a5507879a1fe46b5e69",
+    "path": "skills/statechart/scripts/run.ts",
+    "sha256": "fb6ec4a1835a15e6e72df28bb932b8df5a4c04c5de6f9c270fd63ff5cd148dc7",
+    "why": "statechart skill's model-check runner: asks the user's mise to install TLA+ tla2tools v1.7.4 (sha256-pinned in the spec string) and a Temurin JDK into mise's own store, writes only temporary .cfg/.tla files under a mkdtemp dir; never fetches or replaces plugin code (PR #158523)"
   }
 ]

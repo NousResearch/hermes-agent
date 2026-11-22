@@ -2,28 +2,15 @@ name: spanish-top-tech-companies
 title: Spanish Top Tech Companies
 repo: https://github.com/pugarte7/spanish-top-tech-companies
 subdir: hermes-plugin
-sha: 87319691316975e1a406e83904dc1647ca2d729e
-description: >-
-  Find the day's tech job postings in Spain and remote roles open to it, from 400+ company job boards,
-  each with what that company pays the role, read a posting's application form live, and apply with the
-  person's yes, through a keyless hosted MCP server (Streamable HTTP), with the tech-pay-spain skill
-  bundled. Salary medians from Levels.fyi submissions in Spain; every figure says how many people it
-  comes from.
-  Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/). Disclosure: hosted-only
-  connector with no local code; every tool call goes to spanishtoptechcompanies.com, which stores
-  nothing about the user and counts each call in PostHog (EU) without an IP address: the tool, the
-  filters or posting asked for, the result count, the client's name, the country and the agent's stated
-  reason with emails, numbers and keys removed. job_questions makes the server read the posting from the
-  employer's public job board. report_application records an application's outcome, never anything about
-  the person. Applications are sent by the agent's own browser only after the person says yes. The tool
-  list comes from the server at run time, so the pinned commit doesn't cover it.
+sha: 8e3c61f993d256785af1c8ca8bc509696ebdde27
+description: "Find the day's tech job postings in Spain and remote roles open to it, from 400+ company job boards, each with what that company pays the role, read a posting's application form live, and apply with the person's yes, through a keyless hosted MCP server (Streamable HTTP), with the tech-pay-spain skill bundled. Salary medians from Levels.fyi submissions in Spain; every figure says how many people it comes from. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/). Disclosure — hosted-only connector with no local code; every tool call goes to spanishtoptechcompanies.com, which stores nothing about the user and counts each call in PostHog (EU) without an IP address: the tool, the filters or posting asked for, the result count, the client's name, the country and the agent's stated reason with emails, numbers and keys removed. job_questions makes the server read the posting from the employer's public job board. hiring_contact returns a named recruiter or hiring manager for a posting, with an email only where one was published for candidates and otherwise a LinkedIn profile; any message to them is written by the agent, approved by the person and sent from the person's own mailbox or LinkedIn account. report_application records an application's outcome, never anything about the person. Applications are sent by the agent's own browser only after the person says yes. The tool list comes from the server at run time, so the pinned commit doesn't cover it."
 maintainer: pugarte7
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/pugarte7/spanish-top-tech-companies/blob/87319691316975e1a406e83904dc1647ca2d729e/hermes-plugin/README.md
-version: "1.0.0"
-image: https://raw.githubusercontent.com/pugarte7/spanish-top-tech-companies/87319691316975e1a406e83904dc1647ca2d729e/hermes-plugin/assets/catalog-card.png
+docs_url: https://github.com/pugarte7/spanish-top-tech-companies/blob/8e3c61f993d256785af1c8ca8bc509696ebdde27/hermes-plugin/README.md
+version: "1.1.2"
+image: https://raw.githubusercontent.com/pugarte7/spanish-top-tech-companies/8e3c61f993d256785af1c8ca8bc509696ebdde27/hermes-plugin/assets/catalog-card.png
 platforms: []
 capabilities:
   provides_tools: []

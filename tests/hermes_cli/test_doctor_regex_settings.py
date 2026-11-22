@@ -153,3 +153,23 @@ def test_an_installed_engine_that_fails_to_import_is_reported_with_its_cause(mon
     assert status == 0
     assert "google-re2 is installed but cannot be imported: ImportError: libre2.so.11: cannot open shared object" in out
     assert "not installed" not in out
+
+
+@pytest.mark.parametrize("platform, adapter_compiles", [
+    pytest.param("telegram", ["x(?=y) "], id="telegram"),
+    pytest.param("slack", ["x(?=y) "], id="slack"),
+    pytest.param("whatsapp", ["x(?=y) "], id="whatsapp"),
+    pytest.param("dingtalk", ["x(?=y) "], id="dingtalk"),
+    pytest.param("bluebubbles", ["x(?=y)", "7"], id="bluebubbles"),  # the wake-word reader strips and str()s
+])
+def test_a_mention_pattern_is_checked_as_the_text_its_adapter_compiles(platform, adapter_compiles):
+    """Trimming changes the verdict: RE2 accepts a lookahead only at the end of the pattern."""
+    import hermes_re
+    from hermes_cli.doctor_regex import SETTINGS, Inputs
+
+    setting = next(s for s in SETTINGS if s.label == f"{platform} mention patterns")
+    found = [pattern for _where, pattern in setting.read(Inputs(extras={platform: {
+        "mention_patterns": ["x(?=y) ", 7, "  "]}}))]
+    assert found == adapter_compiles
+    with pytest.raises(hermes_re.error):
+        hermes_re.compile("x(?=y) ")

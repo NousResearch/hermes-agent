@@ -127,31 +127,39 @@ def _wake_words(value: str) -> object:
     return loaded if isinstance(loaded, list) else [part for line in value.splitlines() for part in line.split(",")]
 
 
-def _texts(value: object, split: Callable[[str], object]) -> list[str]:
-    """A setting value as pattern texts: a string goes through ``split``, a list is taken item by item."""
+def _texts(value: object, split: Callable[[str], object], verbatim: bool) -> list[str]:
+    """A setting value as pattern texts: a string goes through ``split``, a list is taken item by item.
+    ``verbatim``: the adapter compiles each non-blank string item as it stands and skips other items
+    (Telegram, Slack, WhatsApp, DingTalk); otherwise every item is ``str(item).strip()`` (Photon,
+    BlueBubbles, Matrix). Doctor must check the text the adapter compiles: ``"x(?=y) "`` is refused, ``"x(?=y)"`` is not."""
     if isinstance(value, str):
         value = split(value)
     if isinstance(value, str):  # a JSON string literal
         value = [value]
-    return [text for text in (str(item).strip() for item in value) if text] if isinstance(value, list) else []
+    if not isinstance(value, list):
+        return []
+    if verbatim:
+        return [item for item in value if isinstance(item, str) and item.strip()]
+    return [text for text in (str(item).strip() for item in value) if text]
 
 
 def _platform_setting(platform: str, key: str, env: str, *, first: First, yaml_split: Callable[[str], object],
-                      env_split: Callable[[str], object], gate_env: bool = False,
+                      env_split: Callable[[str], object], gate_env: bool = False, verbatim: bool = False,
                       ) -> Callable[[Inputs], Iterator[tuple[str, str]]]:
     """Reader for one adapter setting that yields only the value the adapter uses, chosen with that
     adapter's precedence (``first``): ``"env"`` (a non-blank env var of the active profile wins, else the
     YAML), ``"yaml"`` (a YAML value that is not null wins, else the env var) or ``"yaml_key"`` (a YAML key
-    that is present wins). ``gate_env`` reads the env var as the gate readers do (Telegram)."""
+    that is present wins). ``gate_env`` reads the env var as the gate readers do (Telegram). ``verbatim``: see ``_texts``."""
     def read(inputs: Inputs) -> Iterator[tuple[str, str]]:
         from gateway.platforms._shared import get_scoped_secret, platform_gate_env
         extra = inputs.extras.get(platform, {})
         env_value = (platform_gate_env(env, "") if gate_env else str(get_scoped_secret(env, "") or "")).strip()
         yaml_set = key in extra if first == "yaml_key" else extra.get(key) is not None
         if (bool(env_value) if first == "env" else not yaml_set):
-            yield from ((env, pattern) for pattern in _texts(env_value, env_split))
+            yield from ((env, pattern) for pattern in _texts(env_value, env_split, verbatim))
         else:
-            yield from ((f"{platform}.{key} (config.yaml)", pattern) for pattern in _texts(extra.get(key), yaml_split))
+            yield from ((f"{platform}.{key} (config.yaml)", pattern)
+                        for pattern in _texts(extra.get(key), yaml_split, verbatim))
     return read
 
 
@@ -160,7 +168,8 @@ def _mention_patterns(platform: str, env: str, *, first: First = "yaml", yaml_st
     return Setting(
         f"{platform} mention patterns",
         _platform_setting(platform, "mention_patterns", env, first=first, env_split=env_split, gate_env=gate_env,
-                          yaml_split=_one if yaml_string_is_one_pattern else env_split),
+                          yaml_split=_one if yaml_string_is_one_pattern else env_split,
+                          verbatim=yaml_string_is_one_pattern),
         "the pattern will be skipped, so that wake word stops matching", ignore_case=True, bridged=True)
 
 

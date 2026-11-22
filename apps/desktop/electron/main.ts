@@ -667,6 +667,7 @@ import {
   type RelaunchRegistration
 } from './updater/relaunch'
 import { startUpdateRelaunchWaiter } from './updater/relaunch-waiter'
+import { preflightDiskSpace } from './updater/disk-space-preflight'
 import { preflightStateDb } from './updater/state-db-preflight'
 import { createStoreStrategy } from './updater/store-client'
 import { filenameFromUrl } from './url-filename'
@@ -3648,6 +3649,9 @@ function resolveCheckoutUpdateStrategy(): CheckoutStrategy {
         home,
         log
       })
+    },
+    preflightDiskSpace: async (root: string, log: (message: string) => void): Promise<void> => {
+      await preflightDiskSpace({ root, log })
     },
     runningAppBundle,
     markQuittingForHandoff: () => {

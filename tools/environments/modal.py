@@ -3,20 +3,26 @@
 
 import asyncio
 import base64
+import functools
 import io
+import itertools
 import logging
 import shlex
 import tarfile
 import threading
+import weakref
+from concurrent.futures import Future
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from hermes_constants import get_hermes_home
-from tools.environments.base import BaseEnvironment, _load_json_store, _update_json_store
+from hermes_constants import get_hermes_home, hermes_home_key
+from tools.environments.base import BaseEnvironment, _update_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
 from tools.environments.remote_common import bash_argv, ensure_lazy_dep
+from utils import read_json_or_empty
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +33,7 @@ def _snapshot_store() -> Path:
 
 
 def _load_snapshots() -> dict:
-    return _load_json_store(_snapshot_store())
+    return read_json_or_empty(_snapshot_store())
 
 
 def _update_snapshots(update: Callable[[dict], None]) -> None:
@@ -128,11 +134,143 @@ class _AsyncWorker:
             self._thread.join(timeout=10)
 
 
+# Profile home key -> (token pair, modal.Client built from it, its build's start order): one client
+# per routed profile, like the routed FAL, Bedrock and Entra clients, replaced when that profile's
+# pair changes. A replaced client is not closed: a sandbox created through it keeps running its RPCs
+# on it.
+_profile_clients: dict[str, tuple[tuple[str, str], Any, int]] = {}
+
+
+@dataclass
+class _ClientFlight:
+    """One ``Client.from_credentials`` build in progress for a (home, pair). It runs on the loop of
+    the environment that started it; concurrent first sandboxes, each on its own environment's
+    loop, wait on ``done`` instead of opening a client of their own (the SDK keeps every opened
+    client until process exit)."""
+
+    loop: asyncio.AbstractEventLoop
+    seq: int
+    done: Future = field(default_factory=Future)
+    settled: bool = False
+    build: Optional[asyncio.Future] = None  # held: the loop keeps only a weak reference to a task
+
+
+_client_flights: dict[tuple[str, tuple[str, str]], _ClientFlight] = {}
+_client_flight_seq = itertools.count(1)
+# Loops whose startup was abandoned: no client is admitted on them once their startup failed. Weak,
+# so a stopped loop is not kept alive; code can only run on a loop while it is alive.
+_revoked_loops: weakref.WeakSet[asyncio.AbstractEventLoop] = weakref.WeakSet()
+# Guards _profile_clients, _client_flights and _revoked_loops; never held across an await.
+_profile_clients_lock = threading.Lock()
+
+
+def _routed_token_pair() -> tuple[str, str] | None:
+    """The serving profile's own ``(MODAL_TOKEN_ID, MODAL_TOKEN_SECRET)`` when it is a routed
+    profile, else None: a single-profile process keeps the SDK's own resolution (process env, then
+    the ``modal`` CLI login in ``~/.modal.toml``). Without an explicit client the SDK uses one
+    process-wide client built from ``os.environ``, which holds the launch profile's tokens."""
+    from agent.secret_scope import get_secret, serves_routed_profile
+
+    if not serves_routed_profile():
+        return None
+    token_id, token_secret = ((get_secret(name) or "").strip()
+                              for name in ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"))
+    if not (token_id and token_secret):
+        raise ValueError("MODAL_TOKEN_ID and MODAL_TOKEN_SECRET are not both set for this profile: add "
+                         "them to this profile's .env (or its secret source). Another profile's Modal "
+                         "tokens and the shared ~/.modal.toml login are never used for it.")
+    return token_id, token_secret
+
+
+async def _profile_client(modal: Any, home: str, pair: tuple[str, str]) -> Any:
+    """The profile's cached client, or the one build in progress for this home and pair, started
+    here when there is none. Waiters are shielded: a cancelled waiter never cancels the build the
+    others wait on."""
+    loop = asyncio.get_running_loop()
+    with _profile_clients_lock:
+        if loop in _revoked_loops:
+            raise RuntimeError("Modal client not started: the sandbox startup running it was abandoned")
+        cached = _profile_clients.get(home)
+        if cached is not None and cached[0] == pair:
+            return cached[1]
+        flight = _client_flights.get((home, pair))
+        starting = flight is None
+        if flight is None:
+            flight = _client_flights[(home, pair)] = _ClientFlight(loop, next(_client_flight_seq))
+    if starting:
+        try:
+            build = flight.build = asyncio.ensure_future(modal.Client.from_credentials.aio(*pair))
+        except Exception as exc:
+            _settle_client_flight(home, pair, flight, None, exc)
+            raise
+        build.add_done_callback(functools.partial(_on_client_built, home, pair, flight))
+    return await asyncio.shield(asyncio.wrap_future(flight.done))
+
+
+def _on_client_built(home: str, pair: tuple[str, str], flight: _ClientFlight, build: asyncio.Future) -> None:
+    if build.cancelled():
+        _settle_client_flight(home, pair, flight, None, RuntimeError("Modal client build was cancelled"))
+    elif (error := build.exception()) is not None:
+        _settle_client_flight(home, pair, flight, None, error)
+    else:
+        _settle_client_flight(home, pair, flight, build.result(), None)
+
+
+def _settle_client_flight(home: str, pair: tuple[str, str], flight: _ClientFlight, client: Any,
+                          error: BaseException | None) -> None:
+    """Drop the flight and hand its waiters the outcome. Only a build started after the cached
+    client's replaces it, so an older pair finishing late never overwrites a newer one."""
+    with _profile_clients_lock:
+        if _client_flights.get((home, pair)) is flight:
+            del _client_flights[(home, pair)]
+        if error is None:
+            cached = _profile_clients.get(home)
+            if cached is None or cached[2] < flight.seq:
+                _profile_clients[home] = (pair, client, flight.seq)
+        notify = not flight.settled  # False once abandoned: its waiters already got the error
+        flight.settled = True
+    if notify:
+        if error is None:
+            flight.done.set_result(client)
+        else:
+            flight.done.set_exception(error)
+
+
+def _abandon_client_flights(loop: Optional[asyncio.AbstractEventLoop]) -> None:
+    """A failed or timed-out startup is about to stop ``loop``: fail and drop the client builds it
+    was running, so their waiters fail now and later sandboxes start a fresh build instead of
+    waiting on a stopped loop. The loop is revoked in the same critical section: a startup
+    coroutine that reaches ``_profile_client`` only afterwards (the worker may run late, even past
+    ``_AsyncWorker.stop``'s bounded join) is refused instead of registering a build nobody settles."""
+    with _profile_clients_lock:
+        if loop is not None:
+            _revoked_loops.add(loop)
+        abandoned = [(key, flight) for key, flight in _client_flights.items()
+                     if flight.loop is loop and not flight.settled]
+        for key, flight in abandoned:
+            del _client_flights[key]
+            flight.settled = True
+    for _key, flight in abandoned:
+        flight.done.set_exception(RuntimeError(
+            "Modal client build abandoned: the sandbox startup running it failed or timed out"))
+
+
+class _ClientBuildError(Exception):
+    """Internal wrapper: routed client acquisition failed before snapshot restore began."""
+
+    def __init__(self, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+
+
 class ModalEnvironment(BaseEnvironment):
     """Modal cloud execution via native Modal sandboxes: spawn-per-call via _ThreadedProcessHandle
     wrapping async SDK calls, cancel_fn wired to sandbox.terminate for interrupt support."""
 
     _stdin_mode = "payload"
+    # The askpass prologue checks sudo ``-A`` support inside each command, so no capability probe
+    # runs here (a timed-out probe could only be cancelled by stopping the sandbox).
+    _sudo_askpass_runtime_checked = True
     _snapshot_timeout = 60  # Modal cold starts can be slow
     # Modal SDK stdin buffer limit: the command-router path allows 16 MB but the legacy server
     # path caps at 2 MB, so chunks stay under 2 MB and each is flushed individually via drain().
@@ -150,24 +288,37 @@ class ModalEnvironment(BaseEnvironment):
             _get_snapshot_restore_candidate(self._task_id) if self._persistent else (None, False))
         if restored_snapshot_id:
             logger.info("Modal: restoring from snapshot %s", restored_snapshot_id[:20])
+        # Read in the caller's thread: the SDK coroutines run on the worker loop, outside the turn's
+        # profile scope.
+        pair = _routed_token_pair()
+        home = hermes_home_key() if pair else ""
         ensure_lazy_dep("modal")
         import modal as _modal
         self._worker.start()
 
         def _create(image_spec: Any) -> None:
             async def _create_sandbox():
-                app = await _modal.App.lookup.aio("hermes-agent", create_if_missing=True)
+                if pair:
+                    try:
+                        client = await _profile_client(_modal, home, pair)
+                    except Exception as exc:
+                        raise _ClientBuildError(exc) from exc
+                else:
+                    client = None
+                app = await _modal.App.lookup.aio("hermes-agent", create_if_missing=True, client=client)
                 create_kwargs = dict(modal_sandbox_kwargs or {})
                 sandbox = await _modal.Sandbox.create.aio(
-                    "sleep", "infinity", image=image_spec, app=app,
+                    "sleep", "infinity", image=image_spec, app=app, client=client,
                     timeout=int(create_kwargs.pop("timeout", 3600)), **create_kwargs)
                 return app, sandbox
             self._app, self._sandbox = self._worker.run_coroutine(_create_sandbox(), timeout=300)
         try:
             try:
                 _create(_resolve_modal_image(restored_snapshot_id or image))
+            except _ClientBuildError as exc:
+                raise exc.cause from None
             except Exception as exc:
-                if not restored_snapshot_id:
+                if not restored_snapshot_id or (pair and isinstance(exc, TimeoutError)):
                     raise
                 logger.warning("Modal: failed to restore snapshot %s, retrying with base image: %s",
                                restored_snapshot_id[:20], exc)
@@ -176,8 +327,11 @@ class ModalEnvironment(BaseEnvironment):
             else:
                 if restored_snapshot_id and restored_from_legacy_key:
                     _store_direct_snapshot(self._task_id, restored_snapshot_id)
-        except Exception:
+        except BaseException as exc:
+            _abandon_client_flights(self._worker._loop)
             self._worker.stop()
+            if isinstance(exc, _ClientBuildError):  # the base-image retry's own client build failed
+                raise exc.cause from None
             raise
         logger.info("Modal: sandbox created (task=%s)", self._task_id)
         self._sync_manager = FileSyncManager(

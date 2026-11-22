@@ -187,6 +187,24 @@
       }
     },
     {
+      "name": "bot_delivery.list",
+      "summary": "Read-only: this bot's unsettled message_agent deliveries to local teammates, newest first.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/BotDeliveryListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/BotDeliveryListResult"
+        }
+      }
+    },
+    {
       "name": "bot_relay.deliver",
       "summary": "Deliver a relayed DM into a Bot Chat on this gateway and return the one-turn reply (blocking).",
       "params": [
@@ -3859,6 +3877,24 @@
       }
     },
     {
+      "name": "shared_metrics.desktop_long_frames",
+      "summary": "Record one finished Desktop day's long-frame histogram (uncapped); recorded=false keeps it for a retry.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsDesktopLongFramesParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsDesktopDailyResult"
+        }
+      }
+    },
+    {
       "name": "shared_metrics.desktop_onboarding",
       "summary": "Count one Desktop first-run step transition (fire-and-forget; once per step+event; a no-op unless on).",
       "params": [
@@ -7360,6 +7396,134 @@
         "title": "BillingStepUpVerificationPayload",
         "type": "object"
       },
+      "BotDeliveryListParams": {
+        "additionalProperties": false,
+        "description": "``profile`` is the SENDER bot; it routes the call to that profile's connection.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "BotDeliveryListParams",
+        "type": "object"
+      },
+      "BotDeliveryListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "sender": {
+            "title": "Sender",
+            "type": "string"
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/BotDeliveryRow"
+            },
+            "title": "Deliveries",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sender",
+          "deliveries"
+        ],
+        "title": "BotDeliveryListResult",
+        "type": "object"
+      },
+      "BotDeliveryRow": {
+        "additionalProperties": false,
+        "description": "``tools/bot_delivery_status.py::list_sender_deliveries``. ``since`` is the receipt's last\nwrite (epoch seconds); ``waiting_on`` is set for ``waiting_on_you``, ``reason`` (+ ``error``)\nfor ``failed`` \u2014 ``unknown_outcome`` means the target may have acted: never resend it.",
+        "properties": {
+          "delivery_id": {
+            "title": "Delivery Id",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "target_handle": {
+            "title": "Target Handle",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/BotDeliveryState"
+          },
+          "since": {
+            "title": "Since",
+            "type": "number"
+          },
+          "preview": {
+            "title": "Preview",
+            "type": "string"
+          },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Waiting On"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          }
+        },
+        "required": [
+          "delivery_id",
+          "target",
+          "target_handle",
+          "state",
+          "since",
+          "preview"
+        ],
+        "title": "BotDeliveryRow",
+        "type": "object"
+      },
+      "BotDeliveryState": {
+        "enum": [
+          "queued",
+          "claimed",
+          "working",
+          "waiting_on_you",
+          "failed"
+        ],
+        "title": "BotDeliveryState",
+        "type": "string"
+      },
       "BotRelayDeliverParams": {
         "additionalProperties": false,
         "description": "``profile`` here is the TARGET profile on this gateway (also what the desktop route wrapper adds).",
@@ -9246,6 +9410,30 @@
             "default": false,
             "title": "Picker",
             "type": "boolean"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Query"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
           }
         },
         "title": "CanonicalListParams",
@@ -9268,6 +9456,18 @@
             ],
             "title": "Scope",
             "type": "string"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Next Cursor"
           }
         },
         "required": [
@@ -14200,6 +14400,18 @@
             ],
             "default": null,
             "title": "Already Installed"
+          },
+          "upstream_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Upstream Repo"
           }
         },
         "required": [
@@ -16032,7 +16244,7 @@
       },
       "CronJobRow": {
         "additionalProperties": true,
-        "description": "``tools/cronjob_job_args.py::_format_job``.",
+        "description": "``cron/job_args.py::_format_job``.",
         "properties": {
           "job_id": {
             "title": "Job Id",
@@ -24316,7 +24528,7 @@
       },
       "MessageCompletePayload": {
         "additionalProperties": false,
-        "description": "``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` /\n``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) /\n``compute_host_bridge`` (``text`` + ``status``).",
+        "description": "``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` /\n``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text``, plus ``status`` for a completed child) /\n``compute_host_bridge`` (``text`` + ``status``).",
         "properties": {
           "text": {
             "anyOf": [
@@ -24502,6 +24714,18 @@
               }
             ],
             "default": null
+          },
+          "paused": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Paused"
           }
         },
         "title": "MessageCompletePayload",
@@ -24731,7 +24955,7 @@
       },
       "MessageReaction": {
         "additionalProperties": true,
-        "description": "One persisted reaction row (``hermes_state_messages.set_message_reaction``); ``seen`` is\nstamped once announced.",
+        "description": "One persisted reaction row (``MessageRepository.set_reaction``); ``seen`` is\nstamped once announced.",
         "properties": {
           "emoji": {
             "title": "Emoji",
@@ -25689,6 +25913,154 @@
           "kind"
         ],
         "title": "NotificationShowPayload",
+        "type": "object"
+      },
+      "NousUsageBar": {
+        "additionalProperties": false,
+        "description": "``agent.billing_usage.UsageBar``: one dollar bar (``topup`` has no cap, so total == remaining).",
+        "properties": {
+          "kind": {
+            "enum": [
+              "plan",
+              "topup"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "remaining_usd": {
+            "title": "Remaining Usd",
+            "type": "number"
+          },
+          "total_usd": {
+            "title": "Total Usd",
+            "type": "number"
+          },
+          "spent_usd": {
+            "default": 0.0,
+            "title": "Spent Usd",
+            "type": "number"
+          }
+        },
+        "required": [
+          "kind",
+          "remaining_usd",
+          "total_usd"
+        ],
+        "title": "NousUsageBar",
+        "type": "object"
+      },
+      "NousUsageDollars": {
+        "additionalProperties": false,
+        "description": "``agent.billing_usage.UsageModel`` in numbers: the classic CLI's two-bar Nous balance block.",
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "status": {
+            "default": "free",
+            "title": "Status",
+            "type": "string"
+          },
+          "plan_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plan Name"
+          },
+          "renews_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Renews At"
+          },
+          "renews_display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Renews Display"
+          },
+          "subscription_remaining_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Subscription Remaining Usd"
+          },
+          "topup_remaining_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Topup Remaining Usd"
+          },
+          "total_spendable_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Total Spendable Usd"
+          },
+          "plan_bar": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NousUsageBar"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "topup_bar": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NousUsageBar"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "available"
+        ],
+        "title": "NousUsageDollars",
         "type": "object"
       },
       "OkResult": {
@@ -28261,7 +28633,7 @@
       },
       "PluginActivation": {
         "additionalProperties": false,
-        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a\nrunning process cannot import (installed after it booted, or never); ``missing_in`` names which\nprocesses (``gateway``, ``backend`` = the Desktop / dashboard process) \u2014 only restarting them loads them.",
+        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a\nrunning process cannot import (installed after it booted, or never); ``missing_in`` names which\nprocesses (``gateway``, ``backend`` = the Desktop / dashboard process) \u2014 only restarting them loads them.\n``activated_now.provider``: a model-provider plugin whose current tree serves new sessions. ``load_error``: a\nmodel-provider plugin's updated tree failed to import (the previous version keeps serving).",
         "properties": {
           "name": {
             "title": "Name",
@@ -28315,6 +28687,18 @@
             },
             "title": "Missing In",
             "type": "array"
+          },
+          "load_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Load Error"
           }
         },
         "required": [
@@ -28530,7 +28914,7 @@
       },
       "PluginScanFinding": {
         "additionalProperties": false,
-        "description": "One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked.",
+        "description": "One security-scan finding (``hermes_cli.plugins_install_scan``) on a plugin tree the scan blocked.",
         "properties": {
           "pattern_id": {
             "title": "Pattern Id",
@@ -29737,7 +30121,7 @@
       },
       "PreviewClosePayload": {
         "additionalProperties": false,
-        "description": "``tools/preview_tool.py`` / ``tools/close_preview_tool.py``; ``url`` '' closes every tab.",
+        "description": "``tools/preview_tool.py``; ``url`` '' closes every tab.",
         "properties": {
           "url": {
             "default": "",
@@ -33368,6 +33752,104 @@
         "title": "ProjectsUpdateParams",
         "type": "object"
       },
+      "PromptCacheWindow": {
+        "additionalProperties": false,
+        "description": "``agent.prompt_cache_clock.cache_window``: until when the session's cached prompt prefix is warm.\n``guaranteed_until``: the whole prefix is warm before it (a documented minimum or a proven tier);\n``estimated_until``: certainly gone after it; between the two it may still be warm. ``coverage``\nmaps each cached tier to its deadline. ``confidence`` is ``proven`` | ``declared`` | ``assumed`` |\n``unknown``; times are epoch seconds.",
+        "properties": {
+          "guaranteed_until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guaranteed Until"
+          },
+          "estimated_until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Until"
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier"
+          },
+          "confidence": {
+            "title": "Confidence",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Refreshed At"
+          },
+          "coverage": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "default": {},
+            "title": "Coverage",
+            "type": "object"
+          },
+          "warming_off": {
+            "default": false,
+            "title": "Warming Off",
+            "type": "boolean"
+          },
+          "tier_pending": {
+            "default": false,
+            "title": "Tier Pending",
+            "type": "boolean"
+          },
+          "learned": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Learned"
+          }
+        },
+        "required": [
+          "guaranteed_until",
+          "estimated_until",
+          "tier",
+          "confidence",
+          "reason"
+        ],
+        "title": "PromptCacheWindow",
+        "type": "object"
+      },
       "PromptCancelParams": {
         "additionalProperties": false,
         "properties": {
@@ -34959,7 +35441,7 @@
       },
       "RollbackRestoreResult": {
         "additionalProperties": true,
-        "description": "``tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full\n(non-file) restore that also rewound the live transcript.",
+        "description": "``agent/checkpoints/manager.py::restore`` outcome; ``history_removed`` is added for a full\n(non-file) restore that also rewound the live transcript.",
         "properties": {
           "success": {
             "title": "Success",
@@ -36407,6 +36889,62 @@
         "title": "SeedMessage",
         "type": "object"
       },
+      "SessionAccountUsage": {
+        "additionalProperties": false,
+        "description": "``gateway/session_usage.py::account_usage``: the account blocks of ``/usage``. ``lines``: the\nroute's provider plan limits. ``nous_lines``: the Nous balance whenever Nous is signed in on the\nprofile, after them (headed as a separate account off a Nous route). ``nous_route``: the route is\nNous inference, so the ``/topup`` CTA applies. ``nous_usage``: on a Nous route, the same account\nread's dollar model, so the CLI draws its two bars without reading the account again.",
+        "properties": {
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "nous_lines": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Nous Lines",
+            "type": "array"
+          },
+          "nous_route": {
+            "title": "Nous Route",
+            "type": "boolean"
+          },
+          "nous_usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NousUsageDollars"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "lines",
+          "nous_route"
+        ],
+        "title": "SessionAccountUsage",
+        "type": "object"
+      },
+      "SessionAccountUsageParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionAccountUsageParams",
+        "type": "object"
+      },
       "SessionActivateParams": {
         "additionalProperties": false,
         "properties": {
@@ -37614,6 +38152,17 @@
             },
             "title": "Context Files",
             "type": "array"
+          },
+          "prompt_cache": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PromptCacheWindow"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -39057,6 +39606,18 @@
             ],
             "default": null,
             "title": "Expected Hosted Task Id"
+          },
+          "resume": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resume"
           }
         },
         "required": [
@@ -39560,7 +40121,7 @@
       },
       "SessionMutateParams": {
         "additionalProperties": false,
-        "description": "``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.\n``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite\nthe session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy``\n(``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes).",
+        "description": "``operation`` + ``payload`` are validated by ``persistence.authority.runtime.parse_mutation``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.\n``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite\nthe session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy``\n(``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes).",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -39688,7 +40249,7 @@
       },
       "SessionPruneParams": {
         "additionalProperties": false,
-        "description": "Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).",
+        "description": "Exactly one of ``filters`` (``older_than_days``, ``source`` and ``PruneCriteria`` fields, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).",
         "properties": {
           "filters": {
             "anyOf": [
@@ -41214,6 +41775,18 @@
             ],
             "default": null,
             "title": "Credits Usage Window"
+          },
+          "nous_route": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Nous Route"
           }
         },
         "title": "SessionUsageResult",
@@ -42276,6 +42849,72 @@
           "detail"
         ],
         "title": "SharedMetricsDesktopFrictionParams",
+        "type": "object"
+      },
+      "SharedMetricsDesktopLongFrameCount": {
+        "additionalProperties": false,
+        "description": "Long animation frames counted in one duration bucket while the window was visible.",
+        "properties": {
+          "bucket": {
+            "enum": [
+              "50ms_to_100ms",
+              "100ms_to_250ms",
+              "250ms_to_1s",
+              "1s_to_5s",
+              "gte_5s"
+            ],
+            "title": "Bucket",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bucket",
+          "count"
+        ],
+        "title": "SharedMetricsDesktopLongFrameCount",
+        "type": "object"
+      },
+      "SharedMetricsDesktopLongFramesParams": {
+        "additionalProperties": false,
+        "description": "One finished UTC day's long-frame histogram and visible window time, aggregated on the client.\n``day`` (YYYY-MM-DD) only latches a resend and is never recorded.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "day": {
+            "title": "Day",
+            "type": "string"
+          },
+          "frames": {
+            "items": {
+              "$ref": "#/components/schemas/SharedMetricsDesktopLongFrameCount"
+            },
+            "title": "Frames",
+            "type": "array"
+          },
+          "visible_ms": {
+            "default": 0,
+            "title": "Visible Ms",
+            "type": "number"
+          }
+        },
+        "required": [
+          "day"
+        ],
+        "title": "SharedMetricsDesktopLongFramesParams",
         "type": "object"
       },
       "SharedMetricsDesktopModeDay": {
@@ -50494,6 +51133,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/RuntimeDescribeResult"
+        }
+      }
+    },
+    {
+      "name": "session.account_usage",
+      "summary": "The /usage account blocks for this session's route: provider plan limits, then the Nous balance.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionAccountUsageParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionAccountUsage"
         }
       }
     },

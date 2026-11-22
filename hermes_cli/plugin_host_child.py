@@ -478,12 +478,15 @@ def _import_base(ref: str) -> type:
 def _provider_base(value: Any) -> Optional[type]:
     """The provider ABC (``HOST_OBJECT_BASES``) ``value`` implements. Only an already-imported base
     can match: a plugin object subclassing it imported it."""
+    from hermes_agent.compat.finder import current_name
+    from hermes_agent.compat.moves import MOVES
     from hermes_cli.plugin_isolation import HOST_OBJECT_BASES
     for ref in HOST_OBJECT_BASES.values():
         module, attr = ref.split(":")
-        base = getattr(sys.modules.get(module), attr, None)
-        if isinstance(base, type) and isinstance(value, base):
-            return base
+        for name in (module, current_name(module, MOVES)):
+            base = getattr(sys.modules.get(name), attr, None)
+            if isinstance(base, type) and isinstance(value, base):
+                return base
     return None
 
 
@@ -621,8 +624,10 @@ def extract_profiles_main(path: str, module_name: str) -> int:
 def main() -> int:
     reader, writer = _take_protocol_streams()
     import hermes_bootstrap
-    logging.basicConfig(stream=sys.stderr, level=os.environ.get("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING"),
-                        format="%(levelname)s %(name)s: %(message)s")
+    from hermes_logging import DisplayNameFormatter
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setFormatter(DisplayNameFormatter("%(levelname)s %(name)s: %(message)s"))
+    logging.basicConfig(handlers=[stderr_handler], level=os.environ.get("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING"))
     runtime = HostRuntime(reader, writer)
     from hermes_cli import plugin_events
     plugin_events._session_event_forwarder = runtime.session_event

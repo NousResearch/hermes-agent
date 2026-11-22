@@ -66,6 +66,18 @@ def _kill_owner(home: Path, execution_id: str) -> None:
         conn.close()
 
 
+def _as_store(fake):
+    """``fake``'s job-runs listing as a storage handle's ``sessions.list_cron_job_runs`` (rows as the backend's
+    ``CronRunEntry.as_cron_row()`` projects them)."""
+    from types import SimpleNamespace
+
+    def runs(job_id, window):
+        return [SimpleNamespace(as_cron_row=lambda row=row: dict(row))
+                for row in fake.list_cron_job_runs(job_id, limit=window.limit, offset=window.offset)]
+
+    return SimpleNamespace(sessions=SimpleNamespace(list_cron_job_runs=runs), close=fake.close)
+
+
 def _runs(monkeypatch, job_id: str, rows: list, profile: str = "default") -> dict:
     class _FakeDB:
         def list_cron_job_runs(self, canonical, limit=20, offset=0):
@@ -74,7 +86,7 @@ def _runs(monkeypatch, job_id: str, rows: list, profile: str = "default") -> dic
         def close(self):
             pass
 
-    monkeypatch.setattr(_rt_cron, "_open_session_db_for_profile", lambda _p, *, read_only: _FakeDB())
+    monkeypatch.setattr(_rt_cron, "_open_session_db_for_profile", lambda _p, *, read_only: _as_store(_FakeDB()))
     monkeypatch.setattr(_rt_cron, "_job_owner_profile", lambda _j, _p: profile)
     monkeypatch.setattr(
         _rt_cron, "_call_cron_for_profile",

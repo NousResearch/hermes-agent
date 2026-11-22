@@ -1,0 +1,32 @@
+name: flota
+title: Flota
+repo: https://github.com/Bto-03/hermes-flota
+sha: bd99f3270489790b1d25c79809e6994184a8f128
+version: "0.2.2"
+description: "Run delegate_task subagents on your own machines over SSH (delegation.backend: flota). Flota wakes the chosen machine (Wake-on-LAN, a relay host on its LAN, any command, or the machine's own wake timer), falls back to another machine if it does not come up, and suspends it after its last subagent, never a busy one (the model cannot force it). The agent tool checks and wakes machines; asking it to suspend or power one off is opt-in and every such call goes through Hermes' approval prompt. `hermes flota setup user@host` detects OS, MAC, broadcast and how the machine can sleep; `doctor` prints fixes; `uninstall` undoes it; fleet pairing with two codes (public keys only); a fleet map page for Hermes Desktop and the web dashboard. Python standard library only. Disclosure — runs ssh to the machines you configure and your own wake/sleep commands, sends Wake-on-LAN packets on your LAN, can run `sudo -n` for one fixed wake-alarm command only if you allow it, creates an SSH key pair without a passphrase (`~/.ssh/flota_ed25519`) when you have none and adds that public key to a ship's `authorized_keys` at pairing as an ordinary login line with no `command=` or `restrict` options, creates `flota-<machine>` Hermes profiles with `terminal.ssh_sync_files: false`, lets the agent suspend or power off a machine only if you turn on `agent_power_actions` and approve each call, and keeps auto-sleep timers in the gateway process; no third-party network calls, no telemetry."
+maintainer: Francisco Bastidas
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+# Linux is the verified target (Hermes host and controlled machines). macOS and Windows ships are
+# experimental: power commands and wake timers exist and are unit-tested, not tested on hardware.
+platforms: [linux]
+readme: true
+capabilities:
+  provides_tools: [flota]
+  provides_hooks: [subagent_start, subagent_stop, pre_tool_call]
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Only one delegation backend is active at a time; delegation.backend: flota replaces any other delegation route."
+  - "Auto-sleep timers live in the running process, so auto-sleep needs a long-lived gateway."
+  - "Hermes routes the tasks of one delegate_task call sequentially, so a slow wake delays the later tasks of that batch."
+  - "Hooks carry no route, so subagents are matched to machines by calling thread plus goal text; identical goals for different machines from the same thread can still be mixed up."
+  - "Plain Wake-on-LAN needs the Hermes host on the machine's LAN; use wake: wol_via, wake: command or wake: timer across networks."
+  - "The hermes flota sleep/off CLI and the dashboard see busy machines only while a gateway is running (it publishes busy counts to a state file); without one they cannot tell."
+  - "One busy-state file per profile: a gateway and a separate chat session running subagents at the same time overwrite each other's counts."
+  - "A machine with wake: timer cannot be woken on demand; a task for it waits only if its own alarm is due within wake_timeout."
+  - "macOS and Windows ships are experimental and untested on real hardware; wake: timer is unit-tested only."
+  - "SSH file sync is still on: Flota sets terminal.ssh_sync_files: false in its machine profiles, but Hermes does not read that key until core issue #148726 is resolved (PRs #148791, #145271), so a subagent on a Flota machine copies this host's ~/.hermes files there and tars the machine's ~/.hermes back, slow on a machine with its own Hermes install. hermes flota doctor warns about it."
+  - "The agent tool's sleep and off actions are off by default (agent_power_actions); when turned on, each call needs the user's approval, so unattended runs (cron, no gateway) cannot use them, and the change reaches the model in new sessions."
+  - "hermes plugins validate warns about private core imports (profiles, cron jobs, atomic config write); a core release can break them."

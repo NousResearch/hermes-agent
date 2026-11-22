@@ -44,14 +44,16 @@ def main(argv=None) -> int:
         icon_python = prepare_icon_environment(source, products / "icon-environment", args.cache)
         env = {**os.environ, "HERMES_PYTHON": str(icon_python)}
         commands = [
-            ["scripts/build/node-deps.mjs", "--source", str(source), "--workspace", "ui-tui", "--workspace", "web"],
+            ["scripts/build/node-deps.mjs", "--source", str(source), "--workspace", "ui-tui", "--workspace", "web",
+             "--workspace", "apps/desktop"],
             ["scripts/generate-icons.mjs", "--source", str(source), "--out", str(products / "icons")],
             ["scripts/build/tui.mjs", "--source", str(source), "--out", str(products / "tui")],
             ["scripts/build/web.mjs", "--source", str(source), "--icons", str(products / "icons"), "--out", str(products / "web")],
+            ["scripts/build/webapp.mjs", "--source", str(source), "--out", str(products / "webapp")],
         ]
         for command in commands:
             subprocess.run([node, *command], cwd=ROOT, env=env, check=True)
-        args.frontends = {"tui": products / "tui", "web": products / "web"}
+        args.frontends = {name: products / name for name in ("tui", "web", "webapp")}
         return stage_native(args)
 
 

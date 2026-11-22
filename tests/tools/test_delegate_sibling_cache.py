@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 def test_siblings_send_one_system_prompt_and_get_their_context_in_the_user_turn():
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from run_agent import AIAgent
     from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
     from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
@@ -20,8 +20,9 @@ def test_siblings_send_one_system_prompt_and_get_their_context_in_the_user_turn(
     with FakeLLMServer([]) as srv:
         write_hermes_home(home, srv.base_url, extra_config=OFFLINE_CONFIG + NO_BACKGROUND_REVIEW)
         srv.push(Text("first done"), Text("second done"))
+        db = open_persistence(profile_scope(home=home))
         parent = AIAgent(provider="custom", base_url=srv.base_url, api_key="sk-fake-e2e", model="fake-model",
-                         session_db=SessionDB(db_path=home / "state.db"), session_id="parent", quiet_mode=True, platform="cli")
+                         session_db=db, persistence=db, session_id="parent", quiet_mode=True, platform="cli")
         parent._ensure_db_session()
         delegate_task(goal="count the files", context="The parent is auditing numbers.", parent_agent=parent)
         delegate_task(goal="find the flaky test", context="The parent is fixing the gateway.", parent_agent=parent)
@@ -41,7 +42,7 @@ def test_schema_correction_turn_carries_the_contract_even_after_a_compaction():
     and pastes the contract again, because a long first turn is compacted before the retry is sent."""
     import json
 
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from run_agent import AIAgent
     from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
     from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_hermes_home
@@ -56,8 +57,9 @@ def test_schema_correction_turn_carries_the_contract_even_after_a_compaction():
                           + "compression:\n  threshold_tokens: 12000\n")
         srv.push(*[ToolCall("read_file", {"path": str(home / "big.txt"), "offset": 1 + i}) for i in range(10)],
                  Text("there are three"), Text('{"count": 3}'))
+        db = open_persistence(profile_scope(home=home))
         parent = AIAgent(provider="custom", base_url=srv.base_url, api_key="sk-fake-e2e", model="fake-model",
-                         session_db=SessionDB(db_path=home / "state.db"), session_id="parent", quiet_mode=True, platform="cli")
+                         session_db=db, persistence=db, session_id="parent", quiet_mode=True, platform="cli")
         parent._ensure_db_session()
         entry = json.loads(delegate_task(goal="count the files", context="Only count .py files.", output_schema=schema,
                                          parent_agent=parent))["results"][0]

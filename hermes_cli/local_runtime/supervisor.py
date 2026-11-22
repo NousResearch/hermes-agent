@@ -75,6 +75,11 @@ def _stable_port() -> int:
         return _free_port()
 
 
+def api_key_path() -> Path:
+    """Where the endpoint key lives on disk; handed to llama-server via --api-key-file."""
+    return runtimes_root() / ".api_key"
+
+
 def _stable_api_key() -> str:
     """One key for the life of the install, persisted beside the runtimes.
 
@@ -82,15 +87,20 @@ def _stable_api_key() -> str:
     per-boot key strands every resumed session on HTTP 401 exactly as a per-boot port would on
     connection errors.
     """
-    key_path = runtimes_root() / ".api_key"
+    key_path = api_key_path()
     with suppress(OSError):
         existing = key_path.read_text(encoding="utf-8-sig").strip()
         if len(existing) >= 16:
+            # Keys persisted before the file was created owner-only keep their umask mode.
+            with suppress(OSError):
+                os.chmod(key_path, 0o600)
             return existing
     key = secrets.token_urlsafe(24)
     try:
-        key_path.parent.mkdir(parents=True, exist_ok=True)
-        key_path.write_text(key, encoding="utf-8")
+        from utils import atomic_write_text
+
+        # mkstemp creates the temp file 0600, so the key is never readable at the process umask.
+        atomic_write_text(key_path, key, tmp_prefix=f".{key_path.name}_", mode=0o600)
     except OSError as exc:
         logger.warning("could not persist api key (%s); sessions will need "
                        "a re-pick after restart", exc)
@@ -98,15 +108,42 @@ def _stable_api_key() -> str:
 
 
 @lru_cache(maxsize=16)
-def _direct_io_args(executable: Path) -> tuple[str, ...]:
-    """Select the loading option supported by this engine, including older pinned builds."""
+def _engine_help(executable: Path) -> str:
     result = subprocess.run([str(executable), "--help"], capture_output=True,
                             text=True, encoding="utf-8", errors="replace", check=True,
                             timeout=15, cwd=str(executable.parent))
-    help_text = result.stdout + result.stderr
+    return result.stdout + result.stderr
+
+
+@lru_cache(maxsize=16)
+def _direct_io_args(executable: Path) -> tuple[str, ...]:
+    """Select the loading option supported by this engine, including older pinned builds."""
+    help_text = _engine_help(executable)
     if "--load-mode" in help_text:
         return ("--load-mode", "dio")
     return ("-dio",) if "--direct-io" in help_text else ()
+
+
+def _api_key_file_supported(executable: Path) -> bool:
+    """Older pinned builds predate --api-key-file; a failed probe falls back to argv.
+
+    Deliberately uncached: ``_engine_help`` caches only a successful probe, so a transient
+    ``--help`` failure is retried on the next spawn instead of pinning the key in argv."""
+    try:
+        return "--api-key-file" in _engine_help(executable)
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _mask_argv_secrets(cmd: list[str]) -> list[str]:
+    """Mask the --api-key value (separate or `=`-joined) for the spawn log; it must never reach disk."""
+    masked = list(cmd)
+    for i, arg in enumerate(masked):
+        if arg == "--api-key" and i + 1 < len(masked):
+            masked[i + 1] = "***"
+        elif arg.startswith("--api-key="):
+            masked[i] = "--api-key=***"
+    return masked
 
 
 class LlamaServerSupervisor:
@@ -175,11 +212,24 @@ class LlamaServerSupervisor:
 
     def _spawn(self) -> None:
         exe = self.binary
+        key_path = api_key_path()
+        try:
+            # llama-server reads each line of the file verbatim (no BOM/whitespace strip), so the
+            # file is used only when its bytes ARE the key; a hand-edited copy (CRLF, BOM, spaces)
+            # falls back to argv rather than locking every client out with 401.
+            key_on_disk = key_path.read_bytes() in {self.api_key.encode(), self.api_key.encode() + b"\n"}
+        except OSError:
+            key_on_disk = False  # persistence failed earlier: nothing on disk to point at
+        # The file keeps the key out of argv (visible to `ps`) and out of the spawn line below.
+        if key_on_disk and _api_key_file_supported(exe):
+            key_args = ("--api-key-file", str(key_path))
+        else:
+            key_args = ("--api-key", self.api_key)
         cmd = [
             str(exe),
             "--host", "127.0.0.1",
             "--port", str(self.port),
-            "--api-key", self.api_key,
+            *key_args,
             "--models-max", str(self.models_max),
             # Residency contract: a chat request to a staged-but-unloaded model loads it (slow
             # first token) instead of a bare 400/404 after an eject.
@@ -202,7 +252,7 @@ class LlamaServerSupervisor:
             # The crash-restart loop calls _spawn repeatedly; each restart would leak one fd.
             _quiet(self._log_handle.close)
         self._log_handle = open(self.log_path, "a", encoding="utf-8", errors="replace")
-        self._log_handle.write(f"\n# spawn: {cmd}\n")
+        self._log_handle.write(f"\n# spawn: {_mask_argv_secrets(cmd)}\n")
         self._log_handle.flush()
         # list-args, never a shell: spaced paths (user homes) must survive. owned: the router
         # tree dies with this process on every OS, however this process dies (#126631).

@@ -101,7 +101,7 @@ vi.mock('./use-voice-conversation', () => ({
 
     return {
       end: vi.fn(async () => undefined),
-      level: 0,
+      levelStore: { get: () => 0, listen: () => () => {}, set: () => {} },
       muted: false,
       start: vi.fn(async () => undefined),
       status: 'idle',
@@ -114,7 +114,11 @@ vi.mock('./use-voice-conversation', () => ({
 vi.mock('./use-voice-recorder', () => ({
   useVoiceRecorder: () => ({
     dictate: vi.fn(),
-    voiceActivityState: { elapsedSeconds: 0, level: 0, status: 'idle' },
+    voiceActivityState: {
+      elapsedSeconds: 0,
+      levelStore: { get: () => 0, listen: () => () => {}, set: () => {} },
+      status: 'idle'
+    },
     voiceStatus: 'idle'
   })
 }))

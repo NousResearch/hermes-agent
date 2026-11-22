@@ -153,3 +153,11 @@
   :root[data-shell='portal'] .catalog-filter-row { flex-wrap: wrap; row-gap: 10px; }
   :root[data-shell='portal'] .catalog-filter-row > .catalog-filter-chips { order: 1; flex-basis: 100%; }
 }
+
+/* The Tools tab's shelves sit outside the results container the queries above read, so on a phone
+   their four columns stayed four. Two there, in the redesign. */
+@media (max-width: 639.98px) {
+  :root[data-shell='portal'] .capabilities-scroll > .catalog-discovery .catalog-feature-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

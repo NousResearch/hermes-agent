@@ -741,6 +741,13 @@
   :root[data-shell='portal'] .discovery-welcome-place-meta {
     min-inline-size: 0;
   }
+
+  /* Lines and examples wrap here, each to a different depth: the rows hang from their tops so every
+     name sits at the same offset, whichever of the two is the longer. */
+  :root[data-shell='portal'] .discovery-welcome-place:has([data-example]) {
+    align-items: flex-start;
+    padding-block: 0.75rem;
+  }
 }
 
 /* ── The empty chat: heading and starter ideas (18695:18388) ──────────────────────────────── */

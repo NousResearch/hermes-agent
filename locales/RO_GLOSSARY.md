@@ -1,5 +1,13 @@
 # Romanian (ro) localisation — consistency decisions
 
+## Source
+
+Maintained on the fork at https://github.com/idshdx/hermes-agent, branch
+`feature/ro-locale` (upstream: `NousResearch/hermes-agent`). Keep local work on
+that branch: `hermes update` is configured with
+`updates.parked_branch_strategy: update_in_place` so upstream `main` is merged
+into it rather than switching the checkout away.
+
 Applies to all four surfaces: `web/src/i18n/ro.ts`, `locales/ro.yaml` (core agent),
 `locales/ro.tui.yaml` (TUI), `locales/ro.desktop.yaml` (desktop).
 

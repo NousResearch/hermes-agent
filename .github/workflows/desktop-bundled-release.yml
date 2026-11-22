@@ -1379,7 +1379,8 @@ jobs:
           # This arch's one .dmg and one .zip and their blockmaps, none hidden: the globs below skip
           # hidden names, the uploader's Path.glob does not.
           shopt -s nullglob
-          unexpected="$(find "$root" -mindepth 1 \( -type d -o -type l -o -name '.*' -o ! \( -name "*-mac-${TARGET##*-}.dmg" -o -name "*-mac-${TARGET##*-}.zip" -o -name '*.blockmap' \) \) -print)"
+          unexpected="$(find "$root" -mindepth 1 \( -type d -o -type l -o -name '.*' -o ! \( -name "*-mac-${TARGET##*-}.dmg" -o -name "*-mac-${TARGET##*-}.zip" \
+            -o -name "*-mac-${TARGET##*-}.dmg.blockmap" -o -name "*-mac-${TARGET##*-}.zip.blockmap" \) \) -print)"
           for blockmap in "$root"/*.blockmap; do [ -f "${blockmap%.blockmap}" ] || unexpected+=" $blockmap"; done
           dmgs=("$root"/*.dmg)
           if [ "${#dmgs[@]}" -ne 1 ]; then unexpected+=" ${#dmgs[@]} DMGs"; fi

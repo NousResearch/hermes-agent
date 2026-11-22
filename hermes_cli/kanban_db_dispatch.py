@@ -1588,8 +1588,8 @@ def check_respawn_guard(
     # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
     #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
     #    An infrastructure spawn refusal (#114720) shares the cooldown: the host
-    #    condition is not the card's, so it retries forever, spaced, and never
-    #    reaches the breaker.
+    #    condition is not the card's (its text may still say 403), so it retries
+    #    forever, spaced, and reaches neither the breaker nor blocker_auth.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
     latest_run = conn.execute(
         "SELECT outcome, ended_at, metadata FROM task_runs "
@@ -1597,11 +1597,11 @@ def check_respawn_guard(
         "ORDER BY ended_at DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    if latest_run is not None and latest_run["outcome"] == "spawn_failed":
-        if rl_cooldown > 0 and _kb._json_dict(latest_run["metadata"]).get("infrastructure"):
-            ended_at = _kb._to_epoch(latest_run["ended_at"])
-            if ended_at is not None and (now - ended_at) < rl_cooldown:
-                return "infrastructure_cooldown"
+    infrastructure = (latest_run is not None and latest_run["outcome"] == "spawn_failed"
+                      and bool(_kb._json_dict(latest_run["metadata"]).get("infrastructure")))
+    ended_at = _kb._to_epoch(latest_run["ended_at"]) if infrastructure else None
+    if rl_cooldown > 0 and ended_at is not None and (now - ended_at) < rl_cooldown:
+        return "infrastructure_cooldown"
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
@@ -1621,7 +1621,7 @@ def check_respawn_guard(
     # benign commands such as ``claude auth status`` (#117097).
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+    if err and latest_outcome != "crashed" and not infrastructure and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL

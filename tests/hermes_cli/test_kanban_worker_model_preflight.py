@@ -360,7 +360,7 @@ def test_an_ip_literal_is_judged_by_its_scope(url, expected, monkeypatch):
 
 
 def test_a_pinned_card_spawns_without_reading_its_profiles_config(dispatch_profile, monkeypatch):
-    """A card with its own model never needs the profile's: a config backend outage must not defer it."""
+    """A card with its own model never reads the profile's config: an outage of that read alone must not defer it."""
     from hermes_cli import config_effective
     from hermes_cli.config_backend import ConfigBackendUnavailable
 
@@ -375,6 +375,54 @@ def test_a_pinned_card_spawns_without_reading_its_profiles_config(dispatch_profi
     monkeypatch.setattr(config_effective, "load_user_config_effective", unavailable)
     task_id, result, row, _, _ = _dispatch(profile, "model:\n  provider: openrouter\n", model_override="task-model")
     assert len(spawned) == 1 and result.spawned[0][0] == task_id and row.status == "running"
+
+
+def _plane_down(monkeypatch, profile, message="config plane unreachable"):
+    """Fail every config read of ``profile`` the way the remote backend does when its boot fetch fails."""
+    from hermes_cli import config_backend
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+
+    backend = config_backend.get_config_backend()
+    reads = {"read_user_doc", "read_user_doc_readonly", "read_user_layer", "version", "probe_readable", "locked"}
+
+    class PlaneDown:
+        def __getattr__(self, name):
+            def read(home, *args, **kwargs):
+                if Path(home) == profile:
+                    raise ConfigBackendUnavailable(message)
+                return getattr(backend, name)(home, *args, **kwargs)
+            return read if name in reads else getattr(backend, name)
+
+    monkeypatch.setattr(config_backend, "get_config_backend", PlaneDown)
+    return backend
+
+
+@pytest.mark.parametrize("pin", [{"model_override": "task-model"}, {}], ids=["pinned", "unpinned"])
+def test_a_card_defers_when_its_config_plane_is_down(pin, dispatch_profile, monkeypatch):
+    """The spawn binds the profile scope, which reads config, so even a pinned card must defer as an
+    infrastructure failure instead of letting ConfigBackendUnavailable (a SystemExit) escape the tick."""
+    profile, spawned = dispatch_profile
+    _plane_down(monkeypatch, profile)
+    _, result, task, _, runs = _dispatch(profile, "model:\n  provider: openrouter\n", **pin)
+    assert not spawned and not result.spawned
+    assert task.status == "ready" and task.consecutive_failures == 0
+    assert runs[-1].outcome == "spawn_failed" and runs[-1].metadata.get("infrastructure") is True
+
+
+def test_a_card_deferred_by_a_config_plane_403_spawns_once_the_plane_is_back(dispatch_profile, monkeypatch):
+    """The deferral stores the plane's text; "HTTP 403" in it must not park the card as an auth blocker."""
+    from hermes_cli import config_backend, kanban_db as kb, kanban_db_dispatch as dispatch
+    from hermes_cli.kanban_db_connect import connect_closing
+
+    profile, spawned = dispatch_profile
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+    backend = _plane_down(monkeypatch, profile, "Remote Config: HTTP 403 forbidden: instance token rejected")
+    task_id, *_ = _dispatch(profile, "model:\n  provider: openrouter\n")
+    assert not spawned
+    monkeypatch.setattr(config_backend, "get_config_backend", lambda: backend)
+    with connect_closing(board="work") as conn:
+        result = dispatch.dispatch_once(conn, board="work")
+        assert [s[0] for s in result.spawned] == [task_id] and kb.get_task(conn, task_id).status == "running"
 
 
 def test_an_unreadable_profile_config_is_left_to_the_owner_not_refused(dispatch_profile, monkeypatch):

@@ -165,6 +165,26 @@ def _verdict_reasoning() -> dict | None:
     return {"enabled": False}
 
 
+def _extract_verdict_text(content: object) -> str:
+    """Extract plain text from a string or structured content-part list (ignoring non-text/thinking blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                if part.get("type") == "text" and isinstance(part.get("text"), str):
+                    parts.append(part["text"])
+            elif getattr(part, "type", None) == "text":
+                text = getattr(part, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return ""
+
+
 def _smart_approve(command: str, description: str) -> str:
     """Ask the auxiliary LLM; return 'approve', 'deny', or 'escalate' (uncertain/failed).
 
@@ -204,7 +224,7 @@ def _smart_approve(command: str, description: str) -> str:
             reasoning_config=_verdict_reasoning(),
         )
         logger.debug("Smart approvals: LLM call completed in %.1fs", time.monotonic() - _smart_t0)
-        answer = (response.choices[0].message.content or "").strip().upper()
+        answer = _extract_verdict_text(response.choices[0].message.content).strip().upper()
         if not answer:
             # WARNING, not DEBUG: an empty-but-200 body is an infrastructure failure, not a
             # verdict — typically finish_reason=="length" after a reasoning model spent the

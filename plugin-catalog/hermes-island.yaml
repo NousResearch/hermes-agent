@@ -2,7 +2,7 @@ name: hermes-island
 repo: https://github.com/hunterbohm/hermes-island
 sha: 2433366e6150ea6be637bd92fe17be7f44e3b97e
 subdir: hermes-plugin
-description: 'Hermes Island: a Dynamic Island style voice window on macOS for talking to Hermes. The island_call_back tool rings it when a job is done and says the result when you answer; `hermes island status|build|setup` builds the app at the same pinned commit and points its talks at this Hermes.'
+description: "Hermes Island: a Dynamic Island style voice window on macOS for talking to Hermes. The island_call_back tool rings it when a job is done and says the result when you answer; `hermes island status|build|setup` builds the app at the same pinned commit and points its talks at this Hermes. Disclosure — the island_call_back tool runs the Hermes Island app's command line on this Mac, or on another Mac through the ssh-style transport command you set, and passes the job result to it to be spoken aloud; `hermes island build` (run by you) builds the app from a local checkout or, when there is none, clones the app's GitHub repository at the exact commit Hermes installed this plugin from into ~/Library/Caches/dev.hermes-island.app/source, then runs that repository's own build scripts (which download a pinned FluidAudio release and checksum-pinned speech models from huggingface.co); `--install` replaces /Applications/Hermes Island.app and can turn on its open-at-login item."
 maintainer: hunterbohm
 tier: community
 category: voice

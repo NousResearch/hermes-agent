@@ -109,8 +109,18 @@ function createHoverSubmenus() {
     closeTimer = 0
   }
 
+  const close = () => {
+    cancelOpen()
+
+    if (current) {
+      current(false)
+      current = null
+    }
+  }
+
   return {
     cancelOpen,
+    close,
     dispose: () => {
       cancelOpen()
       keep()
@@ -249,7 +259,26 @@ function DropdownMenuContent({
   const container = usePopoverPortalContainer(portalContainer)
   const [hoverSubmenus] = React.useState(createHoverSubmenus)
 
-  React.useEffect(() => hoverSubmenus.dispose, [hoverSubmenus])
+  React.useEffect(() => {
+    const handleScrollOrWheel = (event: Event) => {
+      const target = event.target as HTMLElement | null
+
+      if (target?.closest?.('[data-slot="dropdown-menu-sub-content"]')) {
+        return
+      }
+
+      hoverSubmenus.close()
+    }
+
+    window.addEventListener('scroll', handleScrollOrWheel, true)
+    window.addEventListener('wheel', handleScrollOrWheel, { capture: true, passive: true })
+
+    return () => {
+      window.removeEventListener('scroll', handleScrollOrWheel, true)
+      window.removeEventListener('wheel', handleScrollOrWheel, true)
+      hoverSubmenus.dispose()
+    }
+  }, [hoverSubmenus])
 
   return (
     <DropdownMenuPrimitive.Portal container={container}>
@@ -516,6 +545,7 @@ function DropdownMenuSubContent({
         // the submenu never gets clipped.
         collisionPadding={collisionPadding}
         data-slot="dropdown-menu-sub-content"
+        hideWhenDetached
         onPointerMove={event => {
           // The pointer made it into the submenu: cancel a pending hover close.
           hoverSubmenus?.keep()

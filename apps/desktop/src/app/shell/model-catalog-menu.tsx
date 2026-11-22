@@ -764,7 +764,13 @@ export function ModelCatalogMenu({
           {copy.noModels}
         </DropdownMenuItem>
       ) : hasList ? (
-        <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5" ref={listRef}>
+        <div
+          className="max-h-[max(150px,30dvh)] overflow-y-auto overscroll-contain py-0.5"
+          onScroll={event => {
+            event.stopPropagation()
+          }}
+          ref={listRef}
+        >
           {/* Favorites first — the shortcut the star exists for. The section
               paints nothing with no favorites, and nothing while searching,
               where every match is listed in its provider's place instead. */}

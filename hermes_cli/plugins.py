@@ -426,10 +426,6 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                 # not come back (disabled, removed, or omitted from this discovery pass) so e.g. a disabled
                 # auth plugin's provider does not stay live process-wide until restart. See #91701.
                 self._evict_stale_persistent_registrations()
-                # load_hermes_dotenv() ran at import, before plugin secret sources existed: re-pull.
-                # Plugin secret sources register during discover; the initial load_hermes_dotenv() already
-                # ran at import time. Re-pull so the first process sees plugin backends (tracking #64177).
-                self._refresh_secret_sources_after_discovery()
                 if force:
                     # config.yaml shell hooks / outbound webhooks live in ``_hooks`` but are
                     # config-owned; unload() wiped them and cannot restore them.
@@ -444,6 +440,23 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             except BaseException:
                 self._discovered = False
                 raise
+        # The secret refresh must NOT run under ``_discovery_lock``: it re-enters config/env
+        # machinery that takes the config bridge's YAML_ENV_LOCK (refresh_installed_secret_scope
+        # -> owner_secret_scope -> launch_secret_scope -> follow_bridged_env), while
+        # ``load_gateway_config`` holds YAML_ENV_LOCK across ``discover_plugins()`` (its YAML
+        # layer calls it inside the transaction). Under ``_discovery_lock`` the two orderings
+        # invert and the pair deadlocks — freezing the serve loop with them, which enters
+        # launch_secret_scope synchronously in its plugin-API middleware (captured live
+        # 2026-11-22, logs/desktop-loop-watchdog.log: every fresh backend wedged ~90s after
+        # spawn). Still inside the manager's home scope so the re-pull resolves THIS home.
+        with _plugin_home_scope(self.home_path):
+            try:
+                # load_hermes_dotenv() ran at import, before plugin secret sources existed: re-pull.
+                # Plugin secret sources register during discover; the initial load_hermes_dotenv() already
+                # ran at import time. Re-pull so the first process sees plugin backends (tracking #64177).
+                self._refresh_secret_sources_after_discovery()
+            except Exception:
+                logger.debug("post-discovery secret refresh failed", exc_info=True)
         # Outside the lock: a listener (the gateway's re-wire) may read the registry from another thread.
         self._notify_plugin_loaded(loaded_before)
 

@@ -8,8 +8,11 @@ lefthook: "sh -c 'if test -f scripts/run-lefthook; then exec sh scripts/run-left
 # commit no job matches never sets up an environment. Absolute: `root:` jobs run in a subdir.
 # `env -u GIT_DIR`: git exports GIT_DIR to hooks in a linked worktree, and with it set
 # `--show-toplevel` answers the job's cwd (apps/desktop/), not the checkout.
+# No double quotes: on Windows lefthook runs `sh.exe -c "<run>"` without escaping, so a `"`
+# in the value ends that argument early. `IFS=` and `set -f` stand in for the quotes, keeping
+# a checkout path with spaces in one word; the job's arguments arrive unchanged as `$@`.
 templates:
-  just: sh "$(env -u GIT_DIR git rev-parse --show-toplevel)/scripts/hook-just"
+  just: sh -c 'set -f; IFS=; exec sh $(env -u GIT_DIR git rev-parse --show-toplevel)/scripts/hook-just $@' hook-just
 
 pre-commit:
   jobs:

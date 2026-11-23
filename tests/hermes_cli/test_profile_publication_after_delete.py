@@ -147,6 +147,7 @@ def test_an_import_stages_privately_until_its_files_are_tightened(profile_env, m
 
     def record(staged):
         modes.append(staged.parent.stat().st_mode & 0o777)
+        assert staged.parent.parent == profiles.get_profile_dir("private").parent  # beside the target: one rename
         real(staged)
 
     monkeypatch.setattr(profiles_initialization, "prepare_imported_tree", record)

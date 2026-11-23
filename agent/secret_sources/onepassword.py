@@ -326,6 +326,11 @@ class OnePasswordSource(SecretSource):
 
         result.secrets = secrets
         result.warnings.extend(fetch_warnings)
+        # A pull that resolved nothing is a failure, not an empty success: a per-ref `op read`
+        # error is only a warning, so a total outage reported ok=True with zero secrets.
+        # A partial failure stays ok=True: the resolved refs are usable.
+        if fetch_warnings and not secrets:
+            return result.fail(fetch_warnings[0], _classify_op_error(fetch_warnings[0]))
         return result
 
 

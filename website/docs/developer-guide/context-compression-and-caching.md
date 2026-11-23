@@ -236,6 +236,24 @@ attempt anyway:
   the next failure would extend the ladder (#100661). If that attempt fails,
   the cooldown is recorded normally.
 
+#### Summarizer input shape
+
+Lean mode sends the compacted turns in their real roles — user text as `role=user`, assistant tool
+calls as `tool_calls`, tool output as `role=tool` — so text a tool printed can never arrive as a user
+turn and be carried forward as a forged approval (#146750). That shape needs an endpoint that accepts
+tool turns. When the summary route answers with an error naming tool calls or tool messages, that same
+route is retried once with the flattened transcript (the serializer `tail_mode: legacy` uses). The
+verdict is remembered per route identity — `summary_model`, `provider`, `base_url` — not per session,
+so later compactions on that route go straight to the flat shape while a different route (a configured
+model change, the fallback to the main model) gets the typed shape again. The retry re-resolves
+`auxiliary.compression`, so a stalled primary's one-shot pin is spent by the refused attempt; the main
+model is the destination only when the configured route has no other rung.
+
+The same retry covers the other half of the failure: an endpoint that accepts the typed rows but answers
+200 with tool calls and no text, because the tool history alone is enough to make an agent-trained model
+continue the work instead of summarizing. The flat transcript drops that cue, so the second attempt is a
+summary instead of an empty-content failure.
+
 #### Attempt telemetry
 
 Every `compress_context` call that returns logs one content-free INFO line,

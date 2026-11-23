@@ -59,6 +59,7 @@ class FailoverReason(enum.Enum):
     role_alternation = "role_alternation"  # Strict chat template rejected adjacent same-role messages — merge them for this destination and retry
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
+    tool_turns_unsupported = "tool_turns_unsupported"  # Endpoint takes no tool turns at all (summarizer lanes) — flatten the transcript and retry
     reasoning_mandatory = "reasoning_mandatory"  # Route rejects reasoning: {enabled: false} — send the disable no more on this route and retry
 
     # Provider-specific
@@ -286,6 +287,16 @@ _MULTIMODAL_TOOL_CONTENT_PATTERNS = (
     # Console Go / pydantic-v2 relays behind opencode-go (422, param ``messages.N.tool.content.str``, #104731).
     "tool_call.content must be string", "tool.content.str", "input should be a valid string",
     "chatcompletionrequesttoolmessagecontent",
+)
+
+# An endpoint that accepts no tool turns at all (a summarizer lane, some proxies). Unlike the
+# list-content rejections above, nothing is wrong with the *content*: the whole conversation has to
+# travel as text. Deliberately excludes bare "tools are not supported", which also appears when a
+# provider rejects tool *declarations* ("Unsupported parameter: tools"). (#158684)
+_TOOL_TURNS_UNSUPPORTED_PATTERNS = (
+    "tool calls and tool messages are not supported", "tool calls are not supported",
+    "tool messages are not supported", "does not support tool calls", "does not support tool messages",
+    "'tool' role is not supported", "`tool` role is not supported",
 )
 
 # Local-inference memory/resource-ceiling rejections (oMLX/MLX memory guard,
@@ -579,6 +590,9 @@ _V_PAYLOAD_TOO_LARGE = _v(_R.payload_too_large, should_compress=True)
 _V_OVERLOADED, _V_SERVER_ERROR, _V_TIMEOUT, _V_UNKNOWN = map(_v, (_R.overloaded, _R.server_error, _R.timeout, _R.unknown))
 _V_IMAGE_TOO_LARGE, _V_IMAGE_CORRUPT = _v(_R.image_too_large), _v(_R.image_corrupt)
 _V_MULTIMODAL, _V_INVALID_ENCRYPTED = _v(_R.multimodal_tool_content_unsupported), _v(_R.invalid_encrypted_content)
+# Same recovery flags as format_error: no other provider takes this request either, but the main
+# fallback chain still owns it (a different model may accept tool turns).
+_V_TOOL_TURNS_UNSUPPORTED = _v(_R.tool_turns_unsupported, **_ABORT_FALLBACK)
 _V_REASONING_MANDATORY = _v(_R.reasoning_mandatory, should_compress=False, should_fallback=False)
 # Same recovery hints as format_error: consumers without a merge-and-retry step (the main loop
 # already merges adjacent users before the call) keep aborting to the fallback chain.
@@ -717,7 +731,7 @@ def _first_match(error_msg: str, rules: Sequence[tuple[Sequence[str], Any]]) -> 
 # bytes need strip not shrink; image-shrink is cheaper than context compression.
 _IMAGE_TOOL_RULES = (
     (_MULTIMODAL_TOOL_CONTENT_PATTERNS, _V_MULTIMODAL), (_IMAGE_CORRUPT_PATTERNS, _V_IMAGE_CORRUPT),
-    (_IMAGE_TOO_LARGE_PATTERNS, _V_IMAGE_TOO_LARGE),
+    (_IMAGE_TOO_LARGE_PATTERNS, _V_IMAGE_TOO_LARGE), (_TOOL_TURNS_UNSUPPORTED_PATTERNS, _V_TOOL_TURNS_UNSUPPORTED),
 )
 
 # Overflow signals arriving as 5xx (llama.cpp reports overflow as 500; busy /

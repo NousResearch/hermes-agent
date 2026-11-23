@@ -114,8 +114,11 @@ def hosted_webapp(monkeypatch):
     monkeypatch.setattr(status, "_hosted_webapp_url", lambda: _WEBAPP_URL)
 
 
-def test_status_names_the_webapp_to_a_signed_in_hosted_dashboard(gated_client, hosted_webapp):
-    assert "webapp_url" not in gated_client.get("/api/status").json()  # signed out
+def test_status_names_the_webapp_to_a_signed_in_hosted_dashboard(gated_client, monkeypatch):
+    from hermes_cli.web_routers import status
+    monkeypatch.setattr(status, "_hosted_webapp_url", lambda: pytest.fail("asked for a signed-out caller"))
+    assert "webapp_url" not in gated_client.get("/api/status").json()  # signed out: gateway not queried
+    monkeypatch.setattr(status, "_hosted_webapp_url", lambda: _WEBAPP_URL)
     _login(gated_client)
     assert gated_client.get("/api/status").json()["webapp_url"] == _WEBAPP_URL
 
@@ -130,17 +133,34 @@ def test_status_omits_the_webapp_on_the_webapp_itself(gated_client, hosted_webap
     assert "webapp_url" not in gated_client.get("/api/status").json()
 
 
-@pytest.mark.parametrize("hosted,webapp,expected", [
-    (True, {"enabled": True, "public_url": _WEBAPP_URL + "/"}, _WEBAPP_URL),
-    (False, {"enabled": True, "public_url": _WEBAPP_URL}, None),  # not Hermes Cloud
-    (True, {"enabled": False, "public_url": _WEBAPP_URL}, None),  # Webapp not seeded on
-    (True, {"enabled": True}, None),
-    (True, {"enabled": True, "public_url": "javascript:alert(1)"}, None),
-    (True, None, None),
+def _access(state="serving", *, enabled=True, public_url=_WEBAPP_URL, served_port=9120):
+    """``webapp_access.access_status()`` for a config asking for the Webapp on port 9120."""
+    url = f"http://127.0.0.1:{served_port}" if state == "serving" else None
+    return {"enabled": enabled, "port": 9120, "public_url": public_url,
+            "gateway": {"state": state, "url": url, "reason": None}}
+
+
+@pytest.mark.parametrize("hosted,access,expected", [
+    (True, _access(), _WEBAPP_URL),
+    (False, _access(), None),  # not Hermes Cloud
+    (True, _access(enabled=False), None),  # Webapp not seeded on
+    (True, _access(public_url=""), None),
+    (True, _access("starting"), None),  # gateway restarting onto the config
+    (True, _access("stopped"), None),  # no gateway answers
+    (True, _access("unavailable"), None),
+    (True, _access(served_port=9999), None),  # serving, but not the configured port yet
 ])
-def test_hosted_webapp_url(monkeypatch, hosted, webapp, expected):
-    from hermes_cli import web_server_files
+def test_hosted_webapp_url(monkeypatch, hosted, access, expected):
+    from hermes_cli import web_server_files, webapp_access
     from hermes_cli.web_routers import status
     monkeypatch.setattr(web_server_files, "_default_hermes_root_is_opt_data", lambda: hosted)
-    monkeypatch.setattr(status, "load_config", lambda: {"webapp": webapp} if webapp is not None else {})
+    monkeypatch.setattr(webapp_access, "access_status", lambda: access)
     assert status._hosted_webapp_url() == expected
+
+
+def test_local_dashboard_never_asks_the_gateway_about_the_webapp(monkeypatch):
+    from hermes_cli import web_server_files, webapp_access
+    from hermes_cli.web_routers import status
+    monkeypatch.setattr(web_server_files, "_default_hermes_root_is_opt_data", lambda: False)
+    monkeypatch.setattr(webapp_access, "access_status", lambda: pytest.fail("queried the gateway"))
+    assert status._hosted_webapp_url() is None

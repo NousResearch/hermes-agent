@@ -7,6 +7,7 @@ row's title made the status bar badge (and ``/title``) go blank after the first 
 The CLI's store is its ``GatewaySessionStore`` on a connection to a real session authority in this
 process; the rows are seeded and read back through the owner's storage interface handle.
 """
+import time
 from datetime import datetime
 
 import pytest
@@ -50,6 +51,12 @@ def test_status_bar_and_title_command_read_the_compression_tip(owner, capsys):
     root = cli.session_id
     _rotated(rows, root)
     assert rows.sessions.get_title(root) is None  # the precondition the CLI used to miss
+    # The first frame never waits for the read-only reader to open: the title is blank until the
+    # warm-up thread has opened it, then the next repaint reads the compression tip's title.
+    assert cli._get_status_bar_session_title() == ""
+    deadline = time.monotonic() + 5
+    while getattr(cli, "_status_bar_title_warming", False) and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert cli._get_status_bar_session_title() == "weekly digest"
     cli._cmd_title("/title")
     assert "weekly digest" in capsys.readouterr().out

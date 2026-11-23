@@ -18,6 +18,10 @@ from agent.pet import render as pet_render
 from hermes_cli.banner import _format_context_length
 from typing import Any, Dict, Optional
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 _SB = "class:status-bar"
 _DIM = "class:status-bar-dim"
 _STRONG = "class:status-bar-strong"
@@ -413,6 +417,14 @@ class CLIStatusBarMixin:
         title = pending
         db = getattr(self, "_session_db", None)
         if not pending and db is not None and session_id:
+            if getattr(db, "_reader", True) is None:
+                # The read-only reader is not open yet: opening it imports the persistence layer and
+                # costs a few hundred ms. The first frame must not wait for it, so open it off the
+                # render path and repaint when the title is known.
+                self._status_bar_title_session_id = session_id
+                self._status_bar_title_checked_at = now
+                self._warm_status_bar_title(db)
+                return str(getattr(self, "_status_bar_title_cache", "") or "")
             try:
                 title = str(db.get_session_title(self._title_session_id()) or "").strip()
             except Exception:
@@ -421,6 +433,35 @@ class CLIStatusBarMixin:
         self._status_bar_title_cache = title
         self._status_bar_title_checked_at = now
         return title
+
+    def _warm_status_bar_title(self, db: Any) -> None:
+        """Open the session reader on a worker thread, then expire the title cache and repaint."""
+        if getattr(self, "_status_bar_title_warming", False):
+            return
+        self._status_bar_title_warming = True
+
+        def _run() -> None:
+            try:
+                # Both lookups open the reader; the title itself is re-read on repaint.
+                db.get_session_title(self._title_session_id())
+            except Exception:  # health: allow BLE001 -- best-effort warm-up; the render path reads the title itself
+                logger.debug("status bar title warm-up failed", exc_info=True)
+            finally:
+                self._status_bar_title_warming = False
+                # Reader open: expire the cache so the next render reads the title. No state.db yet
+                # (the gateway creates it on its first start): keep the 1.5 s polling interval.
+                opened = getattr(db, "_reader", None) is not None
+                self._status_bar_title_checked_at = 0.0 if opened else time.monotonic()
+                app = getattr(self, "_app", None)
+                if opened and app is not None:
+                    try:
+                        app.invalidate()
+                    except Exception:  # health: allow BLE001 -- a repaint request must never break the worker
+                        logger.debug("status bar repaint request failed", exc_info=True)
+
+        from agent.memory_provider import spawn_context_thread
+
+        spawn_context_thread(_run, name="status-bar-title-warm").start()
 
     @staticmethod
     def _status_bar_display_width(text: str) -> int:

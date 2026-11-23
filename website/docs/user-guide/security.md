@@ -424,8 +424,10 @@ Safety rules:
   output. Masked text is never used as an allowlist pattern: a command whose
   glob would embed a credential (`TOKEN=… docker …`) is not proposed. The
   session database itself still holds the command as it was executed.
-- A tool-call id used by more than one call (some providers reuse ids across
-  sessions) is not counted, so those providers may see fewer proposals.
+- A tool-call id that two different commands share anywhere in the stored
+  history, inside the `--days` window or not (some providers reuse ids across
+  sessions), is not counted, and an id repeated with the same command counts
+  once, so those providers may see fewer proposals.
 
 Useful flags: `--days N` (history window, default 90), `--min-count N`
 (minimum approvals to qualify, default 2), `--limit N`, and `--db PATH`.

@@ -137,7 +137,7 @@ def _iter_terminal_calls(messages, since_ts: float) -> Iterator[tuple[str, str]]
             if fn.get("name") != "terminal":
                 continue
             args = _json_or_none(fn.get("arguments") or "{}")
-            if args is None:
+            if not isinstance(args, dict):  # a rejected call can carry `[]` or a bare string
                 continue
             command = args.get("command")
             if isinstance(command, str) and command.strip():
@@ -149,7 +149,10 @@ def _user_approved_tool_call_ids(messages, since_ts: float) -> set:
     ``approval`` note counts: the command's output, which the agent controls, may print the same words."""
     approved = set()
     for tool_call_id, content in messages.blocked_tool_result_payloads(since_ts=since_ts):
-        payload = _json_or_none(content)
+        try:  # the tool's own JSON: subdirectory hints, LSP verdicts and plugin notices are appended after it
+            payload = json.JSONDecoder().raw_decode(content)[0]
+        except (TypeError, ValueError):
+            continue
         note = payload.get("approval") if isinstance(payload, dict) else None
         if isinstance(note, str) and _USER_APPROVED_NOTE.fullmatch(note):
             approved.add(tool_call_id)
@@ -171,11 +174,14 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
     records: list[tuple[str, str]] = []
     with open_persistence_reader(path) as store:
         approved = _user_approved_tool_call_ids(store.messages, since_ts)
-        calls = list(_iter_terminal_calls(store.messages, since_ts))
+        # A compaction keeps the archived row next to its carried copy: the same call, stored twice.
+        calls = list(dict.fromkeys(_iter_terminal_calls(store.messages, since_ts)))
         # Call ids are unique within a session only (a provider that sends none gets ids derived from the
         # call, others number them from call_0), and nothing here ties a result to its session, so an id
-        # used by more than one call could credit one session's approval to another's command.
-        id_uses = Counter(tool_call_id for tool_call_id, _command in calls)
+        # two different commands share could credit one session's approval to another's command. Ids are
+        # counted over all history: an approval wait can carry a result past the cutoff, not its call.
+        history = calls if since_ts <= 0 else dict.fromkeys(_iter_terminal_calls(store.messages, 0.0))
+        id_uses = Counter(tool_call_id for tool_call_id, _command in history)
         for tool_call_id, command in calls:
             if tool_call_id not in approved or id_uses[tool_call_id] > 1:
                 continue

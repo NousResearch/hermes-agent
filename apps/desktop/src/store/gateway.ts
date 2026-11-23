@@ -2171,6 +2171,10 @@ export async function redialProfileGateway(profile: string, { shown = false } = 
   const key = normKey(profile)
   const entry = g.secondaries.get(key)
 
+  // What failed on the route the profile left says nothing about its new one.
+  g.reauthFailures.delete(key)
+  g.dialFailures.delete(key)
+
   if (!entry || !isLegacySecondary(entry)) {
     // Not dialed: its next dial reads the new route.
     if (shown && key !== g.primaryProfile && g.activeKey === g.primaryProfile) {
@@ -2181,8 +2185,6 @@ export async function redialProfileGateway(profile: string, { shown = false } = 
   }
 
   const wasActive = key === g.activeKey
-  g.reauthFailures.delete(key)
-  g.dialFailures.delete(key)
   reactivatingScopes().add(key)
   disposeSecondary(entry)
   g.secondaries.delete(key)

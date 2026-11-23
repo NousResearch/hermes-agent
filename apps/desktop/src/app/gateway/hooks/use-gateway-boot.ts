@@ -288,21 +288,41 @@ interface GatewayBootOptions {
 async function redialMovedProfile(
   profile: string,
   redialPrimary: (profile: string) => Promise<boolean>,
-  otherGateway: boolean
+  otherGateway: boolean,
+  stopped: () => boolean
 ): Promise<boolean> {
   try {
     if (!otherGateway && profile === normalizeProfileKey(primaryGatewayProfile())) {
       return await redialPrimary(profile)
     }
-
-    const shown = normalizeProfileKey($activeGatewayProfile.get()) === profile
-
-    await redialProfileGateway(profile, { shown: shown && !(otherGateway && isActivePrimary()) })
   } catch (error) {
     console.warn(`[gateway] redial of "${profile}" after its backend moved failed`, error)
+
+    return true
   }
 
-  return true
+  const shown = () => normalizeProfileKey($activeGatewayProfile.get()) === profile
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await redialProfileGateway(profile, { shown: shown() && !(otherGateway && isActivePrimary()) })
+
+      return true
+    } catch (error) {
+      console.warn(`[gateway] redial of "${profile}" after its backend moved failed`, error)
+    }
+
+    // The route could not be read, so a profile the window shows through the
+    // primary socket is still on the backend it left (this computer's own,
+    // when a plugin took the profile over). Ask again, with the reconnect
+    // backoff. A profile that reached a socket of its own meanwhile is left
+    // on it, and one the window no longer shows asks nothing.
+    await new Promise(resolve => setTimeout(resolve, reconnectBackoffDelayMs(attempt)))
+
+    if (stopped() || !isActivePrimary()) {
+      return true
+    }
+  }
 }
 
 /** A registered gateway on another machine, not this computer's own backend ("This device"). */
@@ -950,7 +970,8 @@ export function useGatewayBoot({
         (await redialMovedProfile(
           normalizeProfileKey(detail.profile),
           redialPrimaryInPlace,
-          isOtherGateway(primaryConnection)
+          isOtherGateway(primaryConnection),
+          () => cancelled
         ))
       ) {
         return

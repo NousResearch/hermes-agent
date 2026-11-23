@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $apiRequestScope } from '@/api/client'
 import { $desktopBoot } from '@/store/boot'
 import { $connectionsRegistry, _resetConnectionsForTests } from '@/store/connections'
-import { closeSecondaryGateways, isActivePrimary } from '@/store/gateway'
+import { closeSecondaryGateways, isActivePrimary, requestGatewayForProfile } from '@/store/gateway'
 import { $gatewaySwitching, endGatewaySwitch } from '@/store/gateway-switch'
 import { clearNotifications } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, ensureGatewayAgent, ensureGatewayProfile } from '@/store/profile'
@@ -287,6 +287,153 @@ describe('a plugin re-routes one profile', () => {
     expect($connection.get()?.baseUrl).toBe(launcherConn.baseUrl)
     expect(beforeConnectionSwitch).not.toHaveBeenCalled()
     expect($gatewaySwitching.get()).toBe(false)
+  })
+
+  // `default` is the window's primary and `work` rides its socket (the one host backend) until a
+  // plugin takes it over. The next `world.failLookups` route lookups for `work` reject.
+  function sharedThenSandboxed(world: { failLookups: number; sandboxed: boolean }) {
+    const desktop = fakeDesktop()
+    const sharedWork = { ...primaryConn, profile: 'work', sharedPrimary: true }
+    const launcherWork = { ...launcherConn, profile: 'work' }
+
+    desktop.getConnection.mockImplementation(async (profile?: null | string) => {
+      const key = (profile ?? '').trim()
+
+      if (!key || key === 'default') {
+        return primaryConn
+      }
+
+      if (world.failLookups > 0) {
+        world.failLookups -= 1
+
+        throw new Error('route lookup failed')
+      }
+
+      return world.sandboxed ? launcherWork : sharedWork
+    })
+    desktop.getGatewayWsUrl.mockImplementation(async (profile?: unknown) =>
+      profile === 'work' && world.sandboxed ? launcherWork.wsUrl : primaryConn.wsUrl
+    )
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    const workLookups = () => desktop.getConnection.mock.calls.filter(([profile]) => profile === 'work').length
+
+    return { launcherWork, workLookups }
+  }
+
+  const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+  it('a route lookup that fails at the move is asked again until it answers, so the window leaves the host backend', async () => {
+    const world = { failLookups: 0, sandboxed: false }
+
+    sharedThenSandboxed(world)
+    render(<Harness />)
+    await flushAsync()
+    vi.useRealTimers()
+    await ensureGatewayProfile('work')
+    expect(isActivePrimary()).toBe(true)
+
+    // The plugin took `work` over; the first two lookups of its new route reject.
+    world.sandboxed = true
+    world.failLookups = 2
+    act(() => connectionApplied?.({ profile: 'work' }))
+
+    for (let i = 0; i < 300 && isActivePrimary(); i += 1) {
+      await pause(10)
+    }
+
+    await pause(20)
+    vi.useFakeTimers()
+
+    // On the plugin's backend: the host backend no longer gets what this window sends for `work`.
+    expect(isActivePrimary()).toBe(false)
+    expect($activeGatewayProfile.get()).toBe('work')
+    expect($connection.get()?.baseUrl).toBe(launcherConn.baseUrl)
+  })
+
+  it.each([
+    { label: 'the window shows another profile', leave: () => ensureGatewayProfile('default') },
+    { label: 'the window closes', leave: async () => cleanup() }
+  ])('the lookup is not asked again once $label', async ({ leave }) => {
+    const world = { failLookups: 0, sandboxed: false }
+    const { workLookups } = sharedThenSandboxed(world)
+
+    render(<Harness />)
+    await flushAsync()
+    vi.useRealTimers()
+    await ensureGatewayProfile('work')
+
+    world.sandboxed = true
+    world.failLookups = Number.POSITIVE_INFINITY
+    act(() => connectionApplied?.({ profile: 'work' }))
+    await pause(50)
+    await leave()
+
+    const asked = workLookups()
+
+    // Longer than the wait before the next attempt would be.
+    await pause(1300)
+    vi.useFakeTimers()
+
+    expect(asked).toBeGreaterThan(0)
+    expect(workLookups()).toBe(asked)
+  })
+
+  it('a retry leaves the profile alone once a newer move has put it on its own socket', async () => {
+    const world = { failLookups: 0, sandboxed: false }
+    const { launcherWork } = sharedThenSandboxed(world)
+
+    render(<Harness />)
+    await flushAsync()
+    vi.useRealTimers()
+    await ensureGatewayProfile('work')
+
+    // The first move's lookup fails and its redial waits; the second move's redial lands at once.
+    world.sandboxed = true
+    world.failLookups = 1
+    act(() => connectionApplied?.({ profile: 'work' }))
+    await pause(5)
+    act(() => connectionApplied?.({ profile: 'work' }))
+
+    for (let i = 0; i < 100 && isActivePrimary(); i += 1) {
+      await pause(10)
+    }
+
+    // Longer than the first redial's wait.
+    await pause(450)
+    vi.useFakeTimers()
+
+    expect(isActivePrimary()).toBe(false)
+    expect(FakeWebSocket.instances.filter(socket => socket.url === launcherWork.wsUrl)).toHaveLength(1)
+  })
+
+  it("a lookup that failed before the move does not hold the moved profile's next background request", async () => {
+    const world = { failLookups: 0, sandboxed: false }
+    const { launcherWork } = sharedThenSandboxed(world)
+
+    render(<Harness />)
+    await flushAsync()
+    vi.useRealTimers()
+
+    // The window shows `default`. A background request for `work` whose route lookup fails is
+    // recorded as that profile's failed dial, and background requests then wait out a cooldown.
+    world.failLookups = 1
+    await expect(requestGatewayForProfile('work', 'session.list', {})).rejects.toThrow('route lookup failed')
+
+    world.sandboxed = true
+    act(() => connectionApplied?.({ profile: 'work' }))
+    await pause(30)
+
+    // The fake socket answers no request, so a request that was sent ends at its own timeout.
+    const outcome = await requestGatewayForProfile('work', 'session.list', {}, 50).then(
+      () => 'answered',
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    )
+
+    vi.useFakeTimers()
+
+    expect(outcome).not.toMatch(/reconnecting/)
+    expect(FakeWebSocket.instances.some(socket => socket.url === launcherWork.wsUrl)).toBe(true)
   })
 
   it('a sandboxed profile switched off moves back onto the shared primary and the window stays on it', async () => {

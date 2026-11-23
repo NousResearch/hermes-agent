@@ -158,9 +158,10 @@ def _keyless_backend() -> Optional[str]:
 def _managed_web_search() -> bool:
     """True when web_search is on the managed Nous route: the stored ``nous`` selection (a
     ``web.search_backend: nous`` pin, else the shared one), or a never-configured install whose
-    autodetect lands on the gateway — the entitled Firecrawl gateway, or free Perplexity fast search
-    for any Nous identity when nothing else is configured (search-only: the extract ladder is
-    untouched). A stored vendor selection never is."""
+    autodetect lands on the entitled Firecrawl gateway with no direct search-only key (SearXNG,
+    Brave; see ``_direct_search_only_backend``), or on nothing while free Perplexity fast search
+    is open to any Nous identity (search-only: the extract ladder is untouched). A stored vendor
+    selection never is."""
     search_pin = _configured_backend("search_backend")
     if search_pin:
         return search_pin == NOUS_MANAGED_PROVIDER

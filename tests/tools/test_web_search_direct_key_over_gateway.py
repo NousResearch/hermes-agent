@@ -14,14 +14,13 @@ _KEYS = (
 )
 
 
-def _env(monkeypatch, raw_web=None, selection=None, **env):
+def _env(monkeypatch, raw_web=None, **env):
     from tools import tool_backend_helpers as helpers
     from tools import web_tools
 
     raw_web = dict(raw_web or {})
     monkeypatch.setattr(web_tools, "_load_web_config", lambda: dict(raw_web))
     monkeypatch.setattr(helpers, "_raw_section", lambda section: dict(raw_web) if section == "web" else None)
-    monkeypatch.setattr(web_tools, "read_selection", lambda name: selection)
     for var in _KEYS:
         monkeypatch.delenv(var, raising=False)
     for var, value in env.items():
@@ -44,18 +43,19 @@ def test_search_only_key_beats_gateway_for_search_but_extract_stays_on_gateway(m
     assert wt._get_extract_backend() == "firecrawl"
 
 
-def test_stored_nous_selection_still_routes_search_to_managed(monkeypatch):
-    wt = _env(monkeypatch, {"backend": "nous"}, selection="nous", BRAVE_SEARCH_API_KEY="k")
+@pytest.mark.parametrize("raw_web", [{"backend": "nous"}, {"use_gateway": True}])  # use_gateway: legacy shim
+def test_stored_nous_selection_still_routes_search_to_managed(monkeypatch, raw_web):
+    wt = _env(monkeypatch, raw_web, BRAVE_SEARCH_API_KEY="k")
 
     assert wt._managed_web_search() is True
     assert wt._get_search_backend() == "perplexity"
 
 
 def test_stored_search_pin_and_stored_backend_keep_winning(monkeypatch):
-    wt = _env(monkeypatch, {"search_backend": "exa"}, selection="exa", BRAVE_SEARCH_API_KEY="k")
+    wt = _env(monkeypatch, {"search_backend": "exa"}, BRAVE_SEARCH_API_KEY="k")
     assert wt._get_search_backend() == "exa"
 
-    wt = _env(monkeypatch, {"backend": "firecrawl"}, selection="firecrawl", BRAVE_SEARCH_API_KEY="k")
+    wt = _env(monkeypatch, {"backend": "firecrawl"}, BRAVE_SEARCH_API_KEY="k")
     assert wt._get_search_backend() == "firecrawl"
 
 

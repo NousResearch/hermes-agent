@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const api = vi.hoisted(() => ({ hermesApi: vi.fn() }))
 
-vi.mock('@/api/client', () => ({ hermesApi: api.hermesApi }))
+// Partial: the stores this module loads read other exports of the client (the request scope).
+vi.mock('@/api/client', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  hermesApi: api.hermesApi
+}))
 
 import { backendTransitionFor, beginBackendTransition, resetBackendTransitionsForTests } from './backend-transition'
 import {

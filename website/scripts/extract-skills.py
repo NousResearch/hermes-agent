@@ -294,19 +294,27 @@ def load_git_dates() -> dict[str, dict[str, str]]:
     dates: dict[str, dict[str, str]] = {}
     alias: dict[str, str] = {}  # old skill dir → current dir, for renamed skills
 
-    def touch(path: str, when: str) -> None:
-        if os.path.basename(path) != "SKILL.md":
-            return
-        skill_dir = os.path.dirname(path)
-        # Follow the alias chain to the current directory name. History with back-and-forth
-        # renames (A->B, later B->A) can make this cyclic; a seen-set turns that into "stop
-        # and use the last name we had" instead of spinning forever.
+    def resolve(skill_dir: str) -> str:
+        """Follow the alias chain to the current directory name.
+
+        Union-find style: every alias is stored already fully resolved (see the
+        rename branch below), so this is normally a single hop. The seen-set is
+        belt-and-suspenders against a cycle slipping through some other path.
+        """
         seen = {skill_dir}
         while skill_dir in alias and alias[skill_dir] not in seen:
             skill_dir = alias[skill_dir]
             seen.add(skill_dir)
+        return skill_dir
+
+    def touch_resolved_dir(skill_dir: str, when: str) -> None:
         rec = dates.setdefault(skill_dir, {"addedAt": when, "updatedAt": when})
         rec["addedAt"] = when  # newest-first walk: the last write wins = oldest commit
+
+    def touch(path: str, when: str) -> None:
+        if os.path.basename(path) != "SKILL.md":
+            return
+        touch_resolved_dir(resolve(os.path.dirname(path)), when)
 
     when = ""
     for line in log.splitlines():
@@ -318,9 +326,14 @@ def load_git_dates() -> dict[str, dict[str, str]]:
             continue
         if parts[0].startswith("R") and len(parts) == 3:
             old, new = parts[1], parts[2]
-            touch(new, when)
+            # Resolve the new side FIRST (path compression) so alias[old] always points
+            # straight at the ultimate current name, never at an intermediate hop. Without
+            # this, a reused path name (a -> b -> a -> c) overwrites an existing alias with
+            # a stale target, and the oldest "added" commit resolves to the wrong directory.
+            new_dir = resolve(os.path.dirname(new))
+            touch_resolved_dir(new_dir, when)
             if os.path.basename(old) == "SKILL.md":
-                alias[os.path.dirname(old)] = os.path.dirname(new)
+                alias[os.path.dirname(old)] = new_dir
             continue
         touch(parts[-1], when)
     return dates

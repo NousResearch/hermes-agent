@@ -9,7 +9,7 @@ import uuid
 
 import acp
 from acp.schema import (
-    AgentCapabilities, Implementation, InitializeResponse, LoadSessionResponse,
+    AgentCapabilities, Implementation, InitializeResponse, LoadSessionResponse, McpCapabilities,
     NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
     SessionCapabilities, SessionForkCapabilities, SessionListCapabilities, SessionResumeCapabilities,
 )
@@ -144,6 +144,11 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             agent_info=Implementation(name="hermes-agent", version=__version__),
             agent_capabilities=AgentCapabilities(load_session=True,
                 prompt_capabilities=PromptCapabilities(image=True),
+                # new_session/resume_session/load_session/fork_session accept client-provided
+                # HTTP and SSE MCP servers (forwarded to the owner as editor MCP), so advertise
+                # that support like the standalone adapter does: capability-checking clients
+                # (e.g. qwen-audio-agent) gate MCP-over-HTTP here and drop Hermes otherwise (#124910).
+                mcp_capabilities=McpCapabilities(http=True, sse=True),
                 session_capabilities=SessionCapabilities(fork=SessionForkCapabilities(), list=SessionListCapabilities(),
                                                          resume=SessionResumeCapabilities())),
             auth_methods=build_auth_methods())

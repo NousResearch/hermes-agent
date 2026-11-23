@@ -1,6 +1,6 @@
 name: token-meter
 repo: https://github.com/nj186/hermes-token-meter
-sha: 75014f21912eee6ee38747898b40db2b2b0264dc
+sha: 6d82660de102e41dcc4a054833090b6dafbbb758
 subdir: ""
 description: "Live token and cost readout in the Hermes Desktop status bar: turns/steps, output speed, cumulative total, input/output split, cache hit rate and a context-occupancy ring, plus a 13-line tooltip with model, latency, reasoning tokens, subagent count and compression count. Disclosure — reads host.state.focusedUsage and host.request('session.history') from the focused session, and writes two diagnostic JSON files into its own plugin data directory; no network calls, no subprocess, no shell, no credential access, no telemetry."
 maintainer: nj186

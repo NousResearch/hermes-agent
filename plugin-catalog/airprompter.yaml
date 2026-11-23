@@ -1,0 +1,21 @@
+name: airprompter
+title: AirPrompter
+repo: https://github.com/airprompter/airprompter-hermes-plugin
+sha: df99b1e479b6c9dadc2f6631d4cefbe3941b575d
+description: "AirPrompter connects Hermes to your saved prompt and workflow library, so you can find, run, create, and update reusable prompts and multi-step workflows. This is a portable Agent Plugins v1 package submitted by AirPrompter, which runs the service. It contains no local code: it adds one skill and one remote MCP server (https://mcp.airprompter.com/mcp). Hermes stores and refreshes the sign-in tokens; none are in the package. Every read, save, and run goes to AirPrompter, with what the call carries. What the tools return reaches your model provider through the session: your saved prompts and workflows, including the saved prompt text a run hands back for the assistant to follow. Write tools change your saved AirPrompter library, and Hermes asks before each one. The tool list comes from the AirPrompter server at run time, so a pinned commit does not fix it. There is no background process and no self-update, and the package itself sends no telemetry. Every workflow you run through this plugin is reported to AirPrompter and saved as a run record on your account. This reporting cannot be turned off. You need an AirPrompter account."
+maintainer: AirPrompter
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://airprompter.com/docs
+version: "0.2.6"
+readme: true
+platforms: []
+known_issues:
+  - "The package's mcp.json cannot complete sign-in, because Agent Plugins v1 has no OAuth field. Add mcp_servers.airprompter to ~/.hermes/config.yaml with url https://mcp.airprompter.com/mcp, auth: oauth and trust: untrusted, then run `hermes mcp login airprompter` and `hermes mcp test airprompter`, and start a new session or run /reload-mcp. A config.yaml entry replaces the package's, so keep trust: untrusted in it."
+  - "Write tools change your saved AirPrompter library, and running a workflow creates a run record on your AirPrompter account. This reporting cannot be turned off."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

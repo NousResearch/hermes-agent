@@ -35,7 +35,7 @@ def runtime_with_rotated_pool_key(main_runtime: Optional[dict[str, Any]]) -> Opt
     if not isinstance(base_url, str) or not base_url:
         return main_runtime  # fail closed: without an endpoint we cannot tell whose key this is
     try:
-        current = _pool_runtime_api_key(pool.peek(endpoint_url=base_url))
+        current = _pool_runtime_api_key(pool.peek(model=runtime.get("model") or None, endpoint_url=base_url))
     except Exception:  # health: allow BLE001 -- a broken pool must not break the retry; keep the runtime key
         return main_runtime
     if not current or current == key:

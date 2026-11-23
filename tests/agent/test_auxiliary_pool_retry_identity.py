@@ -2,6 +2,7 @@
 import asyncio
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -119,3 +120,12 @@ def test_runtime_without_base_url_fails_closed(tmp_path, monkeypatch):
     swap, runtime = _zai_runtime_pool(tmp_path, monkeypatch, ["https://a.example/v1"] * 2)
     runtime.pop("base_url")
     assert swap(runtime) is runtime
+
+
+def test_swap_only_skips_keys_cooled_down_for_the_runtime_model(tmp_path, monkeypatch):
+    future = time.time() + 3600
+    urls = ["https://a.example/v1"] * 3
+    swap, runtime = _zai_runtime_pool(tmp_path, monkeypatch, urls, {1: {"other-model": future}})
+    assert swap(runtime)["api_key"] == "fixture-1"  # key-1 is only benched for another model
+    swap, runtime = _zai_runtime_pool(tmp_path, monkeypatch, urls, {1: {"glm-4.7": future}})
+    assert swap(runtime)["api_key"] == "fixture-2"

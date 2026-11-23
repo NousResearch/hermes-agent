@@ -162,9 +162,8 @@ it('flashes an unfocused source window until it regains focus, and leaves a focu
 it.each([
   ['darwin', true, true],
   ['darwin', false, false],
-  ['win32', false, false],
-  // Linux shows notifications through its own path, which does not ask Electron.
-  ['linux', false, true]
+  ['win32', false, false]
+  // Linux asks the session bus instead; notification-linux.test.ts covers it.
 ] as const)('on %s with Notification.isSupported() %s, main says it can notify: %s', async (platform, supported, expected) => {
   host.supported = supported
   registerNativeNotifications({ getMainWindow: () => null, focusWindow: vi.fn(), platform })

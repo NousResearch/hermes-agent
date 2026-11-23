@@ -1549,3 +1549,30 @@ class TestAzureFoundryPickerCatalog:
         monkeypatch.setattr(_models_mod, "_get_model_config_dict",
                             lambda: {"provider": "azure-foundry", "base_url": "https://b.openai.azure.com/openai/v1"})
         assert _models_mod._credential_fingerprint("azure-foundry") != fp_a
+
+
+class TestCuratedNousModels:
+    """Curated Nous Portal picker fallback must keep in-repo Gemini 4 additions even when
+    the remote manifest only lists a subset."""
+
+    def test_nous_static_catalog_includes_all_gemini_4_models(self):
+        nous_models = _models_mod._PROVIDER_MODELS["nous"]
+        for mid in (
+            "google/gemini-4-neon",
+            "google/gemini-4-hydrogen",
+            "google/gemini-4-carbon",
+            "google/gemini-4-argon",
+        ):
+            assert mid in nous_models
+
+    def test_get_curated_nous_model_ids_merges_remote_and_static_without_dupes(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.model_catalog.get_curated_nous_models",
+            lambda: ["google/gemini-4-argon", "deepseek/deepseek-v4-pro"],
+        )
+        ids = _models_mod.get_curated_nous_model_ids()
+        assert ids[:2] == ["google/gemini-4-argon", "deepseek/deepseek-v4-pro"]
+        assert ids.count("google/gemini-4-argon") == 1
+        assert "google/gemini-4-neon" in ids
+        assert "google/gemini-4-hydrogen" in ids
+        assert "google/gemini-4-carbon" in ids

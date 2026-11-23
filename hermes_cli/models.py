@@ -734,7 +734,7 @@ def get_curated_nous_model_ids() -> list[str]:
         remote = get_curated_nous_models()
     except Exception:
         remote = None
-    return list(remote or _PROVIDER_MODELS.get("nous", []))
+    return list(dict.fromkeys([*(remote or ()), *_PROVIDER_MODELS.get("nous", [])]))
 
 
 def _ai_gateway_model_is_free(pricing: Any) -> bool:

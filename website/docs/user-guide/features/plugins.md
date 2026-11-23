@@ -950,10 +950,14 @@ What changes in `host` mode:
   its install directory name to `plugins.host.in_process_providers` (empty by default), for example
   `in_process_providers: [claude-subscription-directsdk]`. Only the profiles that need it then load in the
   Hermes process, outside the host's isolation; a plugin that is not listed never loads there, whatever
-  it reports about itself. The list is read from the same place as `plugins.isolation`: when managed scope
-  pins the isolation, only the managed `plugins.host.in_process_providers` counts and a profile's own list
-  is ignored; if a managed config exists but cannot be read, the list allows no plugin. Restart Hermes
-  after changing the list.
+  it reports about itself. Like other keys, a managed value of the list wins over the profile's; and when
+  managed scope pins `plugins.isolation`, only the managed list counts and a profile's own list is
+  ignored. If a managed config exists but cannot be read, the list allows no plugin. Restart Hermes
+  after changing the list. The list holds directory names, not particular installs: a listed name lets any
+  provider plugin installed under that name (`plugins/model-providers/<name>/` or `plugins/<name>/`) load
+  in the Hermes process, whoever installed it there, in the profile whose config lists it, or with the
+  managed list in every profile the process serves. Where profile owners install their own plugins, leave
+  the list empty.
 - **No cookies.** A hosted plugin's API answers are served from the gateway's own address, so Hermes
   drops any `Set-Cookie` header they carry (logging it once per plugin) rather than let a plugin set or
   overwrite the dashboard's cookies. This also applies to another profile's plugins, which always run in

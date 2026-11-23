@@ -26,8 +26,8 @@ import { triggerHaptic } from '@/lib/haptics'
 import { $touchPointer } from '@/lib/touch-interaction'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
-import { sessionCompacting } from '@/store/compaction'
 import { changesBackend } from '@/store/backend-transition'
+import { sessionCompacting } from '@/store/compaction'
 import { draftKey } from '@/store/composer'
 import { draftRetry } from '@/store/composer-draft-retry'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
@@ -313,17 +313,23 @@ export function ChatBar({
   const emoji = useEmojiCompletions()
 
   const { t } = useI18n()
+
   const {
     backendTransition,
     disabled: connectionDisabled,
     inputDisabled,
     reconnecting
   } = useComposerConnection(gatewayDisabled, profile)
+
   useStore($durableOwnerVersion)
+
   const durableScope = draftKey(activeQueueSessionKey)
+
   const durableReconnectAllowed =
     reconnecting && durableComposerOwner(durableScope) !== undefined && !changesBackend(backendTransition)
+
   const disabled = connectionDisabled && !durableReconnectAllowed
+
   useEffect(() => {
     void warmDurableOwner(durableScope)
   }, [durableScope, reconnecting])

@@ -225,6 +225,52 @@ class TestChatCompletionsBasic:
         assert messages[0]["content"] == content
 
 
+    def test_convert_messages_reencodes_deep_gemini_tool_json_on_vertex_alias_route(self, transport):
+        """The Gemini pass must honor the route triple, not re-gate on the model id alone.
+
+        A vertex route can serve alias model ids without "gemini" in the name; the
+        outer gate in ``convert_messages`` already consumed (model, base_url, provider),
+        so a model-only re-check inside the pass silently skipped the deep-JSON
+        flattening on those routes.
+        """
+        value = {"leaf": 1}
+        for _ in range(32):
+            value = {"nested": value}
+        content = "Result: " + json.dumps(value)
+        messages = [{"role": "tool", "tool_call_id": "call", "content": content}]
+
+        result = transport.convert_messages(messages, model="vertex-alias-turbo", provider="vertex")
+
+        assert result[0]["content"].startswith("Result: ")
+        assert '\\"nested\\":' in result[0]["content"]
+        # Stored history untouched.
+        assert messages[0]["content"] == content
+
+    def test_convert_messages_flattening_keeps_sanitized_wire_keys_stripped(self, transport):
+        """The deep-JSON rewrite must build on the sanitized copy, not the raw message.
+
+        Rebuilding from the raw ``msg`` resurrected the keys ``_sanitize_message``
+        had stripped for the wire — ``_``-prefixed scaffolding markers, persistence
+        sidecars and the schema-illegal ``name`` on tool results — on every Gemini
+        route whose tool content was rewritten.
+        """
+        value = {"leaf": 1}
+        for _ in range(32):
+            value = {"nested": value}
+        content = "Result: " + json.dumps(value)
+        messages = [{"role": "tool", "tool_call_id": "call", "content": content,
+                     "name": "execute_code", "_empty_recovery_synthetic": True}]
+
+        result = transport.convert_messages(messages, model="google/gemini-2.5-flash")
+
+        assert '\\"nested\\":' in result[0]["content"]
+        assert "name" not in result[0]
+        assert not any(k.startswith("_") for k in result[0])
+        # Stored history untouched.
+        assert messages[0]["name"] == "execute_code"
+        assert messages[0]["_empty_recovery_synthetic"] is True
+
+
     def test_convert_messages_no_copy_without_timestamp(self, transport):
         """A timestamp-free message list needs no sanitize pass and is
         returned by identity (preserves the deepcopy-on-demand contract)."""

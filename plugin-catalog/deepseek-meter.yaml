@@ -1,6 +1,6 @@
 name: deepseek-meter
 repo: https://github.com/samieshmil-blip/hermes-deepseek-meter
-sha: 79fe7d830538049f342f3f4e0533a20e6fa8d798
+sha: 3cec7c8c1a899bb66b4622fa03ca1adf8cb6cb65
 description: >-
   DeepSeek account meter for the Hermes status bar: the live account balance
   from the DeepSeek API, the focused chat's context-window load with a bar, and
@@ -17,7 +17,7 @@ maintainer: samieshmil-blip
 tier: community
 category: desktop
 docs_url: https://github.com/samieshmil-blip/hermes-deepseek-meter#readme
-version: "1.0.0"
+version: "1.0.1"
 platforms: []
 capabilities:
   provides_tools: []
@@ -25,5 +25,5 @@ capabilities:
   provides_middleware: []
   requires_env: [DEEPSEEK_API_KEY]
 screenshots:
-  - https://raw.githubusercontent.com/samieshmil-blip/hermes-deepseek-meter/79fe7d830538049f342f3f4e0533a20e6fa8d798/docs/hero.png
-  - https://raw.githubusercontent.com/samieshmil-blip/hermes-deepseek-meter/79fe7d830538049f342f3f4e0533a20e6fa8d798/docs/locales.png
+  - https://raw.githubusercontent.com/samieshmil-blip/hermes-deepseek-meter/3cec7c8c1a899bb66b4622fa03ca1adf8cb6cb65/docs/hero.png
+  - https://raw.githubusercontent.com/samieshmil-blip/hermes-deepseek-meter/3cec7c8c1a899bb66b4622fa03ca1adf8cb6cb65/docs/locales.png

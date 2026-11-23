@@ -364,3 +364,10 @@
   [data-testid='reasoning-pill']:has([role='status']) {
   display: none;
 }
+
+/* Classic's fade behind the composer runs from clear to its flat chat ground, 5px proud of the card
+   on each side. Over the redesign's art that is a dark rounded box behind the card (plain on a new
+   chat, where no dock floor covers it). The redesign's own floor does this job (app/chat/stage.css). */
+:root[data-shell='portal'] [data-slot='composer-backdrop-fade'] {
+  display: none;
+}

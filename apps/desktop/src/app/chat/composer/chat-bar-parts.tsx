@@ -65,6 +65,7 @@ export function ComposerPopoutChrome({
       {!poppedOut && (
         <div
           className="pointer-events-none absolute inset-0 rounded-[inherit]"
+          data-slot="composer-backdrop-fade"
           style={{ background: COMPOSER_FADE_BACKGROUND }}
         />
       )}

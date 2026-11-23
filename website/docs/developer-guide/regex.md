@@ -102,8 +102,7 @@ These compile and can give a result that differs from stdlib:
 | B7 | IGNORECASE classes with members above U+FFFF follow Python 3.14's rule on every interpreter | |
 | B8 | An interpreter whose Unicode version, or an RE2 build whose Unicode generation, has no entry in `hermes_re/_tables.py` gets RE2's own `\w` / `\d` where they differ | caught by `tests/hermes_re/test_tables_current.py` |
 
-Also: `error.pos` / `lineno` / `colno` are `None`; `Pattern.flags` omits inline flags; `groupindex` is a
-`dict`.
+Also: `error.pos` / `lineno` / `colno` are `None`.
 
 Avoid patterns that can match the empty string in `sub` / `split` / `findall` (B2); write `\s+`, not `\s*`.
 

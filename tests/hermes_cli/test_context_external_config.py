@@ -23,10 +23,10 @@ def test_real_config_consumed_with_engine_override_and_owning_home(tmp_path, mon
     project.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(launch))
     monkeypatch.setenv('HERMES_RUNTIME_DIR', str(tmp_path / 'runtime'))
-    (project / 'HERMES.md').write_text('Compatibility contract.')
-    (project / 'AGENTS.md').write_text('Automatic contract.')
+    (project / 'HERMES.md').write_text('Compatibility contract.', encoding="utf-8")
+    (project / 'AGENTS.md').write_text('Automatic contract.', encoding="utf-8")
     external = owner / 'rules.md'
-    external.write_text('Owner external contract.')
+    external.write_text('Owner external contract.', encoding="utf-8")
     atomic_config_replace(owner / 'config.yaml', {'context': {
         'engine': 'custom-engine', 'memory_trim': {'enabled': False},
         'external_files': [str(external)], 'ignore_hermes_md': True,

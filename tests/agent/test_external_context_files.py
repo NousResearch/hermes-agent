@@ -28,14 +28,14 @@ def test_cursor_external_files_load_once_in_order(context_env, relative):
     home, project = context_env
     target = project / relative
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text('Configured cursor contract.')
+    target.write_text('Configured cursor contract.', encoding="utf-8")
     first = home / 'first.md'
-    first.write_text('First external contract.')
+    first.write_text('First external contract.', encoding="utf-8")
     alias = home / 'alias.md'
     alias.symlink_to(target)
     other = project / '.cursor/rules/other.mdc'
     other.parent.mkdir(parents=True, exist_ok=True)
-    other.write_text('Automatic cursor contract.')
+    other.write_text('Automatic cursor contract.', encoding="utf-8")
     configure(home, [str(first), {'path': str(alias), 'label': 'Shared rules'}, str(target)])
 
     result = build_context_files_prompt(cwd=str(project), skip_soul=True)
@@ -53,15 +53,15 @@ def test_external_root_preserves_automatic_agents_chain(context_env):
     home, project = context_env
     (project / '.git').mkdir()
     root = project / 'AGENTS.md'
-    root.write_text('Root contract.')
+    root.write_text('Root contract.', encoding="utf-8")
     middle = project / 'team'
     middle.mkdir()
-    (middle / 'AGENTS.md').write_text('Team contract.')
+    (middle / 'AGENTS.md').write_text('Team contract.', encoding="utf-8")
     child = middle / 'app'
     child.mkdir()
-    (child / 'AGENTS.override.md').write_text('Personal app contract.')
-    (child / 'AGENTS.md').write_text('Shadowed app contract.')
-    (project / 'HERMES.md').write_text('Compatibility contract.')
+    (child / 'AGENTS.override.md').write_text('Personal app contract.', encoding="utf-8")
+    (child / 'AGENTS.md').write_text('Shadowed app contract.', encoding="utf-8")
+    (project / 'HERMES.md').write_text('Compatibility contract.', encoding="utf-8")
     configure(home, [str(root)], ignore_hermes_md=True)
 
     result = build_context_files_prompt(cwd=str(child), skip_soul=True)
@@ -75,7 +75,7 @@ def test_external_root_preserves_automatic_agents_chain(context_env):
 def test_safe_worker_skips_external_reads(context_env, monkeypatch):
     home, project = context_env
     target = home / 'external.md'
-    target.write_text('External contract.')
+    target.write_text('External contract.', encoding="utf-8")
     configure(home, [str(target)])
     monkeypatch.setattr('agent.safe_worker_policy.safe_worker_enabled', lambda: True)
 
@@ -89,8 +89,8 @@ def test_safe_worker_skips_external_reads(context_env, monkeypatch):
 def test_install_fallback_suppresses_auto_but_keeps_explicit_files(context_env, monkeypatch):
     home, project = context_env
     external = home / 'external.md'
-    external.write_text('Explicit contract.')
-    (project / 'AGENTS.md').write_text('Install contributor contract.')
+    external.write_text('Explicit contract.', encoding="utf-8")
+    (project / 'AGENTS.md').write_text('Install contributor contract.', encoding="utf-8")
     configure(home, [str(external)])
     monkeypatch.chdir(project)
     monkeypatch.setattr('agent.runtime_cwd._is_install_tree', lambda path: True)
@@ -102,11 +102,11 @@ def test_install_fallback_suppresses_auto_but_keeps_explicit_files(context_env, 
 def test_external_files_use_safe_reader_scan_and_truncation(context_env, monkeypatch):
     home, project = context_env
     malicious = home / 'malicious.md'
-    malicious.write_text('<!-- ignore_rules -->')
+    malicious.write_text('<!-- ignore_rules -->', encoding="utf-8")
     large = home / 'large.md'
-    large.write_text('Start contract.\n' + 'x' * 4000 + '\nEnd contract.')
+    large.write_text('Start contract.\n' + 'x' * 4000 + '\nEnd contract.', encoding="utf-8")
     denied = home / 'denied.md'
-    denied.write_text('Unreadable contract.')
+    denied.write_text('Unreadable contract.', encoding="utf-8")
     atomic_config_replace(home / 'config.yaml', {
         'context': {'external_files': [str(home / 'missing.md'), str(denied), str(malicious), str(large)]},
         'context_file_max_chars': 1000,
@@ -134,7 +134,7 @@ def test_external_files_use_safe_reader_scan_and_truncation(context_env, monkeyp
 def test_external_hermes_file_strips_frontmatter(context_env):
     home, project = context_env
     target = project / 'HERMES.md'
-    target.write_text('---\nname: frontmatter-only\n---\nHermes contract.')
+    target.write_text('---\nname: frontmatter-only\n---\nHermes contract.', encoding="utf-8")
     configure(home, [str(target)])
     result = build_context_files_prompt(cwd=str(project), skip_soul=True)
     assert result.count('Hermes contract.') == 1

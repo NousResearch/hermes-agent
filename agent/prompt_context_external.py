@@ -9,15 +9,15 @@ logger = logging.getLogger(__name__)
 
 def configured_context(home_override: Path | None = None) -> dict:
     """Read context options once, bound to the owning profile when explicitly supplied."""
-    from hermes_cli.config import load_config
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from agent.runtime_scope import bind_profile_scope
+    from hermes_cli.config import load_config_readonly
+    from hermes_constants import get_hermes_home
 
-    token = set_hermes_home_override(home_override) if home_override is not None else None
-    try:
-        context = load_config().get("context")
-    finally:
-        if token is not None:
-            reset_hermes_home_override(token)
+    if home_override is None or home_override == get_hermes_home():
+        context = load_config_readonly().get("context")
+    else:
+        with bind_profile_scope(home_override, hydrate_secrets=False):
+            context = load_config_readonly().get("context")
     if not isinstance(context, dict):
         logger.warning("Ignoring context configuration: expected a mapping")
         return {}

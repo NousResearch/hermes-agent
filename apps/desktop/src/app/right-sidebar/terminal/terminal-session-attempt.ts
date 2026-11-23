@@ -53,6 +53,8 @@ interface SessionAttemptOptions {
   isReplayingHistory: () => boolean
   /** The attempt adopted a live session: seed size, shell name and selection. */
   onStarted: (session: HermesTerminalSession) => void
+  /** Re-arm leading blank-line stripping for each fresh shell attempt. */
+  resetBootGap?: () => void
   /** Cwd for the next shell; read at each start so a retry follows a `cd`. */
   resolveCwd: () => string
   /** Runs once start metadata says whether the server replays history itself. */
@@ -85,6 +87,7 @@ export function createSessionAttemptController(
     isDisposed,
     isReplayingHistory,
     onStarted,
+    resetBootGap,
     resolveCwd,
     restoreHistory,
     sessionIdRef,
@@ -103,6 +106,7 @@ export function createSessionAttemptController(
 
   const startSession = () => {
     cleanupAttempt?.()
+    resetBootGap?.()
     let current = true
     let attemptSessionId: string | null = null
     let hadReplay = false
@@ -204,7 +208,9 @@ export function createSessionAttemptController(
             }
 
             if (options?.replay) {
-              hadReplay = true
+              if (data.trim().length > 0) {
+                hadReplay = true
+              }
               ++replayWrites
               term.write(data, () => {
                 --replayWrites

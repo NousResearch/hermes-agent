@@ -1,12 +1,12 @@
 name: gws-workspace
 repo: https://github.com/anpicasso/hermes-gws-workspace
-sha: f0fb307337a9baab8bda2ec472abff1f420ca852
+sha: 05448155edf3decd892b3b122af8cb7f3cc78a73
 description: Multi-account Gmail, Drive and Calendar tools with native gws; explicit slash commands start change notifications in the current conversation or a new session.
 maintainer: anpicasso
 tier: community
 category: tools
 requires_hermes: '>=0.23.2'
-docs_url: https://github.com/anpicasso/hermes-gws-workspace/blob/f0fb307337a9baab8bda2ec472abff1f420ca852/README.md
+docs_url: https://github.com/anpicasso/hermes-gws-workspace/blob/05448155edf3decd892b3b122af8cb7f3cc78a73/README.md
 version: '0.10.0'
 platforms:
 - linux

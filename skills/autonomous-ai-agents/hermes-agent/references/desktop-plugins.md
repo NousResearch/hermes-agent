@@ -176,9 +176,12 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
 - Backend: if the plugin ships a Python `plugin_api.py` (under
   `~/.hermes/plugins/<id>/dashboard/`, manifest `"api": "plugin_api.py"`), reach
   it with `ctx.rest('/path', { method?, body?, timeoutMs? })` and its live twin
-  `ctx.socket('/events', onMessage)` — both scoped to `/api/plugins/<id>` by
-  construction (traversal rejected). `ctx.socket` is a **no-op on OAuth
-  remotes**, so always keep a polling fallback. The Python backend is imported
+  `ctx.socket('/events', onMessage, onStatus?)` — both scoped to `/api/plugins/<id>`
+  by construction (traversal rejected). OAuth remotes and the browser Webapp open
+  only the plugin's `/events` stream, with a single-use ticket (other paths stay
+  on polling), and a route at `/api/plugins/<id>/events` accepts that ticket
+  without naming its socket. `onStatus` reports `'live'` / `'polling'`. Always
+  keep a polling fallback. The Python backend is imported
   only when the plugin is in `plugins.enabled` in `config.yaml` (separate from
   the in-app enable toggle). For gateway-wide data use `host.request` /
   `host.onEvent` instead.

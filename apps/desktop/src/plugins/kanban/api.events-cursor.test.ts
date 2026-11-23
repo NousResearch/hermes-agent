@@ -51,7 +51,7 @@ describe('kanban event cursor', () => {
     resolveBoard(BOARD(14_386))
 
     await vi.waitFor(() => {
-      expect(socket).toHaveBeenCalledWith('/events?board=ops&since=14386', expect.any(Function))
+      expect(socket).toHaveBeenCalledWith('/events?board=ops&since=14386', expect.any(Function), expect.any(Function))
     })
 
     dispose()
@@ -70,7 +70,7 @@ describe('kanban event cursor', () => {
       socket
     )
 
-    expect(socket).toHaveBeenCalledWith('/events?board=ops&since=14386', expect.any(Function))
+    expect(socket).toHaveBeenCalledWith('/events?board=ops&since=14386', expect.any(Function), expect.any(Function))
     dispose()
   })
 
@@ -100,7 +100,7 @@ describe('kanban event cursor', () => {
     $boardSlug.set('ship')
 
     await vi.waitFor(() => {
-      expect(socket).toHaveBeenCalledWith('/events?board=ship&since=7', expect.any(Function))
+      expect(socket).toHaveBeenCalledWith('/events?board=ship&since=7', expect.any(Function), expect.any(Function))
     })
 
     resolveOps(BOARD(14_386))
@@ -135,7 +135,7 @@ describe('kanban event cursor', () => {
       socket
     )
 
-    expect(socket).toHaveBeenCalledWith('/events?board=ship&since=10', expect.any(Function))
+    expect(socket).toHaveBeenCalledWith('/events?board=ship&since=10', expect.any(Function), expect.any(Function))
     frames.at(-1)!({ cursor: 25, events: [{ id: 25, kind: 'spawned', task_id: 't_1' }] })
 
     $boardSlug.set('ops')

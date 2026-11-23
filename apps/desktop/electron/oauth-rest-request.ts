@@ -126,13 +126,20 @@ export function shouldReplayAfterCookie401(
   return method === 'GET' || method === 'HEAD' || options.replayOn401 === true
 }
 
-/** Ticket minting is replay-safe, unlike arbitrary REST mutations. */
+/** Ticket minting is replay-safe, unlike arbitrary REST mutations. `socket` names
+ *  the socket the ticket opens (the default gateway socket when omitted), so a
+ *  mint is bound to exactly that one path — the plugin event streams' name is
+ *  `plugin-events/<id>`. */
 export async function mintGatewayWsTicket(
   baseUrl: string,
   deps: MintGatewayWsTicketDeps,
-  headers: Record<string, string> = {}
+  headers: Record<string, string> = {},
+  socket?: string
 ): Promise<string> {
-  const url = `${baseUrl}/api/auth/ws-ticket`
+  const url = socket
+    ? `${baseUrl}/api/auth/ws-ticket?socket=${encodeURIComponent(socket)}`
+    : `${baseUrl}/api/auth/ws-ticket`
+
   // replayOn401: a ticket that was never issued has no effect to double.
   const options = { method: 'POST', timeoutMs: 8_000, headers, replayOn401: true }
 

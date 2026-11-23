@@ -239,7 +239,16 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
     from hermes_cli.dashboard_auth.native_http import HEADER, authenticate_native_ws, redeem_audio_ws
     from hermes_cli.web_server import _SESSION_TOKEN, app
     from hermes_cli.browser_credential import generation_of
-    from hermes_cli.web_session_sockets import OWN_TICKET_SOCKETS, track
+    from hermes_cli.web_session_sockets import (
+        OWN_TICKET_SOCKETS, is_plugin_events_socket, plugin_events_socket, track)
+    if socket is None:
+        # A plugin's ``/api/plugins/<id>/events`` route need not name its socket: the path does. A
+        # ticket named for that stream then opens exactly it, and an unnamed legacy ticket still
+        # opens it (``plugin-events`` is not an own-ticket socket). Every other path is unchanged.
+        parts = ws.url.path.rstrip("/").split("/")
+        if (len(parts) >= 4 and parts[-1] == "events" and parts[-3] == "plugins"
+                and parts[-4] == "api" and is_plugin_events_socket(f"plugin-events/{parts[-2]}")):
+            socket = plugin_events_socket(parts[-2])
     auth_required = bool(getattr(app.state, "auth_required", False))
     # The Webapp's own rules (socket tickets on the loopback gate, the server's credential only where
     # its spawned clients dial) apply on its listener; the standalone dashboard and serve keep main's.

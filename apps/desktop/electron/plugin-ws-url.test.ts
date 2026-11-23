@@ -1,7 +1,7 @@
 import { expect, test, vi } from 'vitest'
 
 import { createLocalGatewayDials, type GatewayEndpoint } from './local-gateway'
-import { createPluginWsUrlHandler, pluginWsPath } from './plugin-ws-url'
+import { createPluginWsUrlHandler, pluginWsPath, pluginWsUrlWithTicket } from './plugin-ws-url'
 
 // PLG-1: a local gateway's plugin socket rides the native-http grant its REST twin uses. The grant
 // is attached as a header to the one dial main prepared, never placed in the renderer's URL.
@@ -20,6 +20,7 @@ test('a plugin dial carries the grant header once and never in its URL', () => {
   expect(dials.headers({ ...details, webContentsId: 8 })).toBeNull()
   // A different path carrying the same nonce gets nothing.
   expect(dials.headers({ ...details, url: url.replace('/kanban/events', '/other/events') })).toBeNull()
+
   // The same nonce and path aimed at another server, scheme or port gets nothing.
   for (const elsewhere of ['ws://evil.example:9', 'wss://127.0.0.1:9', 'ws://127.0.0.1:10', 'ws://localhost:9']) {
     expect(dials.headers({ ...details, url: url.replace('ws://127.0.0.1:9', elsewhere) })).toBeNull()
@@ -81,6 +82,32 @@ test('mints a native-http grant for a local gateway and null elsewhere', async (
   expect(mint).toHaveBeenCalledTimes(1)
 })
 
+// An OAuth remote has no local gateway: its plugin event stream opens with a named one-use ticket
+// minted over the OAuth session. Only `/events` is ticketed; every other path keeps polling (null).
+test('an oauth remote mints a named ticket for the plugin event stream only', async () => {
+  const mintRemotePluginTicket = vi.fn(async () => 'one-use')
+
+  const handler = createPluginWsUrlHandler({
+    ensureBackend: vi.fn(async () => ({ authMode: 'oauth', baseUrl: 'https://gateway.example:8443', headers: { 'x-h': '1' } })),
+    ensureRegistryBackend: vi.fn(async () => ({ authMode: 'token', baseUrl: 'https://remote.invalid' })),
+    forgetLocalGatewayDescriptor: vi.fn(),
+    forgetRegistryLocalGatewayDescriptor: vi.fn(),
+    launchHome: '/home/u/.hermes',
+    mintRemotePluginTicket,
+    prepare: vi.fn(() => 'unused')
+  })
+
+  await expect(handler({ path: '/events?board=main&since=7', pluginId: 'kanban' }, 3)).resolves.toBe(
+    'wss://gateway.example:8443/api/plugins/kanban/events?board=main&since=7&ticket=one-use'
+  )
+  expect(mintRemotePluginTicket).toHaveBeenCalledWith('https://gateway.example:8443', { 'x-h': '1' }, 'plugin-events/kanban')
+  await expect(handler({ path: '/events', pluginId: 'kanban' }, 3)).resolves.toBe('wss://gateway.example:8443/api/plugins/kanban/events?ticket=one-use')
+  await expect(handler({ path: '/stream', pluginId: 'kanban' }, 3)).resolves.toBeNull()
+  await expect(handler({ path: '/events-other', pluginId: 'kanban' }, 3)).resolves.toBeNull()
+  await expect(handler({ connectionId: 'homelab', path: '/events', pluginId: 'kanban' }, 3)).resolves.toBeNull()
+  expect(mintRemotePluginTicket).toHaveBeenCalledTimes(2)
+})
+
 // The renderer cannot tell a refused upgrade from a gateway that is away. Main can name the one case it
 // knows is not transient, a grant mint refused for a permission reason, and answers it as plain data.
 test('a mint refused for a permission reason is a named reply, any other failure stays an error', async () => {
@@ -118,4 +145,17 @@ test('the shared local dial keeps the gateway socket on an interactive grant', a
 
   expect(url).toBe('http://127.0.0.1:9|interactive-2')
   expect(mint).toHaveBeenCalledWith(expect.objectContaining({ profile_id: '/home/u/.hermes' }), 'interactive')
+})
+
+test('the ticket joins the stream query once and keeps a "?" inside a value', () => {
+  const url = pluginWsUrlWithTicket('https://gateway.example/base/', '/api/plugins/kanban/events?board=a?b&since=3', 't1')
+
+  expect(url.match(/\?/g)).toHaveLength(1)
+  expect(url.startsWith('wss://gateway.example/base/api/plugins/kanban/events?')).toBe(true)
+
+  const params = new URL(url).searchParams
+  expect(params.get('board')).toBe('a?b')
+  expect(params.get('since')).toBe('3')
+  expect(params.get('ticket')).toBe('t1')
+  expect(new URL(pluginWsUrlWithTicket('http://h.example', '/api/plugins/k/events', 't2')).searchParams.get('ticket')).toBe('t2')
 })

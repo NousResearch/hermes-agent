@@ -112,7 +112,7 @@ class _TrackingConnection:
 @pytest.mark.asyncio
 async def test_stream_events_exits_on_idle_disconnect(monkeypatch, tmp_path):
     mod = _load_plugin_module()
-    monkeypatch.setattr(mod, "_ws_upgrade_authorized", lambda ws: True)
+    monkeypatch.setattr(mod, "_ws_upgrade_authorized", lambda ws, socket=None: True)
 
     ws = _IdleDisconnectingWebSocket()
     # Disconnects before any poll. Name a cursor so the handler does not open
@@ -134,7 +134,7 @@ async def test_stream_events_reuses_connection_and_closes_after_disconnect(
     monkeypatch,
 ):
     mod = _load_plugin_module()
-    monkeypatch.setattr(mod, "_ws_upgrade_authorized", lambda ws: True)
+    monkeypatch.setattr(mod, "_ws_upgrade_authorized", lambda ws, socket=None: True)
 
     event_row = {
         "id": 7,
@@ -192,7 +192,7 @@ async def test_stream_events_reuses_connection_and_closes_after_disconnect(
 @pytest.mark.asyncio
 async def test_stream_events_closes_connection_when_cancelled(monkeypatch):
     mod = _load_plugin_module()
-    monkeypatch.setattr(mod, "_ws_upgrade_authorized", lambda ws: True)
+    monkeypatch.setattr(mod, "_ws_upgrade_authorized", lambda ws, socket=None: True)
 
     loop = asyncio.get_running_loop()
     first_fetch_done = asyncio.Event()
@@ -233,3 +233,31 @@ async def test_stream_events_closes_connection_when_cancelled(monkeypatch):
     assert conn.execute_calls == 1
     assert conn.close_calls == 1
     assert len(set(connect_threads + conn.thread_ids)) == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_events_sends_an_idle_keepalive_frame(monkeypatch):
+    """An idle board still emits ``{"events": [], "cursor": N}`` every keepalive interval, so a
+    client can tell a quiet channel from a silently dead one."""
+    mod = _load_plugin_module()
+    monkeypatch.setattr(mod, "_ws_upgrade_authorized", lambda ws, socket=None: True)
+    monkeypatch.setattr(mod, "_EVENT_KEEPALIVE_SECONDS", 0.05)
+    monkeypatch.setattr(mod, "_EVENT_POLL_SECONDS", 0.01)
+    conn = _TrackingConnection()
+    monkeypatch.setattr(mod.kbc, "connect", lambda *, board=None: conn)
+
+    ws = _PollingWebSocket()
+    ws.query_params = {"since": "5"}
+    task = asyncio.create_task(mod.stream_events(ws))
+    try:
+        for _ in range(500):
+            if len(ws.sent) >= 2:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        ws._disconnect.set()
+        await asyncio.wait_for(task, timeout=5)
+
+    assert len(ws.sent) >= 2, "no keepalive frames while idle"
+    assert all(frame == {"events": [], "cursor": 5} for frame in ws.sent)
+    assert conn.close_calls == 1

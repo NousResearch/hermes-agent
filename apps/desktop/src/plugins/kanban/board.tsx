@@ -67,8 +67,11 @@ import {
   $collapsedLanes,
   $introDismissed,
   $lanesByProfile,
+  $lastSyncAt,
+  $liveState,
   boardKey,
   boardKeyPrefix,
+  boardRefetchInterval,
   boardsKey,
   bulkTasks,
   createTask,
@@ -77,7 +80,10 @@ import {
   fetchBoard,
   fetchBoards,
   fetchProfiles,
+  isBrowserHosted,
+  type KanbanLiveState,
   patchTask,
+  pollInBackground,
   profilesKey,
   taskKey,
   useKanbanScope
@@ -1097,6 +1103,38 @@ function SelectionBar({
   )
 }
 
+// ── live sync chip ───────────────────────────────────────────────────────────
+
+const LIVE_DOT_CLASS: Record<KanbanLiveState, string> = {
+  live: 'bg-emerald-500',
+  polling: 'bg-amber-500',
+  offline: 'bg-red-500'
+}
+
+/** Header chip: transport state (live/polling/offline) plus the wall-clock
+ *  time of the last backend answer, an events frame or a successful poll.
+ *  `live` means the socket is open and frames are arriving. */
+function LiveSyncChip(props: { lastSyncAt: number | null; state: KanbanLiveState }) {
+  const k = useKanban()
+
+  const label =
+    props.state === 'live' ? k.live.live : props.state === 'offline' ? k.live.offline : k.live.polling
+
+  const syncLabel =
+    props.lastSyncAt === null ? null : k.live.lastSync(new Date(props.lastSyncAt).toLocaleTimeString())
+
+  return (
+    <span
+      className="flex items-center gap-1.5 rounded-full bg-(--ui-bg-quaternary) px-2 py-px text-[0.625rem] text-(--ui-text-tertiary)"
+      title={syncLabel === null ? label : `${label} — ${syncLabel}`}
+    >
+      <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${LIVE_DOT_CLASS[props.state]}`} />
+      {label}
+      {syncLabel !== null && <span className="tabular-nums">{syncLabel}</span>}
+    </span>
+  )
+}
+
 // ── page ─────────────────────────────────────────────────────────────────────
 
 export function KanbanBoardPage() {
@@ -1107,11 +1145,20 @@ export function KanbanBoardPage() {
   const [archived, setArchived] = useState(false)
 
   // Live updates ride the events socket (bindApi); this interval is only the
-  // slow heartbeat for socketless paths (OAuth remotes, dropped connections).
+  // heartbeat fallback. It adapts to the live state:
+  // 60 s while the socket carries updates, 10 s when only polling covers us.
+  // React Query pauses intervals in unfocused windows by default, so the 10 s
+  // fallback also runs in background windows (otherwise changes stall in
+  // minimized or covered windows) — except against a local gateway this
+  // Desktop started, which background polling would keep from idling out.
+  const liveState = useValue($liveState)
+  const lastSyncAt = useValue($lastSyncAt)
+
   const { data: board, error } = useQuery({
     queryFn: () => fetchBoard(archived),
     queryKey: boardKey(scope, slug, archived),
-    refetchInterval: 60_000
+    refetchInterval: boardRefetchInterval(liveState),
+    refetchIntervalInBackground: pollInBackground(liveState, scope, isBrowserHosted())
   })
 
   const [openId, setOpenId] = useState<null | string>(null)
@@ -1366,6 +1413,7 @@ export function KanbanBoardPage() {
         )}
         <SearchField aria-label={k.filterCards} onChange={setSearch} placeholder={k.filterCards} value={search} />
         <div className="ml-auto flex items-center gap-1">
+          <LiveSyncChip lastSyncAt={lastSyncAt} state={liveState} />
           <Tip label={k.orchestrationSettings}>
             <Button
               aria-label={k.orchestrationSettings}

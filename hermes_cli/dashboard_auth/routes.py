@@ -581,16 +581,30 @@ async def api_auth_me(request: Request):
 
 
 @router.post("/api/auth/ws-ticket", name="auth_ws_ticket")
-async def api_auth_ws_ticket(request: Request):
+async def api_auth_ws_ticket(request: Request, socket: str = ""):
     """Mint a 30s single-use ticket for a WS upgrade (browsers cannot set
-    ``Authorization`` on the upgrade); one ticket per WS."""
+    ``Authorization`` on the upgrade); one ticket per WS. *socket* optionally
+    names the one socket the ticket opens (``web_session_sockets`` name, e.g.
+    ``gateway`` or ``plugin-events/<id>``) — a named ticket opens exactly that
+    socket and nothing else. Empty mints the legacy unnamed ticket, which opens
+    any socket except the own-ticket ones (``host-terminal``, ``relay``), the
+    plugin events streams included."""
     sess = _require_session(request)
     from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS, mint_ticket
+    from hermes_cli.web_session_sockets import (AUDIO_SOCKETS, GATEWAY_SOCKET,
+                                                is_plugin_events_socket)
+    if socket and socket not in ({GATEWAY_SOCKET} | AUDIO_SOCKETS) and not is_plugin_events_socket(socket):
+        raise _http(400, "Unknown socket")
     # On the gateway's Webapp the ticket carries the login's sign-in binding, so the socket it opens
     # closes at sign-out (``hermes_cli.webapp_sign_in``).
     signed_in = webapp_sign_in.sign_in_of(request)
+    extra = {}
+    if socket:
+        extra["socket"] = socket
+    if signed_in:
+        extra["sign_in"] = signed_in
     ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider, issuer=sess.issuer,
-                         extra={"sign_in": signed_in} if signed_in else None)
+                         extra=extra or None)
     _audit(request, AuditEvent.WS_TICKET_MINTED, provider=sess.provider, user_id=sess.user_id)
     return {"ticket": ticket, "ttl_seconds": TTL_SECONDS}
 

@@ -14,7 +14,7 @@
 
 import type { ReadableAtom } from 'nanostores'
 
-import { pluginRest, type PluginRestOptions, pluginSocket } from '@/hermes'
+import { pluginRest, type PluginRestOptions, pluginSocket, type PluginSocketStatus } from '@/hermes'
 import { createPluginI18n, type PluginI18n } from '@/i18n'
 import {
   listPluginAppActions,
@@ -154,9 +154,15 @@ export interface PluginContext {
   rest: <T>(path: string, opts?: PluginRestOptions) => Promise<T>
   /** Live twin of `rest`: a WebSocket to this plugin's own namespace
    *  ('/events'), JSON frames to `onMessage`, auto-reconnect, disposer
-   *  returned. Resolves to a no-op on OAuth remotes — treat it as an
-   *  accelerator over your polling, never a replacement. */
-  socket: (path: string, onMessage: (data: unknown) => void) => () => void
+   *  returned. Transport changes (socket open → 'live', closed/refused →
+   *  'polling') are reported to `onStatus` so plugins can surface a live vs
+   *  delayed indicator and tighten their polling fallback. Treat the socket
+   *  as an accelerator over polling, never a replacement. */
+  socket: (
+    path: string,
+    onMessage: (data: unknown) => void,
+    onStatus?: (status: PluginSocketStatus) => void
+  ) => () => void
   /** The curated OS door: native notification, open-external, reveal-in-file-
    *  manager, clipboard — attributed to this plugin, result-shaped (never
    *  throws for a missing capability). */
@@ -394,7 +400,7 @@ export function createPluginContext(
     onEvent: (type, listener) => track(onGatewayEvent(type, listener)),
     ...createPluginLifetime(track),
     rest: <T>(path: string, opts?: PluginRestOptions) => pluginRest<T>(pluginId, path, opts),
-    socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),
+    socket: (path, onMessage, onStatus) => track(pluginSocket(pluginId, path, onMessage, onStatus)),
     os: createPluginOs(pluginId),
     pet: createPluginPet(pluginId, track),
     runAction: id => runPluginAppAction(pluginId, id),

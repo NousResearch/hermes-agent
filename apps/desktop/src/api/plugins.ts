@@ -1,7 +1,9 @@
 import { isStableOpen, reconnectBackoffDelayMs } from '@hermes/shared'
 
 import type { HermesConnection } from '@/global'
+import { browserBootstrap, pluginEventsTicketUrl } from '@/lib/browser-transport'
 import { hostHas } from '@/lib/host-capabilities'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 
 import { $apiRequestScope, getApiRequestConnection, getApiRequestProfile, hermesApi, profileScoped } from './client'
@@ -96,9 +98,24 @@ type PluginSocketTarget = null | string | { refused: 'permission' }
 
 /** The URL a plugin socket dials, or null to stay on polling. A local gateway
  *  (`authMode: 'native'`, no static token) gets a fresh one-use URL from main:
- *  its native grant rides a request header main attaches to that one dial. */
+ *  its native grant rides a request header main attaches to that one dial. An
+ *  OAuth remote gets the same one-use URL from main, minted with the OAuth
+ *  session over `/api/auth/ws-ticket`; the browser-hosted Desktop mints its own
+ *  ticket per dial over its authenticated same-origin ticket door. A mint that
+ *  resolves null means "no ticket path for this dial": one socket less, polling
+ *  carries the view. A mint that REJECTS is a connection failure — it
+ *  propagates so connect() retries it with backoff instead of stranding the
+ *  live channel on polling until the page reloads. */
 async function pluginSocketUrl(connection: HermesConnection, pluginId: string, suffix: string): Promise<PluginSocketTarget> {
-  if (connection.authMode === 'native') {
+  if (isBrowserHostedDesktop()) {
+    // The browser session token never rides a URL: only a plugin's own event
+    // stream has a ticket path (`plugin-events/<id>`), everything else polls.
+    // Null stays the mint's "no ticket path" verdict; a rejected mint (ticket
+    // door unreachable while the gateway restarts, empty ticket) propagates.
+    return pluginEventsTicketUrl(browserBootstrap(), pluginId, suffix)
+  }
+
+  if (connection.authMode === 'native' || connection.authMode === 'oauth') {
     const mint = window.hermesDesktop.getPluginWsUrl
 
     // An IPC round-trip with no deadline of its own, bounded like activeConnection().
@@ -119,12 +136,24 @@ async function pluginSocketUrl(connection: HermesConnection, pluginId: string, s
 
 const requestScopeKey = () => `${getApiRequestConnection() ?? ''}\n${getApiRequestProfile() ?? ''}`
 
+/** The plugin's own view of its live channel: 'live' while its socket is open
+ *  (server keepalives prove it every 25s), 'polling' once any dial resolved
+ *  null, refused or dropped — the REST polling fallback carries the view. */
+export type PluginSocketStatus = 'live' | 'polling'
+
 /** The plugin WebSocket door — the live twin of `pluginRest`, scoped the same
  *  way: `path` is relative to `/api/plugins/<pluginId>` ('/events' → the
  *  plugin's own event stream). Token-mode backends auth via the same query
  *  credential the app's own sockets use, a local gateway via the native grant
- *  its REST twin uses; OAuth remotes resolve null (callers keep their polling
- *  fallback — every consumer must have one anyway, since a socket can drop).
+ *  its REST twin uses, OAuth remotes and the browser-hosted Desktop via a
+ *  one-use ticket minted per dial (callers keep their polling fallback for any
+ *  dial that resolves null — every consumer must have one anyway, since a
+ *  socket can drop).
+ *
+ *  `onStatus`, when given, mirrors the channel's transport state so a view can
+ *  tell "live" from "polling carries us" — it reports, it does not decide: the
+ *  frames themselves (event or keepalive) prove freshness, the status only
+ *  says which channel would carry them.
  *
  *  Auto-reconnects with capped backoff until disposed. A dial that never opens,
  *  or a connection descriptor or grant that can't be resolved yet, keeps
@@ -135,7 +164,7 @@ const requestScopeKey = () => `${getApiRequestConnection() ?? ''}\n${getApiReque
  *  accepts and closes at once. A connection or profile change drops a dial
  *  still resolving for the old scope, closes a socket bound to it, resets the
  *  count and dials for the new scope. */
-export function pluginSocket(pluginId: string, path: string, onMessage: (data: unknown) => void): () => void {
+export function pluginSocket(pluginId: string, path: string, onMessage: (data: unknown) => void, onStatus?: (status: PluginSocketStatus) => void): () => void {
   const suffix = pluginPathSuffix('pluginSocket', path)
 
   let socket: null | WebSocket = null
@@ -155,6 +184,9 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
     refused = refusal ? refused + 1 : refused
 
     if (refused >= MAX_REFUSED_PLUGIN_DIALS) {
+      // Terminal stop: no more dials — the polling fallback carries the view.
+      onStatus?.('polling')
+
       return
     }
 
@@ -176,6 +208,8 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
 
     // No bridge: stay on the polling fallback.
     if (!window.hermesDesktop?.getConnection) {
+      onStatus?.('polling')
+
       return
     }
 
@@ -189,10 +223,15 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
       return retry(dial, false)
     }
 
-    // OAuth cookie auth (WS tickets are single-use, core-managed) and the browser-hosted
-    // Desktop (its session token never rides a URL): stay on the polling fallback rather than
-    // half-working.
-    if (stale() || connection.authMode === 'oauth' || !hostHas('urlTokenAuth')) {
+    // Token-mode remotes without a URL token capability have no credential that
+    // may ride a URL — stay on the polling fallback. The browser-hosted Desktop
+    // and OAuth remotes resolve through their own one-use ticket mints instead
+    // (pluginSocketUrl): null from those mints means "poll", below.
+    if (stale() || (!isBrowserHostedDesktop() && connection.authMode !== 'oauth' && !hostHas('urlTokenAuth'))) {
+      if (!stale()) {
+        onStatus?.('polling')
+      }
+
       return
     }
 
@@ -201,11 +240,17 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
     try {
       url = await pluginSocketUrl(connection, pluginId, suffix)
     } catch {
-      // The local mint failed or timed out (owner away, re-ensuring): a connection failure.
+      // The mint failed or timed out (owner away, re-ensuring, or the browser
+      // ticket door unreachable): a connection failure.
       return retry(dial, false)
     }
 
     if (stale() || !url) {
+      // A resolved null is the mint's own verdict for this mode: poll.
+      if (!stale() && !url) {
+        onStatus?.('polling')
+      }
+
       return
     }
 
@@ -219,6 +264,7 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
 
     current.onopen = () => {
       openedAt = Date.now()
+      onStatus?.('live')
     }
 
     current.onmessage = event => {
@@ -243,6 +289,10 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
       if (stale()) {
         return
       }
+
+      // Live channel gone; the polling fallback carries the view until a
+      // redial opens (retry below re-suspends that on success).
+      onStatus?.('polling')
 
       // Only a socket that stayed up resets the ladder. An accept-then-close server
       // (Kanban on an archived board) is up and answering, so it counts as a refusal.
@@ -272,6 +322,9 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
     const old = socket
     socket = null
     old?.close()
+    // The old dial's onclose is stale by now (generation moved): report here,
+    // before the new dial's own onopen overwrites it again.
+    onStatus?.('polling')
     void connect()
   })
 

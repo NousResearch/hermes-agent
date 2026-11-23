@@ -7481,11 +7481,11 @@ const recoverCloudCookieSession = createCloudSessionRecovery({
 
 // Native bearer first (including one forced 401 rotation), OAuth cookie second.
 // Transient ticket POST failures keep their bounded retry before Cloud recovery.
-async function mintGatewayWsTicket(baseUrl: string, headers: Record<string, string> = {}): Promise<string> {
+async function mintGatewayWsTicket(baseUrl: string, headers: Record<string, string> = {}, socket?: string): Promise<string> {
   return recoverCloudCookieSession(baseUrl, () =>
     withTransientRetries(
       (): Promise<string> =>
-        mintOauthGatewayWsTicket(baseUrl, { ensureNativeAccessToken, fetchJson, fetchJsonViaOauthSession }, headers),
+        mintOauthGatewayWsTicket(baseUrl, { ensureNativeAccessToken, fetchJson, fetchJsonViaOauthSession }, headers, socket),
       {
         isRetryable: (error: Error): boolean =>
           !(error instanceof NativeAuthChangedError) && !isGatewayAuthRejection(error)
@@ -14563,7 +14563,8 @@ ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
 })
 
 const pluginWsUrl = createPluginWsUrlHandler({ ensureBackend, ensureRegistryBackend, forgetLocalGatewayDescriptor,
-  forgetRegistryLocalGatewayDescriptor, launchHome: HERMES_HOME, prepare: localGatewayDials.preparePlugin })
+  forgetRegistryLocalGatewayDescriptor, launchHome: HERMES_HOME, prepare: localGatewayDials.preparePlugin,
+  mintRemotePluginTicket: (baseUrl, headers, socket) => mintGatewayWsTicket(baseUrl, headers, socket) })
 
 ipcMain.handle('hermes:plugin:ws-url', (event, payload) => pluginWsUrl(payload ?? {}, event.sender.id))
 

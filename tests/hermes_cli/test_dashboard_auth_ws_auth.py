@@ -148,6 +148,30 @@ class TestWsTicketEndpoint:
         assert "window.__HERMES_AUTH_REQUIRED__=true" in response.text
         assert "__HERMES_SESSION_TOKEN__" not in response.text
 
+    def test_plugin_events_socket_ticket_is_bound_to_that_stream(self, gated_app):
+        from hermes_cli.dashboard_auth.ws_tickets import consume_ticket
+
+        _logged_in(gated_app)
+        headers = {"Origin": "https://fly-app.fly.dev"}
+        r = gated_app.post("/api/auth/ws-ticket?socket=plugin-events/kanban", headers=headers)
+        assert r.status_code == 200
+        assert consume_ticket(r.json()["ticket"])["socket"] == "plugin-events/kanban"
+
+    def test_unknown_socket_is_refused(self, gated_app):
+        _logged_in(gated_app)
+        headers = {"Origin": "https://fly-app.fly.dev"}
+        for socket in ("bogus", "plugin-events/../x", "plugin-events/Kanban", "plugin-events/"):
+            r = gated_app.post("/api/auth/ws-ticket", params={"socket": socket}, headers=headers)
+            assert r.status_code == 400, socket
+
+    def test_without_socket_the_ticket_stays_unnamed(self, gated_app):
+        from hermes_cli.dashboard_auth.ws_tickets import consume_ticket
+
+        _logged_in(gated_app)
+        r = gated_app.post("/api/auth/ws-ticket", headers={"Origin": "https://fly-app.fly.dev"})
+        assert r.status_code == 200
+        assert "socket" not in consume_ticket(r.json()["ticket"])
+
     def test_unauthenticated_returns_401_or_redirect(self, gated_app):
         r = gated_app.post("/api/auth/ws-ticket", follow_redirects=False)
         # gated_auth_middleware short-circuits before the route — it
@@ -465,6 +489,45 @@ class TestWsAuthOkGated:
         if log_file.exists():
             content = log_file.read_text()
             assert "ws_ticket_rejected" in content
+
+
+class TestPluginEventsRouteDerivesItsSocket:
+    """A plugin's ``/api/plugins/<id>/events`` route that calls ``_ws_auth_ok(ws)`` without
+    ``socket=`` still takes a ticket named for its own stream, and only that one. Judged through
+    ``_ws_auth_reason`` with a request stub (no real upgrade)."""
+
+    @staticmethod
+    def _named(plugin_id):
+        return mint_ticket(user_id="u1", provider="stub", extra={"socket": f"plugin-events/{plugin_id}"})
+
+    def test_named_ticket_opens_exactly_its_path(self, gated_app):
+        ws = _fake_ws(query={"ticket": self._named("team-hub")}, path="/api/plugins/team-hub/events")
+        assert _web_server_chat._ws_auth_reason(ws) == (None, "ticket")
+
+    def test_base_prefix_is_ignored(self, gated_app):
+        ws = _fake_ws(query={"ticket": self._named("kanban")}, path="/proxy/hermes/api/plugins/kanban/events")
+        assert _web_server_chat._ws_auth_ok(ws) is True
+
+    def test_another_plugins_ticket_is_refused(self, gated_app):
+        ws = _fake_ws(query={"ticket": self._named("other")}, path="/api/plugins/kanban/events")
+        assert _web_server_chat._ws_auth_ok(ws) is False
+
+    def test_named_ticket_opens_no_other_path(self, gated_app):
+        for path in ("/api/plugins/kanban/other", "/api/plugins/kanban/events/x", "/api/ws",
+                     "/api/plugins/Kanban/events", "/api/plugins//events", "/plugins/kanban/events"):
+            ws = _fake_ws(query={"ticket": self._named("kanban")}, path=path)
+            assert _web_server_chat._ws_auth_ok(ws) is False, path
+
+    def test_unnamed_legacy_ticket_still_opens_the_stream(self, gated_app):
+        ticket = mint_ticket(user_id="u1", provider="stub")
+        ws = _fake_ws(query={"ticket": ticket}, path="/api/plugins/kanban/events")
+        assert _web_server_chat._ws_auth_ok(ws) is True
+
+    def test_other_paths_judge_an_unnamed_ticket_as_before(self, gated_app):
+        # Not a plugin events path: the socket stays unnamed, and an unnamed ticket still opens it.
+        ticket = mint_ticket(user_id="u1", provider="stub")
+        ws = _fake_ws(query={"ticket": ticket}, path="/api/plugins/kanban/other")
+        assert _web_server_chat._ws_auth_ok(ws) is True
 
 
 class TestWsRequestIsAllowedGated:

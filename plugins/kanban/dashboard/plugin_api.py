@@ -47,13 +47,21 @@ _BOARD_Q = Query(None, description="Kanban board slug (omit for current)")
 
 # --- Connection / board helpers ---------------------------------------------
 
-def _ws_upgrade_authorized(ws: WebSocket) -> bool:
+def _ws_upgrade_authorized(ws: WebSocket, socket: str | None = None) -> bool:
     """Authorize a WS upgrade via the dashboard's canonical gates, the same pair every core WS
     route runs: ``_ws_auth_ok`` (``?token=`` / ``?ticket=`` / ``?internal=``) and
-    ``_ws_request_is_allowed`` (Host/Origin + loopback-peer guard)."""
+    ``_ws_request_is_allowed`` (Host/Origin + loopback-peer guard). *socket* is this route's
+    ``web_session_sockets`` name (``plugin-events/kanban``): a one-use ticket minted for it opens
+    this stream and nothing else."""
     from hermes_cli import web_server_chat as _ws
 
-    return bool(_ws._ws_auth_ok(ws)) and bool(_ws._ws_request_is_allowed(ws))
+    return bool(_ws._ws_auth_ok(ws, socket=socket)) and bool(_ws._ws_request_is_allowed(ws))
+
+
+#: This route's ``web_session_sockets`` name: a ticket minted for exactly this name (and no other
+#: socket's ticket) opens the kanban event stream; unnamed legacy tickets keep opening it too
+#: (``web_session_sockets.ticket_refusal``).
+PLUGIN_EVENTS_SOCKET = "plugin-events/kanban"
 
 
 def _normalize_slug_or_400(slug: str) -> Optional[str]:
@@ -1696,6 +1704,8 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
 
 # Event tail poll interval: WAL + 300 ms polling is the simplest robust approach (negligible CPU).
 _EVENT_POLL_SECONDS = 0.3
+#: Idle keepalive interval for the events stream, comfortably under typical proxy idle timeouts.
+_EVENT_KEEPALIVE_SECONDS = 25.0
 
 
 def _since_param(ws: WebSocket) -> Optional[int]:
@@ -1799,7 +1809,7 @@ class _EventTail:
 
 @router.websocket("/events")
 async def stream_events(ws: WebSocket):
-    if not _ws_upgrade_authorized(ws):
+    if not _ws_upgrade_authorized(ws, socket=PLUGIN_EVENTS_SOCKET):
         await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
         return
     await ws.accept()
@@ -1814,11 +1824,16 @@ async def stream_events(ws: WebSocket):
         return
     tail = _EventTail(board)
     since = _since_param(ws)
+    # Idle keepalive: an empty frame proves the channel (and any proxy between) stays live, so the
+    # client can tell "connected, nothing new" from "silently dead" for its freshness badge.
+    keepalive_after = _EVENT_KEEPALIVE_SECONDS
     try:
         # Capture the tail at accept, before the first wait, so an event that
         # lands in that window is still delivered. A missing cursor must not
         # mean 0 — that replays the whole history.
         cursor = since if since is not None else await tail.latest()
+        loop = asyncio.get_running_loop()
+        keepalive_at = loop.time() + keepalive_after
         while True:
             # Race receive() against the poll interval so a disconnect is detected even when no
             # events flow (else idle boards leak poll tasks). Other client messages are ignored.
@@ -1829,8 +1844,13 @@ async def stream_events(ws: WebSocket):
             except TimeoutError:
                 pass  # no client message — poll the DB
             cursor, events = await tail.poll(cursor)
+            now = loop.time()
             if events:
                 await ws.send_json({"events": events, "cursor": cursor})
+                keepalive_at = now + keepalive_after
+            elif now >= keepalive_at:
+                await ws.send_json({"events": [], "cursor": cursor})
+                keepalive_at = now + keepalive_after
     except WebSocketDisconnect:
         return
     except asyncio.CancelledError:

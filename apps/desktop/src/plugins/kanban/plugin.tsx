@@ -30,7 +30,17 @@ import {
   useValue
 } from '@hermes/plugin-sdk'
 
-import { $boardSlug, bindApi, boardKey, fetchBoard, useKanbanScope } from './api'
+import {
+  $boardSlug,
+  $liveState,
+  bindApi,
+  boardKey,
+  boardRefetchInterval,
+  fetchBoard,
+  isBrowserHosted,
+  pollInBackground,
+  useKanbanScope
+} from './api'
 import { KanbanBoardPage } from './board'
 import { KANBAN_LOCALES } from './i18n'
 import { $newTaskLane, useKanban } from './ui'
@@ -43,11 +53,15 @@ function KanbanCount() {
   const scope = useKanbanScope()
   const slug = useValue($boardSlug)
 
-  // Socket-invalidated like the page (same cache); slow socketless heartbeat.
+  // Socket-invalidated like the page (same cache); the heartbeat adapts to
+  // the live state exactly like the page query.
+  const liveState = useValue($liveState)
+
   const { data: board } = useQuery({
     queryFn: () => fetchBoard(false),
     queryKey: boardKey(scope, slug, false),
-    refetchInterval: 60_000
+    refetchInterval: boardRefetchInterval(liveState),
+    refetchIntervalInBackground: pollInBackground(liveState, scope, isBrowserHosted())
   })
 
   if (!board) {

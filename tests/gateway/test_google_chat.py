@@ -1817,6 +1817,7 @@ def test_bot_id_cache_skips_a_deleted_or_renamed_profile_home(adapter, tmp_path,
     home = dead_named_home(tmp_path, move)
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
     adapter._save_cached_bot_id("users/123")  # never raises
+    assert not home.exists()
 
 
 @pytest.mark.parametrize("move", ("delete", "rename"))

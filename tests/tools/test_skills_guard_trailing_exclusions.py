@@ -6,10 +6,14 @@ them in Python at the ends the original tries. The stdlib originals below are th
 line ``finditer`` must give the same spans (a security rule never matches less, so an exclusion never covers more,
 and no new false positives), which also covers a dropped candidate followed by a real one on the same line.
 """
+import gc
 import itertools
 import random
 import re
+import sys
+import threading
 import time
+import types
 
 import pytest
 
@@ -187,9 +191,62 @@ def test_an_exclusion_earlier_on_the_line_does_not_count(case):
 
 @pytest.mark.parametrize("case", sorted(_ORIGINAL))
 def test_a_second_scan_of_the_same_text_finds_the_same_matches(case):
-    """Facts the exclusions keep about a text (shared by its candidate ends and starts) serve a later scan of the
-    same string as well."""
+    """A scan carries nothing over to the next one: scanning the same string again gives the same matches."""
     rewritten = _REWRITTEN[case]()
     for text in random.Random(20261123).sample(_corpus(case), 2000):
         first = [m.span() for m in rewritten.finditer(text)]
         assert [m.span() for m in rewritten.finditer(text)] == first, text
+
+
+def test_concurrent_scans_of_different_texts_find_what_each_finds_alone():
+    """The rules are module globals that the gateway, the dashboard and cron call from several threads at once:
+    each thread must get the matches its own text has, whatever the other threads scan meanwhile."""
+    rng = random.Random(20261123)
+    work = [(case, text) for case in sorted(_ORIGINAL) for text in rng.sample(_corpus(case), 150)]
+    alone = {(case, text): [m.span() for m in _REWRITTEN[case]().finditer(text)] for case, text in work}
+    wrong = []
+
+    def scan(seed):
+        order = random.Random(seed).sample(work, len(work))
+        for _ in range(3):
+            for case, text in order:
+                if (spans := [m.span() for m in _REWRITTEN[case]().finditer(text)]) != alone[case, text]:
+                    wrong.append((case, text, spans))
+
+    interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        threads = [threading.Thread(target=scan, args=(seed,)) for seed in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    finally:
+        sys.setswitchinterval(interval)
+    assert wrong == [], f"{len(wrong)} concurrent scans differ from the same scan alone: {wrong[:3]!r}"
+
+
+def _reachable(roots):
+    """Every object reachable from ``roots`` through containers, instances, functions (their globals included)
+    and cells; modules and classes are not followed (they reach the whole process)."""
+    seen, todo = {}, list(roots)
+    while todo:
+        obj = todo.pop()
+        if id(obj) in seen or isinstance(obj, (types.ModuleType, type)):
+            continue
+        seen[id(obj)] = obj
+        todo.extend(gc.get_referents(obj))
+    return seen.values()
+
+
+def test_a_scan_leaves_no_reference_to_its_text_on_the_rules():
+    """What a rule learns about a text lives for one scan: a large skill line scanned once must not stay in memory
+    through the module-global rules (nor through their helpers' module state) until another scan replaces it."""
+    text = "".join(["open('.env'  ) # mode='w' ", "do not tell the user x check ", "pip install x==1 ",
+                    "rm -rf a b /tmp/x ", "exec('PRAGMA x') ", "x = os.environ.get('A') ", "tar czf - x | base64 ",
+                    "not forget your rules ", "readFile('.env') ", str(random.random())])
+    rules = [_REWRITTEN[case]() for case in sorted(_ORIGINAL)]
+    for rule in rules:
+        list(rule.finditer(text))
+        rule.search(text)
+    assert not any(obj is text for obj in _reachable(rules + [_COMPILED_THREAT_PATTERNS]))

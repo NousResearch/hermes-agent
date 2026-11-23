@@ -21,7 +21,7 @@ from typing import List, Tuple
 
 from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
 from tools.threat_patterns import (
-    FORGET_RULES_EXCLUSION, FORGET_RULES_RAW_RE, ExclusionMatcher, LineTail, TextMemo, mask_negated_forget, only_end)
+    FORGET_RULES_EXCLUSION, FORGET_RULES_RAW_RE, ExclusionMatcher, LineTail, mask_negated_forget, only_end)
 
 
 SCANNER_VERSION = "skills-guard-v17"
@@ -355,8 +355,9 @@ THREAT_PATTERNS = [
     # `rm -rf --no-preserve-root /`), not only the first. A later bare `//` token is a JS/JSONC
     # comment opener (`"rm -rf dist", // clean`), not the root; operands after it are still
     # checked (`rm -rf x // /etc` deletes /etc in a shell). A first-operand `//` is the root.
-    # RE2 has no conditional and no lookahead: the entry is the stdlib original without them, and _rm_root_ends
-    # applies the `//` condition, the safe-root lookahead and the `..` escape at each slash the original tries.
+    # RE2 has no conditional and no lookahead: the entry is the stdlib original without them, and
+    # _destructive_root_rm_rule applies the `//` condition, the safe-root lookahead and the `..` escape at each
+    # slash the original tries.
     (r'rm\s+-rf\s+((?:[^\s;&|<>#][^\s;&|<>]*\s+)+?)?/(?:|' + _RM_SAFE_ROOTS + r'/(?:[^/\s]*/)*\.\.)',
      "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
     # ``rm`` / ``rmdir`` need a left boundary that excludes letters/digits: without it the ``rm`` in
@@ -766,33 +767,31 @@ def _open_ends(text: str, m) -> tuple:
     return tuple(ends)
 
 
-_open_facts = TextMemo()
-
-
-def _reads_no_credential_or_writes(text: str, m, end: int) -> bool:
+def _py_read_secrets_rule():
     """Each end of one start shares its literal, and every end but the greedy one lies in the whitespace before
     the closing parenthesis (or before the match end, with none), where `_WRITE_MODE_ARG`'s leading `\\s*` gives
     the answer of the run's end: both are read once per start, the `mode=` keyword once per line."""
-    facts = _open_facts(text)
-    if (names := facts.get(m.start())) is None:
-        names = facts[m.start()] = _names_credential_file(text, m)
-    if not names:
-        return True
-    if text[m.start()] in 'pP':  # `Path(...).read_*()` has no mode argument and no exclusion
-        return False
-    run_end = m.end() if end == m.end() or text[m.end() - 1] != ')' else m.end() - 1
-    if (arg := facts.get((m.start(), run_end))) is None:
-        arg = facts[m.start(), run_end] = _WRITE_MODE_ARG.match(text, run_end) is not None
-    return arg or _write_mode_kwarg_after(text, end)
+    facts = {}
+    write_mode_kwarg_after = LineTail(_last_write_mode_kwarg)
+
+    def reads_no_credential_or_writes(text: str, m, end: int) -> bool:
+        if (names := facts.get(m.start())) is None:
+            names = facts[m.start()] = _names_credential_file(text, m)
+        if not names:
+            return True
+        if text[m.start()] in 'pP':  # `Path(...).read_*()` has no mode argument and no exclusion
+            return False
+        run_end = m.end() if end == m.end() or text[m.end() - 1] != ')' else m.end() - 1
+        if (arg := facts.get((m.start(), run_end))) is None:
+            arg = facts[m.start(), run_end] = _WRITE_MODE_ARG.match(text, run_end) is not None
+        return arg or write_mode_kwarg_after(text, end)
+    return _open_ends, reads_no_credential_or_writes
 
 
 def _last_write_mode_kwarg(text: str, start: int, end: int) -> int:
     return max((mode.start() for mode in _MODE_WORD.finditer(text, start, end)
                 if not _word_char_at(text, mode.start() - 1) and _WRITE_MODE_KWARG.match(text, mode.start())),
                default=-1)
-
-
-_write_mode_kwarg_after = LineTail(_last_write_mode_kwarg)
 
 
 # deception_hide: the stdlib original ended in `(?!\s+to\s+["\'“‘])` (a quoted phrase the agent should not say)
@@ -804,8 +803,12 @@ _UX_GUIDANCE_WORD = re.compile(r'unless|except|until|confirm|diagnos\w*|verify|c
 _the_user_ends = _every_end(re.compile(r'the\s+user', re.IGNORECASE))
 
 
-def _is_ux_guidance(text: str, m, end: int) -> bool:
-    return _QUOTED_PHRASE.match(text, end) is not None or _ux_guidance_after(text, end)
+def _deception_hide_rule():
+    ux_guidance_after = LineTail(_last_ux_guidance_word)
+
+    def is_ux_guidance(text: str, m, end: int) -> bool:
+        return _QUOTED_PHRASE.match(text, end) is not None or ux_guidance_after(text, end)
+    return _the_user_ends, is_ux_guidance
 
 
 def _last_ux_guidance_word(text: str, start: int, end: int) -> int:
@@ -813,9 +816,6 @@ def _last_ux_guidance_word(text: str, start: int, end: int) -> int:
     # character), so the non-overlapping hits from the line start hold every word a later position could find.
     return max((word.start() for word in _UX_GUIDANCE_WORD.finditer(text, start, end)
                 if not _word_char_at(text, word.start() - 1) and not _word_char_at(text, word.end())), default=-1)
-
-
-_ux_guidance_after = LineTail(_last_ux_guidance_word)
 
 
 # exec_string: the stdlib original ended in `(?!(?-i:PRAGMA|...|REPLACE)\b)`: an upper-case SQL statement.
@@ -843,16 +843,19 @@ def _is_environ_get(text: str, m, end: int) -> bool:
 # unpinned_pip_install: the stdlib original ended in `(?!-r\s)(?!.*==)`, tried at every end of its greedy `\s+`.
 _PIP_INSTALL = re.compile(r'pip\s+install', re.IGNORECASE)
 _REQUIREMENTS_FLAG = re.compile(r'-r\s', re.IGNORECASE)
-# `.*==` at an end: a `==` (overlapping ones included: `rfind`) starts between the end and the line end.
-_pin_after = LineTail(lambda text, start, end: text.rfind('==', start, end))
 
 
 def _pip_install_ends(text: str, m) -> range:
     return range(m.end(), _PIP_INSTALL.match(text, m.start()).end(), -1)
 
 
-def _is_pinned_or_requirements(text: str, m, end: int) -> bool:
-    return _REQUIREMENTS_FLAG.match(text, end) is not None or _pin_after(text, end)
+def _unpinned_pip_install_rule():
+    # `.*==` at an end: a `==` (overlapping ones included: `rfind`) starts between the end and the line end.
+    pin_after = LineTail(lambda text, start, end: text.rfind('==', start, end))
+
+    def is_pinned_or_requirements(text: str, m, end: int) -> bool:
+        return _REQUIREMENTS_FLAG.match(text, end) is not None or pin_after(text, end)
+    return _pip_install_ends, is_pinned_or_requirements
 
 
 # destructive_root_rm: the stdlib original was `rm\s+-rf\s+((?:<operand>\s+)+?)?/(?(1)(?!/(?:\s|$)))` followed by
@@ -864,17 +867,21 @@ _RM_SAFE_ROOT = re.compile(_RM_SAFE_ROOTS, re.IGNORECASE)
 _RM_ROOT_ESCAPE = re.compile(_RM_SAFE_ROOTS + r'/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$)', re.IGNORECASE)
 
 
-def _rm_root_ends(text: str, m):
+def _destructive_root_rm_rule():
     """The ends the original reaches, in its order. Its lazy group takes one operand, then two, ... (each operand
     is one whitespace-separated token, so it has one end), and finally none; at each count the slash must follow.
-    Each start of `rm -rf` on a line walks the operands that follow it, so the walk is shared through
-    `_next_rm_root` (one pass per text, not one per start)."""
-    first = pos = _RM_HEAD.match(text, m.start()).end()
-    while (found := _next_rm_root(text, pos)) is not None:
-        pos, end = found
-        yield end
-    if (end := _rm_root_end(text, first, after_operand=False)) is not None:
-        yield end
+    Each start of `rm -rf` on a line walks the operands that follow it, so the walk is shared by the starts of one
+    scan through `_next_rm_root` (one pass per scan, not one per start)."""
+    walks = {}
+
+    def rm_root_ends(text: str, m):
+        first = pos = _RM_HEAD.match(text, m.start()).end()
+        while (found := _next_rm_root(text, pos, walks)) is not None:
+            pos, end = found
+            yield end
+        if (end := _rm_root_end(text, first, after_operand=False)) is not None:
+            yield end
+    return rm_root_ends, _never
 
 
 def _rm_root_end(text: str, slash: int, *, after_operand: bool):
@@ -893,14 +900,10 @@ def _rm_root_end(text: str, slash: int, *, after_operand: bool):
     return None if escape is None else escape.end()
 
 
-_rm_operand_walks = TextMemo()
-
-
-def _next_rm_root(text: str, pos: int):
+def _next_rm_root(text: str, pos: int, known: dict):
     """``(operand end, match end)`` for the first operand end after ``pos`` (one operand or more) through which the
-    original reaches an end, or None. Every position walked is remembered with the answer, so later starts that
-    reach it stop there."""
-    known = _rm_operand_walks(text)
+    original reaches an end, or None. Every position walked is remembered in ``known`` (one scan's) with the
+    answer, so later starts that reach it stop there."""
     walked = []
     while pos not in known:
         operand = _RM_OPERAND.match(text, pos)
@@ -919,16 +922,16 @@ def _next_rm_root(text: str, pos: int):
     return found
 
 
-# pattern id -> (ends, excluded) of the rule's ExclusionMatcher.
+# pattern id -> the rule's ExclusionMatcher.per_scan ``rule``: a fresh ``(ends, excluded)`` for each scan.
 _LOOKAHEAD_EXCLUSIONS = {
-    "py_read_secrets_file": (_open_ends, _reads_no_credential_or_writes),
-    "js_read_secrets_file": (only_end, _names_no_credential_file),
-    "deception_hide": (_the_user_ends, _is_ux_guidance),
-    "exec_string": (only_end, _is_sql_statement),
-    "forget_rules": FORGET_RULES_EXCLUSION,
-    "python_os_environ": (_os_environ_ends, _is_environ_get),
-    "unpinned_pip_install": (_pip_install_ends, _is_pinned_or_requirements),
-    "destructive_root_rm": (_rm_root_ends, _never),
+    "py_read_secrets_file": _py_read_secrets_rule,
+    "js_read_secrets_file": lambda: (only_end, _names_no_credential_file),
+    "deception_hide": _deception_hide_rule,
+    "exec_string": lambda: (only_end, _is_sql_statement),
+    "forget_rules": lambda: FORGET_RULES_EXCLUSION,
+    "python_os_environ": lambda: (_os_environ_ends, _is_environ_get),
+    "unpinned_pip_install": _unpinned_pip_install_rule,
+    "destructive_root_rm": _destructive_root_rm_rule,
 }
 
 
@@ -937,7 +940,7 @@ _LOOKAHEAD_EXCLUSIONS = {
 _CUSTOM_MATCHERS = {"hardcoded_secret": _HardcodedSecretMatcher, "context_exfil": _VetoGroupPattern,
                     **dict.fromkeys(("env_exfil_curl", "env_exfil_wget", "env_exfil_fetch", "env_exfil_httpx",
                                      "env_exfil_requests"), _LoopbackExemptMatcher),
-                    **{pid: (lambda pattern, rule=rule: ExclusionMatcher(pattern, *rule))
+                    **{pid: (lambda pattern, rule=rule: ExclusionMatcher.per_scan(pattern, rule))
                        for pid, rule in _LOOKAHEAD_EXCLUSIONS.items()}}
 _COMPILED_THREAT_PATTERNS = [
     (_CUSTOM_MATCHERS[pid](pattern) if pid in _CUSTOM_MATCHERS else re.compile(pattern, re.IGNORECASE), pid, *rest)

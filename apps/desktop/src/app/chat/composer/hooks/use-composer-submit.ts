@@ -12,6 +12,7 @@ import type { BusyInputMode } from '@/store/busy-input-mode'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import {
   type ComposerAttachment,
+  draftKey,
   freezeComposerTransportPayload,
   isFreshDraftScope,
   takeSessionDraft
@@ -150,14 +151,12 @@ export function useComposerSubmit({
     target?: Parameters<ChatBarProps['onSubmit']>[1],
     onRejected?: (scope: string | null, submissionId: string) => void
   ) => {
-    // A fresh chat's composer is keyed by its per-lifecycle fresh-draft key
-    // (`__new__:<uuid>`), but the submit contract spells "no session yet" as
-    // null: the create handoff below and the composer drift prong both key off
-    // it, and draftKey(null) resolves to that same fresh bucket.
-    const submittedScope =
-      target?.storedSessionId ?? (isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current)
+    // Pin the draft's lifecycle now. null is only the submit contract's
+    // "no session yet": resolving it after an await could name another new chat.
+    const submittedDraftScope = draftKey(target?.storedSessionId ?? draftScopeRef.current)
+    const submittedScope = isFreshDraftScope(submittedDraftScope) ? null : submittedDraftScope
 
-    let restoreScope = submittedScope
+    let restoreScope = submittedDraftScope
     const submittedAttachments = attachments ?? []
 
     let outgoing: OutgoingSend | undefined
@@ -183,14 +182,14 @@ export function useComposerSubmit({
     // chain must not take the words with it (see composer-outbox).
     outgoing = displayKind
       ? undefined
-      : journalOutgoingSend(submittedScope, draftRetry(submissionId, text, submittedAttachments))
+      : journalOutgoingSend(submittedDraftScope, draftRetry(submissionId, text, submittedAttachments))
 
     const restore = () => {
       stashAt(restoreScope, text, submittedAttachments)
       // Restored with its identity: Enter on this exact draft retries the same send.
       rememberDraftRetry?.(restoreScope, draftRetry(submissionId, text, submittedAttachments))
 
-      if ((isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current) === restoreScope) {
+      if (draftKey(draftScopeRef.current) === restoreScope) {
         loadIntoComposer(text, submittedAttachments)
       }
     }
@@ -220,10 +219,10 @@ export function useComposerSubmit({
       .then(accepted => {
         if (accepted === false) {
           rejected()
-        } else if (stashStillHoldsSent(submittedScope, text, submittedAttachments)) {
+        } else if (stashStillHoldsSent(submittedDraftScope, text, submittedAttachments)) {
           // Through the composer's own save, so a next message the user types
           // into this emptied draft counts as unsaved and is saved again.
-          stashAt(submittedScope, '', [])
+          stashAt(submittedDraftScope, '', [])
         }
       })
       .catch(rejected)

@@ -406,6 +406,8 @@ def to_markdown_v2(content: str) -> str:
     # 5) Bold **text** and *italic* resolve together so nested emphasis survives; unmatched
     # markers stay literal (bullet lists rely on that); 6) Strikethrough; 7) Spoiler kept as-is.
     text = _resolve_emphasis(text, _ph, _escape_mdv2)
+    # ponytail: only plain single-line underlines; use a unified entity parser for nested markup.
+    text = re.sub(r'(?<![\w\\_])__(?![\s_])((?:[^\n_*~|\\\x00]|_(?!_))+?)(?<!\s)__(?![\w_])', _ph_wrap('__', '__'), text)
     text = re.sub(r'~~(.+?)~~', _ph_wrap('~', '~'), text)
     text = re.sub(r'\|\|(.+?)\|\|', _ph_wrap('||', '||'), text)
     # 9) Blockquotes: protect leading > from escaping; expandable quotes (**> starts, || ends the block's LAST line).

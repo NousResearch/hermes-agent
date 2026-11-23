@@ -47,7 +47,8 @@ from utils import atomic_replace, fast_safe_load, file_cache_version, file_signa
 from hermes_cli.config_set_scalars import _SCALAR_WORDS, _coerce_float, _coerce_int, _quoted_bool
 from hermes_cli.config_issues import ConfigIssue, _issue
 from hermes_cli.config_credential_values import (
-    _check_non_ascii_credential, refuse_redacted_config_credentials, refuse_redacted_env_value)
+    _check_non_ascii_credential, _is_header_credential_env_name, refuse_redacted_config_credentials,
+    refuse_redacted_env_value)
 from hermes_cli.config_backend import (
     ConfigWriteError, config_cache_version, config_destination, config_exists, config_version,
     get_config_backend, probe_config_readable, read_config_doc, supports_file_tooling,
@@ -2568,7 +2569,8 @@ def save_env_value(key: str, value: str, env_path: Optional[Path] = None):
     validate_env_var_name_for_write(key)
     value = value.replace("\n", "").replace("\r", "")
     refuse_redacted_env_value(key, value)
-    value = _check_non_ascii_credential(key, value)
+    if _is_header_credential_env_name(key):
+        value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()
     env_path = Path(env_path) if env_path is not None else get_env_path()
     with _env_write_lock(env_path):

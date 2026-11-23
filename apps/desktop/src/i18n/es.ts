@@ -505,6 +505,8 @@ export const esOverrides = {
       rejectAction: 'Rechazar',
       accessTitle: 'Se necesita acceso a una carpeta',
       accessTitleNamed: session => `Se necesita acceso a una carpeta — ${session}`,
+      accessReadBody: folder => `Solo lectura: ${folder}`,
+      accessReadWriteBody: folder => `Lectura y escritura: ${folder}`,
       networkTitle: 'Se necesita acceso a un sitio web',
       networkTitleNamed: session => `Se necesita acceso a un sitio web — ${session}`,
       allowAction: 'Permitir',

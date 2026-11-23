@@ -190,6 +190,8 @@ export const jaOverrides = {
       rejectAction: '拒否',
       accessTitle: 'フォルダーアクセスが必要です',
       accessTitleNamed: session => `フォルダーアクセスが必要です — ${session}`,
+      accessReadBody: folder => `読み取り専用: ${folder}`,
+      accessReadWriteBody: folder => `読み取り/書き込み: ${folder}`,
       networkTitle: 'サイトへのアクセスが必要です',
       networkTitleNamed: session => `サイトへのアクセスが必要です — ${session}`,
       allowAction: '許可',

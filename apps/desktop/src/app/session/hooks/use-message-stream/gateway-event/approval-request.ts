@@ -2,6 +2,7 @@ import { translateNow } from '@/i18n'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import {
   accessTarget,
+  type ApprovalAccessTarget,
   approvalKindFields,
   type ApprovalRequest,
   networkTarget,
@@ -77,7 +78,7 @@ function approvalNotice(request: ApprovalRequest) {
 
     return {
       approveKey: 'notifications.native.allowAction',
-      body: access?.path ?? (network ? networkTargetName(network) : request.description),
+      body: access ? accessNoticeBody(access) : network ? networkTargetName(network) : request.description,
       namedTitleKey: `notifications.native.${prefix}Named`,
       rejectKey: 'notifications.native.denyAction',
       titleKey: `notifications.native.${prefix}`
@@ -91,4 +92,14 @@ function approvalNotice(request: ApprovalRequest) {
     rejectKey: 'notifications.native.rejectAction',
     titleKey: 'notifications.native.approvalTitle'
   }
+}
+
+/** A folder card's notification text: the folder, led by whether the request is to read it or to
+ *  read and write it. The notification's Allow button answers the card. */
+function accessNoticeBody(target: ApprovalAccessTarget): string {
+  if (target.access === 'read_write') {
+    return translateNow('notifications.native.accessReadWriteBody', target.path)
+  }
+
+  return target.access === 'read' ? translateNow('notifications.native.accessReadBody', target.path) : target.path
 }

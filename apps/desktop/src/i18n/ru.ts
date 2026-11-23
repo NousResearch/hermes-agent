@@ -178,6 +178,8 @@ export const ruOverrides = {
       rejectAction: 'Отклонить',
       accessTitle: 'Нужен доступ к папке',
       accessTitleNamed: session => `Нужен доступ к папке — ${session}`,
+      accessReadBody: folder => `Только чтение: ${folder}`,
+      accessReadWriteBody: folder => `Чтение и запись: ${folder}`,
       networkTitle: 'Нужен доступ к сайту',
       networkTitleNamed: session => `Нужен доступ к сайту — ${session}`,
       allowAction: 'Разрешить',

@@ -144,11 +144,45 @@ describe('approval request routing', () => {
           { id: 'approve:sandbox-card-1', text: 'Allow' },
           { id: 'reject:sandbox-card-1', text: 'Deny' }
         ],
-        body: 'C:\\docs',
+        body: 'Read and write: C:\\docs',
         kind: 'approval',
         title: expect.stringMatching(/^Folder access needed — /)
       })
     )
+  })
+
+  it('says in the folder notification that the request is to read and write the folder', () => {
+    // The notification's Allow button answers the card, so it says what the card says.
+    deliver(
+      'approval',
+      {
+        access: 'read_write',
+        choices: ['once', 'always', 'deny'],
+        command: '',
+        description: 'Allow read and write access to C:\\docs',
+        kind: 'access',
+        path: 'C:\\docs',
+        request_id: 'sandbox-card-7',
+        session_id: 'session-rw'
+      },
+      'session-b'
+    )
+
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ body: 'Read and write: C:\\docs' }))
+  })
+
+  it('says "Read only" for a read-only folder, and names the folder alone when the request gives no level', () => {
+    const folder = { choices: ['once', 'deny'], command: '', kind: 'access', path: 'C:\\ref' }
+
+    deliver(
+      'approval',
+      { ...folder, access: 'read', request_id: 'sandbox-card-8', session_id: 'session-ro' },
+      'session-b'
+    )
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ body: 'Read only: C:\\ref' }))
+
+    deliver('approval', { ...folder, request_id: 'sandbox-card-9', session_id: 'session-bare' }, 'session-b')
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ body: 'C:\\ref' }))
   })
 
   it('parks a site card with its label and names the site in the notification', () => {

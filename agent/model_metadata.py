@@ -1629,12 +1629,12 @@ def _normalize_model_version(model: str) -> str:
 
 
 def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> Optional[int]:
-    """Anthropic /v1/models max_input_tokens; OAuth tokens (sk-ant-oat*) 401 and are skipped.
-
-    ``api_key`` may be a ``key_cmd`` callable token source; the metadata probe never mints — a
-    callable is not a Console key, so the lookup is skipped like an OAuth token (#114967).
+    """Anthropic /v1/models max_input_tokens, asked with ``x-api-key``. An OAuth-shaped credential
+    (``_is_oauth_token``; the Messages client sends it to Anthropic as a bearer token) 401s there and
+    is skipped; so is a ``key_cmd`` callable token source, which the metadata probe never mints (#114967).
     """
-    if not api_key or not isinstance(api_key, str) or api_key.startswith("sk-ant-oat"):
+    from agent.anthropic_credentials import _is_oauth_token
+    if not api_key or not isinstance(api_key, str) or _is_oauth_token(api_key):
         return None
     try:
         base = base_url.rstrip("/").removesuffix("/v1")

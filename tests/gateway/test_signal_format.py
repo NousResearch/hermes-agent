@@ -171,7 +171,7 @@ class TestEdgeCases:
 class TestMarkdownStripPatch:
     """Tests for the original signal-markdown-strip-patch.
 
-    Covers: fenced code blocks with language tags, links preserved,
+    Covers: fenced code blocks with language tags, links rendered as label + bare URL,
     headings converted to bold, multiple headings, UTF-16 correctness
     for multi-byte characters, and marker stripping completeness.
     """
@@ -185,12 +185,24 @@ class TestMarkdownStripPatch:
         assert "line3" in text
         assert "```" not in text
 
-    def test_links_preserved(self):
-        """[text](url) links are kept as-is — Signal auto-linkifies."""
-        md = "Check [this link](https://example.com) for details"
+    def test_inline_link_becomes_label_and_bare_url(self):
+        """`[text](url)` reaches Signal as `text: url` — Signal has no clickable label."""
+        md = "Vedi [Lean community](https://leanprover.zulipchat.com/stream) per dettagli"
         text, _styles = _m2s(md)
-        # Links should pass through — either as markdown or just preserved
-        assert "https://example.com" in text
+        assert "Lean community: https://leanprover.zulipchat.com/stream" in text
+        assert "](http" not in text and "[" not in text
+
+    def test_image_becomes_bare_url(self):
+        """`![alt](url)` keeps the URL and drops the alt text and the leading `!`."""
+        text, _styles = _m2s("![logo](https://example.com/a.png)")
+        assert "https://example.com/a.png" in text
+        assert "![" not in text
+
+    def test_link_inside_fenced_code_is_untouched(self):
+        """Fenced code is not prose: Markdown-looking link syntax stays verbatim."""
+        md = "```\n[see docs](https://example.com)\n```"
+        text, _styles = _m2s(md)
+        assert "[see docs](https://example.com)" in text
 
     def test_heading_h1(self):
         """# H1 becomes bold text."""

@@ -129,8 +129,19 @@ async fn deliver(body:&str,mute:bool)->Result<(),String>{
             RegCloseKey(key);
             if status!=0{return Err(std::io::Error::from_raw_os_error(status as i32).to_string())}
         }
-        winrt_notification::Toast::new(APP_ID).title("Hermes").text1(&body)
-            .sound((!mute).then_some(winrt_notification::Sound::Default)).show().map_err(|e|e.to_string())
+        // A WinRT toast through the current `windows` crate (winrt-notification's windows 0.24
+        // import library bound enclave APIs to vertdll.dll, which fails to load in a normal process).
+        use windows::{Data::Xml::Dom::XmlDocument, UI::Notifications::{ToastNotification, ToastNotificationManager}, core::HSTRING};
+        let escape=|t:&str|t.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;").replace('"',"&quot;");
+        let audio=if mute {"<audio silent=\"true\"/>"} else {""};
+        let xml=format!("<toast><visual><binding template=\"ToastGeneric\"><text>Hermes</text><text>{}</text></binding></visual>{audio}</toast>",escape(&body));
+        let show=||->windows::core::Result<()>{
+            let document=XmlDocument::new()?;
+            document.LoadXml(&HSTRING::from(xml.as_str()))?;
+            let toast=ToastNotification::CreateToastNotification(&document)?;
+            ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(APP_ID))?.Show(&toast)
+        };
+        show().map_err(|e|e.to_string())
     }).await.map_err(|e|e.to_string())?
 }
 #[cfg(not(any(target_os="linux",target_os="windows",target_os="macos")))]

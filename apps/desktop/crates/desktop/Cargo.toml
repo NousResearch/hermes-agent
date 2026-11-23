@@ -64,7 +64,7 @@ version="0.5"
 version="0.5"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-winrt-notification = "0.5"
+windows = { version = "0.62", features = ["Data_Xml_Dom", "UI_Notifications"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_System_Registry", "Win32_Security", "Win32_Graphics_Dwm", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

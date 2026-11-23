@@ -787,7 +787,8 @@ class TestRefusedEntryFailsValidation:
         def entry_write_denied(self, path, verb):
             return f"{verb} denied: {path}" if path.startswith("mt/") else None
 
-    @pytest.mark.parametrize("entry_op", ["*** Delete File: mt/token", "*** Move File: a.py -> mt/new"])
+    @pytest.mark.parametrize("entry_op", [
+        "*** Delete File: mt/token", "*** Move File: a.py -> mt/new", "*** Move File: mt/token -> moved.py"])
     def test_nothing_applies(self, entry_op):
         ops = self._Refusing({"a.py": "x = 1\n", "mt/token": "t", "plain.py": "hello\n"})
         patch = f"*** Begin Patch\n*** Update File: plain.py\n@@\n-hello\n+world\n{entry_op}\n*** End Patch"

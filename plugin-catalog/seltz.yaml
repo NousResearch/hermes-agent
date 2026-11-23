@@ -1,16 +1,16 @@
 name: seltz
 title: Seltz
 repo: https://github.com/seltz-ai/seltz-hermes-plugin
-sha: fb10dbae50c0a7d48c9999a2d6e2f14f63f567e0
-description: "Source-backed web search through Seltz's hosted MCP server, with a Seltz research skill. Sign in through the Seltz Console (OAuth); the packaged connection is the SELTZ_API_KEY fallback. Disclosure — Connects to https://mcp.seltz.ai/mcp and sends it the search queries the agent asks Seltz to run. OAuth also contacts https://console.seltz.ai. Calls use the user's Seltz account."
+sha: 35ef5648079c8187c778270f8cf91f0489e511d3
+description: "Source-backed web search, news, company and LinkedIn lookups, financial reports, Wikipedia, and page fetch. Sign in through the Seltz Console (OAuth); the packaged connection is the SELTZ_API_KEY fallback. Disclosure — Connects to https://mcp.seltz.ai/mcp and sends it the queries the agent asks Seltz to run. OAuth also contacts https://console.seltz.ai. Calls use the user's Seltz account."
 maintainer: seltz-ai
 tier: community
 category: web
 requires_hermes: ">=0.22.2"
-docs_url: https://github.com/seltz-ai/seltz-hermes-plugin/blob/fb10dbae50c0a7d48c9999a2d6e2f14f63f567e0/README.md
+docs_url: https://github.com/seltz-ai/seltz-hermes-plugin/blob/35ef5648079c8187c778270f8cf91f0489e511d3/README.md
 version: "1.0.0"
 platforms: []
-image: https://raw.githubusercontent.com/seltz-ai/seltz-hermes-plugin/fb10dbae50c0a7d48c9999a2d6e2f14f63f567e0/assets/seltz-catalog-card.svg
+image: https://raw.githubusercontent.com/seltz-ai/seltz-hermes-plugin/35ef5648079c8187c778270f8cf91f0489e511d3/assets/seltz-hermes-banner.png
 known_issues:
   - "Portable manifests cannot declare OAuth. Browser sign-in needs the native mcp_servers.seltz entry in the README. The packaged connection is the SELTZ_API_KEY fallback and is used only when that native entry is absent."
 capabilities:

@@ -124,6 +124,11 @@ class DispatchResult:
     Code terminal like ``orion-cc``), not a Hermes profile. Expected steady-state
     on multi-lane setups, NOT operator-actionable; tracked apart so health
     telemetry can tell "stuck" from "correctly idle"."""
+    skipped_review_skill_unavailable: list[tuple[str, str, str]] = field(default_factory=list)
+    """``(task_id, assignee, reason)`` review-lane cards left unclaimed because the assignee's profile
+    cannot load ``sdlc-review`` (``reason`` is ``disabled`` or ``missing``, #99251). Operator-actionable:
+    the card stays in ``review`` for a human (the visible outcome of ``kanban.review_dispatch: false``)
+    instead of crashing the reviewer or reviewing with no review skill."""
     skipped_per_profile_capped: list[tuple[str, str, int]] = field(default_factory=list)
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
@@ -1801,7 +1806,12 @@ def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     if profile_exists is None:
         # Can't introspect — assume spawnable, preserve legacy behavior.
         return True
-    return any(profile_exists(row["assignee"]) for row in rows)
+    return any(
+        profile_exists(row["assignee"])
+        # A review card the dispatcher will skip (no review skill) is not stuck work: same gate as the spawn.
+        and (status != "review" or review_skill_problem(row["assignee"]) is None)
+        for row in rows
+    )
 
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
@@ -1828,6 +1838,91 @@ def review_dispatch_enabled() -> bool:
         return bool((load_config() or {}).get("kanban", {}).get("review_dispatch", True))
     except Exception:
         return True
+
+
+REVIEW_SKILL_NAME = "sdlc-review"
+
+
+def _startup_sync_would_install(skill: str) -> bool:
+    """True when the worker's own startup sync (``sync_skills``) would copy ``skill`` into the profile.
+
+    A profile that predates the skill (not started since an upgrade) lacks it on disk but is repaired by the
+    first launch; parking its cards would be a false alarm, and since the dispatcher never starts the profile
+    the card would never recover. The sync leaves a skill out when the profile opted out of bundled skills
+    (``.no-bundled-skills``), the curator suppressed it, or the profile already tracked it (a tracked skill
+    absent from disk was deleted on purpose). Judged under the active home; errs towards ``True``.
+    """
+    try:
+        from tools import skills_sync as ss
+        if (ss._hermes_home() / ss.NO_BUNDLED_SKILLS_MARKER).exists():
+            return False
+        if skill in ss._read_suppressed_names() or skill in ss._read_manifest():
+            return False
+        return any(name == skill for name, _src in ss._discover_bundled_skills(ss._get_bundled_dir()))
+    except Exception:
+        return True
+
+
+def _profile_has_skill(skill: str) -> bool:
+    """Whether the active home's skill roots hold ``skill`` (directory name or frontmatter ``name``).
+
+    Reads files only. The worker's own loader (``skill_view``) records usage counters and seeds the home on
+    every call, which a dispatcher polling each tick must never do to a profile.
+    """
+    from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
+    from tools.skill_usage import read_skill_name
+    roots = [root for root in get_all_skills_dirs() if root.is_dir()]
+    if any(not is_excluded_skill_path(md) for root in roots for md in root.rglob(f"{skill}/SKILL.md")):
+        return True
+    return any(
+        read_skill_name(md, "") == skill
+        for root in roots for md in root.rglob("SKILL.md") if not is_excluded_skill_path(md)
+    )
+
+
+def review_skill_problem(assignee: str) -> Optional[str]:
+    """Why ``assignee``'s profile cannot load the review skill, or ``None`` when it can.
+
+    ``"disabled"``: ``skills.disabled`` lists it (the loader counts a disabled skill as missing, #59156).
+    ``"missing"``: the profile has no such skill and its launch will not install it (``hermes profile create
+    --no-skills``, a skill deleted on purpose). Either way the dispatcher's forced ``sdlc-review`` cannot
+    load: a card pinning no skill crashes the worker at launch (``Unknown skill(s)``, exit 1, retries burn,
+    auto-block), a card pinning another skill only warns and the reviewer runs with no review skill at all
+    (#99251).
+
+    Read-only by construction (config and skill files are read under the assignee's home, nothing is
+    written), because the dispatcher asks every tick. Judges the global ``skills.disabled`` list, which is
+    what a worker started without a platform applies. Fails open (``None``) whenever it cannot tell: skills
+    off in this process, profile unresolvable, a hosted scope refusing the home switch, any error. A skill
+    supplied only by a project-level skills dir of the card's workspace is not seen from here.
+    """
+    if not assignee:
+        return None
+    try:
+        from agent.skill_commands import _skills_off
+        from agent.skill_utils import ESSENTIAL_SKILLS, _normalize_string_set, _skills_cfg
+        from hermes_cli.profiles import get_profile_dir
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        if _skills_off():
+            return None
+        profile_dir = get_profile_dir(assignee)
+        if not profile_dir.is_dir():
+            # No profile home to judge (the dispatcher's own existence gate owns that case).
+            return None
+        token = set_hermes_home_override(profile_dir)
+    except Exception:
+        return None
+    try:
+        skills_cfg = _skills_cfg() or {}
+        if REVIEW_SKILL_NAME in _normalize_string_set(skills_cfg.get("disabled")) - ESSENTIAL_SKILLS:
+            return "disabled"
+        if _profile_has_skill(REVIEW_SKILL_NAME):
+            return None
+        return None if _startup_sync_would_install(REVIEW_SKILL_NAME) else "missing"
+    except Exception:
+        return None
+    finally:
+        reset_hermes_home_override(token)
 
 
 # Memory-aware dispatch guard: an uncapped board once OOM'd a 1 GiB host. Two
@@ -2091,6 +2186,23 @@ def _dispatch_lane_task(
                         or last["payload"] != _kb._json_or_null({"assignee": assignee})):
                     _kb._append_event(conn, task_id, "skipped_nonspawnable", {"assignee": assignee})
         return False
+    # The review lane force-loads sdlc-review below. A profile that cannot load it (disabled, or not
+    # installed) would crash the reviewer at launch or review with no review skill (#99251): leave the card
+    # in ``review`` for a human and say why on the card, once.
+    if lane == "review":
+        problem = review_skill_problem(assignee)
+        if problem is not None:
+            result.skipped_review_skill_unavailable.append((task_id, assignee, problem))
+            if not dry_run:
+                payload = {"assignee": assignee, "skill": REVIEW_SKILL_NAME, "reason": problem}
+                with _kb.write_txn(conn):
+                    last = conn.execute(
+                        "SELECT kind, payload FROM task_events WHERE task_id = ? "
+                        "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,)).fetchone()
+                    if (last is None or last["kind"] != "review_skill_unavailable"
+                            or last["payload"] != _kb._json_or_null(payload)):
+                        _kb._append_event(conn, task_id, "review_skill_unavailable", payload)
+            return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
     if per_profile_cap is not None:
@@ -2297,6 +2409,8 @@ def _any_spawnable_review(
         if not assignee:
             continue
         if profile_exists is not None and not profile_exists(assignee):
+            continue
+        if review_skill_problem(assignee) is not None:
             continue
         if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
             continue

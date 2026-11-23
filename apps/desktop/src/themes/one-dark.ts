@@ -1,4 +1,4 @@
-import type { DesktopTheme, DesktopThemeColors } from './types'
+import type { DesktopTerminalPalette, DesktopTheme, DesktopThemeColors } from './types'
 
 // Runtime-only provenance: a user-installed theme named one-dark is not our preset.
 // Object spreads preserve the symbol; JSON deliberately does not persist it.
@@ -39,11 +39,34 @@ const COLORS: DesktopThemeColors = {
   userBubbleBorder: '#3e4452'
 }
 
+const TERMINAL: DesktopTerminalPalette = {
+  foreground: '#d7dae0',
+  cursor: '#61afef',
+  selectionBackground: 'rgba(97, 175, 239, 0.4)',
+  black: '#282c34',
+  red: '#e06c75',
+  green: '#98c379',
+  yellow: '#e5c07b',
+  blue: '#61afef',
+  magenta: '#c678dd',
+  cyan: '#56b6c2',
+  white: '#abb2bf',
+  brightBlack: '#8a919e',
+  brightRed: '#ef8b93',
+  brightGreen: '#b1d696',
+  brightYellow: '#f0d199',
+  brightBlue: '#82c2f5',
+  brightMagenta: '#d699e8',
+  brightCyan: '#74cad5',
+  brightWhite: '#e6e6e6'
+}
+
 /** Used only for a backend skin, never for an arbitrary installed theme. */
 export function oneDarkTheme(theme: DesktopTheme): DesktopTheme {
   const colors = { ...COLORS }
+  const terminal = { ...TERMINAL }
 
-  return { ...theme, [ONE_DARK]: true, colors, darkColors: colors } as OneDarkTheme
+  return { ...theme, [ONE_DARK]: true, colors, darkColors: colors, terminal, darkTerminal: terminal } as OneDarkTheme
 }
 
 /** Closed renderer policy, not an extensible or persisted CSS-variable bag. */
@@ -52,6 +75,7 @@ export function oneDarkProperties(c: DesktopThemeColors): Record<string, string>
     '--ui-bg-chrome': c.background,
     '--ui-bg-sidebar': c.sidebarBackground ?? c.background,
     '--ui-bg-editor': c.card,
+    '--ui-terminal-surface-background': c.card,
     '--ui-bg-elevated': c.popover,
     '--ui-bg-card': c.card,
     '--ui-bg-input': c.input,

@@ -27,6 +27,8 @@ describe('One Dark cached theme resolution', () => {
     const stored = window.localStorage.getItem('hermes-desktop-backend-themes-v1')
     const resolved = resolveTheme('one-dark')!
     expect(resolved.colors.background).toBe('#282c34')
+    expect(resolved.darkTerminal?.foreground).toBe('#d7dae0')
+    expect(resolved.terminal?.foreground).toBe('#d7dae0')
     expect(isOneDark(resolved)).toBe(true)
     expect(listAllThemes().find(t => t.name === 'one-dark')!.colors).toEqual(resolved.colors)
     expect($backendThemes.get()['one-dark']).toBe(snapshot)

@@ -6,7 +6,6 @@
 import { cn, Codicon, Tip } from '@hermes/plugin-sdk'
 import type { ReactNode } from 'react'
 
-import { useNowSeconds } from './canonical-group-activity'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import type { GroupActivityEntry } from './group-activity'
 import { RoomActivityRow, RoomTypingRow } from './group-room-ui'
@@ -16,10 +15,9 @@ import type { GroupMember } from './types'
  *  time counts from its latest `working` activity (ms). The legacy engine sees no tool frames. */
 export function LegacyTypingRow({ avatar, name, since }: { avatar: ReactNode; name: string; since?: number }) {
   const labels = useCanonicalGroupLabels()
-  const now = useNowSeconds(true)
-  const elapsedS = typeof since === 'number' ? Math.max(0, Math.floor(now - since / 1000)) : undefined
 
-  return <RoomTypingRow avatar={avatar} labels={labels} name={name} status={{ kind: 'working', elapsedS }} />
+  return <RoomTypingRow avatar={avatar} labels={labels} name={name}
+    status={{ kind: 'working', startedAt: typeof since === 'number' ? since / 1000 : undefined }} />
 }
 
 /** While the room runs: the member on turn as a typing row, else waiting-for-you / working. */

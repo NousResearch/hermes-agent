@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Runnable proof for issue #48013 — image-dimension 400 session brick.
 
-Before the fix, ``agent.conversation_compression.try_shrink_image_parts_in_messages``
+Before the fix, ``agent.conversation_compression_image_shrink.try_shrink_image_parts_in_messages``
 silently discarded a *pixel-correct* downscale whenever the re-encoded PNG was
 larger in bytes than the original (the common case for downscaled Retina
 screenshots). The image was left at its original oversized dimensions, the
@@ -40,7 +40,7 @@ if str(_REPO_ROOT) not in sys.path:
 PIL = pytest.importorskip("PIL", reason="Pillow required for the real-resize proof")
 from PIL import Image, ImageDraw
 
-from agent.conversation_compression import (
+from agent.conversation_compression_image_shrink import (
     try_shrink_image_parts_in_messages,
 )
 

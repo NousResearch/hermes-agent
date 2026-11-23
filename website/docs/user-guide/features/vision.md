@@ -203,7 +203,7 @@ When a user attaches an image — from the CLI clipboard, the gateway (Telegram/
 | **Vision-capable** (GPT-4V, Claude with vision, Gemini, Qwen-VL, MiMo-VL, DeepSeek Flash / V4.1-Flash, etc.) | Sent as **real pixels** using the provider's native image content format above. No text summary layer. |
 | **Text-only** (DeepSeek V4 Pro, DeepSeek V3, smaller open-source models, older chat-only endpoints) | Routed through the `vision_analyze` auxiliary tool — an auxiliary vision model describes the image, and the text description is injected into the conversation. |
 
-You don't configure this — Hermes looks up your current model's capability in the provider metadata and picks the right path automatically. The practical effect: you can switch between vision and non-vision models mid-session and image handling "just works" without changing your workflow. Text-only models get coherent context about the image rather than a broken multimodal payload they'd have to reject.
+You don't configure this — Hermes looks up your current model's capability in the provider metadata and picks the right path automatically. For models served through Nous Portal, that metadata is the image-input flag in the Portal's own model list. The practical effect: you can switch between vision and non-vision models mid-session and image handling "just works" without changing your workflow. Text-only models get coherent context about the image rather than a broken multimodal payload they'd have to reject.
 
 To override the automatic choice, set `agent.image_input_mode` in `config.yaml`:
 

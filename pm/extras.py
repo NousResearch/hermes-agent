@@ -179,6 +179,36 @@ def _evaluate_in_runtime(marker: str, environment: dict[str, str]) -> bool:
     return result.stdout.strip() == "1"
 
 
+_INTERACTIVE_INSTALL_PROMPT_SUPPRESSIONS = 0
+
+
+def interactive_install_prompts_suppressed() -> bool:
+    """Whether this process is inside a non-interactive lazy-install scope."""
+    return _INTERACTIVE_INSTALL_PROMPT_SUPPRESSIONS > 0
+
+
+def suppress_interactive_install_prompts():
+    """Process-wide scope that prevents lazy installs from reading stdin.
+
+    Gateway/dashboard runtimes may inherit a TTY from tmux or another supervisor,
+    but there is no operator waiting at stdin while adapters start. The counter is
+    process-wide (not a ContextVar) so worker threads obey the same daemon policy;
+    nesting remains safe and the interactive default is restored on exit.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _scope():
+        global _INTERACTIVE_INSTALL_PROMPT_SUPPRESSIONS
+        _INTERACTIVE_INSTALL_PROMPT_SUPPRESSIONS += 1
+        try:
+            yield
+        finally:
+            _INTERACTIVE_INSTALL_PROMPT_SUPPRESSIONS -= 1
+
+    return _scope()
+
+
 def install_hint(extra: str) -> str:
     """The one command users are told to run for a missing extra."""
     return f"hermes pm install --extra {extra}"
@@ -208,6 +238,11 @@ def ensure_import(extra: str) -> None:
         from prompt_toolkit.application.current import get_app_or_none
 
         app_running = bool(getattr(get_app_or_none(), "is_running", False))
+    # A daemon suppression scope means stdin is not an interaction surface even
+    # when a supervisor/tmux left it attached to a TTY. Fold that into the
+    # existing prompt-unavailable gate so policy checks can remain orthogonal.
+    if interactive_install_prompts_suppressed():
+        app_running = True
     if not app_running and sys.stdin.isatty() and sys.stdout.isatty():
         try:
             answer = input(f"\nThis needs Hermes' optional {extra!r} feature, which isn't installed yet.\n"
@@ -401,7 +436,7 @@ def _built_by_pm(venv: Path) -> bool:
     """
     import json
 
-    from pm.environment import PM_BUILT_KEY
+    from pm.environment import PM_BUILT_KEY  # noqa: TID251
 
     try:
         lines = (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines()
@@ -476,6 +511,73 @@ def first_generation_selection(project_root: Path) -> list[str] | None:
     (``pm.carried_extras.with_pre_pm_baseline``).
     """
     return None if venv_selection_recorded(project_root) else ["all"]
+
+
+def _covered_extras(root: Path, recorded) -> set[str]:
+    """PEP 685 keys of the extras the core plus *recorded* already install in full.
+
+    An extra whose every requirement is already there (``computer-use`` is ``mcp``, which ``all``
+    pulls in), or that requires nothing (``vision = []``, anchored on core Pillow), reads as present:
+    carrying it changes nothing but the stamp, and costs a rebuild.
+    """
+    import re
+    import tomllib
+
+    try:
+        project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    except (OSError, KeyError, ValueError):
+        return set()
+    def nested(spec: str):
+        return re.match(r"^hermes-agent\[([^\]]+)\]", spec)
+
+    def name_of(spec: str) -> str:
+        return _canonical(re.split(r"[\s\[<>=!~;@(]", spec, maxsplit=1)[0])
+
+    table = {_canonical(name): specs for name, specs in project.get("optional-dependencies", {}).items()}
+    installed = {name_of(spec) for spec in project.get("dependencies", ())}
+    seen, todo = set(), [_canonical(extra) for extra in recorded]
+    while todo:
+        extra = todo.pop()
+        if extra in seen:
+            continue
+        seen.add(extra)
+        for spec in table.get(extra, ()):
+            if match := nested(spec):
+                todo.extend(_canonical(part) for part in match.group(1).split(","))
+            else:
+                installed.add(name_of(spec))
+    # An empty alias (``vision = []``) installs nothing, so every generation already holds it.
+    return seen | {extra for extra, specs in table.items()
+                   if all(nested(spec) is None and name_of(spec) in installed for spec in specs)}
+
+
+def committed_generation_extras(project_root: Path) -> list[str]:
+    """Extras the committed PM generation holds that its recorded selection lacks (#96180).
+
+    A sync replaces that environment, so an SDK present there and not in the ledger (put back by
+    hand after an update dropped it, or a ledger an interrupted migration wrote short) is gone once
+    it publishes. Read from site-packages, never imported; umbrellas, declined and gated-off extras
+    are never carried, as in ``legacy_selection``.
+    """
+    from pm.environments import _recorded_venv, runtime_facts_path, site_packages
+    from pm.lock import Facts
+
+    root = Path(project_root)
+    try:
+        fact = Facts(runtime_facts_path(root)).get("venv") or {}
+        venv = _recorded_venv(root)  # the generation PM committed; a sealed payload carries its own record
+    except (RuntimeError, ValueError, OSError):
+        return []
+    if venv is None or not isinstance(fact.get("extras"), list):
+        return []
+    trees = [tree for tree in (site_packages(venv), *venv.glob("lib/python*/site-packages")) if tree.is_dir()]
+    held = _covered_extras(root, fact["extras"])
+    refused = declined_extras(root)
+    return sorted(
+        extra for extra in ANCHORS if extra not in {"messaging", "voice", "wake"} and _canonical(extra) not in held
+        and extra not in refused
+        and any(all(_installed_in(tree, anchor) for anchor in _anchors(extra)) for tree in trees)
+        and extra_supported(extra, importable=lambda _anchor: False))
 
 
 def pre_pm_baseline(project_root: Path) -> list[str]:

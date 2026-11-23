@@ -122,7 +122,8 @@ def _migrate_legacy_custom_pool_key(provider: str, legacy_key: str) -> None:
 
 def _provider_base_url(provider: str) -> str:
     if provider == "openrouter":
-        return OPENROUTER_BASE_URL
+        # A providers.openrouter proxy entry is what the name means: a key added now is the proxy's.
+        return str((_configured_provider_entry(provider) or {}).get("base_url") or "").strip() or OPENROUTER_BASE_URL
     if provider.startswith(CUSTOM_POOL_PREFIX):
         from agent.credential_pool import _get_custom_provider_config
         return str((_get_custom_provider_config(provider) or {}).get("base_url") or "").strip()
@@ -254,7 +255,8 @@ _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
         fields=lambda creds, provider: {
             "refresh_token": creds.get("refresh_token"),
             "expires_at_ms": creds.get("expires_at_ms"),
-            "base_url": _provider_base_url(provider)}),
+            # Minted by Anthropic's login, never a providers.anthropic proxy's (as openrouter_pkce).
+            "base_url": PROVIDER_REGISTRY[provider].inference_base_url}),
     "openai-codex": _OAuthAddSpec(
         login=_codex_login,
         token=lambda creds: creds["tokens"]["access_token"],
@@ -294,7 +296,8 @@ _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
             timeout_seconds=float(getattr(args, "timeout", None) or 300.0)),
         token=lambda creds: creds["api_key"],
         source=f"{SOURCE_MANUAL}:openrouter_pkce",
-        fields=lambda creds, provider: {"base_url": _provider_base_url(provider)},
+        # The PKCE key is minted by openrouter.ai, never a providers.openrouter proxy's.
+        fields=lambda creds, provider: {"base_url": OPENROUTER_BASE_URL},
         auth_type=AUTH_TYPE_API_KEY),
 }
 

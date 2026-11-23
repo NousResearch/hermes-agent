@@ -28,7 +28,7 @@ from gateway.status_inline_source import (
     inline_source_flag_index,
 )
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
-from hermes_cli._subprocess_compat import pid_exists_stdlib
+from hermes_cli._subprocess_compat import pid_exists_stdlib, process_start_time_stdlib
 from gateway.status_lock_dir import unusable_lock_dir, unusable_lock_dir_recovered
 from utils import atomic_json_write
 
@@ -272,18 +272,15 @@ def recorded_gateway_home_conflicts(
         return True
 
 
-# Mirrors hermes_cli.profiles._PROFILE_ID_RE -- duplicated so gateway identity code
-# stays import-light (hermes_constants + stdlib only).
-_PROFILE_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-
-
 def _profile_label_for_home(home: Path | str) -> Optional[str]:
     """Best-effort label: ``<root>/profiles/<name>`` -> name, root home -> "default", else None."""
+    from hermes_constants import PROFILE_ID_RE
+
     try:
         canonical = _canonical_hermes_home(home)
     except Exception:
         return None
-    if canonical.parent.name == "profiles" and _PROFILE_LABEL_RE.match(canonical.name):
+    if canonical.parent.name == "profiles" and PROFILE_ID_RE.match(canonical.name):
         return canonical.name
     import hermes_constants
     default_homes = (hermes_constants.get_default_hermes_root, _get_platform_default_hermes_home)
@@ -297,10 +294,12 @@ def _profile_label_for_home(home: Path | str) -> Optional[str]:
 def scoped_lock_owner_label(record: Optional[dict[str, Any]]) -> Optional[str]:
     """Profile label of a scoped-lock owner (None: PID-only wording): the validated ``profile``
     field stamped by :func:`acquire_scoped_lock`, else inferred from ``hermes_home`` (old locks)."""
+    from hermes_constants import PROFILE_ID_RE
+
     if not isinstance(record, dict):
         return None
     profile = record.get("profile")
-    if isinstance(profile, str) and _PROFILE_LABEL_RE.match(profile.strip()):
+    if isinstance(profile, str) and PROFILE_ID_RE.match(profile.strip()):
         return profile.strip()
     home = record.get("hermes_home")
     return _profile_label_for_home(home) if isinstance(home, str) and home.strip() else None
@@ -487,12 +486,9 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     spawn against the live value *on the same host*, the differing units across
     platforms are irrelevant — only same-source equality matters.
     """
-    stat_path = Path(f"/proc/{pid}/stat")
-    try:
-        # Field 22 (ticks) after comm's last ")": comm may hold spaces or non-UTF-8 bytes.
-        return int(stat_path.read_bytes().rsplit(b")", 1)[1].split()[19])
-    except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
-        pass
+    ticks = process_start_time_stdlib(pid)
+    if ticks is not None:
+        return ticks
 
     # No /proc (macOS / Windows): psutil, quantized to centiseconds for stable equality.
     # process_birth: macOS's clock-step-stable kernel start (#140580); unchanged with no step.
@@ -593,20 +589,13 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     ):
         return None
     # Drop --profile X / -p X / --profile=X / -p=X (consumes a VALUE of "gateway" too).
-    filtered: list[str] = []
-    skip_next = False
-    for token in tokens:
-        if skip_next:
-            skip_next = False
-        elif token in ("--profile", "-p"):
-            skip_next = True
-        elif not token.startswith(("--profile=", "-p=")):
-            filtered.append(token)
-    for i, token in enumerate(filtered):
-        if token == "gateway":
-            # Bare `hermes gateway` defaults to `run`.
-            return filtered[i + 1] if i + 1 < len(filtered) else "run"
-    return None
+    filtered = [t for i, t in enumerate(tokens) if t not in ("--profile", "-p")
+                and not t.startswith(("--profile=", "-p=")) and not (i and tokens[i - 1] in ("--profile", "-p"))]
+    if "gateway" not in filtered:
+        return None
+    # Gateway-level flags may precede the action (`gateway --accept-hooks run`); bare `gateway` runs.
+    rest = filtered[filtered.index("gateway") + 1:]
+    return None if {"-h", "--help"} & set(rest) else next((t for t in rest if not t.startswith("-")), "run")
 
 
 def gateway_spawn_intent_subcommand(command: str | None) -> str | None:
@@ -787,12 +776,13 @@ def _record_argv() -> list[str]:
 
 
 def _build_pid_record() -> dict:
+    from process_identity import pid_namespace_id  # ``pid`` is relative to its PID namespace (#123081)
     return {
         "pid": os.getpid(), "kind": _GATEWAY_KIND, "argv": _record_argv(),
         "start_time": _get_process_start_time(os.getpid()),
         # Scoped locks are machine-global; the owner's home lets a cross-profile
         # --replace place its takeover marker where the target will read it.
-        "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
+        "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())), "pidns": pid_namespace_id(),
     }
 
 
@@ -1544,15 +1534,13 @@ def _acquire_scoped_lock_at(
         _unlink_quietly(lock_path)
     if existing:
         existing_pid = _pid_from_record(existing)
-        # Our own PID: always self-reacquire. start_time guards reuse of OTHER PIDs; requiring
-        # equality here rejects reconnects when the on-disk record has start_time null.
         # Same live PID as this process: always self-reacquire. ``start_time`` is a PID-reuse guard for
         # *other* PIDs; it cannot distinguish two processes that share the caller's own PID (impossible
         # while we are alive). Requiring start_time equality here falsely rejects reconnects when the
-        # on-disk record has ``start_time: null`` (older writers / psutil failure at first write) while the
-        # freshly built record has a real value — the gateway then reports itself as the foreign squatter of
-        # its own token (#81468).
-        if existing_pid == os.getpid():
+        # on-disk record has ``start_time: null`` (older writers / psutil failure at first write) while the fresh
+        # record has a real value — the gateway then reports itself as the foreign squatter of its token (#81468).
+        from gateway.status_scoped_locks import scoped_lock_pid_is_ours
+        if existing_pid == os.getpid() and scoped_lock_pid_is_ours(existing):
             _write_json_file(lock_path, record)
             return True, existing
         if not _scoped_lock_record_is_stale(existing, existing_pid):
@@ -1965,13 +1953,14 @@ def get_running_pid(
     resolved_pid_path = pid_path or _get_pid_path()
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
     if is_gateway_runtime_lock_active(resolved_lock_path):
-        records = (
-            _read_pid_record(resolved_pid_path), _read_gateway_lock_record(resolved_lock_path),
-        )
+        from gateway.status_scoped_locks import scoped_lock_pid_is_ours
+        records = (_read_pid_record(resolved_pid_path), _read_gateway_lock_record(resolved_lock_path))
         expected_home = pid_path.parent if pid_path is not None else None
-        saw_live_pid = False
-        foreign_live_pid = False
+        saw_live_pid = foreign_live_pid = False
         for record in records:
+            if isinstance(record, dict) and not scoped_lock_pid_is_ours(record):
+                saw_live_pid = True  # held flock, PID from another namespace: never probe or unlink (#123081)
+                continue
             pid = _live_pid_from_record(record)
             if pid is None:
                 continue

@@ -5,6 +5,8 @@ third-party plugin code OUT of it: general plugins load in one plugin-host proce
 (:mod:`hermes_cli.plugin_host`) and talk to Hermes only through ``ctx``; every other path that would
 import a user-supplied module in-process (category providers, model-provider profiles, dashboard
 plugin APIs) refuses with a stated reason. Bundled plugins ship with Hermes and stay in-process.
+A model-provider plugin's profiles run in the host too; a profile that cannot (it builds its own SDK
+client) is refused, unless the operator names that plugin in ``plugins.host.in_process_providers``.
 
 That second half is the property a pooled deployment needs: one Hermes process serving many
 profiles must never share an interpreter with a profile's plugin code. The same boundary gives a
@@ -134,6 +136,40 @@ def in_process_import_refusal(what: str, *, source: str = "user",
         return None
     return (f"{what} runs only in-process, and plugins.isolation is 'host' (third-party plugin code "
             f"never runs inside the Hermes process); set plugins.isolation: in_process to load it")
+
+
+IN_PROCESS_PROVIDERS_KEY = "plugins.host.in_process_providers"
+
+
+def host_in_process_providers(config: Optional[Mapping[str, Any]] = None) -> frozenset[str]:
+    """``plugins.host.in_process_providers``: install directory names of the model-provider plugins
+    the operator lets run in the Hermes process under ``host``. Empty by default."""
+    host = _plugins_config(config).get("host")
+    names = host.get("in_process_providers") if isinstance(host, Mapping) else None
+    if isinstance(names, str):
+        names = [names]
+    if not isinstance(names, (list, tuple)):
+        return frozenset()
+    return frozenset(str(name).strip() for name in names if str(name).strip())
+
+
+def in_process_provider_refusal(plugin: str, profiles: Mapping[str, str], *,
+                                config: Optional[Mapping[str, Any]] = None) -> Optional[str]:
+    """Why the hosted model-provider plugin *plugin* (its install directory name) must not import
+    *profiles* (``{profile name: reason it cannot run in the plugin host}``) in-process, or ``None``
+    when the operator named it in ``plugins.host.in_process_providers``.
+
+    Only that operator list can allow the import: the profile list comes from the plugin's own
+    extraction, so what it reports can only ever get its profiles refused, never loaded here.
+    """
+    if plugin in host_in_process_providers(config):
+        return None
+    listed = ", ".join(f"{name!r} ({reason})" for name, reason in profiles.items())
+    refusal = in_process_import_refusal(f"provider profile {listed} of model-provider plugin {plugin!r}",
+                                        config=config)
+    if refusal is None:
+        return None
+    return f"{refusal}, or add {plugin!r} to {IN_PROCESS_PROVIDERS_KEY}"
 
 
 def import_user_code(path: Any, module_name: str) -> Optional[ModuleType]:

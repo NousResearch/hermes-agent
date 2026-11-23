@@ -206,7 +206,11 @@ def import_into_layer(plugin_dir: Path, source: str, base_name: str) -> None:
         P._REGISTRATION_TARGET.reset(token)
     if module_name in sys.modules or module_name in staging.hosted:
         _publish(layer, base_name, module_name, fingerprint, staging, replacing=live is not None)
-        layer.errors.pop(plugin_dir.name, None)
+        # A hosted plugin can load with one of its profiles refused (plugins.isolation: host): that reason stays.
+        if refused := staging.errors.get(plugin_dir.name):
+            layer.errors[plugin_dir.name] = refused
+        else:
+            layer.errors.pop(plugin_dir.name, None)
         if live is not None:
             logger.info("Provider plugin %s changed on disk; new sessions use the updated version",
                         plugin_dir.name)

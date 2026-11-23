@@ -71,6 +71,14 @@ plugins:
   # seconds. Subdirectory installs download only that folder.
   # Raise this for large repositories or slow connections. Maximum: 3600.
   clone_timeout_seconds: 300
+  # Where third-party Python plugins run: in_process (default) or host (one plugin-host process
+  # per profile). Under host, a model-provider profile that builds its own SDK client
+  # (create_client) is refused unless its plugin's install directory name is listed in
+  # host.in_process_providers; a listed plugin loads that profile in the Hermes process.
+  # isolation: host
+  # host:
+  #   launcher: []               # argv prefix for the plugin host, e.g. a sandbox runner
+  #   in_process_providers: []   # e.g. [claude-subscription-directsdk]
 
 # =============================================================================
 # Model Configuration

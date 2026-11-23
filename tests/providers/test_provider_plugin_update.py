@@ -88,11 +88,13 @@ def _forced_sweep():
 
 @pytest.mark.parametrize("isolation", ["in-process", "host"])
 def test_an_update_serves_new_sessions_whole_while_old_clients_stay_on_their_version(plugin, isolation):
-    # Under ``host`` the demo profile overrides create_client, so it is one of the profiles the plugin host
-    # hands back to the gateway process: the same lazy import, through the hosted path.
+    # Under ``host`` the demo profile overrides create_client, so it loads in the gateway process only because
+    # plugins.host.in_process_providers names the plugin: the same lazy import, through the hosted path.
     from providers import get_provider_profile
 
-    (plugin.parent.parent / "config.yaml").write_text(f"plugins:\n  isolation: {isolation}\n", encoding="utf-8")
+    allow = "  host:\n    in_process_providers: [demo-provider]\n" if isolation == "host" else ""
+    (plugin.parent.parent / "config.yaml").write_text(f"plugins:\n  isolation: {isolation}\n{allow}",
+                                                      encoding="utf-8")
     _write(plugin, 1, extra=True)
     before = get_provider_profile("demo-provider")  # loaded, but its lazy ``client`` not imported yet
     assert get_provider_profile("demo-extra") is not None and get_provider_profile("demo-old") is before

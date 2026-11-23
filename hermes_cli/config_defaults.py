@@ -1678,10 +1678,10 @@ DEFAULT_CONFIG = {
         # running). Bundled plugins stay in-process; `hermes plugins validate` says whether a
         # plugin can run in the host.
         "isolation": "in_process",
-        "host": {
-            # argv prefix the plugin host runs under, e.g. a sandbox runner. [] = plain subprocess.
-            "launcher": [],
-        },
+        # host.launcher: argv prefix the plugin host runs under, e.g. a sandbox runner ([] = plain subprocess).
+        # host.in_process_providers: provider plugins (install dir names) whose create_client profiles may load
+        # in the Hermes process under isolation: host ([] = such profiles are refused).
+        "host": {"launcher": [], "in_process_providers": []},
     },
     # Shell-script hooks: event name (pre_tool_call, post_tool_call, pre_llm_call, subagent_stop,
     # ...) -> list of {matcher, command, timeout}. First run of a new command prompts for consent;

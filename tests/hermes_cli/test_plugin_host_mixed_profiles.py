@@ -1,4 +1,5 @@
-"""plugins.isolation: host — a profile that cannot cross the host boundary never takes its siblings down."""
+"""plugins.isolation: host — a profile that cannot cross the host boundary is refused and never takes its
+siblings down."""
 
 import logging
 import os
@@ -28,7 +29,7 @@ register_provider(Local(name="mixlocal", base_url="acp://mixlocal"))
 
 
 @pytest.mark.platforms("any")  # the host is a child process: its env/home resolution is per-OS
-def test_create_client_profile_loads_in_process_and_its_sibling_stays_hosted(tmp_path, monkeypatch, caplog):
+def test_create_client_profile_is_refused_and_its_sibling_stays_hosted(tmp_path, monkeypatch, caplog):
     import providers
 
     home = tmp_path / ".hermes"
@@ -44,11 +45,10 @@ def test_create_client_profile_loads_in_process_and_its_sibling_stays_hosted(tmp
         hosted = providers.get_provider_profile("mixhosted")
         local = providers.get_provider_profile("mixlocal")
     try:
-        assert hosted is not None and local is not None
-        assert local.create_client()["pid"] == os.getpid()
+        assert hosted is not None and local is None
         assert hosted.build_extra_body(session_id="s")["pid"] != os.getpid()
-        # The in-process import registered ONLY the profile that needs it.
         assert type(hosted).__module__ == "hermes_cli.plugin_host_profiles"
+        assert not [m for m in sys.modules if m.endswith("_mixpair")]  # nothing of it imported here
         notices = [r.getMessage() for r in caplog.records if "mixlocal" in r.getMessage()]
         assert len(notices) == 1 and "create_client" in notices[0]
         assert not any("mixhosted" in r.getMessage() for r in caplog.records)
@@ -63,7 +63,7 @@ def test_create_client_profile_loads_in_process_and_its_sibling_stays_hosted(tmp
 @pytest.mark.platforms("any")
 def test_a_rescan_keeps_the_hosted_plugin_it_already_loaded(tmp_path, monkeypatch, caplog):
     """Another plugin dir landing while the process runs rescans the home: the plugin already loaded
-    is not imported again (no second warning, the same hosted profile object)."""
+    is not loaded again (no second refusal warning, the same hosted profile object)."""
     import providers
 
     home = tmp_path / ".hermes"
@@ -78,7 +78,7 @@ def test_a_rescan_keeps_the_hosted_plugin_it_already_loaded(tmp_path, monkeypatc
     try:
         with caplog.at_level(logging.WARNING, logger="providers"):
             first = providers.get_provider_profile("mixhosted")
-            assert providers.get_provider_profile("mixlocal") is not None
+            assert providers.get_provider_profile("mixlocal") is None
             (home / "plugins" / "model-providers" / "other").mkdir()
             providers.refresh_bound_home()
             again = providers.get_provider_profile("mixhosted")

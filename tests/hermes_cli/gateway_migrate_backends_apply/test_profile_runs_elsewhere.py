@@ -94,8 +94,21 @@ def test_no_step_of_a_move_by_hand_is_printed_for_a_home_a_plugin_runs_elsewhere
 
     out = capsys.readouterr().out
     assert code == engine.EXIT_BLOCKED and host.calls == [] and _files(home) == before
-    assert "taskkill" not in out and "config set" not in out, out  # no step: none is listed under "Steps"
+    assert "taskkill" not in out and "gateway install" not in out, out  # no step, and no word of one
+    assert "Steps" not in out and "cannot be migrated automatically" not in out, out
     assert pre.run_elsewhere_refusal(home) in " ".join(out.split())
+
+
+def test_the_plan_of_a_home_a_plugin_runs_elsewhere_calls_no_backend_one_to_move_by_hand(home, capsys):
+    """The dashboard's card prints "This server cannot be moved from here" and the instructions of every
+    backend the plan lists as one to move by hand. For a marked home the plan lists none."""
+    pre.mark_profile_run_elsewhere("default", "sandbox-plugin", root=home)
+
+    code = engine.cmd_apply(ByHandHost(home), _args(dry_run=True, json=True))
+
+    plan = json.loads(capsys.readouterr().out)["plan"]
+    assert code == engine.EXIT_BLOCKED and plan["unsupported"] == [], plan["unsupported"]
+    assert any(pre.run_elsewhere_refusal(home) in blocker for blocker in plan["blockers"])
 
 
 # ── every form of the command, through the entry they all pass ───────────────────────

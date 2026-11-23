@@ -894,15 +894,9 @@ def build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False) 
 
 
 def _owner_problem(host) -> Optional[str]:
-    """Why this profile's move is not planned here: a plugin runs the profile elsewhere, another home's
-    gateway serves it, or which gateway serves it is not known. None for a home whose own gateway would
-    serve the Webapp."""
-    from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+    """Why this profile's move is not planned here: another home's gateway serves it, or which gateway
+    serves it is not known. None for a home whose own gateway would serve the Webapp."""
     from hermes_constants import profile_name_for_home
-    if (elsewhere := run_elsewhere_refusal(host.home)) is not None:
-        # The gateway a move starts would refuse this profile, and the backend found for its home may be
-        # the one the plugin runs: no step is planned against it, by this command or by hand.
-        return f"{elsewhere} Nothing changed."
     kind, owner = host.gateway_owner()
     name = profile_name_for_home(str(host.home))
     if kind == "other":
@@ -924,6 +918,14 @@ def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False)
         plan.blockers.append(f"{problem}: fix it and re-run the dry run. Nothing changed.")
         return plan
     _select(plan, host.backends(), address, host)
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+    if (plan.unsupported or plan.candidates) and (elsewhere := run_elsewhere_refusal(host.home)) is not None:
+        # A plugin runs this profile elsewhere. The gateway a move starts would refuse the profile, and
+        # the backend found for its home may be the one the plugin runs: the plan lists none, to move
+        # here or by hand.
+        plan.blockers.append(f"{elsewhere} Nothing changed.")
+        plan.unsupported, plan.candidates = [], []
+        return plan
     if (plan.unsupported or plan.candidates) and (problem := _owner_problem(host)):
         plan.blockers.append(problem)
         plan.unsupported = [(item, why, []) for item, why, _steps in plan.unsupported]

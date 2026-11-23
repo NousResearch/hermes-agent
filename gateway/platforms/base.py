@@ -1583,6 +1583,9 @@ class SendResult:
     # SEND_ERROR_KINDS member (failures only) via :func:`classify_send_error`, so consumers
     # branch without substring-matching ``error``.
     error_kind: Optional[str] = None
+    # Positive acknowledgement that NO part of this message was delivered. An exception,
+    # an unclassified failure, or a timeout after sending is not such an acknowledgement.
+    confirmed_not_delivered: bool = False
 
 
 # Longest server ``retry_after`` ``_send_with_retry`` will sleep inline. Longer penalties return the

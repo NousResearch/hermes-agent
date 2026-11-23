@@ -230,6 +230,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # Idempotency is scoped to the authenticated route and routed profile: provider delivery
         # IDs are not globally unique across unrelated webhook endpoints.
         self._seen_deliveries: dict[_WebhookDeliveryIdentity, float] = {}
+        self._direct_in_flight: set[_WebhookDeliveryIdentity] = set()
         self._idempotency_ttl: int = 3600  # 1 hour
         self._seen_deliveries_next_prune_at: float = 0.0
         self._rate_counts: dict[str, deque[float]] = {}  # per-route hit timestamps in a fixed window
@@ -585,6 +586,7 @@ class WebhookAdapter(BasePlatformAdapter):
                                    event_type: str, delivery_id: str, profile: Optional[str] = None) -> web.Response:
         """deliver_only: the rendered prompt IS the message — skip the agent, reuse the same
         auth/rate-limit/idempotency/template pipeline."""
+        assert web is not None  # The optional aiohttp adapter has registered this handler.
         delivery = {"deliver": route_config.get("deliver", "log"), "payload": payload, "profile": profile,
                     "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
                     "route": route_name,
@@ -592,15 +594,27 @@ class WebhookAdapter(BasePlatformAdapter):
         logger.info("[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s", event_type,
                     route_name, delivery["deliver"], len(prompt), delivery_id)
         failed = {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id}
+        identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
+        self._direct_in_flight.add(identity)
+        retry_safe = False
         try:
             result = await self._direct_deliver(prompt, delivery)
+            if result.success:
+                return web.json_response({"status": "delivered", "route": route_name, "target": delivery["deliver"],
+                                          "delivery_id": delivery_id}, status=200)
+            retry_safe = getattr(result, "confirmed_not_delivered", False) is True
         except Exception:
             logger.exception("[webhook] direct-deliver failed route=%s delivery=%s", route_name, delivery_id)
             return web.json_response(failed, status=502)
-        if result.success:
-            return web.json_response({"status": "delivered", "route": route_name, "target": delivery["deliver"],
-                                      "delivery_id": delivery_id}, status=200)
-        # Target rejected it — 502 with a generic error (don't leak adapter detail).
+        finally:
+            self._direct_in_flight.discard(identity)
+            if retry_safe:
+                self._seen_deliveries.pop(identity, None)
+            else:
+                # A cancellation, timeout or partial delivery may have reached the target.
+                # Start the replay window at settlement, even when the original claim expired.
+                self._seen_deliveries[identity] = time.time()
+        # Return a generic 502 (don't leak adapter detail).
         logger.warning("[webhook] direct-deliver target rejected route=%s target=%s error=%s", route_name,
                        delivery["deliver"], result.error)
         return web.json_response(failed, status=502)
@@ -678,6 +692,7 @@ class WebhookAdapter(BasePlatformAdapter):
 
     async def _handle_webhook(self, request: web.Request) -> web.Response:
         """POST /webhooks/{route_name} — receive and process a webhook event."""
+        assert web is not None  # Reached through a running aiohttp application.
         route_name, route_config, profile, error_response = self._resolve_route(request)
         if error_response is None:
             raw_body, error_response = await self._read_authenticated_body(request, route_name, route_config)
@@ -740,6 +755,9 @@ class WebhookAdapter(BasePlatformAdapter):
         # in-memory guard is their only replay defence (main dedupes every route here).
         non_durable = bool(route_config.get("deliver_only") or route_config.get("cron_job")
                            or isinstance(coalesce, dict))
+        if delivery_identity in self._direct_in_flight:
+            return web.json_response({"status": "in_progress", "delivery_id": delivery_id},
+                                     status=503, headers={"Retry-After": "1"})
         if non_durable and not self._record_delivery_id(delivery_identity, now):
             logger.info("[webhook] Skipping duplicate delivery %s on route %s", delivery_id, route_name)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
@@ -985,17 +1003,17 @@ class WebhookAdapter(BasePlatformAdapter):
         repo, pr_number = extra.get("repo", ""), extra.get("pr_number", "")
         if not repo or not pr_number:
             logger.error("[webhook] github_comment delivery missing repo or pr_number")
-            return SendResult(success=False, error="Missing repo or pr_number")
+            return SendResult(success=False, error="Missing repo or pr_number", confirmed_not_delivered=True)
         try:  # input validation (prevent CLI argument injection)
             pr_int = int(pr_number)
             if pr_int <= 0:
                 raise ValueError("non-positive")
         except (ValueError, TypeError):
             logger.error("[webhook] invalid pr_number: %r", pr_number)
-            return SendResult(success=False, error="Invalid pr_number")
+            return SendResult(success=False, error="Invalid pr_number", confirmed_not_delivered=True)
         if not _REPO_RE.fullmatch(repo):
             logger.error("[webhook] invalid repo format: %r", repo)
-            return SendResult(success=False, error="Invalid repo format")
+            return SendResult(success=False, error="Invalid repo format", confirmed_not_delivered=True)
         try:
             # Off-loop: `gh` does network I/O up to its 30s timeout; inline it froze every adapter and
             # timer on the gateway event loop.
@@ -1013,7 +1031,7 @@ class WebhookAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=result.stderr)
         except FileNotFoundError:
             logger.error("[webhook] 'gh' CLI not found — install GitHub CLI for github_comment delivery")
-            return SendResult(success=False, error="gh CLI not installed")
+            return SendResult(success=False, error="gh CLI not installed", confirmed_not_delivered=True)
         except Exception as e:
             logger.error("[webhook] github_comment delivery error: %s", e)
             return SendResult(success=False, error=str(e))
@@ -1042,14 +1060,14 @@ class WebhookAdapter(BasePlatformAdapter):
     async def _deliver_cross_platform(self, platform_name: str, content: str, delivery: dict) -> SendResult:
         """Route response to another platform (telegram, discord, etc.)."""
         if not self.gateway_runner:
-            return SendResult(success=False, error="No gateway runner for cross-platform delivery")
+            return SendResult(success=False, error="No gateway runner for cross-platform delivery", confirmed_not_delivered=True)
         try:
             target_platform = Platform(platform_name)
         except ValueError:
-            return SendResult(success=False, error=f"Unknown platform: {platform_name}")
+            return SendResult(success=False, error=f"Unknown platform: {platform_name}", confirmed_not_delivered=True)
         profile = delivery.get("profile")
         if not (adapter := self._find_adapter(target_platform, profile)):
-            return SendResult(success=False, error=f"Platform {platform_name} not connected")
+            return SendResult(success=False, error=f"Platform {platform_name} not connected", confirmed_not_delivered=True)
         extra = delivery.get("deliver_extra", {})
         chat_id = extra.get("chat_id", "")
         # Whole leg under the routed profile's scope: the home channel comes from THAT profile's config
@@ -1059,13 +1077,13 @@ class WebhookAdapter(BasePlatformAdapter):
             if not chat_id:
                 home = self._delivery_config(profile).get_home_channel(target_platform)
                 if not home:
-                    return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}")
+                    return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}", confirmed_not_delivered=True)
                 chat_id = home.chat_id
             thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
             # Runtime gate on the FINAL target (payload-rendered chat_id included): a shared-bot
             # satellite rides the primary's bot only to chats routed to it (#147602).
             if not self.gateway_runner._shared_bot_target_allowed(target_platform, profile, chat_id, thread_id):
-                return SendResult(success=False, error=f"{platform_name}:{chat_id} is not routed to profile {profile}")
+                return SendResult(success=False, error=f"{platform_name}:{chat_id} is not routed to profile {profile}", confirmed_not_delivered=True)
             result = await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
             if result.success:
                 self._mirror_delivery(platform_name, str(chat_id), content, delivery, thread_id)

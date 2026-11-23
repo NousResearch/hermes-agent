@@ -3212,12 +3212,6 @@ def set_config_value(key: str, value: str, force: bool = False):
             f"✗ Invalid config key: {key!r} — contains an empty path segment "
             "(leading, trailing, or doubled '.').")
     _exit_if_key_managed(key, "set")
-    # A gate's own switch is not settable by the process it guards: an unattended agent runs
-    # `hermes config set` itself, so without this it can grant the approval the gate requires.
-    from hermes_cli.config_self_control import refuse_unattended_security_self_control
-
-    refuse_unattended_security_self_control(key, value)
-
     if _is_env_config_key(key):
         from hermes_cli.credential_lifecycle import save_provider_env_credential
 
@@ -3275,6 +3269,14 @@ def set_config_value(key: str, value: str, force: bool = False):
     from hermes_cli.config_section_guard import _guard_section_overwrite
     key = _guard_section_overwrite(key, value, user_config, force)
     value = _refuse_container_type_mismatch(key, value, user_config, force)
+    # A gate's own switch is not settable by the process it guards: an unattended agent runs
+    # `hermes config set` itself, so without this it can grant the approval the gate requires.
+    # Judged here, on the final key and the coerced value the writer about to store (YAML/JSON escapes
+    # already decoded) against the config it lands in, so a write that leaves the gate ON — the
+    # watchdog's repair direction — still goes through.
+    from hermes_cli.config_self_control import refuse_unattended_security_self_control
+
+    refuse_unattended_security_self_control(key, value, user_config)
     _old_provider = _model_val.get("provider") if isinstance(_model_val, dict) else None
     try:
         _set_nested(user_config, key, value)

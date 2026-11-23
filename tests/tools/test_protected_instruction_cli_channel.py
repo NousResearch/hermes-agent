@@ -149,3 +149,124 @@ def test_a_person_at_a_terminal_may_still_turn_the_gate_off(tmp_path, monkeypatc
 
     assert _REAL_GATE_CONFIG() == (False, [])
 
+
+# The gate's switch, spelled so the raw text never contains the leaf: YAML double-quoted scalars decode
+# ``\uXXXX`` and ``\xXX``, and ``set_config_value`` parses the argument after the guard used to look at it.
+_ESCAPED_DISABLE_PAYLOADS = [
+    ('{"protected_instruction_files": false}', "plain"),
+    ('{"protected_instruction_\\u0066iles": false}', "u0066"),
+    ('{"protected_instruction_\\x66iles": false}', "x66"),
+    ('{"\\u0070rotected_instruction_files": false}', "u0070"),
+]
+
+
+def _flipped_home(home, *, extra_patterns: str = ""):
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "security:\n  protected_instruction_files: false\n" + extra_patterns)
+
+
+def _gate_after_write(home):
+    """The gate's real reading of *home*, with the config caches dropped (no stale parse)."""
+    from hermes_cli import config as cli_config
+
+    cli_config._LOAD_CONFIG_CACHE.clear()
+    cli_config._RAW_CONFIG_CACHE.clear()
+    return _REAL_GATE_CONFIG()
+
+
+@pytest.mark.parametrize("payload,case", _ESCAPED_DISABLE_PAYLOADS, ids=[c for _, c in _ESCAPED_DISABLE_PAYLOADS])
+@pytest.mark.parametrize("force", [False, True], ids=["plain", "force"])
+def test_config_set_cannot_hide_the_switch_behind_a_yaml_escape(tmp_path, monkeypatch, capsys,
+                                                               payload, case, force):
+    """``config set security '{"protected_instruction_\\u0066iles": false}'`` wrote the real leaf and the
+    gate read off: the guard substring-matched the raw argument while the writer parsed it afterwards."""
+    from hermes_cli import config as cli_config
+
+    monkeypatch.setattr(_guards, "_protected_instruction_config", _REAL_GATE_CONFIG)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+
+    with pytest.raises(SystemExit) as refused:
+        cli_config.set_config_value("security", payload, force=force)
+
+    assert refused.value.code == 1
+    assert "Refusing to set 'security'" in capsys.readouterr().err
+    written = tmp_path / "config.yaml"
+    assert not written.exists() or "protected_instruction_files" not in written.read_text()
+    assert _gate_after_write(tmp_path) == (True, [])
+
+
+@pytest.mark.parametrize("key,value,force", [
+    ("security.protected_instruction_files", "true", False),
+    # replacing the section itself needs --force once it has sub-keys; the guard must not be the wall then
+    ("security", '{"protected_instruction_files": true}', True),
+], ids=["leaf", "section"])
+def test_the_watchdog_repair_write_is_allowed_without_a_terminal(tmp_path, monkeypatch, key, value,
+                                                                force):
+    """``protected-instruction-guard.py`` restores a flipped home with ``config set ... true`` from a cron
+    tick. Refusing that direction too left the only automated mitigation failing open."""
+    from hermes_cli import config as cli_config
+
+    monkeypatch.setattr(_guards, "_protected_instruction_config", _REAL_GATE_CONFIG)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    _flipped_home(tmp_path)
+    assert _gate_after_write(tmp_path) == (False, [])
+
+    cli_config.set_config_value(key, value, force=force)
+
+    assert "protected_instruction_files: true" in (tmp_path / "config.yaml").read_text()
+    assert _gate_after_write(tmp_path) == (True, [])
+
+
+def test_a_repair_keeps_the_gates_extra_patterns(tmp_path, monkeypatch):
+    """Turning the gate back on is not a section rewrite: what it covered has to survive."""
+    from hermes_cli import config as cli_config
+
+    monkeypatch.setattr(_guards, "_protected_instruction_config", _REAL_GATE_CONFIG)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    _flipped_home(tmp_path, extra_patterns="  protected_instruction_extra_patterns:\n    - RULES.md\n")
+    assert _gate_after_write(tmp_path) == (False, ["RULES.md"])
+
+    cli_config.set_config_value("security.protected_instruction_files", "true")
+
+    written = (tmp_path / "config.yaml").read_text()
+    assert "protected_instruction_files: true" in written
+    assert "RULES.md" in written
+    assert _gate_after_write(tmp_path) == (True, ["RULES.md"])
+
+
+def test_config_set_cannot_narrow_the_gates_coverage_without_a_terminal(tmp_path, monkeypatch, capsys):
+    """Narrowing what the gate covers is the same self-grant as switching it off."""
+    from hermes_cli import config as cli_config
+
+    monkeypatch.setattr(_guards, "_protected_instruction_config", _REAL_GATE_CONFIG)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    _flipped_home(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "security:\n  protected_instruction_extra_patterns:\n    - RULES.md\n")
+
+    with pytest.raises(SystemExit) as refused:
+        cli_config.set_config_value("security.protected_instruction_extra_patterns", "[]")
+
+    assert refused.value.code == 1
+    assert "Refusing to set 'security.protected_instruction_extra_patterns'" in capsys.readouterr().err
+    assert "- RULES.md" in (tmp_path / "config.yaml").read_text()
+
+
+def test_an_unrelated_config_write_is_not_caught_by_the_guard(tmp_path, monkeypatch):
+    """A home whose gate is off is not frozen: the refusal covers the switch, not every setting."""
+    from hermes_cli import config as cli_config
+
+    monkeypatch.setattr(_guards, "_protected_instruction_config", _REAL_GATE_CONFIG)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    _flipped_home(tmp_path)
+
+    cli_config.set_config_value("display.skin", "ares")
+
+    assert "ares" in (tmp_path / "config.yaml").read_text()
+

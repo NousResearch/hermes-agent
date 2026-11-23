@@ -219,17 +219,26 @@ def _transport_is_dead(transport) -> bool:
     return getattr(transport, "_closed", None) is True
 
 
-def _session_is_lru_evictable(sid: str, session: dict) -> bool:
-    """Shared hard exemptions for both reapers (the LRU cap applies them WITHOUT the age gate: eligible the moment
-    it loses its client): never evict a session mid-turn, awaiting input, still building, owning live delegated
-    work, or on a live transport. Lazy watch sessions never start a build, so their unset agent_ready must not
-    make them immortal."""
+def _session_passes_hard_exemptions(sid: str, session: dict) -> bool:
+    """The shared hard exemptions WITHOUT any transport condition: never touch a session mid-turn,
+    awaiting input, still building, or owning live delegated work. Lazy watch sessions never start a
+    build, so their unset agent_ready must not make them immortal. The session reapers add the
+    transport clause on top (``_session_is_lru_evictable``); the slash-worker eviction below must
+    NOT — a live transport is its normal case, not a protection."""
     if session.get("running") or _session_pending_kind(sid) or _session_has_active_delegations(sid, session):
         return False
     ready = session.get("agent_ready")
     if ready is not None and not ready.is_set() and not session.get("lazy"):
         return False
-    return _transport_is_dead(session.get("transport"))
+    return True
+
+
+def _session_is_lru_evictable(sid: str, session: dict) -> bool:
+    """Shared hard exemptions for both reapers (the LRU cap applies them WITHOUT the age gate: eligible the moment
+    it loses its client): never evict a session mid-turn, awaiting input, still building, owning live delegated
+    work, or on a live transport. Lazy watch sessions never start a build, so their unset agent_ready must not
+    make them immortal."""
+    return _session_passes_hard_exemptions(sid, session) and _transport_is_dead(session.get("transport"))
 
 
 def _sessions_quiescent(exclude: str | None = None) -> bool:
@@ -287,6 +296,7 @@ def _reap_idle_sessions() -> None:
     except Exception:
         logger.debug("idle lease release failed", exc_info=True)
     _reclaim_orphaned_leases()
+    _evict_idle_slash_workers(now)
     # Long-lived processes: gen2 GC rarely runs at steady state and glibc retains freed pages as RSS, so trim
     # every quiescent scan to prevent unbounded RSS growth over days/weeks. Forced trims (agent close, cache
     # pressure) are unaffected.
@@ -298,6 +308,52 @@ def _reap_idle_sessions() -> None:
         trim_memory_when_idle(reason="idle reaper periodic trim")
     except Exception as exc:  # debug, not warning — a persistent failure would repeat every scan.
         logger.debug("idle reaper memory trim failed: %s: %s", type(exc).__name__, exc)
+
+
+def _evict_idle_slash_workers(now: float) -> int:
+    """Close slash workers that have not run a command for ``_SLASH_WORKER_IDLE_S`` — at the 900 s
+    default, with the 300 s scan, an eviction lands 15-20 min after the worker's last command —
+    WITHOUT ending their sessions.
+
+    Every session teardown funnel gates on a dead transport (``_session_is_lru_evictable``), so a
+    session on a live dashboard WebSocket never finalizes and its worker — a full MCP fleet,
+    ~177 MB — accumulates for the gateway's lifetime. The worker is only a cache: ``slash.exec``
+    respawns it on demand and already handles a dead worker, so evicting it is invisible to the
+    client. Eligibility is the LRU hard exemptions MINUS the transport clause, plus the worker's
+    own activity stamp (``last_used``, stamped by slash.exec — the window means "this worker has
+    not run a command", not "this session has not had a prompt"; a worker with no stamp predates
+    stamping and reads as idle). The close itself is lock-gated on the worker
+    (``_SlashWorker.close_if_idle``): a command in flight is never killed, it just defers the
+    eviction to a later scan. No session ends, nothing is written to state.db, and no
+    ``session.reclaimed`` is announced. 0 disables.
+    """
+    idle_s = _SLASH_WORKER_IDLE_S
+    if idle_s <= 0:
+        return 0
+    with _sessions_lock:
+        candidates = [(sid, s) for sid, s in _sessions.items() if s.get("slash_worker") is not None]
+    evicted = 0
+    for sid, session in candidates:
+        worker = session.get("slash_worker")
+        if worker is None:
+            continue
+        if not _session_passes_hard_exemptions(sid, session):
+            continue
+        last_used = float(getattr(worker, "last_used", 0.0) or 0.0)
+        if last_used and (now - last_used) < idle_s:
+            continue
+        with contextlib.suppress(Exception):
+            if not worker.close_if_idle():
+                continue
+            # Null the slot identity-checked, under the registry lock: a worker respawned since
+            # the snapshot (slash.exec / _restart_slash_worker) is a different object and stays.
+            with _sessions_lock:
+                if session.get("slash_worker") is worker:
+                    session["slash_worker"] = None
+            evicted += 1
+    if evicted:
+        logger.info("Evicted %d idle slash worker(s) (idle >= %.0fs)", evicted, idle_s)
+    return evicted
 
 
 def _repair_missing_ws_orphan_reaps() -> None:

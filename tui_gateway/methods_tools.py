@@ -1080,6 +1080,11 @@ def _(rid, params: dict) -> dict:
     try:
         with _transcript_claim(session) if writes and session else contextlib.nullcontext():
             output = worker.run(cmd)
+        # Stamp the worker's activity for the reaper's idle eviction: the window measures time
+        # since this worker last RAN a command, not since the session last saw a prompt — a
+        # chat-busy session can hold a long-unused worker, and a quiet session's fresh worker
+        # must not be evicted early.
+        worker.last_used = time.time()
         if seed := (worker.pop_seed() if hasattr(worker, "pop_seed") else ""):
             # /prompt//blueprint composed a next-turn prompt in the worker; route it as a
             # send dispatch (both Desktop and TUI clients already handle {type:"send"}).

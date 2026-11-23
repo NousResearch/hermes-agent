@@ -47,5 +47,5 @@ def test_auxiliary_pool_recovery_keeps_key_on_model_throttle(monkeypatch, body, 
     pool = _StubPool()
     monkeypatch.setattr(ac, "load_pool", lambda provider: pool)
     monkeypatch.setattr(ac, "_evict_cached_clients", lambda provider: None)
-    assert ac._recover_provider_pool("opencode-go", _go_429(body), failed_api_key="sk-mock") is benches
+    assert (ac._recover_provider_pool("opencode-go", _go_429(body), failed_api_key="sk-mock") is not None) is benches
     assert len(pool.rotate_calls) == (1 if benches else 0)

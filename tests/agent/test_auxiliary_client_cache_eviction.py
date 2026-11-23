@@ -76,7 +76,7 @@ def test_pool_rotation_evicts_client_built_with_revoked_credential(monkeypatch):
     auth_error.status_code = 401
 
     with patch("agent.auxiliary_client.load_pool", return_value=pool):
-        assert aux._recover_provider_pool("anthropic", auth_error, failed_api_key="revoked-token") is True
+        assert aux._recover_provider_pool("anthropic", auth_error, failed_api_key="revoked-token") is not None
 
     assert stale_key not in aux._client_cache
     pool.mark_exhausted_and_rotate.assert_called_once()

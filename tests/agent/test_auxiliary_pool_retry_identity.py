@@ -10,7 +10,7 @@ import pytest
 import hermes_yaml as yaml
 
 from agent import auxiliary_client as aux
-from agent.credential_pool import PooledCredential
+from agent.credential_pool import PooledCredential, load_pool
 from hermes_cli.auth import read_credential_pool, write_credential_pool
 
 
@@ -93,23 +93,28 @@ def test_retry_exhausts_only_keys_that_failed_over_http(tmp_path, monkeypatch, c
 
 
 def _zai_runtime_pool(tmp_path, monkeypatch, urls, cooldowns=None):
-    """Pool rows key-0..n on ``urls``; key-0 is benched by a 429 rotation. Returns ``(swap, runtime)`` for urls[0]."""
-    from agent.auxiliary_pool_retry import runtime_with_rotated_pool_key
-    from agent.credential_pool import load_pool
+    """Pool rows key-0..n on ``urls``; key-0 is benched by a 429 rotation. Returns ``(swap, runtime)`` for urls[0]:
+    ``swap(runtime)`` is the runtime after adopting the entry that rotation chose."""
+    from agent.auxiliary_pool_retry import adopt_rotated_entry
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     rows = [PooledCredential(id=f"key-{i}", provider="zai", label=f"test-{i}", source="manual",
             auth_type="api_key", priority=i, access_token=f"fixture-{i}", base_url=url,
             model_cooldowns=(cooldowns or {}).get(i)) for i, url in enumerate(urls)]
     write_credential_pool("zai", [e.to_dict() for e in rows])
-    load_pool("zai").mark_exhausted_and_rotate(status_code=429, credential_id="key-0")
+    pool = load_pool("zai")
+    entry = pool.mark_exhausted_and_rotate(status_code=429, credential_id="key-0")
     runtime = {"provider": "zai", "api_key": "fixture-0", "base_url": urls[0], "model": "glm-4.7"}
-    return runtime_with_rotated_pool_key, runtime
+
+    def swap(rt, chosen=None):
+        adopt_rotated_entry(rt, "fixture-0", chosen or entry, pool)
+        return rt
+    return swap, runtime
 
 
 def test_rotated_key_for_another_endpoint_is_never_swapped_in(tmp_path, monkeypatch):
     swap, runtime = _zai_runtime_pool(tmp_path, monkeypatch, ["https://a.example/v1", "https://b.example/v1"])
-    assert swap(runtime) is runtime  # key-1 belongs to endpoint B: it must not be sent to A
+    assert swap(runtime)["api_key"] == "fixture-0"  # key-1 belongs to endpoint B: it must not be sent to A
 
 
 def test_rotated_key_for_the_same_endpoint_is_swapped_in(tmp_path, monkeypatch):
@@ -120,13 +125,20 @@ def test_rotated_key_for_the_same_endpoint_is_swapped_in(tmp_path, monkeypatch):
 def test_runtime_without_base_url_fails_closed(tmp_path, monkeypatch):
     swap, runtime = _zai_runtime_pool(tmp_path, monkeypatch, ["https://a.example/v1"] * 2)
     runtime.pop("base_url")
-    assert swap(runtime) is runtime
+    assert swap(runtime)["api_key"] == "fixture-0"
 
 
-def test_swap_only_skips_keys_cooled_down_for_the_runtime_model(tmp_path, monkeypatch):
+def test_swap_only_adopts_entries_not_cooled_down_for_the_runtime_model(tmp_path, monkeypatch):
     future = time.time() + 3600
     urls = ["https://a.example/v1"] * 3
     swap, runtime = _zai_runtime_pool(tmp_path, monkeypatch, urls, {1: {"other-model": future}})
-    assert swap(runtime)["api_key"] == "fixture-1"  # key-1 is only benched for another model
+    key1 = lambda: next(e for e in load_pool("zai").entries() if e.id == "key-1")
+    assert swap(runtime, key1())["api_key"] == "fixture-1"  # key-1 is only benched for another model
     swap, runtime = _zai_runtime_pool(tmp_path, monkeypatch, urls, {1: {"glm-4.7": future}})
-    assert swap(runtime)["api_key"] == "fixture-2"
+    assert swap(runtime, key1())["api_key"] == "fixture-0"  # cooled for this model: keep the runtime key
+
+
+def test_swap_only_when_the_benched_key_is_the_runtime_key(tmp_path, monkeypatch):
+    swap, runtime = _zai_runtime_pool(tmp_path, monkeypatch, ["https://a.example/v1"] * 2)
+    runtime["api_key"] = "someone-elses-key"  # the runtime never held the benched key: never overwrite it
+    assert swap(runtime)["api_key"] == "someone-elses-key"

@@ -3467,26 +3467,34 @@ def _recoverable_pool_provider(
 
 
 def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "",
-                           verdict: Optional[aux_errors.ClassifiedError] = None, base_url: str = "") -> bool:
-    """Try same-provider credential-pool recovery for auxiliary calls.
+                           verdict: Optional[aux_errors.ClassifiedError] = None, base_url: str = "",
+                           runtime: Optional[dict[str, Any]] = None) -> Optional[Any]:
+    """Try same-provider credential-pool recovery for auxiliary calls; returns the pool entry it recovered to (None: no recovery).
 
     ``failed_api_key`` lets mark_exhausted_and_rotate identify the right pool entry even if another process already
     rotated (current() would be None). ``base_url``: where the failed request went (a custom entry rotates its rows bound there).
+    ``runtime``: the main runtime the retry is rebuilt from; it adopts the entry's key when it held the benched one.
     """
     normalized = _normalize_aux_provider(provider)
     try:
         pool = pool_for_aux_provider(provider, normalized, load_pool, base_url)
     except Exception as load_exc:
         logger.debug("Auxiliary client: could not load pool for %s recovery: %s", normalized, load_exc)
-        return False
+        return None
     if not pool or not pool.has_credentials():
-        return False
+        return None
     if verdict is None:  # the ladder hands in the failed request's own verdict: hooks fire once per request
         verdict = aux_errors.classify_attempt(exc, normalized)
     status_code = verdict.status_code
     gated = verdict.reason is FailoverReason.model_entitlement
 
-    def _rotate(fallback_status: int) -> bool:
+    def _recovered(entry: Any) -> Any:
+        from agent.auxiliary_pool_retry import adopt_rotated_entry
+        _evict_cached_clients(normalized)
+        adopt_rotated_entry(runtime, failed_api_key, entry, pool)  # the retry sends the entry the pool chose
+        return entry
+
+    def _rotate(fallback_status: int) -> Optional[Any]:
         # Sized as the main loop's recover_with_credential_pool sizes it: real status, pool failure reason, model.
         error_context: dict[str, Any] = {"message": str(exc)}
         if status_code is not None:
@@ -3497,18 +3505,14 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
             failure_reason=pool_failure_reason(verdict.reason, verdict.error_context, verdict.billing_unverified),
             model=verdict.model or None,
         )
-        if next_entry is None:
-            return False
-        _evict_cached_clients(normalized)
-        return True
+        return None if next_entry is None else _recovered(next_entry)
 
     if aux_errors.auth_refresh(verdict):
-        if pool.try_refresh_current() is not None:
-            _evict_cached_clients(normalized)
-            return True
+        if (refreshed := pool.try_refresh_current()) is not None:
+            return _recovered(refreshed)
         return _rotate(401)
     if not verdict.should_rotate_credential:  # e.g. an overloaded server or an upstream model throttle
-        return False
+        return None
     return _rotate(402 if aux_errors.benches_provider(verdict) else 400 if gated else 429)
 
 
@@ -3523,8 +3527,6 @@ def _prepare_same_provider_retry(
 ) -> tuple[Any, dict[str, Any]]:
     """Rebuild (client, request kwargs) for a same-provider retry after credential recovery. ``repairs``: the
     parameter rungs' strips the failed request already carried, re-applied so a stripped field stays stripped."""
-    from agent.auxiliary_pool_retry import runtime_with_rotated_pool_key
-    main_runtime = runtime_with_rotated_pool_key(main_runtime)  # an auto route must not resend a benched key
     if task == "vision":
         effective_provider, retry_client, retry_model = resolve_vision_provider_client(
             provider=resolved_provider, model=final_model, base_url=resolved_base_url,
@@ -7567,10 +7569,11 @@ def _failure_pool(route: _LadderRoute, failure: aux_errors.Failure) -> tuple[Opt
     return pool_provider, str(getattr(sender, "api_key", "") or "")
 
 
-def _recover_failure_pool(route: _LadderRoute, failure: aux_errors.Failure) -> bool:
+def _recover_failure_pool(route: _LadderRoute, failure: aux_errors.Failure) -> Optional[Any]:
     pool_provider, failed_api_key = _failure_pool(route, failure)
-    return bool(pool_provider) and _recover_provider_pool(
-        pool_provider, failure.error, failed_api_key=failed_api_key, verdict=failure.verdict, base_url=str(getattr(_failure_sender(route, failure), "base_url", "") or ""))
+    return _recover_provider_pool(
+        pool_provider, failure.error, failed_api_key=failed_api_key, verdict=failure.verdict, runtime=route.main_runtime,
+        base_url=str(getattr(_failure_sender(route, failure), "base_url", "") or "")) if pool_provider else None
 
 
 def _ladder_credential_rungs(

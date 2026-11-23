@@ -149,6 +149,31 @@ def test_a_file_where_the_marker_folder_belongs_runs_no_profile(root):
         pre.require_home_runs_here(root / "profiles" / "dev")
 
 
+def test_the_line_for_a_listed_backend_says_what_the_marker_tells(root):
+    """The lists of ``hermes serve`` / ``hermes dashboard`` backends say why a backend of a marked home is
+    not one to move: the plugin by name, "a plugin" when the marker cannot be read, and that Hermes cannot
+    tell when the marker folder cannot be read."""
+    not_moved = "Hermes does not move this backend to the gateway on this host."
+    named = pre.mark_profile_run_elsewhere("ops", "sandbox-plugin", root=root)
+    assert named.backend_note() == (
+        f"Profile 'ops' runs elsewhere (the 'sandbox-plugin' plugin runs its backend): {not_moved}")
+
+    named.path.write_text("{not json", encoding="utf-8")
+    unread = pre.run_elsewhere("ops", root=root)
+    assert unread.plugin is None
+    assert unread.backend_note() == f"Profile 'ops' runs elsewhere (a plugin runs its backend): {not_moved}"
+
+    named.path.unlink()
+    folder = root / "profiles_run_elsewhere"
+    folder.rmdir()
+    folder.write_text("not a folder", encoding="utf-8")
+    cannot_tell = pre.run_elsewhere("ops", root=root)
+    assert cannot_tell.folder_error
+    assert cannot_tell.backend_note() == (
+        f"Hermes cannot read {folder}, so it cannot tell whether a plugin runs profile 'ops' elsewhere: it does "
+        "not move this backend to the gateway on this host.")
+
+
 def test_reading_the_marker_folder_gives_one_kind_of_answer(root):
     """The marked ids and the error that made the folder unreadable are separate fields of one
     result, so a failed read is never the same value as "nothing marked"."""

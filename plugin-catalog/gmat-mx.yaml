@@ -1,0 +1,18 @@
+name: gmat-mx
+title: GMAT MX
+repo: https://github.com/elvispaul7/gmat-mx-api
+sha: c96f73cdc62501b8fb1132ca00385e1ffb48a64c
+version: "1.0.0"
+description: "Verified GMAT (Focus Edition) facts for Mexico and Latin America through gmat.mx's free MCP server (Streamable HTTP at https://api.gmat.mx/mcp, no sign-in, no keys in config): the official GMAC score-to-percentile table (2021-2026 data), GMAT fees in USD for Mexico, Ecuador, Colombia and Peru (registration, reschedule, cancellation, score reports), exam format and retake policy, and original practice questions with answer, explanation and trap analysis. Bundles one skill: gmat-facts. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to api.gmat.mx, a Cloudflare Worker run by gmat.mx (a test-prep provider, not GMAC); it stores no user data. All four tools are read-only and the package marks the server untrusted, so Hermes would ask before any tool that is not. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: gmat.mx
+tier: community
+category: tools
+docs_url: https://api.gmat.mx/
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

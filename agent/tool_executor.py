@@ -1422,7 +1422,7 @@ class _ConcurrentBatch:
             result = ref.emit_cancelled(agent, start)
             duration = time.time() - start
             logger.info("tool %s cancelled (%.2fs)", ref.name, duration)
-            return _ToolOutcome(ref, result, duration, True, False, "cancelled")
+            return _ToolOutcome(ref, result, duration, True, False, execution_status="cancelled")
         except Exception as tool_error:
             result = f"Error executing tool '{ref.name}': {tool_error}"
             logger.error("_invoke_tool raised for %s: %s", ref.name, tool_error, exc_info=True)

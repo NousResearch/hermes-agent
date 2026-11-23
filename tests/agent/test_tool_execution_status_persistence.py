@@ -29,7 +29,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.tool_executor import _ManagedToolResult, execute_tool_calls_segmented
-from hermes_state import SessionDB
+from persistence.conversation.messages import NewMessage
+from persistence.conversation.sessions import NewSession
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
 
 
@@ -52,8 +54,10 @@ def _make_tool_defs(*names: str) -> list:
     ]
 
 
-def _make_agent(tools=("probe_tool",)):
-    hermes_home = Path(tempfile.mkdtemp(prefix="hermes-test-home-"))
+def _make_agent(tools=("probe_tool",), home=None):
+    # The agent's home must be the home whose state.db the test reads back: SessionDB
+    # resolves a profile scope from the path it is given.
+    hermes_home = Path(home) if home is not None else Path(tempfile.mkdtemp(prefix="hermes-test-home-"))
     (hermes_home / "logs").mkdir(parents=True, exist_ok=True)
     with (
         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs(*tools)),
@@ -77,9 +81,19 @@ def _make_agent(tools=("probe_tool",)):
     return agent
 
 
-def _attach_real_session_db(agent, db_path: Path, session_id: str) -> SessionDB:
-    db = SessionDB(db_path=db_path)
-    db.create_session(session_id=session_id, source="tui", model="test/model")
+def _open_store(db_path: Path):
+    """The store handle the agent writes through: a profile scope rooted at the db's home."""
+    store = open_persistence(profile_scope(home=db_path.parent))
+    store.ready()
+    return store
+
+
+def _attach_real_session_db(agent, db_path: Path, session_id: str):
+    db = _open_store(db_path)
+    db.sessions.create(NewSession(session_id=session_id, source="tui", model="test/model"))
+    # The turn's flush writes through the storage interface, which needs both handles set
+    # (writer_interface(agent.persistence, agent._session_db)), as run_agent does.
+    agent.persistence = db
     agent._session_db = db
     agent._session_db_created = True
     agent.session_id = session_id
@@ -92,13 +106,10 @@ def _attach_real_session_db(agent, db_path: Path, session_id: str) -> SessionDB:
 
 def _durable_tool_outcomes(db_path: Path, session_id: str) -> list:
     """Read ``(effect_disposition, execution_status)`` per durably persisted tool row."""
-    db = SessionDB(db_path=db_path)
-    try:
-        msgs = db.get_messages_as_conversation(session_id)
-    finally:
-        db.close()
-    return [(m.get("effect_disposition"), m.get("execution_status"))
-            for m in msgs if m.get("role") == "tool"]
+    db = _open_store(db_path)
+    msgs = db.messages.read_conversation(session_id)
+    return [(m.effect_disposition, m.execution_status)
+            for m in msgs if m.role == "tool"]
 
 
 def _mock_tool_call(name="probe_tool", arguments="{}", call_id="c1"):
@@ -146,7 +157,7 @@ def _run_tool_turn(agent, *, parallel=False, calls=None):
 # ---------------------------------------------------------------------------
 def test_sequential_success_is_null_effect_plus_success_status(tmp_path):
     """A completed call does not claim "no effect" — only that it succeeded."""
-    agent = _make_agent()
+    agent = _make_agent(home=tmp_path)
     db_path = tmp_path / "state.db"
     session_id = "seq-success"
     db = _attach_real_session_db(agent, db_path, session_id)
@@ -160,7 +171,7 @@ def test_sequential_success_is_null_effect_plus_success_status(tmp_path):
 
 
 def test_sequential_error_result_persists_error_status(tmp_path):
-    agent = _make_agent()
+    agent = _make_agent(home=tmp_path)
     db_path = tmp_path / "state.db"
     session_id = "seq-error"
     db = _attach_real_session_db(agent, db_path, session_id)
@@ -177,7 +188,7 @@ def test_sequential_error_result_persists_error_status(tmp_path):
 
 def test_concurrent_outcomes_are_keyed_to_their_own_call(tmp_path):
     """No sorting: swapping the statuses between probe_a/probe_b must fail this."""
-    agent = _make_agent(tools=("probe_a", "probe_b"))
+    agent = _make_agent(tools=("probe_a", "probe_b"), home=tmp_path)
     db_path = tmp_path / "state.db"
     session_id = "conc-mixed"
     db = _attach_real_session_db(agent, db_path, session_id)
@@ -206,11 +217,11 @@ def test_concurrent_outcomes_are_keyed_to_their_own_call(tmp_path):
     finally:
         db.close()
 
-    db = SessionDB(db_path=db_path)
+    db = _open_store(db_path)
     try:
         by_call = {
-            m.get("tool_call_id"): (m.get("effect_disposition"), m.get("execution_status"))
-            for m in db.get_messages_as_conversation(session_id) if m.get("role") == "tool"
+            m.tool_call_id: (m.effect_disposition, m.execution_status)
+            for m in db.messages.read_conversation(session_id) if m.role == "tool"
         }
     finally:
         db.close()
@@ -219,7 +230,7 @@ def test_concurrent_outcomes_are_keyed_to_their_own_call(tmp_path):
 
 def test_blocked_call_is_none_effect_plus_blocked_status(tmp_path):
     """A call refused before dispatch provably had no effect — ``none`` + ``blocked``."""
-    agent = _make_agent()
+    agent = _make_agent(home=tmp_path)
     db_path = tmp_path / "state.db"
     session_id = "blocked"
     db = _attach_real_session_db(agent, db_path, session_id)
@@ -255,7 +266,7 @@ def test_blocked_call_is_none_effect_plus_blocked_status(tmp_path):
 
 def test_concurrent_deadline_is_unknown_effect_plus_timeout_status(tmp_path):
     """A call killed mid-flight: the effect is unobservable, the outcome is a timeout."""
-    agent = _make_agent()
+    agent = _make_agent(home=tmp_path)
     db_path = tmp_path / "state.db"
     session_id = "timeout"
     db = _attach_real_session_db(agent, db_path, session_id)
@@ -290,7 +301,7 @@ def test_concurrent_deadline_is_unknown_effect_plus_timeout_status(tmp_path):
 
 def test_interrupt_skip_is_none_effect_plus_cancelled_status(tmp_path):
     """Skipped-before-start: provably no effect, and the outcome is a cancellation."""
-    agent = _make_agent()
+    agent = _make_agent(home=tmp_path)
     db_path = tmp_path / "state.db"
     session_id = "skip"
     db = _attach_real_session_db(agent, db_path, session_id)
@@ -318,7 +329,7 @@ def test_interrupt_skip_is_none_effect_plus_cancelled_status(tmp_path):
     assert _durable_tool_outcomes(db_path, session_id) == [("none", "cancelled")]
 
 
-def test_invalid_arguments_agree_across_both_dispatch_paths():
+def test_invalid_arguments_agree_across_both_dispatch_paths(tmp_path):
     """Malformed JSON never reaches the tool: ``none`` + ``error`` on BOTH dispatch paths.
 
     Regression for the concurrent/sequential disagreement (concurrent used to report
@@ -328,7 +339,7 @@ def test_invalid_arguments_agree_across_both_dispatch_paths():
     """
     from agent.tool_executor import execute_tool_calls_concurrent, execute_tool_calls_sequential
 
-    agent = _make_agent(tools=("probe_a", "probe_b"))
+    agent = _make_agent(tools=("probe_a", "probe_b"), home=tmp_path)
     calls = [_mock_tool_call(name="probe_a", call_id="ca", arguments="[not, an, object]"),
              _mock_tool_call(name="probe_b", call_id="cb", arguments="[also, bad]")]
 
@@ -417,25 +428,33 @@ def test_codex_projection_records_provider_reported_status():
 # ---------------------------------------------------------------------------
 def test_execution_status_survives_the_export_import_roundtrip(tmp_path):
     """A copied session keeps the outcome axis; losing it would silently blind the feed."""
-    source = SessionDB(db_path=tmp_path / "source.db")
+    source_home = tmp_path / "source"
+    source_home.mkdir()
+    source = _open_store(source_home / "state.db")
     try:
-        source.create_session(session_id="roundtrip", source="tui", model="test/model")
-        source.append_message(
-            "roundtrip", "tool", content="boom", tool_name="probe_tool",
-            tool_call_id="c1", effect_disposition="unknown", execution_status="timeout",
+        source.sessions.create(NewSession(session_id="roundtrip", source="tui", model="test/model"))
+        source.messages.append(
+            "roundtrip",
+            NewMessage(role="tool", content="boom", tool_name="probe_tool",
+                       tool_call_id="c1", effect_disposition="unknown", execution_status="timeout"),
         )
-        payload = source.export_session("roundtrip")
+        export = source.maintenance.export_session("roundtrip")
+        # ``import_sessions`` takes the exported row as a mapping plus its wire messages.
+        payload = {**export.session.as_dict(),
+                   "messages": [m.as_wire_row() for m in export.messages]}
     finally:
         source.close()
 
-    target = SessionDB(db_path=tmp_path / "target.db")
+    target_home = tmp_path / "target"
+    target_home.mkdir()
+    target = _open_store(target_home / "state.db")
     try:
-        target.import_sessions([payload])
-        rows = [m for m in target.get_messages_as_conversation("roundtrip")
-                if m.get("role") == "tool"]
+        target.maintenance.import_sessions([payload])
+        rows = [m for m in target.messages.read_conversation("roundtrip")
+                if m.role == "tool"]
     finally:
         target.close()
-    assert [(m.get("effect_disposition"), m.get("execution_status")) for m in rows] == [
+    assert [(m.effect_disposition, m.execution_status) for m in rows] == [
         ("unknown", "timeout")]
 
 
@@ -451,3 +470,27 @@ def test_execution_status_is_stripped_from_the_provider_wire():
     assert "execution_status" not in out
     assert "effect_disposition" not in out
     assert "tool_name" not in out
+
+
+def test_replay_recovery_fills_the_status_axis(tmp_path):
+    """A crash-recovery row is the one place the status axis matters most.
+
+    ``strip_dangling_tool_call_tail`` (the gateway-died-mid-call case) used to write
+    ``effect_disposition`` only, so the row landed with ``execution_status`` NULL — the
+    same stored value as any pre-migration row, and the column could not answer
+    "which calls never finished" exactly where it was needed.
+    """
+    from agent.replay_cleanup import strip_dangling_tool_call_tail
+
+    history = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function",
+             "function": {"name": "write_file", "arguments": "{}"}},
+        ]},
+    ]
+    recovered = strip_dangling_tool_call_tail(history)
+    rows = [m for m in recovered if m.get("role") == "tool"]
+    assert [(m.get("effect_disposition"), m.get("execution_status")) for m in rows] == [
+        ("unknown", "cancelled")
+    ]

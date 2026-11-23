@@ -3271,9 +3271,9 @@ def set_config_value(key: str, value: str, force: bool = False):
     value = _refuse_container_type_mismatch(key, value, user_config, force)
     # A gate's own switch is not settable by the process it guards: an unattended agent runs
     # `hermes config set` itself, so without this it can grant the approval the gate requires.
-    # Judged here, on the final key and the coerced value the writer about to store (YAML/JSON escapes
-    # already decoded) against the config it lands in, so a write that leaves the gate ON — the
-    # watchdog's repair direction — still goes through.
+    # Judged here, on the final key and the coerced value the writer is about to store (YAML/JSON
+    # escapes already decoded) against the config it lands in, so a write that leaves the gate ON —
+    # the watchdog's repair direction — still goes through.
     from hermes_cli.config_self_control import refuse_unattended_security_self_control
 
     refuse_unattended_security_self_control(key, value, user_config)

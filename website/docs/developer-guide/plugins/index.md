@@ -1762,6 +1762,9 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | [`on_session_reset`](../../user-guide/features/hooks.md#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
 | [`on_session_delete`](../../user-guide/features/hooks.md#on_session_delete) | A session delete or deliberate archive commits (every surface, sweeps, prune) | `session_id: str, reason: str, profile: str \| None`, optional `deleted_ids: list[str]`, `sessions_dir: str` | ignored |
 | [`post_compaction`](../../user-guide/features/hooks.md#post_compaction) | A compaction committed (any path: auto, `/compress`, gateway, Codex, micro, prune) | `session_id: str, old_session_id: str, kind: str, reason: str, before_tokens: int \| None, after_tokens: int \| None, messages_removed: int \| None` | ignored |
+| [`pre_background_review`](../../user-guide/features/hooks.md#pre_background_review) | Before a background memory/skill review fork builds its agent | `session_id, review_memory, review_skills, explicit, focus, prompt, model, provider, routed, message_count, skills_loaded, extra_tools` | `None`, `{"action": "skip", "reason"}`, or `{"prompt", "append_prompt", "extra_tools"}` |
+| [`post_background_review`](../../user-guide/features/hooks.md#post_background_review) | After a background review pass finishes (`ok`, `error`, `cancelled`, or `skipped`) | `session_id, review_memory, review_skills, explicit, focus, model, provider, routed, outcome, result_kind, actions, tool_calls, skills_touched, usage, duration_seconds, error, skip_reason` | ignored |
+| [`pre_curator_run`](../../user-guide/features/hooks.md#pre_curator_run) | Before a curator pass runs transitions or LLM consolidation | `trigger: str, dry_run: bool, consolidate: bool, candidate_count: int, candidates: list[str], prompt: str` | `None`, `{"action": "skip" \| "skip_llm", "reason"}`, or `{"prompt", "append_prompt"}` |
 | [`post_curator_run`](../../user-guide/features/hooks.md#post_curator_run) | A curator pass wrote its report directory | `run_dir: str, run_json_path: str, report_md_path: str, dry_run: bool` | ignored |
 | [`gateway_platform_event`](../../user-guide/features/hooks.md#gateway_platform_event) | An authorized platform-native event is normalized at the gateway boundary (Telegram reactions and message edits; Discord message edits and deletes, thread create and rename; see the [per-event contracts](../../user-guide/features/hooks.md#gateway_platform_event)) | `platform: str, event_type: str, payload: dict` | ignored |
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
@@ -1825,6 +1828,9 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `gateway_platform_event` | `gateway/run_adapters.py` `GatewayAdapterLifecycleMixin._handle_gateway_platform_event` (events come from the Telegram and Discord adapters) |
 | `pre_command` | `hermes_cli/plugins.py` `fire_pre_command_hook`, called from `cli.py` `HermesCLI.process_command`, `gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_command_hooks` and `gateway/session_commands.py` |
 | `post_compaction` | `agent/compaction_events.py` `fire_post_compaction` |
+| `pre_background_review` | `agent/background_review.py` `_apply_pre_background_review_hook` |
+| `post_background_review` | `agent/background_review.py` `_notify_post_background_review` |
+| `pre_curator_run` | `agent/curator.py` `_apply_pre_curator_run_hook` |
 | `post_curator_run` | `agent/curator.py` `_notify_post_curator_run` |
 
 ### `pre_llm_call` context injection

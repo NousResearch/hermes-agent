@@ -210,6 +210,20 @@ VALID_HOOKS: set[str] = {
     # post_curator_run: after a curator pass wrote logs/curator/<run>/ (run.json + REPORT.md). Kwargs:
     # run_dir, run_json_path, report_md_path, dry_run. Observer; returns ignored.
     "post_curator_run",
+    # pre_curator_run: before a curator pass runs auto-transitions / LLM consolidation. Kwargs:
+    # trigger, dry_run, consolidate, candidate_count, candidates, prompt. Return None or a dict with
+    # action ("skip" | "skip_llm"), reason, prompt (replace), or append_prompt (append).
+    "pre_curator_run",
+    # pre_background_review: on the background-review thread right before the review fork builds its
+    # AIAgent. Kwargs: session_id, review_memory, review_skills, explicit, focus, prompt, model,
+    # provider, routed, message_count, skills_loaded, extra_tools. Return None or a dict with
+    # action ("skip"), reason, prompt (replace), append_prompt (append), or extra_tools (list[str]).
+    "pre_background_review",
+    # post_background_review: after a background review pass finishes (ok, error, cancelled, or
+    # skipped). Kwargs: session_id, review_memory, review_skills, explicit, focus, model, provider,
+    # routed, outcome, result_kind, actions, tool_calls, skills_touched, usage, duration_seconds,
+    # error, skip_reason. Observer; returns ignored.
+    "post_background_review",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as

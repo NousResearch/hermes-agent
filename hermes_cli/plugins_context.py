@@ -413,6 +413,18 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         from hermes_cli.plugin_session import context_surface
         return context_surface(self._manager)
 
+    def turn_client(self) -> dict | None:
+        """The client that submitted the running turn, or ``None`` (``plugin_session.turn_client``).
+        Under ``plugins.isolation: host`` this runs in the gateway, in the calling hook's context."""
+        from hermes_cli.plugin_session import turn_client
+        return turn_client()
+
+    def session_viewers(self) -> list[dict]:
+        """The clients attached to the calling session (``plugin_session.session_viewers``).
+        Under ``plugins.isolation: host`` this runs in the gateway, in the calling hook's context."""
+        from hermes_cli.plugin_session import session_viewers
+        return session_viewers()
+
     def post_message(self, text: str) -> Any:
         """Post *text* into the session bound to this call; the handle's ``edit(text)`` updates it in
         place. Never raises (``ok=False`` + ``error`` with no conversation): ``plugin_messages.py``."""

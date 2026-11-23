@@ -85,6 +85,9 @@ class FakeHost(SystemHost):
     def gateway_preflight(self):
         return None
 
+    def legacy_unit_records(self):  # no pre-rename hermes.service
+        return []
+
     def linger(self):
         return False
 

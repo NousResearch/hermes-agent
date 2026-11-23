@@ -101,3 +101,11 @@ def test_brave_key_is_a_direct_web_credential_in_the_gateway_offer(web_profile, 
     unconfigured, has_direct, _explicit, _managed = ns.get_gateway_eligible_tools({"model": {"provider": "nous"}})
     assert "web" in has_direct
     assert "web" not in unconfigured
+
+
+def test_managed_defaults_leave_web_alone_for_a_brave_only_install(web_profile):
+    web_profile({}, credentials="BRAVE_SEARCH_API_KEY=brave-test\n", gateway_ready=True)
+    config = {"model": {"provider": "nous"}}
+    changed = ns.apply_nous_managed_defaults(config, enabled_toolsets=["web"])
+    assert "web" not in changed
+    assert config["web"].get("backend") != "nous"

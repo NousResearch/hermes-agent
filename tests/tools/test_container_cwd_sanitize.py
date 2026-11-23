@@ -28,6 +28,38 @@ class TestIsUnusableContainerCwd:
     def test_posix_home_host_path_rejected(self):
         assert tt._is_unusable_container_cwd("/home/ben/projects") is True
 
+class TestPosixContainerCwdAcceptedOnWindowsHost:
+    """Regression: on Windows ``os.path`` is ``ntpath``, and since Python 3.13
+    ``ntpath.isabs("/workspace")`` is False (no drive letter). The container-cwd
+    sanitizer judges paths INSIDE a Linux container, so it must use POSIX
+    semantics — otherwise every valid container cwd (including the canonical
+    ``/workspace``) is discarded and the container launches in the backend
+    default instead. Host Windows-drive paths must stay rejected.
+    """
+
+    def _with_ntpath(self, monkeypatch):
+        import ntpath
+        import tools.terminal_tool_config as ttc
+
+        monkeypatch.setattr(ttc.os, "path", ntpath)
+        return tt
+
+    def test_workspace_is_valid_container_cwd_under_ntpath(self, monkeypatch):
+        tt = self._with_ntpath(monkeypatch)
+        assert tt._is_unusable_container_cwd("/workspace") is False
+
+    def test_workspace_subdir_is_valid_container_cwd_under_ntpath(self, monkeypatch):
+        tt = self._with_ntpath(monkeypatch)
+        assert tt._is_unusable_container_cwd("/workspace/task42") is False
+
+    def test_windows_drive_path_still_rejected_under_ntpath(self, monkeypatch):
+        tt = self._with_ntpath(monkeypatch)
+        assert tt._is_unusable_container_cwd(r"C:\Users\someuser") is True
+
+    def test_relative_path_still_rejected_under_ntpath(self, monkeypatch):
+        tt = self._with_ntpath(monkeypatch)
+        assert tt._is_unusable_container_cwd("relative/dir") is True
+
 class TestOverrideCwdSanitizedAtCallSite:
     """E2E pin: a per-task cwd OVERRIDE that is a host path must NOT reach the
     container builder. This is the actual reported bug — the gateway/TUI

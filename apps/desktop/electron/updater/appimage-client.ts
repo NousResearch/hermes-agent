@@ -1,8 +1,10 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
 import electronUpdater from 'electron-updater'
 import type { AppAdapter } from 'electron-updater/out/AppAdapter'
+import type { InstallOptions } from 'electron-updater/out/BaseUpdater'
 import { load } from 'js-yaml'
 
 import feedContract from '../../update-feed.cjs'
@@ -47,12 +49,74 @@ export function relaunchUpdatedAppImage(
   host.spawn(target, collectRelaunchArgs(host.argv.slice(1)), childEnv, host.execPath)
 }
 
+/**
+ * Put the download at destination in one rename, so a failure leaves whatever was there.
+ * A download on another filesystem is first copied beside destination for the same reason.
+ */
+function moveIntoPlace(download: string, destination: string): void {
+  try {
+    fs.renameSync(download, destination)
+
+    return
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EXDEV') {
+      throw error
+    }
+  }
+
+  const staging: string = fs.mkdtempSync(path.join(path.dirname(destination), '.hermes-update-'))
+
+  try {
+    const staged: string = path.join(staging, path.basename(destination))
+    fs.copyFileSync(download, staged, fs.constants.COPYFILE_FICLONE)
+    fs.renameSync(staged, destination)
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true })
+  }
+
+  fs.rmSync(download, { force: true })
+}
+
 export class RelaunchingAppImageUpdater extends electronUpdater.AppImageUpdater {
   constructor(
     private readonly relaunch: (target: string, env: NodeJS.ProcessEnv) => void,
     app?: AppAdapter
   ) {
     super(undefined, app)
+  }
+
+  /**
+   * electron-updater's install, except that it unlinks the AppImage before moving the download in,
+   * so a failed move left no Hermes to start. Here the old file goes only once the new one is in place.
+   */
+  protected override doInstall(options: InstallOptions): boolean {
+    const current: string | undefined = process.env.APPIMAGE
+    const download: string | null = this.installerPath
+
+    if (!current || !path.isAbsolute(current) || current.includes('\0') || !download) {
+      throw new Error(`Cannot install the update: APPIMAGE (${current}) or the download (${download}) is missing.`)
+    }
+
+    // Upstream's naming: a name without a version is the user's own, so the update keeps it.
+    const versioned: boolean = /\d+\.\d+\.\d+/.test(path.basename(current))
+    const destination: string = versioned ? path.join(path.dirname(current), path.basename(download)) : current
+
+    moveIntoPlace(download, destination)
+
+    if (destination !== current) {
+      fs.unlinkSync(current)
+      this.emit('appimage-filename-updated', destination)
+    }
+
+    const env: NodeJS.ProcessEnv = { ...process.env, APPIMAGE_SILENT_INSTALL: 'true' }
+
+    if (options.isForceRunAfter) {
+      void this.spawnLog(destination, [], env)
+    } else {
+      execFileSync(destination, [], { env: { ...env, APPIMAGE_EXIT_AFTER_INSTALL: 'true' } })
+    }
+
+    return true
   }
 
   protected override spawnLog(command: string, _args?: string[], env?: NodeJS.ProcessEnv): Promise<boolean> {

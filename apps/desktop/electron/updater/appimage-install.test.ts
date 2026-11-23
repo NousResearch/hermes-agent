@@ -16,6 +16,7 @@ beforeEach((): void => {
 })
 
 afterEach((): void => {
+  vi.restoreAllMocks()
   process.env.APPIMAGE = appImage
 
   if (appImage === undefined) {
@@ -69,6 +70,19 @@ function install(oldName: string, newName: string, failure?: 'missing-download' 
   return { old, downloaded, installed, relaunch, errors }
 }
 
+/** The download cache on another filesystem: renaming out of it fails as rename(2) does. */
+function crossDevice(): void {
+  const rename = fs.renameSync
+
+  vi.spyOn(fs, 'renameSync').mockImplementation((from: fs.PathLike, to: fs.PathLike): void => {
+    if (String(from).startsWith(path.join(dir, 'pending'))) {
+      throw Object.assign(new Error(`EXDEV: cross-device link not permitted, rename '${from}'`), { code: 'EXDEV' })
+    }
+
+    rename(from, to)
+  })
+}
+
 it('replaces an unversioned AppImage in place and relaunches it through Hermes, not a direct spawn', () => {
   const { old, installed, relaunch, errors } = install('Hermes.AppImage', 'Hermes-0.99.1-linux-arm64.AppImage')
   expect(errors).toEqual([])
@@ -115,5 +129,56 @@ it('keeps the previous AppImage when replacing the destination fails with the do
   expect(fs.readFileSync(downloaded, 'utf8')).toBe('new build')
   expect(fs.readFileSync(old, 'utf8')).toBe('old build')
   expect(fs.statSync(old).mode & 0o111).toBe(0o111)
+  expect(fs.readdirSync(path.dirname(old)).sort()).toEqual([oldName, newName])
+})
+
+it('copies a download from another filesystem beside the AppImage, then swaps it in', () => {
+  crossDevice()
+
+  const { old, downloaded, installed, relaunch, errors } = install(
+    'Hermes.AppImage',
+    'Hermes-0.99.1-linux-arm64.AppImage'
+  )
+
+  expect(errors).toEqual([])
+  expect(installed).toBe(true)
+  expect(fs.readFileSync(old, 'utf8')).toBe('new build')
+  expect(fs.statSync(old).mode & 0o111).toBe(0o111)
+  expect(fs.existsSync(downloaded)).toBe(false)
+  expect(fs.readdirSync(path.dirname(old))).toEqual(['Hermes.AppImage'])
+  expect(relaunch).toHaveBeenCalledWith(old, expect.any(Object))
+})
+
+it('keeps the AppImage whole when the disk fills while copying from another filesystem', () => {
+  crossDevice()
+  vi.spyOn(fs, 'copyFileSync').mockImplementation((_from: fs.PathLike, to: fs.PathLike): void => {
+    fs.writeFileSync(to, 'half a build')
+    throw Object.assign(new Error('ENOSPC: no space left on device, copyfile'), { code: 'ENOSPC' })
+  })
+
+  const { old, downloaded, installed, relaunch, errors } = install(
+    'Hermes.AppImage',
+    'Hermes-0.99.1-linux-arm64.AppImage'
+  )
+
+  expect(installed).toBe(false)
+  expect(errors).toHaveLength(1)
+  expect(relaunch).not.toHaveBeenCalled()
+  expect(fs.readFileSync(old, 'utf8')).toBe('old build')
+  expect(fs.readFileSync(downloaded, 'utf8')).toBe('new build')
+  expect(fs.readdirSync(path.dirname(old))).toEqual(['Hermes.AppImage'])
+})
+
+it('keeps the AppImage and the download, and no staging copy, when a cross-filesystem swap fails', () => {
+  crossDevice()
+  const oldName = 'Hermes-0.99.0-linux-arm64.AppImage'
+  const newName = 'Hermes-0.99.1-linux-arm64.AppImage'
+  const { old, downloaded, installed, relaunch, errors } = install(oldName, newName, 'blocked-destination')
+
+  expect(installed).toBe(false)
+  expect(errors).toHaveLength(1)
+  expect(relaunch).not.toHaveBeenCalled()
+  expect(fs.readFileSync(downloaded, 'utf8')).toBe('new build')
+  expect(fs.readFileSync(old, 'utf8')).toBe('old build')
   expect(fs.readdirSync(path.dirname(old)).sort()).toEqual([oldName, newName])
 })

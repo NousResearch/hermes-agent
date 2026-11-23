@@ -24,10 +24,9 @@ from gateway.status import (
     retained_gateway_state,
     runtime_status_heartbeat_age_s, runtime_status_is_stale)
 from gateway.status_served import local_liveness_pid
-from hermes_cli import __release_date__
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_cli.isolated_scope import isolated_launch_profile, scope_to_launch_profile
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import get_version_info, release_date_text
 from hermes_constants import get_process_hermes_home, profile_name_for_home
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
 from hermes_cli.web_routers._common import config_scoped_to_thread, destructive_profile, scoped_to_thread
@@ -606,7 +605,7 @@ async def get_status(profile: Optional[str] = None,
         auth = _auth_gate_status()
 
         status = {
-            "version": local["version"], "release_date": __release_date__,
+            "version": local["version"], "release_date": release_date_text(),
             # `hermes import --keep-host` and /api/ops/transfer/*: a client checks it before a transfer.
             "import_keep_host": 1,
             "config_version": local["config_version"], "latest_config_version": local["latest_config_version"],

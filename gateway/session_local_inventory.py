@@ -103,13 +103,28 @@ def _unknown_toolsets(enabled, config):
     return []
 
 
+# The banner's skill list is display-only and every classic-CLI ``session.create`` asks for it, so a long-lived
+# owner would re-read ~400 SKILL.md files per launch (~0.2 s of the launch's wait). The scan signature sees
+# skills added, removed or moved (and the disabled set); the age bound covers what it cannot see, an in-place
+# SKILL.md edit, so the list can lag such an edit by at most this long.
+_CLI_SKILLS_TTL_SECONDS = 300.0
+_cli_skills_cache: tuple | None = None  # (signature, monotonic time, grouped)
+
+
 def _cli_skills():
     """``hermes_cli.banner.get_available_skills`` as main's classic CLI computed it: ``cmd_chat`` pins
     ``HERMES_KANBAN_BOARD`` before HermesCLI starts, so ``environments: [kanban]`` skills are offered.
     The owner never sets that env; the kanban relevance is scoped to this scan (a ContextVar) and the
-    catalog cache entry it would poison is restored, so other surfaces keep their own view."""
+    catalog cache entry it would poison is restored, so other surfaces keep their own view.
+    The grouped result is memoized on the scan signature (see ``_CLI_SKILLS_TTL_SECONDS``)."""
+    global _cli_skills_cache
+    import time
     from tools import skills_tool
     from tools.kanban_toolset_context import scoped_kanban_toolset_selection
+    signature = skills_tool.skills_scan_signature()  # before the scan: a racing write re-scans next time
+    cached = _cli_skills_cache
+    if cached is not None and cached[0] == signature and time.monotonic() - cached[1] < _CLI_SKILLS_TTL_SECONDS:
+        return {category: list(names) for category, names in cached[2].items()}
     key = ("filtered", False)
     saved = skills_tool._SKILLS_CACHE.pop(key, None)
     try:
@@ -122,6 +137,7 @@ def _cli_skills():
     grouped: dict[str, list[str]] = {}
     for skill in found:
         grouped.setdefault(skill.get("category") or "general", []).append(skill["name"])
+    _cli_skills_cache = (signature, time.monotonic(), {category: list(names) for category, names in grouped.items()})
     return grouped
 
 

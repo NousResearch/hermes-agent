@@ -174,10 +174,11 @@ def test_a_run_inside_the_legacy_unit_is_blocked_and_pointed_at_detach(home, tmp
 
 
 # What systemd 255 prints for a unit whose drop-in reset Environment= and set more after it, with a continued
-# line, quoting, an escaped quote, a C escape, a literal % and an optional EnvironmentFile (read live).
+# line, quoting, an escaped quote, a C escape, a literal % and an optional EnvironmentFile and a required one
+# whose path holds a % (systemd prints it expanded).
 _SHOW = ('Environment=HOME=/home/u "A=one two" B=cont "Q=say \\"hi\\"" P=100% "T=tab\\there" PATH=/usr/bin TOKEN=x\n'
          "EnvironmentFiles=/home/u/bot.env (ignore_errors=yes)\n"
-         "EnvironmentFiles=/home/u/must.env (ignore_errors=no)\n")
+         "EnvironmentFiles=/home/u/100%/must.env (ignore_errors=no)\n")
 
 
 def test_the_legacy_environment_is_what_systemd_resolved_carried_verbatim(home, monkeypatch):
@@ -193,7 +194,7 @@ def test_the_legacy_environment_is_what_systemd_resolved_carried_verbatim(home, 
     assert calls == [("user", ["show", "hermes.service", "--no-pager", "--property=Environment",
                                "--property=EnvironmentFiles"])]
     assert lines == ['Environment="A=one two" B=cont "Q=say \\"hi\\"" P=100%% "T=tab\\there" TOKEN=x',
-                     "EnvironmentFile=-/home/u/bot.env", "EnvironmentFile=/home/u/must.env"]
+                     "EnvironmentFile=-/home/u/bot.env", "EnvironmentFile=/home/u/100%%/must.env"]
 
 
 def test_a_legacy_unit_whose_environment_was_reset_carries_none(home, monkeypatch):

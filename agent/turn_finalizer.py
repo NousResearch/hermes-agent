@@ -618,6 +618,21 @@ def public_pre_transform(agent, pre_transform: Optional[Any]) -> Optional[Any]:
     return None if getattr(agent, "_hold_stream", False) else pre_transform
 
 
+def _buffer_late_soft_interrupt(agent: Any, completed: bool) -> None:
+    """Queue the text of a soft interrupt that landed after the turn's last assistant message.
+
+    Nothing was left to stop, so the turn ran to its end: the text is the user's next message, not
+    a reason this turn ended. It joins the leftover /steer drain, which hands it back as the next
+    user turn. A hard interrupt only says the caller wanted the turn stopped; it has no message to
+    hand back.
+    """
+    hard_stop = getattr(agent, "_hard_interrupt_requested", None)
+    hard_stopped = callable(getattr(hard_stop, "is_set", None)) and hard_stop.is_set()
+    message = getattr(agent, "_interrupt_message", None)
+    if completed and getattr(agent, "_interrupt_requested", False) and message and not hard_stopped:
+        agent.steer(message)
+
+
 def _mirror_turn_to_memory(
     agent, *, original_user_message, final_response, interrupted, messages, review_memory, review_skills, vetoed,
 ) -> None:
@@ -879,6 +894,7 @@ def finalize_turn(
     # A /steer landing after the final assistant turn has no tool batch to drain into;
     # hand it back so it becomes the next user turn instead of being lost. A gateway transfer
     # (ticketed) stays buffered: the claim's settlement returns it to its own queue place.
+    _buffer_late_soft_interrupt(agent, completed)
     _leftover_steer = (getattr(agent, "_drain_leftover_steer", None) or agent._drain_pending_steer)()
     if _leftover_steer:
         result["pending_steer"] = _leftover_steer

@@ -1938,6 +1938,14 @@ body.guest-pointer-lock :is(webview, iframe) {
   initial-value: 0px;
 }
 
+/* A pinned prompt's lower edge, on the still box beside the transcript viewport, for a skin that
+   softens the clip there (thread/redesign.css). Written when a prompt comes to rest, not per frame. */
+@property --sticky-prompt-edge {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
 /* The sticky prompt owns no field paint. Clip only the scrolling siblings
    behind it, including the top gap, so bubble transparency still works. */
 [data-sticky-prompt-clip] {

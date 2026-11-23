@@ -469,7 +469,10 @@ centred 640px column shared with the docked composer (`--portal-column-conversat
 the right edge up to 380px, with 6px corners, 6/10px insets and a 5% (light 2%)
 fill and no border; their time and restore actions sit beside the bubble. Base text
 is 13px at 1.6 leading before user scaling. A pinned prompt keeps 12px of clearance
-below its bubble so clipped reply lines never touch it. Retain the current branded
+below its bubble so clipped reply lines never touch it, and reply lines dissolve over the two
+lines beneath it: a still strip at the prompt's edge repaints the stage and fades out downwards
+(`aui_sticky-prompt-edge`). Never soften that edge with a mask on the turns that scroll: it changes
+every frame and redraws each covered reply whole. Retain the current branded
 body font, timestamp preference, and working message actions; enabled timestamps
 use caption ink and sit above the bubble. Collapsed tool runs, including
 single-tool runs, use the dashed [2,4] summary frame with a status dot. The stage is a

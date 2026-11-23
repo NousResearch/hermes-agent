@@ -317,7 +317,8 @@
   )
   > [data-panel-header]::before,
 :root[data-shell='portal'] [data-overlay-surface][data-page-surface] [data-glass-raised],
-:root[data-shell='portal'] [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out])::before {
+:root[data-shell='portal'] [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out])::before,
+:root[data-shell='portal'] [data-slot='aui_sticky-prompt-edge'] {
   background: var(--artwork-stage-noise), linear-gradient(var(--artwork-veil)), var(--artwork-paint);
   background-color: var(--portal-surface-canvas);
   background-blend-mode: normal, normal, var(--artwork-blend);

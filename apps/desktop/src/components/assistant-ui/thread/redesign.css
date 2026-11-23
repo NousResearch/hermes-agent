@@ -78,36 +78,37 @@
   padding-block: 0 var(--portal-conversation-prompt-clearance);
 }
 
-/* A hard clip at the prompt's edge cut the reply line under it in half. Fade
-   the covered sibling out instead: hidden through the prompt's box, then
-   easing back to full ink over two reply lines: the line straddling the edge
-   is all but gone and the next one is faded, never half a line at full ink. A mask, like the
-   clip it replaces, paints no backing, so the stage (and its art) shows
-   through in either theme. */
-:root[data-shell='portal'] [data-sticky-prompt-clip] {
-  clip-path: none;
+/* The hard clip at a pinned prompt's edge (styles.css) cuts the reply line under it in half. Soften
+   it: hidden through the prompt's box by that clip, then easing back to full ink over two reply
+   lines (the transcript's 14/1.6), so the line straddling the edge is all but gone and the next one
+   is faded.
+
+   Nothing that scrolls is touched. A still strip sits at the edge the clip hook publishes, repaints
+   the stage (portal-artwork.css, as the composer's floor does) and fades itself out downwards, so
+   the lines passing beneath it dissolve. It is drawn once and moves only when another prompt comes
+   to rest. The fade used to be a mask on each covered turn whose gradient moved on every scroll
+   frame, which redrew the whole reply per frame: four times the raster work of the clip alone over
+   the same scroll of a long chat, and why the redesign scrolled worse than classic. */
+:root[data-shell='portal'] [data-slot='aui_sticky-prompt-edge'] {
+  position: absolute;
+  top: var(--sticky-prompt-edge);
+  right: var(--portal-scrollbar-size);
+  left: 0;
+  display: block;
+  height: 2.8rem;
+  opacity: 0;
   mask-image: linear-gradient(
     to bottom,
-    transparent var(--sticky-prompt-clip),
-    color-mix(in srgb, var(--portal-raw-black) 20%, transparent)
-      calc(var(--sticky-prompt-clip) + 0.5 * var(--portal-conversation-prompt-fade)),
-    var(--portal-raw-black) calc(var(--sticky-prompt-clip) + var(--portal-conversation-prompt-fade))
+    var(--portal-raw-black),
+    color-mix(in srgb, var(--portal-raw-black) 80%, transparent) 50%,
+    transparent
   );
+  pointer-events: none;
+  transition: opacity var(--portal-motion-fast) var(--portal-ease);
 }
 
-:root[data-shell='portal'] [data-slot='aui_thread-content'] {
-  --portal-conversation-prompt-fade: calc(2 * var(--dt-line-height) * var(--conversation-text-font-size));
-}
-
-:root[data-shell='portal'] [data-slot='aui_user-bubble-actions'] {
-  width: fit-content;
-  max-width: min(100%, 23.75rem);
-  align-self: flex-end;
-}
-
-:root[data-shell='portal'] [data-slot='aui_edit-composer-root'] .composer-human-message-container {
-  max-width: 100%;
-  align-self: flex-end;
+:root[data-shell='portal'] [data-slot='aui_sticky-prompt-edge'][data-sticky-prompt-edge] {
+  opacity: 1;
 }
 
 /* Content-sized, borderless, 6px corners. The padding keeps a one-line prompt

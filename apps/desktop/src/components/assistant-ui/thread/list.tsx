@@ -503,6 +503,20 @@ const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized
   )
 })
 
+// Secondary windows hide the titlebar chrome, so the scroller runs to
+// the window's top edge and streamed text slides up under the OS
+// traffic lights. Content padding alone scrolls away with the text — a
+// fixed opaque strip (the titlebar's drag region) masks anything behind
+// it and keeps the window draggable, matching the main window's header.
+function SecondaryTitlebarStrip() {
+  return (
+    <div
+      aria-hidden="true"
+      className="absolute inset-x-0 top-0 z-10 h-(--titlebar-height) bg-background [-webkit-app-region:drag]"
+    />
+  )
+}
+
 const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   clampToComposer,
   components,
@@ -1599,7 +1613,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   }, [visibleGroups, components, rowKeySignature, structuralSignature, tailStart])
 
   useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey, sessionId: scrollSessionId })
-  useStickyPromptClip({ contentRef, scrollRef, paneVisible, rows })
+  const promptEdgeRef = useRef<HTMLDivElement>(null)
+  useStickyPromptClip({ contentRef, edgeRef: promptEdgeRef, scrollRef, paneVisible, rows })
 
   return (
     <div
@@ -1611,17 +1626,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         } as CSSProperties
       }
     >
-      {secondaryWindow && (
-        // Secondary windows hide the titlebar chrome, so the scroller runs to
-        // the window's top edge and streamed text slides up under the OS
-        // traffic lights. Content padding alone scrolls away with the text — a
-        // fixed opaque strip (the titlebar's drag region) masks anything behind
-        // it and keeps the window draggable, matching the main window's header.
-        <div
-          aria-hidden="true"
-          className="absolute inset-x-0 top-0 z-10 h-(--titlebar-height) bg-background [-webkit-app-region:drag]"
-        />
-      )}
+      {secondaryWindow && <SecondaryTitlebarStrip />}
       <div
         className="size-full overflow-x-hidden overflow-y-auto overscroll-contain"
         data-following={isAtBottom ? 'true' : 'false'}
@@ -1665,6 +1670,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           )}
         </div>
       </div>
+      <div aria-hidden="true" className="hidden" data-slot="aui_sticky-prompt-edge" ref={promptEdgeRef} />
     </div>
   )
 }

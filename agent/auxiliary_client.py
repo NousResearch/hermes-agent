@@ -2759,7 +2759,11 @@ def reset_runtime_main(token: contextvars.Token) -> None:
 
 @contextlib.contextmanager
 def scoped_runtime_main(main_runtime: Optional[dict[str, Any]]):
-    """Temporarily bind an explicit runtime for the current context."""
+    """Temporarily bind an explicit runtime for the current context. No runtime given: keep the published one
+    bound as is, so a key rotated mid-call (``rotate_runtime_main_api_key``) reaches the caller's later calls."""
+    if main_runtime is None and isinstance(_RUNTIME_MAIN_CONTEXT.get(), dict):
+        yield _RUNTIME_MAIN_CONTEXT.get()
+        return
     runtime = _normalize_main_runtime(main_runtime)
     token = _RUNTIME_MAIN_CONTEXT.set(runtime or None)
     try:

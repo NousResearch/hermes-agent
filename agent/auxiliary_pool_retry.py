@@ -18,6 +18,7 @@ def adopt_rotated_entry(runtime: Optional[dict[str, Any]], failed_key: str, entr
     provider, a key from another pool or endpoint, no ``base_url``) leaves the runtime unchanged.
     """
     from agent.auxiliary_client import _pool_runtime_api_key
+    from agent.auxiliary_key_rotation import rotate_runtime_main_api_key
     from agent.credential_pool import credential_pool_entry_serves_endpoint
     from agent.credential_pool_model_cooldowns import model_cooldown_until
 
@@ -32,3 +33,4 @@ def adopt_rotated_entry(runtime: Optional[dict[str, Any]], failed_key: str, entr
             and failed_key in {_pool_runtime_api_key(e) for e in pool.entries()}):
         return
     runtime["api_key"] = new
+    rotate_runtime_main_api_key(failed_key, new)  # the published runtime too, so later aux calls skip the dead key

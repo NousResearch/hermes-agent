@@ -85,3 +85,16 @@ def test_retry_uses_the_rotated_entry_without_reloading_the_pool(zai, monkeypatc
     assert chosen and chosen[0] is not None and not isinstance(chosen[0], bool)
     assert seen[0] == "fixture-0" and seen[-1] == chosen[0].runtime_api_key  # between: the ladder's same-key backoff retry
     assert loads.count(("zai",)) == 1, loads  # only the rebuilt client's cache hint loads zai: no swap-time reload
+
+
+def test_later_aux_calls_start_with_the_rotated_key(zai):
+    base, seen, _dead, setup = zai
+    setup()
+    token = aux.set_runtime_main("zai", "glm-4.7", base_url=base, api_key="fixture-0")
+    try:
+        _call()
+        del seen[:]
+        _call()
+    finally:
+        aux.reset_runtime_main(token)
+    assert seen == ["fixture-1"]  # the second call's first attempt is already healthy

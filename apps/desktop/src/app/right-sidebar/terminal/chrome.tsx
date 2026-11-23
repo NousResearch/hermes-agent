@@ -14,7 +14,7 @@ export function TerminalPaneChrome() {
   const terminals = useStore($terminals)
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1">
+    <div className="flex h-full min-h-0 min-w-0 flex-1 items-stretch">
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
         <TerminalSlot />
       </div>

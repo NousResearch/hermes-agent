@@ -36,7 +36,11 @@ const micHandle = {
 }
 
 vi.mock('./use-mic-recorder', () => ({
-  useMicRecorder: () => ({ handle: micHandle, level: 0, recording: false })
+  useMicRecorder: () => ({
+    handle: micHandle,
+    levelStore: { get: () => 0, listen: () => () => {}, set: () => {} },
+    recording: false
+  })
 }))
 
 vi.mock('@/i18n', () => ({

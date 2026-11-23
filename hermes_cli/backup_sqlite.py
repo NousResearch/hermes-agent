@@ -111,6 +111,22 @@ def _stepped_rollback_journal_copy(conn: sqlite3.Connection, backup_conn: sqlite
     conn.backup(backup_conn, pages=-1, progress=check_busy, sleep=_ROLLBACK_BUSY_SLEEP_SECONDS)
 
 
+def _wal_copy_until_deadline(conn: sqlite3.Connection, backup_conn: sqlite3.Connection, check_busy) -> None:
+    """One-step backup, restarted while the source reports an extended busy code. sqlite3's backup loop
+    retries only plain SQLITE_BUSY/LOCKED; SQLITE_BUSY_RECOVERY (another connection rebuilding the
+    WAL index) ends it as an error, though the source is readable a moment later."""
+    while True:
+        try:
+            conn.backup(backup_conn, pages=-1, progress=check_busy, sleep=0.1)
+            return
+        except sqlite3.OperationalError as exc:
+            code = getattr(exc, "sqlite_errorcode", 0)
+            if code & 0xFF not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                raise
+            check_busy(code, 0, 0)  # raises once the source has been busy past the deadline
+            time.sleep(0.1)
+
+
 class _OffThreadCopy:
     """One long sqlite3 call run off the main thread. Python runs signal handlers only on the main
     thread and only between bytecodes, so a one-step backup (a single C ``sqlite3_backup_step``,
@@ -172,7 +188,8 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
         def _check_backup_progress(status: int, _remaining: int, _total: int) -> None:
             nonlocal busy_deadline
             now = time.monotonic()
-            if status in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            # Masked: extended codes such as SQLITE_BUSY_RECOVERY are busy too.
+            if status & 0xFF in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
                 if now >= busy_deadline:
                     raise _SQLiteBackupTimeout(f"database remained locked for {timeout_seconds:g} seconds")
             else:
@@ -182,8 +199,7 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
             # One step: SQLite restarts a multi-step backup whenever another connection writes the
             # source, and a WAL reader never blocks a writer however long the copy takes.
             # Run off the main thread so a SIGTERM is serviced during the copy (_OffThreadCopy).
-            copier = _OffThreadCopy(lambda: conn.backup(
-                backup_conn, pages=-1, progress=_check_backup_progress, sleep=0.1))
+            copier = _OffThreadCopy(lambda: _wal_copy_until_deadline(conn, backup_conn, _check_backup_progress))
             copier.run()
         else:
             _stepped_rollback_journal_copy(conn, backup_conn, _check_backup_progress)
@@ -219,6 +235,18 @@ def _reclaim_abandoned_staging(home: Path, prefix: str) -> None:
                 staged.unlink()
 
 
+def _fsync_parent_dir(path: Path) -> None:
+    """Make a just-renamed file's directory entry durable; stdlib-only twin of ``utils.fsync_directory``."""
+    if os.name == "nt":
+        return
+    with suppress(OSError):
+        fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
 def preflight_state_db(home: Path) -> dict:
     """Publish an emergency snapshot; do not prune recovery files on failure."""
     source = home / "state.db"
@@ -243,6 +271,7 @@ def preflight_state_db(home: Path) -> dict:
             connection.close()
         size = staged.stat().st_size
         os.replace(staged, destination)
+        _fsync_parent_dir(destination)
     finally:
         staged.unlink(missing_ok=True)
         # A copy stopped mid-write leaves the staging copy's rollback journal behind too.

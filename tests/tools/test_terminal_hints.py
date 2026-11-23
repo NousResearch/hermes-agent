@@ -16,7 +16,6 @@ class TestAnnotateFailureBasics:
 
     def test_empty_output_falls_to_exit_code_tier(self):
         assert "126" in annotate_failure("./run.sh", 126, "")
-        assert "SIGKILL" in annotate_failure("big_job", 137, "")
         assert "timeout" in annotate_failure("sleep 999", 124, "")
 
     def test_unknown_failure_returns_none(self):

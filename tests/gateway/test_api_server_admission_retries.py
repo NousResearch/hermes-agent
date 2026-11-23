@@ -247,9 +247,9 @@ async def test_authority_retry_preserves_next_prompt_and_execution_fence(api, ow
     from gateway.session_results import execution_result
 
     adapter, client = api
-    monkeypatch.setenv("HERMES_HOME", str(Path(owner.db.db_path).parent))
+    monkeypatch.setenv("HERMES_HOME", str(owner.persistence.scope.profile_dir))
     adapter.gateway_runner = owner.runner
-    adapter._session_db = owner.db
+    adapter._session_db = owner.persistence
     owner.runner._adapter_for_source = lambda source: adapter
     entries = [_ApprovalEntry({"command": "test"}) for _ in range(2)]
     registered = [asyncio.Event(), asyncio.Event()]
@@ -259,7 +259,7 @@ async def test_authority_retry_preserves_next_prompt_and_execution_fence(api, ow
     async def turn(event):
         sid = event.source.chat_id
         live = owner.sessions[sid]
-        current = owner.db.get_session(sid)["runtime_generation"]
+        current = owner.persistence.sessions.get(sid).runtime_generation
         generation.append(current)
         started.set()
         await allow_prompt.wait()
@@ -287,11 +287,11 @@ async def test_authority_retry_preserves_next_prompt_and_execution_fence(api, ow
         await registered[0].wait()
         detach = owner.detach
         if detach_error:
-            from hermes_state_runtime import RuntimeStoreError
+            from persistence import AuthorityRefusal
 
             async def failed_detach(*args, **kwargs):
                 await detach(*args, **kwargs)
-                raise RuntimeStoreError(detach_error)
+                raise AuthorityRefusal(detach_error)
 
             monkeypatch.setattr(owner, "detach", failed_detach)
         first = await client.post(url, json=body, headers=_headers())
@@ -326,10 +326,10 @@ async def test_authority_retry_preserves_next_prompt_and_execution_fence(api, ow
 ])
 async def test_authority_preflight_refusals_do_not_exhaust_receipts(api, owner, monkeypatch, changed, status, code):
     adapter, client = api
-    monkeypatch.setenv("HERMES_HOME", str(Path(owner.db.db_path).parent))
+    monkeypatch.setenv("HERMES_HOME", str(owner.persistence.scope.profile_dir))
     monkeypatch.setattr(adapter._run_admissions, "MAX_RECEIPTS", 2)
     adapter.gateway_runner = owner.runner
-    adapter._session_db = owner.db
+    adapter._session_db = owner.persistence
     owner.runner._adapter_for_source = lambda source: adapter
     entry = _ApprovalEntry({"command": "test"})
     ready = asyncio.Event()
@@ -338,7 +338,7 @@ async def test_authority_preflight_refusals_do_not_exhaust_receipts(api, owner, 
     async def turn(event):
         sid = event.source.chat_id
         live = owner.sessions[sid]
-        current = owner.db.get_session(sid)["runtime_generation"]
+        current = owner.persistence.sessions.get(sid).runtime_generation
         generation.append(current)
         monkeypatch.setitem(approval._gateway_queues, live.route, [entry])
         owner.register_approval(sid, current, live.route, entry.data)

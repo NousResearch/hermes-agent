@@ -76,6 +76,7 @@ def cookie_origin_is_allowed(request: Request) -> bool:
     if bound_host and not _is_accepted_host(
         request.headers.get("host", ""), bound_host,
         getattr(request.app.state, "trusted_public_hosts", frozenset()),
+        bool(getattr(request.app.state, "loopback_companion", None)),
     ):
         return False
     origins = request.headers.getlist("origin")

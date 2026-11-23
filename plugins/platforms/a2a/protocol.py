@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from gateway.platforms._shared import coerce_port as _coerce_int
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 
 PROTOCOL_VERSION = "1.0"
 
@@ -454,7 +454,7 @@ def persist_message(context_id: str, role: str, text: str, task_id: str = "", in
     """Append one message to the context's on-disk conversation log. Never raises."""
     try:
         path = _conv_path(context_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_under_hermes_home(path.parent)
         entry = {"ts": time.time(), "role": role, "text": text, "task_id": task_id, **({"input_id": input_id} if input_id else {})}
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")

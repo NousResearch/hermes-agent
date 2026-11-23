@@ -144,7 +144,16 @@ export function ModelPill({
   ) : (
     <>
       {currentModel.trim() ? (
-        <span className="truncate">{pillLabel ?? formatModelPillLabel(currentModel, { fastMode, serviceTier })}</span>
+        <span className="truncate">
+          {pillLabel ??
+            formatModelPillLabel(currentModel, {
+              fastMode,
+              requireCapabilities: !runtimeId,
+              serviceTier,
+              supportsFast: model.supportsFast,
+              supportsUltrafast: model.supportsUltrafast
+            })}
+        </span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}

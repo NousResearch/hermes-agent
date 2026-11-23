@@ -553,6 +553,12 @@ class PromptCacheWindow(Result):
     reason: str
     refreshed_at: float | None = None
     coverage: dict[str, float] = {}
+    #: Keep-alives missed on this route (two real misses in a row): nothing is warmed again this session.
+    warming_off: bool = False
+    #: ``cache_ttl: auto`` on a person's chat still on 5m: it moves to 1h at its first pause over 5 minutes.
+    tier_pending: bool = False
+    #: A rule learned from this route's own usage (``no-cache`` | ``write-on-hit`` | ``short-lived``).
+    learned: str | None = None
 
 
 class SessionContextBreakdownResult(Result):
@@ -625,6 +631,9 @@ method("session.compress", params=SessionCompressParams, result=SessionCompressR
 
 class SessionInterruptParams(SessionParams):
     expected_hosted_task_id: str | None = None  # only interrupt if this hosted task is the running one
+    #: The caller pauses the turn and continues it itself (a hidden ``prompt.submit``): its ``message.complete``
+    #: says ``paused``. A plain interrupt (the user's Stop) for the same turn wins.
+    resume: bool | None = None
 
 
 class InterruptStatus(WireEnum):

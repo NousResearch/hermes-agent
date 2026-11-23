@@ -1,0 +1,21 @@
+name: styx
+title: Styx
+repo: https://github.com/CloudDown/styx
+sha: 77e671b016aa22339ad240ca0b55f7aaf4988a8f
+description: "Password-gated Tor onion access to the local Hermes webapp or dashboard. Disclosure — when you start it, Styx publishes your Hermes web UI (which can run commands on this machine) as a Tor onion service: anyone with the onion address and your Styx passphrase gets a full Hermes session. Starting it turns on webapp.enabled in config.yaml, builds the webapp, and may restart the Hermes gateway (interrupting running turns); setup can install Tor through your system package manager after you confirm. The optional Styx Fast chat page, off unless you choose it, uses the same Hermes sign-in and sends chats, files and (only when you allow the microphone) voice recordings to this Hermes instance."
+maintainer: CloudDown
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "0.1.0"
+docs_url: https://github.com/CloudDown/styx/blob/77e671b016aa22339ad240ca0b55f7aaf4988a8f/README.md
+image: https://raw.githubusercontent.com/CloudDown/styx/77e671b016aa22339ad240ca0b55f7aaf4988a8f/docs/catalog-banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/CloudDown/styx/77e671b016aa22339ad240ca0b55f7aaf4988a8f/docs/login.png
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

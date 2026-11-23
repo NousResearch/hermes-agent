@@ -304,12 +304,12 @@ def carried_command_variants(command: str, capped: list[str] | None = None):
                 if payload in seen:
                     continue
                 seen.add(payload)
-                yield from _command_detection_variants(payload, capped=capped)
+                yield from _command_detection_variants(payload, capped=capped, floors=True)
                 # A literal heredoc body inside the payload is text here too, as at the top level.
                 payload = _blank_literal_heredoc_bodies(payload)
                 nested.append(payload)
                 peeled = strip_wrapper_prefixes(payload)
-                yield from _command_detection_variants(peeled, capped=capped)
+                yield from _command_detection_variants(peeled, capped=capped, floors=True)
                 # The peeled form can expose a carrier the raw walk stops before (`xargs su -c ...`).
                 if peeled not in seen:
                     seen.add(peeled)
@@ -333,9 +333,11 @@ def hardline_detection_variants(command: str, capped: list[str] | None = None):
     # The peeled command gets the full variant set, not just normalization: a quoted verb behind a
     # wrapper (`nice "reboot"`) needs the same dequoting the bare `"reboot"` gets.
     # Its carried payloads too: `xargs sh -c 'nice reboot'` only exposes `sh -c` once peeled.
-    peeled = itertools.chain(_command_detection_variants(stripped, capped=capped), carried_command_variants(stripped, capped)) if stripped != masked else ()
+    peeled = itertools.chain(
+        _command_detection_variants(stripped, capped=capped, floors=True),
+        carried_command_variants(stripped, capped)) if stripped != masked else ()
     carried = carried_command_variants(_blank_literal_heredoc_bodies(command), capped)
-    for variant in itertools.chain(_command_detection_variants(command, capped=capped), peeled, carried):
+    for variant in itertools.chain(_command_detection_variants(command, capped=capped, floors=True), peeled, carried):
         for candidate in (variant, dequote_rm_operands(variant) if "rm" in variant.lower() else variant):
             if candidate not in seen:
                 seen.add(candidate)

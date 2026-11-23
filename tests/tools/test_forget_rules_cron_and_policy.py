@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from tools.cronjob_prompt_scan import _scan_cron_prompt, _scan_cron_skill_assembled
+from cron.prompt_scan import _scan_cron_prompt, _scan_cron_skill_assembled
 from tools.skills_guard import scan_skill, should_allow_install
 
 

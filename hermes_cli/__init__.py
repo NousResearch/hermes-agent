@@ -2,7 +2,7 @@
 
 import sys
 
-__release_date__ = "2026.9.24"
+__release_date__ = "2026.11.23"
 # Declared for type checkers and the old-updater surface audit; served lazily by __getattr__.
 __version__: str
 

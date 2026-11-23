@@ -1123,12 +1123,61 @@ def _run_system_player(cmd: list[str]) -> bool:
     return False
 
 
+def _play_audio_via_sounddevice_convert(file_path: str) -> bool:
+    """Decode a non-WAV clip to a temporary WAV and play it through sounddevice.
+
+    ``ffplay -autoexit`` returns at end-of-stream and can cut the tail of the last
+    sentence while the output device still has samples buffered, so a TTS reply ends
+    mid-word. ``sounddevice`` blocks for the exact sample count instead. TTS providers
+    hand back MP3/OGG, which never reaches the ``.wav``-only branch above.
+
+    Returns False — the caller then falls through to the system player — when
+    sounddevice output is not allowed, ffmpeg is missing, the decode fails, or playback
+    itself failed. The temporary WAV is always removed.
+    """
+    if not _sounddevice_output_allowed():
+        return False
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return False
+    wav_path = None
+    try:
+        fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="hermes-audio-")
+        os.close(fd)
+        # ``-ac 1``: _play_wav_via_sounddevice reads frames as 1-D int16 and hands them to
+        # sounddevice as mono, so a multi-channel WAV would play interleaved (double speed).
+        # TTS output is mono anyway. Credential scrub mirrors the system-player path (#56332).
+        from tools.environments.local import hermes_subprocess_env
+
+        subprocess.run(
+            [ffmpeg, "-v", "error", "-i", file_path, "-vn", "-ac", "1",
+             "-acodec", "pcm_s16le", "-y", wav_path],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, timeout=60,
+            env=hermes_subprocess_env(inherit_credentials=False),
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        # ffmpeg exit status, timeout, unreadable input, unwritable temp file: the decode
+        # failed, so the caller uses the system player instead of dropping the reply.
+        logger.debug("sounddevice convert failed: %s", e)
+        _unlink_quietly(wav_path)
+        return False
+    try:
+        return _play_wav_via_sounddevice(wav_path)
+    finally:
+        _unlink_quietly(wav_path)
+
+
 def _play_audio_file_impl(file_path: str) -> bool:
     if not os.path.isfile(file_path):
         logger.warning("Audio file not found: %s", file_path)
         return False
     # macOS skips sounddevice output (TCC media-library prompt); afplay handles all formats.
     if file_path.endswith(".wav") and _sounddevice_output_allowed() and _play_wav_via_sounddevice(file_path):
+        return True
+    # MP3/OGG (what TTS providers return) plays through the same blocking speaker path
+    # instead of ffplay -autoexit, which drops the buffered tail of the last sentence.
+    if not file_path.lower().endswith(".wav") and _play_audio_via_sounddevice_convert(file_path):
         return True
     for cmd in _system_player_candidates(file_path):
         if shutil.which(cmd[0]) and _run_system_player(cmd):

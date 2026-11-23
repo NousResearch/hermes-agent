@@ -30,8 +30,8 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli.gateway_migrate_backends_plan import (
-    _SECRET_KEY, APPLY_STEPS, EXIT_BLOCKED, EXIT_OK, EXIT_UNSUPPORTED, EXIT_USAGE, BackendPlan, build_plan,
-    format_address, format_plan, manual_steps, parse_address, provider_names,
+    _LEGACY_ENV_DROPIN, _SECRET_KEY, APPLY_STEPS, EXIT_BLOCKED, EXIT_OK, EXIT_UNSUPPORTED, EXIT_USAGE, BackendPlan,
+    _forceable, build_plan, format_address, format_plan, manual_steps, parse_address, provider_names,
 )
 from hermes_cli.gateway_migrate_backends_detach import (
     clear_refusal, detach, read_refusal, record_refusal, refusal_status,
@@ -354,14 +354,16 @@ def _apply_steps(run: Run, plan: BackendPlan, *, force_interrupt: bool) -> float
     print(f"  ✓ config.yaml: {', '.join(plan.config_writes())}")
     run.step("write_config", "done")
     run.step("gateway_service")
+    environment = _replace_legacy_units(run, plan)
     _ensure_gateway_service(host, m["gateway"])
+    _carry_legacy_environment(run, environment)
     print("  ✓ the gateway is installed and enabled as a user service")
     run.step("gateway_service", "done")
     rec = m["old_backend"]
     if (changed := _changed_since_check(host, rec)) is not None:
         raise StepFailed(f"the old backend changed since the check ({changed}), so the stop would reach a process "
                          f"the checks never saw. The old backend has not been stopped; run this command again.")
-    if not force_interrupt and rec.get("pid") and (late := _turns_now(host, rec)) is not None:
+    if not force_interrupt and (late := _late_activity(host, rec)) is not None:
         raise StepFailed(f"{late} The old backend has not been stopped.")
     run.step("stop_old_backend")
     stopped_at = host.now()
@@ -376,6 +378,8 @@ def _apply_steps(run: Run, plan: BackendPlan, *, force_interrupt: bool) -> float
     print("  ✓ old backend stopped" + (" and disabled (unit file kept)" if rec["supervisor"] != "manual" else ""))
     if dropin is not None:
         print(f"  ✓ started by hand it exits once and stays down: {dropin}")
+    if force_interrupt:
+        _stop_stray_gateway(run)
     run.step("stop_old_backend", "done")
     run.step("start_gateway")
     host.gateway_verb("restart" if m["gateway"]["active"] else "start")
@@ -420,9 +424,84 @@ def _turns_now(host, rec: dict) -> Optional[str]:
     pid, start = rec["pid"], rec.get("start_time")
     turns = host.running_turns(pid, start)
     now = SimpleNamespace(running_turns=turns, turns_unknown=_turns_unknown(host, pid, start) if turns is None else "",
-                          blockers=[])
+                          blockers=[], forceable=[], takes_over=[])
     _turns_blocker(now, False)
     return now.blockers[0] if now.blockers else None
+
+
+def _late_activity(host, rec: dict) -> Optional[str]:
+    """What started since the preflight that only consent may stop: a turn on the old backend, or a gateway of
+    this home outside its service (a chat window opened meanwhile), else None."""
+    if rec.get("pid") and (late := _turns_now(host, rec)) is not None:
+        return late
+    gs = host.gateway_state()
+    if gs["running_pid"] and not gs["active"]:
+        return (f"A gateway for this home started outside its service after the check (pid {gs['running_pid']}); "
+                f"re-run with --force-interrupt to let the move stop it.")
+    return None
+
+
+def _stop_stray_gateway(run: Run) -> None:
+    """With consent: stop this home's gateway running outside its service, once the old backend (whose chat
+    may have started it) is down, so the gateway service can take its place. Nothing to put back: a chat
+    window starts one again when needed; one started by hand is named by --restore."""
+    host, m = run.host, run.data
+    m["stopped_gateway"] = {"pid": host.gateway_state()["running_pid"]}
+    run.save()
+    if (pid := host.stop_stray_gateway()) is not None:
+        print(f"  ✓ stopped the gateway running outside its service (pid {pid})")
+
+
+def _replace_legacy_units(run: Run, plan: BackendPlan) -> list[str]:
+    """Remove each legacy ``hermes.service`` the plan replaces (stop, disable, delete), after recording its
+    state and a private copy of its unit file for a rollback or --restore. Returns its ``Environment=`` /
+    ``EnvironmentFile=`` lines (in memory only: values may be credentials) for the gateway service."""
+    host, m = run.host, run.data
+    if not plan.legacy_units:
+        return []
+    environment: list[str] = []
+    m["legacy_units"] = []
+    for unit in plan.legacy_units:
+        environment += host.legacy_environment_lines(unit["unit"])
+        backup = _write_private(host.home, f"legacy-{unit['unit']}", Path(unit["path"]).read_text(encoding="utf-8"))
+        m["legacy_units"].append({**unit, "backup": backup})
+    run.save()  # recorded before the removal: rollback and restore put each one back
+    host.remove_legacy_units()
+    print(f"  ✓ replaced {', '.join(u['unit'] for u in plan.legacy_units)} (a copy is kept for --restore)")
+    return environment
+
+
+def _carry_legacy_environment(run: Run, lines: list[str]) -> None:
+    """Give the gateway service the replaced unit's own environment lines (a token set in the unit, an
+    ``EnvironmentFile=``), in a 0600 drop-in recorded first so a rollback or --restore removes it."""
+    if not lines:
+        return
+    host, m = run.host, run.data
+    m["gateway_env_dropin"] = host.gateway_env_dropin_path(_LEGACY_ENV_DROPIN)
+    run.save()
+    host.write_gateway_env_dropin(m["gateway_env_dropin"], lines)
+    print(f"  ✓ the gateway service keeps {len(lines)} environment line(s) of the replaced unit: "
+          f"{m['gateway_env_dropin']} (mode 600; values not shown)")
+
+
+def _put_back_legacy(host, m: dict, attempt) -> None:
+    """Undo :func:`_carry_legacy_environment` and :func:`_replace_legacy_units`: the drop-in goes, then each
+    replaced unit comes back with its enablement and state (the migrated gateway is stopped by then)."""
+    if m.get("gateway_env_dropin"):
+        attempt("removed the gateway service's copy of the replaced unit's environment",
+                lambda: host.remove_gateway_env_dropin(m["gateway_env_dropin"]))
+    for unit in m.get("legacy_units") or []:
+        attempt(f"put back {unit['unit']}", lambda unit=unit: host.restore_legacy_unit(unit))
+
+
+def _legacy_manual_steps(m: dict) -> list[str]:
+    steps = [f"rm -f {m['gateway_env_dropin']} && systemctl --user daemon-reload"] if m.get("gateway_env_dropin") else []
+    for unit in m.get("legacy_units") or []:
+        now = " --now" if unit.get("active") else ""
+        enable = f" && systemctl --user enable{now} {unit['unit']}" if unit.get("enabled") == "enabled" else (
+            f" && systemctl --user start {unit['unit']}" if now else "")
+        steps.append(f"cp {unit['backup']} {unit['path']} && systemctl --user daemon-reload{enable}")
+    return steps
 
 
 def apply(host, plan: BackendPlan, *, detached: bool = False, force_interrupt: bool = False) -> int:
@@ -747,6 +826,8 @@ def _undo(run: Run, errors: list[str]) -> None:
             attempt("disabled the gateway service again", lambda: host.gateway_verb("disable"))
         if m.get("linger") is False and host.linger() is True:
             attempt("turned lingering off again", lambda: host.set_linger(False))
+        if safe[0]:  # a replaced hermes.service comes back only once the gateway service is proven stopped
+            _put_back_legacy(host, m, attempt)
     if _entered(m, "start_gateway") and gw_before["active"] and safe[0]:
         # It runs the restored config again: not on the old backend's address.
         attempt("started the gateway again (it was running before)", lambda: host.gateway_verb("start"))
@@ -880,6 +961,7 @@ def _manual_rollback_steps(m: dict) -> list[str]:
         steps.append(f"{hermes} gateway uninstall")
     elif m["gateway"]["active"]:
         steps.append(f"{hermes} gateway start")
+    steps += _legacy_manual_steps(m)
     if m.get("old_unit_dropin"):
         steps.append(f"rm -f {m['old_unit_dropin']} && systemctl --user daemon-reload")
     if _old_never_stopped(m):  # it ran all along: nothing of it to enable, start or bootstrap again
@@ -1246,7 +1328,8 @@ def _gateway_service_blockers(host, plan: BackendPlan) -> None:
         plan.blockers.append(f"{unit} belongs to another Hermes home (it runs HERMES_HOME={other}): the move "
                              f"would restart, stop or remove that home's gateway. Run the migration from that "
                              f"home, or remove its service there first, then run this again. Nothing changed.")
-    if host.legacy_gateway_units():
+    # An automatic move replaces the legacy units it can (plan._legacy, which blocks on the others).
+    if host.legacy_gateway_units() and not (plan.rec and (plan.legacy_units or any("legacy" in b for b in plan.blockers))):
         plan.blockers.append("A legacy Hermes gateway unit (hermes.service) is installed: installing the gateway "
                              "would stop, disable and delete it, and a rollback or --restore could not bring it "
                              f"back. Run `{hermes_command(host.home, powershell=os.name == 'nt')} gateway "
@@ -1271,9 +1354,9 @@ def _owner_blockers(host, plan: BackendPlan, *, force_interrupt: bool = False) -
     _gateway_service_blockers(host, plan)
     if plan.running_turns is None and not force_interrupt and not plan.blockers:
         # None is "cannot be read", never 0: stopping the old backend could cut off a reply being written.
-        plan.blockers.append("The old backend's running turns cannot be read, so this command cannot prove no "
-                             "reply is being written in it. Confirm it is idle, then re-run with "
-                             "--force-interrupt. Nothing changed.")
+        _forceable(plan, "The old backend's running turns cannot be read, so this command cannot prove no reply is "
+                         "being written in it. Confirm it is idle, then re-run with --force-interrupt. Nothing changed.",
+                   "Cuts off any reply being written on the old backend (its chat activity cannot be read).", False)
     others = [i for i in host.backends()
               if i.supervisor not in _NEVER_TOUCHED and _for_this_home(i, host)
               # a launchd job is listed only while it is loaded: idle or not, launchd may start it

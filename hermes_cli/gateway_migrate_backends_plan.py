@@ -81,6 +81,10 @@ class BackendPlan:
     running_turns: Optional[int] = None  # None: the old backend's activity has not been read or cannot be read
     turns_unknown: str = ""  # why running_turns is None, for the blocker text (not in the JSON)
     blockers: list[str] = field(default_factory=list)
+    forceable: list[str] = field(default_factory=list)  # the blockers --force-interrupt clears (each in blockers)
+    takes_over: list[str] = field(default_factory=list)  # what the move stops or replaces besides the old backend
+    stray_gateway: Optional[dict] = None  # with --force-interrupt: a gateway outside its service, stopped too
+    legacy_units: list[dict] = field(default_factory=list)  # pre-rename hermes.service units the move replaces
     unsupported: list[tuple[Optional[BackendItem], str, list[str]]] = field(default_factory=list)
     notices: list[str] = field(default_factory=list)
 
@@ -119,8 +123,10 @@ class BackendPlan:
             "manifest": "record the current state in backend_migration.json (backups of config.yaml and .env)",
             "webapp_bundle": "build the Webapp bundle" if self.bundle_missing else "check the Webapp bundle (built)",
             "write_config": "write .env and webapp.* (" + ", ".join(self.config_writes()) + ")",
-            "gateway_service": "make sure the gateway runs as a user service",
-            "stop_old_backend": "stop the old backend" + ("" if manual else " and disable it (its unit file is kept)"),
+            "gateway_service": "make sure the gateway runs as a user service" + "".join(
+                f" (replacing {u['unit']}; a copy is kept for --restore)" for u in self.legacy_units),
+            "stop_old_backend": "stop the old backend" + ("" if manual else " and disable it (its unit file is kept)")
+                                + (", then the gateway running outside its service" if self.stray_gateway else ""),
             "start_gateway": "start or restart the gateway",
             "verify": "verify " + " and ".join(format_address(h, self.new_port) for h in self.verify_hosts)
                       + ": /api/status 200 from the gateway and the Webapp page served, within 90 s",
@@ -148,6 +154,7 @@ class BackendPlan:
             "public_url": self.public_url, "auth_before": self.auth_before, "gateway": self.gateway,
             "linger": self.linger, "webapp_bundle_missing": self.bundle_missing,
             "running_turns": self.running_turns, "blockers": list(self.blockers),
+            "forceable_blockers": list(self.forceable), "takes_over": list(self.takes_over),
             "unsupported": [{"supervisor": i.supervisor if i else None, "unit": i.unit if i else None,
                              "pid": i.pid if i else None, "instructions": t, "steps": list(s)}
                             for i, t, s in self.unsupported],
@@ -786,19 +793,89 @@ def _manual_target(plan: BackendPlan, host, keep_webapp: bool) -> None:
         plan.unsupported[0] = (item, why, [])  # no steps that would set a refused or conflicting address
 
 
-def _gateway(plan: BackendPlan, host) -> None:
+def _gateway(plan: BackendPlan, host, force_interrupt: bool) -> None:
     gs = host.gateway_state()
     plan.gateway, plan.linger = gs, host.linger()
     if gs["kind"] is None:
         plan.no_service = True  # its by-hand steps are built once every check has run (build_plan)
         return
+    _legacy(plan, host)
     if gs["running_pid"] and not gs["active"]:
-        plan.blockers.append(
-            f"A gateway for this home runs outside its service (pid {gs['running_pid']}). Stop it "
-            f"({hermes_command(plan.home, powershell=plan.powershell)} gateway stop) so the migration can run it "
-            f"as a service, then re-run.")
+        _stray_gateway(plan, host, gs["running_pid"], force_interrupt)
     if reason := host.gateway_preflight():
         plan.blockers.append(f"The gateway's user service cannot be driven from this shell: {reason}")
+
+
+def _forceable(plan: BackendPlan, blocker: str, consent: str, force_interrupt: bool) -> None:
+    """Something the move may stop only with the user's consent: *consent* says what (the dashboard's Move asks
+    once for all of it), and without --force-interrupt *blocker* holds the move."""
+    plan.takes_over.append(consent)
+    if not force_interrupt:
+        plan.blockers.append(blocker)
+        plan.forceable.append(blocker)
+
+
+def _stray_gateway(plan: BackendPlan, host, pid: int, force_interrupt: bool) -> None:
+    """A gateway of this home running outside its service: one the dashboard's chat started (it ends itself
+    when idle) or one started by hand, which may run messaging bots. With consent the move stops it right after
+    the old backend, so the gateway service can take over; a legacy ``hermes.service`` is replaced instead."""
+    stray = host.stray_gateway(pid)
+    if any(u.get("main_pid") == pid or u["unit"] == stray.get("unit") for u in plan.legacy_units):
+        return  # the legacy unit's own gateway: replaced, not stopped by hand
+    what = ("started by a chat window; it ends by itself when idle" if stray["idle_exit"]
+            else "started by hand or by another program")
+    chats = {None: "; its chats cannot be read", 0: ""}.get(stray["chats"], f"; {stray['chats']} chat(s) running on it")
+    stop = f"{hermes_command(plan.home, powershell=plan.powershell)} gateway stop"
+    _forceable(plan, f"A gateway for this home runs outside its service (pid {pid}, {what}{chats}). The move stops "
+                     f"it and runs the gateway as a service in its place; re-run with --force-interrupt to allow that "
+                     f"(or stop it first: {stop}).",
+               f"Stops the gateway running outside its service (pid {pid}, {what}{chats}); the gateway service "
+               f"takes over its chats and messaging bots.", force_interrupt)
+    if force_interrupt:
+        plan.stray_gateway = stray
+
+
+_LEGACY_ENV_DROPIN = "hermes-legacy-environment.conf"
+
+
+def _legacy(plan: BackendPlan, host) -> None:
+    """A pre-rename ``hermes.service`` gateway unit: the move replaces it with the gateway service, keeping its
+    extra ``Environment=``/``EnvironmentFile=`` lines in a drop-in and its unit file for a rollback or --restore.
+    Bot tokens and pairings live in this home, so nothing signs in again. One it cannot replace blocks."""
+    for unit in host.legacy_unit_records():
+        if unit["system"]:
+            plan.blockers.append(
+                f"A legacy system-wide gateway unit is installed ({unit['path']}), and this command changes no system "
+                f"unit. Remove it as root (sudo systemctl disable --now {unit['unit']}; sudo rm {unit['path']}; sudo "
+                f"systemctl daemon-reload), then run this again; your bots keep their logins (they are in this home). "
+                f"Nothing changed.")
+        elif (problem := _legacy_home_problem(unit, host)) is not None:
+            plan.blockers.append(f"A legacy gateway unit ({unit['unit']}) is installed, but {problem}, so the move "
+                                 f"cannot replace it. Remove it from the home it serves (hermes gateway migrate-legacy "
+                                 f"there), then run this again. Nothing changed.")
+        elif os.path.lexists(dropin := host.gateway_env_dropin_path(_LEGACY_ENV_DROPIN)):
+            plan.blockers.append(f"{dropin} already exists; move it aside before migrating. Nothing changed.")
+        else:
+            plan.legacy_units.append(unit)
+            plan.takes_over.append(f"Replaces the old {unit['unit']} with the gateway service, which keeps its "
+                                   f"environment settings; its messaging bots keep their logins.")
+
+
+def _legacy_home_problem(unit: dict, host) -> Optional[str]:
+    """Why *unit* may serve another Hermes home (``hermes gateway install`` deletes it whichever home it serves),
+    else None: read the way the old backend's unit is (:func:`_for_this_home`)."""
+    from hermes_cli.gateway_migrate_backends_host import exec_start_argv
+    env, problem = host.unit_environment(unit["unit"], "user")
+    if problem is None and _profile_flag(exec_start_argv(host.unit_props(unit["unit"], "user").get("ExecStart", ""))):
+        problem = "its command line picks a profile (-p/--profile)"
+    if problem:
+        return f"which Hermes home it serves cannot be told ({problem})"
+    if env.get("HERMES_HOME"):
+        return None if host.same_home(env["HERMES_HOME"]) else f"it serves another Hermes home ({env['HERMES_HOME']})"
+    mine = host.default_home(env)  # a unit that pins no HERMES_HOME runs its own default home
+    if mine is None:
+        return "which Hermes home it serves cannot be told (its HOME is not a plain absolute path)"
+    return None if mine else "it serves another Hermes home (the default one)"
 
 
 def _restart_hint(plan: BackendPlan) -> str:
@@ -823,16 +900,16 @@ def _turns_before_restart(host, pid: Optional[int], start_time) -> Optional[int]
 
 
 def _turns_blocker(plan: BackendPlan, force_interrupt: bool) -> None:
-    if force_interrupt:
-        return
     if plan.running_turns is None:
         why = plan.turns_unknown or "its turn activity could not be read"
-        plan.blockers.append(f"Cannot tell whether turns are running on the old backend: {why}. To move it, "
-                             f"confirm it is idle, then re-run with --force-interrupt (any running turn is "
-                             f"interrupted).")
+        _forceable(plan, f"Cannot tell whether turns are running on the old backend: {why}. To move it, confirm it "
+                         f"is idle, then re-run with --force-interrupt (any running turn is interrupted).",
+                   "Cuts off any reply being written on the old backend (its chat activity cannot be read).",
+                   force_interrupt)
     elif plan.running_turns > 0:
-        plan.blockers.append(f"{plan.running_turns} turn(s) are running on the old backend. Wait for them to "
-                             f"finish, or re-run with --force-interrupt (they are interrupted).")
+        _forceable(plan, f"{plan.running_turns} turn(s) are running on the old backend. Wait for them to finish, or "
+                         f"re-run with --force-interrupt (they are interrupted).",
+                   f"Cuts off the {plan.running_turns} reply(ies) being written on the old backend.", force_interrupt)
 
 
 def _auth_and_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
@@ -945,7 +1022,7 @@ def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False)
     _public_url(plan, cfg, backend_url_env(host, env))
     if plan.new_host is not None:
         _proposed_webapp(plan, host)
-    _gateway(plan, host)
+    _gateway(plan, host, force_interrupt)
     _auth_and_turns(plan, host, force_interrupt)
     plan.bundle_missing = host.bundle_missing()
     if plan.rec["supervisor"] == "systemd" and _own_cgroup_inside(plan):
@@ -981,6 +1058,8 @@ def format_plan(plan: BackendPlan, *, dry_run: bool) -> list[str]:
         lines += [f"      {s}" for s in steps]
     if plan.rec:
         lines += _plan_body(plan)
+    if plan.takes_over:
+        lines += ["", "  The move also:", *[f"    • {t}" for t in plan.takes_over]]
     if plan.blockers:
         lines += ["", "  ✗ Blockers (nothing will be changed):", *[f"    • {b}" for b in plan.blockers]]
     if plan.notices:

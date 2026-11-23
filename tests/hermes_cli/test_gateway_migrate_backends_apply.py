@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 
 import pytest
 
@@ -148,7 +149,7 @@ class FakeHost(SystemHost):
 
     def gateway_state(self):
         return {"kind": "systemd", "unit": "hermes-gateway", **self.gw,
-                "running_pid": _GATEWAY_PID if self.gw["active"] else None}
+                "running_pid": _GATEWAY_PID if self.gw["active"] else self.stray_pid}
 
     def gateway_preflight(self):
         return None
@@ -158,10 +159,49 @@ class FakeHost(SystemHost):
     def foreign_gateway_home(self):
         return self.foreign_home
 
-    legacy_units = False  # a legacy hermes.service is installed
+    legacy_units = False  # a legacy hermes.service is installed (that no record describes)
+    legacy_records: list = []  # the legacy units the move may replace (SystemHost.legacy_unit_records)
+    legacy_env: list = []  # their Environment=/EnvironmentFile= lines
+    stray: dict = {}  # pid -> SystemHost.stray_gateway() of a gateway outside its service
 
     def legacy_gateway_units(self):
-        return self.legacy_units
+        return self.legacy_units or bool(self.legacy_records)
+
+    def legacy_unit_records(self):
+        return [dict(r) for r in self.legacy_records]
+
+    def legacy_environment_lines(self, unit):
+        return list(self.legacy_env)
+
+    def remove_legacy_units(self):
+        self._change("remove_legacy_units")
+        self.legacy_records = []
+
+    def gateway_env_dropin_path(self, name):
+        return str(self.home / "fake-units" / "hermes-gateway.service.d" / name)
+
+    def write_gateway_env_dropin(self, path, lines):
+        self._change("write_gateway_env_dropin")
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text("[Service]\n" + "\n".join(lines) + "\n")
+
+    def remove_gateway_env_dropin(self, path):
+        self._change("remove_gateway_env_dropin")
+        Path(path).unlink(missing_ok=True)
+
+    def restore_legacy_unit(self, rec):
+        self._change(f"restore_legacy_unit:{rec['unit']}")
+        self.legacy_records = [*self.legacy_records, {k: rec[k] for k in rec if k != "backup"}]
+
+    def stray_gateway(self, pid):
+        return {"pid": pid, "start_time": 1, "idle_exit": False, "chats": 0, "unit": None, **self.stray.get(pid, {})}
+
+    def stop_stray_gateway(self):
+        self._change("stop_stray_gateway")
+        pid, self.stray_pid = self.stray_pid, None
+        return pid
+
+    stray_pid: Optional[int] = None  # a gateway of this home running outside its service
 
     def install_gateway(self):
         self._change("install_gateway")

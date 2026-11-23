@@ -143,27 +143,50 @@ describe("BackendMigrationCard", () => {
     expect(moveButton()?.disabled).toBe(false);
   });
 
-  it("holds the move while a blocker stands and says what to do", async () => {
-    await render(planWith({
-      blockers: ["1 turn(s) are running on the old backend. Wait for them to finish, or re-run with --force-interrupt (they are interrupted)."],
-    }));
-    expect(moveButton()?.disabled).toBe(true);
-    expect(container.textContent).toContain("Wait for them to finish. Or move anyway");
+  it("lets a running chat not hold Move: the confirmation says it is cut off, and the move is sent forced", async () => {
+    const running = "1 turn(s) are running on the old backend. Wait for them to finish, or re-run with --force-interrupt (they are interrupted).";
+    const cut = "Cuts off the 1 reply(ies) being written on the old backend.";
+    await render(planWith({ blockers: [running], forceable_blockers: [running], takes_over: [cut] }));
+    expect(moveButton()?.disabled).toBe(false);
+    expect(container.querySelector('[data-slot="backend-migration-blocker"]')).toBeNull();
+    expect(container.querySelector('[data-slot="backend-migration-takes-over"]')?.textContent).toBe(cut);
     expect(container.textContent).not.toContain("--force-interrupt");
-    expect(button("Move anyway")).toBeDefined();
+    expect(button("Move anyway")).toBeUndefined();
+    const bodies: unknown[] = [];
+    server(async (init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return json(409, { error: "blocked", message: "x" });
+    }, [none]);
+    await act(async () => moveButton()!.click());
+    expect(document.body.textContent).toContain("Running chats are stopped, and messaging and the gateway are unavailable");
+    expect(document.body.textContent).toContain(cut);
+    await act(async () => button("Move now")!.click());
+    expect(bodies).toEqual([expect.objectContaining({ force_interrupt: true })]);
   });
 
-  it("shows unknown turn activity as the engine's blocker, and Move anyway with the engine's warning", async () => {
-    // The plan route's blocker for an unreadable turn-marker file: it names the file.
-    const marker = unknownActivityBlocker.split("checked: ")[1].split(". To move it")[0];
-    await render(planWith({ running_turns: null, blockers: [unknownActivityBlocker] }));
+  it("lets a gateway running outside its service not hold Move (the engine's text, without forceable_blockers)", async () => {
+    const stray = "A gateway for this home runs outside its service (pid 6041, started by a chat window; it ends by "
+      + "itself when idle). The move stops it and runs the gateway as a service in its place; re-run with "
+      + "--force-interrupt to allow that (or stop it first: hermes -p work gateway stop).";
+    await render(planWith({ blockers: [stray] }));
+    expect(moveButton()?.disabled).toBe(false);
+    expect(container.textContent).not.toContain("pid 6041");
+  });
+
+  it("keeps Move held by a blocker consent does not clear, next to one it does", async () => {
+    const running = "1 turn(s) are running on the old backend. Wait for them to finish, or re-run with --force-interrupt (they are interrupted).";
+    const other = "A legacy system-wide gateway unit is installed (/etc/systemd/system/hermes.service), and this command changes no system unit.";
+    await render(planWith({ blockers: [running, other], forceable_blockers: [running] }));
     expect(moveButton()?.disabled).toBe(true);
-    expect(container.textContent).toContain(`${marker}. To move it, confirm it is idle, then move anyway (any reply `
-      + "being written is cut off).");
+    expect(container.querySelector('[data-slot="backend-migration-blocker"]')?.textContent).toBe(`• ${other}`);
+  });
+
+  it("shows unknown turn activity in the confirmation, never as a blocker", async () => {
+    await render(planWith({ running_turns: null, blockers: [unknownActivityBlocker] }));
+    expect(moveButton()?.disabled).toBe(false);
     expect(container.textContent).not.toContain("--force-interrupt");
-    await act(async () => button("Move anyway")!.click());
-    expect(document.body.textContent).toContain(
-      "The old backend's turn activity could not be read: the move goes ahead and any turn running on it is interrupted.");
+    await act(async () => moveButton()!.click());
+    expect(document.body.textContent).toContain("Running chats are stopped");
   });
 
   it("shows what an incomplete rollback could not do, in the engine's words, next to the steps", async () => {
@@ -253,9 +276,9 @@ describe("BackendMigrationCard", () => {
       expect(container.textContent).toContain("1 turn(s) are running on it now: stopping it interrupts them");
     });
 
-    it("leaves a movable plan's Move anyway as it is", async () => {
+    it("leaves a movable plan's Move enabled past its running turns", async () => {
       await render(planWith({ blockers: asPlan(containerPlans.running.held).plan.blockers }));
-      expect(button("Move anyway")).toBeDefined();
+      expect(moveButton()?.disabled).toBe(false);
       expect(button("Show the steps anyway")).toBeUndefined();
     });
   });

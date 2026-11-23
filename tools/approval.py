@@ -1229,7 +1229,7 @@ def _run_approval_gate(
 
     Order: yolo bypass → session-cache short-circuit → interactive/gateway/unattended branch →
     prompt → persistence. Input-shape checks (hardline, allowlist, pattern detection) are the
-    caller's job.     ``fail_closed_when_no_human``: a non-interactive, non-gateway context with no
+    caller's job. ``fail_closed_when_no_human``: a non-interactive, non-gateway context with no
     unattended context and no ask bridge BLOCKS instead of auto-approving, so a
     plugin-flagged action never runs ungated. An active unattended context resolves
     first: any deny blocks, and an approve (including ``single_query_mode: approve``)

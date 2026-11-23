@@ -173,45 +173,6 @@ _SHELL_NAMES_RE = r'(?:bash|sh|zsh|ksh|dash)\b'
 _SUDO_PREFIX = r'(?:sudo\s+(?:-\S+\s+)*)?'
 
 
-_ASCII_WORD = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz'
-
-
-def _other_word_re(words: tuple, stems: tuple = (), fold_case: bool = True) -> str:
-    r"""One whole word (a ``\w+`` run) that is none of *words* and starts with none of *stems*, spelled without
-    lookaround: RE2 has no ``(?!...)``, so "no exempting word on the rest of the line" is written as "every word
-    is one of these". ASCII letters only. *fold_case*: the flags in force where the result is interpolated are
-    the table's IGNORECASE (a listed letter stands for both cases); False inside ``(?-i:...)``.
-
-    Two cases, so that the large Unicode word class is written twice instead of once per letter of every listed
-    word (RE2 copies it each time): a word holding a non-ASCII character (no listed word does; under IGNORECASE
-    ``ſ``, ``ı``, ``İ`` and the Kelvin sign count as their ASCII letters), or an all-ASCII word that leaves the
-    letter tree of the listed words."""
-    def tree(listed: tuple, prefix: str = ''):
-        """All-ASCII words that go on from *prefix* and are none of *listed*; None below a stem."""
-        if prefix in stems:
-            return None
-        letters = sorted({w[len(prefix)] for w in listed + stems if w.startswith(prefix) and len(w) > len(prefix)})
-        taken = {c for letter in letters for c in ((letter.lower(), letter.upper()) if fold_case else letter)}
-        longer = ['[' + ''.join(c for c in _ASCII_WORD if c not in taken) + rf'][{_ASCII_WORD}]*']
-        longer += [c + rest for c in letters if (rest := tree(listed, prefix + c)) is not None]
-        return '(?:' + '|'.join(longer) + ')' + ('' if prefix in listed or not prefix else '?')
-    # `tree(())`: an ASCII head that does not open with a stem, before the first non-ASCII character.
-    return rf'(?:{tree(())}?[^\W\x00-\x7f]\w*|{tree(words)})'
-
-
-# deception_hide's two exemptions as ONE positive lookahead on the rest of the line. It replaces
-# `(?!\s+to\s+["'“‘])(?!.*\b(?:unless|except|until|confirm|diagnos\w*|verify|check)\b)`: the rest of the line is
-# a run of words none of which exempts, and it does not open with ` to "`. `to` is left out of _DH_WORD and
-# listed beside it, so the one spot where it matters (first word, a quote after it) can be spelled apart.
-_DH_WORD = _other_word_re(("unless", "except", "until", "confirm", "verify", "check", "to"), ("diagnos",))
-_DH_END = r'(?:\n[\s\S]*)?\Z'            # the line ends here
-_DH_SEP = rf'(?:[^\w\n]+|{_DH_END})'    # what follows a whole word
-_DH_TO = rf'(?:to{_DH_SEP})*'
-_NOT_UX_GUIDANCE = (
-    rf'(?=(?:(?:\w+{_DH_SEP}|[^\S\n]*[^\w\s][^\w\n]*'
-    rf'|[^\S\n]+to(?:{_DH_END}|[^\w\s][^\w\n]*|[^\S\n]+(?:[^\w\s"\'\u201c\u2018][^\w\n]*)?)){_DH_TO}|[^\S\n]*)'
-    rf'(?:{_DH_WORD}{_DH_SEP}{_DH_TO})*{_DH_END})')
-
 # Known credential-file paths for the JavaScript and Python read-secrets patterns (a private key,
 # .env, credentials, .netrc, .pgpass, .npmrc, .pypirc; a public key is not a secret), as a literal
 # string argument naming one of those files. RE2 has no mid-pattern lookahead and no exact interior
@@ -226,44 +187,6 @@ _CRED_FILE_LITERAL = (r'["\'][^"\'\n]*(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)'
 _PY_CRED_FILE_ARG = r'(?:os\.path\.expanduser\s*\(\s*)?' + _CRED_FILE_LITERAL + r'\s*\)?'
 
 
-def _not_write_mode_re() -> str:
-    r"""py_read_secrets_file's write-mode exemption as the ONE trailing lookahead RE2 allows.
-
-    Formerly two negative lookaheads, ``(?!\s*\)?\s*,\s*["\'][^"\']*[wax][^"\']*["\'])`` and
-    ``(?![^\n]*\bmode\s*=\s*["\'][^"\']*[wax])``. The positive spelling reads the rest of the line as
-    quote-free pieces split at each quote character and passes when (a) the line does not go on with
-    ``, "<text holding w/a/x>"`` (after an optional ``)``), and (b) no piece that ends in ``mode =``
-    (whole word, spaces allowed) is followed by a piece holding w/a/x.
-    """
-    quote, sp = r'["\']', r'[^\S\n]*'
-
-    def char(but: str = '') -> str:
-        return r'[^"\'\n' + but + r']'
-
-    def plain(skip: str = '', second_arg: bool = True) -> str:
-        """A piece that does not end in ``mode =``; ``second_arg=False`` also rules out ``) ,``."""
-        run = char(skip) + r'*'
-        not_mode = (r'(?:' + run + char(r'\se' + skip) + r'|(?:' + run + char(r'd' + skip) + r')?e'
-                    r'|(?:' + run + char(r'o' + skip) + r')?de|(?:' + run + char(r'm' + skip) + r')?ode'
-                    r'|' + run + r'[^\W' + skip + r']mode)?')
-        ends = [run + char(r'\s=' + ('' if second_arg else ',') + skip), not_mode + sp + r'=']
-        if not second_arg:
-            ends.append(run + r'(?:' + char(r'\s)') + r'|\)' + run + r'\))' + run + r',')
-        return r'(?:' + r'|'.join(ends) + r')?' + sp
-
-    any_run, safe_run = char() + r'*', char(r'wax') + r'*'
-    kwarg = r'(?:' + any_run + char(r'\w') + r')?mode' + sp + r'=' + sp + quote
-    safe_kwargs = r'(?:(?:' + safe_run + char(r'\w') + r')?mode' + sp + r'=' + sp + quote + r')*'
-    second = sp + r'\)?' + sp + r',' + sp + quote
-    guarded = r'(?:' + second + r'|' + kwarg + r')' + safe_kwargs
-    head = r'(?:' + guarded + plain(r'wax') + quote + r'|' + plain(second_arg=False) + quote + r')'
-    more = r'(?:' + plain() + quote + r'|' + kwarg + safe_kwargs + plain(r'wax') + quote + r')*'
-    last = r'(?:' + any_run + r'|' + kwarg + safe_kwargs + safe_run + r')'
-    return (r'(?=(?:' + head + more + last + r'|' + any_run + r'|' + guarded + safe_run
-            + r'|' + second + any_run + r')(?:\n|\Z))')
-
-
-_NOT_WRITE_MODE = _not_write_mode_re()
 # Well-known PUBLIC Solana program ids (SPL Token, Token-2022, Associated Token Account, Memo,
 # System, Metaplex Token Metadata). On-chain code addresses every client hardcodes, so a
 # `TOKEN = '<id>'` constant names a program, it does not embed a credential. A CLOSED list, matched
@@ -344,8 +267,8 @@ THREAT_PATTERNS = [
     # exclude a write/append/exclusive mode — a literal 2nd-arg string containing w/a/x, or a
     # `mode=` kwarg with the same, tolerating the expanduser wrapper's own `)` — from the
     # `open(...)` branch; `Path(...).read_*()` has no mode argument, so needs no exclusion.
+    # The exclusion stood as two trailing lookaheads; RE2 has none, so _TrailingExclusionMatcher applies it.
     (r'\bopen\s*\(\s*' + _PY_CRED_FILE_ARG
-     + _NOT_WRITE_MODE
      + r'|\bPath\s*\(\s*' + _PY_CRED_FILE_ARG + r'\s*\)\.(?:read_text|read_bytes|readlines|readline)\s*\(',
      "py_read_secrets_file", "critical", "exfiltration", "Python reads a known credential file"),
     # ── Exfiltration: programmatic env access ──
@@ -407,7 +330,8 @@ THREAT_PATTERNS = [
     # Concealment only — the lookahead exempts UX guidance ("don't tell the user X unless Y confirms")
     # and a tone rule that QUOTES the phrase the agent should not say (`Do not tell the user to
     # "be careful with terminal."`); an unquoted `to ...` is still an instruction and fires.
-    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user' + _NOT_UX_GUIDANCE,
+    # The two exemptions stood as trailing lookaheads; RE2 has none, so _TrailingExclusionMatcher applies them.
+    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user',
      "deception_hide", "high", "injection", "instructs agent to hide information from user"),
     (r'system\s+(?:\w+\s+)*prompt\s+(?:\w+\s+)*override',
      "sys_prompt_override", "critical", "injection", "attempts to override the system prompt"),
@@ -531,10 +455,8 @@ THREAT_PATTERNS = [
     # node:sqlite / better-sqlite3), never code or a shell command line.
     # A method named ``exec`` on an object (``sandbox.exec("tar", ...)``, a Docker/sandbox SDK argv call)
     # is not the Python ``exec()`` builtin running a code string, so require no ``.``/word char before ``exec``.
-    (r'(?<![.\w])exec\s*\(\s*["\'](?=(?-i:' + _other_word_re((
-        'PRAGMA', 'BEGIN', 'COMMIT', 'ROLLBACK', 'CREATE', 'INSERT', 'SELECT', 'UPDATE', 'DELETE', 'DROP', 'ALTER',
-        'VACUUM', 'SAVEPOINT', 'RELEASE', 'ANALYZE', 'REINDEX', 'ATTACH', 'DETACH', 'REPLACE'),
-        fold_case=False) + r')?(?:\W|\Z))',
+    # The SQL exclusion stood as a trailing lookahead; RE2 has none, so _TrailingExclusionMatcher applies it.
+    (r'(?<![.\w])exec\s*\(\s*["\']',
      "exec_string", "high", "obfuscation", "exec() with string argument"),
     (rf'echo\s+[^\n]*\|\s*(?:{_SHELL_NAMES_RE}|python|perl|ruby|node)',
      "echo_pipe_exec", "critical", "obfuscation", "echo piped to interpreter for execution"),
@@ -804,11 +726,129 @@ class _LoopbackExemptMatcher:
         return next(self.finditer(text), None)
 
 
+_WORD_CHAR = re.compile(r'\w')
+_SPACE_CHAR = re.compile(r'\s')
+
+
+def _word_char_at(text: str, i: int) -> bool:
+    """Whether ``text[i]`` is a word character (False outside the text), as stdlib's ``\\b`` reads it."""
+    return 0 <= i < len(text) and _WORD_CHAR.match(text, i) is not None
+
+
+def _line_end(text: str, start: int) -> int:
+    end = text.find('\n', start)
+    return len(text) if end < 0 else end
+
+
+class _TrailingExclusionMatcher:
+    """Stands in for a compiled entry whose stdlib original ended in negative lookaheads (RE2 has none): the entry
+    is the original without them. From a start, the original tries the ends its quantifiers reach in backtracking
+    order and keeps the first that its lookaheads let through; ``ends(text, match)`` lists those ends in that
+    order and ``excluded(text, match, end)`` evaluates the lookaheads at one end. A start with no such end is no
+    match, and the search goes on one character later; a match resumes the search at its end, as in stdlib."""
+
+    def __init__(self, pattern: str, ends, excluded):
+        self._pattern = re.compile(pattern, re.IGNORECASE)
+        self._ends, self._excluded = ends, excluded
+
+    def finditer(self, text: str):
+        pos = 0
+        while (m := self._pattern.search(text, pos)) is not None:
+            hit = next((hit for end in self._ends(text, m) if not self._excluded(text, m, end)
+                        and (hit := self._pattern.fullmatch(text, m.start(), end)) is not None), None)
+            if hit is None:
+                pos = m.start() + 1
+            else:
+                yield hit
+                pos = hit.end()
+
+    def search(self, text: str):
+        return next(self.finditer(text), None)
+
+
+def _only_end(text: str, m) -> tuple:
+    return (m.end(),)
+
+
+# py_read_secrets_file: the stdlib original ended the `open(` branch in
+# `(?!\s*\)?\s*,\s*["\'][^"\']*[wax][^"\']*["\'])(?![^\n]*\bmode\s*=\s*["\'][^"\']*[wax])`, a write/append/exclusive
+# mode as the literal 2nd argument or as a `mode=` keyword later on the line.
+_WRITE_MODE_ARG = re.compile(r'\s*\)?\s*,\s*["\'][^"\']*[wax][^"\']*["\']', re.IGNORECASE)
+_MODE_WORD = re.compile(r'mode', re.IGNORECASE)
+_WRITE_MODE_KWARG = re.compile(r'mode\s*=\s*["\'][^"\']*[wax]', re.IGNORECASE)
+
+
+def _open_ends(text: str, m) -> tuple:
+    """The `open(` branch ends in `<literal>\\s*\\)?` (the literal's closing quote is the next quote): stdlib
+    tries the greedy end, then without the `)`, then one whitespace character shorter at a time."""
+    if m.group()[:1] in 'pP':
+        return (m.end(),)
+    ends, end = [m.end()], m.end()
+    if text[end - 1] == ')':
+        end -= 1
+        ends.append(end)
+    while _SPACE_CHAR.match(text, end - 1):
+        end -= 1
+        ends.append(end)
+    return tuple(ends)
+
+
+def _opens_for_write(text: str, m, end: int) -> bool:
+    if m.group()[:1] in 'pP':  # `Path(...).read_*()` has no mode argument and no exclusion
+        return False
+    if _WRITE_MODE_ARG.match(text, end):
+        return True
+    return any(not _word_char_at(text, mode.start() - 1) and _WRITE_MODE_KWARG.match(text, mode.start())
+               for mode in _MODE_WORD.finditer(text, end, _line_end(text, end)))
+
+
+# deception_hide: the stdlib original ended in `(?!\s+to\s+["\'“‘])` (a quoted phrase the agent should not say)
+# and `(?!.*\b(?:unless|except|until|confirm|diagnos\w*|verify|check)\b)` (UX guidance on the rest of the line).
+_QUOTED_PHRASE = re.compile('\\s+to\\s+["\'\u201c\u2018]', re.IGNORECASE)
+_UX_GUIDANCE_WORD = re.compile(r'unless|except|until|confirm|diagnos\w*|verify|check', re.IGNORECASE)
+_THE_USER = re.compile(r'the\s+user', re.IGNORECASE)
+
+
+def _the_user_ends(text: str, m) -> tuple:
+    """Every `the user` the entry can end on: its two `(?:\\w+\\s+)*` runs are greedy, so stdlib tries the last
+    one first; fullmatch in the matcher drops those its word run does not reach."""
+    return tuple(sorted((hit.end() for hit in _THE_USER.finditer(text, m.start(), m.end())), reverse=True))
+
+
+def _is_ux_guidance(text: str, m, end: int) -> bool:
+    if _QUOTED_PHRASE.match(text, end):
+        return True
+    # A guidance word cannot start inside another (each is all word characters), so non-overlapping hits suffice.
+    return any(not _word_char_at(text, word.start() - 1) and not _word_char_at(text, word.end())
+               for word in _UX_GUIDANCE_WORD.finditer(text, end, _line_end(text, end)))
+
+
+# exec_string: the stdlib original ended in `(?!(?-i:PRAGMA|...|REPLACE)\b)`: an upper-case SQL statement.
+_SQL_STATEMENTS = frozenset((
+    'PRAGMA', 'BEGIN', 'COMMIT', 'ROLLBACK', 'CREATE', 'INSERT', 'SELECT', 'UPDATE', 'DELETE', 'DROP', 'ALTER',
+    'VACUUM', 'SAVEPOINT', 'RELEASE', 'ANALYZE', 'REINDEX', 'ATTACH', 'DETACH', 'REPLACE'))
+_WORD_RUN = re.compile(r'\w*')
+
+
+def _is_sql_statement(text: str, m, end: int) -> bool:
+    """`(?-i:<word>)\\b` right after the quote: the word run there is exactly one of the statements."""
+    return _WORD_RUN.match(text, end).group() in _SQL_STATEMENTS
+
+
+_TRAILING_EXCLUSIONS = {
+    "py_read_secrets_file": (_open_ends, _opens_for_write),
+    "deception_hide": (_the_user_ends, _is_ux_guidance),
+    "exec_string": (_only_end, _is_sql_statement),
+}
+
+
 # pattern id -> matcher built from the entry's pattern text, for an entry that needs Python beside its regex.
 # A matcher offers `search` and `finditer` (all the scanners call on a rule) and yields real match objects.
 _CUSTOM_MATCHERS = {"hardcoded_secret": _HardcodedSecretMatcher, "context_exfil": _VetoGroupPattern,
                     **dict.fromkeys(("env_exfil_curl", "env_exfil_wget", "env_exfil_fetch", "env_exfil_httpx",
-                                     "env_exfil_requests"), _LoopbackExemptMatcher)}
+                                     "env_exfil_requests"), _LoopbackExemptMatcher),
+                    **{pid: (lambda pattern, rule=rule: _TrailingExclusionMatcher(pattern, *rule))
+                       for pid, rule in _TRAILING_EXCLUSIONS.items()}}
 _COMPILED_THREAT_PATTERNS = [
     (_CUSTOM_MATCHERS[pid](pattern) if pid in _CUSTOM_MATCHERS else re.compile(pattern, re.IGNORECASE), pid, *rest)
     for pattern, pid, *rest in THREAT_PATTERNS]

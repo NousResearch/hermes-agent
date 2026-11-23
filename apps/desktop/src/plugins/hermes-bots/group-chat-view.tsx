@@ -1534,7 +1534,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
         {Array.isArray(entry.images) && entry.images.length ? (
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
             {entry.images.map((img, imgIndex) =>
-              img.kind === 'pdf' || img.kind === 'file' ? (
+              img.kind === 'pdf' || img.kind === 'file' || !img.data ? (
                 <div
                   className="flex items-center gap-1 rounded-md border border-(--ui-stroke-secondary) px-1.5 py-1 text-[0.65rem] text-(--ui-text-tertiary)"
                   key={`${entryKey}:img:${imgIndex}`}

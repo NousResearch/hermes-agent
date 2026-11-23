@@ -17,11 +17,13 @@ import {
 } from '@/store/composer'
 import { type ComposerDraftRetry, draftRetry } from '@/store/composer-draft-retry'
 import { resetBrowseState } from '@/store/composer-input-history'
+import { journalOutgoingSend, type OutgoingSend } from '@/store/composer-outbox'
 import { enqueueQueuedPrompt, type QueuedPromptEntry, serverOwnsComposerQueue } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
 import { notify } from '@/store/notifications'
 import { isOnboardingChat } from '@/store/onboarding-session'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
+import { isReplyPaused, useReplyPaused } from '@/store/paused-replies'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
@@ -66,7 +68,8 @@ interface UseComposerSubmitArgs {
   onSteer: ChatBarProps['onSteer']
   onSteerHidden: ChatBarProps['onSteerHidden']
   onSubmit: ChatBarProps['onSubmit']
-  queueCurrentDraft: () => boolean | Promise<boolean>
+  /** `submissionId`: the restored send this draft retries, so the owner deduplicates it. */
+  queueCurrentDraft: (submissionId?: string) => boolean | Promise<boolean>
   queueEdit: QueueEditState | null
   queuedPrompts: QueuedPromptEntry[]
   sessionId: string | null | undefined
@@ -120,6 +123,7 @@ export function useComposerSubmit({
   const surfaceId = useComposerSurfaceId()
   const { t } = useI18n()
   const copy = t.desktop
+  const replyPaused = useReplyPaused(activeQueueSessionKey, sessionId)
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-stash the draft so the words survive. Repaint it
@@ -130,7 +134,8 @@ export function useComposerSubmit({
     text: string,
     attachments?: ComposerAttachment[],
     displayKind?: 'hidden',
-    target?: Parameters<ChatBarProps['onSubmit']>[1]
+    target?: Parameters<ChatBarProps['onSubmit']>[1],
+    onRejected?: (scope: string | null, submissionId: string) => void
   ) => {
     // A fresh chat's composer is keyed by its per-lifecycle fresh-draft key
     // (`__new__:<uuid>`), but the submit contract spells "no session yet" as
@@ -142,6 +147,8 @@ export function useComposerSubmit({
     let restoreScope = submittedScope
     const submittedAttachments = attachments ?? []
 
+    let outgoing: OutgoingSend | undefined
+
     // Only this operation's explicit session.create handoff may re-home a
     // pre-session submit. A null → stored render can also be user navigation.
     const assignment =
@@ -149,6 +156,7 @@ export function useComposerSubmit({
         ? {
             onComposerScopeAssigned: (scope: string) => {
               restoreScope = scope
+              outgoing?.move(scope)
             }
           }
         : {}
@@ -157,6 +165,12 @@ export function useComposerSubmit({
     // (the explicit retry), else a new one. Equal text never inherits an identity, so a new
     // message that repeats an uncertain send, in this pane or another, is its own turn.
     const submissionId = target?.submission_id ?? randomUuid()
+
+    // Journaled before the send chain's first await: closing or reloading the window inside that
+    // chain must not take the words with it (see composer-outbox).
+    outgoing = displayKind
+      ? undefined
+      : journalOutgoingSend(submittedScope, draftRetry(submissionId, text, submittedAttachments))
 
     const restore = () => {
       stashAt(restoreScope, text, submittedAttachments)
@@ -169,8 +183,12 @@ export function useComposerSubmit({
     }
 
     // A hidden submit is machine text (a setup note, never something the user
-    // typed), so a rejection drops it instead of loading it into the draft.
-    const rejected = displayKind ? () => {} : restore
+    // typed), so a rejection drops it instead of loading it into the draft. An
+    // external request brings its own (it never took the draft, so it must not
+    // overwrite it).
+    // The callback gets the scope the send ended up in (a new chat's session.create may have
+    // re-homed it) and this send's identity, so a re-queued request is the same message.
+    const rejected = onRejected ? () => onRejected(restoreScope, submissionId) : displayKind ? () => {} : restore
 
     // A synchronous throw takes the rejection path too: the caller has already cleared the
     // composer, so a send that fails while it is being prepared must not take the words with it.
@@ -196,6 +214,7 @@ export function useComposerSubmit({
         }
       })
       .catch(rejected)
+      .finally(() => outgoing?.retire())
   }
 
   // External "submit this prompt" requests (e.g. the review pane's agent-ship
@@ -223,18 +242,42 @@ export function useComposerSubmit({
           !inputDisabled
         ) {
           const current = externalSubmitRef.current
+          const queueKey = activeQueueSessionKeyRef.current
 
-          if (!current.busy) {
-            current.dispatchSubmit(text, undefined, displayKind)
+          // External requests contain only text; the unsent draft and its attachments stay in the composer.
+          const enqueue = (key: string | null = queueKey, id?: string) =>
+            void enqueueQueuedPrompt(key, {
+              text,
+              attachments: [],
+              ...(id ? { id } : {}),
+              ...(displayKind ? { displayKind } : {})
+            })
+
+          // The chat's reply is paused for its automatic continuation (store/paused-replies.ts), which may
+          // already be running as a turn of its own. Like a typed message the request waits in the chat's
+          // queue and goes once the continuation has completed: not ahead of it (a send) and not into it
+          // (a steer). The store is asked as the request arrives; the pause can be newer than the last render.
+          if (isReplyPaused(queueKey, sessionId)) {
+            enqueue()
 
             return
           }
 
-          const queueKey = activeQueueSessionKeyRef.current
+          if (!current.busy) {
+            // Explicitly no attachments: the send must not pick up the draft's files. A rejected
+            // visible request goes to the queue (sendable, editable), never over the user's draft:
+            // under its own submission id (a rejection can follow an uncertain delivery, and the
+            // owner dedupes by id) and in the scope the send landed in.
+            current.dispatchSubmit(
+              text,
+              [],
+              displayKind,
+              undefined,
+              displayKind ? () => {} : (scope, id) => enqueue(scope ?? queueKey, id)
+            )
 
-          // External requests contain only text; the unsent draft and its attachments stay in the composer.
-          const enqueue = () =>
-            void enqueueQueuedPrompt(queueKey, { text, attachments: [], ...(displayKind ? { displayKind } : {}) })
+            return
+          }
 
           // A hidden note never becomes a user turn: it rides session.steer into
           // the model's next tool result, and keeps its kind if it has to queue.
@@ -246,7 +289,7 @@ export function useComposerSubmit({
                     enqueue()
                   }
                 })
-                .catch(enqueue)
+                .catch(() => enqueue())
             } else {
               enqueue()
             }
@@ -266,7 +309,7 @@ export function useComposerSubmit({
                   enqueue()
                 }
               })
-              .catch(enqueue)
+              .catch(() => enqueue())
           } else {
             enqueue()
           }
@@ -283,6 +326,19 @@ export function useComposerSubmit({
     if (editorHadFocus || !isTouchInteraction()) {
       focusInput()
     }
+  }
+
+  // A restored send retried while the session is busy keeps its identity: it is admitted as the next
+  // turn under that submission id (never a steer, which carries none), so the owner deduplicates it
+  // against the interrupted original. A refused enqueue leaves the draft, and gives it back its id.
+  const queueRetry = (retry: ComposerDraftRetry) => {
+    const scope = draftScopeRef.current
+
+    void Promise.resolve(queueCurrentDraft(retry.id)).then(queued => {
+      if (!queued) {
+        rememberDraftRetry?.(scope, retry)
+      }
+    })
   }
 
   // Returns false when the submit was refused and must not refocus the input.
@@ -312,6 +368,14 @@ export function useComposerSubmit({
       triggerHaptic('submit')
       clearDraft()
       dispatchSubmit(text, undefined, undefined, retry && { submission_id: retry.id })
+
+      return true
+    }
+
+    const retry = payloadPresent ? takeDraftRetry?.(text, cloneAttachments(attachments)) : undefined
+
+    if (retry) {
+      queueRetry(retry)
     } else if (!blockingPrompt && !attachments.length && text.trim()) {
       // Busy Send follows the backend busy-input policy: interrupt redirects
       // the live turn (Cursor-style stop-and-correct), steer injects at the
@@ -420,8 +484,27 @@ export function useComposerSubmit({
     return true
   }
 
+  // The reply is paused for an automatic continuation (store/paused-replies.ts), which may already be
+  // running as a turn of its own: a message waits in the chat's queue and goes once the continuation has
+  // completed, never into it (a steer, or the gateway's interrupt for a plain send). Also while a restart
+  // has the backend away and the composer is otherwise disabled: Enter keeps the words.
+  const holdsForContinuation = (text: string, payloadPresent: boolean) =>
+    replyPaused && !queueEdit && payloadPresent && !isSlashCommandText(text)
+
+  const holdForContinuation = (text: string, editorHadFocus: boolean) => {
+    const retry = takeDraftRetry?.(text, cloneAttachments(attachments))
+
+    if (retry) {
+      queueRetry(retry)
+    } else {
+      queueCurrentDraft()
+    }
+
+    refocusAfterSend(editorHadFocus)
+  }
+
   const submitDraft = () => {
-    if (disabled) {
+    if (disabled && !replyPaused) {
       return
     }
 
@@ -456,10 +539,24 @@ export function useComposerSubmit({
       return
     }
 
+    const hold = holdsForContinuation(text, payloadPresent)
+
+    if (disabled && !hold) {
+      return
+    }
+
+    // A card parked on the session still takes typed text as its answer.
     const parked = answerParkedCardWithDraft(text, payloadPresent)
 
     if (parked === 'answered') {
       refocusAfterSend(editorHadFocus)
+
+      return
+    }
+
+    // Ahead of `busy`, which would route the message into the running continuation.
+    if (hold) {
+      holdForContinuation(text, editorHadFocus)
 
       return
     }
@@ -502,6 +599,14 @@ export function useComposerSubmit({
   // tool boundary. If the turn already ended, queue the words instead.
   const steerDraft = (mode: 'interrupt' | 'steer' = 'interrupt') => {
     const text = draftRef.current.trim()
+    // The Steer action on a restored send: queued under its id like a busy Enter (see queueRetry).
+    const retry = attachments.length ? undefined : takeDraftRetry?.(draftRef.current, [])
+
+    if (retry) {
+      queueRetry(retry)
+
+      return
+    }
 
     // Guard on live editor state, not the render-lagged `canSteer`: a redirect
     // fired on a fast Enter must not be dropped because state hasn't synced.
@@ -569,12 +674,20 @@ export function useComposerSubmit({
   }
 
   const queueDraft = () => {
-    if (disabled || !busy || refusedDuringSetup(draftRef.current)) {
+    // A paused reply's chat queues like a busy one (see submitDraft).
+    if ((disabled && !replyPaused) || !(busy || replyPaused) || refusedDuringSetup(draftRef.current)) {
       return
     }
 
     const editorHadFocus = editorHasFocus()
-    queueCurrentDraft()
+    const retry = takeDraftRetry?.(draftRef.current, cloneAttachments(attachments))
+
+    if (retry) {
+      queueRetry(retry)
+    } else {
+      queueCurrentDraft()
+    }
+
     refocusAfterSend(editorHadFocus)
   }
 

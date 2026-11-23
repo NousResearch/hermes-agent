@@ -64,7 +64,7 @@ def test_concurrent_processes_keep_every_install_and_tap(tmp_path):
 
     expected = sorted(f"{tag}-{i}" for tag in ("cli", "desktop") for i in range(_WRITES_PER_PROCESS))
     assert sorted(HubLockFile(hub / "lock.json").load()["installed"]) == expected
-    assert sorted(t["repo"] for t in TapsManager(hub / "taps.json").load()) == [f"o/{name}" for name in expected]
+    assert sorted(t["repo"] for t in TapsManager(hub / "taps.json").list_taps()) == [f"o/{name}" for name in expected]
 
 
 def test_reader_mid_save_sees_complete_hub_state(tmp_path):
@@ -77,11 +77,11 @@ def test_reader_mid_save_sees_complete_hub_state(tmp_path):
     seen = []
 
     with observe_file_writes(lambda: seen.append((sorted(HubLockFile(lock_path).load()["installed"]),
-                                                  [t["repo"] for t in TapsManager(taps_path).load()]))):
+                                                  [t["repo"] for t in TapsManager(taps_path).list_taps()]))):
         lock.record_uninstall("beta")
         taps.add("o/two")
 
     assert seen
     assert all(installed and repos for installed, repos in seen), seen
     assert sorted(lock.load()["installed"]) == ["alpha"]
-    assert [t["repo"] for t in taps.load()] == ["o/one", "o/two"]
+    assert [t["repo"] for t in taps.list_taps()] == ["o/one", "o/two"]

@@ -1,0 +1,62 @@
+# RainbowOMMA — one Mac, one human, many agents. Owner-submitted (hackathon entry).
+# 31 tools, a pre_tool_call guard, a browser provider (browser.cloud_provider: rainbowomma), /rainbow, a Desktop pane.
+name: rainbowomma
+repo: https://github.com/aviv27-dev/RainbowOMMA
+sha: "c1961dff1e6c661f46d090d00ed30c13c6074f92"
+subdir: hermes-plugin/rainbowomma
+title: RainbowOMMA
+description: "One Mac, one human, many agents. Each Hermes profile gets a Chrome of its own with a coloured, named window frame, its own ports, processes, clipboard and document leases in Word / Excel / Acrobat / Preview. A pre_tool_call guard refuses what would hit the human or another agent before it runs (pkill Chrome, quitting Word through AppleScript, a port or a process that isn't the agent's, the human's clipboard and Chrome profile, typing while the human types) and names the tool that does it safely; a Messages/Mail send goes to Hermes's approval gate. Idle tabs, expired document leases, apps an agent launched and orphaned servers are cleaned up at session end and on a timer. With browser.cloud_provider: rainbowomma, Hermes's own browser tools drive that Chrome. /rainbow shows who holds what; /rainbow pause stops every agent at once. Disclosure — macOS only. Starts Google Chrome for the agent (own profile folder, a DevTools port on 127.0.0.1, an unpacked theme extension) and runs osascript, ps, pgrep, lsof, ioreg, open and xcrun simctl with a minimal environment (no Hermes provider keys); stops only processes that are provably the agent's, its own idle Chrome, and an Office app an agent launched and left empty. Keeps one guard helper process per profile and a housekeeping timer thread while Hermes runs. Writes its state under ~/.rainbowomma (registry, leases, a receipts log, Chrome profiles, temp copies for Word conversions); conversion outputs go only into the source document's folder, and rainbow_save_document saves in place a document the agent itself opened. When one Hermes process serves several profiles it prefixes the agent's shell commands with `export RAINBOW_AGENT=…` (modify directive; setting mark_commands). Its only request goes to 127.0.0.1 (the agent's own Chrome). No updater, no credential access."
+maintainer: aviv27-dev
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/aviv27-dev/RainbowOMMA/blob/c1961dff1e6c661f46d090d00ed30c13c6074f92/hermes-plugin/rainbowomma/README.md
+image: https://raw.githubusercontent.com/aviv27-dev/RainbowOMMA/c1961dff1e6c661f46d090d00ed30c13c6074f92/hermes-plugin/assets/overview.jpg
+readme: true
+platforms: [macos]
+capabilities:
+  provides_tools:
+    - rainbow_start_browser
+    - rainbow_browser_status
+    - rainbow_recover_browser
+    - rainbow_open_url
+    - rainbow_job_start
+    - rainbow_job_end
+    - rainbow_keep_tabs
+    - rainbow_close_job_tabs
+    - rainbow_tidy_tabs
+    - rainbow_lease_port
+    - rainbow_release_port
+    - rainbow_who_port
+    - rainbow_whose_process
+    - rainbow_stop_process
+    - rainbow_my_processes
+    - rainbow_take_screen
+    - rainbow_release_screen
+    - rainbow_take_login
+    - rainbow_release_login
+    - rainbow_open_document
+    - rainbow_save_document
+    - rainbow_close_document
+    - rainbow_renew_document
+    - rainbow_convert_to_pdf
+    - rainbow_recalc_workbook
+    - rainbow_documents
+    - rainbow_clip_copy
+    - rainbow_clip_paste
+    - rainbow_sim_lease
+    - rainbow_sim_release
+    - rainbow_status
+  provides_hooks:
+    - pre_tool_call
+    - on_session_start
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "macOS only. On another system the plugin registers nothing but /rainbow, which says so."
+  - "The guard reads the command text: it closes the cheap ways to hurt a neighbour, it is not a sandbox."
+  - "The document tools need the one-time macOS Automation consent (osascript → System Events and each Office/PDF app); a background gateway is asked separately from a terminal session. Browser, port, process, screen and clipboard tools need none."
+  - "Word's sandbox asks for access once per folder; until the human answers, rainbow_convert_to_pdf reports blocked-by-dialog."
+  - "Extra document apps (setting extra_apps) are driven with AppleScript's standard document suite and need the one-time macOS Automation consent; only Word, Excel, Acrobat and Preview are exercised by the maintainer."

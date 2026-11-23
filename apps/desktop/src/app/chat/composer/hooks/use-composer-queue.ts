@@ -19,6 +19,7 @@ import {
   migrateQueuedPrompts,
   promoteQueuedPrompt,
   type QueuedPromptEntry,
+  queuedSubmissionId,
   removeQueuedPrompt,
   resolveQueuedPromptTransport,
   serverOwnsComposerQueue,
@@ -29,6 +30,7 @@ import {
 } from '@/store/composer-queue'
 import { activeGateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
+import { isReplyPaused, useReplyPaused } from '@/store/paused-replies'
 import { $sessionsLoading } from '@/store/session'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
@@ -151,6 +153,7 @@ export function useComposerQueue({
   const parkedSessions = useStore($parkedQueueSessions)
   const queueParked = Boolean(activeQueueSessionKey && parkedSessions[activeQueueSessionKey])
   const sessionsLoading = useStore($sessionsLoading)
+  const replyPaused = useReplyPaused(activeQueueSessionKey, sessionId)
 
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
   queueEditRef.current = queueEdit
@@ -401,7 +404,9 @@ export function useComposerQueue({
     return true
   }
 
-  const queueCurrentDraft = useCallback(() => {
+  // `submissionId` names the restored send this draft retries: the admission (or the local entry that
+  // drains under its id) keeps it, so the owner never runs the interrupted original a second time.
+  const queueCurrentDraft = useCallback((submissionId?: string) => {
     const text = draftRef.current
 
     if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
@@ -433,14 +438,20 @@ export function useComposerQueue({
     // Canonical (gateway-owned) sessions admit busy input straight into the
     // durable gateway FIFO; the row comes back as a server-owned queue entry.
     // `fromQueue` submits skip the transport freeze, so send the frozen text.
-    if (serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)) {
+    // Not while the reply is paused for its continuation (store/paused-replies.ts):
+    // admitted now, the send would be drawn in the thread as the next turn's
+    // prompt between the paused reply and its continuation, and would run ahead
+    // of a continuation not yet admitted. The local queue holds it until the
+    // continuation has completed.
+    if (!replyPaused && serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)) {
       return Promise.resolve(
         onSubmit(frozen.frozenTransport ?? frozen.text, {
           attachments: cloneAttachments(attachments),
           ...(frozen.displayText ? { displayText: frozen.displayText } : {}),
           fromQueue: true,
           sessionId: sessionId ?? null,
-          storedSessionId: activeQueueSessionKey
+          storedSessionId: activeQueueSessionKey,
+          ...(submissionId ? { submission_id: submissionId } : {})
         })
       )
         .then(accepted => {
@@ -460,6 +471,7 @@ export function useComposerQueue({
 
     if (
       !enqueueQueuedPrompt(activeQueueSessionKey, {
+        ...(submissionId ? { id: submissionId } : {}),
         text: frozen.text,
         attachments,
         ...(frozen.displayText ? { displayText: frozen.displayText } : {}),
@@ -476,7 +488,7 @@ export function useComposerQueue({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments, onSubmit, sessionId, t.composer])
+  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments, onSubmit, replyPaused, sessionId, t.composer])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited, from the
@@ -521,7 +533,7 @@ export function useComposerQueue({
               ...(resolved.displayText ? { displayText: resolved.displayText } : {}),
               ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
               fromQueue: true,
-              submission_id: entry.id,
+              submission_id: queuedSubmissionId(entry),
               sessionId: drainRuntimeSessionId,
               storedSessionId: drainQueueSessionKey
             })
@@ -559,7 +571,12 @@ export function useComposerQueue({
     [queueEditRef] // reads the edit id off a ref so the lock-holder always sees the latest
   )
 
-  const drainNextQueued = useCallback(async () => (await runDrain(pickDrainHead)) === true, [pickDrainHead, runDrain])
+  // A message held for a paused reply's continuation goes once that has completed (the auto-drain below),
+  // not on an empty Enter in between.
+  const drainNextQueued = useCallback(
+    async () => !replyPaused && (await runDrain(pickDrainHead)) === true,
+    [pickDrainHead, replyPaused, runDrain]
+  )
 
   const sendQueuedNow = useCallback(
     (id: string) => {
@@ -645,6 +662,20 @@ export function useComposerQueue({
     [activeQueueSessionKey, busy, onSteer, queueEditRef, t.composer]
   )
 
+  // A message held for a paused reply's continuation (store/paused-replies.ts) stays queued until that has
+  // completed. Whatever sends or steers one row gets these two: the queue panel's row buttons (the hook returns
+  // them as sendQueuedNow / steerQueuedNow) and a second Enter. They ask the store as they run: a pause can
+  // begin after the render that handed them out, or while a steer is still being answered.
+  const sendQueuedUnlessPaused = useCallback(
+    (id: string) => !isReplyPaused(activeQueueSessionKey, sessionId) && sendQueuedNow(id),
+    [activeQueueSessionKey, sendQueuedNow, sessionId]
+  )
+
+  const steerQueuedUnlessPaused = useCallback(
+    async (id: string) => !isReplyPaused(activeQueueSessionKey, sessionId) && steerQueuedNow(id),
+    [activeQueueSessionKey, sessionId, steerQueuedNow]
+  )
+
   // Double-Enter while busy. The entry usually sits in the queue because the
   // first Enter's steer didn't land, so retry that: the words join the live
   // turn as a bubble, with no interrupt and no settle wait. A payload a steer
@@ -659,7 +690,7 @@ export function useComposerQueue({
       const entry = activeQueueSessionKey ? getQueuedPrompts(activeQueueSessionKey).find(e => e.id === id) : undefined
 
       if (!busy || !entry || entry.displayKind || entry.displayText || !isSteerableEntry(entry)) {
-        return sendQueuedNow(id)
+        return sendQueuedUnlessPaused(id)
       }
 
       // A repeat Enter mid-steer must not interrupt the turn about to take it.
@@ -668,15 +699,17 @@ export function useComposerQueue({
       }
 
       steeringIdsRef.current.add(id)
-      const steered = await steerQueuedNow(id).finally(() => steeringIdsRef.current.delete(id))
+      const steered = await steerQueuedUnlessPaused(id).finally(() => steeringIdsRef.current.delete(id))
 
       // Settled while we asked: the idle auto-drain already owns the entry.
       return (
         steered ||
-        (busyRef.current && getQueuedPrompts(activeQueueSessionKey!).some(e => e.id === id) && sendQueuedNow(id))
+        (busyRef.current &&
+          getQueuedPrompts(activeQueueSessionKey!).some(e => e.id === id) &&
+          sendQueuedUnlessPaused(id))
       )
     },
-    [activeQueueSessionKey, busy, sendQueuedNow, steerQueuedNow]
+    [activeQueueSessionKey, busy, sendQueuedUnlessPaused, steerQueuedUnlessPaused]
   )
 
   // Edge-independent auto-drain: send the head whenever the session is idle and
@@ -768,10 +801,12 @@ export function useComposerQueue({
       return
     }
 
-    if (shouldAutoDrain({ isBusy: busy, parked: queueParked, queueLength: queuedPrompts.length })) {
+    // A reply paused for an automatic continuation (store/paused-replies.ts) holds the queue like a running turn:
+    // the queued send goes after the continuation, not into it.
+    if (shouldAutoDrain({ isBusy: busy || replyPaused, parked: queueParked, queueLength: queuedPrompts.length })) {
       return autoDrainNext()
     }
-  }, [autoDrainNext, busy, drainRetryTick, queueParked, queuedPrompts.length, sessionsLoading])
+  }, [autoDrainNext, busy, drainRetryTick, queueParked, queuedPrompts.length, replyPaused, sessionsLoading])
 
   // Queue-edit cleanup: on session swap the scope effect already stashed the
   // edit snapshot; only restore into the composer when still on the same scope.
@@ -816,8 +851,8 @@ export function useComposerQueue({
     queueEdit,
     queueParked,
     queuedPrompts,
-    sendQueuedNow,
-    steerQueuedNow,
+    sendQueuedNow: sendQueuedUnlessPaused,
+    steerQueuedNow: steerQueuedUnlessPaused,
     stepQueuedEdit
   }
 }

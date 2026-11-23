@@ -1,8 +1,8 @@
 """The browser-hosted Desktop on the gateway's own listener: config, bind address and browser credential.
 
 ``webapp.enabled`` in the gateway home's ``config.yaml`` turns it on; the gateway then binds its one HTTP
-listener to ``webapp.port`` on a loopback or wildcard ``webapp.host``, and native clients keep dialling a
-loopback address.
+listener to ``webapp.port`` on a loopback, wildcard or one specific ``webapp.host`` address, and native
+clients keep dialling a loopback address.
 """
 import asyncio
 import errno
@@ -43,7 +43,7 @@ def test_an_enabled_webapp_binds_its_configured_address(tmp_path):
     "webapp:\n  enabled: true\n  port: http\n",
     "webapp:\n  enabled: true\n  host: ''\n",
     "webapp:\n  enabled: 'true'\n",
-    "webapp:\n  enabled: true\n  host: 192.168.1.20\n",
+    "webapp:\n  enabled: true\n  host: 127.0.0.2\n",
     "webapp:\n  enabled: true\n  host: hermes.example.net\n",
 ])
 def test_a_malformed_webapp_block_keeps_the_listener_private(tmp_path, block):

@@ -305,7 +305,9 @@ export const zhHantChrome = {
       ultra: '超高',
       sendsOnRoute: (level: string) => `此路由實際傳送 ${level}`,
       updateFailed: '模型選項更新失敗',
-      fastFailed: '快速模式更新失敗'
+      fastFailed: '快速模式更新失敗',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Daybreak 更新失敗'
     },
     gatewayMenu: {
       gateway: '閘道',
@@ -400,6 +402,15 @@ export const zhHantChrome = {
           system_prompt: '系統提示詞',
           tool_definitions: '工具定義'
         },
+        compact: {
+          action: '壓縮對話',
+          busyHint: '請先完成或停止目前的回覆',
+          confirm: '壓縮',
+          hint: '摘要較早的上下文以騰出空間，繼續目前的對話。',
+          question: '將此對話壓縮為摘要？',
+          questionNamed: title => `將「${title}」壓縮為摘要？`,
+          working: '正在壓縮…'
+        },
         empty: '尚無上下文資料',
         loading: '正在載入明細…',
         percentFull: percent => `已用 ${percent}%`,
@@ -466,6 +477,14 @@ export const zhHantChrome = {
     terminalNew: '新增終端機',
     terminalCloseOthers: '關閉其他',
     terminalCloseAll: '全部關閉',
+    terminalNewOn: '新增終端機於…',
+    terminalGatewayRemoved: '已移除的閘道',
+    terminalGatewayRemovedBody:
+      '此終端機所在的閘道已被移除，無法重新開啟。請關閉此分頁。',
+    terminalGatewayNoShellBody:
+      '此閘道不提供 Shell 存取，此終端機無法重新開啟。請關閉此分頁。',
+    terminalDisconnectedBody:
+      '終端機已中斷連線。按 Enter 啟動新的 shell；捲動記錄會保留。',
     addToChat: '新增至聊天'
   },
 
@@ -511,7 +530,8 @@ export const zhHantChrome = {
     saveApply: '儲存並套用',
     notExpressible: '此排列互相咬合（風車形）——暫時無法表示為巢狀分割',
     zoneCount: count => `${count} 個區域`,
-    tabCount: count => `${count} 個分頁`
+    tabCount: count => `${count} 個分頁`,
+    tabActions: title => `${title} 的動作`
   },
 
   contextMenu: {

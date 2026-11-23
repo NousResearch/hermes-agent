@@ -149,7 +149,8 @@ def _save_disk(efforts_by_id: dict[str, list[str]]) -> None:
     if path is None:
         return
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(path.parent)  # a dead profile home: skipped, not recreated
         tmp = path.with_suffix(".tmp")  # write-then-rename keeps readers from seeing a torn file
         tmp.write_text(json.dumps({"ts": time.time(), "efforts": efforts_by_id}), encoding="utf-8")
         tmp.replace(path)

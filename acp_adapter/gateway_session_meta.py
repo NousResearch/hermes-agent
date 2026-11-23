@@ -9,10 +9,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import logging
 from pathlib import Path
-import sqlite3
 
 from acp.schema import (
-    AvailableCommand, AvailableCommandsUpdate, ModelInfo, SessionConfigOptionSelect, SessionConfigSelectOption,
+    AvailableCommand, AvailableCommandsUpdate, SessionConfigOptionSelect, SessionConfigSelectOption,
     SessionInfoUpdate, SessionMode, SessionModeState, SessionModelState, UnstructuredCommandInput, Usage, UsageUpdate,
 )
 
@@ -70,6 +69,8 @@ def session_modes(info: dict | None = None) -> SessionModeState:
 
 
 REASONING_CONFIG_ID = "reasoning_effort"
+SERVICE_TIER_CONFIG_ID = "service_tier"
+SERVICE_TIER_LABELS = {"normal": "Normal", "fast": "Fast", "auto": "Auto", "cold": "Cold", "ultrafast": "Ultrafast"}
 
 
 def reasoning_choices() -> tuple[str, ...]:
@@ -98,11 +99,35 @@ def config_options(models: SessionModelState | None, info: dict, mode_id: str) -
     return options
 
 
+async def session_config_options(client, session_id, models, info, mode_id):
+    """Project the owner's eligible speed choices alongside the existing ACP pickers."""
+    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_cli.models import model_supports_fast_mode
+    options = config_options(models, info, mode_id)
+    if not model_supports_fast_mode(info.get('model'), provider=info.get('provider'), base_url=info.get('base_url')):
+        return options
+    try:
+        speed = await client.rpc('config.get', session_id=session_id, key='service_tier')
+    except GatewayRPCError as exc:
+        if str(exc) != 'invalid_params':
+            raise
+        return options  # Older owners do not serve the speed-choice read.
+    choices = speed.get('options') or []
+    if choices:
+        current = speed['value']
+        rows = [SessionConfigSelectOption(value=value, name=SERVICE_TIER_LABELS[value]) for value in choices]
+        if current not in choices:
+            rows.append(SessionConfigSelectOption(value=current,
+                        name=f"{SERVICE_TIER_LABELS.get(current, current)} (unavailable on this route)"))
+        options.append(SessionConfigOptionSelect(id=SERVICE_TIER_CONFIG_ID, name='Service tier', category='other',
+                                                type='select', current_value=current, options=rows))
+    return options
+
+
 def model_state(info: dict) -> SessionModelState | None:
-    """The picker for the session's model (``session.info``), from the shared inventory; a single
-    current-model row when nothing is listable, as main's ``_build_model_state``. Blocking."""
+    """The picker for ``session.info`` from shared inventory, with a current-model fallback. Blocking."""
     from acp_adapter.auth import detect_provider
-    from acp_adapter.model_catalog import build_model_state, encode_model_choice
+    from acp_adapter.model_catalog import build_model_state, fallback_model_state
     model = str(info.get("model") or "").strip()
     provider = info.get("provider") or detect_provider() or "openrouter"
     try:
@@ -112,23 +137,23 @@ def model_state(info: dict) -> SessionModelState | None:
     except Exception:
         # Boundary: a broken inventory must not fail session/new; the current model still shows.
         logger.debug("Could not build ACP model state", exc_info=True)
-    if not model:
-        return None
-    choice = encode_model_choice(provider, model)
-    return SessionModelState(available_models=[ModelInfo(model_id=choice, name=model)], current_model_id=choice)
+    return fallback_model_state(model, provider)
 
 
-def provenance_meta(db_path: Path, acp_session_id: str, session_id: str) -> dict | None:
+def provenance_meta(home: Path, acp_session_id: str, session_id: str) -> dict | None:
     """``_meta.hermes.sessionProvenance`` for the editor's id, the logical session's current
-    compression tip and its lineage (``acp_adapter/provenance.py``). Blocking."""
+    compression tip and its lineage (``acp_adapter/provenance.py``), read from the store of the
+    profile in ``home``. Blocking."""
     from acp_adapter.provenance import session_provenance_meta
-    from hermes_state import SessionDB
-    if not Path(db_path).exists():
+    from persistence.core.errors import STORE_FAILURES
+    from persistence_assembly import open_persistence_reader, profile_scope, store_exists
+    scope = profile_scope(home=Path(home))
+    if not store_exists(scope):
         return None
     try:
-        with SessionDB(db_path=db_path, read_only=True) as db:
-            return session_provenance_meta(db, acp_session_id, db.get_compression_tip(session_id) or session_id)
-    except sqlite3.Error:
+        with open_persistence_reader(scope.profile_dir) as persistence:
+            return session_provenance_meta(persistence, acp_session_id, persistence.lineage.tip(session_id))
+    except STORE_FAILURES:
         # Best-effort, as main's ``_provenance_meta``: an unreadable store must not fail the attach.
         logger.debug("Could not build ACP session provenance for %s", session_id, exc_info=True)
         return None

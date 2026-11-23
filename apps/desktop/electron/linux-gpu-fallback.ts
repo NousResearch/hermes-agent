@@ -210,6 +210,24 @@ export function linuxGpuMarkerAfterSuccessfulBoot(options: {
   return linuxGpuFallbackMarker('gpu-launch-failure', options.appVersion)
 }
 
+/**
+ * A deliberate exit before the first window (a clean quit mid-boot, the runtime --no-sandbox
+ * restart) settles this launch's `booting` witness as `ok`. Left behind, the next launch reads
+ * it as a boot abort or a failed re-probe and engages software rendering. A sticky fallback
+ * keeps its marker.
+ */
+export function clearLinuxGpuBootMarker(userDataDir: string, fallbackSticky: boolean): void {
+  if (fallbackSticky) {
+    return
+  }
+
+  try {
+    writeLinuxGpuMarker(userDataDir, linuxGpuMarkerAfterSuccessfulBoot({ fallbackActive: false }))
+  } catch {
+    void 0
+  }
+}
+
 export interface LinuxGpuLaunchDecision {
   enable: boolean
   reason: string | null

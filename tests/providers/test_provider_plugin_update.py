@@ -138,7 +138,7 @@ def test_a_broken_update_keeps_the_previous_version_and_says_so(plugin):
 
 
 @pytest.mark.platforms("any")  # the profile extraction is a child process: its env/home resolution is per-OS
-def test_an_update_that_gets_a_hosted_profile_refused_says_the_update_is_in_use(plugin, monkeypatch):
+def test_an_update_that_gets_its_only_profile_refused_says_it_serves_no_profile(plugin, monkeypatch):
     """Under ``host`` a release whose profile starts building its own client is refused once it is swapped
     in: the old release's profile is gone too, so the hint must not say the previous version keeps serving."""
     from hermes_cli.plugins_activation import activation_hint, find_activation, plugin_activation_summary
@@ -162,7 +162,8 @@ def test_an_update_that_gets_a_hosted_profile_refused_says_the_update_is_in_use(
         hint = activation_hint({"gateway_reloaded": True, "activation": summary})
         assert get_provider_profile("demo-provider") is None  # what the running process serves now
         assert "previous version keeps serving" not in hint
-        assert hint.startswith("The updated provider plugin is in use without the profiles Hermes refused (")
+        assert "provider" not in summary["activated_now"] and summary["load_refused"] is True
+        assert hint.startswith("The updated provider plugin serves no profile: Hermes refused them (")
         assert "plugins.host.in_process_providers" in hint
     finally:
         host = getattr(manager, "_plugin_host_instance", None)
@@ -188,3 +189,58 @@ def test_a_failed_update_is_reported_as_failed_whatever_its_exception_is_called(
     assert activation_hint({"gateway_reloaded": True, "activation": summary}) == (
         "The updated provider plugin failed to load (provider profile unavailable: bad metadata); "
         "the previous version keeps serving.")
+
+
+def _summary_after_sweep(name: str = "demo-provider") -> tuple[dict, object]:
+    from hermes_cli.plugins_activation import find_activation, plugin_activation_summary
+
+    manager = _forced_sweep()
+    key = next(k for k in manager._plugins if k.endswith(name))
+    return find_activation([plugin_activation_summary(manager, key)], name), manager
+
+
+@pytest.mark.platforms("any")  # the profile extraction is a child process: its env/home resolution is per-OS
+def test_a_plugin_with_a_refused_profile_reports_its_hosted_sibling_as_active(plugin, monkeypatch):
+    from hermes_cli.plugins_activation import activation_hint
+    from tui_gateway.contracts.tools_mcp_plugins import PluginActivation
+    from providers import get_provider_profile
+
+    home = plugin.parent.parent
+    monkeypatch.setenv("HOME", str(home / "os-home"))
+    (home / "config.yaml").write_text("plugins:\n  isolation: host\n", encoding="utf-8")
+    _write(plugin, 1, extra=True)  # demo-provider builds its own client (refused); demo-extra is hosted
+    summary, manager = _summary_after_sweep()
+    try:
+        hosted = get_provider_profile("demo-extra")
+        assert hosted is not None and type(hosted).__module__ == "hermes_cli.plugin_host_profiles"
+        assert get_provider_profile("demo-provider") is None
+        assert summary["activated_now"] == {"provider": ["demo-provider"]}
+        assert "'demo-provider' (it overrides create_client()" in summary["load_error"]
+        assert summary["load_refused"] is True
+        PluginActivation.model_validate(summary)
+        hint = activation_hint({"gateway_reloaded": True, "activation": summary})
+        assert hint.startswith("The updated provider plugin is active; Hermes refused some of its profiles (")
+    finally:
+        host = getattr(manager, "_plugin_host_instance", None)
+        if host is not None:
+            host.shutdown()
+
+
+@pytest.mark.platforms("any")
+def test_a_hosted_plugin_with_no_refused_profile_reports_as_before(plugin, monkeypatch):
+    home = plugin.parent.parent
+    monkeypatch.setenv("HOME", str(home / "os-home"))
+    (home / "config.yaml").write_text("plugins:\n  isolation: host\n", encoding="utf-8")
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: demo-provider\nkind: model-provider\nversion: 1.0\n")
+    (plugin / "__init__.py").write_text(
+        "from providers import register_provider\nfrom providers.base import ProviderProfile\n"
+        "register_provider(ProviderProfile(name='demo-provider', base_url='https://demo.example/v1'))\n")
+    summary, manager = _summary_after_sweep()
+    try:
+        assert summary == {"name": "demo-provider", "key": "demo-provider",
+                           "activated_now": {"provider": ["demo-provider"]}, "deferred": {}}
+    finally:
+        host = getattr(manager, "_plugin_host_instance", None)
+        if host is not None:
+            host.shutdown()

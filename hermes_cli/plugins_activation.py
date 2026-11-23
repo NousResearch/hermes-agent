@@ -64,11 +64,12 @@ def plugin_activation_summary(manager: Any, plugin_key: str) -> dict[str, Any]:
     if getattr(manifest, "kind", None) == "model-provider":
         # providers/ discovery owns these and the forced sweep re-scans them: an updated tree serves new
         # sessions once it imported; a failed import leaves the previous version serving (#153300).
-        from providers import plugin_load_error, plugin_load_refused
+        from providers import plugin_load_error, plugin_load_refused, refusal_served_profiles
         plugin_dir = Path(getattr(manifest, "path", None) or name).name
         load_error = plugin_load_error(plugin_dir)
         load_refused = plugin_load_refused(plugin_dir)
-        if not load_error:
+        # A tree that loaded with some profiles refused still serves the ones it published.
+        if not load_error or refusal_served_profiles(plugin_dir):
             now["provider"] = [name]
     deferred: dict[str, list[str]] = {}
     tools = sorted(set(kinds.get("tool", ())) | set(getattr(loaded, "tools_registered", None) or ())
@@ -337,8 +338,11 @@ def activation_hint(result: dict[str, Any]) -> str:
         # Under plugins.isolation: host the updated tree loads with a profile refused: the update is live,
         # the refused profile gone.
         if act.get("load_refused"):
-            return "\n".join([*lines, f"The updated provider plugin is in use without the profiles Hermes "
-                                      f"refused ({error})."])
+            if (act.get("activated_now") or {}).get("provider"):
+                return "\n".join([*lines, f"The updated provider plugin is active; Hermes refused some of its "
+                                          f"profiles ({error})."])
+            return "\n".join([*lines, f"The updated provider plugin serves no profile: Hermes refused them "
+                                      f"({error})."])
         return "\n".join([*lines, f"The updated provider plugin failed to load ({error}); "
                                   "the previous version keeps serving."])
     if not result.get("gateway_reloaded"):

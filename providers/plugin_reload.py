@@ -206,8 +206,12 @@ def import_into_layer(plugin_dir: Path, source: str, base_name: str) -> None:
         P._REGISTRATION_TARGET.reset(token)
     if module_name in sys.modules or module_name in staging.hosted:
         _publish(layer, base_name, module_name, fingerprint, staging, replacing=live is not None)
-        # A hosted plugin can load with one of its profiles refused (plugins.isolation: host): that reason stays.
+        # A hosted plugin can load with one of its profiles refused (plugins.isolation: host): that reason stays,
+        # with the profiles this publish actually gave the layer.
         if refused := staging.errors.get(plugin_dir.name):
+            if isinstance(refused, P.ProfileRefusal):
+                refused = P.ProfileRefusal(refused, tuple(sorted(
+                    name for name in staging.registry if layer.owner.get(name) == base_name)))
             layer.errors[plugin_dir.name] = refused
         else:
             layer.errors.pop(plugin_dir.name, None)

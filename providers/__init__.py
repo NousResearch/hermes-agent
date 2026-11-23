@@ -784,7 +784,15 @@ def _note_load_result(plugin_dir: Path, exc: BaseException | None) -> None:
 class ProfileRefusal(str):
     """A plugin dir's recorded load error when ``plugins.isolation: host`` refused some of its profiles while
     its tree loaded, as opposed to an import that failed. The text is the refusal; the type is the kind of
-    load result, so readers never classify a record by its wording."""
+    load result, so readers never classify a record by its wording. ``served``: the profiles that tree
+    published in the home layer alongside the refusal (its hosted siblings)."""
+
+    served: tuple[str, ...] = ()
+
+    def __new__(cls, text: str, served: tuple[str, ...] = ()) -> ProfileRefusal:
+        record = super().__new__(cls, text)
+        record.served = served
+        return record
 
 
 def plugin_load_error(plugin: str) -> str:
@@ -796,6 +804,13 @@ def plugin_load_refused(plugin: str) -> bool:
     """Whether *plugin*'s recorded load error (:func:`plugin_load_error`) is a refusal of some of its
     profiles, its tree loaded (:class:`ProfileRefusal`), rather than a failed import."""
     return isinstance(_home_layer().errors.get(plugin), ProfileRefusal)
+
+
+def refusal_served_profiles(plugin: str) -> tuple[str, ...]:
+    """The profiles *plugin*'s live tree serves although its load error is a refusal
+    (:attr:`ProfileRefusal.served`); ``()`` when the record is not a refusal or the tree serves none."""
+    error = _home_layer().errors.get(plugin)
+    return error.served if isinstance(error, ProfileRefusal) else ()
 
 
 def _discover_entry_point_providers() -> None:

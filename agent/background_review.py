@@ -703,7 +703,7 @@ def _verbose_memory_lines(label: str, detail: dict) -> list[str]:
 # Tool-call argument fields surfaced in action summaries, with their defaults.
 _CALL_DETAIL_DEFAULTS = (
     ("action", "?"), ("target", "memory"), ("content", ""), ("old_text", ""), ("name", ""),
-    ("old_string", ""), ("new_string", ""),
+    ("old_string", ""), ("new_string", ""), ("file_path", ""),
 )
 
 
@@ -750,6 +750,37 @@ def _prior_tool_keys(prior_snapshot: list[dict]) -> tuple[set, set]:
     return ids, contents
 
 
+_SKILL_VERBS = {
+    "create": "created", "patch": "patched", "edit": "rewritten",
+    "write_file": "written", "remove_file": "removed", "delete": "deleted",
+}
+
+
+def _skill_result_line(op: dict, *, archived: bool = False) -> str:
+    action = op.get("action")
+    verb = _SKILL_VERBS.get(action) if isinstance(action, str) else None
+    if not verb or not op.get("name"):
+        return ""
+    if archived and action == "delete":
+        verb = "removed"  # A curator archive removes the active skill but can be restored.
+    path = f" ({op['file_path']})" if op.get("file_path") else ""
+    return t("display.review.skill_result", name=op["name"], verb=t(f"display.review.skill_verb.{verb}"), path=path)
+
+
+def _batch_skill_lines(data: dict) -> list[str]:
+    # Requested operations can still be pending approval or have been rolled back.
+    results = data.get("results")
+    if not data.get("operations_applied") or not isinstance(results, list):
+        return []
+    lines = []
+    for result in results:
+        if not isinstance(result, dict) or result.get("success") is not True:
+            continue
+        if line := _skill_result_line(result):
+            lines.append(line)
+    return lines
+
+
 def _action_lines(data: dict, detail: dict, verbose: bool) -> list[str]:
     """Summary line(s) for one successful notify-tool result (``[]`` when nothing to report)."""
     if data.get("staged"):
@@ -760,23 +791,9 @@ def _action_lines(data: dict, detail: dict, verbose: bool) -> list[str]:
     target = data.get("target", "") or detail.get("target", "")
     is_skill = detail.get("tool") == "skill_manage"
     if is_skill and "results" in data:
-        # The requested operations are not evidence of applied writes (approval
-        # and atomic rollback can leave all of them unapplied).
-        verbs = {"create": "created", "patch": "patched", "edit": "rewritten",
-                 "write_file": "written", "remove_file": "removed", "delete": "deleted"}
-        results = data.get("results")
-        if not data.get("operations_applied") or not isinstance(results, list):
-            return []
-        lines = []
-        for result in results:
-            if not isinstance(result, dict) or result.get("success") is not True:
-                continue
-            verb_key = verbs.get(result.get("action"))
-            if verb_key and result.get("name"):
-                path = f" ({result['file_path']})" if result.get("file_path") else ""
-                lines.append(t("display.review.skill_result", name=result["name"],
-                               verb=t(f"display.review.skill_verb.{verb_key}"), path=path))
-        return lines
+        return _batch_skill_lines(data)
+    if is_skill and not verbose and (line := _skill_result_line(detail, archived=data.get("_archived", False))):
+        return [line]
     lower = message.lower()
     if not verbose and ("created" in lower or "updated" in lower or
                         (is_skill and any(word in lower for word in ("patched", "deleted", "written")))):

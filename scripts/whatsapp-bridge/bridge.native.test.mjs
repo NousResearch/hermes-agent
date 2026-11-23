@@ -626,4 +626,38 @@ import {
   console.log('  ✓ nested envelopes: quote text resolves through both layers');
 }
 
+{
+  // A reaction carries only the target's id: resolve the target's text from
+  // the message store so the agent knows which message was reacted to.
+  const messageStore = createBoundedMessageStore(8);
+  messageStore.remember({
+    key: { id: 'outbound-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: true },
+    message: { extendedTextMessage: { text: 'Deploy finished.' } },
+  });
+  const reactTo = (id) => extractBridgeEvent({
+    msg: {
+      key: { id: `reaction-${id}`, remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+      messageTimestamp: 123,
+      message: { reactionMessage: { text: '👍', key: { id, remoteJid: '15551234567@s.whatsapp.net', fromMe: true } } },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15550001111@s.whatsapp.net',
+    senderNumber: '15550001111',
+    downloadMedia: async () => Buffer.from(''),
+    messageStore,
+  });
+
+  const known = await reactTo('outbound-1');
+  assert.equal(known.body, '[Reaction: 👍 to outbound-1]');
+  assert.equal(known.quotedMessageId, 'outbound-1');
+  assert.equal(known.quotedText, 'Deploy finished.');
+  assert.equal(known.hasQuotedMessage, true);
+
+  const unknown = await reactTo('evicted-1');
+  assert.equal(unknown.quotedMessageId, null);
+  assert.equal(unknown.quotedText, '');
+  assert.equal(unknown.hasQuotedMessage, false);
+  console.log('  ✓ reaction: quoted text resolves from the message store');
+}
+
 console.log('\n✅ All WhatsApp native bridge helper tests passed.');

@@ -375,14 +375,15 @@ export async function extractBridgeEvent({
   writeMediaFile,
   cacheDirs = {},
   lookupQuotedMedia,
+  messageStore,
 }) {
   const messageContent = getMessageContent(msg);
   const contextInfo = getContextInfo(messageContent);
   const mentionedIds = Array.from(new Set((contextInfo?.mentionedJid || []).map(normalizeWhatsAppId).filter(Boolean)));
-  const quotedMessageId = contextInfo?.stanzaId || null;
+  let quotedMessageId = contextInfo?.stanzaId || null;
   const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || '') || null;
   const quotedRemoteJid = normalizeWhatsAppId(contextInfo?.remoteJid || '') || null;
-  const hasQuotedMessage = !!contextInfo?.quotedMessage;
+  let hasQuotedMessage = !!contextInfo?.quotedMessage;
   let quotedText = textFromQuotedMessage(contextInfo?.quotedMessage);
   let quotedMediaUrls = [];
   let quotedMediaType = '';
@@ -534,6 +535,15 @@ export async function extractBridgeEvent({
       remoteJid: normalizeWhatsAppId(messageContent.reactionMessage.key?.remoteJid || ''),
       participant: normalizeWhatsAppId(messageContent.reactionMessage.key?.participant || ''),
     };
+    // A reaction carries only the target's id. Resolve the target's text from
+    // recently seen or sent messages so the agent knows what was reacted to.
+    const targetId = nativeMetadata.reaction.messageId;
+    const targetText = textFromQuotedMessage(messageStore?.get(targetId)?.message);
+    if (targetText) {
+      quotedMessageId = targetId;
+      quotedText = targetText;
+      hasQuotedMessage = true;
+    }
   } else if (messageContent.pollCreationMessage || messageContent.pollCreationMessageV2 || messageContent.pollCreationMessageV3) {
     const item = messageContent.pollCreationMessage || messageContent.pollCreationMessageV2 || messageContent.pollCreationMessageV3;
     mediaType = 'poll';

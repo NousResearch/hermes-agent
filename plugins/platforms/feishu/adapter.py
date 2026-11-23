@@ -149,6 +149,15 @@ _FEISHU_DOC_UPLOAD_TYPES = {
 _MAX_TEXT_INJECT_BYTES = 100 * 1024
 _FEISHU_CONNECT_ATTEMPTS = 3
 _FEISHU_SEND_ATTEMPTS = 3
+# Feishu error codes meaning the tenant access token the SDK presented was rejected.
+# The lark-oapi token cache is a process-global singleton (TokenManager.cache), so a
+# stale entry poisons every client instance; codes per the Feishu error catalog.
+_FEISHU_TOKEN_ERROR_CODES = frozenset({
+    99991400,  # tenant/user access token expired
+    99991663,  # permission denied (scope lost along with the token)
+    99991664,  # access token invalid
+    99991679,  # tenant access token does not match the app
+})
 _FEISHU_APP_LOCK_SCOPE = "feishu-app-id"
 _DEFAULT_TEXT_BATCH_DELAY_SECONDS = 0.6
 _DEFAULT_TEXT_BATCH_MAX_MESSAGES = 8
@@ -1478,8 +1487,61 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         profile HERMES_HOME override / secret scope (multiplexed dedup flush, thread lookup).
         """
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
+        response = await loop.run_in_executor(
             self._get_sdk_executor(), contextvars.copy_context().run, func, *args)
+        if self._is_token_error(response):
+            # One retry after explicit token-cache invalidation. The lark-oapi token
+            # cache is a process-global singleton (TokenManager.cache) that no client
+            # rebuild can clear: every request re-reads it via verify() →
+            # TokenManager.get_self_tenant_token(), so a stale entry fails *every*
+            # call with a failed response (not an exception) until evicted. Retrying
+            # here — the single choke point for every SDK operation — recovers
+            # send/edit/delete/upload alike without re-running already-accepted
+            # operations (e.g. earlier chunks in a multi-chunk send). See PR #28608.
+            logger.warning(
+                "[Feishu] Token/auth error (code %s); evicting SDK token cache entry and retrying once",
+                getattr(response, "code", "unknown"),
+            )
+            self._invalidate_token_cache()
+            response = await loop.run_in_executor(
+                self._get_sdk_executor(), contextvars.copy_context().run, func, *args)
+        return response
+
+    @staticmethod
+    def _is_token_error(response: Any) -> bool:
+        """Is this a failed SDK response whose code says the tenant token was rejected?"""
+        if response is None or getattr(response, "success", None) is None:
+            return False
+        try:
+            if response.success():
+                return False
+        except Exception:
+            return False
+        code = getattr(response, "code", None)
+        try:
+            return int(code) in _FEISHU_TOKEN_ERROR_CODES
+        except (TypeError, ValueError):
+            return False
+
+    def _invalidate_token_cache(self) -> None:
+        """Drop the SDK's cached tenant tokens for this app (process-global LocalCache).
+
+        ``lark_oapi.core.token.TokenManager.cache`` is a class-level singleton shared by
+        every client instance; a stale ``self_tenant_token:<app_id>`` entry survives
+        client rebuilds and even gateway reconnects. The ICache interface has no delete,
+        so evict by overwriting with an immediately-expiring empty value.
+        """
+        try:
+            from lark_oapi.core.token import TokenManager
+            cache = TokenManager.cache
+            for key in (
+                f"self_tenant_token:{self._app_id}",
+                f"self_app_token:{self._app_id}",
+            ):
+                cache.set(key, "", int(time.time() - 1))
+        except Exception:
+            logger.debug("[Feishu] Failed to invalidate SDK token cache", exc_info=True)
+
 
     def _shutdown_sdk_executor(self) -> None:
         """Stop the adapter-owned SDK executor without touching the loop default."""

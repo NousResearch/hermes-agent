@@ -46,6 +46,45 @@ def test_start_gateway_exits_78_before_reading_config(root, monkeypatch, capsys,
     assert "HERMES_EXEC_ASK" not in os.environ
 
 
+def test_marked_siblings_keep_the_gateway_off_an_external_cron_registry(root, monkeypatch):
+    """An external provider reconciles one unscoped registry toward this home's jobs; a marked profile's
+    backend elsewhere may arm its jobs there, so the gateway keeps the built-in ticker as for any host
+    with more than one profile."""
+    import threading
+    import types
+    from cron import scheduler_provider as sp
+    from cron import scheduler_thread
+    from gateway import run as gateway_run
+
+    class _Ticker:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return False
+
+    external = types.SimpleNamespace(name="external", start=lambda *_a, **_k: None)
+    monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: external)
+    monkeypatch.setattr(scheduler_thread, "SupervisedTickerThread", _Ticker)
+    monkeypatch.setattr(gateway_run, "_start_gateway_housekeeping", lambda *_a, **_k: None)
+    runner = types.SimpleNamespace(config=types.SimpleNamespace(multiplex_profiles=True), adapters={},
+                                   _profile_adapters=None, _primary_profile_name="default",
+                                   _draining=False, _external_drain_active=False)
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin", root=root)
+
+    async def _start():
+        return gateway_run._start_gateway_start_cron_and_housekeeping(runner)
+
+    cron_stop, provider, _thread, housekeeping = asyncio.run(_start())
+    cron_stop.set()
+    if isinstance(housekeeping, threading.Thread):
+        housekeeping.join(timeout=5)
+    assert isinstance(provider, sp.InProcessCronScheduler)
+
+
 def test_an_unmarked_profile_passes_the_refusal(root):
     from gateway import run_bootstrap
 

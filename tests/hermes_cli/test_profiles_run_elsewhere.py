@@ -279,6 +279,27 @@ def test_desktop_cron_ticker_never_ticks_a_marked_profile(root, monkeypatch):
     assert gate("ops", root / "profiles" / "ops") is False
 
 
+def test_an_external_cron_reconcile_still_counts_the_marked_profiles(root, monkeypatch):
+    """The external registry is not profile-scoped: reconciling it toward one profile's jobs would
+    cancel the armed one-shots of the profiles the plugins run elsewhere."""
+    from cron import scheduler_provider as sp
+    from hermes_cli import web_server_cron
+
+    reconciled = []
+
+    class _External:
+        name = "external"
+
+        def on_jobs_changed(self):
+            reconciled.append(True)
+
+    monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: _External())
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin")
+    pre.mark_profile_run_elsewhere("dev", "sandbox-plugin")
+    web_server_cron._notify_cron_provider_for_profile("default")
+    assert reconciled == []
+
+
 # ── profile listing inside a backend denied the profiles folder ────────────────────────────────
 
 

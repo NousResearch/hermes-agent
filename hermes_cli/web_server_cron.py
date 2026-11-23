@@ -142,7 +142,7 @@ def _validate_dashboard_cron_context_from(refs: Optional[list[str]], profile_nam
                 detail=f"context_from job '{ref}' not found in profile '{profile_name}'")
 
 
-def _cron_profile_dicts() -> list[dict[str, Any]]:
+def _cron_profile_dicts(*, include_run_elsewhere: bool = False) -> list[dict[str, Any]]:
     """Minimal profile records (callers only consume ``name``); avoids ``list_profiles()``,
     whose config parsing, gateway probes and skill counts are GIL pressure on large pools."""
     from hermes_cli.web_server_profiles import _fallback_profile_dicts
@@ -150,7 +150,8 @@ def _cron_profile_dicts() -> list[dict[str, Any]]:
     try:
         return [
             {"name": name, "path": str(home), "is_default": name == "default"}
-            for name, home in profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True)]
+            for name, home in profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True,
+                                                             include_run_elsewhere=include_run_elsewhere)]
     except Exception:
         _log.exception("Failed to list profiles for cron dashboard; falling back to directory scan")
         return _fallback_profile_dicts(profiles_mod)
@@ -258,7 +259,8 @@ def _notify_cron_provider_for_profile(target_profile: Optional[str]) -> None:
         with _cron_store_scope(home):
             provider = resolve_cron_scheduler()
             external = not isinstance(provider, InProcessCronScheduler)
-            if external and sum(1 for p in _cron_profile_dicts() if p.get("name")) > 1:
+            # Every installed profile counts: a marked one's jobs can sit in the same remote registry.
+            if external and sum(1 for p in _cron_profile_dicts(include_run_elsewhere=True) if p.get("name")) > 1:
                 _log.warning(
                     "Skipping cron provider reconcile for profile %s: "
                     "external provider '%s' reconcile is not "

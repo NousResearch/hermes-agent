@@ -201,7 +201,7 @@ def test_notify_cron_provider_scopes_store_and_runtime_home_together(
     monkeypatch.setattr(
         _web_server_cron,
         "_cron_profile_dicts",
-        lambda: [{"name": "worker_alpha"}],
+        lambda **_: [{"name": "worker_alpha"}],
     )
     captured = {}
 
@@ -274,7 +274,7 @@ def test_external_provider_reconcile_fails_closed_with_multiple_profiles(
     monkeypatch.setattr(
         _web_server_cron,
         "_cron_profile_dicts",
-        lambda: [{"name": "default"}, {"name": "worker_alpha"}],
+        lambda **_: [{"name": "default"}, {"name": "worker_alpha"}],
     )
     notified = []
 
@@ -322,7 +322,7 @@ def test_builtin_provider_hook_still_fires_with_multiple_profiles(
     monkeypatch.setattr(
         _web_server_cron,
         "_cron_profile_dicts",
-        lambda: [{"name": "default"}, {"name": "worker_alpha"}],
+        lambda **_: [{"name": "default"}, {"name": "worker_alpha"}],
     )
     notified = []
 

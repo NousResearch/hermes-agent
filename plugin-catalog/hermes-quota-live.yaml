@@ -1,0 +1,33 @@
+# DRAFT — no enviado. Revisar antes de abrir el PR a hermes-agent.
+# El sha fija el commit publicado; cualquier cambio de código requiere un SHA nuevo.
+name: hermes-quota-live
+repo: https://github.com/fgvilches/hermes-quota-live
+sha: "ccda7f7bfcd81d35a333882b841ea343c7e9f0e2"
+subdir: ""
+title: "Hermes Quota Live"
+description: "Real provider quota (OpenCode Go, OpenRouter, Copilot) inside the Hermes desktop app."
+maintainer: "Felipe González"
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+docs_url: ""
+image: ""
+screenshots:
+  - https://raw.githubusercontent.com/fgvilches/hermes-quota-live/ccda7f7bfcd81d35a333882b841ea343c7e9f0e2/docs/screenshots/panel-cuota.png
+  - https://raw.githubusercontent.com/fgvilches/hermes-quota-live/ccda7f7bfcd81d35a333882b841ea343c7e9f0e2/docs/screenshots/vista-usado.png
+readme: true
+platforms: []
+onboarding: false
+default: false
+known_issues:
+  - "The panel UI is Spanish; an English i18n bundle is planned."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - GITHUB_TOKEN
+    - GLM_API_KEY
+    - OPENCODE_GO_API_KEY
+    - OPENROUTER_API_KEY

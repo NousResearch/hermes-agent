@@ -23,6 +23,7 @@ _ASCII = {"d": ((48, 57),), "w": ((48, 57), (65, 90), (95, 95), (97, 122)), "s":
 SHORTHANDS = frozenset("dDwWsS")
 _CONTROL = {"n": 10, "t": 9, "r": 13, "f": 12, "v": 11, "a": 7, "b": 8}
 _OCTAL = frozenset("01234567")
+_HEXDIGITS = frozenset("0123456789abcdefABCDEF")
 _unicode = None
 
 
@@ -92,7 +93,10 @@ def _escape(body: str, i: int, latin1: bool = False):
     if latin1 and ch in "uUN":  # as stdlib: a bytes pattern has no \u, \U or \N escape
         raise Unsupported(f"bad escape \\{ch}")
     if width:
-        code = int(body[i + 2:i + 2 + width], 16)
+        digits = body[i + 2:i + 2 + width]
+        if len(digits) != width or not _HEXDIGITS.issuperset(digits):  # int() would take a sign or "_"
+            raise Unsupported(f"incomplete escape \\{ch}{digits}")
+        code = int(digits, 16)
         if code > _r.MAX:  # as stdlib: refused, not left for RE2 to refuse at the first match
             raise Unsupported(f"bad escape \\{ch}{body[i + 2:i + 2 + width]}")
         return code, None, i + 2 + width

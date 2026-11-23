@@ -66,3 +66,13 @@ def test_a_guard_stdlib_refuses_is_refused(guard):
             if refused and outcome(lambda: hre.compile(source, flags)) != "raises error":
                 accepted.append((source, int(flags)))
     assert accepted == []
+
+
+def test_a_class_hex_escape_takes_exactly_its_width_of_hex_digits():
+    # int(..., 16) would also take a sign, "_" or spaces; stdlib refuses all of them
+    for pattern in (r"[\u+041]", r"[\u0_41]", r"[\x+4]", r"[\x 4]", r"[\U0000_041]", r"(?<![\u0_41])b"):
+        with pytest.raises(std.error):
+            std.compile(pattern)
+        with pytest.raises(hre.error):
+            hre.compile(pattern)
+    assert hre.compile(r"[\u0041\x42]").findall("AB") == ["A", "B"]

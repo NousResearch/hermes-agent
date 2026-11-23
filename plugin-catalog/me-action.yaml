@@ -1,0 +1,16 @@
+name: me-action
+title: Me Action
+repo: https://github.com/claudieclaw/hermes-me-action
+sha: bcc93a8e4997ba39fabfbddc0b0c80e246d58923
+version: "0.1.0"
+description: "Interpret a leading /me in Hermes messaging chats as an action by the original sender. The plugin rewrites matching inbound text before slash dispatch and adds a system-prompt convention for busy steers."
+maintainer: claudieclaw
+tier: community
+category: platform
+requires_hermes: ">=0.23.3"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_gateway_dispatch]
+  provides_middleware: []
+  requires_env: []

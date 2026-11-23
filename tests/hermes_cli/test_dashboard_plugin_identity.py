@@ -328,6 +328,22 @@ def test_a_dashboard_name_of_a_bundled_platform_or_backend_plugin_is_not_registe
     assert "not shown" in message
 
 
+def test_a_dashboard_name_that_is_a_portable_plugins_name_is_not_registered(dash):
+    """A flat portable plugin is keyed and turned on by its ``plugin.json`` name, so that name is its own
+    even when its folder is named otherwise: another plugin's dashboard by that name is not registered."""
+    from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
+
+    portable = dash.home / "plugins" / "porty-dir"
+    portable.mkdir(parents=True)
+    (portable / "plugin.json").write_text(json.dumps({"$schema": PLUGIN_SCHEMA_V1, "name": "porty", "version": "1.0.0"}))
+    imported = _install(dash.home, "tab-dir", "porty", yaml_name="tab-dir")
+    _plugins(dash.home, enabled=["porty"])
+    dash.start()
+
+    assert not imported.exists()
+    assert "porty" not in dash.listed()
+
+
 def test_plugin_enabled_by_its_directory_key_mounts_and_lists(dash):
     """``hermes plugins enable hermes-mobile`` turns on a plugin whose dashboard calls itself ``mobile``."""
     imported = _install(dash.home, "hermes-mobile", "mobile", yaml_name="hermes-mobile")

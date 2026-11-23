@@ -676,12 +676,25 @@ class _PluginNameOwners:
             self._owners = {}
             for root, root_source in self._roots:
                 for directory, key in _installed_plugin_dirs(root):
-                    for spelling in plugin_spellings(directory, key):
+                    for spelling in plugin_spellings(directory, key) | _portable_plugin_name(directory, key):
                         self._owners.setdefault(spelling, []).append((directory, key, root_source))
         entries = self._owners.get(name, [])
         same = {d for d, key, owner_source in entries if d == plugin_dir
                 or (key == plugin_dir.name and "bundled" in (source, owner_source))}
         return [d for d, _key, _source in entries if d not in same]
+
+
+def _portable_plugin_name(plugin_dir: Path, key: str) -> set:
+    """The ``plugin.json`` name the loader keys a flat portable plugin by (none beside a ``plugin.yaml``)."""
+    from hermes_cli.agent_plugins import read_agent_plugin_manifest
+    try:
+        if "/" in key or (plugin_dir / "plugin.yaml").exists() or (plugin_dir / "plugin.yml").exists() \
+                or not (plugin_dir / "plugin.json").exists():
+            return set()
+        name = read_agent_plugin_manifest(plugin_dir)[0].get("name")
+    except (OSError, ValueError):  # an unreadable or invalid plugin.json is no plugin the loader keys by name
+        return set()
+    return {name} if isinstance(name, str) and name else set()
 
 
 def _dashboard_name(plugin_dir: Path) -> Any:

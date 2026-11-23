@@ -35,6 +35,8 @@ __all__ = [
     "ConversationRevision",
     "CooldownSnapshot",
     "DelegationDelivery",
+    "DeleteMessageScope",
+    "DeleteMessagesResult",
     "HeldCoverage",
     "HeldMessage",
     "MarkerPurgeReport",
@@ -112,6 +114,25 @@ class ReplaceMode(Enum):
     DESTRUCTIVE = "destructive"
     PRESERVE_EXISTING_ARCHIVE = "preserve_existing_archive"
     ARCHIVE_DROPPED = "archive_dropped"
+
+
+class DeleteMessageScope(Enum):
+    """How ``delete_message`` selects rows to remove while preserving later conversation.
+
+    ``MESSAGE`` removes the targeted message (expanding to its matching tool-call / tool-result group so no dangling ``tool_call_id`` remains); ``EXCHANGE`` removes the entire user-initiated exchange containing the targeted message.
+    """
+
+    MESSAGE = "message"
+    EXCHANGE = "exchange"
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteMessagesResult:
+    """Result of ``delete_message``: removed row ids in ascending order, remaining active count, and whether an active compressed summary remains on the session."""
+
+    deleted_ids: tuple[MessageId, ...]
+    remaining_message_count: int
+    has_compressed_summary: bool
 
 
 def _live_or_column(message: Mapping[str, Any], live_key: str, column: str) -> Any:
@@ -982,6 +1003,10 @@ class MessageRepository(Protocol):
 
     def clear_transcript(self, session_id: SessionId) -> None:
         """Delete every stored row of the session, whatever its visibility, and set its message and tool-call counters to zero in one transaction. No write guard applies, so a session ended by compression is cleared too; a missing session is a no-op."""
+        ...
+
+    def delete_message(self, session_id: SessionId, message_id: MessageId, *, scope: DeleteMessageScope = DeleteMessageScope.MESSAGE, reject_active_turn_lease: bool = True, reject_active_compression_lock: bool = True) -> DeleteMessagesResult:
+        """Permanently delete a specific message (or its enclosing user exchange when ``scope`` is ``EXCHANGE``) without removing later messages. Preserves tool-call pairing (removing an assistant tool-call message or a tool result removes the whole paired tool-call group) and removes any compaction-archived copies sharing the deleted rows' ``message_uid`` so display/search views never resurrect deleted content. Recomputes session counters and bumps ``transcript_revision`` in one transaction under the transcript write guards."""
         ...
 
     def rewind_user_turn(self, session_id: SessionId, user_ordinal: int, *, warm_history: Optional[Sequence[Mapping[str, Any]]] = None, require_retryable: bool = False, require_composite: bool = False, adopt_row_ids: bool = False) -> UserTurnRewind:

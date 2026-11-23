@@ -474,6 +474,20 @@ class _SessionDB:
         self._store.messages.clear_transcript(session_id)
 
     @_held
+    def delete_message(self, session_id: "str", message_id: "int", *, scope: "str" = "message") -> "dict[str, Any]":
+        from persistence.conversation.messages import DeleteMessageScope
+        from persistence.core.identity import MessageId
+
+        result = self._store.messages.delete_message(
+            session_id, MessageId(message_id), scope=DeleteMessageScope(scope),
+        )
+        return {
+            "deleted_ids": [int(i) for i in result.deleted_ids],
+            "remaining_message_count": result.remaining_message_count,
+            "has_compressed_summary": result.has_compressed_summary,
+        }
+
+    @_held
     def search_messages(
         self, query: "str", source_filter: "Optional[list[str]]" = None,
         exclude_sources: "Optional[list[str]]" = None, role_filter: "Optional[list[str]]" = None, limit: "int" = 20,

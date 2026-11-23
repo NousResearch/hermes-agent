@@ -682,6 +682,136 @@ def clear_messages(holder: StoreHolder, session_id: str) -> None:
     holder._execute_write(_do)
 
 
+def _extract_tool_call_ids(raw_tool_calls: Any) -> set[str]:
+    """Return all non-empty string tool-call ids declared by an assistant row's ``tool_calls`` column."""
+    parsed = _parse_tool_calls(raw_tool_calls)
+    if not isinstance(parsed, list):
+        return set()
+    ids: set[str] = set()
+    for tc in parsed:
+        if isinstance(tc, dict):
+            tc_id = tc.get("id")
+            if isinstance(tc_id, str) and tc_id:
+                ids.add(tc_id)
+    return ids
+
+
+def _select_active_ids_to_delete(active_rows: list[Any], target_idx: int, scope: str) -> set[int]:
+    """Select active row ids to delete for *target_idx* under *scope* (``'message'`` or ``'exchange'``)."""
+    target = active_rows[target_idx]
+    if scope == "exchange":
+        start = target_idx
+        while start > 0 and active_rows[start]["role"] != "user":
+            if active_rows[start - 1]["role"] in ("system", "session_meta"):
+                break
+            start -= 1
+        end = target_idx + 1
+        while end < len(active_rows) and active_rows[end]["role"] != "user":
+            end += 1
+        return {int(active_rows[i]["id"]) for i in range(start, end)}
+
+    ids_to_delete: set[int] = {int(target["id"])}
+    role = target["role"]
+    if role == "assistant":
+        tc_ids = _extract_tool_call_ids(target["tool_calls"])
+        if tc_ids:
+            for row in active_rows:
+                if row["role"] == "tool" and row["tool_call_id"] in tc_ids:
+                    ids_to_delete.add(int(row["id"]))
+    elif role == "tool" and target["tool_call_id"]:
+        tc_id = target["tool_call_id"]
+        parent_tc_ids: set[str] = {tc_id}
+        for row in active_rows:
+            if row["role"] == "assistant":
+                row_tc_ids = _extract_tool_call_ids(row["tool_calls"])
+                if tc_id in row_tc_ids:
+                    ids_to_delete.add(int(row["id"]))
+                    parent_tc_ids.update(row_tc_ids)
+        for row in active_rows:
+            if row["role"] == "tool" and row["tool_call_id"] in parent_tc_ids:
+                ids_to_delete.add(int(row["id"]))
+    return ids_to_delete
+
+
+def delete_message(
+    holder: StoreHolder, session_id: str, row_id: int, *, scope: str = "message",
+    reject_active_turn_lease: bool = True, reject_active_compression_lock: bool = True,
+) -> dict[str, Any]:
+    """Permanently delete a specific message (or its enclosing user exchange when ``scope='exchange'``)
+    from *session_id* without removing later messages. Preserves tool-call pairing, removes any
+    compaction-archived copies sharing the same ``message_uid``, recomputes session counters, and
+    bumps ``transcript_revision`` in one write transaction under the transcript write guards."""
+    if scope not in ("message", "exchange"):
+        raise ValueError(f"Unsupported delete scope {scope!r}; expected 'message' or 'exchange'")
+    if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
+        return {"deleted_ids": [], "remaining_message_count": 0, "has_compressed_summary": False}
+
+    def _do(conn) -> dict[str, Any]:
+        _check_transcript_write_guards(
+            holder, conn, session_id, None,
+            reject_active_turn_lease=reject_active_turn_lease,
+            reject_active_compression_lock=reject_active_compression_lock,
+        )
+        active_rows = conn.execute(
+            "SELECT id, role, tool_calls, tool_call_id, message_uid, _compressed_summary "
+            "FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+            (session_id,),
+        ).fetchall()
+        active_idx_by_id = {int(r["id"]): i for i, r in enumerate(active_rows)}
+        target_idx = active_idx_by_id.get(row_id)
+
+        uids_to_purge: set[str] = set()
+        if target_idx is not None:
+            selected_ids = _select_active_ids_to_delete(active_rows, target_idx, scope)
+            for row in active_rows:
+                if int(row["id"]) in selected_ids and row["message_uid"]:
+                    uids_to_purge.add(str(row["message_uid"]))
+        else:
+            archived = conn.execute(
+                "SELECT id, message_uid FROM messages WHERE session_id = ? AND id = ?",
+                (session_id, row_id),
+            ).fetchone()
+            if archived is None:
+                return {
+                    "deleted_ids": [],
+                    "remaining_message_count": len(active_rows),
+                    "has_compressed_summary": any(bool(r["_compressed_summary"]) for r in active_rows),
+                }
+            selected_ids = {int(archived["id"])}
+            if archived["message_uid"]:
+                uids_to_purge.add(str(archived["message_uid"]))
+
+        all_delete_ids = set(selected_ids)
+        if uids_to_purge:
+            uid_list = sorted(uids_to_purge)
+            for peer in conn.execute(
+                f"SELECT id FROM messages WHERE session_id = ? AND message_uid IN ({_placeholders(uid_list)})",
+                [session_id, *uid_list],
+            ).fetchall():
+                all_delete_ids.add(int(peer["id"]))
+
+        ordered_delete_ids = sorted(all_delete_ids)
+        conn.execute(
+            f"DELETE FROM messages WHERE session_id = ? AND id IN ({_placeholders(ordered_delete_ids)})",
+            [session_id, *ordered_delete_ids],
+        )
+
+        remaining_active = [r for r in active_rows if int(r["id"]) not in all_delete_ids]
+        remaining_tool_calls = sum(_tool_calls_len(r["tool_calls"], scalar=1) for r in remaining_active)
+        conn.execute(
+            "UPDATE sessions SET message_count = ?, tool_call_count = ?, "
+            "transcript_revision = transcript_revision + 1 WHERE id = ?",
+            (len(remaining_active), remaining_tool_calls, session_id),
+        )
+        return {
+            "deleted_ids": ordered_delete_ids,
+            "remaining_message_count": len(remaining_active),
+            "has_compressed_summary": any(bool(r["_compressed_summary"]) for r in remaining_active),
+        }
+
+    return holder._execute_write(_do)
+
+
 def replace_messages_in_transaction(holder: StoreHolder, conn, session_id: str, messages: list[dict[str, Any]], *,
                                     active_only: bool = False, archive_dropped: bool = False,
                                     reject_active_turn_lease: bool = False,

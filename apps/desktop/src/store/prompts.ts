@@ -119,8 +119,26 @@ export type ApprovalTarget = ApprovalAccessTarget | ApprovalNetworkTarget
 
 type ApprovalKindFields = Pick<ApprovalRequest, 'kind' | 'risk' | 'target'>
 
+// Code points that draw nothing, end the line or reorder the text around them: controls, format
+// characters (zero-width, bidirectional marks, overrides and isolates), unassigned and private-use
+// code points, line and paragraph separators, and the blank glyphs. A card shows them as escapes,
+// as the gateway does for a command (agent/redact_approval_display.py).
+const HIDDEN_CHARS = /[\p{C}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800]/gu
+
+function escapeHiddenChar(char: string): string {
+  const code = char.codePointAt(0) ?? 0
+  const hex = code.toString(16)
+
+  return code < 0x100
+    ? `\\x${hex.padStart(2, '0')}`
+    : code < 0x10000
+      ? `\\u${hex.padStart(4, '0')}`
+      : `\\U${hex.padStart(8, '0')}`
+}
+
+/** One line of a card as the user reads it: trimmed, with hidden characters made visible. */
 const wireText = (value: unknown): string | undefined =>
-  typeof value === 'string' && value.trim() ? value.trim() : undefined
+  typeof value === 'string' && value.trim() ? value.trim().replace(HIDDEN_CHARS, escapeHiddenChar) : undefined
 
 /** The kind, target and risk an approval payload carries (live request params,
  *  `approval.pending` entries, resume snapshots). Missing or unknown kinds read

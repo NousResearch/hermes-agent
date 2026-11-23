@@ -26,7 +26,7 @@ export interface GatewayRegistryState {
   reauthFailures: Map<string, { connectionId: string | null; error: Error }>
   // Dial failures outlive the disposable socket too: a background request lease disposes its
   // entry on failure, so history kept on the entry reset on every poll (#121865).
-  dialFailures: Map<string, { at: number; streak: number; connectionId: string | null }>
+  dialFailures: Map<string, { at: number; streak: number; connectionId: string | null; ownerProbe?: boolean }>
   /** Scopes that opened in this renderer generation, even if later pruned. */
   openedSecondaryScopes?: Set<string>
   /** Scopes whose re-activation after a connection redial has not landed yet. */

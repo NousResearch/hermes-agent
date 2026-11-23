@@ -27,8 +27,8 @@ def legacy_env(request, tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "lockfile_path", lambda: lock_path)
     target = pm.current_target()
     package = pm.get_package(f"llamacpp-{backend}")
-    if package.missing_reason(target):
-        pytest.skip(f"{package.name} has no build for {target}")
+    if reason := package.missing_reason(target) or package.native_abi_reason(target):
+        pytest.skip(reason)
     urls = package.fetch_urls("10964", target)
     lock = Lockfile(lock_path)
     lock.set_pin(package.name, "10964", {target: [{"url": u, "sha256": s} for u, s in zip(urls, PINNED)]})

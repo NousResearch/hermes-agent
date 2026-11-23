@@ -64,12 +64,11 @@ def test_background_notification_history_replay_is_not_new_delivery():
 
 
 def test_retained_result_lookup_does_not_initialize_session_store(tmp_path, monkeypatch):
-    import hermes_state
     from gateway.session_context import scoped_current_session_id
     from tools import process_registry_results as receipts
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(receipts, "get_hermes_home", lambda: tmp_path)
     directory = tmp_path / "logs" / "process-results"
     directory.mkdir(parents=True)
@@ -304,15 +303,16 @@ def test_receipts_are_bounded_redacted_and_session_scoped(tmp_path, monkeypatch)
     with scoped_current_session_id("unrelated-session"):
         assert load_completed_results(recovered.id) == {}
         assert fresh.get(recovered.id) is None
-    from hermes_state import SessionDB
-    db = SessionDB()
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
+    db = open_persistence(profile_scope())
     try:
-        db.create_session("owner-session", "cli")
-        db.create_session("delegated-child", "subagent", parent_session_id="owner-session")
+        seed_session(db, "owner-session", "cli")
+        seed_session(db, "delegated-child", "subagent", parent_session_id="owner-session")
         with scoped_current_session_id("delegated-child"):
             assert fresh.get(recovered.id) is None
-        db.end_session("owner-session", end_reason="compression")
-        db.create_session("owner-tip", "cli", parent_session_id="owner-session")
+        db.sessions.end("owner-session", "compression")
+        seed_session(db, "owner-tip", "cli", parent_session_id="owner-session")
         with scoped_current_session_id("owner-tip"):
             assert fresh.get(recovered.id).output_buffer == recovered.output_buffer
     finally:

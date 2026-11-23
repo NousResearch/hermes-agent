@@ -101,11 +101,11 @@ class GatewayBackgroundMixin:
                     provider_require_parameters=pr.get("require_parameters", False),
                     provider_data_collection=pr.get("data_collection"),
                     session_id=task_id,
-                    platform=platform_key,
+                    platform=platform_key, side_agent=True,
                     **{k: getattr(source, k) for k in (
                         "user_id", "user_id_alt", "user_name", "chat_id", "chat_name", "chat_type", "thread_id",
                     )},
-                    session_db=getattr(self._session_db, "_db", self._session_db),
+                    persistence=getattr(self, "persistence", None),
                     # Reload from disk — do not reuse the startup snapshot.
                     # See #60955.
                     fallback_model=self._refresh_fallback_model(),

@@ -18,6 +18,7 @@ import {
   withQueueDrainClaim
 } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
+import { pausedKey, usePausedChats } from '@/store/paused-replies'
 import {
   $sessionProfilesTruncated,
   $sessions,
@@ -71,6 +72,7 @@ export function useBackgroundQueueDrain({
   const parkedQueueSessions = useStore($parkedQueueSessions)
   const sessionsLoading = useStore($sessionsLoading)
   const workingSessionIds = useStore($workingSessionIds)
+  const pausedChats = usePausedChats()
   const submitTextRef = useRef(submitText)
   const drainingSessionIdsRef = useRef(new Set<string>())
   const drainFailuresRef = useRef(new Map<string, number>())
@@ -205,6 +207,7 @@ export function useBackgroundQueueDrain({
           submitTextRef.current(resolved.transportText, {
             attachments: liveEntry.attachments,
             ...(resolved.displayText ? { displayText: resolved.displayText } : {}),
+            ...(liveEntry.displayKind ? { displayKind: liveEntry.displayKind } : {}),
             fromQueue: true,
             submission_id: queuedSubmissionId(liveEntry),
             sessionId: runtimeSessionId,
@@ -268,7 +271,10 @@ export function useBackgroundQueueDrain({
       const isSelected =
         Boolean(selectedStoredSessionId) && idsShareLineage(sessionKey, selectedStoredSessionId!, sessions)
 
-      const isBusy = working.some(workingId => idsShareLineage(sessionKey, workingId, sessions))
+      // A reply paused for its continuation holds the queue like a running turn (store/paused-replies.ts).
+      const isBusy =
+        Boolean(pausedKey(pausedChats, sessionKey, sessions)) ||
+        working.some(workingId => idsShareLineage(sessionKey, workingId, sessions))
 
       if (
         isSelected ||
@@ -295,6 +301,7 @@ export function useBackgroundQueueDrain({
     drainSessionQueue,
     enabled,
     parkedQueueSessions,
+    pausedChats,
     queuedPromptsBySession,
     retryTick,
     selectedStoredSessionId,

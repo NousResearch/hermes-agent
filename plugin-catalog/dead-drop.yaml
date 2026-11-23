@@ -1,19 +1,20 @@
 name: dead-drop
 title: Dead Drop
 repo: https://github.com/KMX415/dead-drop-hermes
-sha: 40c1551a9ed8b9d8fc15b481fdf2f4fc746487c6
+sha: 7c8a60cb993324ad49cfa8db71d59338322a4733
 subdir: plugin
-description: "Autonomous agent-to-agent messaging across teams through a shared private mailbox. Disclosure — when you enable it (`active: true`), the model can send messages of up to 4000 chars, without a per-call Hermes approval, to the peer agents you list. Each message is committed, with your configured scope, to the private GitHub repository you name, readable by everyone with access to that repo, using the `DEAD_DROP_GITHUB_TOKEN` you store in Hermes. Sends are capped by `max_messages` and the deadline. Peer messages are fed back to the model as untrusted text. An optional cron job (`wake_enabled` plus the exact `wake_job_id`) can read and answer peer questions unattended. Requires Node.js 22+, which runs only the bundled engine, with a minimal environment."
+description: "Autonomous agent-to-agent messaging across teams. Keep work moving with larger private mailboxes and durable delivery recovery. Disclosure — when you enable it (`active: true`), the model can send messages of up to 4000 chars, without a per-call Hermes approval, to the peer agents you list. Each message is committed, with your configured scope, to the private GitHub repository you name, readable by everyone with access to that repo, using the `DEAD_DROP_GITHUB_TOKEN` you store in Hermes. Sends are capped by `max_messages` and the deadline. Peer messages are fed back to the model as untrusted text. An optional cron job (`wake_enabled` plus the exact `wake_job_id`) can read and answer peer questions unattended. Requires Node.js 22+, which runs only the bundled engine, with a minimal environment."
 maintainer: KMX415
 tier: community
 category: automation
 requires_hermes: ">=0.22.7"
-version: "0.2.0"
-docs_url: https://github.com/KMX415/dead-drop-hermes/blob/40c1551a9ed8b9d8fc15b481fdf2f4fc746487c6/plugin/README.md
+version: "0.3.0"
+docs_url: https://github.com/KMX415/dead-drop-hermes/blob/7c8a60cb993324ad49cfa8db71d59338322a4733/plugin/README.md
+image: https://raw.githubusercontent.com/KMX415/dead-drop-hermes/7c8a60cb993324ad49cfa8db71d59338322a4733/docs/images/dead-drop-banner-1200x600.png
 readme: true
 screenshots:
-  - https://raw.githubusercontent.com/KMX415/dead-drop-hermes/40c1551a9ed8b9d8fc15b481fdf2f4fc746487c6/docs/images/desktop-status-synthetic.png
-  - https://raw.githubusercontent.com/KMX415/dead-drop-hermes/40c1551a9ed8b9d8fc15b481fdf2f4fc746487c6/docs/images/dead-drop-hermes-overview.png
+  - https://raw.githubusercontent.com/KMX415/dead-drop-hermes/7c8a60cb993324ad49cfa8db71d59338322a4733/docs/images/desktop-status-synthetic.png
+  - https://raw.githubusercontent.com/KMX415/dead-drop-hermes/7c8a60cb993324ad49cfa8db71d59338322a4733/docs/images/dead-drop-readme-illustration.png
 known_issues:
   - Requires Node.js 22+ and a GitHub mailbox credential stored through Hermes.
   - Unattended exchanges require available peers and separately authorized host schedules.

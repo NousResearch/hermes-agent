@@ -20,14 +20,14 @@ from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
-from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES
-from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
+from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES, provider_plugin_snapshot_dir
+from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, delete_failed_error, delete_incomplete_message, record_delete_finished, wait_profile_unowned
 from hermes_cli.profiles_export_scrub import (
     GATEWAY_CONNECTION_STORE_RE as _GATEWAY_CONNECTION_STORE_RE, GATEWAY_CONNECTION_STORES as _GATEWAY_CONNECTION_STORES,
     scrub_export_secrets as _scrub_export_secrets)
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
-    named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
+    named_profile_delete_incomplete, named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
 )
 from hermes_cli.config_backend import (
     config_cache_version, config_cache_version_or_none, config_exists, require_file_tooling)
@@ -94,7 +94,7 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] =  frozenset({
 # duplicate deliveries) the moment its gateway starts. The empty dir is recreated below.
 _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "state.db", "state.db-wal", "state.db-shm", "sessions", "backups", "state-snapshots", "checkpoints",
-    "cron", "webapp",  # webapp/: the source gateway's sign-in state (credential, native grants, Portal callback)
+    "cron", "webapp", "backend_migration", "backend_migration.json",  # webapp/: its sign-in; backend_migration*: its migration
 })
 
 # Marker written by `hermes profile create --no-skills`. When present at a profile root,
@@ -146,7 +146,7 @@ def _clone_all_copytree_ignore(source_dir: Path):
             # resolve() can fail on odd FS layouts (broken symlinks, missing parents).
             # Fail open — better to over-copy than silently drop user data.
             at_root = False
-        ignored = _non_exportable_entries(directory, names)
+        ignored = _non_exportable_entries(directory, names) | provider_plugin_snapshot_dir(directory, names, source_dir)
         if at_root:
             ignored.update(root_exclude & set(names))
             ignored.update(n for n in names if _GATEWAY_CONNECTION_STORE_RE.fullmatch(n.casefold()))
@@ -185,7 +185,7 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "proxy",                        # iron-proxy CA key + proxy tokens
     "chrome-debug",                 # /browser connect Chrome profile (cookies, logins)
     "home",                         # subprocess HOME: gh, git, ssh, npm and skill-CLI credentials
-    "backups", "state-snapshots",   # pre-update zips, config copies, update snapshots of the stores
+    "backups", "state-snapshots", "backend_migration", "backend_migration.json",  # update/migration store copies
     *_GATEWAY_CONNECTION_STORES,    # saved gateways' session tokens + OAuth sign-ins (sidecars: _STORE_COPY_RE)
     *_OS_CREDENTIAL_STORES,
 })
@@ -329,8 +329,9 @@ def _is_our_wrapper(path: Path) -> bool:
         return False
 
 
-def _missing_profile_error(canon: str) -> FileNotFoundError:
-    return FileNotFoundError(f"Profile '{canon}' does not exist. Create it with: hermes profile create {canon}")
+def _missing_profile_error(canon: str, profile_dir: Path | None = None) -> FileNotFoundError:
+    missing = f"Profile '{canon}' does not exist. Create it with: hermes profile create {canon}"
+    return FileNotFoundError(delete_incomplete_message(canon, profile_dir) or missing)
 
 
 def _unknown_profile_error(canon: str) -> FileNotFoundError:
@@ -338,11 +339,10 @@ def _unknown_profile_error(canon: str) -> FileNotFoundError:
     return FileNotFoundError(f"No profile named '{canon}'. See your profiles with: hermes profile list")
 
 
-def _profile_exists_error(canon: str) -> FileExistsError:
-    return FileExistsError(
+def _profile_exists_error(canon: str, profile_dir: Path | None = None) -> FileExistsError:
+    return FileExistsError(delete_incomplete_message(canon, profile_dir) or (
         f"A profile named '{canon}' already exists. Switch to it with `hermes profile use {canon}`, "
-        "see all profiles with `hermes profile list`, or choose a different name."
-    )
+        "see all profiles with `hermes profile list`, or choose a different name."))
 
 
 _PROFILE_NAME_RULE = (
@@ -481,23 +481,21 @@ def profile_matches_home(name: str, home: Path | None = None) -> bool:
         return False
 
 
-def _iter_named_profile_dirs(*, live_only: bool = True) -> list[Path]:
-    """Sorted named-profile dirs (valid ids, never ``default``); ``live_only`` skips tombstones.
+def _iter_named_profile_dirs(*, incomplete_only: bool = False) -> list[Path]:
+    """Sorted valid named-profile dirs, either live or left by incomplete deletes.
 
     A dir is a profile only when it carries an identity marker (``named_profile_has_identity``):
     cron/logging side-effects and pre-tombstone ghost shells leave marker-less dirs that must
     not be listed, served, ticked, or ``.env``-seeded — that seeding is what turned a ghost
-    shell into a "real" profile on the next ``hermes update`` (#95188, #94823, #99392)."""
+    shell into a "real" profile on the next ``hermes update`` (#95188, #94823, #99392).
+    Incomplete deletes are shown only in the CLI recovery list, never served."""
+    eligible = named_profile_delete_incomplete if incomplete_only else named_profile_is_live
     profiles_root = _get_profiles_root()
     if not profiles_root.is_dir():
         return []
     return [
         entry for entry in sorted(profiles_root.iterdir())
-        if entry.is_dir()
-        and entry.name != "default"
-        and _PROFILE_ID_RE.match(entry.name)
-        and named_profile_has_identity(entry)
-        and not (live_only and named_profile_is_deleted(entry))
+        if entry.name != "default" and _PROFILE_ID_RE.match(entry.name) and eligible(entry)
     ]
 
 
@@ -1372,7 +1370,8 @@ def create_profile(
     if canon == "default":
         raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
     profile_dir = get_profile_dir(canon)
-    if profile_dir.exists() and not named_profile_has_identity(profile_dir):
+    if (profile_dir.exists() and not named_profile_has_identity(profile_dir)
+            and not named_profile_delete_incomplete(profile_dir)):
         if named_profile_is_deleted(profile_dir):
             # Empty shell left by a post-delete mkdir: invisible to ``profile list``, safe to replace
             # unless a gateway still tearing the deleted profile down holds its gateway.lock in it.
@@ -1387,7 +1386,7 @@ def create_profile(
                 "file, so it is not listed as a profile. Move or remove that directory first."
             )
     if profile_dir.exists():
-        raise _profile_exists_error(canon)
+        raise _profile_exists_error(canon, profile_dir)
     source_dir = _resolve_clone_source(clone_from) if cloning else None
     if source_dir is not None and clone_channels:
         from hermes_cli.profile_channels import clone_channels_refusal
@@ -1399,7 +1398,7 @@ def create_profile(
     # on every create and every 30 s, and ``_iter_named_profile_dirs`` only lists valid ids (no leading
     # dot), so it can never adopt the half-copied tree and start adapters on credentials the strip
     # below has not removed yet.
-    from hermes_cli.profiles_initialization import clone_staging_dir, discard_unpublished_vault_key, finish_profile_layout
+    from hermes_cli.profiles_initialization import clone_staging_dir, discard_unpublished_vault_key, finish_profile_layout, publish_staging
     staging = clone_staging_dir(profile_dir)
     clone_key = None  # the keychain entry made for this clone's vault, if any
     try:
@@ -1413,7 +1412,7 @@ def create_profile(
             if stripped:
                 logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
         finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description, soul=soul)
-        os.rename(staging, profile_dir)
+        publish_staging(staging, profile_dir, lambda: _profile_exists_error(canon))
     except BaseException:
         discard_unpublished_vault_key(clone_key)
         shutil.rmtree(staging, ignore_errors=True)
@@ -1731,7 +1730,9 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     _stop_bot_desktop(profile_dir)
 
     # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
-    mark_named_profile_deleted(profile_dir)
+    mark_named_profile_deleted(profile_dir, incomplete=True)  # until rmtree succeeds
+    # 5. The name no longer resolves; clear active_profile now, since Ctrl-C skips the code after rmtree
+    _retarget_active_profile(canon, "default", "✓ Active profile reset to default")
     # The multiplexer sees the tombstone, stops this profile's adapters and releases its handles
     # into the directory before we remove it. Identity settlement is a separate delete-only
     # operation below: an ordinary unserve must preserve identity, because a rename's old name
@@ -1756,8 +1757,8 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         if _released:
             print(f"✓ Released {_released} memory-store connection(s) held by this process")
     with contextlib.suppress(Exception):
-        from hermes_state_registry import close_all_under as _close_session_dbs_under
-        _closed = _close_session_dbs_under(profile_dir)
+        from persistence_assembly import close_stores_under
+        _closed = close_stores_under(profile_dir)
         if _closed:
             print(f"✓ Released {_closed} session database connection(s) held by this process")
 
@@ -1782,15 +1783,14 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         if not wait_profile_unowned(profile_dir):
             raise RuntimeError("a running gateway still owns this profile; retry the delete once it settles")
         _rmtree_with_retry(profile_dir, _rmtree_make_writable)
+        record_delete_finished(profile_dir)
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")
         remove_error = e
 
-    # 5. Clear active_profile if it pointed to this profile
-    _retarget_active_profile(canon, "default", "✓ Active profile reset to default")
     if remove_error is not None:
-        raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
+        raise delete_failed_error(canon, profile_dir, remove_error) from remove_error
     print(f"\nProfile '{canon}' deleted.")
     if not identity_settled:
         # Filesystem work and runtime teardown are done; the durable identity is not. Report the
@@ -1955,7 +1955,7 @@ def set_active_profile(name: str) -> None:
     """Set the sticky active profile (``default`` = remove the file)."""
     canon = _canon_valid(name)
     if canon != "default" and not profile_exists(canon):
-        raise _missing_profile_error(canon)
+        raise _missing_profile_error(canon, get_profile_dir(canon))
     path = _get_active_profile_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     if canon == "default":
@@ -2149,7 +2149,6 @@ def export_profile(name: str, output_path: str, extra_files: Optional[dict[str, 
 
 def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     """Import a profile from a tar.gz archive."""
-    import tempfile
     archive = Path(archive_path)
     if not archive.exists():
         raise FileNotFoundError(f"Archive not found: {archive}")
@@ -2173,21 +2172,21 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         )
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists():
-        raise _profile_exists_error(canon)
-    _get_profiles_root().mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="hermes_profile_import_") as tmpdir:
-        staging_root = Path(tmpdir)
-        safe_extract_targz(archive, staging_root)
-        extracted = staging_root / archive_root
+        raise _profile_exists_error(canon, profile_dir)
+    import tempfile
+    from hermes_cli.profile_provision import _create_lock
+    from hermes_cli.profiles_initialization import prepare_imported_tree, publish_staging
+    profile_dir.parent.mkdir(parents=True, exist_ok=True)
+    # Hidden mkdtemp beside the target: 0700 until prepare_imported_tree tightens .env/config.yaml, and its cleanup
+    # clears the read-only bits extraction re-applies, which a plain rmtree can't delete on Windows.
+    with _create_lock(canon), tempfile.TemporaryDirectory(  # publish as create does: a racing publish wins
+            prefix=f".{canon}.staging-", dir=profile_dir.parent, ignore_cleanup_errors=True) as staging_root:
+        safe_extract_targz(archive, Path(staging_root))
+        extracted = Path(staging_root) / archive_root
         if not extracted.is_dir():
             raise ValueError(f"Profile archive root is missing or invalid: {archive_root}")
-        final_source = extracted
-        if archive_root != canon:
-            final_source = staging_root / canon
-            extracted.rename(final_source)
-        from hermes_cli.profiles_initialization import prepare_imported_tree
-        prepare_imported_tree(final_source)
-        shutil.move(str(final_source), str(profile_dir))
+        prepare_imported_tree(extracted)
+        publish_staging(extracted, profile_dir, lambda: _profile_exists_error(canon, profile_dir))
     clear_named_profile_deleted(profile_dir)
     return profile_dir
 
@@ -2225,54 +2224,54 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     if not old_dir.is_dir():
         raise _unknown_profile_error(old_canon)
     if new_dir.exists():
-        raise _profile_exists_error(new_canon)
+        raise _profile_exists_error(new_canon, new_dir)
 
-    # 1. Remove the old name's service even when its gateway is stopped: the unit is named after
-    # the old profile and runs ``--profile <old>``, so the service manager would crash-loop it on
-    # the next login or container boot. Then stop the gateway and the screen whose launcher
-    # holds paths under the old name.
-    gw_running = _check_gateway_running(old_dir)
-    service_removed = _cleanup_gateway_service(old_canon, old_dir)
-    _maybe_unregister_gateway_service(old_canon)
-    if gw_running:
-        _stop_gateway_process(old_dir)
-    _stop_bot_desktop(old_dir)
-
-    # 1b. Unroute the old name from a live multiplexer BEFORE the rename (same protocol as
-    # delete_profile). A multiplexed secondary has no gateway.pid of its own, so the check above
-    # reports it stopped while the default gateway still holds its adapters, cron ticker, logging
-    # and SQLite handles; those re-``mkdir`` the old home the moment it moves (no tombstone →
-    # ``mkdir_under_hermes_home`` does not refuse it) and the periodic reconcile re-adopts the
-    # resurrected dir as a ghost served profile (#109267).
-    live_mux = _live_default_multiplexer()
-    if live_mux:
-        mark_named_profile_deleted(old_dir)
-        _notify_multiplexer(old_canon)
-
-    # 1c. Release this process's cached MCP stderr handle into the old home (same as
-    # delete_profile): Windows refuses to rename a directory holding an open file, and the
-    # handle would otherwise stay cached under the old key after the move.
+    # 1. Remove the old name's service even when its gateway is stopped (the unit runs ``--profile <old>``
+    # and would crash-loop on the next login or boot), then stop the gateway and the screen holding old paths.
+    # 1b. Unroute the old name from a live multiplexer BEFORE the move (same protocol as delete_profile):
+    # it serves a multiplexed secondary that has no gateway.pid; a writer outside ``mkdir_under_hermes_home``
+    # can re-create the moved-away home, which the reconcile could re-adopt as a ghost (#109267). 1c. Release
+    # this process's MCP stderr handle into the old home: Windows refuses to rename a dir holding an open file.
+    # 2. Everything before the move is undone on any exit (Ctrl-C in the service stop or owner wait, EXDEV, a
+    # racing writer); after it, the old name is never re-served.
     from hermes_constants import hermes_home_key
+    from hermes_cli.profiles_initialization import publish_staging
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-    shutdown_mcp_servers(scope=hermes_home_key(old_dir))
-
-    # 2. Rename directory. If the move fails (cross-device EXDEV, permissions, a racing writer),
-    # undo the unroute so the profile is never stranded tombstoned-but-present.
+    gw_running = _check_gateway_running(old_dir)
+    service_removed = live_mux = renamed = False
+    old_identity, unfinished_delete = None, named_profile_is_deleted(old_dir)
     try:
+        service_removed = _cleanup_gateway_service(old_canon, old_dir)
+        _maybe_unregister_gateway_service(old_canon)
+        if gw_running:
+            _stop_gateway_process(old_dir)
+        _stop_bot_desktop(old_dir)
+        live_mux, old_identity = _live_default_multiplexer(), old_dir.lstat()
+        if live_mux:
+            if not unfinished_delete:  # an unfinished delete's own record stays as it is
+                mark_named_profile_deleted(old_dir)
+            _notify_multiplexer(old_canon)
+        shutdown_mcp_servers(scope=hermes_home_key(old_dir))
         if live_mux and not wait_profile_unowned(old_dir):  # same owner wait as delete_profile
             raise RuntimeError("a running gateway still owns this profile; retry the rename once it settles")
-        old_dir.rename(new_dir)
-    except Exception:
-        if live_mux:
+        publish_staging(old_dir, new_dir, lambda: _profile_exists_error(new_canon, new_dir))  # a racing publish wins
+        renamed = True
+    finally:
+        moved = renamed  # identity only for an interrupt after the move: FAT/CIFS may change the dir ID
+        if not moved and old_identity is not None:
+            with contextlib.suppress(OSError):  # no new_dir: the move never landed
+                moved = os.path.samestat(new_dir.lstat(), old_identity)
+        if moved:
             clear_named_profile_deleted(old_dir)
-            _notify_multiplexer(old_canon)
-        _maybe_register_gateway_service(old_canon)
-        if service_removed:
-            print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
-        raise
+            clear_named_profile_deleted(new_dir)
+        elif not unfinished_delete:  # a delete that did not finish stays tombstoned and unregistered
+            if live_mux:
+                clear_named_profile_deleted(old_dir)
+                _notify_multiplexer(old_canon)
+            _maybe_register_gateway_service(old_canon)
+            if service_removed:
+                print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
-    clear_named_profile_deleted(old_dir)
-    clear_named_profile_deleted(new_dir)
 
     # 2b. Record the rename so Bot Mode group chats can re-link persisted
     # member descriptors to the new slug (#110200). Best-effort: a metadata
@@ -2340,5 +2339,5 @@ def resolve_profile_env(profile_name: str) -> str:
         return str(root)
     profile_dir = root / "profiles" / canon
     if not named_profile_is_live(profile_dir):
-        raise _missing_profile_error(canon)
+        raise _missing_profile_error(canon, profile_dir)
     return str(profile_dir)

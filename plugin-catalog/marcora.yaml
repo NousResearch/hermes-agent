@@ -1,0 +1,19 @@
+name: marcora
+title: "Marcora: Brand Context & Writing"
+repo: https://github.com/ccromp/marcora-mcp
+sha: 41d1c6d92bb1a49915408f324f90900deb124db8
+description: "Brand context, marketing blueprints, content creation, grounding, and GTM planning through Marcora's hosted MCP server (Streamable HTTP at https://mcp.marcora.ai/, OAuth 2.1 PKCE or Bearer API token). Bundles the marcora-mcp workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to Marcora's hosted server (mcp.marcora.ai) over HTTPS and acts on the user's Marcora workspace under their own role; the 63-tool surface (32 read-only, 31 non-read-only, 15 destructiveHint: true) is served at runtime and is not covered by the pinned sha. Non-read-only tools create or update workspace records, send team invitation emails (invite_user), publish share links (create_external_share), or spend team Marcora Studio Credits (create_content with instructions, produce_plan, create_blueprint_draft, create_project with project_brief_instructions, ask_content_assistant, check_content_grounding, trigger_health_audit_scan, convert_markdown_to_word_doc at 2 credits/conversion, and run_workflow). run_workflow starts a server-side automated agent session using Marcora tools and the user's connected third-party apps (allowed_tools is a prompt instruction to the runner, not a separate permission check), workflows that are Active with an On schedule run on Marcora's server-side scheduler independently of the local client, and ask_content_assistant runs an asynchronous background AI assistant that may edit a document in place. The package marks the server untrusted (timeout: 180), so Hermes's host policy prompts before client-initiated calls to tools the server does not mark read-only, though neither Hermes trust nor advisory MCP annotations prevent server-side scheduled workflow runs or background agent actions once started or activated on Marcora."
+maintainer: ccromp
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://marcora.ai/docs/mcp-overview
+version: "1.2.26"
+image: https://raw.githubusercontent.com/ccromp/marcora-mcp/41d1c6d92bb1a49915408f324f90900deb124db8/plugin/.claude-plugin/icon.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

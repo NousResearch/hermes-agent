@@ -103,19 +103,20 @@ def _route_namespaces(profile_home):
 
 
 def _stored_owner(db, owner_ids, namespaces):
-    """The conversation in ``db`` (the requested profile's state.db) that owns a piece of work; "" when none
+    """The conversation in ``db`` (the storage handle on the requested profile's state.db) that owns a piece of
+    work; "" when none
     is ours. A stored id (child lineage, process ``parent_session_id``) is authoritative: present here or
     not ours. Only a process without one falls back to its route key, fenced to this profile's namespaces,
     since an identical route (a legacy ``agent:main`` key, the same DM in two profiles) can sit in another
     profile's store."""
     stored_id, route = owner_ids
     if stored_id:
-        return stored_id if db.get_session(stored_id) else ""
+        return stored_id if db.sessions.get(stored_id) is not None else ""
     parts = route.split(":")
     if len(parts) < 3 or parts[0] != "agent" or parts[1] not in namespaces:
         return ""
-    row = db.find_latest_gateway_session_for_peer(source=parts[2], session_key=route)
-    return str(row["id"]) if row and row.get("id") else ""
+    found = db.routing.latest_session_for_peer(source=parts[2], session_key=route)
+    return str(found.session.session_id) if found is not None and found.session.session_id else ""
 
 
 @method("subagent.roster")

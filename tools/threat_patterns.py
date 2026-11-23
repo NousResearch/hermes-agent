@@ -74,7 +74,18 @@ _PATTERNS: list[tuple[str, str, str]] = [
     # follow all the setup instructions" or "forget your password? follow the reset instructions" pass.
     (FORGET_RULES_RE, "forget_rules", "all"),
     (rf'act\s{{1,64}}as\s{{1,64}}(if|though)\s{{1,64}}{_FILLER}you\s{{1,64}}{_FILLER}(have\s{{1,64}}no|don\'t\s{{1,64}}have)\s{{1,64}}{_FILLER}(restrictions|limits|rules)', "bypass_restrictions", "all"),
-    (r'<!--[^>]{0,512}(?:ignore|override|system|secret|hidden)[^>]{0,512}-->', "html_comment_injection", "all"),
+    # An HTML comment is suspicious only when it carries an injection payload. A bare mention of
+    # "system" is documentation ("<!-- The system writes logs -->"), not an instruction; the earlier
+    # `(?:ignore|override|system|secret|hidden)` alternation blocked a repo's AGENTS.md on three
+    # benign comments that merely used the word.
+    (r'<!--[^>]{0,512}(?:'
+     r'\b(?:ignore|override)\s{1,64}(?:(?:all|any|the|your|previous|prior|above)\s{1,64}){0,4}'
+     r'(?:instructions?|rules|prompts?|system|guidelines|directions)\b'
+     r'|\bsystem\s{1,64}(?:prompt|message|override)\b'
+     r'|\b(?:secret|hidden)\s{1,64}(?:instructions?|commands?|prompts?|directives?|tasks?)\b'
+     r'|\byou\s{1,64}are\s{1,64}now\b'
+     r'|\bdo\s{1,64}not\s{1,64}(?:tell|reveal|show|mention|inform)\b'
+     r')[^>]{0,512}-->', "html_comment_injection", "all"),
     (r'<\s{0,64}div\s{1,64}style\s{0,64}=\s{0,64}["\'][^>]{0,2048}display\s{0,64}:\s{0,64}none', "hidden_div", "all"),
     (
         r"translate\s{1,64}[^\n]{0,512}\s{1,64}into\s{1,64}\w{1,64}(?:[\s-]{1,64}\w{1,64}){0,2}\s{1,64}and\s{1,64}(execute|run|eval)\b",

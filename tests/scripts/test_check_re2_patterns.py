@@ -298,3 +298,10 @@ def test_no_argument_run_finds_the_repo_root(tmp_path):
     summary = proc.stdout.strip().splitlines()[-1]
     assert summary.startswith("checked ")
     assert int(summary.split()[1]) >= 1
+
+
+def test_a_look_alike_flag_attribute_on_another_object_is_not_a_regex_flag(tmp_path):
+    # options.DEBUG may be 0 at run time; only the regex module's own constants have known values
+    code, out = _gate(tmp_path, "import hermes_re as re\nre.search('a', 'x', flags=options.DEBUG)\n")
+    assert code == 0 and "REJECTED" not in out, out
+    assert _gate(tmp_path, "import hermes_re as re\nre.search('a', 'x', flags=re.DEBUG)\n")[1].startswith("REJECTED")

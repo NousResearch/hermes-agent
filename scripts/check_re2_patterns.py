@@ -90,10 +90,19 @@ def load_facade():
     return hermes_re, rules.canonical_tree, measure._python_comments
 
 
+def _regex_module(node) -> bool:
+    """``node`` names an imported regex module (``re``, ``hermes_re``) or its ``RegexFlag``, as canonical_tree spells
+    them; ``options.DEBUG`` and other look-alike attributes are not flags."""
+    if isinstance(node, ast.Attribute) and node.attr == "RegexFlag":
+        node = node.value
+    return isinstance(node, ast.Name) and getattr(node, "imported", False) and not node.relative \
+        and node.id in ("re", "hermes_re")
+
+
 def flag_value(node):
     if node is None:
         return 0
-    if isinstance(node, ast.Attribute) and node.attr in FLAGS:
+    if isinstance(node, ast.Attribute) and node.attr in FLAGS and _regex_module(node.value):
         return FLAGS[node.attr]
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         left, right = flag_value(node.left), flag_value(node.right)

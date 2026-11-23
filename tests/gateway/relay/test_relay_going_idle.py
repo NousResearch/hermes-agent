@@ -136,6 +136,59 @@ async def test_buffered_inbound_is_acked_after_handler(server):
 
 
 @pytest.mark.asyncio
+async def test_buffered_inbound_whose_handler_raised_is_acked_only_once_taken(server):
+    # The handler fails on the first delivery, so the transport withholds the ACK and the
+    # connector replays the frame. The replay is a real delivery: the handler runs for it, and
+    # only then is the frame acked.
+    from gateway.config import PlatformConfig
+    from gateway.relay.adapter import RelayAdapter
+    from tests.waiting import async_wait_until
+
+    frame = {
+        "type": "inbound",
+        "event": {
+            "text": "buffered",
+            "message_type": "text",
+            "message_id": "m-7",
+            "source": {
+                "platform": "discord",
+                "chat_id": "c1",
+                "chat_type": "dm",
+                "message_id": "m-7",
+            },
+        },
+        "bufferId": "buf-7",
+    }
+    server._to_push = [frame, dict(frame)]
+    attempts = []
+
+    async def fail_once(ev):
+        attempts.append(ev.text)
+        if len(attempts) == 1:
+            raise RuntimeError("session store is locked")
+
+    async def never(ev):
+        return False
+
+    async def nothing(ev):
+        return None
+
+    transport = WebSocketRelayTransport(server.url, "discord", "appShared")
+    adapter = RelayAdapter(PlatformConfig(), _relay_descriptor(), transport=transport)
+    adapter.handle_message = fail_once
+    adapter._consume_prompt_response = never
+    adapter._localize_inbound_media = nothing
+    await adapter.connect()
+    try:
+        # An ack is sent only after a delivery was taken, so it is the last thing to happen.
+        await async_wait_until(lambda: server.inbound_acks, timeout=10)
+        assert attempts == ["buffered", "buffered"]
+        assert server.inbound_acks == ["buf-7"]
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_reconnect_redials_after_unexpected_close():
     # A server that drops the FIRST connection right after handshake; the
     # transport with reconnect=True re-dials and handshakes again.

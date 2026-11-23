@@ -3975,21 +3975,38 @@ html[data-hud-window] [data-slot='popover-content'] {
   display: none;
 }
 
-/* Radix positions in viewport pixels, which <html> zoom would scale again.
-   Keep statusbar positioning unscaled and restore the selected scale on its
-   content. Height limits must use that content's CSS pixels too. */
-html[data-hermes-desktop-host='browser'] [data-radix-popper-content-wrapper]:has(> [data-statusbar-menu]) {
-  zoom: calc(1 / var(--browser-ui-scale, 1));
+/* On the Webapp, UI scale lives as CSS zoom on <html>. Floating UI skips
+   getScale() when a fixed popper's offsetParent is window (direct child of
+   body), double-scaling coordinates, available sizes, anchor widths and arrows
+   (#148414, #150502, #150729). Portaling into a full-viewport containing-block
+   host gives Floating UI an element offsetParent whose getScale() matches the
+   active CSS zoom, so every Radix primitive scales natively. */
+[data-browser-portal-host] {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  contain: layout;
+}
 
-  > [data-statusbar-menu] {
-    zoom: var(--browser-ui-scale, 1);
-    --radix-context-menu-content-available-height: calc(
-      var(--radix-popper-available-height) / var(--browser-ui-scale, 1)
-    ) !important;
-    --radix-dropdown-menu-content-available-height: calc(
-      var(--radix-popper-available-height) / var(--browser-ui-scale, 1)
-    ) !important;
-  }
+/* Above mobile Sheet / find-bar z-50 layers, below --z-modal-backdrop (120). */
+[data-browser-portal-host='menu'] {
+  z-index: 60;
+}
+
+[data-browser-portal-host='select'] {
+  z-index: var(--z-modal-popover);
+}
+
+[data-browser-portal-host='tooltip'] {
+  z-index: var(--z-over-modal);
+}
+
+/* Non-modal popovers do not set inline pointer-events: auto; restore it on
+   interactive popper wrappers unless a modal layer has locked body pointer
+   events, while leaving tooltips pass-through. */
+body:not([style*='pointer-events: none']) > [data-browser-portal-host='menu'] > *,
+body:not([style*='pointer-events: none']) > [data-browser-portal-host='select'] > * {
+  pointer-events: auto;
 }
 
 /* CSS zoom scales viewport units too; browser shells must fit their parent. */

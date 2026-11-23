@@ -432,6 +432,78 @@ def test_scheduler_rejects_submission_failure():
         )
 
 
+def _api_server_entry() -> SessionEntry:
+    now = datetime.now()
+    return SessionEntry(
+        session_key="agent:main:api_server:dm:api-7",
+        session_id="session-api-7",
+        created_at=now,
+        updated_at=now,
+        origin=SessionSource(platform=Platform.API_SERVER, chat_id="api-7", chat_type="dm", user_id="api-7"),
+        platform=Platform.API_SERVER,
+    )
+
+
+def _accept_schedule(coro, _target_loop, **_kwargs):
+    coro.close()
+    return MagicMock()
+
+
+@pytest.mark.parametrize(
+    "entry, authority, scheduled",
+    [
+        (_api_server_entry(), True, False),  # automation admission would drop it after a True
+        (_api_server_entry(), False, True),  # no session authority: the adapter path runs it, unchanged
+        (_entry(), True, True),  # a messaging session still schedules
+    ],
+)
+def test_scheduler_refuses_api_server_session_synchronously(entry, authority, scheduled, monkeypatch):
+    """#156466: a keyed injection into an API-server session returned True, then automation admission
+    refused it (``snapshot_automation``) and the turn was dropped. Under a session authority the
+    plugin now gets False at once."""
+    runner = _runner(entry)
+    runner.session_store = SimpleNamespace(lookup_by_session_key=lambda _key: entry)
+    loop = MagicMock()
+    loop.is_closed.return_value = False
+    runner._gateway_loop = loop
+    monkeypatch.setattr("gateway.session_authorities.active_authority",
+                        lambda _runner: object() if authority else None)
+
+    with patch("gateway.run.safe_schedule_threadsafe", side_effect=_accept_schedule) as schedule:
+        result = runner._schedule_plugin_message_injection(
+            session_key=entry.session_key,
+            content="wake up",
+            plugin_id="notify-plugin",
+        )
+
+    assert result is scheduled
+    assert schedule.called is scheduled
+
+
+@pytest.mark.parametrize("platform, scheduled", [(Platform.API_SERVER, False), (Platform.TELEGRAM, True)])
+def test_scheduler_refuses_api_server_origin_synchronously(platform, scheduled, monkeypatch):
+    """The origin path reaches the same admission: an API-server origin gets False, not a dropped turn."""
+    runner = _runner(_entry())
+    loop = MagicMock()
+    loop.is_closed.return_value = False
+    runner._gateway_loop = loop
+    monkeypatch.setattr("gateway.session_authorities.active_authority", lambda _runner: object())
+    source = SessionSource(platform=platform, chat_id="c-1", chat_type="dm", user_id="c-1")
+    runner._plugin_origin_source = lambda _origin, **_kwargs: source
+    runner._plugin_origin_admissible = lambda _source, **_kwargs: True
+    runner._dispatch_plugin_origin_injection = AsyncMock(return_value=True)
+
+    with patch("gateway.run.safe_schedule_threadsafe", side_effect=_accept_schedule) as schedule:
+        result = runner._schedule_plugin_message_injection(
+            origin={"platform": platform.value, "chat_id": "c-1"},
+            content="wake up",
+            plugin_id="notify-plugin",
+        )
+
+    assert result is scheduled
+    assert schedule.called is scheduled
+
+
 def test_install_and_clear_gateway_injector_preserves_newer_owner():
     runner = _runner(_entry())
     manager = PluginManager()

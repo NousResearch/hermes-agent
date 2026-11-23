@@ -176,8 +176,9 @@ class GatewayPluginInjectionMixin:
             coro = plugin_keyless_inject.admit(self, *resolved, content=content, plugin_id=plugin_id)
         elif origin is not None:
             source = self._plugin_origin_source(origin, plugin_home=plugin_home, plugin_id=plugin_id)
-            if source is None or not self._plugin_origin_admissible(source, plugin_home=plugin_home,
-                                                                    plugin_id=plugin_id):
+            if source is None or self._plugin_route_unserved_by_automation(
+                    source, plugin_id=plugin_id, target=f"origin={source.platform.value}/{source.chat_id}") \
+                    or not self._plugin_origin_admissible(source, plugin_home=plugin_home, plugin_id=plugin_id):
                 return False
             target = f"origin={source.platform.value}/{source.chat_id}"
             coro = self._dispatch_plugin_origin_injection(source=source, content=content, plugin_id=plugin_id)
@@ -260,15 +261,30 @@ class GatewayPluginInjectionMixin:
                            plugin_id, target)
         return authorized
 
+    def _plugin_route_unserved_by_automation(self, source: SessionSource, *, plugin_id: str, target: str) -> bool:
+        """Under a session authority every plugin turn goes through automation admission, which never
+        serves an API-server route (``snapshot_automation``): the turn would be dropped at dispatch after
+        the plugin got ``True``. Without an authority the adapter's own message path still runs it."""
+        if source.platform != Platform.API_SERVER:
+            return False
+        from gateway.session_authorities import active_authority
+        if active_authority(self) is None:
+            return False
+        logger.warning("Plugin message injection refused: plugin=%s %s is an API-server chat, which plugin "
+                       "turns cannot reach under the session authority", plugin_id, target)
+        return True
+
     def _plugin_session_key_admissible(self, session_key: str, *, plugin_home: Optional[Path], plugin_id: str) -> bool:
         """Synchronous refusal of a keyed injection into another profile's session (local or
-        messaging), so the plugin gets ``False``; an unknown key is decided at dispatch, as before.
-        Dispatch rechecks."""
+        messaging) or into a route automation admission never serves, so the plugin gets ``False``; an
+        unknown key is decided at dispatch, as before. Dispatch rechecks."""
         entry = self.session_store.lookup_by_session_key(session_key)
         if entry is None or entry.origin is None:
             return True
         from gateway.session_identity import replace_source
         source = replace_source(self._restored_source(entry))
+        if self._plugin_route_unserved_by_automation(source, plugin_id=plugin_id, target=f"session={session_key}"):
+            return False
         if source.platform == Platform.LOCAL:
             return self._plugin_local_session(source, session_key, plugin_home=plugin_home,
                                               plugin_id=plugin_id) is not None

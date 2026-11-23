@@ -130,6 +130,11 @@ export const en: Translations = {
     dashboardMovingMachineTitle: "Your cloud machine",
     dashboardMovingMachineDetail: "Keep working in the new app",
     dashboardMovingMachineReady: "Ready",
+    dashboardMovingMachineStarting: "Starting",
+    dashboardMovingMachineDown: "Offline",
+    dashboardMovingMachineNotAvailable: "Not available yet",
+    dashboardMovingMachineNotAvailableDetail:
+      "The web app is not on this machine yet",
     dashboardMovingSettingsTitle: "Advanced settings",
     dashboardMovingSettingsDetail: "Available in Agent settings",
     dashboardMovingOpen: "Open in web app",

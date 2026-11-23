@@ -11,12 +11,37 @@ const RETIREMENT_DATE = new Date(2027, 0, 15);
 /** Agent settings in the web app (a hash route, like every page there). */
 const WEBAPP_SETTINGS_HASH = "/#/settings";
 
+/** The machine row's status per web app state: its copy key, English fallback and colour. */
+const MACHINE = {
+  ready: {
+    key: "dashboardMovingMachineReady",
+    label: "Ready",
+    tone: "text-success",
+  },
+  starting: {
+    key: "dashboardMovingMachineStarting",
+    label: "Starting",
+    tone: "text-warning",
+  },
+  down: {
+    key: "dashboardMovingMachineDown",
+    label: "Offline",
+    tone: "text-destructive",
+  },
+  not_available: {
+    key: "dashboardMovingMachineNotAvailable",
+    label: "Not available yet",
+    tone: "opacity-65",
+  },
+} as const;
+
 /**
  * Hermes Cloud's "your dashboard is moving" notice. A modal, not a banner:
  * it interrupts until the user answers, so there is no backdrop or Escape dismissal, only its
- * two actions. The backend sets `webapp_url` only on a hosted agent's signed-in dashboard that
- * already serves the web app, so presence == show; a local dashboard never gets it. "Later"
- * hides it for this browser session.
+ * actions. The backend sets `webapp_state` only on a Hermes Cloud agent's signed-in dashboard, so
+ * presence == show; a local dashboard never gets it. The machine row shows that state, and the
+ * way into the web app is offered only while it is `ready`. "Later" hides the modal for this
+ * browser session.
  */
 export function DashboardMovingModal({
   status,
@@ -24,7 +49,8 @@ export function DashboardMovingModal({
   status: StatusResponse | null;
 }) {
   const { t, locale } = useI18n();
-  const webappUrl = status?.webapp_url ?? null;
+  const state = status?.webapp_state ?? null;
+  const webappUrl = state === "ready" ? (status?.webapp_url ?? null) : null;
   const panelRef = useRef<HTMLDivElement>(null);
   const [dismissed, setDismissed] = useState(() => {
     try {
@@ -33,7 +59,7 @@ export function DashboardMovingModal({
       return false;
     }
   });
-  const open = Boolean(webappUrl) && !dismissed;
+  const open = state !== null && !dismissed;
 
   useEffect(() => {
     if (!open) return;
@@ -43,9 +69,11 @@ export function DashboardMovingModal({
         panelRef.current?.querySelectorAll<HTMLElement>("a[href], button") ??
           [],
       );
-    actions()
-      .find((el) => el.hasAttribute("data-primary"))
-      ?.focus();
+    // The way into the web app when there is one, else "Later".
+    const initial = actions();
+    (
+      initial.find((el) => el.hasAttribute("data-primary")) ?? initial.at(-1)
+    )?.focus();
 
     // Keep Tab inside the dialog: the page behind it is inert until answered.
     const onKey = (e: KeyboardEvent) => {
@@ -66,9 +94,9 @@ export function DashboardMovingModal({
       document.removeEventListener("keydown", onKey);
       prevActive?.focus?.();
     };
-  }, [open]);
+  }, [open, webappUrl]);
 
-  if (!open || !webappUrl) return null;
+  if (!open || !state) return null;
 
   const later = () => {
     try {
@@ -124,20 +152,61 @@ export function DashboardMovingModal({
             "Your agents, chats, skills and routines come with you. Use the same sign-in."}
         </p>
 
-        <div className="flex flex-col rounded-[15px] bg-midground/5 px-4 py-4 sm:px-8">
-          <div className="flex min-h-16 items-center gap-4">
-            <Cloud aria-hidden className="h-4 w-4 shrink-0 opacity-65" />
-            <Row
-              title={t.app.dashboardMovingMachineTitle ?? "Your cloud machine"}
-              detail={
-                t.app.dashboardMovingMachineDetail ??
-                "Keep working in the new app"
-              }
-            />
-            <span className="shrink-0 text-[13px] leading-[17px] text-success">
-              {t.app.dashboardMovingMachineReady ?? "Ready"}
-            </span>
-          </div>
+        <MachineCard state={state} webappUrl={webappUrl} />
+
+        <div className="flex flex-wrap gap-2.5 sm:px-8">
+          {webappUrl && (
+            <Button
+              data-primary
+              type="button"
+              onClick={() => window.open(webappUrl, "_self")}
+            >
+              {t.app.dashboardMovingOpen ?? "Open in web app"}
+            </Button>
+          )}
+          <Button type="button" outlined onClick={later}>
+            {t.app.dashboardMovingLater ?? "Later"}
+          </Button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/** The machine's web app state, and the way into its settings once it is up. */
+function MachineCard({
+  state,
+  webappUrl,
+}: {
+  state: keyof typeof MACHINE;
+  webappUrl: string | null;
+}) {
+  const { t } = useI18n();
+  const machine = MACHINE[state];
+  return (
+    <div className="flex flex-col rounded-[15px] bg-midground/5 px-4 py-4 sm:px-8">
+      <div className="flex min-h-16 items-center gap-4">
+        <Cloud aria-hidden className="h-4 w-4 shrink-0 opacity-65" />
+        <Row
+          title={t.app.dashboardMovingMachineTitle ?? "Your cloud machine"}
+          detail={
+            state === "not_available"
+              ? (t.app.dashboardMovingMachineNotAvailableDetail ??
+                "The web app is not on this machine yet")
+              : (t.app.dashboardMovingMachineDetail ??
+                "Keep working in the new app")
+          }
+        />
+        <span
+          data-testid="dashboard-moving-state"
+          className={`shrink-0 text-[13px] leading-[17px] ${machine.tone}`}
+        >
+          {t.app[machine.key] ?? machine.label}
+        </span>
+      </div>
+      {webappUrl && (
+        <>
           <div aria-hidden className="h-px bg-midground/5" />
           <a
             href={`${webappUrl}${WEBAPP_SETTINGS_HASH}`}
@@ -156,23 +225,9 @@ export function DashboardMovingModal({
             />
             <ChevronRight aria-hidden className="h-4 w-4 shrink-0 opacity-80" />
           </a>
-        </div>
-
-        <div className="flex flex-wrap gap-2.5 sm:px-8">
-          <Button
-            data-primary
-            type="button"
-            onClick={() => window.open(webappUrl, "_self")}
-          >
-            {t.app.dashboardMovingOpen ?? "Open in web app"}
-          </Button>
-          <Button type="button" outlined onClick={later}>
-            {t.app.dashboardMovingLater ?? "Later"}
-          </Button>
-        </div>
-      </div>
-    </div>,
-    document.body,
+        </>
+      )}
+    </div>
   );
 }
 

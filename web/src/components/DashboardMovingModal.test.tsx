@@ -29,7 +29,9 @@ const button = (label: string) =>
   Array.from(modal()?.querySelectorAll("button") ?? []).find(
     (el) => el.textContent === label,
   );
-const cloud = { webapp_url: WEBAPP } as StatusResponse;
+const cloud = { webapp_state: "ready", webapp_url: WEBAPP } as StatusResponse;
+const stateLabel = () =>
+  modal()?.querySelector('[data-testid="dashboard-moving-state"]')?.textContent;
 
 beforeEach(() => {
   sessionStorage.clear();
@@ -62,6 +64,41 @@ describe("DashboardMovingModal", () => {
     expect(modal()?.textContent).toContain(
       "This dashboard moves to the Hermes web app on January 15.",
     );
+    expect(document.activeElement).toBe(button("Open in web app"));
+    expect(stateLabel()).toBe("Ready");
+  });
+
+  it.each([
+    ["starting", "Starting"],
+    ["down", "Offline"],
+    ["not_available", "Not available yet"],
+  ] as const)(
+    "shows a web app that is %s and offers no way into it",
+    async (webapp_state, label) => {
+      await render(
+        <DashboardMovingModal status={{ webapp_state } as StatusResponse} />,
+      );
+      expect(stateLabel()).toBe(label);
+      expect(button("Open in web app")).toBeUndefined();
+      expect(modal()?.querySelector("a")).toBeNull();
+      expect(document.activeElement).toBe(button("Later"));
+    },
+  );
+
+  it("offers the web app once it comes up", async () => {
+    await render(
+      <DashboardMovingModal
+        status={{ webapp_state: "starting" } as StatusResponse}
+      />,
+    );
+    await act(async () =>
+      root.render(
+        <I18nProvider>
+          <DashboardMovingModal status={cloud} />
+        </I18nProvider>,
+      ),
+    );
+    expect(stateLabel()).toBe("Ready");
     expect(document.activeElement).toBe(button("Open in web app"));
   });
 

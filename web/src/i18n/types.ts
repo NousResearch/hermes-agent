@@ -146,6 +146,10 @@ export interface Translations {
     dashboardMovingMachineTitle?: string;
     dashboardMovingMachineDetail?: string;
     dashboardMovingMachineReady?: string;
+    dashboardMovingMachineStarting?: string;
+    dashboardMovingMachineDown?: string;
+    dashboardMovingMachineNotAvailable?: string;
+    dashboardMovingMachineNotAvailableDetail?: string;
     dashboardMovingSettingsTitle?: string;
     dashboardMovingSettingsDetail?: string;
     dashboardMovingOpen?: string;

@@ -29,8 +29,11 @@ export interface StatusResponse {
   /** False when the dashboard is running in a hosted/managed layout where
    * updates are handled by the outer launcher instead of ``hermes update``. */
   can_update_hermes?: boolean;
-  /** The Hermes web app's address, set only on a Hermes Cloud agent's dashboard (never a
-   * local one) once that agent serves the web app: the dashboard is moving there. */
+  /** Set only on a Hermes Cloud agent's dashboard (never a local one), which is moving to the
+   * Hermes web app: `ready` serving, `starting` coming up, `down` stopped or failing,
+   * `not_available` not turned on for this agent. */
+  webapp_state?: "ready" | "starting" | "down" | "not_available";
+  /** The web app's address, once it is `ready`. */
   webapp_url?: string;
   config_path: string;
   config_version: number;

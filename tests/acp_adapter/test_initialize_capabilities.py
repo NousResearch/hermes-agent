@@ -19,15 +19,21 @@ import pytest
 acp_schema = pytest.importorskip("acp.schema")
 
 
-def _initialize_response():
+def _initialize_responses():
+    """Both ACP surfaces must advertise the capability: the standalone adapter AND the
+    gateway projection. ``HermesACPAgent.__new__`` routes editor sessions to
+    ``GatewayACPAgent`` when no session manager is given, so the two initialize()
+    implementations are asserted separately instead of depending on that routing."""
+    from acp_adapter.gateway_server import GatewayACPAgent
     from acp_adapter.server import HermesACPAgent
 
-    agent = HermesACPAgent.__new__(HermesACPAgent)  # no __init__: network/model state not needed
-    return asyncio.run(agent.initialize())
+    standalone = HermesACPAgent.__new__(HermesACPAgent, session_manager=object())  # real class, no __init__
+    gateway = asyncio.run(GatewayACPAgent().initialize())
+    return [("standalone", asyncio.run(standalone.initialize())), ("gateway", gateway)]
 
 
-def test_initialize_advertises_http_and_sse_mcp():
-    response = _initialize_response()
+@pytest.mark.parametrize("label,response", _initialize_responses(), ids=lambda x: x)
+def test_initialize_advertises_http_and_sse_mcp(label, response):
     caps = response.agent_capabilities
     assert caps.mcp_capabilities is not None, (
         "initialize() must declare mcpCapabilities: clients gate MCP-over-HTTP on it (#124910)"
@@ -36,9 +42,9 @@ def test_initialize_advertises_http_and_sse_mcp():
     assert caps.mcp_capabilities.sse is True
 
 
-def test_initialize_serializes_mcp_capabilities_alias():
+@pytest.mark.parametrize("label,response", _initialize_responses(), ids=lambda x: x)
+def test_initialize_serializes_mcp_capabilities_alias(label, response):
     """The wire format uses the camelCase ``mcpCapabilities`` key."""
-    response = _initialize_response()
     payload = response.model_dump(by_alias=True, exclude_none=True)
     assert payload["agentCapabilities"]["mcpCapabilities"] == {"http": True, "sse": True}
 

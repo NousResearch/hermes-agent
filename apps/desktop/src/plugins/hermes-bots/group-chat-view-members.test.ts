@@ -236,7 +236,11 @@ describe('a room that spans machines', () => {
 
     expect(seatedNames(room)).toEqual(['programmer', 'reviewer'])
 
-    room.rounds.sendToGroupChat('Core', seatedNames(room).map(name => ({ name })), '@all go')
+    room.rounds.sendToGroupChat(
+      'Core',
+      seatedNames(room).map(name => ({ name })),
+      '@all go'
+    )
     await drain(() => Boolean(room.chat.$groupChats.get().Core.running))
 
     expect(room.gateway.calls.map(call => call.profile)).not.toContain('scout')
@@ -257,11 +261,18 @@ describe('a room that spans machines', () => {
     await expect(room.members.setGroupChatMembers('Core', [programmer, reviewer])).rejects.toThrow(/Scout/)
 
     expect(seatedNames(room)).toEqual(['programmer', 'reviewer', 'scout'])
-    expect(room.chat.$groupChats.get().Core.members?.map(member => member.name)).toEqual(['programmer', 'reviewer', 'scout'])
+    expect(room.chat.$groupChats.get().Core.members?.map(member => member.name)).toEqual([
+      'programmer',
+      'reviewer',
+      'scout'
+    ])
 
     // Reconnect: that machine's ui_meta still names the room, and now agrees with this Desktop.
     const { mergeServerMeta } = await import('./profile-ops')
-    mergeServerMeta([{ ...remote, sourceReachable: true, ui_meta: { 'hermes-bots': { groups: ['Core'] } } }], Date.now() + 120_000)
+    mergeServerMeta(
+      [{ ...remote, sourceReachable: true, ui_meta: { 'hermes-bots': { groups: ['Core'] } } }],
+      Date.now() + 120_000
+    )
 
     expect(seatedNames(room)).toEqual(['programmer', 'reviewer', 'scout'])
   })
@@ -293,8 +304,15 @@ describe('a room that spans machines', () => {
 
     await expect(room.members.setGroupMembership(remote, 'Core', false)).rejects.toThrow(/Scout/)
     expect(room.data.$botMeta.get()[room.data.botMetaKey(remote)].groups).toEqual(['Core'])
-    expect(room.chat.$groupChats.get().Core.members?.map(member => member.name)).toEqual(['programmer', 'reviewer', 'scout'])
-    mergeServerMeta([{ ...remote, sourceReachable: true, ui_meta: { 'hermes-bots': { groups: ['Core'] } } }], Date.now() + 120_000)
+    expect(room.chat.$groupChats.get().Core.members?.map(member => member.name)).toEqual([
+      'programmer',
+      'reviewer',
+      'scout'
+    ])
+    mergeServerMeta(
+      [{ ...remote, sourceReachable: true, ui_meta: { 'hermes-bots': { groups: ['Core'] } } }],
+      Date.now() + 120_000
+    )
     expect(seatedNames(room)).toEqual(['programmer', 'reviewer', 'scout'])
 
     // Its machine has no rooms; joining one while it does not answer is refused too.
@@ -305,7 +323,10 @@ describe('a room that spans machines', () => {
     await expect(room.members.setGroupMembership(remote, 'Core', true)).rejects.toThrow(/Scout/)
     expect(room.data.$botMeta.get()[room.data.botMetaKey(remote)].groups).toEqual([])
     expect(room.chat.$groupChats.get().Core.members?.map(member => member.name)).toEqual(['programmer', 'reviewer'])
-    mergeServerMeta([{ ...remote, sourceReachable: true, ui_meta: { 'hermes-bots': { groups: [] } } }], Date.now() + 240_000)
+    mergeServerMeta(
+      [{ ...remote, sourceReachable: true, ui_meta: { 'hermes-bots': { groups: [] } } }],
+      Date.now() + 240_000
+    )
     expect(seatedNames(room)).toEqual(['programmer', 'reviewer'])
   })
 

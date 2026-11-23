@@ -30,7 +30,11 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 
   return {
     ...sdk,
-    host: { ...sdk.host, requestProfile, state: { ...sdk.host.state, connectionId, gateway: state, profile: atom('default') } },
+    host: {
+      ...sdk.host,
+      requestProfile,
+      state: { ...sdk.host.state, connectionId, gateway: state, profile: atom('default') }
+    },
     usePluginI18n: () => translateBotsIn('en')
   }
 })
@@ -62,10 +66,14 @@ afterEach(() => {
 
 it('lists rooms once the socket opens, with no Refresh button and no error text', async () => {
   renderGatewayRooms()
-  await act(async () => { await Promise.resolve() })
+  await act(async () => {
+    await Promise.resolve()
+  })
   expect(requestProfile).not.toHaveBeenCalled()
 
-  await act(async () => { gatewayState().set('open') })
+  await act(async () => {
+    gatewayState().set('open')
+  })
 
   expect(await screen.findByRole('button', { name: 'Launch crew' })).toBeTruthy()
   expect(screen.queryByRole('button', { name: /refresh/i })).toBeNull()
@@ -78,7 +86,9 @@ it('keeps the last good list when a re-read fails', async () => {
   await screen.findByRole('button', { name: 'Launch crew' })
 
   requestProfile.mockRejectedValue(new Error('groups.list exploded'))
-  await act(async () => { refreshGatewayGroupRooms() })
+  await act(async () => {
+    refreshGatewayGroupRooms()
+  })
   await waitFor(() => expect(requestProfile.mock.calls.length).toBeGreaterThan(1))
 
   expect(screen.getByRole('button', { name: 'Launch crew' })).toBeTruthy()
@@ -89,7 +99,9 @@ it('lists nothing, and says nothing, on a connection with no registry id or no g
   gatewayState().set('open')
   connectionId().set(null)
   const view = renderGatewayRooms()
-  await act(async () => { await Promise.resolve() })
+  await act(async () => {
+    await Promise.resolve()
+  })
 
   expect(requestProfile).not.toHaveBeenCalled()
   expect(view.container.textContent).toBe('')
@@ -111,7 +123,9 @@ it('a disbanded room never comes back: not from a slow read, a failed re-read or
   // The gateway still answers with the room (a read issued before the disband), then fails.
   forgetCanonicalGroup({ connectionId: 'local', profile: 'default', roomId: 'room-1', roomName: 'Launch crew' })
   requestProfile.mockResolvedValueOnce({ rooms: [room], next_offset: null }).mockRejectedValue(new Error('offline'))
-  await act(async () => { refreshGatewayGroupRooms() })
+  await act(async () => {
+    refreshGatewayGroupRooms()
+  })
 
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Launch crew' })).toBeNull())
   expect($canonicalGroupBindings.get()).toEqual({})

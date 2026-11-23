@@ -21,44 +21,48 @@ export function immediateMetricsLocks(): void {
     waiting.shift()?.()
   }
 
-  vi.stubGlobal('navigator', { locks: {
-    request: (_key: string, run: () => unknown) => {
-      const result = Promise.withResolvers<unknown>()
+  vi.stubGlobal('navigator', {
+    locks: {
+      request: (_key: string, run: () => unknown) => {
+        const result = Promise.withResolvers<unknown>()
 
-      const acquire = () => {
-        owned = true
+        const acquire = () => {
+          owned = true
 
-        try {
-          const value = run()
+          try {
+            const value = run()
 
-          if (value instanceof Promise) {
-            void value.then(result.resolve, result.reject).finally(release)
-          } else {
-            result.resolve(value)
+            if (value instanceof Promise) {
+              void value.then(result.resolve, result.reject).finally(release)
+            } else {
+              result.resolve(value)
+              release()
+            }
+          } catch (error) {
+            result.reject(error)
             release()
           }
-        } catch (error) {
-          result.reject(error)
-          release()
         }
-      }
 
-      if (owned) {
-        waiting.push(acquire)
-      } else {
-        acquire()
-      }
+        if (owned) {
+          waiting.push(acquire)
+        } else {
+          acquire()
+        }
 
-      return result.promise
+        return result.promise
+      }
     }
-  } })
+  })
 }
 
 /** Only the browser transaction API is doubled: real metric journals, snapshots and backend-latch
  * assertions remain in the tests. Requests acquire ownership asynchronously, one transaction at
  * a time, and completion/abort release it before the next transaction's request can run. */
 export function indexedDbMetricsLocks(): { abortNext: (after?: number) => void; close: () => void } {
-  interface Request { onsuccess?: () => void }
+  interface Request {
+    onsuccess?: () => void
+  }
   interface Transaction {
     aborted: boolean
     onabort?: () => void
@@ -114,34 +118,42 @@ export function indexedDbMetricsLocks(): { abortNext: (after?: number) => void; 
       const transaction: Transaction = { aborted: false }
 
       return Object.assign(transaction, {
-        abort: () => { transaction.aborted = true },
-        objectStore: () => ({ get: () => {
-          const request: Request = {}
+        abort: () => {
+          transaction.aborted = true
+        },
+        objectStore: () => ({
+          get: () => {
+            const request: Request = {}
 
-          transaction.request = request
-          waiting.push(transaction)
-          pump()
+            transaction.request = request
+            waiting.push(transaction)
+            pump()
 
-          return request
-        } })
+            return request
+          }
+        })
       })
     }
   }
 
   vi.stubGlobal('navigator', {})
-  vi.stubGlobal('indexedDB', { open: () => {
-    const request: Request & { onupgradeneeded?: () => void; result: typeof database } = { result: database }
+  vi.stubGlobal('indexedDB', {
+    open: () => {
+      const request: Request & { onupgradeneeded?: () => void; result: typeof database } = { result: database }
 
-    setTimeout(() => {
-      request.onupgradeneeded?.()
-      request.onsuccess?.()
-    }, 0)
+      setTimeout(() => {
+        request.onupgradeneeded?.()
+        request.onsuccess?.()
+      }, 0)
 
-    return request
-  } })
+      return request
+    }
+  })
 
   return {
-    abortNext: (after = 0) => { abortAfter = after },
+    abortNext: (after = 0) => {
+      abortAfter = after
+    },
     close: () => database.onversionchange?.()
   }
 }

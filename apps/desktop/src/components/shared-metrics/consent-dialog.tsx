@@ -56,7 +56,14 @@ export function SharedMetricsConsentDialog({ enabled, profile: fallbackProfile }
   const scope = useStore($apiRequestScope)
   const profile = normalizeProfileKey(scope.profile ?? fallbackProfile)
 
-  return <SharedMetricsConsentDialogForOwner connectionId={scope.connectionId} enabled={enabled} key={JSON.stringify([scope.connectionId, profile])} profile={profile} />
+  return (
+    <SharedMetricsConsentDialogForOwner
+      connectionId={scope.connectionId}
+      enabled={enabled}
+      key={JSON.stringify([scope.connectionId, profile])}
+      profile={profile}
+    />
+  )
 }
 
 interface SharedMetricsConsentDialogOwnerProps extends SharedMetricsConsentDialogProps {
@@ -76,11 +83,12 @@ function SharedMetricsConsentDialogForOwner({ connectionId, enabled, profile }: 
   const [saving, setSaving] = useState(false)
 
   const scopedRequest = useMemo(
-    () => sharedMetricsProfileRequester(
-      <T,>(method: string, params: Record<string, unknown> = {}) =>
-        requestGatewayForAgent<T>(connectionId, profile, method, params),
-      profile
-    ),
+    () =>
+      sharedMetricsProfileRequester(
+        <T,>(method: string, params: Record<string, unknown> = {}) =>
+          requestGatewayForAgent<T>(connectionId, profile, method, params),
+        profile
+      ),
     [connectionId, profile]
   )
 

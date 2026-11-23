@@ -1,29 +1,27 @@
 name: gws-workspace
 repo: https://github.com/anpicasso/hermes-gws-workspace
-sha: fe83b8a32d0cad4a91ef1b189b999d34bef7fbfb
-description: Multi-account Gmail, Drive and Calendar tools with native gws and targeted change notifications in your current conversation or a new session.
+sha: 4a361ce30265647f852b259466e953c80a0f24ab
+description: Multi-account Gmail, Drive and Calendar tools with native gws; explicit slash commands start change notifications in the current conversation or a new session.
 maintainer: anpicasso
 tier: community
 category: tools
 requires_hermes: '>=0.23.2'
-docs_url: https://github.com/anpicasso/hermes-gws-workspace/blob/fe83b8a32d0cad4a91ef1b189b999d34bef7fbfb/README.md
-version: '0.9.1'
+docs_url: https://github.com/anpicasso/hermes-gws-workspace/blob/4a361ce30265647f852b259466e953c80a0f24ab/README.md
+version: '0.10.0'
 platforms:
 - linux
 known_issues:
 - Requires native gws and your own Google Cloud Desktop OAuth client. Use hermes gws login in a terminal; optional remote login is a separate companion, not included in this listing. Native gws owns credential storage and refresh.
 - Watches require an operator-supervised POSIX worker, public HTTPS ingress, Google API/IAM setup and operator-created Hermes webhook routes. Installation does not provision or start them.
 - One trusted operator per Hermes profile; authorized sessions can use all connected accounts. Google API results and matched change metadata are sent to the agent/model provider.
-- Origin capture depends on undocumented Hermes session APIs and fails closed when required context is unavailable. Same-session delivery has a concurrent session-reset race; webhook admission is not delivery confirmation. Google push may be delayed or coalesced.
+- Watches are explicit user-sent /gws-watch commands, not agent tools. An identified sender and an existing messaging session are required; command arguments cannot choose the destination. The WhatsApp bridge supports only non-shared DMs. No Hermes patch is required.
+- Same-session delivery has a concurrent session-reset race; webhook admission is not delivery confirmation. Google push may be delayed or coalesced.
 - Stop watches and finish cleanup before changing authentication or routes. Removing the plugin preserves account credentials, watch state and saved response files; local logout does not revoke Google consent.
 - Native subprocesses use host filesystem permissions, not a file sandbox. Local input/output requires approval; successful results and saved response files may contain private Workspace content.
 capabilities:
   provides_tools:
   - gws_accounts
   - gws_api
-  - gws_gmail_watch
-  - gws_drive_watch
-  - gws_calendar_watch
   - gws_gmail_search
   - gws_gmail_read
   - gws_gmail_draft

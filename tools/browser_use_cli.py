@@ -17,6 +17,7 @@ import os
 import re
 import signal
 import stat
+import tempfile
 import subprocess
 import sys
 import threading
@@ -203,7 +204,17 @@ def _base_subprocess_env() -> dict:
     namespace_harness_dirs(env, hermes_home_key())
     # A daemon the CLI starts inherits this tag; _own_harness_daemon owns only one that names us.
     env.update(spawn_env("browser-harness-daemon"))
+    # Only approved code may run (#157913): no module from Hermes's working directory shadows an import, and no
+    # bytecode cache in the workspace (__pycache__/agent_helpers.*.pyc) runs instead of the shown source.
+    env["PYTHONSAFEPATH"] = "1"
+    env["PYTHONPYCACHEPREFIX"] = _private_pycache_dir()
     return env
+
+
+@functools.cache
+def _private_pycache_dir() -> str:
+    """This process's own bytecode cache for the harness, so a planted .pyc beside a source is never read."""
+    return tempfile.mkdtemp(prefix="hermes-harness-pycache-")
 
 
 def _read_browser_cfg() -> dict:
@@ -862,14 +873,17 @@ def _env_listing(text: str) -> str:
     own, so masking a secret value cannot swallow a neighbouring line; the listing also goes to the smart
     approver's model and onto a chat card, and these values were never shown to either."""
     from agent.redact import redact_sensitive_text
-    shown = []
+    shown, seen = [], set()
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = (part.strip() for part in line.split("=", 1))
         masked = redact_sensitive_text(f"{key}={value.strip(chr(34)).strip(chr(39))}", force=True, secret_file=True)
-        shown.append(masked if masked.startswith(f"{key}=") else f"{key}=***")
+        masked = masked if masked.startswith(f"{key}=") else f"{key}=***"
+        # The harness keeps the first value (os.environ.setdefault), so a later line changes nothing.
+        shown.append(f"# ignored, an earlier line sets {key}: {masked}" if key in seen else masked)
+        seen.add(key)
     return "\n".join(shown)
 
 
@@ -971,9 +985,9 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     started = time.time()
 
     def dispatch() -> dict[str, Any]:
+        _attach_vault_supervisor(env, task_id)
         if approved_files is not None and (changed := _workspace_changed_refusal(task_id, approved_files)):
             return {"error_result": changed}
-        _attach_vault_supervisor(env, task_id)
         with _driven_daemons_lock:
             daemon = daemon_identity(env)
             _driven_daemons[daemon] = hermes_home_key()

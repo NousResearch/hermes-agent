@@ -181,15 +181,15 @@ def test_a_masked_block_cannot_hide_an_env_line_from_the_approver(gateway_user, 
     assert "LD_PRELOAD=/tmp/evil.so" in assessed[0] and harness == []
 
 
-@pytest.mark.parametrize("approved, swapped", [
-    ("BROWSER_USE_API_KEY=bu_" + "a" * 32, "BROWSER_USE_API_KEY=bu_" + "b" * 32),  # both display as masked
-    ("x = 1\n", "import os\nos.system('id')\n"),
+@pytest.mark.parametrize("name, approved, swapped", [
+    (".env", "BROWSER_USE_API_KEY=bu_" + "a" * 32, "BROWSER_USE_API_KEY=bu_" + "b" * 32),  # both display as masked
+    ("agent_helpers.py", "x = 1\n", "import os\nos.system('id')\n"),
 ])
 def test_files_changed_before_the_harness_starts_are_refused(manual, harness, workspace, monkeypatch,
-                                                              approved, swapped):
+                                                              name, approved, swapped):
     """Compared byte for byte just before the harness starts, after routing (which can take seconds)."""
     monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
-    target = workspace / (".env" if "=" in approved and "\n" not in approved else "agent_helpers.py")
+    target = workspace / name
     target.write_text(approved)
 
     def notify(data):
@@ -207,6 +207,21 @@ def test_files_changed_before_the_harness_starts_are_refused(manual, harness, wo
     monkeypatch.setattr(B, "_route_exec_current", route)
     result = _exec()
     assert "changed after they were approved" in result["error"] and harness == []
+
+
+def test_a_later_duplicate_env_key_is_shown_as_ignored(gateway_user, harness, workspace, monkeypatch):
+    """The harness keeps the first value of a key, so a later line must not read as the one in effect."""
+    assessed = _smart_assessments(monkeypatch)
+    (workspace / ".env").write_text("LD_PRELOAD=/tmp/evil.so\nLD_PRELOAD=\n")
+    _exec()
+    assert "LD_PRELOAD=/tmp/evil.so\n# ignored, an earlier line sets LD_PRELOAD: LD_PRELOAD=" in assessed[0]
+
+
+def test_the_harness_reads_neither_the_cwd_nor_a_workspace_bytecode_cache():
+    """Only shown code runs: no cwd module shadows an import, no planted __pycache__ .pyc replaces the source."""
+    env = B._base_subprocess_env()
+    assert env["PYTHONSAFEPATH"] == "1"
+    assert os.path.isdir(env["PYTHONPYCACHEPREFIX"])
 
 
 def test_a_helpers_directory_refuses_the_call(gateway_user, harness, workspace):

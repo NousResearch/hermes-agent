@@ -12,8 +12,9 @@ from pathlib import Path
 from persistence.sqlite._state.health import STORAGE_CORRUPT, note_storage_error, storage_state
 
 from persistence import StorageProbe, StorageState
+from persistence.core.errors import StoreReplaced
 
-from ._backend import register_repository
+from ._backend import register_repository, translated
 
 __all__ = ["SQLiteStorageHealth", "probe_state_db"]
 
@@ -46,15 +47,24 @@ def probe_state_db(path: Path) -> StorageProbe:
 class SQLiteStorageHealth:
     """``StorageHealth`` over the process-wide latch, bound to one ``state.db``."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, store=None) -> None:
         self._path = path
+        self._store = store
 
     def storage_state(self) -> StorageState:
         corrupt = storage_state(self._path) == STORAGE_CORRUPT
         return StorageState.CORRUPT if corrupt else StorageState.OK
 
     def probe(self) -> StorageProbe:
+        held = getattr(self._store, "_held", None)
+        if held is not None:
+            try:
+                # Under _lock: mid-close() the sidecars are gone before the generation is cleared.
+                with held._lock, translated():
+                    held._raise_if_db_replaced()
+            except StoreReplaced as exc:
+                return StorageProbe(status="degraded", detail=type(exc).__name__)
         return probe_state_db(self._path)
 
 
-register_repository("health", lambda store: SQLiteStorageHealth(store.store_path))
+register_repository("health", lambda store: SQLiteStorageHealth(store.store_path, store))

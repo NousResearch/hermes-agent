@@ -45,14 +45,22 @@ def test_finished_review_thread_is_noop():
 
 
 def test_waits_for_in_flight_review_to_finish():
+    go = threading.Event()
     finished = threading.Event()
 
     def _review():
-        time.sleep(0.3)
+        go.wait(10)  # still in flight when the wait starts; the timer below releases it
         finished.set()
 
-    assert br.wait_for_background_review(_Agent(_thread(_review)), timeout_s=10) == "done"
-    assert finished.is_set()
+    t = _thread(_review)
+    release = threading.Timer(0.3, go.set)
+    release.start()
+    try:
+        assert br.wait_for_background_review(_Agent(t), timeout_s=10) == "done"
+        assert finished.is_set()
+    finally:
+        release.cancel()
+        go.set()
 
 
 def test_wait_is_bounded():
@@ -212,7 +220,7 @@ def _run_child(tmp_path: Path, exit_wait_s) -> Path:
     script.write_text(_E2E_CHILD.format(repo=str(REPO_ROOT), marker=str(marker)), encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k != "PYTEST_CURRENT_TEST"}
     env["HERMES_HOME"] = str(home)
-    proc = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
+    proc = subprocess.run([sys.executable, str(script)], check=False, capture_output=True, text=True,
                           timeout=120, env=env, cwd=str(tmp_path))
     assert proc.returncode == 0, proc.stderr
     assert "EXITING" in proc.stdout
@@ -228,6 +236,7 @@ def test_e2e_one_shot_exit_lets_review_finish(tmp_path):
 @pytest.mark.platforms("posix")
 def test_e2e_exit_wait_zero_drops_review(tmp_path):
     """Control: without the wait, interpreter exit kills the daemon (the original bug shape)."""
+    # subprocess.run returned, so the child and its daemon thread are gone: the marker can
+    # no longer appear.
     marker = _run_child(tmp_path, 0)
-    time.sleep(2.0)
     assert not marker.exists()

@@ -417,6 +417,6 @@ def _finalize_single_query(cli) -> None:
         # Lease-free: the review fork is persistence-isolated (no session DB, skip_memory), but
         # it still uses the MCP/aux clients that _run_cleanup tears down.
         _wait_for_oneshot_background_review(cli)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- exit must survive any review-wait failure; no traceback (config values may hold credentials)
         logger.debug("one-shot background review wait failed; exception details omitted")
     _run_cleanup(notify_session_finalize=False)

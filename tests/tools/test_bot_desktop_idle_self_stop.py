@@ -41,6 +41,10 @@ from tools.bot_desktop import runtime
 runtime._X_LOCK_DIR = Path({scratch!r})
 runtime._ALLOC_LOCK = runtime._X_LOCK_DIR / "alloc.lock"
 runtime.missing_binaries = list
+# The idle check runs on this interpreter, not a launcher bound to whatever tool store the host's
+# HOME holds (that launcher, under this temporary HERMES_HOME, has no dependencies to select).
+from hermes_cli import _launchers
+_launchers.resolve_store_python = lambda root, **_: None
 {prelude}
 print(runtime.start(wait_seconds=15).pid, flush=True)
 time.sleep(600)

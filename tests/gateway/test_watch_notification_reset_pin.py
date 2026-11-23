@@ -9,6 +9,7 @@ import pytest
 
 from tests.module_clock import install_module_clock
 from tests.waiting import async_wait_until
+from persistence_assembly import close_stores_under
 
 
 async def _gateway(monkeypatch):
@@ -50,9 +51,8 @@ async def _gateway(monkeypatch):
 
 
 def _settled(authority, session_id):
-    from hermes_state_runtime import list_session_admissions
-    rows = list_session_admissions(authority.db, session_id=session_id, pending_only=False) if session_id else []
-    return bool(rows) and all(row['status'] not in ('queued', 'started') for row in rows)
+    rows = authority.persistence.admissions.list(session_id=session_id, pending_only=False) if session_id else []
+    return bool(rows) and all(row.status not in ('queued', 'started') for row in rows)
 
 
 def _notice(entry, pinned_session_id, kind='watch_match'):
@@ -73,9 +73,8 @@ def _restart_wait(runner):
 
 
 def _queued_admissions(authority, session_id):
-    from hermes_state_runtime import list_session_admissions
-    return [row for row in list_session_admissions(authority.db, session_id=session_id, pending_only=False)
-            if row['principal_id'].startswith('automation:')]
+    return [row for row in authority.persistence.admissions.list(session_id=session_id, pending_only=False)
+            if row.principal_id.startswith('automation:')]
 
 
 @pytest.mark.asyncio
@@ -99,18 +98,20 @@ async def test_notice_pinned_to_a_reset_session_is_dropped_once(monkeypatch, cap
         assert retired in warnings[0] and live in warnings[0] and 'admission_conflict' in warnings[0]
         assert not _queued_admissions(authority, live)
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
 async def test_notice_pinned_to_a_compression_ancestor_still_admits(monkeypatch, caplog):
+    from persistence.conversation.lineage import CompressionChild
+    from persistence.conversation.messages import NewMessage
     runner, authority, entry = await _gateway(monkeypatch)
     try:
         parent, child = entry.session_id, entry.session_id + '-compressed'
-        runner.session_store._db_for_key(entry.session_key).publish_compression_child(
-            parent_session_id=parent, child_session_id=child, source='discord',
-            require_compression_lease=False, model='offline', model_config={},
-            system_prompt='offline', messages=[{'role': 'user', 'content': 'retained'}],
+        runner.session_store._persistence_for_key(entry.session_key).lineage.publish_compression_child(
+            parent, CompressionChild(session_id=child, source='discord', model='offline', model_config={},
+                                     system_prompt='offline'),
+            [NewMessage.from_live({'role': 'user', 'content': 'retained'})], require_compression_lease=False,
         )
         assert runner.session_store.advance_compression_session(entry.session_key, parent, child)
         pending = queue.Queue()
@@ -122,9 +123,9 @@ async def test_notice_pinned_to_a_compression_ancestor_still_admits(monkeypatch,
         assert pending.empty()
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
         admitted = _queued_admissions(authority, parent) + _queued_admissions(authority, child)
-        assert [row['status'] for row in admitted] == ['queued']
+        assert [row.status for row in admitted] == ['queued']
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 async def _foreign_pin(runner):
@@ -184,9 +185,9 @@ async def test_refused_notice_backs_off_and_only_a_permanent_refusal_drops(monke
             clock.now += 120
             await runner._drain_watch_notifications(pending)
             assert pending.empty()
-            assert [row['status'] for row in _queued_admissions(authority, entry.session_id)] == ['queued']
+            assert [row.status for row in _queued_admissions(authority, entry.session_id)] == ['queued']
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 _REAL_SLEEP = asyncio.sleep
@@ -241,7 +242,7 @@ async def test_permanently_refused_completion_converges_to_dropped_across_restar
 
         assert (row['delivery_state'], row['delivery_attempts']) == ('dropped', delegation._MAX_DELIVERY_ATTEMPTS)
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -267,9 +268,9 @@ async def test_live_pinned_completion_survives_a_long_restart_wait(monkeypatch):
         runner._draining = False
         await _run_async_watcher(runner, monkeypatch, clock, ticks=120)
         assert delegation.get_durable_delegation('live-1')['delivery_state'] == 'delivered'
-        assert [r['status'] for r in _queued_admissions(authority, entry.session_id)] == ['queued']
+        assert [r.status for r in _queued_admissions(authority, entry.session_id)] == ['queued']
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -292,4 +293,4 @@ async def test_foreign_pinned_completion_spends_nothing_across_restarts(monkeypa
         row = delegation.get_durable_delegation('foreign-1')
         assert (row['delivery_state'], row['delivery_attempts']) == ('pending', 0)
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)

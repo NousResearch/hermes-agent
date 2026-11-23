@@ -9,6 +9,7 @@ import logging
 import subprocess
 from typing import Any, Dict, Optional
 
+from agent.secret_scope import serves_routed_profile
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
@@ -49,7 +50,6 @@ def terminal_backend_unavailable_reason() -> Optional[str]:
 
 _VERCEL_SANDBOX_DEFAULT_CWD = "/vercel/sandbox"
 _SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
-_BUILTIN_BACKENDS = "local, docker, modal, daytona, vercel_sandbox, ssh"
 
 # Config -> kwargs shapers, driven by (out_key, config_key, default) tables. The container table's
 # (key, default) literal is intentionally greppable; tools/terminal_tool.py keeps its own for the AST test.
@@ -118,9 +118,13 @@ def _modal_unavailable_reason(modal_state: dict[str, Any]) -> tuple[str, str]:
                 f"Modal backend is configured for managed mode, but {tail}")
     managed = managed_nous_tools_enabled()
     if modal_state["mode"] == "direct":
-        return ("Modal backend selected with TERMINAL_MODAL_MODE=direct, but no direct Modal credentials/config "
-                f"were found. Configure Modal or choose TERMINAL_MODAL_MODE={'managed/auto' if managed else 'auto'}.",
-                "Modal backend is configured for direct mode, but no direct Modal credentials/config were found.")
+        missing = "no direct Modal credentials/config were found"
+        if serves_routed_profile():
+            missing = ("this profile does not set both MODAL_TOKEN_ID and MODAL_TOKEN_SECRET (the ~/.modal.toml "
+                       "login serves only a single-profile Hermes)")
+        return (f"Modal backend selected with TERMINAL_MODAL_MODE=direct, but {missing}. "
+                f"Configure Modal or choose TERMINAL_MODAL_MODE={'managed/auto' if managed else 'auto'}.",
+                f"Modal backend is configured for direct mode, but {missing}.")
     found = "or managed tool gateway was found" if managed else "was found"
     fix = ", set up the managed gateway, or" if managed else " or"
     return (f"Modal backend selected but no direct Modal credentials/config {found}. "
@@ -268,7 +272,7 @@ def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
         plugin_names = plugin_backend_names()
     except Exception:
         plugin_names = []
-    known = ", ".join(f"'{n}'" for n in _BUILTIN_BACKENDS.split(", ") + list(plugin_names))
+    known = ", ".join(f"'{n}'" for n in [*_ENV_BUILDERS, *plugin_names])
     from hermes_cli.left_core_migration import terminal_backend_install_hint
     raise ValueError(f"Unknown environment type: {env_type}. Use {known}{terminal_backend_install_hint(env_type)}")
 
@@ -419,7 +423,7 @@ def _check_plugin_requirements(config: dict[str, Any]) -> bool:
         ok = bool(provider.check_requirements(config))
         return ok or _reject(f"the {env_type!r} plugin backend reported its requirements are not met")
     from hermes_cli.left_core_migration import terminal_backend_install_hint
-    return _reject(f"Unknown TERMINAL_ENV '{env_type}'. Use one of: {_BUILTIN_BACKENDS}, or a plugin-registered "
+    return _reject(f"Unknown TERMINAL_ENV '{env_type}'. Use one of: {', '.join(_ENV_BUILDERS)}, or a plugin-registered "
                    f"backend{terminal_backend_install_hint(env_type)}")
 
 

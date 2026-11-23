@@ -54,11 +54,11 @@ def _record_finished_child(delegation_id: str) -> None:
         "task_index": 0, "status": "completed", "summary": "finished before the sibling wedged",
         "api_calls": 2, "duration_seconds": 1.5,
     })
-    with ad._DB_LOCK, ad._transaction() as conn:
-        row = conn.execute(
-            "SELECT result_json FROM async_delegations WHERE delegation_id=?", (delegation_id,)).fetchone()
+    with ad._DB_LOCK, ad._ledger_reader() as reader:
+        rows = reader.coordination.list_inflight_delegations()
+    row = next((r for r in rows if str(r.delegation_id) == delegation_id), None)
     assert row is not None, "dispatch must persist the unit row before returning"
-    assert [r["summary"] for r in json.loads(row[0])["results"]] == ["finished before the sibling wedged"]
+    assert [r["summary"] for r in row.result["results"]] == ["finished before the sibling wedged"]
 
 
 def test_stalled_batch_keeps_recorded_children(monkeypatch):
@@ -95,8 +95,8 @@ def test_stalled_batch_keeps_recorded_children(monkeypatch):
         by_index = {r.get("task_index"): r for r in evt.get("results") or []}
         # The finished child's real result survives the force-finalization.
         assert by_index.get(0, {}).get("summary") == "finished before the sibling wedged"
-        # The wedged sibling is honestly reported, not silently dropped.
-        assert by_index.get(1, {}).get("status") == "unknown"
+        # The wedged sibling is honestly reported with the unit's status (``_keep_finished_children``).
+        assert by_index.get(1, {}).get("status") == "stalled"
         assert evt.get("error")
         # The model-facing wall shows the recovered work (same rendering as the owner-death path).
         assert "finished before the sibling wedged" in (format_process_notification(evt) or "")
@@ -132,7 +132,7 @@ def test_crashed_batch_keeps_recorded_children():
     assert evt["status"] == "error"
     by_index = {r.get("task_index"): r for r in evt.get("results") or []}
     assert by_index.get(0, {}).get("summary") == "finished before the sibling wedged"
-    assert by_index.get(1, {}).get("status") == "unknown"
+    assert by_index.get(1, {}).get("status") == "error"
     assert "post-join finalize exploded" in evt.get("error", "")
 
 
@@ -204,11 +204,12 @@ def test_persist_completion_preserves_late_recorded_child_and_contracts():
     result = {"results": list(event["results"]), "error": "stalled"}
     ad._persist_completion(event, result)
 
-    assert event["results"][0]["status"] == "completed"
-    assert event["results"][0]["live_transcript"] == "/tmp/child-0.log"
-    assert event["results"][0]["summary_truncated"] is True
+    # ``_persist_completion`` redacts into copies before the store call, so the merge contract is
+    # observable on the DURABLE row (what restart replay and delivery read), not the caller's dict.
     durable = ad.get_durable_delegation(record["delegation_id"])
     assert durable is not None
     durable_results = durable["result"]["results"]
     assert durable_results[0]["status"] == "completed"
+    assert durable_results[0]["live_transcript"] == "/tmp/child-0.log"
     assert durable_results[0]["summary_truncated"] is True
+    assert durable_results[1]["status"] == "unknown"

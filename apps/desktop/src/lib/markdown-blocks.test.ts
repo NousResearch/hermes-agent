@@ -99,6 +99,47 @@ describe('parseMarkdownIntoBlocksCached', () => {
     expect(blocks.join('')).toBe(LONG_CORPUS)
   })
 
+  it('keeps one streamed prefix per lineage, not every prefix (memory bound)', () => {
+    // Each flush is a new full-length string; retaining all of them in the
+    // exact LRU held ~256 x N bytes per stream. The live tip keeps its array
+    // identity (Streamdown re-renders against it); superseded prefixes go.
+    const base = `retention ${LONG_CORPUS}`
+    const first = parseMarkdownIntoBlocksCached(base)
+    const tip = `${base}\n\nnext paragraph`
+    const tipBlocks = parseMarkdownIntoBlocksCached(tip)
+
+    expect(parseMarkdownIntoBlocksCached(tip)).toBe(tipBlocks)
+    const again = parseMarkdownIntoBlocksCached(base)
+    expect(again).not.toBe(first)
+    expect(again).toEqual(first)
+  })
+
+  it.each([false, true])('keeps a settled parse when another message extends it (streamed: %s)', streamed => {
+    const text = `shared settled ${streamed}\n\n${LONG_CORPUS}`
+    const first = parseMarkdownIntoBlocksCached(text, streamed)
+
+    expect(parseMarkdownIntoBlocksCached(text, false)).toBe(first)
+    const longer = `${text}\n\nAnother message continues.`
+    const tip = parseMarkdownIntoBlocksCached(longer)
+
+    expect(tip).toEqual(parseMarkdownIntoBlocks(longer))
+    expect(parseMarkdownIntoBlocksCached(longer)).toBe(tip)
+    expect(parseMarkdownIntoBlocksCached(text, false)).toBe(first)
+  })
+
+  it('still evicts settled entries from the bounded exact LRU', () => {
+    const text = 'old settled entry'
+    const first = parseMarkdownIntoBlocksCached(text, false)
+
+    for (let i = 0; i < 256; i++) {
+      parseMarkdownIntoBlocksCached(`new settled entry ${i}`, false)
+    }
+
+    const again = parseMarkdownIntoBlocksCached(text, false)
+    expect(again).not.toBe(first)
+    expect(again).toEqual(first)
+  })
+
   it('falls back to a full lex for non-append rewrites (edit / branch swap)', () => {
     const grown = `${LONG_CORPUS}\n\nappended tail paragraph`
     parseMarkdownIntoBlocksCached(grown)

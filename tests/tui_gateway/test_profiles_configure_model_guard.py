@@ -120,8 +120,10 @@ def test_other_sections_still_apply_while_model_awaits_confirmation(home, contri
 
 @pytest.mark.parametrize("group_tokens, expect_warning", [(99_000, False), (120_000, True)])
 def test_profile_switch_uses_the_largest_affected_group_context(home, group_tokens, expect_warning):
+    import persistence_assembly
     from agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, capture_usage_anchor
-    from hermes_state import SessionDB
+    from tests.fixtures.storage_read import conversation
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
     old_model = "old-local-model"
     new_model = "new-local-model"
@@ -129,7 +131,7 @@ def test_profile_switch_uses_the_largest_affected_group_context(home, group_toke
         f"model:\n  default: {old_model}\n  provider: custom\n  switch_context_confirm_tokens: 100000\n",
         encoding="utf-8",
     )
-    with SessionDB(home / "state.db") as db:
+    with persistence_assembly.open_persistence(persistence_assembly.profile_scope(home=home)) as db:
         for sid, source, model, tokens in (
             ("short-room", "bot_room", old_model, 95_000),
             ("long-room", "bot_room", old_model, group_tokens),
@@ -137,12 +139,12 @@ def test_profile_switch_uses_the_largest_affected_group_context(home, group_toke
             ("unrelated-chat", "local", old_model, 190_000),
             ("stale-room", "bot_room", old_model, 200_000),
         ):
-            db.create_session(sid, source, model=model)
-            db.append_message(sid, "user", "Existing history")
-            messages = db.get_messages_as_conversation(sid)
+            seed_session(db, sid, source, model=model)
+            seed_messages(db, sid, {"role": "user", "content": "Existing history"})
+            messages = conversation(db, sid)
             if sid == "stale-room":
                 messages[0] = {"role": "user", "content": "History from before a rewind"}
-            db.patch_session_model_config(
+            db.sessions.patch_model_config(
                 sid, {USAGE_ANCHOR_MODEL_CONFIG_KEY: capture_usage_anchor(tokens, 0, messages)},
             )
 

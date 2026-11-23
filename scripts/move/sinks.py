@@ -87,6 +87,8 @@ class Findings:
     module_elements: set[int] = field(default_factory=set)
     """Strings in a container that also holds a moved module name, or the module of a (module, attr) pair."""
     path_pieces: set[int] = field(default_factory=set)
+    join_pieces: set[int] = field(default_factory=set)
+    """Every string a path join takes as a part, whatever expression holds the folder."""
     i18n: set[int] = field(default_factory=set)
     prose: set[int] = field(default_factory=set)
     joined: set[int] = field(default_factory=set)
@@ -521,9 +523,10 @@ class SinkFinder(cst.CSTVisitor):
 
     def visit_BinaryOperation(self, node: cst.BinaryOperation) -> None:
         """``<checkout root> / "tools"``: a path into the source tree, built from a folder name."""
-        if isinstance(node.operator, cst.Divide) and isinstance(node.right, cst.SimpleString) \
-                and _ROOT_EXPRESSION.search(_source(node.left)):
-            self.found.path_pieces.add(id(node.right))
+        if isinstance(node.operator, cst.Divide) and isinstance(node.right, cst.SimpleString):
+            self.found.join_pieces.add(id(node.right))
+            if _ROOT_EXPRESSION.search(_source(node.left)):
+                self.found.path_pieces.add(id(node.right))
 
     def visit_Tuple(self, node: cst.Tuple) -> None:
         self._container(node.elements)
@@ -636,9 +639,12 @@ class SinkFinder(cst.CSTVisitor):
             self.local_calls.append((positional[0], list(node.args[1:])))
         if name in _I18N_CALLS and first is not None:
             self.found.i18n.update(id(n) for n in string_parts(first))
-        elif name in _PATH_CALLS and any(_ROOT_EXPRESSION.search(_source(arg)) for arg in (owner, *positional)
-                                         if arg is not None and not isinstance(arg, cst.SimpleString)):
-            self.found.path_pieces.update(id(arg) for arg in positional if isinstance(arg, cst.SimpleString))
+        elif name in _PATH_CALLS:
+            pieces = {id(arg) for arg in positional if isinstance(arg, cst.SimpleString)}
+            self.found.join_pieces |= pieces
+            if any(_ROOT_EXPRESSION.search(_source(arg)) for arg in (owner, *positional)
+                   if arg is not None and not isinstance(arg, cst.SimpleString)):
+                self.found.path_pieces |= pieces
         self._call_sink(node, name, owner, positional, keywords)
 
     def _call_sink(self, node, name, owner, positional, keywords) -> None:

@@ -17,6 +17,7 @@ plugin is no longer installed.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, NamedTuple, Optional
 
 CARRIER_TYPE = "hermes.native_assistant"
@@ -56,6 +57,24 @@ def thought_signature(extra: Any) -> Optional[str]:
     google = extra.get("google")
     sig = google.get("thought_signature") if isinstance(google, dict) else extra.get("thought_signature")
     return sig if isinstance(sig, str) and sig.strip() else None
+
+
+def is_google_thought_delta(delta: Any) -> bool:
+    """True when a Google/Vertex OpenAI-compat stream delta marks ``content`` as internal thinking
+    (``delta.extra_content.google.thought is True``, or flat ``extra_content.thought is True``)."""
+    if isinstance(delta, Mapping):
+        extra = delta.get(_GEMINI_KEY)
+        dump = getattr(extra, "model_dump", None)
+        if callable(dump):
+            extra = dump()
+    else:
+        extra = field(delta, _GEMINI_KEY)
+    if not isinstance(extra, Mapping):
+        return False
+    google = extra.get("google")
+    if isinstance(google, Mapping):
+        return google.get("thought") is True
+    return extra.get("thought") is True
 
 
 def carrier_record(assistant_message: Any) -> Optional[dict]:

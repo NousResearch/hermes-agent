@@ -14,6 +14,7 @@ from typing import Any
 
 from agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
 from session_rules.turns import flatten_message_text
+from agent.reasoning_carriers import is_google_thought_delta
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 
 
@@ -57,10 +58,13 @@ class RelayChatAccumulator:
         if delta.get("role"):
             self._role = delta["role"]
         text = flatten_message_text(delta.get("content"), sep="")
-        if text:
+        is_thought = bool(text) and is_google_thought_delta(delta)
+        if text and not is_thought:
             self._content.append(text)
         self._reasoning_details.extend(delta.get("reasoning_details") or [])
         reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        if not reasoning and is_thought:
+            reasoning = text
         if reasoning:
             self._reasoning.append(separate_glued_reasoning_blocks(
                 self._reasoning[-1] if self._reasoning else "", reasoning))

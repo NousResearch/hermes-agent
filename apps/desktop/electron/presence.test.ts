@@ -17,7 +17,8 @@ class FakeWindow extends EventEmitter {
 }
 
 interface HarnessOptions {
-  supported?: boolean
+  /** `'platform'` leaves the clock choice to the source's own default for `platform`. */
+  supported?: boolean | 'platform'
   windows?: FakeWindow[]
   platform?: NodeJS.Platform
   /** Replaces the idle clock (a throwing or nonsense clock). */
@@ -37,7 +38,7 @@ function harness({ supported = true, windows = [new FakeWindow()], platform = 'l
     ipc: { handle: (channel: string, handler: () => unknown) => void handlers.set(channel, handler) } as never,
     monitor: { getSystemIdleState: () => idleState, getSystemIdleTime, on: (event, listener) => power.on(event, listener) },
     platform,
-    supported,
+    supported: supported === 'platform' ? undefined : supported,
     windows
   })
 
@@ -214,6 +215,49 @@ describe('attachPresenceSource', () => {
     presence.tick(30, { input: true })
 
     expect(presence.get().locked).toBe(true)
+  })
+
+  // Under X11 the clock is reset by Hermes itself after a reply (no user input), so Linux never
+  // samples it, X11 or Wayland: presence falls back to input inside the window.
+  it.each([
+    ['X11', { DISPLAY: ':0', XDG_SESSION_TYPE: 'x11', WAYLAND_DISPLAY: undefined }],
+    ['Wayland', { DISPLAY: ':0', XDG_SESSION_TYPE: 'wayland', WAYLAND_DISPLAY: 'wayland-0' }]
+  ])('on Linux under %s reports no system clock, and still pushes lock, suspend and resume', (_session, env) => {
+    for (const [name, value] of Object.entries(env)) {
+      vi.stubEnv(name, value)
+    }
+
+    try {
+      const window = new FakeWindow()
+      const presence = harness({ platform: 'linux', supported: 'platform', windows: [window] })
+
+      presence.tick(60, { input: true })
+      expect(window.sent).toEqual([])
+      expect(presence.get()).toMatchObject({ system: false, idleSeconds: null })
+      expect(presence.getSystemIdleTime).not.toHaveBeenCalled()
+
+      presence.power.emit('lock-screen')
+      presence.power.emit('suspend')
+      presence.power.emit('resume')
+      expect(flags(window.sent)).toEqual([
+        { locked: true, suspended: false, system: false },
+        { locked: true, suspended: true, system: false },
+        { locked: true, suspended: false, system: false }
+      ])
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it.each(['darwin', 'win32'] as const)('on %s samples the OS idle clock by default', platform => {
+    const window = new FakeWindow()
+    const presence = harness({ platform, supported: 'platform', windows: [window] })
+
+    presence.idleFor(120)
+    presence.tick(15, { input: true })
+
+    expect(window.sent).toEqual([expect.objectContaining({ system: true, idleSeconds: 0 })])
+    expect(presence.get()).toMatchObject({ system: true, idleSeconds: 0 })
   })
 
   it('polls only while at least one window exists', () => {

@@ -10,6 +10,7 @@ in legitimate AGENTS.md); filler between tokens is the bounded ``_FILLER``."""
 from __future__ import annotations
 
 import hermes_re as re
+import itertools
 import unicodedata
 from bisect import bisect_left
 from typing import Optional
@@ -82,6 +83,51 @@ class ExclusionMatcher:
             else:
                 yield hit
                 pos = hit.end()
+
+    def search(self, text: str):
+        return next(self.finditer(text), None)
+
+
+# Private-use code points that can mark positions in a copy of a text (MarkedMatcher): the first one the text lacks.
+_MARK_RANGES = (range(0xE000, 0xF900), range(0xF0000, 0xFFFFE), range(0x100000, 0x10FFFE))
+
+
+def _absent_mark(text: str) -> str:
+    if "\ue000" not in text:
+        return "\ue000"
+    present = set(text)
+    return next(mark for mark in map(chr, itertools.chain(*_MARK_RANGES)) if mark not in present)
+
+
+class MarkedMatcher:
+    """Stands in for a compiled rule whose stdlib original held a negative lookahead decided by one point of the
+    match alone (where it starts, or where it ends), where ExclusionMatcher would cost too much: it searches again
+    from the next character after every start it rejects, and that search reads on to where the rule's runs end,
+    so a line of n rejected starts sharing one long run is read n times. ``cuts(text)`` lists, ascending, the
+    positions the lookahead lets through. A private-use character the text lacks is inserted at each of them, and
+    ``marked(mark)``, the rule requiring the mark where the lookahead stood (and taking it wherever else a cut can
+    fall inside a match), is searched in that copy: one pass, which keeps the original's choice of start and end.
+    Each hit is returned as the rule's own match on the text. Nothing is kept from one call to the next but the
+    marked rules, one per mark character."""
+
+    def __init__(self, pattern: str, marked, cuts):
+        self._pattern = re.compile(pattern, re.IGNORECASE)
+        self._marked, self._cuts, self._by_mark = marked, cuts, {}
+
+    def finditer(self, text: str):
+        cuts = self._cuts(text)
+        if not cuts:
+            return
+        mark = _absent_mark(text)
+        if (rule := self._by_mark.get(mark)) is None:
+            rule = self._by_mark[mark] = re.compile(self._marked(mark), re.IGNORECASE)
+        copy = mark.join(text[i:j] for i, j in zip([0, *cuts], [*cuts, len(text)]))
+        marks = [cut + count for count, cut in enumerate(cuts)]  # where each mark stands in the copy
+        pos = 0
+        while (m := rule.search(copy, pos)) is not None:
+            yield self._pattern.fullmatch(text, m.start() - bisect_left(marks, m.start()),
+                                          m.end() - bisect_left(marks, m.end()))
+            pos = m.end()
 
     def search(self, text: str):
         return next(self.finditer(text), None)

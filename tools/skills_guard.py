@@ -21,7 +21,7 @@ from typing import List, Tuple
 
 from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
 from tools.threat_patterns import (
-    FORGET_RULES_EXCLUSION, FORGET_RULES_RAW_RE, ExclusionMatcher, LineTail, mask_negated_forget, only_end)
+    FORGET_RULES_EXCLUSION, FORGET_RULES_RAW_RE, ExclusionMatcher, LineTail, MarkedMatcher, mask_negated_forget, only_end)
 
 
 SCANNER_VERSION = "skills-guard-v17"
@@ -310,7 +310,7 @@ THREAT_PATTERNS = [
     # Concealment only — the lookahead exempts UX guidance ("don't tell the user X unless Y confirms")
     # and a tone rule that QUOTES the phrase the agent should not say (`Do not tell the user to
     # "be careful with terminal."`); an unquoted `to ...` is still an instruction and fires.
-    # The two exemptions stood as trailing lookaheads; RE2 has none, so ExclusionMatcher applies them.
+    # The two exemptions stood as trailing lookaheads; RE2 has none, so a MarkedMatcher applies them.
     (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user',
      "deception_hide", "high", "injection", "instructs agent to hide information from user"),
     (r'system\s+(?:\w+\s+)*prompt\s+(?:\w+\s+)*override',
@@ -798,17 +798,22 @@ def _last_write_mode_kwarg(text: str, start: int, end: int) -> int:
 # and `(?!.*\b(?:unless|except|until|confirm|diagnos\w*|verify|check)\b)` (UX guidance on the rest of the line).
 _QUOTED_PHRASE = re.compile('\\s+to\\s+["\'\u201c\u2018]', re.IGNORECASE)
 _UX_GUIDANCE_WORD = re.compile(r'unless|except|until|confirm|diagnos\w*|verify|check', re.IGNORECASE)
-# Every `the user` the entry can end on: its two `(?:\w+\s+)*` runs are greedy, so stdlib tries the last one
-# first; fullmatch in the matcher drops those its word run does not reach.
-_the_user_ends = _every_end(re.compile(r'the\s+user', re.IGNORECASE))
+# Both depend on the end alone, so the rule is a MarkedMatcher: a line of rejected `do not` starts sharing one word
+# run (`do not tell the user ` x n + `check`) is searched once, not once per start. Every `the user` is an end (no
+# two overlap); the mark goes right after `user`, inside a word, where the word runs take it as part of the word.
+_THE_USER = re.compile(r'the\s+user', re.IGNORECASE)
+_WORD_RUN_STEP = r'(?:\w+\s+)*'
 
 
-def _deception_hide_rule():
+def _deception_hide_cuts(text: str) -> list:
     ux_guidance_after = LineTail(_last_ux_guidance_word)
+    return [end for end in (hit.end() for hit in _THE_USER.finditer(text))
+            if _QUOTED_PHRASE.match(text, end) is None and not ux_guidance_after(text, end)]
 
-    def is_ux_guidance(text: str, m, end: int) -> bool:
-        return _QUOTED_PHRASE.match(text, end) is not None or ux_guidance_after(text, end)
-    return _the_user_ends, is_ux_guidance
+
+def _deception_hide_matcher(pattern: str) -> MarkedMatcher:
+    return MarkedMatcher(pattern, lambda mark: pattern.replace(_WORD_RUN_STEP, rf'(?:\w+(?:{mark}\w*)?\s+)*') + mark,
+                         _deception_hide_cuts)
 
 
 def _last_ux_guidance_word(text: str, start: int, end: int) -> int:
@@ -926,7 +931,6 @@ def _next_rm_root(text: str, pos: int, known: dict):
 _LOOKAHEAD_EXCLUSIONS = {
     "py_read_secrets_file": _py_read_secrets_rule,
     "js_read_secrets_file": lambda: (only_end, _names_no_credential_file),
-    "deception_hide": _deception_hide_rule,
     "exec_string": lambda: (only_end, _is_sql_statement),
     "forget_rules": lambda: FORGET_RULES_EXCLUSION,
     "python_os_environ": lambda: (_os_environ_ends, _is_environ_get),
@@ -938,6 +942,7 @@ _LOOKAHEAD_EXCLUSIONS = {
 # pattern id -> matcher built from the entry's pattern text, for an entry that needs Python beside its regex.
 # A matcher offers `search` and `finditer` (all the scanners call on a rule) and yields real match objects.
 _CUSTOM_MATCHERS = {"hardcoded_secret": _HardcodedSecretMatcher, "context_exfil": _VetoGroupPattern,
+                    "deception_hide": _deception_hide_matcher,
                     **dict.fromkeys(("env_exfil_curl", "env_exfil_wget", "env_exfil_fetch", "env_exfil_httpx",
                                      "env_exfil_requests"), _LoopbackExemptMatcher),
                     **{pid: (lambda pattern, rule=rule: ExclusionMatcher.per_scan(pattern, rule))

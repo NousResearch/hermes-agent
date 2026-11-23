@@ -13,11 +13,12 @@ from __future__ import annotations
 import base64
 import binascii
 import hermes_re as re
+from bisect import bisect_left
 from pathlib import Path
 from typing import Optional
 
 from tools.skills_guard import _COMPILED_THREAT_PATTERNS, Finding
-from tools.threat_patterns import ExclusionMatcher, only_end
+from tools.threat_patterns import MarkedMatcher
 
 # pattern id -> compiled regex, to locate a finding's token on its full source line.
 _PATTERN_BY_ID = {pid: rx for rx, pid, *_ in _COMPILED_THREAT_PATTERNS}
@@ -320,21 +321,37 @@ def is_base64_media(line: str) -> bool:
 # matching DECODE (round-trip), not an opaque embedded blob. Such a line is a note. The embedded-blob
 # attack (decode only, no ``tar c``/no prior ``base64`` encode) keeps full severity.
 # "The first ``base64`` is an ENCODE" stood as the lookahead ``(?![^\n|;&]*(?:-[a-z]*d[a-z]*|--decode))``
-# right after it: no decode flag in the rest of its command. RE2 has no lookahead, so the rule is the stdlib
-# original without it and ExclusionMatcher checks it there. The word boundary after the first and before the
-# second ``base64`` is spelled as the non-word character that has to stand there (RE2's mid-pattern ``\b`` is
-# ASCII-only); both spellings keep the original's backtracking order.
-_FIRST_BASE64 = re.compile(r'base64', re.IGNORECASE)
-_DECODE_FLAG_AHEAD = re.compile(r'[^\n|;&]*(?:-[a-z]*d[a-z]*|--decode)', re.IGNORECASE)
+# right after it: no decode flag in the rest of its command. RE2 has no lookahead; the verdict depends on where the
+# match starts alone, so the rule is a MarkedMatcher: the stdlib original without the lookahead, searched once with
+# a mark before every ``base64`` the lookahead lets through (a line of ``base64 -d |`` stages is then not searched
+# again from each rejected one). The word boundary after the first and before the second ``base64`` is spelled as
+# the non-word character that has to stand there (RE2's mid-pattern ``\b`` is ASCII-only); both spellings keep the
+# original's backtracking order. A mark before the second ``base64`` (``-x;y -d`` decodes, though the lookahead stops
+# at ``;``) is taken by that non-word character; the decode flag, letters after ``-``, cannot hold one.
+_BASE64_WORD = re.compile(r'\bbase64', re.IGNORECASE)
+_DECODE_FLAG = re.compile(r'-[a-z]*d[a-z]*|--decode', re.IGNORECASE)
+_COMMAND_END = re.compile(r'[\n|;&]')
+_B64_ENCODE = r'base64(?:[^\w\n][^\n]*)?\|(?:[^\n]*[^\w\n])?'
+_B64_DECODE = r'base64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b'
 
 
-def _first_base64_decodes(text: str, m, end: int) -> bool:
-    return _DECODE_FLAG_AHEAD.match(text, _FIRST_BASE64.match(text, m.start()).end()) is not None
+def _encoding_base64_starts(text: str) -> list:
+    """Every ``base64`` word with no decode flag starting between its end and its command's end. The only flag
+    starting inside another one's hit is the ``-decode`` in ``--decode``, which the hit's start stands for."""
+    flags = [flag.start() for flag in _DECODE_FLAG.finditer(text)]
+    command_ends = [end.start() for end in _COMMAND_END.finditer(text)]
+    starts = []
+    for word in _BASE64_WORD.finditer(text):
+        after = bisect_left(command_ends, word.end())
+        command_end = command_ends[after] if after < len(command_ends) else len(text)
+        last_flag = bisect_left(flags, command_end) - 1
+        if last_flag < 0 or flags[last_flag] < word.end():
+            starts.append(word.start())
+    return starts
 
 
-_B64_ROUNDTRIP = ExclusionMatcher(
-    r'\bbase64(?:[^\w\n][^\n]*)?\|(?:[^\n]*[^\w\n])?'
-    r'base64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b', only_end, _first_base64_decodes)
+_B64_ROUNDTRIP = MarkedMatcher(r'\b' + _B64_ENCODE + _B64_DECODE,
+                               lambda mark: mark + _B64_ENCODE + _B64_DECODE, _encoding_base64_starts)
 _TAR_CREATE = re.compile(r'\btar\s+(?:-?-?create\b|-?-?c[a-z]*f?\b|c[a-z]*f?\b)', re.IGNORECASE)
 
 

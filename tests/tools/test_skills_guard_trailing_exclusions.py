@@ -1,8 +1,9 @@
 """Rules whose stdlib original held negative lookaheads, checked for RE2 against those originals.
 
-On RE2 each of these rules is a ``tools.threat_patterns.ExclusionMatcher``: the rule is the original without its
-lookaheads (and without a conditional or a mid-pattern ``\\b`` that only guarded them), and the matcher evaluates
-them in Python at the ends the original tries. The stdlib originals below are the reference: on every generated
+On RE2 each of these rules is a ``tools.threat_patterns.ExclusionMatcher`` (or a ``MarkedMatcher`` where the
+exclusion depends on the match start or end alone): the rule is the original without its lookaheads (and without a
+conditional or a mid-pattern ``\\b`` that only guarded them), and the matcher evaluates them in Python at the ends
+the original tries. The stdlib originals below are the reference: on every generated
 line ``finditer`` must give the same spans (a security rule never matches less, so an exclusion never covers more,
 and no new false positives), which also covers a dropped candidate followed by a real one on the same line.
 """
@@ -174,6 +175,39 @@ def test_an_exclusion_is_not_rescanned_at_every_candidate_end(case):
     started = time.perf_counter()
     assert rewritten.search(line) is None
     assert time.perf_counter() - started < 5.0
+
+
+# Lines of many REJECTED STARTS sharing one word run or command chain: searched again after each rejected start,
+# the rest of the line is read once per start (about half a minute for these lines), whatever each check costs.
+_MANY_REJECTED_STARTS = {
+    "deception_hide": lambda: "do not tell the user " * 8_000 + "check",
+    "b64_roundtrip": lambda: "base64 -d | " * 40_000 + "sh",
+}
+
+
+@pytest.mark.parametrize("case", sorted(_MANY_REJECTED_STARTS))
+def test_a_rejected_start_does_not_rescan_the_rest_of_the_line(case):
+    line = _MANY_REJECTED_STARTS[case]()
+    rewritten = _REWRITTEN[case]()
+    started = time.perf_counter()
+    assert rewritten.search(line) is None
+    assert time.perf_counter() - started < 5.0
+
+
+@pytest.mark.parametrize("case", ["deception_hide", "b64_roundtrip"])
+def test_a_text_holding_private_use_characters_scans_as_the_original(case):
+    """These rules mark the positions their exclusion lets through with a private-use character: one the text
+    already holds would let the rule start or run through text the original stops at."""
+    original = re.compile(_ORIGINAL[case], re.IGNORECASE)
+    rewritten = _REWRITTEN[case]()
+    texts = {"deception_hide": ["do not tell x\ue000y the user", "do not tell the user\ue000 the user",
+                                "do not tell the user\ue000x check", "do not \ue000tell the user"],
+             "b64_roundtrip": ["\ue000base64 -d | base64 -d", "base64 -d \ue000| base64 -d",
+                               "x \ue000base64 -w0 | base64 -d", "\ue000base64 -d;\ue000x | base64 -d"]}[case]
+    for extra in ("", "\ue001", "".join(map(chr, range(0xE001, 0xE100)))):
+        for text in texts:
+            text += extra
+            assert [m.span() for m in rewritten.finditer(text)] == [m.span() for m in original.finditer(text)], text
 
 
 @pytest.mark.parametrize("case", ["deception_hide", "py_read_secrets_file", "unpinned_pip_install"])

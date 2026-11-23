@@ -7,6 +7,7 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent
+from gateway.platforms.api_server_runs import terminal_run_status
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 from gateway.turn_context import TurnContext
@@ -30,6 +31,24 @@ class Adapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id):
         return {}
+
+
+@pytest.mark.asyncio
+async def test_api_late_steer_is_returned_to_client_without_running_a_followup():
+    runner = object.__new__(GatewayRunner)
+    runner._draining = False
+    source = SessionSource(platform=Platform.API_SERVER, chat_id="api-session")
+    result = {"final_response": "original answer", "pending_steer": "add a title"}
+
+    pending_event, pending = await runner._run_agent_drain_pending(
+        result, None, source, build_session_key(source)
+    )
+
+    assert (pending_event, pending) == (None, None)
+    assert result["final_response"] == "original answer"
+    status, fields = terminal_run_status(result)
+    assert status == "completed"
+    assert fields["pending_steer"] == "add a title"
 
 
 @pytest.mark.asyncio

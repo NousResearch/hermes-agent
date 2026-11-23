@@ -176,3 +176,38 @@ def test_the_general_loader_loads_an_enabled_plugin_beside_such_a_cache(hermes_h
     loaded = manager._plugins["generalplug"]
     assert (loaded.enabled, loaded.error) == (True, None)
     assert marker.exists()
+
+
+def _malformed_repo_cache(home: Path, *recalled: str) -> None:
+    """A cached removal list whose first entry carries a repo URL ``urlsplit`` refuses."""
+    removed = [{"name": "elsewhere", "repo": "https://[bad/elsewhere"}]
+    _write_cache(home, json.dumps({"entries": [], "removed": removed + [{"name": n, "reason": "withdrawn"} for n in recalled]}))
+
+
+def test_a_removal_entry_with_a_malformed_repo_url_does_not_stop_provider_lookup(hermes_home):
+    kept = _write_plugin(_layouts(hermes_home, "keptprov")["nested"], "keptprov")
+    recalled = _write_plugin(_layouts(hermes_home, "recalledprov")["nested"], "recalledprov")
+    _malformed_repo_cache(hermes_home, "recalledprov")
+    import providers
+
+    assert providers.get_provider_profile("keptprov") is not None and kept.exists()
+    assert providers.get_provider_profile("recalledprov") is None and not recalled.exists()
+    assert providers.plugin_load_error("recalledprov") == "removed from the Hermes plugin catalog: withdrawn"
+
+
+def test_the_general_loader_loads_an_enabled_plugin_beside_a_malformed_repo_url(hermes_home):
+    from hermes_cli.plugins import PluginManager
+
+    plugin_dir = hermes_home / "plugins" / "generalplug"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text("name: generalplug\nversion: 0.1.0\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
+    (hermes_home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": ["generalplug"]}}),
+                                             encoding="utf-8")
+    _malformed_repo_cache(hermes_home)
+
+    manager = PluginManager()
+    manager.discover_and_load()
+
+    loaded = manager._plugins["generalplug"]
+    assert (loaded.enabled, loaded.error) == (True, None)

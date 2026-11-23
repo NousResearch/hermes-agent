@@ -784,21 +784,28 @@ def dotenv_assigned(raw: bytes) -> list[str]:
     return [b.key for b in _dotenv_bindings(raw) if b.key is not None and not b.error]
 
 
+def _quoted_name(raw: bytes, key: str) -> bool:
+    """Whether *raw* assigns *key* under a quoted name (``'KEY'=value``), which python-dotenv reads as *key* and
+    the line-by-line reader does not see."""
+    return any(b.key == key and not b.error and b.original.string.strip().removeprefix("export").lstrip()[:1] == "'"
+               for b in _dotenv_bindings(raw))
+
+
 def remove_whole_dotenv_assignments(env_path: Path, key: str, write) -> bool | None:
     """Remove every assignment of *key* from the ``.env`` at *env_path* whole, as python-dotenv reads it, when the
-    file holds a quoted value over several lines; every other byte stays (the blank lines before one included),
-    written once by ``write(path, lines, preserve_mode=True, newline="")``. Returns whether one was removed, or
-    None for a file without such a value (the line-by-line edit is exact there). A file that is not UTF-8 with
-    an assignment to remove raises :class:`DotenvNotUtf8`; with none it is left alone."""
+    file holds a quoted value over several lines or assigns *key* under a quoted name; every other byte stays
+    (the blank lines before one included), written once by ``write(path, lines, preserve_mode=True, newline="")``.
+    Returns whether one was removed, or None for any other file (the line-by-line edit is exact there). A file
+    that is not UTF-8 with an assignment to remove raises :class:`DotenvNotUtf8`; with none it is left alone."""
     raw = env_path.read_bytes()
-    if not dotenv_multiline(raw):
+    if not dotenv_multiline(raw) and not _quoted_name(raw, key):
         return None
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         if key in dotenv_assigned(raw):
-            raise DotenvNotUtf8(f"{env_path} holds a quoted value over several lines and is not UTF-8 text, so "
-                                f"{key} cannot be removed from it safely: remove it there by hand") from None
+            raise DotenvNotUtf8(f"{env_path} is not UTF-8 text, so {key} cannot be removed from it safely: remove "
+                                f"it there by hand") from None
         return False
     bom = "\ufeff" if text.startswith("\ufeff") else ""
     kept, found = [bom], False

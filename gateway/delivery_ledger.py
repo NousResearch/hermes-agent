@@ -315,6 +315,11 @@ def mark_delivered(obligation_id: str) -> None:
     _update_state(obligation_id, "delivered")
 
 
+def mark_abandoned(obligation_id: str, error: str = "") -> None:
+    """Keep a terminal, non-retryable failure for diagnosis without replaying its content."""
+    _update_state(obligation_id, "abandoned", error=error)
+
+
 def mark_failed(obligation_id: str, error: str = "") -> None:
     _update_state(obligation_id, "failed", error=error)
 

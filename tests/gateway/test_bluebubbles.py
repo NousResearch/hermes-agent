@@ -172,6 +172,21 @@ class TestBlueBubblesWebhookParsing:
 
 class TestBlueBubblesGuidResolution:
 
+    @pytest.mark.asyncio
+    async def test_http_409_is_typed_as_non_retryable_conflict(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        request = httpx.Request("POST", "http://localhost/api/v1/message/text")
+        response = httpx.Response(409, request=request)
+        error = httpx.HTTPStatusError("409 Conflict", request=request, response=response)
+
+        async def fail_with_conflict(path, payload):
+            raise error
+
+        monkeypatch.setattr(adapter, "_api_post", fail_with_conflict)
+        result = await adapter._post_message("/api/v1/message/text", {"message": "hello"})
+
+        assert not result.success
+        assert result.error_kind == "conflict"
 
     @pytest.mark.asyncio
     async def test_participant_only_match_does_not_resolve_to_group(self, monkeypatch):

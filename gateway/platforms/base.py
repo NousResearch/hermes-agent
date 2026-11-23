@@ -1674,9 +1674,10 @@ _SEND_RETRY_INLINE_WAIT_CAP_SECS = 60.0
 # Platform-neutral send-failure kinds for ``SendResult.error_kind``: too_long (size cap),
 # bad_format (markup rejected; plain-text retry fixes), forbidden (the bot CANNOT reach the user),
 # not_found (chat/thread/message gone), rate_limited, transient (connection-level, retry-safe),
-# unknown.
+# conflict (delivery unconfirmed — e.g. a bridge 409; replaying could duplicate, so it is kept
+# for diagnosis but never resent), unknown.
 SEND_ERROR_KINDS = frozenset(
-    {"too_long", "bad_format", "forbidden", "not_found", "rate_limited", "transient", "unknown"})
+    {"too_long", "bad_format", "forbidden", "not_found", "rate_limited", "transient", "conflict", "unknown"})
 
 # ``not_found`` substrings by blast radius: chat-level = target dead; thread/topic/message-level
 # leaves the parent chat reachable.
@@ -3718,8 +3719,9 @@ class BasePlatformAdapter(ABC):
 
     def _send_retry_is_final(self, result: "SendResult") -> bool:
         """True when a failed send must be returned as-is: neither a retry nor the plain-text
-        fallback can fix it (a structured auth/target refusal). Default: never."""
-        return False
+        fallback can fix it. An ambiguous ``conflict`` is always final; subclasses extend this
+        for structured auth/target refusals."""
+        return result.error_kind == "conflict"
 
     @staticmethod
     def _is_partial_delivery(result: "SendResult") -> bool:
@@ -4215,11 +4217,17 @@ class BasePlatformAdapter(ABC):
         backoff has passed instead of waiting for the next restart (#91653)."""
         try:
             from gateway.dead_targets import classify_dead_error
-            from gateway.delivery_ledger import is_reconnect_only, mark_delivered, mark_failed
+            from gateway.delivery_ledger import is_reconnect_only, mark_abandoned, mark_delivered, mark_failed
             if getattr(result, "success", False):
                 await asyncio.to_thread(mark_delivered, obligation_id)
                 return
             error = str(getattr(result, "error", "") or "")
+            if getattr(result, "error_kind", None) == "conflict":
+                # HTTP 409 from an idempotent bridge can mean delivery is pending approval or
+                # otherwise unconfirmed. Retrying risks sending the same reply twice; preserve it
+                # for diagnosis but keep it out of restart/reconnect recovery sweeps.
+                await asyncio.to_thread(mark_abandoned, obligation_id, error)
+                return
             await asyncio.to_thread(mark_failed, obligation_id, error)
             if is_reconnect_only(error):
                 redeliver = getattr(

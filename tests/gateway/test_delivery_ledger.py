@@ -164,6 +164,15 @@ class TestSweep:
 class TestRuntimeFailedSweep:
     """A live gateway may reclaim only its own transient reconnect failures."""
 
+    def test_abandoned_conflict_is_preserved_but_never_replayed(self):
+        _record(platform="bluebubbles", content="keep for diagnosis")
+        dl.mark_abandoned("ob-1", "409 Conflict")
+
+        assert _row("ob-1")["state"] == "abandoned"
+        assert _row("ob-1")["content"] == "keep for diagnosis"
+        assert dl.sweep_failed_for_runtime("bluebubbles") == []
+        assert dl.sweep_recoverable() == []
+
     def test_claims_current_process_send_path_degraded_row(self):
         _record(platform="telegram")
         dl.mark_failed("ob-1", "send_path_degraded")

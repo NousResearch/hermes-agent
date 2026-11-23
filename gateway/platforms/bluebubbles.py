@@ -177,6 +177,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             msg_id = str(data.get("guid") or data.get("messageGuid") or "ok")
             return SendResult(success=True, message_id=msg_id, raw_response=res)
         except Exception as exc:
+            response = getattr(exc, "response", None)
+            if getattr(response, "status_code", None) == 409:
+                return SendResult(success=False, error=str(exc) or type(exc).__name__, error_kind="conflict")
             return SendResult(success=False, error=str(exc) or type(exc).__name__)
 
     async def _private_api_chat_call(self, chat_id: str, action: str, method: str) -> bool:

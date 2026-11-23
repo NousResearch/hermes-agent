@@ -165,6 +165,18 @@ class TestSendWithRetryFallback:
         # Fallback content should be plain-text notice
         assert "plain text" in adapter._send_calls[1][1].lower()
 
+    @pytest.mark.asyncio
+    async def test_conflict_does_not_retry_or_send_plain_text_fallback(self):
+        """A bridge 409 can mean delivery is unconfirmed; another send could duplicate it."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="409 Conflict", error_kind="conflict"),
+        ]
+        result = await adapter._send_with_retry("chat1", "hello")
+        assert not result.success
+        assert result.error_kind == "conflict"
+        assert len(adapter._send_calls) == 1
+
 
 # ---------------------------------------------------------------------------
 # _send_with_retry — retry_after honor

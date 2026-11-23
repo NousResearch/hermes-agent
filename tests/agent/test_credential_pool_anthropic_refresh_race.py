@@ -60,28 +60,7 @@ def _entry(*, id: str, access_token: str, refresh_token: str, source: str) -> Po
     )
 
 
-@pytest.fixture(autouse=True)
-def _fake_pool_store(monkeypatch):
-    """Back write/read_credential_pool with a shared in-memory dict.
-
-    This stands in for ``~/.hermes/auth.json`` so the two "process-local"
-    CredentialPool instances used by the race tests can actually see each
-    other's persisted writes (exactly what the real cross-process recovery
-    path depends on), without touching the real filesystem.
-    """
-    store: dict[str, list] = {}
-
-    def _write(provider, entries, *, removed_ids=None, status_cleared_ids=None, token_bases=None):
-        store[provider] = list(entries)
-
-    def _read(provider=None):
-        if provider is None:
-            return dict(store)
-        return list(store.get(provider, []))
-
-    monkeypatch.setattr("agent.credential_pool.write_credential_pool", _write)
-    monkeypatch.setattr("agent.credential_pool.read_credential_pool", _read)
-    return store
+pytestmark = pytest.mark.usefixtures("fake_pool_store")
 
 
 class _SingleUseTokenServer:

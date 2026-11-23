@@ -5,8 +5,11 @@ platform. An earlier approve must not waive a later deny for execute_code,
 dangerous commands, or plugin approvals.
 """
 
+import os
+
 from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
 from tools import approval, approval_context
+from tools.file_tools_write_guards import _check_approval_required_write
 
 _CLEARED = (
     "HERMES_GATEWAY_SESSION",
@@ -56,6 +59,7 @@ def test_single_query_approve_does_not_waive_cron_deny(monkeypatch):
         dangerous = approval.check_dangerous_command("rm -rf /tmp/stuff", "local")
         plugin = approval.request_tool_approval("memory", "write a note")
         shell = approval.check_all_command_guards("rm -rf /tmp/stuff", "local")
+        write = _check_approval_required_write([os.path.expanduser("~/.ssh/config")])
     finally:
         clear_session_vars(tokens)
 
@@ -64,6 +68,7 @@ def test_single_query_approve_does_not_waive_cron_deny(monkeypatch):
     for result in (dangerous, plugin, shell):
         assert result["approved"] is False
         assert "cron_mode" in result["message"]
+    assert "cron session denies it" in (write or "")
 
 
 def test_single_query_approve_does_not_waive_unattended_deny(monkeypatch):

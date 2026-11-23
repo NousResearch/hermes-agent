@@ -4006,10 +4006,20 @@ html[data-hud-window] [data-slot='popover-content'] {
 
 /* Non-modal popovers do not set inline pointer-events: auto; restore it on
    interactive popper wrappers unless a modal layer has locked body pointer
-   events, while leaving tooltips pass-through. */
-body:not([style*='pointer-events: none']) > [data-browser-portal-host='menu'] > *,
-body:not([style*='pointer-events: none']) > [data-browser-portal-host='select'] > * {
-  pointer-events: auto;
+   events, while leaving tooltips pass-through.
+
+   The lock is read on <body> itself and handed down as a custom property. Written as one selector
+   (`body:not([style*=…]) > host > *`) its subject is `*`, and a style-attribute selector with a
+   universal subject makes the engine restyle the whole subtree of ANY element whose inline style
+   changes: a transcript scroll writes one per frame (the sticky prompt's clip), which restyled the
+   entire reply under it every frame (96k elements against 37k over the same scroll). */
+body[style*='pointer-events: none'] {
+  --browser-popper-pointer-events: none;
+}
+
+[data-browser-portal-host='menu'] > *,
+[data-browser-portal-host='select'] > * {
+  pointer-events: var(--browser-popper-pointer-events, auto);
 }
 
 /* CSS zoom scales viewport units too; browser shells must fit their parent. */

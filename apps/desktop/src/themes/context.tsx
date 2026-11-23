@@ -32,6 +32,7 @@ import {
 import { writeBootPalette } from './boot-palette'
 import { $chatFontFamily, resolveChatFontFamily } from './chat-font'
 import { harmonize, normalizeHex, readableInk } from './color'
+import { isOneDark, oneDarkProperties, themeAccent } from './one-dark'
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme, RETIRED_SKINS } from './presets'
 import { $pendingModeApply } from './request'
 import { retintTheme } from './retint'
@@ -232,7 +233,7 @@ export function accentedTheme(theme: DesktopTheme, accent: string): DesktopTheme
   const base = accentBase(theme)
   const hex = normalizeHex(accent)
 
-  if (!hex || hex === normalizeHex(base.colors.primary)) {
+  if (!hex || hex === normalizeHex(themeAccent(base))) {
     return base
   }
 
@@ -312,6 +313,8 @@ function applyTypographyKnobs(root: HTMLElement, typo: Partial<DesktopThemeTypog
   }
 }
 
+let previousPaletteProperties: string[] = []
+
 function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily = $chatFontFamily.get()) {
   if (typeof document === 'undefined') {
     return
@@ -324,6 +327,19 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily 
   const isDark = rendered === 'dark'
   const midground = c.midground ?? c.ring
   const skinName = theme.name.endsWith(`-${mode}`) ? theme.name.slice(0, -mode.length - 1) : theme.name
+  const exactPalette = isOneDark(theme)
+
+  // Clear before defaults: success/input/solid-primary are also default-owned.
+  for (const property of previousPaletteProperties) {
+    root.style.removeProperty(property)
+  }
+  previousPaletteProperties = []
+
+  if (exactPalette) {
+    root.dataset.hermesPalette = 'one-dark'
+  } else {
+    delete root.dataset.hermesPalette
+  }
 
   root.style.setProperty('color-scheme', rendered)
   root.dataset.hermesTheme = skinName
@@ -390,9 +406,17 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily 
     root.style.setProperty(k, v)
   }
 
+  if (exactPalette) {
+    const properties = oneDarkProperties(c)
+    for (const [key, value] of Object.entries(properties)) {
+      root.style.setProperty(key, value)
+    }
+    previousPaletteProperties = Object.keys(properties)
+  }
+
   applyTypographyKnobs(root, typo)
 
-  const chromeBg = chromeBackground(c.background, isDark)
+  const chromeBg = exactPalette ? c.background : chromeBackground(c.background, isDark)
 
   window.hermesDesktop?.setTitleBarTheme?.({
     background: chromeBg,

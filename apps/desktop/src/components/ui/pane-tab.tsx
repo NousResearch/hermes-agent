@@ -14,26 +14,27 @@ export const PANE_TAB_STRIP_LINE_RIGHT = 'shadow-[inset_-1px_0_0_var(--ui-stroke
 
 // Surface tokens become transparent under glass; the body owns the tint.
 // The close-button fade masks the label, so it needs no second surface fill.
+// Border rule: bottom only — 1px stroke at rest, 2px accent when active —
+// with no top/left edges, so tabs read as one continuous ruled strip.
 const TAB =
-  'group/tab relative flex shrink-0 items-center border-transparent bg-(--tab-bg) text-[0.6875rem] font-medium [-webkit-app-region:no-drag] focus-visible:z-10 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--ui-accent)'
+  'group/tab relative flex shrink-0 items-center border-b border-b-(--ui-stroke-tertiary) bg-(--tab-bg) text-[0.6875rem] font-medium [-webkit-app-region:no-drag] focus-visible:z-10 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--ui-accent)'
 
 // Full height: with the strip's rule removed there is no last-pixel row to
 // leave uncovered, so tabs fill the bar and no sliver of gutter shows through.
-const TAB_HORIZONTAL = 'h-full min-w-0 max-w-48 not-first:border-l not-first:border-l-(--ui-stroke-quaternary)'
+const TAB_HORIZONTAL = 'h-full min-w-0 max-w-48'
 
 // A closeable tab's floor keeps short labels left of the close button.
 // A floor, not padding — a tab already wider than it pays nothing.
 const TAB_CLOSEABLE = 'min-w-13'
 
-const TAB_VERTICAL =
-  'w-full max-h-48 justify-center not-first:border-t not-first:border-t-(--ui-stroke-quaternary) [writing-mode:vertical-rl]'
+const TAB_VERTICAL = 'w-full max-h-48 justify-center [writing-mode:vertical-rl]'
 
 const TAB_ACTIVE = 'h-full text-foreground [--tab-bg:var(--pane-tab-active-bg,var(--ui-editor-surface-background))]'
 
-// Horizontal only: the active tab is the sole seam on the strip — a
-// theme-primary underline drawn as an inset shadow in its own last pixel row,
-// so it costs no layout and can't shift the tab.
-const TAB_ACTIVE_UNDERLINE = 'shadow-[inset_0_-2px_0_var(--pane-tab-active-accent,var(--theme-primary))]'
+// The active tab's underline is a real border, not an inset shadow: it sits
+// on the tab's own edge, so it meets the sidebar seam with no 1px step, and
+// border-box height means the thicker rule never shifts the tab.
+const TAB_ACTIVE_UNDERLINE = 'border-b-2! border-b-(--pane-tab-active-accent,var(--theme-primary))!'
 
 // Inactive = gutter, defaulting to the shared chrome surface so a strip that
 // sets no vars still matches the sidebar/titlebar instead of falling through to
@@ -107,7 +108,7 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
         !vertical && onClose && TAB_CLOSEABLE,
         edge,
         active
-          ? cn(TAB_ACTIVE, !vertical && TAB_ACTIVE_UNDERLINE)
+          ? cn(TAB_ACTIVE, TAB_ACTIVE_UNDERLINE)
           : cn(TAB_IDLE, edge && `${edge}-(--ui-stroke-tertiary)`),
         selected && TAB_SELECTED,
         className

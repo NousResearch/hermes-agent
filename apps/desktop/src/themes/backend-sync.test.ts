@@ -157,6 +157,41 @@ describe('ingestBackendSkin', () => {
     expect(fresh.$backendThemes.get().neon?.name).toBe('neon')
   })
 
+  it('paints a legacy One Dark snapshot at boot and keeps a saved highlight on reconnect', async () => {
+    const snapshot = {
+      name: 'one-dark',
+      label: 'One-dark',
+      description: 'Hermes skin',
+      colors: { background: '#21252b', foreground: '#abb2bf', primary: '#c678dd' }
+    }
+    const savedName = 'one-dark-accent-2ea043'
+    window.localStorage.setItem('hermes-desktop-backend-themes-v1', JSON.stringify({ 'one-dark': snapshot }))
+    window.localStorage.setItem('hermes-desktop-theme-v2', 'one-dark')
+    vi.resetModules()
+    await import('./context')
+    expect(document.documentElement.style.getPropertyValue('--ui-bg-chrome')).toBe('#282c34')
+    expect(document.documentElement.style.getPropertyValue('--ui-text-tertiary')).toBe('#7f848e')
+    expect(window.localStorage.getItem('hermes-boot-background')).toBe('#282c34')
+
+    window.localStorage.setItem('hermes-desktop-theme-v2', savedName)
+    window.localStorage.setItem(
+      'hermes-desktop-user-themes-v1',
+      JSON.stringify({
+        [savedName]: { ...snapshot, name: savedName, accentOf: 'one-dark' }
+      })
+    )
+    vi.resetModules()
+    const context = await import('./context')
+    const before = document.documentElement.style.getPropertyValue('--theme-midground')
+    expect(before).not.toBe('#c678dd')
+    expect(document.documentElement.style.getPropertyValue('--theme-primary')).toBe('#404754')
+    const fresh = await import('./backend-sync')
+    fresh.ingestBackendSkin(skin('one-dark'), { apply: false })
+    expect(fresh.$pendingSkinApply.get()).toBeNull()
+    expect(context.skinPref.stored('default')).toBe(savedName)
+    expect(document.documentElement.style.getPropertyValue('--theme-midground')).toBe(before)
+  })
+
   it('drops junk and built-in names from the cached registry', async () => {
     const mono = { name: 'mono', label: 'x', colors: { background: '#000', foreground: '#fff', primary: '#f0f' } }
     window.localStorage.setItem('hermes-desktop-backend-themes-v1', JSON.stringify({ mono, bad: { name: 'bad' } }))

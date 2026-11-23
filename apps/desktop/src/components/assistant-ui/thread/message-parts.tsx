@@ -7,7 +7,7 @@ import {
   useMessagePartText
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, type FC, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { type ComponentProps, type CSSProperties, type FC, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { CatalogInstallTool } from '@/components/assistant-ui/catalog-install-tool'
@@ -344,7 +344,29 @@ const ThinkingDisclosure: FC<{
           </span>
         }
       >
-        <span className={cn(SCAFFOLD_LABEL_CLASS, pending && 'shimmer')}>{thoughtLabel}</span>
+        {pending ? (
+          // HyperX Sun: each letter rides its own loop. Durations and delays
+          // are a fixed function of the letter index — never re-randomized —
+          // so a re-render resumes the same phase instead of flickering.
+          <span aria-label={thoughtLabel} className={cn(SCAFFOLD_LABEL_CLASS, 'od-sun')}>
+            {Array.from(thoughtLabel).map((letter, index) => (
+              <span
+                aria-hidden="true"
+                key={`${index}-${letter}`}
+                style={
+                  {
+                    '--delay': `-${((index % 8) * 0.25).toFixed(2)}s`,
+                    '--d': `${(1.6 + (index % 8) * 0.19).toFixed(2)}s`
+                  } as CSSProperties
+                }
+              >
+                {letter}
+              </span>
+            ))}
+          </span>
+        ) : (
+          <span className={SCAFFOLD_LABEL_CLASS}>{thoughtLabel}</span>
+        )}
       </ScaffoldRow>
       {open && (
         <div

@@ -6,6 +6,31 @@ import { skinToDesktopTheme } from './skin'
 const withColors = (name: string, colors: Record<string, string>) => skinToDesktopTheme({ name, colors })
 
 describe('skinToDesktopTheme', () => {
+  it('maps One Dark Pro explicitly instead of deriving surfaces from terminal chrome', () => {
+    const theme = withColors('one-dark', {
+      status_bar_bg: '#21252b',
+      banner_text: '#abb2bf',
+      banner_dim: '#5c6370',
+      ui_accent: '#c678dd'
+    })!
+
+    expect(theme.colors).toMatchObject({
+      background: '#282c34',
+      foreground: '#abb2bf',
+      card: '#21252b',
+      popover: '#21252b',
+      primary: '#404754',
+      primaryForeground: '#abb2bf',
+      secondary: '#2c313a',
+      accent: '#e06c75',
+      mutedForeground: '#7f848e',
+      border: '#181a1f',
+      ring: '#3e4452'
+    })
+    expect(theme.darkColors).toEqual(theme.colors)
+    expect(theme.name).toBe('one-dark')
+  })
+
   it('returns null without a name or colors', () => {
     expect(skinToDesktopTheme({ name: 'x' })).toBeNull()
     expect(skinToDesktopTheme({ name: '', colors: { background: '#101010' } })).toBeNull()

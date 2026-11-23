@@ -7,7 +7,7 @@ const reactUi: TestProjectConfiguration = {
     name: 'ui',
     environment: 'jsdom',
     // Keep padding regressions observable instead of mocking the stylesheet away.
-    css: { include: [/status-stack\.css$/] },
+    css: { include: [/status-stack\.css$/, /one-dark\.css(?:\?|$)/] },
     setupFiles: ['./vitest.setup.ts'],
     include: ['src/**/*.test.{ts,tsx}'],
     globals: true,

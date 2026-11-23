@@ -638,7 +638,8 @@ describe('refreshSessions identity + loading hygiene', () => {
         attachments: [],
         fromQueue: true,
         sessionId: 'queued-runtime',
-        storedSessionId: 'queued-session'
+        storedSessionId: 'queued-session',
+        submission_id: expect.any(String)
       })
     } finally {
       unmount()
@@ -674,6 +675,7 @@ describe('refreshSessions identity + loading hygiene', () => {
         } else {
           pending.reject(new Error('outgoing gateway disconnected'))
         }
+
         await refresh
       })
 
@@ -697,6 +699,7 @@ describe('refreshSessions identity + loading hygiene', () => {
         if (cache === 'populated') {
           setSessions([row('incoming')])
         }
+
         gatewayScope.epoch += 1
         const refresh = result.current.refreshSessions(() => isCurrentGatewaySwitch(token))
         expect($sessionsLoading.get()).toBe(true)
@@ -1280,5 +1283,107 @@ describe('messaging profile scope', () => {
 
     expect(listAllProfileSessions).toHaveBeenCalledTimes(2)
     expect($messagingSessions.get().map(session => session.id)).toEqual(['tg'])
+  })
+})
+
+// The flag is raised when the renderer starts ($sessionsLoading = atom(true)) and by a refresh that begins over an
+// empty list. Queued prompts wait for it to drop (use-composer-queue, use-background-queue-drain), and with rows in
+// the list no skeleton shows that it is still up.
+describe('refreshSessions lowers a loading flag it did not raise', () => {
+  it('lowers the start-up flag when a row was listed before the first refresh began', async () => {
+    setSessionsLoading(true) // as the renderer starts
+    setSessions([row('routed')]) // a window reloaded on a chat resumes it and lists its row
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('routed'), row('b')] }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect(
+      $sessions
+        .get()
+        .map(s => s.id)
+        .sort()
+    ).toEqual(['b', 'routed'])
+    expect($sessionsLoading.get()).toBe(false)
+  })
+
+  it('lowers the flag of a refresh that was superseded by one begun over a filled list', async () => {
+    setSessionsLoading(true) // as the renderer starts
+    const first = deferred<SidebarSessionsResponse>()
+    const second = deferred<SidebarSessionsResponse>()
+    listSidebarSessions.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    const boot = result.current.refreshSessions() // list empty: raises the flag
+    setSessions([row('routed')]) // the routed chat's row lands while the first read is out
+    const later = result.current.refreshSessions() // reconnect or another window's broadcast: list not empty
+
+    await act(async () => {
+      first.resolve(sidebar({ sessions: [row('routed')] }))
+      await boot
+    })
+
+    expect($sessionsLoading.get()).toBe(true) // the newest read is still out
+
+    await act(async () => {
+      second.resolve(sidebar({ sessions: [row('routed'), row('b')] }))
+      await later
+    })
+
+    expect(
+      $sessions
+        .get()
+        .map(s => s.id)
+        .sort()
+    ).toEqual(['b', 'routed'])
+    expect($sessionsLoading.get()).toBe(false)
+  })
+
+  it('still leaves a populated, settled list alone', async () => {
+    setSessions([row('a')])
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a')] }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+    const states: boolean[] = []
+    const off = $sessionsLoading.subscribe(value => states.push(value))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    off()
+    expect(states).toEqual([false])
+  })
+
+  it('leaves a gateway switch its barrier when a refresh from before the switch settles', async () => {
+    setSessions([row('a')])
+    const stale = deferred<SidebarSessionsResponse>()
+    const switched = deferred<SidebarSessionsResponse>()
+    listSidebarSessions.mockReturnValueOnce(stale.promise).mockReturnValueOnce(switched.promise)
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    const before = result.current.refreshSessions() // over a populated, settled list: flag down
+    const token = beginGatewaySwitch() // wipes the lists and raises its barrier
+
+    try {
+      await act(async () => {
+        stale.resolve(sidebar({ sessions: [row('a')] }))
+        await before
+      })
+
+      expect($sessionsLoading.get()).toBe(true) // the switch has not loaded its list yet
+
+      const after = result.current.refreshSessions() // begins under the barrier
+
+      await act(async () => {
+        switched.resolve(sidebar({ sessions: [row('b')] }))
+        await after
+      })
+
+      expect($sessionsLoading.get()).toBe(false)
+    } finally {
+      endGatewaySwitch(token)
+    }
   })
 })

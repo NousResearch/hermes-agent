@@ -617,18 +617,16 @@
 }
 
 /* A seam between window-top panels already has the panel hairline (below the band); the sash's
-   own resting hairline would also cross the band. It keeps its hover band. */
-/* The trailing side is a window-top zone, or a split whose zones reach the window top. */
-:root[data-shell='portal']
-  [data-sash-overlap]:is(:has(+ [data-tree-group][data-window-top]), :has(+ * [data-tree-group][data-window-top]))
-  > span:first-child {
+   own resting hairline would also cross the band. It keeps its hover band. The sash names that its
+   trailing side reaches the window top (tree-split.tsx): a :has() looking into that side re-searched
+   the whole transcript on every DOM change in it, and restyled and relaid the seam each time. */
+:root[data-shell='portal'] [data-sash-overlap][data-trailing-window-top] > span:first-child {
   opacity: 0;
 }
 
 /* Panels start below the titlebar band, so does the seam between them: its grab band and hover line
    never cross the band (and never sit over the band's own buttons). */
-:root[data-shell='portal']
-  [data-sash-overlap]:is(:has(+ [data-tree-group][data-window-top]), :has(+ * [data-tree-group][data-window-top])) {
+:root[data-shell='portal'] [data-sash-overlap][data-trailing-window-top] {
   top: var(--titlebar-band-height);
 }
 

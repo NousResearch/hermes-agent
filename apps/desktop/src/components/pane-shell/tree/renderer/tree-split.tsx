@@ -8,6 +8,7 @@
 
 import { useStore } from '@nanostores/react'
 import {
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   useCallback,
@@ -917,34 +918,13 @@ export function TreeSplit({
       {tracks.map(({ child, collapsed, minimized, narrowCollapsed, sizing, track }, i) => {
         const partner = collapsed ? -1 : seamPartner(i)
         const absorbs = i === absorberIndex
+        const trackTop = topEdge && (horizontal || i === visibleOrder[0])
 
         return (
           <div
             className="relative flex min-h-0 min-w-0"
             key={child.id}
-            style={
-              collapsed
-                ? { display: 'none' }
-                : minimized
-                  ? { flex: `0 0 ${horizontal ? MINIMIZED_TRACK : 'auto'}` }
-                  : {
-                      // One flexbox formula for everything: a sized zone is
-                      // grow-0 shrink-1 from its preferred basis (it yields
-                      // gracefully on tight windows, floored by min-width);
-                      // everything else splits the leftover by weight. In an
-                      // all-fixed run an UNCAPPED last track grows into the
-                      // leftover; capped sidebars stay at their declared size.
-                      flex: track ? `${absorbs ? 1 : 0} 1 ${track}` : `${grow(i)} ${grow(i)} 0px`,
-                      // Pane-declared clamps apply along THIS split's axis only
-                      // (a rail's width clamp shouldn't constrain its height).
-                      // The absorber is uncapped by selection, so dropping its
-                      // max is a no-op; capped tracks always keep theirs.
-                      minWidth: (horizontal && sizing?.minWidth) || 0,
-                      maxWidth: horizontal && !absorbs ? sizing?.maxWidth : undefined,
-                      minHeight: (!horizontal && sizing?.minHeight) || 0,
-                      maxHeight: horizontal || absorbs ? undefined : sizing?.maxHeight
-                    }
-            }
+            style={trackStyle({ collapsed, minimized, sizing, track }, horizontal, absorbs, grow(i))}
           >
             {partner >= 0 && (
               <Sash
@@ -955,6 +935,7 @@ export function TreeSplit({
                 onDoubleClick={() => resetBoundary(partner, i)}
                 onKeyDown={e => keySash(partner, i, e)}
                 onPointerDown={e => startSash(partner, i, e)}
+                trailingWindowTop={portal && trackTop && !narrowCollapsed}
               />
             )}
             {!narrowCollapsed && (
@@ -965,7 +946,7 @@ export function TreeSplit({
                 railSide={horizontal ? railSideFor(i) : undefined}
                 rightEdge={rightEdge && (!horizontal || i === visibleOrder[visibleOrder.length - 1])}
                 rootRow={rootRow || childRootRow(child)}
-                topEdge={topEdge && (horizontal || i === visibleOrder[0])}
+                topEdge={trackTop}
               />
             )}
           </div>
@@ -1011,6 +992,44 @@ function useLeadingShare(
   return share
 }
 
+interface TrackBox {
+  collapsed: boolean
+  minimized: boolean
+  sizing: null | PaneSizing
+  track: null | string
+}
+
+/** A track wrapper's box along its split's axis. */
+function trackStyle(
+  { collapsed, minimized, sizing, track }: TrackBox,
+  horizontal: boolean,
+  absorbs: boolean,
+  grow: number
+): CSSProperties {
+  if (collapsed) {
+    return { display: 'none' }
+  }
+
+  if (minimized) {
+    return { flex: `0 0 ${horizontal ? MINIMIZED_TRACK : 'auto'}` }
+  }
+
+  return {
+    // One flexbox formula for everything: a sized zone is grow-0 shrink-1 from its preferred basis
+    // (it yields gracefully on tight windows, floored by min-width); everything else splits the
+    // leftover by weight. In an all-fixed run an UNCAPPED last track grows into the leftover;
+    // capped sidebars stay at their declared size.
+    flex: track ? `${absorbs ? 1 : 0} 1 ${track}` : `${grow} ${grow} 0px`,
+    // Pane-declared clamps apply along THIS split's axis only (a rail's width clamp shouldn't
+    // constrain its height). The absorber is uncapped by selection, so dropping its max is a
+    // no-op; capped tracks always keep theirs.
+    minWidth: (horizontal && sizing?.minWidth) || 0,
+    maxWidth: horizontal && !absorbs ? sizing?.maxWidth : undefined,
+    minHeight: (!horizontal && sizing?.minHeight) || 0,
+    maxHeight: horizontal || absorbs ? undefined : sizing?.maxHeight
+  }
+}
+
 function Sash({
   disabled,
   horizontal,
@@ -1018,7 +1037,8 @@ function Sash({
   leadingIndex,
   onDoubleClick,
   onKeyDown,
-  onPointerDown
+  onPointerDown,
+  trailingWindowTop
 }: {
   disabled?: boolean
   horizontal: boolean
@@ -1028,6 +1048,10 @@ function Sash({
   onDoubleClick?: () => void
   onKeyDown: (e: ReactKeyboardEvent<HTMLDivElement>) => void
   onPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void
+  /** The redesign's seam reaches the window top: its trailing side is a window-top zone or a split
+   *  whose zones reach it. Named here for portal-shell.css: a `:has(+ * [data-window-top])` there
+   *  re-searched the whole trailing pane (the chat transcript) on every DOM change inside it. */
+  trailingWindowTop: boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const { t } = useI18n()
@@ -1063,6 +1087,7 @@ function Sash({
         keyboard && 'outline-none'
       )}
       data-sash-overlap="trailing"
+      data-trailing-window-top={trailingWindowTop || undefined}
       onDoubleClick={disabled ? undefined : onDoubleClick}
       onPointerDown={disabled ? undefined : onPointerDown}
       role="separator"

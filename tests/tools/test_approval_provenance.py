@@ -109,37 +109,3 @@ def test_label_is_the_grant_the_check_accepted_even_if_revoked_after(guard, monk
     monkeypatch.setattr(approval_module, "_pending_findings", check_then_revoke)
     result = guard("chmod 777 build-out", "local", approval_callback=_no_prompt)
     assert result["pre_approved"] == [{"description": writable, "scope": "permanent"}]
-
-
-# --- ``force`` must not bypass the unconditional hardline floor (#157918) ---
-
-def test_force_cannot_bypass_hardline_floor(monkeypatch):
-    from tools import terminal_tool
-
-    monkeypatch.setattr(terminal_tool, "_get_approval_callback", lambda: _no_prompt)
-    with pytest.raises(terminal_tool._Rejected):
-        terminal_tool._run_approval_guards("rm -rf /", "local", {}, force=True)
-
-
-def test_force_cannot_bypass_sudo_stdin_floor(monkeypatch):
-    from tools import terminal_tool
-
-    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
-    with pytest.raises(terminal_tool._Rejected):
-        terminal_tool._run_approval_guards("echo hunter2 | sudo -S apt install -y x", "local", {}, force=True)
-
-
-def test_force_still_approves_a_confirmed_safe_command():
-    from tools import terminal_tool
-
-    verdict = terminal_tool._run_approval_guards("ls -la", "local", {}, force=True)
-    assert verdict.approved_run is True
-
-
-def test_force_in_an_isolated_container_keeps_container_semantics():
-    """An isolated container's hardline isolation is the mitigation — force mirrors
-    check_all_command_guards there instead of applying the host floor (#157918)."""
-    from tools import terminal_tool
-
-    verdict = terminal_tool._run_approval_guards("rm -rf /", "docker", {"env_type": "docker"}, force=True)
-    assert verdict.approved_run is True

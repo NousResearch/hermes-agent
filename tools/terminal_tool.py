@@ -138,10 +138,8 @@ def _container_profile() -> str:
 
 
 from tools.approval import (
-    _floor_block,
-    _should_skip_container_guards,
-    _user_deny_block,
     check_all_command_guards as _check_all_guards_impl,
+    check_preconfirmed_command_guards,
 )
 
 
@@ -1191,26 +1189,17 @@ class _ApprovalVerdict:
 
 
 def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *, force: bool) -> _ApprovalVerdict:
-    """Run the command guards; ``force`` skips them, except the unconditional floor which
-    no flag outranks (#157918).
+    """Run the command guards; ``force`` skips the approval layers but not the floor
+    (:func:`tools.approval.check_preconfirmed_command_guards`).
     Raises :class:`_Rejected` when the command may not run (denied, or pending
     gateway approval)."""
+    has_host_access = _docker_has_host_access(config)
     if force:
-        # ``force`` means "the user confirmed this command" — it cannot also confirm what
-        # check_all_command_guards refuses unconditionally. Mirror its structure exactly:
-        # an isolated container skips the hardline floor (its isolation is the mitigation)
-        # but the operator's approvals.deny rules hold there too; everywhere else the full
-        # floor (hardline, runtime self-delete, sudo -S piping, deny rules) runs.
-        if _should_skip_container_guards(env_type, has_host_access=_docker_has_host_access(config)):
-            blocked = _user_deny_block(command)
-        else:
-            blocked = _floor_block(command, sudo_guard=True)
-        if blocked is not None:
-            approval = blocked
-        else:
+        approval = check_preconfirmed_command_guards(command, env_type, has_host_access=has_host_access)
+        if approval["approved"]:
             return _ApprovalVerdict(approved_run=True)
     else:
-        approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
+        approval = _check_all_guards(command, env_type, has_host_access=has_host_access)
     if not approval["approved"]:
         if approval.get("status") == "pending_approval":  # gateway ask mode
             raise _Rejected(_error_json(
@@ -1602,7 +1591,8 @@ def terminal_tool(
     """Execute *command* in the configured terminal environment; returns a JSON string.
 
     ``force`` (internal, not in the model schema) skips the dangerous-command
-    check after the user confirmed. ``workdir`` is per-command and never
+    check after the user confirmed; the floor no setting bypasses still applies.
+    ``workdir`` is per-command and never
     recorded as the session cwd. ``pty`` applies to the local backend only.
     ``notify_on_complete`` and ``watch_patterns`` are mutually exclusive
     background-only flags: on conflict watch_patterns is dropped. watch_patterns

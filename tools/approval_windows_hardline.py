@@ -216,6 +216,11 @@ class NarrowableDeleteMatcher:
         return self._rule.search(_mask_narrowed_deletes(text, self._verb, self._recursive))
 
 
+def narrowable_rm_rule(rule: str) -> NarrowableDeleteMatcher:
+    """An `rm` drive-root rule (no recursive switch needed) that passes over the deletes a literal -Include narrows."""
+    return NarrowableDeleteMatcher(_RM_WORD_RE, rule, recursive=False)
+
+
 def _win_root_delete(cmdpos: str) -> str:
     # A delete verb as a command (after a bare CR, behind a launcher, or as the command word itself) with a drive
     # root among its arguments. As the command word its word must not run on into a `/`: `./del/run.sh x C:/` is a
@@ -244,6 +249,6 @@ def windows_hardline_patterns(cmdpos: str) -> list[tuple[str | NarrowableDeleteM
         # and a literal PowerShell `-Include *.tmp` (only matching items; `*`, a list, `"*$x"`, cmd `/s`, after `--`/`#` still wipe) fall through.
         # The two drive-root rules are matcher objects: approval_detection keeps a non-str entry as it is.
         (NarrowableDeleteMatcher(_DELETE_VERB_RE, _win_root_delete(cmdpos), recursive=True), "recursive delete of drive root"),
-        (NarrowableDeleteMatcher(_RM_WORD_RE, cmdpos + r'rm\s+(?:-[^\s]*\s+)*(?:' + _HARDLINE_DRIVE_QUOTED + '|' + _HARDLINE_DRIVE_ROOT + r'(?:\s|$|[)`;|&<>]))',
-                                 recursive=False), "recursive delete of drive root"),
+        (narrowable_rm_rule(cmdpos + r'rm\s+(?:-[^\s]*\s+)*(?:' + _HARDLINE_DRIVE_QUOTED + '|' + _HARDLINE_DRIVE_ROOT + r'(?:\s|$|[)`;|&<>]))'),
+         "recursive delete of drive root"),
     ]

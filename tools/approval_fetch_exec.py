@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 import hermes_re as re
 
+from tools.approval_hermes_store import _RepeatEnds
 from tools.approval_pipe_launchers import _PIPE_LAUNCHER_VALUE_FLAGS, _PIPE_PATH_PREFIX_RE
 from tools.shell_heredoc import mask_heredoc_bodies_for_shell_scan
 
@@ -48,19 +49,84 @@ _URL_RE = re.compile(r"(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*://[^\s;&|<>'\"`()]+", r
 # PowerShell runs FILE's content through Invoke-Expression or a script block built from it
 # (`iex (gc f -Raw)`, `Get-Content f | iex`, `[scriptblock]::Create((gc f -Raw))`), or dot-sources or
 # calls FILE inside a -Command string (`pwsh -c ". ./f.ps1"`). Printing it (`Write-Output (gc f)`) runs nothing.
-# An unquoted FILE never starts with `-` + a word character (that word is an option: `gc -Raw`), and a lone `-` is
-# FILE only when no word character follows it ({1}; the piped form needs no test: a quote, a blank or `|` follows).
-_PS_READ = (r"\b(?:gc|get-content|cat|type)(?:[^\S\n]+-\w+)*[^\S\n]+"
-            r"(?:['\"](?P<{0}_quoted>[^\s;&|<>'\"`()]+)"
-            r"|(?P<{0}>[^-\s;&|<>'\"`()][^\s;&|<>'\"`()]*|-[^\w\s;&|<>'\"`()][^\s;&|<>'\"`()]*|-{1}))")
-_PS_LONE_DASH = r"(?!\w)"
-_PS_READ_RUN_RE = re.compile(
-    rf"\b(?:iex|invoke-expression)\b(?:[^\S\n]+-command\b)?(?:[($'\"]|[^\S\n])*{_PS_READ.format('iex', _PS_LONE_DASH)}"
-    rf"|\[scriptblock\]::create\((?:[($'\"]|[^\S\n])*{_PS_READ.format('block', _PS_LONE_DASH)}"
-    rf"|{_PS_READ.format('piped', '')}['\"]?(?:[^\S\n]+-\w+)*[^\S\n]*\|[^\S\n]*(?:iex|invoke-expression)\b"
-    rf"|(?<=[\"'{{;(])[^\S\n]*[.&][^\S\n]+['\"]?(?P<sourced>[^\s;&|<>'\"`()]+)",
+# The rule was one regex whose read (`gc` + flags + FILE) took the flags with possessive runs, so a flag (`-Raw`) was
+# never given back to be FILE. RE2 has no possessive runs: _ps_reads matches the head, the flag run and FILE one
+# step at a time, each step starting where the previous one ended.
+_PS_READ_HEAD_RE = re.compile(
+    r"(?P<iex>\b(?:iex|invoke-expression))|(?P<block>\[scriptblock\]::create\()|(?P<piped>\b(?:gc|get-content|cat|type))"
+    r"|(?<=[\"'{;(])[^\S\n]*[.&][^\S\n]+['\"]?(?P<sourced>[^\s;&|<>'\"`()]+)",
     re.IGNORECASE,
 )
+_PS_READ_WORD_RE = re.compile(r"\b(?:gc|get-content|cat|type)", re.IGNORECASE)
+# After `iex`: an optional `-Command`, then the run of openers and blanks before the read.
+_PS_COMMAND_FLAG_RE = re.compile(r"[^\S\n]+-command\b", re.IGNORECASE)
+_PS_OPENERS_RE = re.compile(r"(?:[($'\"]|[^\S\n])*")
+_PS_READ_FLAG_RE = re.compile(r"[^\S\n]+-\w+")
+_PS_READ_FILE_RE = re.compile(r"[^\S\n]+['\"]?([^\s;&|<>'\"`()]+)")
+_PS_READ_PIPED_RE = re.compile(r"['\"]?")
+_PS_READ_PIPE_RE = re.compile(r"[^\S\n]*\|[^\S\n]*(?:iex|invoke-expression)\b", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class _PsRead:
+    """A PowerShell read of FILE that runs its content: where the read starts and ends, and FILE."""
+
+    start: int
+    end: int
+    file: str
+
+
+class _PsReader:
+    """The reads of one text: FILE after the flag run that ends at a position, kept per position, so reads that share
+    one flag run (`gc -cat -cat ... f`: each `cat` is a read word) read it and FILE once."""
+
+    def __init__(self, text: str):
+        self._text, self._flags, self._files = text, _RepeatEnds(_PS_READ_FLAG_RE, text), {}
+
+    def file_after(self, word_end: int):
+        """``(FILE, end)`` of the read whose word ends at ``word_end``, or None."""
+        flags_end = self._flags.at(word_end)
+        if flags_end not in self._files:
+            found = _PS_READ_FILE_RE.match(self._text, flags_end)
+            self._files[flags_end] = (found.group(1), found.end()) if found else None
+        return self._files[flags_end]
+
+    def piped_end(self, file_end: int) -> int | None:
+        """End of `| iex` after FILE (a closing quote and flags between), or None."""
+        pipe = _PS_READ_PIPE_RE.match(self._text, self._flags.at(_PS_READ_PIPED_RE.match(self._text, file_end).end()))
+        return pipe.end() if pipe else None
+
+
+def _ps_read_start(text: str, head) -> int | None:
+    """Where the read word must start: the head itself (piped), or past `iex`'s / `Create(`'s openers."""
+    if head.lastgroup == "piped":
+        return head.start()
+    pos = head.end()
+    if head.lastgroup == "iex":  # the stdlib `\b` after `iex` is implied: a word character there leaves no read word
+        pos = flag.end() if (flag := _PS_COMMAND_FLAG_RE.match(text, pos)) else pos
+    return _PS_OPENERS_RE.match(text, pos).end()
+
+
+def _ps_read_at(reader: _PsReader, text: str, head) -> _PsRead | None:
+    if head.lastgroup == "sourced":
+        return _PsRead(head.start(), head.end(), head.group("sourced"))
+    start = _ps_read_start(text, head)
+    word = _PS_READ_WORD_RE.match(text, start) if start is not None else None
+    read = reader.file_after(word.end()) if word else None
+    if read is None:
+        return None
+    end = read[1] if head.lastgroup != "piped" else reader.piped_end(read[1])
+    return None if end is None else _PsRead(head.start(), end, read[0])
+
+
+def _ps_reads(text: str, pos: int):
+    """The reads that run FILE's content from *pos* on, one after another as a regex finditer finds them."""
+    reader = _PsReader(text)
+    while (head := _PS_READ_HEAD_RE.search(text, pos)) is not None:
+        read = _ps_read_at(reader, text, head)
+        if read is not None:
+            yield read
+        pos = read.end if read is not None else head.start() + 1
 
 
 def _base(path: str) -> str:
@@ -314,8 +380,8 @@ class DownloadThenRunMatcher:
             written = read.start >= targets.get(_base(read.file), len(text))
             if written and self._runs_content(read):
                 return read
-        for read in _PS_READ_RUN_RE.finditer(text, min(targets.values())):
-            if read.start() >= targets.get(_base(read.group(read.lastgroup).replace("\\", "/")), len(text)):
+        for read in _ps_reads(text, min(targets.values())):
+            if read.start >= targets.get(_base(read.file.replace("\\", "/")), len(text)):
                 return read
         return None
 

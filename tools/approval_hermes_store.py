@@ -5,6 +5,8 @@ targets; the store list is HERMES_PROTECTED_SUBPATHS, shared with agent.file_saf
 The sensitive-path fragments (credential, SSH, shell-rc, Hermes config/env and system-config targets)
 live here too: the detection tables compose them, and that module is at its size cap.
 """
+import functools
+
 import hermes_re as re
 
 from agent.file_safety import SHELL_RC_FILES
@@ -91,17 +93,6 @@ _HOME_SENSITIVE_CREATE_FILE = (
     rf'(?:{_HOME_PREFIX}\.ssh|{_SHELL_RC_FILES}|{_CREDENTIAL_FILES}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH})'
 )
 _HOME_SENSITIVE_CREATE_TARGET = rf'(?:{_SSH_SENSITIVE_PATH}|{_HOME_SENSITIVE_CREATE_FILE}' r'(?=["\'\s;&|)`<>]|$))'
-# The ln rule's tail, without possessive quantifiers or a lookahead in the middle (RE2 has neither): any number
-# of redirects, then the end of the command. A redirect is its operator plus `&` + target, blank + target or a
-# glued target; a bare operator can only end the command (an `&` after it belongs to it, never a separator).
-# Whitespace before the end may hold newlines, but a newline is not itself an end: more text may follow it.
-_LN_REDIRECT = r'[<>]+(?:&\s*[^\s<>;&|)`]*|\s+[^\s<>;&|)`]*|[^\s<>;&|)`]+)'
-_LN_BARE_REDIRECT_END = r'[<>]+(?:[;|)`]|\Z)'
-_LN_COMMAND_END = r'\s*(?:[;&|)`]|\Z)'
-_LN_TAIL = rf'(?:\s*\d*{_LN_REDIRECT})*(?:\s*\d*{_LN_BARE_REDIRECT_END}|{_LN_COMMAND_END})'
-# A named file must end its shell word: a closing quote, a redirect not glued to it by fd digits, or the end.
-_LN_FILE_TAIL = (rf'(?:["\']{_LN_TAIL}|(?:\s+\d*)?{_LN_REDIRECT}{_LN_TAIL}|(?:\s+\d*)?{_LN_BARE_REDIRECT_END}'
-                 rf'|{_LN_COMMAND_END})')
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
 # cp/mv/install: the sensitive path is a write target only as the LAST argument (destination), so
 # `cp config.yaml backup.yaml` (config.yaml as SOURCE) stays out.
@@ -134,6 +125,28 @@ def _sql_write_start(text: str, pos: int) -> int | None:
     return None
 
 
+class _RepeatEnds:
+    """Where a run of *step* matches (each starting where the previous one ended) that starts at a position ends.
+    Every step boundary a walk passes is remembered, so the many candidates inside one long run (`ln a ~/.ssh/"1> ...`,
+    `gc -cat -cat ...`) do not each walk the rest of it. Each step is matched alone, so none gives anything back:
+    the run is the possessive `(?:step)*+` of the stdlib rules it stands in for."""
+
+    def __init__(self, step, text: str):
+        self._step, self._text, self._ends = step, text, {}
+
+    def at(self, pos: int) -> int:
+        walked = []
+        while (end := self._ends.get(pos)) is None:
+            walked.append(pos)
+            if (step := self._step.match(self._text, pos)) is None or step.end() == pos:
+                end = pos
+                break
+            pos = step.end()
+        for at in walked:
+            self._ends[at] = end
+        return end
+
+
 class _NextStart:
     """Where *find(text, pos)* next matches at or after pos; a found start serves every pos up to it."""
 
@@ -148,12 +161,18 @@ class _NextStart:
 
 # touch/mkdir naming a sensitive home target. `touch -r REF` / `--reference REF` only reads REF (its timestamps), so
 # the stdlib rule vetoed the operand right after that flag with lookbehinds, unless a bare `--` came first (the flag
-# word is then a file name). RE2 has no lookbehind: HomeCreateTargetMatcher reads the words before each operand.
+# word is then a file name). RE2 has no lookbehind: _is_create_operand reads the words before each operand.
 _CREATE_TARGET_RE = re.compile(r'["\']?' + _HOME_SENSITIVE_CREATE_TARGET, _FLAGS)
 _REFERENCE_FLAG_RE = re.compile(r'\s(?:-r|--reference)\s', _FLAGS)
 _END_OF_OPTIONS_RE = re.compile(r'\s--', _FLAGS)
 _BLANK_RE = re.compile(r'\s')
 _SEGMENT_END_RE = re.compile(r'[\n;&|]')
+# ln: the stdlib rule reads on from the target with possessive runs: the rest of its word, a closing quote, every
+# redirect (`2>/dev/null`, `>&2`), the blanks, and then the command must end. Each run is matched on its own here, so
+# none gives anything back to the next (`\s*+` keeps a newline, which then cannot end the command).
+_LINK_WORD_REST_RE = re.compile(r'[^\s"\'<>;&|)`]*["\']?')
+_LINK_REDIRECT_RE = re.compile(r'\s*\d*[<>]+&?\s*[^\s<>;&|)`]*')
+_LINK_BLANKS_RE = re.compile(r'\s*')
 
 
 def _is_create_operand(text: str, at: int) -> bool:
@@ -166,27 +185,48 @@ def _is_create_operand(text: str, at: int) -> bool:
     return True
 
 
-class HomeCreateTargetMatcher:
-    """``search(text)`` -> the touch/mkdir command with a sensitive home target among its operands: right after the
-    command word or after any blank before its segment ends (a newline blank included), not a reference operand."""
+def _is_link_destination(redirects: _RepeatEnds, text: str, at: int) -> bool:
+    if (target := _CREATE_TARGET_RE.match(text, at)) is None:
+        return False
+    end = _LINK_BLANKS_RE.match(text, redirects.at(_LINK_WORD_REST_RE.match(text, target.end()).end())).end()
+    return end == len(text) or text[end] in ';&|)`'
 
-    def __init__(self, command_prefix: str):
-        self._command_re = re.compile(command_prefix + r'(?:touch|mkdir)\s', _FLAGS)
+
+class SegmentOperandMatcher:
+    """``search(text)`` -> the command (``command_re``) with an operand that ``operand(text)(at)`` accepts: one that
+    starts after any blank from the command word's end to where its segment ends (a newline blank included) or, with
+    ``first``, right at the command word's end. ``operand(text)`` is built once per text, so it can keep state."""
+
+    def __init__(self, command_re, operand, first: bool):
+        self._command_re, self._operand_for, self._first = command_re, operand, first
 
     def search(self, text: str):
         pos, checked = 0, (0, 0)
+        operand = self._operand_for(text)
         while (command := self._command_re.search(text, pos)) is not None:
             start = command.end()
-            if _is_create_operand(text, start):
+            if self._first and operand(start):
                 return command
             if not checked[0] <= start < checked[1]:  # a later command in a checked segment has no new operand
                 end = _SEGMENT_END_RE.search(text, start)
                 stop = len(text) if end is None else end.start() + (end.group() == '\n')
-                if any(_is_create_operand(text, blank.end()) for blank in _BLANK_RE.finditer(text, start, stop)):
+                if any(operand(blank.end()) for blank in _BLANK_RE.finditer(text, start, stop)):
                     return command
                 checked = (start, stop)
             pos = command.start() + 1
         return None
+
+
+def home_create_target_matcher(command_prefix: str) -> SegmentOperandMatcher:
+    """touch/mkdir with a sensitive home target among its operands that is not a reference operand."""
+    return SegmentOperandMatcher(re.compile(command_prefix + r'(?:touch|mkdir)\s', _FLAGS),
+                                 lambda text: functools.partial(_is_create_operand, text), True)
+
+
+def link_destination_matcher(command_prefix: str) -> SegmentOperandMatcher:
+    """ln whose operand after a blank is a sensitive home target that ends the command (redirects aside)."""
+    return SegmentOperandMatcher(re.compile(command_prefix + r'ln\s', _FLAGS),
+                                 lambda text: functools.partial(_is_link_destination, _RepeatEnds(_LINK_REDIRECT_RE, text), text), False)
 
 
 class SqliteStoreWriteMatcher:

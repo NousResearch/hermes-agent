@@ -30,9 +30,9 @@ from tools.approval_pipe_launchers import (
 from tools.approval_grep_spans import _grep_safe_detection_variant, _quoted_grep_pattern_spans  # re-exported
 from tools.approval_hermes_store import (
     _HERMES_HOME_ROOT, _HERMES_STORE_FILE, _HERMES_STORE_PATH, _HERMES_STORE_ROOT, _HERMES_STORE_ROOT_WORD,
-    HomeCreateTargetMatcher, SqliteStoreWriteMatcher, _NextStart,
-    _COMMAND_TAIL, _CREDENTIAL_FILES, _HERMES_CONFIG_PATH, _HERMES_ENV_PATH, _HOME_PREFIX, _HOME_SENSITIVE_CREATE_FILE,
-    _HOME_SENSITIVE_CREATE_TARGET, _LN_FILE_TAIL, _LN_TAIL, _PROJECT_ENV_PATH, _PROJECT_SENSITIVE_WRITE_TARGET,
+    SqliteStoreWriteMatcher, _NextStart, home_create_target_matcher, link_destination_matcher,
+    _COMMAND_TAIL, _CREDENTIAL_FILES, _HERMES_CONFIG_PATH, _HERMES_ENV_PATH, _HOME_PREFIX, 
+    _HOME_SENSITIVE_CREATE_TARGET, _PROJECT_ENV_PATH, _PROJECT_SENSITIVE_WRITE_TARGET,
     _SECRET_FILE_NAMED, _SECRET_KEY_FILE, _SECRET_PATH_FILE, _SECRET_VAR, _SENSITIVE_WRITE_DIR, _SENSITIVE_WRITE_FILE,
     _SENSITIVE_WRITE_TARGET, _SSH_SENSITIVE_PATH, _SYSTEM_CONFIG_PATH, _USER_SENSITIVE_WRITE_TARGET,
     _WRITE_TARGET_BOUNDARY,
@@ -40,7 +40,7 @@ from tools.approval_hermes_store import (
 from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
 from tools.approval_shell_tokens import _shell_tokens_with_spans
 from tools.approval_windows_hardline import (
-    WhatIfExemptMatcher, whatif_preview_is_real, windows_hardline_patterns, windows_whatif_strict_patterns,
+    WhatIfExemptMatcher, narrowable_rm_rule, whatif_preview_is_real, windows_hardline_patterns, windows_whatif_strict_patterns,
 )
 from tools.approval_applescript import OSASCRIPT_OPAQUE_DESCRIPTION, OSASCRIPT_RISKY_DESCRIPTION, classify_osascript
 from tools.approval_quoted_newlines import _mask_quoted_newlines
@@ -126,34 +126,9 @@ _QUOTED_ROOT_SYSTEM_DIR = (r'["\']/+["\']["\']*(?:' + '|'.join(r'["\']*'.join(na
 # backslashes in replacement fields are unsupported on the 3.11 floor). _CMDPOS-anchored so `rm`
 # must be an actual command word (Git Bash's `rm.exe` too) — "rm -rf /" as DATA in `git commit -m "…rm -rf /…"` must not trip the floor.
 _RM_FLAG_PREFIX = _CMDPOS + r'rm(?:\.exe)?\s+(-[^\s]*\s+)*'
-# Vetoes the drive-root rules when THIS PowerShell delete carries a literal -Include that narrows it (`*.tmp`):
-# not after cmd `/s` or GNU `--` (a file name there), not inside quotes/comments, not `*`/`*.*`/a list/`$x`,
-# and never past a `)` that closes rm's own `$(...)`/subshell (`echo $(rm -rf C:/) -Include x` is echo's flag).
-# RE2 has no lookahead to test this inside the rule, so both parts are matched from the delete's first argument.
-_PS_INCLUDE_VOID_RE = re.compile(r'(?:[^\r\n;&|]*\s)?(?:/s\b|--(?:\s|$))', re.IGNORECASE | re.DOTALL)
-_PS_INCLUDE_NARROWS_RE = re.compile(
-    r'(?:[^\r\n;&|#"\'`)]|"[^"\n]*"|\'[^\'\n]*\')*[^\S\r\n]-inc[a-z]*(?::|\s+)["\']?'
-    r'[^\s,;&|"\'$`(){}@]*[^\s,;&|"\'$`(){}@*?.][^\s,;&|"\'$`(){}@]*["\']?(?:[;&|)]|\s+(?:[^\s,]|\Z)|\Z)',
-    re.IGNORECASE | re.DOTALL)
 # A quoted bare drive (`"C:"`) is the root only when the next bare or quoted segment starts the slash (`"C:"'/'`).
 _QUOTED_BARE_DRIVE = (r'["\'][a-z]:["\'](?:/|"/' + _RM_COLLAPSE_SEG + r'"|\'/' + _RM_COLLAPSE_SEG + r'\')'
                       + _RM_ROOT_COLLAPSE_TAIL)
-
-
-class _IncludeVetoedRule:
-    """A hardline delete rule that a narrowing -Include vetoes; *rule* captures the delete's arguments as group 1."""
-
-    def __init__(self, rule: str):
-        self._rule = re.compile(rule, re.IGNORECASE | re.DOTALL)
-
-    def search(self, text: str):
-        pos = 0
-        while (match := self._rule.search(text, pos)) is not None:
-            args = match.start(1)
-            if _PS_INCLUDE_VOID_RE.match(text, args) or not _PS_INCLUDE_NARROWS_RE.match(text, args):
-                return match
-            pos = match.start() + 1  # vetoed: a later delete in the same text still counts
-        return None
 
 
 # Package-manager global options, each optionally taking ONE non-dash operand.
@@ -170,8 +145,9 @@ HARDLINE_PATTERNS = [
     # PowerShell's `rm` alias with a literal narrowing `-Include` (`rm -r C:/* -Include *.tmp`) deletes only matches.
     # Caveat: Hermes runs the bare command through bash, where GNU rm rejects `-Include` unless POSIXLY_CORRECT is
     # set; then getopt stops at the root operand and `-Include` is a file name, so that delete only prompts.
-    (_IncludeVetoedRule(_CMDPOS + r'rm\s+((?:-[^\s]*\s+)*(?:' + _hardline_rm_path(r'[a-z]:/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|[a-z]:/ \*')
-                        + '|' + _QUOTED_BARE_DRIVE + '))'),
+    # The -Include veto is approval_windows_hardline's (narrowable_rm_rule), shared with the Windows-path twin rule.
+    (narrowable_rm_rule(_CMDPOS + r'rm\s+(?:-[^\s]*\s+)*(?:' + _hardline_rm_path(r'[a-z]:/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|[a-z]:/ \*')
+                        + '|' + _QUOTED_BARE_DRIVE + ')'),
      "recursive delete of drive root"),
     (_RM_FLAG_PREFIX + '(?:' + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS) + '|' + _QUOTED_ROOT_SYSTEM_DIR + ')',
      "recursive delete of system directory"),
@@ -230,6 +206,7 @@ _WMIC_SHADOW_DELETE_DESCRIPTION = "delete volume shadow copies (wmic)"
 _DOWNLOAD_THEN_RUN_DESCRIPTION = "execute a just-downloaded file"
 _SQLITE3_STORE_WRITE_DESCRIPTION = "modify Hermes session store via sqlite3"
 _HOME_CREATE_DESCRIPTION = "create a file in a sensitive credential/SSH/shell-rc path"
+_LINK_DESCRIPTION = "link a file into a sensitive credential/SSH/shell-rc path"
 _LAUNCHCTL_STOP_DESCRIPTION = "stop/restart hermes launchd service (kills running agents)"
 class _PipeRemoteToShellMatcher:
     """Linear stand-in for the pipe-to-shell regex: find the first curl/wget, then try a sink only at
@@ -789,9 +766,10 @@ DANGEROUS_PATTERNS = [
     # Command-position anchored so `ls -ln ~/.ssh` / `grep touch ~/.bashrc` stay out; any touch/mkdir operand
     # counts, but for ln only the destination (last operand) does, so linking OUT of these paths stays safe.
     # `touch -r REF` / `--reference REF` only reads REF (its timestamps), so that operand is not a create target.
-    # Not compiled: DANGEROUS_PATTERNS_COMPILED swaps in HomeCreateTargetMatcher (it reads the lookbehinds).
+    # Not compiled: DANGEROUS_PATTERNS_COMPILED swaps in home_create_target_matcher (it reads the lookbehinds).
     (rf'{_CMDPOS}(?:touch|mkdir)\s(?:[^\n;&|]*\s)?(?:(?<!\s-r\s)(?<!\s--reference\s)|(?<=\s--\s-r\s)|(?<=\s--\s--reference\s))["\']?{_HOME_SENSITIVE_CREATE_TARGET}', _HOME_CREATE_DESCRIPTION),
-    (rf'{_CMDPOS}ln\s[^\n;&|]*\s["\']?(?:{_SSH_SENSITIVE_PATH}[^\s"\'<>;&|)`]*["\']?{_LN_TAIL}|{_HOME_SENSITIVE_CREATE_FILE}{_LN_FILE_TAIL})', "link a file into a sensitive credential/SSH/shell-rc path"),
+    # Not compiled: DANGEROUS_PATTERNS_COMPILED swaps in link_destination_matcher (each possessive run on its own).
+    (rf'{_CMDPOS}ln\s[^\n;&|]*\s["\']?{_HOME_SENSITIVE_CREATE_TARGET}[^\s"\'<>;&|)`]*+["\']?(?:\s*+\d*+[<>]++&?\s*+[^\s<>;&|)`]*+)*+\s*+(?:[\n;&|)`]|$)', _LINK_DESCRIPTION),
     # Hermes home / session-store floor (#109367): delete, wipe, move, or overwrite of the home or a
     # protected store. cp/install/rsync only as the destination, so `cp ~/.hermes/state.db /tmp/bak` stays clean.
     (_CMDPOS + rf'(?:rm|unlink|shred|truncate){_VERB_ARGS}["\']?{_HERMES_STORE_PATH}', "delete/move/wipe Hermes home or session store"),
@@ -905,7 +883,8 @@ _CUSTOM_MATCHERS = {
     _DEV_TCP_REDIRECT_DESCRIPTION: _DevSocketRedirectMatcher,
     "SQL DELETE without WHERE": _SqlDeleteWithoutWhereMatcher,
     _SQLITE3_STORE_WRITE_DESCRIPTION: lambda: SqliteStoreWriteMatcher(_CMDPOS),
-    _HOME_CREATE_DESCRIPTION: lambda: HomeCreateTargetMatcher(_CMDPOS),
+    _HOME_CREATE_DESCRIPTION: lambda: home_create_target_matcher(_CMDPOS),
+    _LINK_DESCRIPTION: lambda: link_destination_matcher(_CMDPOS),
     "recursive delete (flags after operands)": _RmFlagAfterOperandsMatcher,
     _LAUNCHCTL_STOP_DESCRIPTION: lambda: _AllOfMatcher(_LAUNCHCTL_STOP, _HERMES_NAME),
     _DOWNLOAD_THEN_RUN_DESCRIPTION: lambda: DownloadThenRunMatcher(_SHELL_NAMES_RE),

@@ -416,6 +416,76 @@ canonical_method("runtime.describe", params=RuntimeDescribeParams, result=Runtim
                  doc="Owner identity and the canonical capabilities a client may rely on.")
 
 
+class DurableDescribeResult(Result):
+    store_id: str
+    instance_id: str
+    profile_id: str
+    principal_id: str
+    capabilities: list[str]
+
+
+class DurableFile(Params):
+    id: str
+    name: str
+    mediaType: str
+    size: int
+    sha256: str
+
+
+class DurableAttachment(DurableFile):
+    reference: str
+
+
+class DurableOwner(Params):
+    store_id: str
+    profile_id: str
+    principal_id: str
+
+
+class DurableCreateParams(ProfileParams):
+    owner: DurableOwner
+    params: dict[str, JsonValue]
+
+
+class DurableCreateResult(Result):
+    session_id: str
+
+
+class DurableUploadParams(ProfileParams):
+    owner: DurableOwner
+    session_id: str
+    submission_id: str
+    file: DurableFile
+    offset: int
+    data: str
+
+
+class DurableUploadResult(Result):
+    reference: str
+    sha256: str
+    size: int
+    offset: int
+    complete: bool
+
+
+class DurableSubmitParams(ProfileParams):
+    owner: DurableOwner
+    session_id: str
+    submission_id: str
+    text: str
+    attachments: list[DurableAttachment]
+
+
+canonical_method('durable.describe', params=ProfileParams, result=DurableDescribeResult,
+                 doc='Authenticated identity and scoped durable Desktop upload/admission protocol.')
+canonical_method('durable.create', params=DurableCreateParams, result=DurableCreateResult,
+                 doc='Owner-fenced exact session.create; no profile or principal retargeting after reconnect.')
+canonical_method('durable.upload', params=DurableUploadParams, result=DurableUploadResult,
+                 doc='Persist/reconcile one attachment chunk for the exact principal, session and submission.')
+canonical_method('durable.submit', params=DurableSubmitParams, result=AdmissionStatus,
+                 doc='Admit a frozen message only after every owned attachment verifies; exact retries use the admission ledger.')
+
+
 class PluginRpcParams(Params):
     """Open: the plugin's handler owns every other key. ``session_id`` names the session the call
     acts in and passes that session's authorization first."""

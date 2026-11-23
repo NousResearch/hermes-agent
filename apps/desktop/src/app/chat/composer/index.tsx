@@ -27,10 +27,13 @@ import { $touchPointer } from '@/lib/touch-interaction'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { sessionCompacting } from '@/store/compaction'
+import { changesBackend } from '@/store/backend-transition'
+import { draftKey } from '@/store/composer'
 import { draftRetry } from '@/store/composer-draft-retry'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts } from '@/store/composer-queue'
+import { $durableOwnerVersion, durableComposerOwner, warmDurableOwner } from '@/store/durable-composer'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
@@ -61,6 +64,7 @@ import { COMPOSER_AREAS } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
+import { DurableSendQueue } from './durable-send-queue'
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
@@ -309,7 +313,20 @@ export function ChatBar({
   const emoji = useEmojiCompletions()
 
   const { t } = useI18n()
-  const { backendTransition, disabled, inputDisabled, reconnecting } = useComposerConnection(gatewayDisabled, profile)
+  const {
+    backendTransition,
+    disabled: connectionDisabled,
+    inputDisabled,
+    reconnecting
+  } = useComposerConnection(gatewayDisabled, profile)
+  useStore($durableOwnerVersion)
+  const durableScope = draftKey(activeQueueSessionKey)
+  const durableReconnectAllowed =
+    reconnecting && durableComposerOwner(durableScope) !== undefined && !changesBackend(backendTransition)
+  const disabled = connectionDisabled && !durableReconnectAllowed
+  useEffect(() => {
+    void warmDurableOwner(durableScope)
+  }, [durableScope, reconnecting])
 
   // The draft engine — detached source of truth (DOM + draftRef + edge
   // selectors); typing never re-renders the chrome. ChatBar owns `queueEditRef`
@@ -1307,6 +1324,7 @@ export function ChatBar({
               and share one left edge with it. */}
           <div className={cn(composerFloatingStrip, 'px-[5px] pb-1.5 empty:hidden')}>
             <SendTargetHint />
+            <DurableSendQueue sessionKey={activeQueueSessionKey} />
             <ActionBadges sessionId={statusSessionId} />
             <PreparedImageRecovery
               occupied={hasText || attachments.length > 0 || busy || disabled}

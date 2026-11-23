@@ -42,7 +42,17 @@ export interface DurableSendRecord {
   problem?: 'connection' | 'capability' | 'integrity' | 'uncertain' | 'refused'
 }
 
+export interface DurableTransportRequest {
+  token: string
+  route: Pick<DurableSendOwner, 'connectionId' | 'profile'>
+  method: string
+  params: Record<string, unknown>
+}
+
 export interface DurableSendApi {
+  negotiate: (route: Pick<DurableSendOwner, 'connectionId' | 'profile'>) => Promise<DurableSendOwner>
+  pump: () => Promise<void>
+  onTransportRequest: (handler: (request: DurableTransportRequest) => Promise<unknown>) => () => void
   begin: (intent: DurableSendIntent) => Promise<DurableSendRecord>
   append: (id: string, fileId: string, offset: number, bytes: Uint8Array) => Promise<number>
   commit: (id: string) => Promise<DurableSendRecord>

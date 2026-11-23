@@ -278,6 +278,8 @@ class AuthorityConnection:
         handlers.update(tui_config_handlers(self))
         from gateway.session_ancillary import handlers as ancillary_handlers
         handlers.update(ancillary_handlers(self))
+        from gateway.session_durable_send import handlers as durable_send_handlers
+        handlers.update(durable_send_handlers(self))
         from gateway.session_shell import handlers as shell_handlers
         handlers.update(shell_handlers(self))
         from gateway.session_tui_ops import handlers as tui_ops_handlers

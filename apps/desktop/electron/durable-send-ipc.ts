@@ -1,6 +1,11 @@
+import { randomUUID } from 'node:crypto'
+
 import type { BrowserWindow, IpcMain, IpcMainInvokeEvent, WebContents } from 'electron'
 
+import { drainDurableSends, DurableSendRefusal } from './durable-send-delivery'
+import { DURABLE_RPC_METHODS, type DurableRpc, durableRpcTransport } from './durable-send-rpc'
 import { DurableSendStore } from './durable-send-store'
+import type { DurableSendOwner } from './durable-send-types'
 
 interface Dependencies {
   ipc: Pick<IpcMain, 'handle'>
@@ -49,6 +54,85 @@ export function registerDurableSendIpc({ ipc, userData, rendererUrl, getOwner }:
 
     return result
   }
+
+  // Use the application's existing authenticated owner-scoped sockets, not a second credential
+  // implementation. Replies are single-use, timeout-bounded and bound to the requesting app frame.
+  const pending = new Map<
+    string,
+    {
+      sender: WebContents
+      resolve: (value: any) => void
+      reject: (error: Error) => void
+      timer: ReturnType<typeof setTimeout>
+    }
+  >()
+
+  const rpcFor =
+    (event: IpcMainInvokeEvent): DurableRpc =>
+    (route, method, params) => {
+      store(event)
+
+      if (!DURABLE_RPC_METHODS.has(method)) {
+        return Promise.reject(new DurableSendRefusal('RPC denied'))
+      }
+
+      return new Promise((resolve, reject) => {
+        const token = randomUUID()
+
+        const timer = setTimeout(() => {
+          pending.delete(token)
+          reject(new Error('Transport unavailable'))
+        }, 30_000)
+
+        pending.set(token, { sender: event.sender, resolve, reject, timer })
+        event.sender.send('hermes:durable-send:transport', { token, route, method, params })
+      })
+    }
+
+  ipc.handle('hermes:durable-send:transport-reply', (event, token: string, reply: any) => {
+    store(event)
+    const request = pending.get(token)
+
+    if (!request || request.sender !== event.sender) {
+      throw new Error('Transport reply denied')
+    }
+
+    pending.delete(token)
+    clearTimeout(request.timer)
+
+    if (reply?.ok === true) {
+      request.resolve(reply.result)
+    } else {
+      request.reject(
+        reply?.refused === true ? new DurableSendRefusal('Gateway refused') : new Error('Transport unavailable')
+      )
+    }
+  })
+  ipc.handle(
+    'hermes:durable-send:negotiate',
+    async (event, route: Pick<DurableSendOwner, 'connectionId' | 'profile'>) => {
+      store(event)
+
+      if (
+        !route ||
+        typeof route.connectionId !== 'string' ||
+        !route.connectionId ||
+        typeof route.profile !== 'string' ||
+        !route.profile
+      ) {
+        throw new Error('Missing exact owner')
+      }
+
+      const result = await durableRpcTransport(rpcFor(event)).describe({ ...route, gatewayId: '', principalId: '' })
+
+      if (!result.uploadReplayVerified) {
+        throw new Error('Durable send capability unavailable')
+      }
+
+      return result.owner
+    }
+  )
+  ipc.handle('hermes:durable-send:pump', event => drainDurableSends(store(event), durableRpcTransport(rpcFor(event))))
 
   ipc.handle('hermes:durable-send:begin', (event, intent: unknown) => store(event).begin(intent))
   ipc.handle('hermes:durable-send:append', (event, id: string, fileId: string, offset: number, bytes: Uint8Array) =>

@@ -482,6 +482,23 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     pickDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:pick')
   },
   durableSend: {
+    negotiate: route => ipcRenderer.invoke('hermes:durable-send:negotiate', route),
+    pump: () => ipcRenderer.invoke('hermes:durable-send:pump'),
+    onTransportRequest: handler => {
+      const listener = (_event, request) => {
+        void Promise.resolve().then(() => handler(request)).then(
+          result => ipcRenderer.invoke('hermes:durable-send:transport-reply', request.token, { ok: true, result }),
+          error => ipcRenderer.invoke('hermes:durable-send:transport-reply', request.token, {
+            ok: false, refused: ['permission_denied', 'profile_mismatch', 'admission_conflict', 'invalid_params', 'not_found', 'unknown_method']
+              .includes(error?.data?.reason)
+          })
+        ).catch(() => {})
+      }
+
+      ipcRenderer.on('hermes:durable-send:transport', listener)
+
+      return () => ipcRenderer.removeListener('hermes:durable-send:transport', listener)
+    },
     begin: intent => ipcRenderer.invoke('hermes:durable-send:begin', intent),
     append: (id, fileId, offset, bytes) => ipcRenderer.invoke('hermes:durable-send:append', id, fileId, offset, bytes),
     commit: id => ipcRenderer.invoke('hermes:durable-send:commit', id),

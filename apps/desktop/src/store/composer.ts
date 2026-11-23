@@ -86,6 +86,8 @@ export interface ComposerAttachment {
   /** Downscaled data URL for the attachment card and optimistic bubble only. */
   thumbnailUrl?: string
   path?: string
+  /** Original native byte source, before eager remote image staging rewrites path. */
+  durableSourcePath?: string
   /** Ownership of browser-staged bytes; survives failed uploads and draft clones. */
   stagedUpload?: HermesStagedUpload
   /** Validated MIME returned by canonical owner staging. */

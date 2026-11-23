@@ -22,6 +22,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import { journalOutgoingSend, type OutgoingSend } from '@/store/composer-outbox'
 import { enqueueQueuedPrompt, type QueuedPromptEntry, serverOwnsComposerQueue } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
+import { durableComposerOwner, enqueueDurableComposer } from '@/store/durable-composer'
 import { notify } from '@/store/notifications'
 import { isOnboardingChat } from '@/store/onboarding-session'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
@@ -132,6 +133,7 @@ export function useComposerSubmit({
   rememberDraftRetry,
   takeDraftRetry
 }: UseComposerSubmitArgs) {
+  const durablePending = useRef(false)
   const paneVisible = usePaneVisible()
   const scope = useComposerScope()
   const surfaceId = useComposerSurfaceId()
@@ -624,6 +626,33 @@ export function useComposerSubmit({
     // instead; the prompt stays answerable and the queue drains on settle. A
     // setup card that just closed for this message ends its turn the same way.
     const blockingPrompt = !queueEdit && (parked === 'yielded' || hasBlockingPromptRequest(sessionId))
+
+    const durableScope = draftKey(draftScopeRef.current)
+    const durableOwner = durableComposerOwner(durableScope)
+
+    if (payloadPresent && !queueEdit && durableOwner && !isSlashCommandText(text) && !isOnboardingChat(sessionId)) {
+      if (durablePending.current) {return}
+      durablePending.current = true
+      const submitted = cloneAttachments(attachments)
+      void enqueueDurableComposer(durableScope, text, submitted, durableOwner, draftRef.current).then(() => {
+        // Navigation/typing during disk copy cannot clear another chat or the next message.
+        if (draftKey(draftScopeRef.current) === durableScope && pathifyRefs(draftRef.current) === text &&
+            scope.attachments.$attachments.get().every(file => submitted.some(sent => sameOccurrence(sent, file)))) {
+          clearDraft()
+          scope.attachments.removeOccurrences(submitted)
+        }
+
+        if (stashStillHoldsSent(durableScope, text, submitted)) {stashAt(durableScope, '', [])}
+        triggerHaptic('submit')
+        void window.hermesDesktop?.durableSend?.pump().catch(() => {})
+      }).catch(() => {
+        notify({ id: 'durable-send-storage', kind: 'error', title: 'Mensagem não enviada',
+          message: 'Não foi possível preservar a mensagem e seus anexos. O texto continua no campo; confira os arquivos e o espaço disponível.' })
+      }).finally(() => { durablePending.current = false })
+      refocusAfterSend(editorHadFocus)
+
+      return
+    }
 
     if (queueEdit) {
       exitQueuedEdit('save')

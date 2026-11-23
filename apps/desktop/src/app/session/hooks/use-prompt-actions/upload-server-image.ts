@@ -41,6 +41,7 @@ export async function uploadServerOwnedImage(
 
   return {
     ...attachment,
+    durableSourcePath: attachment.durableSourcePath ?? path,
     path: result.path,
     mime: result.mime_type,
     attachedSessionId: sessionId,

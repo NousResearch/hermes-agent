@@ -18915,6 +18915,316 @@
         "title": "DisplayThumbnailResult",
         "type": "object"
       },
+      "DurableAttachment": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "mediaType": {
+            "title": "Mediatype",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "reference": {
+            "title": "Reference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "mediaType",
+          "size",
+          "sha256",
+          "reference"
+        ],
+        "title": "DurableAttachment",
+        "type": "object"
+      },
+      "DurableCreateParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/DurableOwner"
+          },
+          "params": {
+            "additionalProperties": true,
+            "title": "Params",
+            "type": "object"
+          }
+        },
+        "required": [
+          "owner",
+          "params"
+        ],
+        "title": "DurableCreateParams",
+        "type": "object"
+      },
+      "DurableCreateResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "DurableCreateResult",
+        "type": "object"
+      },
+      "DurableDescribeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "store_id": {
+            "title": "Store Id",
+            "type": "string"
+          },
+          "instance_id": {
+            "title": "Instance Id",
+            "type": "string"
+          },
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "principal_id": {
+            "title": "Principal Id",
+            "type": "string"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          }
+        },
+        "required": [
+          "store_id",
+          "instance_id",
+          "profile_id",
+          "principal_id",
+          "capabilities"
+        ],
+        "title": "DurableDescribeResult",
+        "type": "object"
+      },
+      "DurableFile": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "mediaType": {
+            "title": "Mediatype",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "mediaType",
+          "size",
+          "sha256"
+        ],
+        "title": "DurableFile",
+        "type": "object"
+      },
+      "DurableOwner": {
+        "additionalProperties": false,
+        "properties": {
+          "store_id": {
+            "title": "Store Id",
+            "type": "string"
+          },
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "principal_id": {
+            "title": "Principal Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "store_id",
+          "profile_id",
+          "principal_id"
+        ],
+        "title": "DurableOwner",
+        "type": "object"
+      },
+      "DurableSubmitParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/DurableOwner"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "submission_id": {
+            "title": "Submission Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/DurableAttachment"
+            },
+            "title": "Attachments",
+            "type": "array"
+          }
+        },
+        "required": [
+          "owner",
+          "session_id",
+          "submission_id",
+          "text",
+          "attachments"
+        ],
+        "title": "DurableSubmitParams",
+        "type": "object"
+      },
+      "DurableUploadParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/DurableOwner"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "submission_id": {
+            "title": "Submission Id",
+            "type": "string"
+          },
+          "file": {
+            "$ref": "#/components/schemas/DurableFile"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "data": {
+            "title": "Data",
+            "type": "string"
+          }
+        },
+        "required": [
+          "owner",
+          "session_id",
+          "submission_id",
+          "file",
+          "offset",
+          "data"
+        ],
+        "title": "DurableUploadParams",
+        "type": "object"
+      },
+      "DurableUploadResult": {
+        "additionalProperties": false,
+        "properties": {
+          "reference": {
+            "title": "Reference",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "reference",
+          "sha256",
+          "size",
+          "offset",
+          "complete"
+        ],
+        "title": "DurableUploadResult",
+        "type": "object"
+      },
       "EmptyRequestParams": {
         "additionalProperties": false,
         "properties": {
@@ -50994,6 +51304,78 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/CronSubmitResult"
+        }
+      }
+    },
+    {
+      "name": "durable.create",
+      "summary": "Owner-fenced exact session.create; no profile or principal retargeting after reconnect.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DurableCreateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DurableCreateResult"
+        }
+      }
+    },
+    {
+      "name": "durable.describe",
+      "summary": "Authenticated identity and scoped durable Desktop upload/admission protocol.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DurableDescribeResult"
+        }
+      }
+    },
+    {
+      "name": "durable.submit",
+      "summary": "Admit a frozen message only after every owned attachment verifies; exact retries use the admission ledger.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DurableSubmitParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AdmissionStatus"
+        }
+      }
+    },
+    {
+      "name": "durable.upload",
+      "summary": "Persist/reconcile one attachment chunk for the exact principal, session and submission.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DurableUploadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DurableUploadResult"
         }
       }
     },

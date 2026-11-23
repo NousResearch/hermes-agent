@@ -146,6 +146,7 @@ Some commands are so catastrophic — irreversible filesystem wipes, fork bombs,
 - `approvals.mode: off`
 - Cron jobs running in headless `approve` mode
 - User explicitly clicking "allow always"
+- An internal caller's pre-confirmed command (`terminal(force=True)`, used by the TUI's remote path completion)
 
 The blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag. Patterns currently covered (not exhaustive; kept in sync with `tools/approval_detection.py::HARDLINE_PATTERNS`):
 
@@ -185,6 +186,7 @@ Details:
 - In the additional executable candidates, whitespace **between** words is collapsed, but quoted argument content and argument paths are retained. An exact rule such as `git status` therefore also matches `env git\tstatus; echo done` (where `\t` represents a tab). Quoted mentions such as `echo 'sudo -n id'` are not promoted to commands. Existing whole-input globs such as `*sudo*` still intentionally match mentions anywhere.
 - **YAML quoting:** always quote patterns. A bare leading `*` is a YAML alias and fails to parse; `{`, `!`, and `: ` have their own YAML meanings. Single quotes are safest for shell-ish content.
 - User-defined deny rules apply to all terminal backends, including isolated containers, before any backend-specific approval shortcut.
+- A pre-confirmed internal command (`terminal(force=True)`) skips the approval layer (the prompt, smart approval, the allowlist, and the `cron_mode` / `single_query_mode` / `unattended_mode` deny) but not the floor: deny rules, the hardline blocklist and the `sudo -S` guard still apply, and a command too long or complex for the hardline scan to read to the end is refused, as it is under YOLO and `approvals.mode: off`. In an isolated container only the deny rules apply, as for any other command there.
 - A denied command returns a BLOCKED error to the agent telling it not to retry or rephrase. Nothing runs.
 
 Like the rest of the approval config, changes take effect immediately (the config cache is mtime-keyed) — no session restart needed.

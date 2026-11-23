@@ -2560,8 +2560,10 @@ def remove_legacy_hermes_units(interactive: bool = True, dry_run: bool = False) 
         nonlocal removed
         for name, path in units:
             try:
-                _run_systemctl(["stop", name], system=system, check=False, timeout=90)
-                _run_systemctl(["disable", name], system=system, check=False, timeout=30)
+                for action, timeout in (("stop", 90), ("disable", 30)):
+                    result = _run_systemctl([action, name], system=system, check=False, timeout=timeout)
+                    if result.returncode:
+                        raise RuntimeError(f"systemctl {action} {name} exited with status {result.returncode}")
                 path.unlink(missing_ok=True)
                 print(f"  ✓ Removed {path}")
                 removed += 1

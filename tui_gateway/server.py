@@ -1588,8 +1588,8 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
 class _RuntimeFallbackResolution(NamedTuple):
     runtime: dict
     selected_model: str | None = None
-    fallback_index: int = 0
-    used_fallback = property(lambda self: self.fallback_index > 0)
+    fallback_route: tuple[str, str, str] | None = None
+    used_fallback = property(lambda self: self.fallback_route is not None)
 
 
 def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | None) -> None:

@@ -99,6 +99,18 @@ def test_transient_fallback_stays_turn_scoped_until_the_configured_primary_recov
     assert any("Primary model restored" in str(notice) for notice in notices)
 
 
+def test_live_chain_removal_leaves_the_remaining_fallback_reachable(desktop_agent):
+    save_config({
+        "model": {"provider": "anthropic", "default": _PRIMARY_MODEL},
+        "fallback_providers": [{"provider": "openrouter", "model": _LATER_MODEL}],
+    })
+    server._sync_agent_fallback_with_config("fallback-test", {"agent": desktop_agent})
+
+    assert not desktop_agent._restore_primary_runtime()
+    assert desktop_agent._try_activate_fallback()
+    assert (desktop_agent.provider, desktop_agent.model) == ("openrouter", _LATER_MODEL)
+
+
 @pytest.mark.parametrize("one_turn", [True, False])
 def test_desktop_model_pick_only_supersedes_recovery_if_it_persists(
     desktop_agent, desktop_chain, monkeypatch, one_turn,

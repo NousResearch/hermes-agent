@@ -10,18 +10,27 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
+from hermes_cli.fallback_config import fallback_entry_identity
 from utils import base_url_host_matches
 
 logger = logging.getLogger(__name__)
 
 
 class StartupPrimary(NamedTuple):
-    """The configured route and the fallback cursor while startup runs on a backup."""
+    """The configured primary and the backup route selected at startup."""
 
     model: str
     resolve_kwargs: dict[str, Any]
     overrides: dict[str, Any]
-    fallback_index: int
+    fallback_route: tuple[str, str, str]
+
+    def fallback_resume_index(self, chain: list[dict[str, Any]]) -> int:
+        """Resume after the active backup, or try the whole chain if it was removed."""
+        return next(
+            (index for index, entry in enumerate(chain, start=1)
+             if fallback_entry_identity(entry) == self.fallback_route),
+            0,
+        )
 
 
 def apply_persisted_runtime_overrides(model: str, runtime: dict, overrides: dict) -> None:

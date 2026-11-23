@@ -946,7 +946,7 @@ def restore_primary_runtime(agent) -> bool:
     if startup and restore_startup_primary(agent, startup):
         return True
     # The startup route is the turn's baseline while the configured primary is unavailable.
-    fallback_index = startup.fallback_index if startup else 0
+    fallback_index = startup.fallback_resume_index(agent._fallback_chain) if startup else 0
     if not agent._fallback_activated:
         agent._fallback_index = fallback_index
         _revert_credential_rotation(agent)
@@ -1905,7 +1905,7 @@ def _finish_switch(agent, new_provider, old_norm, new_norm, *, supersede_pre_age
     if supersede_pre_agent_primary:
         agent._pre_agent_primary = None
     elif isinstance(intent := getattr(agent, "_pre_agent_primary", None), StartupPrimary):
-        agent._fallback_index = intent.fallback_index
+        agent._fallback_index = intent.fallback_resume_index(agent._fallback_chain)
     # On a deliberate provider swap, prune fallback entries targeting the OLD or NEW primary;
     # otherwise a failed turn silently re-activates the provider the user just rejected.
     fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])

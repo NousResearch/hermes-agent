@@ -526,17 +526,21 @@ def _tool_lifecycle_required_for_ui(name: str) -> bool:
 def _resolve_runtime_with_fallback(
     resolve_kwargs: dict | None = None, fallback_model=None,
 ) -> _RuntimeFallbackResolution:
-    """Resolve the primary, or the first usable provider/model pair and its chain position."""
+    """Resolve the primary, or the first usable backup and its configured route identity."""
     from agent.agent_init_fallback import _fallback_entries
     from agent.fallback_cooldown import candidate_pool_exhausted
     from hermes_cli.auth import AuthError, primary_failure_wording
-    from hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs
+    from hermes_cli.fallback_config import (
+        effective_runtime_provider,
+        fallback_entry_identity,
+        fallback_entry_runtime_kwargs,
+    )
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
         return _RuntimeFallbackResolution(resolve_runtime_provider(**(resolve_kwargs or {})))
     except AuthError as primary_exc:
         chain = _fallback_entries(_load_fallback_model() if fallback_model is None else fallback_model)
-        for index, entry in enumerate(chain, start=1):
+        for entry in chain:
             fb_provider = str(entry.get("provider") or "").strip() if isinstance(entry, dict) else ""
             fb_model = str(entry.get("model") or "").strip() if isinstance(entry, dict) else ""
             if not fb_provider or not fb_model:
@@ -557,7 +561,7 @@ def _resolve_runtime_with_fallback(
                 "Primary %s (%s), falling back to %s model %s",
                 primary_failure_wording(primary_exc)[0], primary_exc, fb_provider, fb_model,
             )
-            return _RuntimeFallbackResolution(runtime, fb_model, index)
+            return _RuntimeFallbackResolution(runtime, fb_model, fallback_entry_identity(entry))
         raise
 
 
@@ -598,7 +602,7 @@ def _resolve_agent_model_runtime(model_override, provider_override, fallback_mod
         overrides = {}
     from agent.route_binding import StartupPrimary, apply_persisted_runtime_overrides
     resolution = _resolve_runtime_with_fallback(resolve_kwargs, fallback_model)
-    if resolution.used_fallback:
+    if resolution.fallback_route is not None:
         if not resolution.selected_model:
             raise RuntimeError("Auth fallback resolved without a model")
         # Same pre-agent switch the messaging gateway surfaces (#74349); _make_agent pops it onto the
@@ -611,7 +615,7 @@ def _resolve_agent_model_runtime(model_override, provider_override, fallback_mod
         resolution.runtime["_fallback_notice"] = pre_agent_fallback_notice(
             primary_provider, model, resolution.runtime.get("provider"), resolution.selected_model)
         resolution.runtime["_pre_agent_primary"] = StartupPrimary(
-            model, resolve_kwargs, overrides, resolution.fallback_index,
+            model, resolve_kwargs, overrides, resolution.fallback_route,
         )
         return resolution.selected_model, resolution.runtime
     apply_persisted_runtime_overrides(model, resolution.runtime, overrides)
@@ -708,8 +712,10 @@ def _make_agent(
         # Emitted once at the start of the next turn via _emit_pending_fallback_notice -> status_callback.
         agent._pending_fallback_notice = fallback_notice
     if pre_agent_primary is not None:
+        from agent.agent_init_fallback import _fallback_entries
+
         agent._pre_agent_primary = pre_agent_primary
-        agent._fallback_index = pre_agent_primary.fallback_index
+        agent._fallback_index = pre_agent_primary.fallback_resume_index(_fallback_entries(fallback_model))
     return agent
 
 

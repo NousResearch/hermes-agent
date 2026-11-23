@@ -15,9 +15,9 @@ _registry = HandlerRegistry()
 _RUNTIME_KEYS = ("model", "provider", "api_key", "base_url", "api_mode")
 
 
-def _snapshot_agent_model_runtime(agent, session: dict) -> dict:
+def _snapshot_agent_model_runtime(agent, session: dict | None = None) -> dict:
     """Keep the original session runtime if a second one-turn pick replaces the first."""
-    if pending := session.get("one_turn_model_restore"):
+    if pending := (session or {}).get("one_turn_model_restore"):
         return pending
     from agent.route_verdicts import primary_runtime_for_restore
     return {**{k: getattr(agent, k, "") for k in _RUNTIME_KEYS},
@@ -62,7 +62,7 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
     finally:
         if startup is not None:
             agent._pre_agent_primary = startup
-            agent._fallback_index = startup.fallback_index
+            agent._fallback_index = startup.fallback_resume_index(agent._fallback_chain)
 
 
 def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True):

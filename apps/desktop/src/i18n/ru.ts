@@ -2776,7 +2776,6 @@ export const ruOverrides = {
     switchProfileFailed: profile => `Не удалось переключиться на ${profile}`,
     willSendTo: profile => `Будет отправлено в ${profile}`,
     addContext: 'Добавить контекст',
-    wakingProfile: profile => `Пробуждаем ${profile}…`,
     placeholderStarting: 'Запуск Hermes...',
     placeholderReconnecting: 'Переподключение к Hermes…',
     placeholderFollowUp: 'Отправить продолжение',

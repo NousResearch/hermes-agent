@@ -3539,7 +3539,6 @@ export const en: Translations = {
     switchProfileFailed: profile => `Couldn’t switch to ${profile}`,
     willSendTo: profile => `Will send to ${profile}`,
     addContext: 'Add context',
-    wakingProfile: profile => `Waking up ${profile}…`,
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',
     placeholderFollowUp: 'Send follow-up',

@@ -2970,7 +2970,6 @@ export interface Translations extends NoticeTranslations {
     willSendTo: (profile: string) => string
     /** The composer's "+" menu: attach files, folders, snippets. */
     addContext: string
-    wakingProfile: (profile: string) => string
     placeholderStarting: string
     placeholderReconnecting: string
     placeholderFollowUp: string

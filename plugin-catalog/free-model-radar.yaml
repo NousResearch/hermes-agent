@@ -1,0 +1,26 @@
+name: free-model-radar
+repo: https://github.com/jh4184591-lgtm/free-model-radar
+sha: ed3e43334adc8a0ad7c528d0d77390f814c1b18c
+subdir: ""
+description: Detect Nous free-model window drift with anonymous, keyless $0 snapshots.
+maintainer: Joshua Harrison
+tier: community
+category: models
+requires_hermes: ">=0.22.2"
+version: "0.1.0"
+docs_url: ""
+image: ""
+screenshots: []
+readme: true
+platforms: []
+title: "Free Model Radar"
+onboarding: false
+default: false
+known_issues: []
+capabilities:
+  provides_tools:
+    - free_model_radar_status
+    - free_model_radar_track
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

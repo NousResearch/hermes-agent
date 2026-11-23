@@ -211,6 +211,21 @@ def test_a_marked_profiles_key_cmd_is_not_run(home, tmp_path):
     assert source() == "tok" and ran.exists()
 
 
+def test_a_marked_profiles_speech_command_is_not_run(home, tmp_path):
+    """``tts.providers.<name>.command`` and ``stt.providers.<name>.command`` are shell command lines in
+    the profile's own ``config.yaml``, and one runner starts both. The dashboard's speak and transcribe
+    requests reach it for a named profile without building an agent."""
+    from tools import tts_command_provider
+
+    program, ran = _program(tmp_path, "speech")
+    _mark(home)
+    with pytest.raises(RuntimeError, match="runs elsewhere"):
+        tts_command_provider.run_command_provider(str(program), 30)
+    assert not ran.exists()
+    assert pre.clear_profile_run_elsewhere("ops", PLUGIN, root=home)
+    assert tts_command_provider.run_command_provider(str(program), 30).returncode == 0 and ran.exists()
+
+
 # -- `hermes secrets <source> <verb>` -----------------------------------------------------------------
 
 def _secrets_verb(*argv: str) -> argparse.Namespace:

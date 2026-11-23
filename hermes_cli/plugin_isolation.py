@@ -141,10 +141,27 @@ def in_process_import_refusal(what: str, *, source: str = "user",
 IN_PROCESS_PROVIDERS_KEY = "plugins.host.in_process_providers"
 
 
-def _managed_isolation_config() -> Optional[Mapping[str, Any]]:
-    """The managed config alone when managed scope pins ``plugins.isolation``, else ``None``."""
-    from hermes_cli.managed_scope import apply_managed_overlay, is_key_managed
-    return apply_managed_overlay({}) if is_key_managed("plugins.isolation") else None
+# Where ``plugins.host.in_process_providers`` is read from (see :func:`_list_authority`).
+_LIST_FROM_PROFILE, _LIST_FROM_MANAGED, _LIST_UNREADABLE = "profile", "managed", "unreadable"
+
+
+def _list_authority() -> tuple[str, Mapping[str, Any]]:
+    """Which config the in-process provider list comes from, and that config when it is the managed one.
+
+    ``managed`` when managed scope pins ``plugins.isolation`` (its config alone counts); ``unreadable``
+    when a managed scope is present but its config.yaml cannot be read or parsed (no list then: the
+    pin may be in the file that failed); ``profile`` otherwise, including a managed directory with no
+    config.yaml. The strict reader tells a missing file (``{}``) from a failed one (it raises).
+    """
+    from hermes_cli.managed_scope import apply_managed_overlay, is_key_managed, load_managed_config
+    from hermes_yaml import YAMLError
+    try:
+        load_managed_config(strict=True)
+    except (OSError, ValueError, YAMLError):
+        return _LIST_UNREADABLE, {}
+    if is_key_managed("plugins.isolation"):
+        return _LIST_FROM_MANAGED, apply_managed_overlay({})
+    return _LIST_FROM_PROFILE, {}
 
 
 def host_in_process_providers(config: Optional[Mapping[str, Any]] = None) -> frozenset[str]:
@@ -152,10 +169,13 @@ def host_in_process_providers(config: Optional[Mapping[str, Any]] = None) -> fro
     the operator lets run in the Hermes process under ``host``. Empty by default.
 
     The list comes from whoever set the isolation: when managed scope pins ``plugins.isolation``,
-    only the managed value counts and a profile's own config.yaml cannot add to it.
+    only the managed value counts and a profile's own config.yaml cannot add to it; when the managed
+    config cannot be read, the list is empty.
     """
-    managed = _managed_isolation_config()
-    host = _plugins_config(managed if managed is not None else config).get("host")
+    authority, managed = _list_authority()
+    if authority == _LIST_UNREADABLE:
+        return frozenset()
+    host = _plugins_config(managed if authority == _LIST_FROM_MANAGED else config).get("host")
     names = host.get("in_process_providers") if isinstance(host, Mapping) else None
     if isinstance(names, str):
         names = [names]
@@ -180,11 +200,15 @@ def in_process_provider_refusal(plugin: str, profiles: Mapping[str, str], *,
                                         config=config)
     if refusal is None:
         return None
-    if _managed_isolation_config() is None:
+    authority, _ = _list_authority()
+    if authority == _LIST_FROM_PROFILE:
         return f"{refusal}, or add {plugin!r} to {IN_PROCESS_PROVIDERS_KEY}"
     from hermes_cli.managed_scope import get_managed_dir
     managed_dir = get_managed_dir()
     where = f" ({managed_dir / 'config.yaml'})" if managed_dir is not None else ""
+    if authority == _LIST_UNREADABLE:
+        return (f"{refusal}; the managed config{where} could not be read, so {IN_PROCESS_PROVIDERS_KEY} "
+                f"allows no plugin until it can be")
     return (f"{refusal}, or add {plugin!r} to {IN_PROCESS_PROVIDERS_KEY} in the managed config{where}, "
             f"which sets plugins.isolation here; a profile's own list is ignored")
 

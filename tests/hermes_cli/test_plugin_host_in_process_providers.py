@@ -305,6 +305,51 @@ def test_isolation_set_in_the_profile_config_reads_the_list_beside_it(home, mana
     assert str(os.getpid()) in _pids(marker)
 
 
+@pytest.mark.platforms("posix")  # a mode-0 file is unreadable for a non-root user on POSIX only
+@pytest.mark.parametrize("damage", ["unreadable", "malformed"])
+def test_a_managed_config_that_cannot_be_read_allows_no_plugin_in_process(home, managed, caplog, damage):
+    """The managed file may be the one pinning the isolation: when it cannot be read, a profile's own list
+    must not take its place."""
+    import providers
+
+    marker = _plugin(home, "ownclient", _OWN_CLIENT)
+    _config(home, isolation="host", host={"in_process_providers": ["ownclient"]})
+    managed_file = managed / "config.yaml"
+    if damage == "unreadable":
+        _managed_config(managed, isolation="host")
+        managed_file.chmod(0)
+    else:
+        _managed_config(managed, isolation="host")
+        managed_file.write_text("plugins: [isolation: host\n", encoding="utf-8")
+        from hermes_cli import managed_scope
+
+        managed_scope.invalidate_managed_cache()
+    try:
+        with caplog.at_level(logging.WARNING, logger="providers"):
+            profile = providers.get_provider_profile("ownclient")
+        assert str(os.getpid()) not in _pids(marker), "the plugin's module ran in the calling process"
+        assert profile is None
+        error = providers.plugin_load_error("ownclient")
+        assert f"the managed config ({managed_file}) could not be read" in error
+        assert "plugins.host.in_process_providers allows no plugin until it can be" in error
+    finally:
+        managed_file.chmod(0o600)
+
+
+@pytest.mark.platforms("any")
+def test_a_managed_directory_without_a_config_file_leaves_the_list_to_the_profile(home, managed):
+    import providers
+
+    marker = _plugin(home, "ownclient", _OWN_CLIENT)
+    _config(home, isolation="host", host={"in_process_providers": ["ownclient"]})
+    from hermes_cli import managed_scope
+
+    managed_scope.invalidate_managed_cache()
+    profile = providers.get_provider_profile("ownclient")
+    assert profile is not None and profile.create_client()["pid"] == os.getpid()
+    assert str(os.getpid()) in _pids(marker)
+
+
 # ── Controls: the same on the base and with this change ──────────────────────
 
 

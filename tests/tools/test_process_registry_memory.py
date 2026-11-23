@@ -129,7 +129,12 @@ def test_worker_memory_limit_warnings_never_echo_config_contents(monkeypatch, ca
     with caplog.at_level(logging.WARNING, logger="tools.process_registry"):
         assert prm._worker_memory_max_bytes() == prm._WORKER_MEMORY_MAX_CAP_BYTES
 
+    monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", f"Bearer {secret}")
+    with caplog.at_level(logging.WARNING, logger="tools.process_registry"):
+        assert prm._worker_memory_max_bytes() == prm._WORKER_MEMORY_MAX_CAP_BYTES
+
     text = "\n".join(logging.Formatter().format(r) for r in caplog.records)
     assert "Ignoring invalid terminal.worker_memory_max_mb" in text
     assert "Could not read terminal.worker_memory_max_mb" in text
+    assert "Ignoring invalid TERMINAL_LOCAL_MEMORY_MAX_MB" in text
     assert secret not in text

@@ -1,11 +1,5 @@
 import { $gateway } from '@/store/gateway'
-import {
-  approvalKindFields,
-  approvalNamesNothing,
-  isCommandApproval,
-  receiveApprovalRequest,
-  replayPendingApproval
-} from '@/store/prompts'
+import { approvalKindFields, isCommandApproval, receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
 import type { SessionResumeResult } from '@/types/hermes'
 
 /** Re-park a resume snapshot's pending approval. True when the session's turn waits on it: a
@@ -13,16 +7,16 @@ import type { SessionResumeResult } from '@/types/hermes'
 export function restorePendingApproval(response: SessionResumeResult, sessionId: string): boolean {
   const pending = response.pending_approval
 
-  const kindFields = approvalKindFields(pending as Record<string, unknown>)
-
-  // A folder or site request that names no folder or site is refused, as a live one is.
-  if (!pending || approvalNamesNothing(kindFields)) {
+  if (!pending) {
     return false
   }
+
+  const kindFields = approvalKindFields(pending as Record<string, unknown>)
 
   // The live `approval` server request (re-delivered from `open_requests`
   // before this ran) already parked itself with the same queue id; don't
   // clobber it with a copy that can only answer through the RPC fallback.
+  // The store parks nothing for a folder or site request that names no folder or site.
   void receiveApprovalRequest(null, {
     allowPermanent: pending.allow_permanent !== false,
     choices: pending.choices,

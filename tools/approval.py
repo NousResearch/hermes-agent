@@ -1,7 +1,7 @@
 """Dangerous command approval -- the gate flow and per-session state.
 
-Owns the session state (approvals, yolo, gateway queues, denial breaker), the three guard
-entry points (``check_all_command_guards``, ``check_execute_code_guard``,
+Owns the session state (approvals, yolo, gateway queues, denial breaker), the guard
+entry points (``check_all_command_guards``, ``check_execute_code_guard``, ``check_browser_exec_guard``,
 ``request_tool_approval`` / ``_run_approval_gate``) and the shared human-decision engine
 behind them. Leaves: ``approval_detection`` (hardline/dangerous patterns), ``approval_context``
 (contextvars, config readers), ``approval_floors`` (pre-gate blocks, allowlist match),
@@ -941,25 +941,31 @@ _COMMAND_GATE = _GateSpec(
     cli_denied="BLOCKED: User denied this command." + _STOP_COMMAND + "{breaker}",
     smart_log="Smart approval: auto-approved '{command}' ({description})",
 )
-_EXECUTE_CODE_GATE = _GateSpec(
-    noun="code", transport=True, user_approved=True, redact_cli=True, pending_keys=True,
-    notify_failed="BLOCKED: Failed to send execute_code approval request to user. Do NOT retry.",
-    gateway_refused=(
-        "BLOCKED: execute_code script {reason}.{reason_addendum} The user has "
-        "NOT consented to running this code. Do NOT retry, do NOT rephrase the "
-        "script, and do NOT attempt the same outcome via a different tool.{timeout_addendum}{breaker}"
-    ),
-    transport_denied=(
-        "BLOCKED: User denied execute_code through the selected approval transport. The user has NOT consented."
-    ),
-    cli_timeout="BLOCKED: Action timed out without user response." + _STOP_ACTION
-                + " Silence is not consent.{breaker}",
-    cli_denied=(
-        "BLOCKED: User denied execute_code script execution (matched "
-        "'{description}'). Do NOT retry — the user has explicitly rejected it.{breaker}"
-    ),
-    smart_log="Smart approval: auto-approved execute_code for session {session_key}",
-)
+def _script_gate(tool: str) -> _GateSpec:
+    """The whole-script gate's wording for *tool* (``execute_code`` / ``browser_exec``)."""
+    return _GateSpec(
+        noun="code", transport=True, user_approved=True, redact_cli=True, pending_keys=True,
+        notify_failed=f"BLOCKED: Failed to send {tool} approval request to user. Do NOT retry.",
+        gateway_refused=(
+            f"BLOCKED: {tool} script {{reason}}.{{reason_addendum}} The user has "
+            "NOT consented to running this code. Do NOT retry, do NOT rephrase the "
+            "script, and do NOT attempt the same outcome via a different tool.{timeout_addendum}{breaker}"
+        ),
+        transport_denied=(
+            f"BLOCKED: User denied {tool} through the selected approval transport. The user has NOT consented."
+        ),
+        cli_timeout="BLOCKED: Action timed out without user response." + _STOP_ACTION
+                    + " Silence is not consent.{breaker}",
+        cli_denied=(
+            f"BLOCKED: User denied {tool} script execution (matched "
+            "'{description}'). Do NOT retry — the user has explicitly rejected it.{breaker}"
+        ),
+        smart_log=f"Smart approval: auto-approved {tool} for session {{session_key}}",
+    )
+
+
+_EXECUTE_CODE_GATE = _script_gate("execute_code")
+_BROWSER_EXEC_GATE = _script_gate("browser_exec")
 # Plugin-escalated tool calls / protected writes: no transport, no breaker,
 # no user_approved marker (parity with the historical gate).
 _ACTION_GATE = _GateSpec(
@@ -1522,13 +1528,17 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # gate (cron/-q resolved above; messaging/API unchanged).
     if (not is_gateway and not is_ask) or _is_local_viewer_turn():
         return _approved()
+    return _whole_script_decision(
+        _EXECUTE_CODE_GATE, pattern_key, description, code, approval_mode == "smart",
+        approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask)
 
+
+def _whole_script_decision(gate: _GateSpec, pattern_key: str, description: str, code: str, smart: bool, *,
+                           approval_callback, is_cli: bool, is_gateway: bool, is_ask: bool) -> dict:
+    """One-shot approval of a whole script; *pattern_key* is also the tool name shown."""
     session_key = get_current_session_key()
-    # Built only past the early-return gates so common paths don't copy a potentially-large script into this string.
-    command = f"execute_code <<'PY'\n{code}\nPY"
-
     # Without this, "Approve session" / "Always" choices are stored but never
-    # consulted, so every execute_code call re-prompts (#39275).
+    # consulted, so every call re-prompts (#39275).
     if is_approved(session_key, pattern_key):
         return _approved()
 
@@ -1537,12 +1547,39 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # display; the raw code is what gets assessed and run.
     from agent.redact import redact_approval_display
     return _human_decision(
-        _EXECUTE_CODE_GATE, command=command, description=description, pattern_key=pattern_key,
+        gate, command=f"{pattern_key} <<'PY'\n{code}\nPY", description=description, pattern_key=pattern_key,
         pattern_keys=[pattern_key], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
-        smart=approval_mode == "smart",
+        smart=smart,
         pending_body=lambda: f"**Code:**\n```python\n{redact_approval_display(code)}\n```",
     )
+
+
+_BROWSER_EXEC_DESCRIPTION = (
+    "browser_exec script execution. The script runs as Python on this machine and can spawn subprocesses or "
+    "mutate files without passing through terminal command approval; approval is one-shot for this run."
+)
+
+
+def check_browser_exec_guard(code: str) -> dict:
+    """Approve a browser_exec script before the harness runs it (#157913).
+
+    The code runs in a Python process on this host whichever browser it drives (local, CDP
+    override, cloud), so this is the execute_code whole-script gate without the container fast
+    path. Unlike execute_code, unattended contexts (cron, -q, unattended platforms) are not
+    decided by their approval modes: scheduled browser runs are a documented feature and those
+    modes default to deny. They stay trusted-by-config, like a headless local session.
+    """
+    approval_mode = approval_context._get_approval_mode()
+    if _yolo_active() or approval_mode == "off" or _unattended_contexts():
+        return _approved()
+    approval_callback, is_cli, is_gateway, is_ask = _presence()
+    # Same rule as execute_code: an interactive CLI or a local viewer's own turn is not asked per script.
+    if (not is_gateway and not is_ask) or _is_local_viewer_turn():
+        return _approved()
+    return _whole_script_decision(
+        _BROWSER_EXEC_GATE, "browser_exec", _BROWSER_EXEC_DESCRIPTION, code, approval_mode == "smart",
+        approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask)
 
 
 # Load permanent allowlist from config on module import

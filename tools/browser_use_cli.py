@@ -795,6 +795,16 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     verdict = _code_url_verdict(code)
     if verdict.blocked:
         return tool_error(verdict.blocked)
+    # The code runs as Python on this host whatever browser it drives, so it is approved like an
+    # execute_code script before anything is launched (#157913).
+    from tools.approval import check_browser_exec_guard
+    guard = check_browser_exec_guard(code)
+    if not guard.get("approved", False):
+        return tool_error(guard.get("message") or "browser_exec blocked by approval guard.")
+    if guard.get("user_approved"):
+        # A stale interrupt bit from the approval wait must not kill the just-approved run.
+        from tools.interrupt import clear_current_thread_interrupt
+        clear_current_thread_interrupt()
     # One endpoint per call: any private URL sends the whole call to the local sidecar. A call with no URL
     # literal stays on the route the previous call took.
     route_key = _backend_cache_key(task_id, session)

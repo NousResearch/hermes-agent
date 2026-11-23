@@ -261,6 +261,10 @@ Local sessions (classic CLI, TUI, Desktop, ACP editor) follow the interactive CL
 - `delegate_task` children and `/bg` / `/btw` side tasks
 - a viewer's turn that runs while no viewer who can approve is attached
 
+### `browser_exec` Scripts {#browser-exec-scripts}
+
+The `code` passed to `browser_exec` also runs as Python on the machine running Hermes, whichever browser it drives (local, a `/browser connect` endpoint, or a cloud browser), so it gets the same one-shot whole-script approval as `execute_code`, in the same sessions, with the same local-session rule. A terminal backend's container does not exempt it: the code never runs there. Unlike `execute_code`, cron jobs, `-q` runs and unattended platforms run it without asking whatever `cron_mode`, `single_query_mode` and `unattended_mode` say, so [scheduled browser runs](./features/browser.md#scheduled-and-unattended-runs) keep working; remove the `browser` toolset from those surfaces (`hermes tools`, or a job's `enabled_toolsets`) where you don't want it. YOLO and `mode: off` skip the prompt.
+
 ### Approval Flow (CLI)
 
 In the interactive CLI, dangerous commands show an inline approval prompt:

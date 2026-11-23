@@ -133,7 +133,8 @@ Any key that is not one of the six typed options above (and not `models`) is for
 verbatim into OpenRouter's `provider` object — including keys Hermes does not know about
 yet. Per-model entries accept passthrough keys too and outrank the flat value for that
 model. Typed keys always win on a name conflict; each forwarded key logs a warning so a
-typo surfaces immediately; an unset key sends nothing.
+typo surfaces immediately. Unset and empty values (`null`, `""`, `[]`, `{}`) send
+nothing; explicit scalars — `false` and `0` included — are sent verbatim.
 
 ```yaml
 provider_routing:

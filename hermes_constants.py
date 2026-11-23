@@ -1344,12 +1344,17 @@ def provider_routing_extra(pr: dict | None) -> dict:
 def merge_provider_routing_prefs(merged: dict, per_model: dict, extra: dict) -> dict:
     """Final OpenRouter provider preference object from the validated merge.
 
-    Falsy typed values are dropped; explicit passthrough values (``extra`` and unknown
-    ``per_model`` entry keys) are forwarded verbatim — falsy included, since e.g.
-    ``allow_fallbacks: false`` is a meaningful OpenRouter pin; ``None`` means unset and
-    is never sent. Typed keys win over flat ``extra`` (``merged`` already carries the
-    typed keys, flat and per-model); unknown per-model keys outrank flat ``extra``."""
+    Falsy typed values are dropped. Passthrough values (``extra`` and unknown
+    ``per_model`` entry keys) are forwarded verbatim — falsy scalars included,
+    since ``allow_fallbacks: false`` and a ``max_price`` of 0 are meaningful
+    OpenRouter pins — while ``None`` and empty containers (``""``, ``[]``,
+    ``{}``) mean unset and are never sent. Typed keys win over flat ``extra``
+    (``merged`` already carries the typed keys, flat and per-model); unknown
+    per-model keys outrank flat ``extra``."""
     import logging
+
+    def _unset(value) -> bool:
+        return value is None or value == "" or value == [] or value == {}
 
     prefs = {key: value for key, value in merged.items() if value}
     for key, value in (extra or {}).items():
@@ -1357,10 +1362,10 @@ def merge_provider_routing_prefs(merged: dict, per_model: dict, extra: dict) -> 
             logging.getLogger(__name__).debug(
                 "provider_routing passthrough: typed key %r wins over config passthrough value", key,
             )
-        elif value is not None:
+        elif not _unset(value):
             prefs[key] = value
     for key, value in (per_model or {}).items():
-        if key not in merged and value is not None:
+        if key not in merged and not _unset(value):
             prefs[key] = value
     return prefs
 

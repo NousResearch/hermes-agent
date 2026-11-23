@@ -75,9 +75,18 @@ def test_falsy_extra_forwarded_verbatim_none_never():
     from agent.chat_completion_helpers import _provider_preferences_for_agent
 
     agent = _stub_agent()
-    agent.provider_extra = {"allow_fallbacks": False, "zdr": False, "partition": None}
+    agent.provider_extra = {"allow_fallbacks": False, "zdr": False, "max_price": {"prompt": 0}}
     prefs = _provider_preferences_for_agent(agent)
-    assert prefs == {"allow_fallbacks": False, "zdr": False}
+    assert prefs == {"allow_fallbacks": False, "zdr": False, "max_price": {"prompt": 0}}
+
+
+def test_empty_containers_mean_unset_never_sent():
+    from agent.chat_completion_helpers import _provider_preferences_for_agent
+
+    agent = _stub_agent()
+    agent.provider_extra = {"quantizations": [], "headers": {}, "partition": "", "zdr": None}
+    prefs = _provider_preferences_for_agent(agent)
+    assert prefs == {}
 
 
 def test_typed_keys_win_on_conflict():

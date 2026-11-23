@@ -56,10 +56,11 @@ provider_routing:
   logs a `WARNING` (`provider_routing: forwarding unrecognized key ...`)
   so typos surface immediately — a mistyped `zdr` should never route
   silently to a non-ZDR provider.
-- **Explicit values are sent verbatim; unset is never sent.** A passthrough
-  key set to a value — including `false` or `0`, since
-  `allow_fallbacks: false` is a meaningful OpenRouter pin — is forwarded
-  as-is; a key left unset (or `None`) emits no wire key.
+- **Explicit scalars are sent verbatim; empty means unset.** A passthrough key set to
+  a scalar — including `false` or `0`, since `allow_fallbacks: false` is a meaningful
+  OpenRouter pin and `max_price: {prompt: 0}` means free-only routing — is forwarded
+  as-is. `None`, an empty string, an empty list or an empty object mean unset and
+  emit no wire key.
 - **Scoped to the provider object.** Only `extra_body["provider"]` is
   touched; nothing else in the request body changes.
 - **Fail-closed on ZDR.** With `zdr: true`, OpenRouter routes only to

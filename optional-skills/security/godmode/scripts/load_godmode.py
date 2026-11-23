@@ -17,7 +17,28 @@ Usage in execute_code:
 import os, sys
 from pathlib import Path
 
-_gm_scripts_dir = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "skills" / "security" / "godmode" / "scripts"
+def _gm_scripts_dir_for_install():
+    """Installed godmode scripts, including a hub install under a custom category.
+
+    The installer records ``<category>/godmode`` and resolves it with
+    ``_resolve_lock_install_path``. A copy dropped at ``skills/security/godmode``
+    is the fallback when the skill was not installed through the hub.
+    """
+    fallback = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "skills" / "security" / "godmode" / "scripts"
+    try:
+        from tools.skills_hub import HubLockFile
+        from tools.skills_hub_install import _resolve_lock_install_path
+        entry = HubLockFile().get_installed("godmode") or {}
+        install_path = entry.get("install_path") or ""
+        if install_path:
+            scripts = _resolve_lock_install_path(install_path, "godmode") / "scripts"
+            if scripts.is_dir():
+                return scripts
+    except Exception:
+        pass
+    return fallback
+
+_gm_scripts_dir = _gm_scripts_dir_for_install()
 
 _gm_old_argv = sys.argv
 sys.argv = ["_godmode_loader"]
@@ -40,6 +61,6 @@ for _gm_script in ["parseltongue.py", "godmode_race.py", "auto_jailbreak.py"]:
 sys.argv = _gm_old_argv
 
 # Cleanup loader vars
-for _gm_cleanup in ['_gm_scripts_dir', '_gm_old_argv', '_gm_load', '_gm_ns', '_gm_k',
+for _gm_cleanup in ['_gm_scripts_dir', '_gm_scripts_dir_for_install', '_gm_old_argv', '_gm_load', '_gm_ns', '_gm_k',
                      '_gm_v', '_gm_script', '_gm_path', '_gm_cleanup']:
     globals().pop(_gm_cleanup, None)

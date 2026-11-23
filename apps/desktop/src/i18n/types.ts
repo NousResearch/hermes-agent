@@ -2978,6 +2978,22 @@ export interface Translations extends NoticeTranslations {
     lookupNoMatches: string
     lookupTry: string
     lookupOr: string
+    referenceScopes: Record<'file' | 'folder' | 'git' | 'image' | 'tool' | 'url', string>
+    slashBrowseAllSessions: string
+    slashGroups: {
+      Commands: string
+      Configuration: string
+      Exit: string
+      Info: string
+      Options: string
+      Session: string
+      Sessions: string
+      Skills: string
+      Themes: string
+      'Tools & Skills': string
+    }
+    slashSkinList: string
+    slashSkinNext: string
     commonCommands: string
     hotkeys: string
     helpFooter: string

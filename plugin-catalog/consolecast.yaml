@@ -1,0 +1,48 @@
+name: consolecast
+title: Console Cast
+repo: https://github.com/Belweave/consolecast-hermes
+sha: "014d33119ff9fb76fe289c0a76b0b44e2bd52737"
+description: "Produce PS5 and Xbox Series X|S streams from Hermes with Console Cast, which brings the console's built-in broadcast into OBS Studio on a Mac or Linux computer with no capture card and sends OBS's output to several destinations at once: status, guided setup, readiness checks, go-live with confirmation, diagnostics, notifications and after-stream recaps, as 25 tools, /stream, `hermes consolecast` and four skills. Needs the Console Cast app (consolecast.app; free for 7 days, then a subscription). Disclosure — runs the local `consolecast` program (`consolecast mcp`, `consolecast version`) without a shell and with a reduced environment (no Hermes variables or API keys); the plugin makes no network requests itself, though Console Cast actions it calls can (update check, DNS self test, a destination once started). Console Cast's own AI Agents level decides what Hermes may do; going live always goes through Hermes's approval prompt, and Console Cast's own confirmation is answered only with that person's answer. It never asks for, reads or stores a stream key, licence key or the agent token (keys are entered in Console Cast itself), and Console Cast Cloud and account actions are not reachable. Its hooks read tool calls, user messages and approval answers without storing them, to block agent shell commands that would expose Console Cast secrets or get around its AI Agents setting, and to add Console Cast's status to messages about the stream. Stores a small stream journal in its plugin-data folder; `/stream watch on` adds a launcher in the Hermes scripts folder and a no-agent Hermes cron job, removed by `/stream watch off`. No telemetry."
+maintainer: belweave
+tier: community
+category: tools
+requires_hermes: ">=0.23.3"
+docs_url: https://consolecast.app
+version: "1.0.0"
+readme: true
+platforms: [macos, linux]
+known_issues:
+  - "Needs the Console Cast app on the same computer (Apple Silicon Mac or x64 Linux). Console Cast for Windows: coming very soon. On Windows the plugin loads and says so."
+capabilities:
+  provides_tools:
+    - consolecast_status
+    - consolecast_preflight
+    - consolecast_start
+    - consolecast_stop
+    - consolecast_arm
+    - consolecast_disarm
+    - consolecast_console_setup
+    - consolecast_obs_add_source
+    - consolecast_obs_setup_scene
+    - consolecast_obs_output_start
+    - consolecast_obs_output_stop
+    - consolecast_destinations
+    - consolecast_destination_add_guide
+    - consolecast_destination_start
+    - consolecast_destination_stop
+    - consolecast_end_stream
+    - consolecast_wait_for_live
+    - consolecast_diagnose
+    - consolecast_license
+    - consolecast_viewer
+    - consolecast_logs
+    - consolecast_stream_summary
+    - consolecast_app_tools
+    - consolecast_app_call
+    - consolecast_notifications
+  provides_hooks:
+    - pre_tool_call
+    - post_approval_response
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

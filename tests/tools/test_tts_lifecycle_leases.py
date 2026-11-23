@@ -17,16 +17,7 @@ import pytest
 
 from tools import tts_command_provider, tts_tool, tts_tool_lifecycle, tts_tool_local
 
-
-@pytest.fixture(autouse=True)
-def _clean_lifecycle(monkeypatch):
-    tts_tool_lifecycle._reset_tts_leases_for_tests()
-    for cache in tts_tool_local._LOCAL_TTS_MODEL_CACHES.values():
-        cache.clear()
-    yield
-    tts_tool_lifecycle._reset_tts_leases_for_tests()
-    for cache in tts_tool_local._LOCAL_TTS_MODEL_CACHES.values():
-        cache.clear()
+pytestmark = pytest.mark.usefixtures("tts_lifecycle_reset")
 
 
 class _FakePiperVoice:
@@ -63,37 +54,13 @@ def fake_piper(monkeypatch, tmp_path):
     return cfg
 
 
-class _FakeTimer:
-    def __init__(self, interval, function, args=None, kwargs=None):
-        self.interval, self.function, self.args = interval, function, tuple(args or ())
-        self.started = self.cancelled = False
-        self.daemon = False
-
-    def start(self):
-        self.started = True
-
-    def cancel(self):
-        self.cancelled = True
-
-    def fire(self):
-        self.function(*self.args)
-
-
 @pytest.fixture
-def timers(monkeypatch):
-    created: list = []
-
-    def _factory(*args, **kwargs):
-        timer = _FakeTimer(*args, **kwargs)
-        created.append(timer)
-        return timer
-
-    monkeypatch.setattr(tts_tool_lifecycle, "_make_keep_warm_timer", _factory, raising=False)
-    return created
+def timers(tts_keep_warm_timers):
+    return tts_keep_warm_timers
 
 
 def _pending(timers):
-    return [t for t in timers if t.started and not t.cancelled]
+    return [t for t in timers if t.pending]
 
 
 # --------------------------------------------------------------------------
@@ -357,6 +324,40 @@ def test_command_provider_runs_warm_and_release_commands(monkeypatch, timers):
     quote = subprocess.list2cmdline([cfg["providers"]["srv"]["model"]]) if os.name == "nt" \
         else shlex.quote(cfg["providers"]["srv"]["model"])
     assert ran == [f"curl -s localhost:5002/load?model={quote}", "curl -s localhost:5002/unload"]
+
+
+def test_command_hook_thread_resolves_passthrough_under_the_callers_scope(monkeypatch, timers):
+    """The warm/release hook runs on its own thread; under the multiplexer that thread must carry
+    the caller's secret scope or ``resolve_passthrough_value`` fails closed and the hook never
+    runs (#120481)."""
+    from agent import secret_scope as ss
+    from tools.env_passthrough import resolve_passthrough_value
+
+    seen: list = []
+    done = threading.Event()
+
+    def _fake_run(command, timeout, env_passthrough=None):
+        try:
+            seen.extend(resolve_passthrough_value(k, None) for k in env_passthrough)
+        except Exception as exc:
+            seen.append(exc)
+        finally:
+            done.set()
+
+    monkeypatch.setattr(tts_command_provider, "run_command_provider", _fake_run)
+    cfg = {"provider": "srv", "providers": {"srv": {
+        "command": "srv say {input_path} {output_path}", "warm_command": "curl -s localhost:5002/load",
+        "env_passthrough": ["MY_TTS_TOKEN"]}}}
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: cfg)
+    ss.set_multiplex_active(True)
+    token = ss.set_secret_scope({"MY_TTS_TOKEN": "tok-work"})
+    try:
+        assert tts_tool_lifecycle.acquire_tts_lease("desktop:read-aloud", cfg)["action"] == "warmed"
+        assert done.wait(5)
+    finally:
+        ss.reset_secret_scope(token)
+        ss.set_multiplex_active(False)
+    assert seen == ["tok-work"]
 
 
 # --------------------------------------------------------------------------

@@ -37,7 +37,7 @@ def read_streaming_error_body(
     stalls and oversize bodies yield best-effort partial text (or ""), so a read error can't mask the
     original failure.
     """
-    chunks: List[bytes] = []
+    chunks: list[bytes] = []
     state = {"truncated": False}
     done = threading.Event()
 
@@ -55,7 +55,7 @@ def read_streaming_error_body(
                     break
                 chunks.append(chunk)
                 total += len(chunk)
-        except Exception as exc:  # noqa: BLE001 - error path must not raise
+        except Exception as exc:
             logger.debug("bounded error-body read failed: %s", exc)
         finally:
             done.set()
@@ -69,7 +69,7 @@ def read_streaming_error_body(
     # Closing cancels any in-flight socket read so the worker unwinds. No join (daemon, may be blocked in C).
     try:
         response.close()
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     if state["truncated"]:
@@ -77,26 +77,3 @@ def read_streaming_error_body(
             "bounded error-body read: capped at %d bytes (max=%d)", sum(len(c) for c in chunks), max_bytes,
         )
     return b"".join(chunks).decode("utf-8", errors="replace")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Optional  # noqa: F401,E402
-
-def read_error_body_or_default(
-    response: httpx.Response,
-    *,
-    max_bytes: int = DEFAULT_ERROR_BODY_MAX_BYTES,
-    timeout_s: float = DEFAULT_ERROR_BODY_TIMEOUT_S,
-) -> Optional[str]:
-    """Like ``read_streaming_error_body`` but returns ``None`` on empty body.
-
-    Convenience for callers that distinguish "no body" from "empty string".
-    """
-    text = read_streaming_error_body(
-        response, max_bytes=max_bytes, timeout_s=timeout_s
-    )
-    return text or None
-# ---- END PLUGIN-COMPAT ----

@@ -112,7 +112,7 @@ def test_warmup_timeout_applies_to_cold_root_only(tmp_path, monkeypatch):
     try:
         with patch.object(svc, "_get_or_spawn", spawn):
             svc.snapshot_baseline(str(src))  # cold: no client registered for the root yet
-            key = _client_key(find_server_for_file(str(src)), str(repo))
+            key = _client_key(find_server_for_file(str(src)), str(repo), svc._trusted(str(repo)))
             with svc._state_lock:
                 svc._clients[key] = fake
             assert svc.get_diagnostics_sync(str(src)) == []  # warm

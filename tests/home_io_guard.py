@@ -11,6 +11,18 @@ import sqlite3
 import sys
 import threading
 
+
+def _pm_generation_dirs(prefixes) -> set[Path]:
+    """The PM generation dir (``<installs>/<key>/{environments,test-environment}/<gen>``) around
+    each prefix that is a generation's ``venv``."""
+    found = set()
+    for prefix in prefixes:
+        venv = Path(prefix).resolve()
+        if venv.name in ("venv", ".venv") and venv.parent.parent.name in ("environments", "test-environment"):
+            found.add(venv.parent)
+    return found
+
+
 _INTERPRETER_PREFIXES = tuple({
     Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
 } | {
@@ -18,6 +30,12 @@ _INTERPRETER_PREFIXES = tuple({
     # whose site-packages sits under the (real) Hermes home; third-party imports from it are the
     # interpreter's installation, not Hermes state.
     Path(p).resolve() for p in sys.path if p and Path(p).name in ("site-packages", "dist-packages")
+} | {
+    # scripts/run_tests.sh runs a PM generation venv (<installs>/<key>/{environments,test-environment}
+    # /<gen>/venv) that sits under the home whenever HOME is the run's fake home. The generation dir
+    # around the venv is that interpreter's installation too: `hermes update` probes
+    # <venv>/../hermes_cli/main.py to find the checkout owning its venv (update_owning_install).
+    *_pm_generation_dirs((sys.prefix, sys.exec_prefix)),
 } | {
     # The default install checks the repo out INSIDE the home (install.sh:
     # INSTALL_DIR=$HERMES_HOME/hermes-agent). Reading test data, sources for tracebacks, or the
@@ -47,12 +65,16 @@ def _contains(path: str, prefix: str) -> bool:
 
 
 class HomeIOGuard:
-    def __init__(self, roots):
+    def __init__(self, roots, installed_apps=lambda: ()):
         self.roots = roots
+        # The machine's installed desktop app (``packaged_gui_app_paths()`` before any test ran):
+        # deleting, replacing or writing into it is refused. Reads stay allowed: several update
+        # paths only probe it.
+        self.installed_apps = installed_apps
         self.checking = threading.local()
         self.directories: dict[int, Path] = {}
 
-    def check(self, value, *, dir_fd=None, metadata=False):
+    def check(self, value, *, dir_fd=None, metadata=False, destructive=False):
         if value is None or isinstance(value, int) or getattr(self.checking, "active", False):
             return
         self.checking.active = True
@@ -76,18 +98,21 @@ class HomeIOGuard:
             # which is not I/O against the home.
             if metadata and (absolute == "/proc" or absolute.startswith("/proc" + os.sep)):
                 return
+            resolved = self._refuse_installed_app_change(value, absolute) if destructive else None
             roots = tuple(_normcase(os.fspath(r)) for r in self.roots())
             # Resolving the root itself (get_default_hermes_root's relative_to
             # probe) reads no state; only its contents are guarded.
             if metadata and absolute in roots:
                 return
-            # ``shutil.which`` stats/accesses ``<PATH entry>/<name>``. A developer shell puts
-            # PM's tool store (~/.hermes/tools/...) on PATH; probing an executable there is
-            # command lookup, not reading Hermes state. CI has no such entries.
+            # ``shutil.which`` stats/accesses ``<PATH entry>/<name>``, and command resolution
+            # realpath()s the entry itself (is it a Hermes-managed bin dir?), which lstats each of
+            # its ancestors. A developer shell puts PM's tool store (~/.hermes/tools/...) on PATH;
+            # probing there is command lookup, not reading Hermes state. CI has no such entries.
             if metadata:
                 path = os.environ.get("PATH", "")
                 cwd = os.getcwd() if self._relative_path_entries(path) else None
-                if os.path.dirname(absolute) in self._path_entries(path, cwd):
+                entries = self._path_entries(path, cwd)
+                if os.path.dirname(absolute) in entries or any(_contains(absolute, entry) for entry in entries):
                     return
             # The interpreter's own installation (a PM-managed python under ~/.hermes/tools):
             # stdlib source reads (linecache, traceback) are not Hermes state either, nor is
@@ -100,7 +125,8 @@ class HomeIOGuard:
             for root in roots:
                 if _within(absolute, root):
                     self.refuse(value)
-            resolved = _normcase(os.path.realpath(absolute))
+            if resolved is None:
+                resolved = _normcase(os.path.realpath(absolute))
             if metadata and resolved in roots:
                 return
             # A fixture symlink to the running interpreter resolves into its installation.
@@ -112,6 +138,22 @@ class HomeIOGuard:
                     self.refuse(value)
         finally:
             self.checking.active = False
+
+    def _refuse_installed_app_change(self, value, absolute):
+        """Fail on a change to an installed app (already normalized, literal and resolved);
+        returns the resolved path so check() does not resolve it again, or None."""
+        apps = self.installed_apps()
+        if not apps:
+            return None
+        resolved = _normcase(os.path.realpath(absolute))
+        for app in apps:
+            if _within(absolute, app) or _within(resolved, app):
+                import pytest
+                # pytest.fail, not AssertionError: removal helpers catch Exception and would log
+                # the refusal as a warning while the test passed.
+                pytest.fail(f"TEST BUG: changing the REAL installed Hermes desktop app: {value}\n"
+                            "Stub hermes_cli.gui_uninstall.packaged_gui_app_paths to a temporary path.")
+        return resolved
 
     @staticmethod
     def refuse(value):
@@ -135,36 +177,41 @@ class HomeIOGuard:
         )
 
     def install(self, monkeypatch):
-        def wrap(module, name, parameters, *, metadata=False):
+        def wrap(module, name, parameters, *, metadata=False, destructive=False):
             original = getattr(module, name)
 
             @wraps(original)
             def guarded(*args, **kwargs):
                 for index, (parameter, descriptor) in enumerate(parameters):
                     value = args[index] if index < len(args) else kwargs.get(parameter)
-                    self.check(value, dir_fd=kwargs.get(descriptor) if descriptor else None, metadata=metadata)
+                    self.check(value, dir_fd=kwargs.get(descriptor) if descriptor else None, metadata=metadata,
+                               destructive=destructive(args, kwargs) if callable(destructive) else destructive)
                 return original(*args, **kwargs)
 
             monkeypatch.setattr(module, name, guarded)
 
+        def open_writes(args, kwargs):
+            mode = args[1] if len(args) > 1 else kwargs.get("mode", "r")
+            return any(flag in mode for flag in "wax+")
+
         for module in (builtins, io):
-            wrap(module, "open", (("file", None),))
+            wrap(module, "open", (("file", None),), destructive=open_writes)
         for name in ("mkdir", "unlink", "remove", "rmdir", "chmod", "utime"):
-            wrap(os, name, (("path", "dir_fd"),))
+            wrap(os, name, (("path", "dir_fd"),), destructive=name != "mkdir")
         for name in ("stat", "lstat", "readlink", "access"):
             wrap(os, name, (("path", "dir_fd"),), metadata=True)
         for name in ("makedirs", "listdir", "scandir"):
             wrap(os, name, (("name" if name == "makedirs" else "path", None),))
         for name in ("rename", "replace"):
-            wrap(os, name, (("src", "src_dir_fd"), ("dst", "dst_dir_fd")))
-        wrap(shutil, "rmtree", (("path", "dir_fd"),))
+            wrap(os, name, (("src", "src_dir_fd"), ("dst", "dst_dir_fd")), destructive=True)
+        wrap(shutil, "rmtree", (("path", "dir_fd"),), destructive=True)
         wrap(sqlite3, "connect", (("database", None),))
 
         original_open, original_close = os.open, os.close
 
         @wraps(original_open)
         def guarded_open(path, flags, *args, **kwargs):
-            self.check(path, dir_fd=kwargs.get("dir_fd"))
+            self.check(path, dir_fd=kwargs.get("dir_fd"), destructive=bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC)))
             fd = original_open(path, flags, *args, **kwargs)
             candidate = Path(os.fsdecode(path))
             if kwargs.get("dir_fd") is not None and not candidate.is_absolute():

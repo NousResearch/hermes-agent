@@ -1,8 +1,8 @@
 import pytest
 
 from gateway.config import PlatformConfig
-from plugins.platforms.telegram import adapter as tg_adapter  # noqa: E402
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram import adapter as tg_adapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 @pytest.mark.asyncio
@@ -101,7 +101,7 @@ async def test_blocked_loop_after_expiry_dumps_diagnostics(monkeypatch):
     # Margin matters: the watchdog thread only dumps if the loop is STILL
     # blocked when it wakes, and thread wakeup lags under parallel-suite load.
     # 0.2s (= deadline+grace exactly) flaked in a 40-worker full-suite run.
-    _time.sleep(1.0)
+    _time.sleep(1.0)  # noqa: ASYNC251 -- deliberately blocks the loop past the deadline
     with pytest.raises(_asyncio.TimeoutError):
         await task
 

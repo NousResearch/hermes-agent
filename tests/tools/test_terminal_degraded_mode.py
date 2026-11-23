@@ -98,8 +98,8 @@ class TestDegradedToolResult:
         r = json.loads(isolated_env.terminal_tool("echo hi", task_id="t-degraded-ssh"))
         assert r["status"] == "degraded"
         assert r["exit_code"] == -1
-        assert "reason" in r and r["reason"]
-        assert "retry_hint" in r and r["retry_hint"]
+        assert r.get("reason")
+        assert r.get("retry_hint")
         assert "traceback" not in r
 
     def test_docker_daemon_down_returns_degraded_result(self, isolated_env, monkeypatch):
@@ -110,8 +110,8 @@ class TestDegradedToolResult:
 
         r = json.loads(isolated_env.terminal_tool("echo hi", task_id="t-degraded-docker"))
         assert r["status"] == "degraded"
-        assert "reason" in r and r["reason"]
-        assert "retry_hint" in r and r["retry_hint"]
+        assert r.get("reason")
+        assert r.get("retry_hint")
         assert "traceback" not in r
 
     def test_degraded_env_is_not_cached(self, isolated_env, monkeypatch):

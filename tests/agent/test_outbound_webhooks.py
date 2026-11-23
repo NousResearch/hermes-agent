@@ -52,7 +52,7 @@ def _strip_outbound_callbacks():
 class _CapturingHandler(BaseHTTPRequestHandler):
     """Records every POST (path, headers, body) on the server instance."""
 
-    def do_POST(self):  # noqa: N802 — http.server naming
+    def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
         self.server.captured.append(  # type: ignore[attr-defined]
@@ -70,7 +70,7 @@ class _CapturingHandler(BaseHTTPRequestHandler):
             self.send_header("Location", location)
         self.end_headers()
 
-    def do_GET(self):  # noqa: N802 — records redirect follow-ups
+    def do_GET(self):
         self.server.captured.append(  # type: ignore[attr-defined]
             {"path": self.path, "method": "GET", "headers": dict(self.headers),
              "body": b""}
@@ -78,7 +78,7 @@ class _CapturingHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
 
-    def log_message(self, format, *args):  # noqa: A002 — http.server naming
+    def log_message(self, format, *args):
         pass
 
 
@@ -336,6 +336,17 @@ class TestPayload:
         body = outbound_webhooks._serialize_payload("on_session_end", {}, "did_2")
         assert json.loads(body)["profile"] == "default"
 
+    def test_kanban_task_id_is_the_owned_task_only(self, monkeypatch):
+        from agent.delegation_context import delegated_child_context
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_owner")
+        monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+        body = outbound_webhooks._serialize_payload("post_tool_call", {}, "did_1")
+        assert json.loads(body)["extra"]["kanban_task_id"] == "t_owner"
+        with delegated_child_context():
+            body = outbound_webhooks._serialize_payload("post_tool_call", {}, "did_2")
+        assert json.loads(body)["extra"]["kanban_task_id"] == ""
+
     def test_unserialisable_values_stringified(self):
         body = outbound_webhooks._serialize_payload(
             "on_session_end", {"weird": object()}, "did_1"
@@ -585,16 +596,17 @@ class TestDelivery:
         script = tmp_path / "fire_and_exit.py"
         script.write_text(
             "import sys\n"
-            f"sys.path.insert(0, {repr(str(Path(outbound_webhooks.__file__).resolve().parents[1]))})\n"
+            f"sys.path.insert(0, {str(Path(outbound_webhooks.__file__).resolve().parents[1])!r})\n"
             "from agent import outbound_webhooks\n"
             "from hermes_cli.plugins import get_plugin_manager\n"
-            f"cfg = {repr(cfg)}\n"
+            f"cfg = {cfg!r}\n"
             "outbound_webhooks.register_from_config(cfg)\n"
             "get_plugin_manager().invoke_hook('on_session_end', session_id='exit_test')\n"
             "# exit immediately — no explicit flush\n"
         )
         proc = subprocess.run(
             [_sys.executable, str(script)], capture_output=True, timeout=30,
+            check=False,
         )
         assert proc.returncode == 0, proc.stderr.decode()
         deadline = time.monotonic() + 5

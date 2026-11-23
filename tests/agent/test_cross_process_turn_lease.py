@@ -8,9 +8,14 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from agent import relay_runtime
-from hermes_state import SessionDB
+from persistence.authority import coordination
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
+from tests.fixtures.storage_read import conversation, transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 class _DB:
@@ -67,7 +72,10 @@ def _agent_with_db(db, *, session_id="stale-parent", platform="desktop"):
     return agent
 
 
-def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
+@pytest.mark.parametrize("signal", ["on_wait", "on_contended"])
+def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch, signal):
+    """A lease wait and a busy-database retry both reload after admission (the busy writer may
+    be the previous holder's final flush); only a real holder is announced to the user."""
     db = _DB()
     agent = _agent_with_db(db)
     status_events = []
@@ -86,12 +94,9 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
         observed["relay_cwd_session_id"] = session_id
         return "", ""
 
-    # Simulate a contended wait so the resume status path is covered.
     def acquire_with_wait(session_id, holder, **kwargs):
         db.events.append(("acquire", session_id, holder))
-        on_wait = kwargs.get("on_wait")
-        if on_wait is not None:
-            on_wait(0.0)
+        kwargs[signal](*((0.0,) if signal == "on_wait" else ()))
         return True
 
     db.acquire_session_turn_lease = acquire_with_wait
@@ -120,7 +125,9 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
         "repair_alternation": True,
         "include_row_ids": True,
     }
-    assert any(kind == "lifecycle" and text for kind, text in status_events)
+    texts = [text or "" for _kind, text in status_events]
+    for notice in ("Another Hermes process", "Session is free"):
+        assert any(notice in text for text in texts) is (signal == "on_wait"), notice
 
 
 def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
@@ -170,26 +177,134 @@ def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
     ]
 
 
-def test_fresh_session_keeps_caller_seed_without_durable_lease(monkeypatch):
-    db = _DB(session_exists=False)
-    agent = _agent_with_db(db, session_id="fresh", platform="subagent")
-    agent._session_db_created = False
-    agent._parent_session_id = "parent"
-    agent._conversation_root_id = lambda: "parent"
+_LATEST = [{"role": "user", "content": "durable latest"}]
 
+
+@pytest.mark.parametrize(
+    "row_after, reload_rows, expect_reload",
+    [
+        # No row after the wait: keep the caller's seed, even if a reload would return rows.
+        (False, _LATEST, False),
+        # The holder created the row meanwhile: reload it, and skip the redundant create.
+        (True, _LATEST, True),
+        # A proven row wins even when its transcript is empty.
+        (True, [], True),
+        # An unreadable row that reloads nothing keeps the caller's history, carried input included.
+        ("raises", [], False),
+    ],
+    ids=["absent-after-wait", "created-during-wait", "created-empty-during-wait", "unreadable-empty"],
+)
+def test_waited_admission_uses_the_row_read_after_the_lease(
+    monkeypatch, row_after, reload_rows, expect_reload,
+):
+    """After a contended wait, the row state read under the lease decides reload and row flag."""
+    from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+
+    db = _DB()
+
+    def locked_get_session(_session_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    def acquire_with_wait(session_id, holder, **kwargs):
+        db.events.append(("acquire", session_id, holder))
+        kwargs["on_wait"](0.0)
+        if row_after == "raises":
+            db.get_session = locked_get_session
+        else:
+            db.session_exists = row_after
+        return True
+
+    db.acquire_session_turn_lease = acquire_with_wait
+    db.get_messages_as_conversation = lambda *_a, **_k: [dict(m) for m in reload_rows]
+    agent = _agent_with_db(db, session_id="client-id", platform="api_server")
+    agent._session_db_created = False
     observed = {}
 
     def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
         observed["history"] = history
+        observed["row_known"] = _agent._session_db_created
         return {"final_response": "ok", "messages": history, "failed": False}
 
     monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
-    seed = [{"role": "user", "content": "delegated context"}]
-
+    carried = {"role": "user", "content": "carried", _PERSIST_AFTER_ADMISSION_INTERRUPT: True}
+    seed = [{"role": "user", "content": "caller history"}, carried]
     AIAgent.run_conversation(agent, "work", conversation_history=seed)
 
-    assert observed["history"] is seed
-    assert db.events == []
+    if expect_reload:
+        assert observed["history"] == reload_rows + [carried]
+    else:
+        assert observed["history"] is seed
+    assert observed["row_known"] is (row_after is True)
+
+
+def test_first_turn_on_fresh_session_serializes_a_second_writer(tmp_path, monkeypatch):
+    """A client-addressed session id has no row until its first turn writes one; a second
+    turn arriving meanwhile must wait for that turn and see its rows, not interleave."""
+    db_a, db_b = open_persistence(profile_scope(home=tmp_path)), open_persistence(profile_scope(home=tmp_path))
+    a_in_turn, a_may_finish, a_finished = threading.Event(), threading.Event(), threading.Event()
+    observed = {}
+
+    def fake_run(_agent, message, _system, history, *_args, **_kwargs):
+        if message == "first":
+            seed_session(_agent._session_db, "client-id", "api_server")
+            seed_messages(_agent._session_db, "client-id", {"role": "user", "content": "first"})
+            a_in_turn.set()
+            a_may_finish.wait(timeout=10)
+            seed_messages(_agent._session_db, "client-id", {"role": "assistant", "content": "first answer"})
+            a_finished.set()  # still inside the turn, so strictly before the lease is released
+        else:
+            observed["a_finished"] = a_finished.is_set()
+            observed["history"] = [m.get("content") for m in history]
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    agent_a = _agent_with_db(db_a, session_id="client-id", platform="api_server")
+    agent_a.persistence = db_a
+    agent_a._session_db_created = False
+    agent_b = _agent_with_db(db_b, session_id="client-id", platform="api_server")
+    agent_b.persistence = db_b
+    # B either starts waiting on the lease or, unserialized, runs to the end.
+    b_waiting_or_done = threading.Event()
+    real_acquire = coordination.acquire_turn_lease_waiting
+
+    def acquire_b(repository, *args, on_wait=None, **kwargs):
+        if repository is not db_b.coordination:
+            return real_acquire(repository, *args, on_wait=on_wait, **kwargs)
+
+        def waiting(elapsed):
+            b_waiting_or_done.set()
+            on_wait(elapsed)
+        return real_acquire(repository, *args, on_wait=waiting, **kwargs)
+
+    monkeypatch.setattr(coordination, "acquire_turn_lease_waiting", acquire_b)
+
+    def run_b():
+        try:
+            AIAgent.run_conversation(
+                agent_b, "second",
+                conversation_history=conversation(db_b, "client-id"))
+        finally:
+            b_waiting_or_done.set()
+
+    thread_a = threading.Thread(
+        target=lambda: AIAgent.run_conversation(agent_a, "first", conversation_history=[]))
+    thread_b = threading.Thread(target=run_b)
+    try:
+        thread_a.start()
+        assert a_in_turn.wait(timeout=10)
+        thread_b.start()
+        assert b_waiting_or_done.wait(timeout=10)
+        a_may_finish.set()
+        thread_a.join(timeout=10)
+        thread_b.join(timeout=10)
+        assert not thread_a.is_alive() and not thread_b.is_alive()
+    finally:
+        a_may_finish.set()
+        db_a.close()
+        db_b.close()
+
+    assert observed["a_finished"] is True
+    assert observed["history"] == ["first", "first answer"]
 
 
 def test_run_conversation_lease_timeout_returns_resend_notice(monkeypatch):
@@ -643,9 +758,10 @@ def test_run_conversation_exposes_holder_for_fenced_flush(monkeypatch):
 
 
 def _flush_agent(db, session_id):
-    """Bind the real flush onto a stand-in so we can use a live SessionDB."""
+    """Bind the real flush onto a stand-in so we can use a live store."""
     agent = SimpleNamespace(
         _session_db=db,
+        persistence=db,
         _session_db_created=True,
         _persist_disabled=False,
         session_id=session_id,
@@ -673,38 +789,37 @@ def _flush_agent(db, session_id):
 
 def test_flush_messages_to_session_db_fences_stale_holder_on_live_db(tmp_path):
     """A-loses / B-acquires / A-late-flush, through the real persist path."""
-    path = tmp_path / "state.db"
-    first = SessionDB(path)
-    second = SessionDB(path)
-    first.create_session("shared", source="test")
+    first = open_persistence(profile_scope(home=tmp_path))
+    second = open_persistence(profile_scope(home=tmp_path))
+    seed_session(first, "shared", "test")
     stale_holder = "pid=1:turn=stale"
     next_holder = "pid=2:turn=next"
-    assert first.try_acquire_session_turn_lease(
-        "shared", stale_holder, ttl_seconds=5
+    assert first.coordination.try_acquire_turn_lease(
+        session_id="shared", holder=stale_holder, ttl_seconds=5
     )
 
     agent = _flush_agent(first, "shared")
     agent._active_session_turn_lease_holder = stale_holder
     owned = [{"role": "user", "content": "stale-owned"}]
     assert agent._flush_messages_to_session_db(owned, []) is True
-    assert [m["content"] for m in first.get_messages("shared")] == ["stale-owned"]
+    assert [m["content"] for m in transcript_rows(first, "shared")] == ["stale-owned"]
 
-    first.release_session_turn_lease("shared", stale_holder)
-    assert second.try_acquire_session_turn_lease(
-        "shared", next_holder, ttl_seconds=5
+    first.coordination.release_turn_lease(session_id="shared", holder=stale_holder)
+    assert second.coordination.try_acquire_turn_lease(
+        session_id="shared", holder=next_holder, ttl_seconds=5
     )
 
     late = [{"role": "assistant", "content": "late stale reply"}]
     assert agent._flush_messages_to_session_db(late, []) is False
     assert agent._last_persistence_error_cause == "turn_lease"
-    assert [m["content"] for m in second.get_messages("shared")] == ["stale-owned"]
+    assert [m["content"] for m in transcript_rows(second, "shared")] == ["stale-owned"]
 
     agent._active_session_turn_lease_holder = next_holder
     assert agent._flush_messages_to_session_db(late, []) is True
-    assert [m["content"] for m in second.get_messages("shared")] == [
+    assert [m["content"] for m in transcript_rows(second, "shared")] == [
         "stale-owned",
         "late stale reply",
     ]
-    second.release_session_turn_lease("shared", next_holder)
+    second.coordination.release_turn_lease(session_id="shared", holder=next_holder)
     first.close()
     second.close()

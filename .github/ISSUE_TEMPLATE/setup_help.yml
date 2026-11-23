@@ -79,17 +79,17 @@ body:
     attributes:
       label: Debug Report
       description: |
-        Run `hermes debug share` from your terminal and paste the links it prints here.
-        This uploads your system info, config, and recent logs to a paste service automatically.
+        Run `hermes debug share` from your terminal and paste the link it prints here.
+        This uploads an allowlisted summary to a public paste service: versions, config key names (no values)
+        and warning/error counts — no log lines or message text. If a maintainer asks for full logs, run
+        `hermes debug share --nous` instead: it uploads them to private storage that only Nous staff can view.
 
-        If you're in an interactive chat session, you can also use the `/debug` slash command — it does the same thing.
+        If you're in an interactive chat session, you can also send `/debug upload` — it uploads the same summary.
 
         If the upload fails or install didn't get that far, run `hermes debug share --local` and paste the output directly.
         If even that doesn't work, run `hermes doctor` and paste that output instead.
       placeholder: |
         Report   https://paste.rs/abc123
-        agent.log   https://paste.rs/def456
-        gateway.log   https://paste.rs/ghi789
       render: shell
 
   - type: textarea

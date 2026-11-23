@@ -19,8 +19,11 @@ def host_gateway(tmp_path, monkeypatch):
     locks.mkdir()
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(locks))
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    # A live owner holds the host lock for its lifetime (run.py claims before it publishes).
+    assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"))
-    return root
+    yield root
+    hr.release_host_lock(hr.ROLE_GATEWAY)
 
 
 def test_default_home_is_reported_as_served_by_the_host_gateway(host_gateway):
@@ -72,3 +75,76 @@ def test_record_without_createtime_is_never_the_host_gateway(host_gateway, monke
     parsed = hr.read_record(hr.ROLE_GATEWAY)
     assert parsed is not None and parsed.create_time is None  # the record itself still parses
     assert host_topology.host_gateway_topology() is None
+
+
+def test_topology_ignores_another_tenants_record_and_reads_the_launch_homes_state(tmp_path, monkeypatch, request):
+    """#121352 reporting half: a record from ANOTHER Hermes root is not this tenant's host gateway
+    (doctor / cron status / the dashboard ladder), and a NAMED-hosted multiplexer's platforms are read
+    from the home that launched it, not from a stale standalone record at the default root."""
+    import json
+    import os
+
+    from gateway import host_rendezvous as hr
+    from gateway import host_topology, status
+
+    root_a, root_b = tmp_path / "hermes-a", tmp_path / "hermes-b"
+    argus = root_b / "profiles" / "argus"
+    argus.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    monkeypatch.setenv("HERMES_HOME", str(root_b))
+    monkeypatch.setattr("hermes_constants._default_hermes_root_memo", None)
+
+    # A live owner holds the host lock for its lifetime (run.py claims before it publishes).
+    assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
+    request.addfinalizer(lambda: hr.release_host_lock(hr.ROLE_GATEWAY))
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"), home=str(root_a))
+    assert host_topology.host_gateway_topology() is None
+
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "argus"), home=str(argus))
+    (argus / "gateway_state.json").write_text(json.dumps(
+        {"pid": os.getpid(), "gateway_state": "running", "platforms": {"telegram": {"state": "connected"}}}),
+        encoding="utf-8")
+    (root_b / "gateway_state.json").write_text(json.dumps(
+        {"pid": 1, "gateway_state": "stopped", "platforms": {"discord": {"state": "disconnected"}}}),
+        encoding="utf-8")
+    topology = host_topology.host_gateway_topology()
+    assert topology is not None and topology.home == argus
+    resolved = status.multiplexer_liveness_for_profile(root_b)
+    assert resolved is not None and resolved[0] == os.getpid()
+    assert set(resolved[1]["platforms"]) == {"telegram"}
+
+
+def test_a_live_looking_pid_with_a_free_host_lock_is_not_the_host_gateway(tmp_path, monkeypatch):
+    """#133744 start-tick collision: createTime matches a recycled pid after a reboot, yet nothing
+    holds the host lock. Topology/status (and the update/shutdown multiplex checks that share the
+    predicate) must not report that pid as the running host gateway."""
+    import json
+    import subprocess
+    import sys
+
+    from gateway import host_rendezvous as hr
+    from gateway import host_topology
+    from gateway.status import get_process_start_time
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr("hermes_constants._default_hermes_root_memo", None)
+    monkeypatch.setattr("hermes_cli.gateway_multiplex_served.live_default_gateway_pid", lambda: None)
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        hr.ensure_host_state_dir()
+        hr.record_path(hr.ROLE_GATEWAY).write_text(json.dumps({
+            "role": hr.ROLE_GATEWAY, "home": str(root), "pid": child.pid,
+            "createTime": hr.process_create_time(child.pid),
+            "startTime": get_process_start_time(child.pid), "host": "", "port": None,
+            "protocolVersion": hr.HOST_PROTOCOL_VERSION, "tokenFingerprint": "",
+            "profiles": ["default", "coder"], "updatedAt": "",
+        }), encoding="utf-8")
+        record = hr.read_record(hr.ROLE_GATEWAY)
+        assert record is not None and hr.liveness_is_proven(record)  # the pid really looks alive
+        assert host_topology.host_gateway_topology() is None
+    finally:
+        child.kill()
+        child.wait(timeout=10)

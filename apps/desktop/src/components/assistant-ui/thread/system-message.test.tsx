@@ -114,3 +114,23 @@ describe('system message timestamp text separation', () => {
     expectTimestampSeparated(container, 'rerun tests')
   })
 })
+
+describe('slash output face', () => {
+  const body = (container: HTMLElement) => container.querySelector('[data-role="system"] .whitespace-pre-wrap')
+
+  it('keeps column-padded output without a plan gauge in the default face', () => {
+    const { container } = render(
+      <Harness text={'slash:/usage\nSession Token Usage\nInput tokens:                 13,527'} />
+    )
+
+    expect(body(container)?.className).not.toContain('font-mono')
+  })
+
+  it('renders a usage-window /usage block (plan gauges) monospace', () => {
+    const output =
+      'Session Token Usage\nInput tokens:                 13,527\n\nNous Plan\nToday  [||        ]  20% used'
+    const { container } = render(<Harness text={`slash:/usage\n${output}`} />)
+
+    expect(body(container)?.className).toContain('font-mono')
+  })
+})

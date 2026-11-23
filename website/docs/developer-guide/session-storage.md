@@ -4,7 +4,14 @@ Hermes Agent uses a SQLite database (`~/.hermes/state.db`) to persist session
 metadata, full message history, and model configuration across CLI and gateway
 sessions. This replaces the earlier per-session JSONL file approach.
 
-Source files: `hermes_state.py` (facade) plus the `hermes_state_*.py` siblings (schema, fts, search, compression, portability, gateway, ...)
+The profile's gateway is the **only writer of canonical sessions**: `hermes chat`,
+the TUI, Desktop (local), the API server, ACP, cron, Bot Chat and Kanban workers are
+clients that admit input to its session authority over `/api/ws` (see
+[Gateway local sessions](./gateway-local-sessions.md)). Out-of-process managed
+workers write through that owner (`RuntimeSessionStore` RPC), never by opening
+`state.db` for transcript writes themselves.
+
+Source files: the storage contracts in `persistence/`, the entry point `persistence_assembly.py` (`open_persistence`, `open_persistence_reader`), and the SQLite backend in `persistence/sqlite/` (schema, FTS, search, compression, portability, gateway, ...)
 
 ## Hermes home and profile isolation
 
@@ -56,7 +63,7 @@ pytest run.
 ### Desktop profile isolation and compaction generations
 
 Each named profile stores its transcript in its own `$HERMES_HOME/state.db`,
-including when one `hermes serve` process serves several profiles. In-session
+including when one process (the multiplex gateway, or a `hermes serve`) serves several profiles. In-session
 agent rebuilds (Bot Chat capability refresh and `tools.configure`) must retain
 that session's database handle and bind its profile home during construction.
 Releasing the outgoing agent must not close the handle inherited by its replacement.
@@ -121,19 +128,39 @@ ownership for a redelivered event.
 ├── session_model_usage   — Per-model/per-task usage attribution rows
 ├── messages_fts          — FTS5 virtual table (content + tool_name + tool_calls)
 ├── messages_fts_trigram  — FTS5 virtual table with trigram tokenizer (CJK / substring search)
-├── messages_fts_cjk      — FTS5 virtual table with cjk_unicode61 tokenizer
 ├── state_meta            — Key/value metadata table
 ├── gateway_routing       — Gateway routing metadata
 ├── compression_locks     — Cross-process compression locking
 ├── async_delegations     — Async delegation bookkeeping
 ├── delivery_obligations  — Gateway outbox (owed replies); created lazily by gateway/delivery_ledger.py
+├── runtime_epoch         — Session authority's owner epoch + instance id (one row)
+├── session_admissions    — Durable per-session input FIFO (queued → started → terminal; unknown on owner loss)
+├── worker_executions     — Managed worker/child/cron/kanban executions bound to a session and epoch
+├── worker_receipts       — Ordered, digest-checked results a managed worker reported
 └── schema_version        — Single-row table tracking migration state
 ```
+
+`session_admissions`, `worker_executions` and `worker_receipts` reference `sessions`
+with `ON DELETE RESTRICT`: deleting or pruning a session retires its terminal ledger
+rows in the same transaction and refuses while work is live or `unknown`. An input that
+was `started` when its owner died becomes `unknown` at the next owner start and is never
+replayed; its later inputs wait until it is resolved (`prompt.resolve_unknown`).
+
+The `runtime_epoch` row is the store's owner fence: the gateway captures it once at boot
+and every write is checked against it, so bumping it is a takeover. Only the profile's lock
+holder may take it over — `begin_runtime_epoch()` refuses a bump while another process
+holds the profile's `gateway.lock` flock, because a stray bump leaves the running gateway
+permanently behind the fence: every write on that store then fails with `stale_epoch` until
+it restarts, and `/reset` does not recover it (#142330).
 
 `hermes sessions recover` copies the row-bearing tables above into the
 recovered database (FTS indexes and `schema_version` are regenerated), including
 the lazily-created `delivery_obligations` ledger when the source has one — its
-row count is verified like `sessions`/`messages`.
+row count is verified like `sessions`/`messages`. The four runtime-ledger tables
+(`runtime_epoch`, `session_admissions`, `worker_executions`, `worker_receipts`) are
+inventoried and reported as excluded, not copied: a partial ledger could replay
+started effects or adopt another owner's workers. A full `hermes backup` restore keeps
+the complete ledger for startup reconciliation instead.
 
 Key design decisions:
 - **WAL mode** for concurrent readers + one writer (gateway multi-platform)
@@ -147,12 +174,14 @@ Key design decisions:
 
 ### Sessions Table
 
-Abridged — see `SCHEMA_SQL` in `hermes_state_common.py` (applied by `hermes_state_schema.py`) for the full current column list
+Abridged — see `SCHEMA_SQL` in `persistence/sqlite/_schema_ddl.py` (applied by `persistence/sqlite/_schema.py`) for the full current column list
 (which also includes gateway routing metadata such as `session_key`, `chat_id`,
 `chat_type`, `thread_id`, `display_name`, `origin_json`, `expiry_finalized`,
 workspace fields `cwd` / `git_branch` / `git_repo_root`, handoff and
 compression-failure fields, `profile_name`, `transport_profile` (the multiplex
-bot that received the lane, nullable), `rewind_count`, `archived`, and
+bot that received the lane, nullable), `rewind_count`, `archived`,
+`auto_archived` (set only by the idle sweep; a resume or compression
+continuation clears a sweep-only archive, never a deliberate one), and
 `pinned`):
 
 ```sql
@@ -185,6 +214,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     title TEXT,
     api_call_count INTEGER DEFAULT 0,
     -- ... additional gateway/workspace/handoff/compression columns ...
+    prompt_cache_clock TEXT,  -- JSON of the latest prompt-cache event (agent/prompt_cache_clock.py)
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -194,6 +224,20 @@ CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique
     ON sessions(title) WHERE title IS NOT NULL;
 ```
+
+`prompt_cache_clock` is nullable JSON: the route (provider, normalized base URL, model), requested
+and granted cache tiers, one coverage deadline per tier, the guaranteed and estimated ends,
+confidence, send time, and the session's context generation when the last request read or wrote
+the provider's prompt cache. It rides the same queued token-count batch as the usage counters (no
+extra write on the turn loop). The context generation is the number of rows a compaction or prune
+archived (`active = 0, compacted = 1`): it only grows, so a saved clock recorded before an in-place
+compaction no longer validates after a restart; for a managed worker the owner stamps that count
+onto the clock inside the usage receipt that carries it. A resumed agent restores the clock before its first
+response is recorded, and the agentless `session.context_breakdown` reads it too, checked against
+the row's persisted model and `model_config` provider/base URL so a `/model` switch reports
+`unknown`. Every clock read is advisory: a failed store read reports `unknown` and never fails the
+turn. Sessions stored
+before the column fall back to the newest assistant row's timestamp (`assumed`, never guaranteed).
 
 `user_id` is the principal on the other end of the session: messaging adapters
 store the platform sender id, and `desktop` / dashboard sessions opened through
@@ -207,7 +251,8 @@ later.
 
 Abridged — the full schema also includes `effect_disposition`,
 `platform_message_id`, `observed`, `active`, `compacted`, `api_content`,
-`display_kind`, and `display_metadata`:
+`display_kind`, `display_metadata`, `message_uid`, `absorbed_message_uids`,
+`tool_call_uids`, and `tool_call_uid`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS messages (
@@ -236,12 +281,15 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 Notes:
 - `tool_calls` is stored as a JSON string (serialized list of tool call objects)
 - `reasoning_details`, `codex_reasoning_items`, and `codex_message_items` are stored as JSON strings
-- `reasoning_details` is always kept in history; on the chat-completions wire it is replayed only to OpenRouter and the Nous Portal (every other chat-completions route gets a copy without it, since strict schemas reject the field)
+- `reasoning`, `reasoning_content` and `reasoning_details` are always kept in history. On the chat-completions wire every assistant turn replays its stored reasoning on the carriers the route reads (`agent/message_sanitization.py::route_reasoning_carriers`): `reasoning_content` everywhere by default; plus `reasoning` and `reasoning_details` on OpenRouter-format gateways (OpenRouter, Kilo, Vercel AI Gateway, Nous Portal); `reasoning_details` on Novita, MiniMax `/v1` and TokenHub; `reasoning` on local servers, Ollama and Upstage. Strict schemas (Mistral, Groq, Cerebras, SambaNova) get no reasoning key, and Fireworks gets `reasoning_content` only. Only DeepSeek, Kimi and MiMo pad a reasoning-less tool-call turn with `" "`. When a route rejects a field by name ("Extra inputs are not permitted, field: messages[N].reasoning_details"), Hermes records it for that provider/host/model, strips it and retries once. The record lasts for the session and never touches history.
 - Desktop history hydration retains assistant sidecars in both REST and JSON-RPC (`session.resume`, `session.activate`, `session.history`) projections, including rows with reasoning and tool calls. REST may return the SQLite JSON string while RPC returns decoded items; Desktop accepts both. A final Responses reply may live only in `codex_message_items` while `content` is empty. Canonical content still takes precedence, and analysis/commentary items are not promoted to reply text.
 - `reasoning` stores the raw reasoning text for providers that expose it
 - A reasoning-only clean stop (empty `content`, `finish_reason=stop`, reasoning present) is answered with the reasoning text, but the assistant row is never written with that text as `content`: `content` stays empty, the text lives in `reasoning`/`reasoning_content`, and `api_content` carries it so the next request replays the answer byte-identically. History surfaces therefore show it as reasoning, not as a reply.
 - `api_content` is a byte-fidelity sidecar: the exact content string sent to the API for this message when it differs from `content` (ephemeral memory/plugin injections, persist overrides). It preserves the wire bytes for prompt-cache-stable replay — stored as sent, except lone surrogates, which sqlite3 cannot bind and which the conversation loop scrubs from every outgoing payload anyway. `NULL` means `content` was sent verbatim.
 - Timestamps are Unix epoch floats (`time.time()`)
+- `message_uid` is the durable per-message id (32 hex, `uuid4().hex`): minted once at a row's first insert and copied by every clone (in-place compaction generations, rotation children, concurrent-tail clones, `replace_messages` re-issues, export/import), so one logical message keeps one uid while its physical `id` changes. Row-addressed rewrites leave it alone. It is restored on every projection (`get_messages_as_conversation` sets it unconditionally; `_row_id` stays opt-in) and stripped from provider requests. Context engines key their own per-message state on it — see [Context Engine Plugins](./context-engine-plugin.md#stable-message-identity-message_uid).
+- `absorbed_message_uids` is the merge witness: a JSON list of the `message_uid`s the host folded into this row (alternation repair's user and assistant merges, the compressor's in-flight restatement and anchor folds, micro-compaction's adjacent-user merge; the composite keeps the first constituent's uid). Written when the survivor is flushed, rewritten with it, restored as the live `_absorbed_message_uids`, `NULL` on rows that absorbed nothing.
+- `tool_call_uids` (assistant rows) is a JSON `{tool_call_id: uid}` map giving each entry of `tool_calls` a per-occurrence id, because provider tool-call ids repeat (calls repeating an id inside one response share its uid; after two assistant turns are folded, an id both name maps to a list of uids, one per occurrence in call order); `tool_call_uid` (tool rows) is the matching value for the result. The `tool_calls` JSON itself is never modified. Minted at the assistant row's first insert, paired onto the result at flush or, when the column is `NULL`, derived on restore from the preceding assistant row; restored as the live `_tool_call_uids` / `_tool_call_uid`.
 
 ### FTS5 Full-Text Search
 
@@ -259,12 +307,31 @@ The FTS5 table is kept in sync via three triggers that fire on INSERT, UPDATE,
 and DELETE of the `messages` table. The current triggers are gated on the
 `fts_rebuild_high_water` / `fts_rebuild_progress` markers in `state_meta` (so a
 background FTS rebuild can proceed without double-indexing) and cover all three
-indexed columns — see `SCHEMA_SQL` in `hermes_state_common.py` for the exact SQL.
+indexed columns — see `SCHEMA_SQL` in `persistence/sqlite/_schema_ddl.py` for the exact SQL.
 
+
+## Dashboard browsing and owner maintenance
+
+Session browsing opens `state.db` read-only. GET listing, search, details,
+messages, statistics and export never create an absent database, quarantine a
+zero-byte file, reconcile a stale schema, or trigger auto-archive. Uninitialized
+or incompatible stores return HTTP 503 with owner-start/recovery guidance;
+profile aggregation reports schema failures in its per-profile `errors` list.
+
+The profile's gateway initializes and reconciles its store at startup. The
+standalone `serve` backend retains its existing startup reconciliation worker.
+Configured `sessions.auto_archive` remains active through gateway startup and
+housekeeping, or the standalone backend's maintenance ticker, independently of
+browsing. Explicit mutation endpoints retain their existing write behavior.
+
+SQLite WAL readers still participate in shared-memory coordination: `mode=ro`
+may create empty WAL/SHM sidecars or update SHM read marks. The read-only contract
+forbids canonical schema/data writes, repair and checkpointing; it does not make
+live SQLite coordination files immutable.
 
 ## Schema Version and Migrations
 
-Current schema version: **23**
+Current schema version: **31**
 
 The `schema_version` table stores a single integer. Simple column additions are handled declaratively by `_reconcile_columns()` (which diffs live columns against `SCHEMA_SQL` and ADDs any missing ones). The version-gated chain is reserved for data migrations and index/FTS changes that can't be expressed declaratively:
 
@@ -288,6 +355,7 @@ The `schema_version` table stores a single integer. Simple column additions are 
 | 23 | FTS storage redesign — external-content FTS tables replacing the v11 inline-mode copies (opt-in transition for existing DBs) |
 | 29 | Cron sessions leave the trigram (substring/CJK) index; `messages_fts_trigram_src` view + triggers filter on `sessions.source`, one-time rebuild purges historical rows |
 | 30 | Delegate-child (subagent) sessions leave the trigram index too — `source='subagent'` or the `$._delegate_from` marker (`FTS_TRIGRAM_SESSION_SQL`). Rows stay in `messages` and the standard `messages_fts` word index, so `session_search` still finds them; only the ~2.6× trigram shadow tables shrink. Same one-time rebuild as v29 |
+| 31 | `messages.message_uid`, `absorbed_message_uids`, `tool_call_uids`, `tool_call_uid` (declarative column adds), a backfill of a fresh `message_uid` onto every row that predates the column (2,000-id chunks, each its own short write; one open spends about a second past its first chunk and resumes from the `message_uid_backfill_id` meta cursor on the next open, until the `message_uid_backfill` marker ends it, so a large store never holds the write lock for the whole table), and the `messages_message_uid_insert` trigger that mints one for any row inserted without it (an older build writing into the store), so a v31 store hands every row to consumers with an id (tool-call uids are minted when a row is next written; results are paired on restore) |
 
 Versions not listed above were declarative column additions handled by `_reconcile_columns()` (version bump only, no data migration).
 
@@ -296,8 +364,10 @@ Declarative column adds use `ALTER TABLE ADD COLUMN` wrapped in try/except to ha
 
 ## Write Contention Handling
 
-Multiple hermes processes (gateway + CLI sessions + worktree agents) share one
-`state.db`. The `SessionDB` class handles write contention with:
+Several processes still open one `state.db`: the gateway (the canonical session
+writer), read-only browsers (dashboard, `hermes sessions list`), maintenance commands,
+and writers of non-session tables. The SQLite backend's store holder (`StoreHolder` in
+`persistence/sqlite/_holder.py`) handles write contention with:
 
 - **Short SQLite timeout** (1 second) instead of the default 30s
 - **Time-budgeted application-level retry** with random jitter (20-150ms for the
@@ -317,7 +387,7 @@ _CHECKPOINT_EVERY_N_WRITES = 50
 ```
 
 When a writer exhausts its budget the turn ends with
-`session_persistence_failed:locked` and, on Linux, `hermes_state_lockowners`
+`session_persistence_failed:locked` and, on Linux, `persistence/sqlite/_state/lockowners.py`
 logs a WARNING naming the process that held the lock at that moment
 (`PID 594094 (hermes --worktree --yolo) holds WAL write lock on state.db-shm`),
 read from `/proc/locks` — SQLite's byte-range `fcntl` locks encode the lock kind
@@ -328,94 +398,109 @@ because every Hermes process has the DB open. Look for that line in
 `~/.hermes/logs/errors.log` next to the `database is locked` failure.
 
 Lock contention is recognised by SQLite result code (`SQLITE_BUSY` /
-`SQLITE_LOCKED`, `hermes_state_errors.is_sqlite_lock_error`), not by message
+`SQLITE_LOCKED`, `storage_errors.is_sqlite_lock_error`), not by message
 text. In rollback-journal (`delete`) mode a lock lost inside FTS5's table
 constructor arrives as `SQLITE_BUSY` with the text `vtable constructor failed:
 messages_fts`; it is treated like `database is locked`. Opening a writable
-`SessionDB` waits up to `_WRITE_PATIENCE_S`; a read-only open waits its
+store waits up to `_WRITE_PATIENCE_S`; a read-only open waits its
 `_READ_BUSY_TIMEOUT_S` (5 s) read budget once. If the lock outlasts that, the dashboard
 answers 503 (busy), not 500.
 
 
 ## Common Operations
 
+Application code reaches the store through one entry point, `persistence_assembly`. `open_persistence(scope)` returns a handle bound to one profile's store. The handle carries one repository per capability (`sessions`, `messages`, `lineage`, `search`, `maintenance`, `state_meta`, ...), and no operation takes a profile argument. The contracts and their typed records live in `persistence/`; the SQLite backend in `persistence/sqlite/` implements them. Code on an asyncio event loop uses the awaitable view `store.aio` (`await store.aio.messages.read_transcript(...)`), which runs each call off the loop.
+
 ### Initialize
 
 ```python
-from hermes_state import SessionDB
+from pathlib import Path
+from persistence_assembly import open_persistence, open_persistence_reader, profile_scope
 
-db = SessionDB()                           # Default: ~/.hermes/state.db
-db = SessionDB(db_path=Path("~/.hermes/cache/scratch/test.db").expanduser())  # Custom path
+store = open_persistence(profile_scope())          # Default: get_hermes_home() / "state.db"
+store = open_persistence(profile_scope("coder"))   # A named profile's store
+store = open_persistence(profile_scope(home=Path("~/.hermes/cache/scratch/test-home").expanduser()))  # <home>/state.db
+store.close()                                      # Each handle releases its reference once
+
+# Read-only access never creates, migrates or repairs a store
+with open_persistence_reader("coder") as reader:
+    count = reader.sessions.count_sessions()
 ```
+
+Handles on one profile share one backend per process. Opening a handle touches no file: the store opens on the handle's first use, or at once with `open_persistence(scope, eager=True)`, so an unopenable store raises its typed error there.
 
 ### Create and Manage Sessions
 
 ```python
+from persistence.conversation.sessions import NewSession
+
 # Create a new session
-db.create_session(
+store.sessions.create(NewSession(
     session_id="sess_abc123",
     source="cli",
     model="anthropic/claude-sonnet-4.6",
     user_id="user_1",
     parent_session_id=None,  # or previous session ID for lineage
-)
+))
 
 # End a session
-db.end_session("sess_abc123", end_reason="user_exit")
+store.sessions.end("sess_abc123", "user_exit")
 
 # Reopen a session (clear ended_at/end_reason)
-db.reopen_session("sess_abc123")
+store.sessions.reopen("sess_abc123")
 ```
 
 ### Store Messages
 
 ```python
-msg_id = db.append_message(
-    session_id="sess_abc123",
+from persistence.conversation.messages import NewMessage
+
+msg_id = store.messages.append("sess_abc123", NewMessage(
     role="assistant",
     content="Here's the answer...",
-    tool_calls=[{"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}}],
+    tool_calls=({"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}},),
     token_count=150,
     finish_reason="stop",
     reasoning="Let me think about this...",
-)
+))
 ```
 
 ### Retrieve Messages
 
 ```python
-# Raw messages with all metadata
-messages = db.get_messages("sess_abc123")
+# Stored rows with all metadata (TranscriptRow records; as_wire_row() gives the dict)
+rows = store.messages.read_transcript("sess_abc123")
 
 # OpenAI conversation format (for API replay)
-conversation = db.get_messages_as_conversation("sess_abc123")
+conversation = [m.as_openai_message() for m in store.messages.read_conversation("sess_abc123")]
 # Returns: [{"role": "user", "content": "..."}, {"role": "assistant", ...}]
 ```
+
+`TranscriptRead` and `ConversationRequest` (same module) choose the view (active, display or all rows), the page, and whether to read the compression lineage root to tip.
 
 ### Session Titles
 
 ```python
-# Set a title (must be unique among non-NULL titles)
-db.set_session_title("sess_abc123", "Fix Docker Build")
+# Set a title (must be unique among non-NULL titles; TitleConflict otherwise)
+store.sessions.set_title("sess_abc123", "Fix Docker Build")
 
 # Resolve by title (returns most recent in lineage)
-session_id = db.resolve_session_by_title("Fix Docker Build")
+session_id = store.sessions.resolve_by_title("Fix Docker Build")
 
 # Auto-generate next title in lineage
-next_title = db.get_next_title_in_lineage("Fix Docker Build")
+next_title = store.sessions.next_title_in_lineage("Fix Docker Build")
 # Returns: "Fix Docker Build #2"
 ```
 
 
 ## Full-Text Search
 
-The `search_messages()` method supports FTS5 query syntax with automatic
-sanitization of user input.
+The `search` repository's `search_messages()` supports FTS5 query syntax with automatic sanitization of user input.
 
 ### Basic Search
 
 ```python
-results = db.search_messages("docker deployment")
+hits = store.search.search_messages("docker deployment")
 ```
 
 ### FTS5 Query Syntax
@@ -432,24 +517,24 @@ results = db.search_messages("docker deployment")
 
 ```python
 # Search only CLI sessions
-results = db.search_messages("error", source_filter=["cli"])
+hits = store.search.search_messages("error", source_filter=["cli"])
 
 # Exclude gateway sessions
-results = db.search_messages("bug", exclude_sources=["telegram", "discord"])
+hits = store.search.search_messages("bug", exclude_sources=["telegram", "discord"])
 
 # Search only user messages
-results = db.search_messages("help", role_filter=["user"])
+hits = store.search.search_messages("help", role_filter=["user"])
 ```
 
 ### Search Results Format
 
-Each result includes:
-- `id`, `session_id`, `role`, `timestamp`
-- `snippet` — FTS5-generated snippet with `>>>match<<<` markers
-- `context` — 1 message before and after the match (content truncated to 200 chars)
-- `source`, `model`, `session_started` — from the parent session
+Each hit is a `SearchHit` record (`persistence/conversation/search.py`) with:
+- `message_id`, `session_id`, `role`, `timestamp`, `tool_name`
+- `snippet`: FTS5-generated snippet with `>>>match<<<` markers
+- `context`: the message before the match, the match itself and the message after, as `SearchContext` records (content truncated to 200 chars)
+- `source`, `model`, `session_started`: from the parent session
 
-The `_sanitize_fts5_query()` method handles edge cases:
+The SQLite backend's `_sanitize_fts5_query()` (`persistence/sqlite/conversation/_store/search.py`) handles edge cases:
 - Strips unmatched quotes and special characters
 - Wraps hyphenated terms in quotes (`chat-send` → `"chat-send"`)
 - Removes dangling boolean operators (`hello AND` → `hello`)
@@ -528,21 +613,27 @@ LIMIT 10;
 ## Export and Cleanup
 
 ```python
-# Export a single session with messages
-data = db.export_session("sess_abc123")
+from hermes_constants import get_hermes_dir
+from persistence.conversation.messages import ReplaceMode
 
-# Export all sessions (with messages) as list of dicts
-all_data = db.export_all(source="cli")
+# The profile's retained native inputs, removed with the sessions that hold them.
+media_root = str((get_hermes_dir("cache/documents", "document_cache") / "native-inputs").resolve())
 
-# Delete old sessions (only ended sessions)
-deleted_count = db.prune_sessions(older_than_days=90)
-deleted_count = db.prune_sessions(older_than_days=30, source="telegram")
+# Export a single session with messages (SessionExport: .session row, .messages)
+export = store.maintenance.export_session("sess_abc123")
+
+# Export all sessions (with messages)
+all_exports = store.maintenance.export_all(source="cli")
+
+# Delete old sessions (only ended sessions); returns PruneResult(count, deleted_ids)
+result = store.maintenance.prune_sessions(older_than_days=90, media_root=media_root)
+result = store.maintenance.prune_sessions(older_than_days=30, source="telegram", media_root=media_root)
 
 # Clear messages but keep the session record
-db.clear_messages("sess_abc123")
+store.messages.replace_transcript("sess_abc123", [], ReplaceMode.DESTRUCTIVE)
 
-# Delete session and all messages
-db.delete_session("sess_abc123")
+# Delete session and all messages; returns the removed ids
+store.sessions.delete("sess_abc123", media_root=media_root)
 ```
 
 

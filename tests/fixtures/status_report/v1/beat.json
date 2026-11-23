@@ -1,0 +1,25 @@
+{
+  "v": 1,
+  "kind": "beat",
+  "seq": 7,
+  "boot_id": "0123456789abcdef0123456789abcdef",
+  "status": {
+    "gateway_running": true,
+    "gateway_state": "running",
+    "gateway_exit_reason": "restart_requested",
+    "gateway_platforms": {
+      "telegram": {
+        "state": "connected"
+      },
+      "discord": {
+        "state": "fatal",
+        "error_code": "discord_login_failed"
+      },
+      "work:slack": {
+        "state": "retrying",
+        "error_code": "slack_socket_closed"
+      }
+    },
+    "nous_session_valid": "valid"
+  }
+}

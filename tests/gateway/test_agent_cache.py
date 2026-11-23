@@ -14,7 +14,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
-from tools import browser_tool_lifecycle as bt_lifecycle
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from tools import browser_session_lifecycle as bt_lifecycle
 
 def _make_runner():
     """Create a minimal GatewayRunner with just the cache infrastructure."""
@@ -98,7 +100,7 @@ class TestAgentConfigSignature:
                 },
             },
         )
-        monkeypatch.setattr(runtime_provider, "_get_model_config", lambda: {})
+        monkeypatch.setattr(runtime_provider, "_get_model_config", dict)
 
         runtime = _resolve_runtime_agent_kwargs()
 
@@ -149,16 +151,16 @@ class TestExtractCacheBustingConfig:
         for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
             assert out[f"{section}.{key}"] == cfg_get(DEFAULT_CONFIG, section, key)
 
-    def test_explicit_null_differs_from_absent_when_default_is_set(self):
-        """`threshold_tokens: null` opts out of the shipped cap; the signature must keep it distinct from
-        'absent' (= the default) so the opt-out rebuilds the cached agent instead of waiting for a restart."""
+    def test_explicit_cap_differs_from_absent(self):
+        """Setting or clearing `threshold_tokens` rebuilds the cached agent (the signature changes), while
+        absent and an explicit default build the same agent (the signature matches)."""
         from gateway.run import GatewayRunner
 
         default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
-        assert default_cap is not None  # the premise: a non-None default whose opt-out is null
-        sig = lambda cfg: GatewayRunner._extract_cache_busting_config(cfg)["compression.threshold_tokens"]  # noqa: E731
+        other_cap = (default_cap or 0) + 100_000
+        sig = lambda cfg: GatewayRunner._extract_cache_busting_config(cfg)["compression.threshold_tokens"]
         assert sig({}) == sig({"compression": {"threshold_tokens": default_cap}}) == default_cap
-        assert sig({"compression": {"threshold_tokens": None}}) is None
+        assert sig({"compression": {"threshold_tokens": other_cap}}) == other_cap != sig({})
 
     def test_legacy_checkpoints_bool_carries_defaults_for_the_other_keys(self):
         """`checkpoints: true` builds the agent with DEFAULT_CONFIG's limits (`_checkpoint_agent_kwargs`), so
@@ -718,15 +720,27 @@ class TestAgentCacheMessageCountRebaseline:
     ``_refresh_agent_cache_message_count`` re-baselines the stored count to
     the now-current value after each turn, so the guard fires ONLY when a
     different process changed the transcript.  These tests pin both halves of
-    the invariant against the REAL SessionDB + the REAL guard condition.
+    the invariant against the REAL store + the REAL guard condition.
     """
 
-    def _runner_with_db(self, db):
-        from hermes_state import AsyncSessionDB
+    @pytest.fixture
+    def attach_store(self, monkeypatch):
+        from persistence_assembly import open_persistence, profile_scope
 
+        opened = []
+
+        def attach(runner, home):
+            opened.append(open_persistence(profile_scope(home=home)))
+            monkeypatch.setattr(type(runner), "persistence", opened[-1])
+
+        yield attach
+        for store in opened:
+            store.close()
+
+    def _runner_with_db(self, db, attach_store):
         runner = _make_runner()
-        # The gateway holds the async facade; the production refresh awaits it.
-        runner._session_db = AsyncSessionDB(db)
+        # The production refresh awaits the storage interface handle over the same state.db.
+        attach_store(runner, db.scope.profile_dir)
         return runner
 
     @staticmethod
@@ -737,8 +751,8 @@ class TestAgentCacheMessageCountRebaseline:
         the cached agent (or either side is None / it's a legacy 2-tuple).
         """
         try:
-            row = runner._session_db._db.get_session(session_id)
-            live = row.get("message_count", 0) if row else None
+            row = runner.persistence.sessions.get(session_id)
+            live = row.message_count if row else None
         except Exception:
             live = None
         with runner._agent_cache_lock:
@@ -752,38 +766,36 @@ class TestAgentCacheMessageCountRebaseline:
         return not invalidate
 
     @pytest.mark.asyncio
-    async def test_cross_process_write_still_invalidates(self, tmp_path):
+    async def test_cross_process_write_still_invalidates(self, tmp_path, attach_store):
         """After the re-baseline, a DIFFERENT process appending to the same
         session must still flip the guard to rebuild (the #45966 fix holds).
         """
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "sessions.db")
-        db.create_session("s1", source="telegram")
-        runner = self._runner_with_db(db)
+        db = storage_handle(tmp_path)
+        seed_session(db, "s1", "telegram")
+        runner = self._runner_with_db(db, attach_store)
         agent = object()
 
         with runner._agent_cache_lock:
-            _row = db.get_session("s1")
+            _row = db.sessions.get("s1")
             runner._agent_cache["telegram:s1"] = (
-                agent, "sig", (_row.get("message_count", 0) if _row else 0),
+                agent, "sig", (_row.message_count if _row else 0),
             )
 
         # Our own turn + re-baseline -> reuse next turn.
-        db.append_message("s1", role="user", content="u")
-        db.append_message("s1", role="assistant", content="a")
+        seed_messages(db, "s1", {"role": "user", "content": "u"})
+        seed_messages(db, "s1", {"role": "assistant", "content": "a"})
         await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
         assert self._guard_would_reuse(runner, "telegram:s1", "s1") is True
 
         # ANOTHER process (e.g. the desktop dashboard backend) appends a turn
         # to the SAME session in the shared DB — we have NOT re-baselined for it.
-        db.append_message("s1", role="user", content="external from dashboard")
+        seed_messages(db, "s1", {"role": "user", "content": "external from dashboard"})
 
         # Guard must now reject reuse so the agent rebuilds from fresh disk.
         assert self._guard_would_reuse(runner, "telegram:s1", "s1") is False
 
     @pytest.mark.asyncio
-    async def test_in_band_followup_reuses_cached_agent(self, tmp_path):
+    async def test_in_band_followup_reuses_cached_agent(self, tmp_path, attach_store):
         """Behavioral regression for the in-band queued (/queue) follow-up.
 
         #46237 re-baselines the snapshot only on the EXTERNAL-turn boundary
@@ -801,22 +813,20 @@ class TestAgentCacheMessageCountRebaseline:
         cache-hit guard, which reads ``get_session(session_id)`` with the same
         ``session_id`` the recursive ``_run_agent`` call is given.
         """
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "sessions.db")
-        db.create_session("s1", source="telegram")
-        runner = self._runner_with_db(db)
+        db = storage_handle(tmp_path)
+        seed_session(db, "s1", "telegram")
+        runner = self._runner_with_db(db, attach_store)
         agent = object()
 
         # First turn: cache miss -> build. Snapshot is the pre-turn count.
-        _row = db.get_session("s1")
-        build_count = _row.get("message_count", 0) if _row else 0
+        _row = db.sessions.get("s1")
+        build_count = _row.message_count if _row else 0
         with runner._agent_cache_lock:
             runner._agent_cache["telegram:s1"] = (agent, "sig", build_count)
 
         # First turn flushes its own user + assistant rows.
-        db.append_message("s1", role="user", content="u")
-        db.append_message("s1", role="assistant", content="a")
+        seed_messages(db, "s1", {"role": "user", "content": "u"})
+        seed_messages(db, "s1", {"role": "assistant", "content": "a"})
 
         # Bug reproduction: re-entering the guard at the in-band follow-up
         # boundary WITHOUT the re-baseline sees the grown count and rebuilds.

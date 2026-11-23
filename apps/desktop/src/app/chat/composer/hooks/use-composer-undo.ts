@@ -3,6 +3,16 @@ import { type RefObject, useCallback, useEffect, useMemo } from 'react'
 import { caretOffsetInEditor, composerPlainText, placeCaretAtOffset, renderComposerContents } from '../rich-editor'
 import { type ComposerSnapshot, createComposerUndoHistory } from '../undo-history'
 
+/** Each mounted composer's undo recorder, keyed by its editor element, for the
+ *  one edit the app makes from outside the composer tree: a context-menu
+ *  replacement (`app/context-menu/composer-menu.ts`). */
+const recorders = new WeakMap<HTMLElement, () => void>()
+
+/** Bank `editor`'s current state on its composer's undo stack, if one is mounted. */
+export function recordComposerUndoPoint(editor: HTMLElement): void {
+  recorders.get(editor)?.()
+}
+
 interface UseComposerUndoArgs {
   editorRef: RefObject<HTMLDivElement | null>
   /** Push a restored snapshot back into draftRef + composer state. */
@@ -41,6 +51,24 @@ export function useComposerUndo({ editorRef, syncDraftFromEditor }: UseComposerU
     },
     [editorRef, history, snapshot]
   )
+
+  useEffect(() => {
+    const editor = editorRef.current
+
+    if (!editor) {
+      return
+    }
+
+    const record = () => recordUndoPoint()
+
+    recorders.set(editor, record)
+
+    return () => {
+      if (recorders.get(editor) === record) {
+        recorders.delete(editor)
+      }
+    }
+  }, [editorRef, recordUndoPoint])
 
   const applySnapshot = useCallback(
     (next: ComposerSnapshot | null) => {

@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any, List
 
-from agent.message_content import flatten_message_text
+from session_rules.turns import flatten_message_text
 from agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
 
 logger = logging.getLogger("run_agent")
@@ -80,7 +80,7 @@ def _last_announced_surface(conversation_history: Any) -> str:
     return ""
 
 
-def note_inert_pinned_tools(agent: Any, built_for_this_surface: List[str]) -> None:
+def note_inert_pinned_tools(agent: Any, built_for_this_surface: list[str]) -> None:
     """Name, at the end of the staged note, the pinned tools THIS surface did not build.
 
     The freeze keeps a previous surface's tools on the wire deliberately — removing them is the one

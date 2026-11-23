@@ -58,7 +58,7 @@ def _stub_create_agent_runtime(monkeypatch, fake_agent_cls):
         "provider": "openrouter", "api_key": "sk-test", "base_url": "https://openrouter.ai/api/v1",
         "api_mode": "chat_completions"})
     monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "global/model")
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+    monkeypatch.setattr("gateway.run._load_gateway_config", dict)
     monkeypatch.setattr("gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {}))
     monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
     monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
@@ -85,7 +85,7 @@ async def test_chat_completions_stream_forwards_agent_reasoning_callback(adapter
             return {"final_response": "answer", "completed": True}
 
     _stub_create_agent_runtime(monkeypatch, FakeAgent)
-    monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+    monkeypatch.setattr(adapter, "_ensure_store", lambda: None)
     request, written, fake_response = _fake_writer_env()
     stream_q = ThreadSafeAsyncQueue()
     agent_task, agent_ref = adapter._spawn_stream_agent(

@@ -196,16 +196,18 @@ class TestGatewayCleanupWiring:
         import threading
         from unittest.mock import MagicMock, patch
 
+        from gateway.config import GatewayConfig
         from gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
         runner._running = True
         runner._running_agents = {}
-        runner._running_agents_ts = {}
+        # __init__ always binds ``config``; the shutdown notice now walks every served
+        # profile's configured home channels from it, not just the live adapters.
+        runner.config = GatewayConfig()
         runner.adapters = {}
         runner._background_tasks = set()
         runner._pending_messages = {}
-        runner._pending_approvals = {}
         runner._pending_model_notes = {}
         runner._shutdown_event = asyncio.Event()
         runner._exit_reason = None
@@ -219,11 +221,9 @@ class TestGatewayCleanupWiring:
         runner._restart_drain_timeout = 0.1
         runner._voice_mode = {}
         runner._session_model_overrides = {}
-        runner._update_prompt_pending = {}
         runner._busy_input_mode = "interrupt"
         runner._agent_cache = {}
         runner._agent_cache_lock = threading.Lock()
-        runner._shutdown_all_gateway_honcho = lambda: None
         runner._update_runtime_status = MagicMock()
 
         mock_agent_1 = MagicMock()
@@ -238,7 +238,7 @@ class TestGatewayCleanupWiring:
             with patch("gateway.status.remove_pid_file"), \
                  patch("gateway.status.write_runtime_status"), \
                  patch("tools.terminal_tool.cleanup_all_environments"), \
-                 patch("tools.browser_tool_lifecycle.cleanup_all_browsers"):
+                 patch("tools.browser_session_lifecycle.cleanup_all_browsers"):
                 loop.run_until_complete(GatewayRunner.stop(runner))
         finally:
             loop.close()
@@ -379,7 +379,7 @@ class TestDelegationCleanup:
         parent._active_children.append(child)
         relay_host = MagicMock()
         monkeypatch.setattr(relay_runtime, "get_runtime", lambda **_kwargs: relay_host)
-        monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 2)
+        monkeypatch.setattr("tools.delegate_tool_child_run._get_child_timeout", lambda: 2)
 
         # The parent's cap must not elapse before the worker thread has opened the child's turn, or
         # the "late result" scenario degrades into "child never started" on a loaded runner. Gate the
@@ -389,16 +389,16 @@ class TestDelegationCleanup:
                 child_started.wait(timeout=5)
                 return super().wait(timeout)
 
-        import tools.delegate_tool as delegate_tool
+        from tools import delegate_tool
 
-        real_start_heartbeat = delegate_tool._start_heartbeat
+        real_heartbeat = delegate_tool._Heartbeat
 
         def start_gated_heartbeat(*args, **kwargs):
-            heartbeat = real_start_heartbeat(*args, **kwargs)
+            heartbeat = real_heartbeat(*args, **kwargs)
             heartbeat.settled = _GatedSettle()
             return heartbeat
 
-        monkeypatch.setattr(delegate_tool, "_start_heartbeat", start_gated_heartbeat)
+        monkeypatch.setattr(delegate_tool, "_Heartbeat", start_gated_heartbeat)
 
         def run_conversation(**kwargs):
             lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(

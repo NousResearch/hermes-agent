@@ -195,6 +195,8 @@ What ends a kernel:
 - **`reset=true`.** The agent can pass `reset: true` to discard the kernel's state and start clean. This is also the way to pick up environment changes: a kernel's environment is frozen when it spawns, so a newly allowlisted passthrough variable is invisible until the kernel is reset.
 - **Idle timeout and eviction.** Kernels die with the session, after `code_execution.kernel_idle_timeout` idle seconds (default 1800), or when more than `code_execution.max_session_kernels` (default 4) top-level sessions' kernels are alive and the oldest is evicted (running subagents' kernels do not count against the cap).
 
+**Edited modules.** A kernel keeps every module it has imported, so after a project file is edited the next cell still runs the code that was loaded earlier. When that happens the result carries a warning naming the edited modules (`warning` on the local kernel, `kernel.warning` on remote backends), and the agent can either `importlib.reload()` them or pass `reset: true`. Kernel state is never discarded for this; standard-library and installed packages are not watched.
+
 The security envelope is the same as a one-shot script: environment scrubbing, the tool whitelist, and the per-call tool budget all apply to every cell, and tool-call authority (approvals, session, allow-list) is rebound on each cell.
 
 ```yaml
@@ -237,6 +239,8 @@ The child process runs with a **minimal environment**. API keys, tokens, and cre
 :::
 
 Environment variables containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `PASSWD`, or `AUTH` in their names are excluded. Only safe system variables (`PATH`, `HOME`, `LANG`, `SHELL`, `PYTHONPATH`, `VIRTUAL_ENV`, etc.) are passed through.
+
+Approvals: gateway sessions approve a script as a whole before it runs. In a local CLI, TUI, Desktop or ACP session, a turn you typed gets no whole-script prompt: Python-level file and process operations in the script run unprompted and only its `terminal()` calls ask. Injected and automation turns keep the whole-script prompt. See [`execute_code` scripts](../security.md#execute-code-scripts).
 
 ### Skill Environment Variable Passthrough
 

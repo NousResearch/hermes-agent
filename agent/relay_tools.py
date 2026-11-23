@@ -104,12 +104,3 @@ def _run_awaitable(value: Any) -> Any:
     return relay_llm._run_awaitable(
         value, loop_error="Synchronous Hermes Relay tool execution cannot run on an active event-loop thread",
     )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import asyncio  # noqa: F401,E402
-import inspect  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

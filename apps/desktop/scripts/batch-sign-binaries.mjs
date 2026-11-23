@@ -66,10 +66,13 @@ const TIMESTAMP_URL = 'http://timestamp.digicert.com'
  */
 function execFileAsync(cmd, args, options) {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, options, (error) => {
+    const child = execFile(cmd, args, options, (error) => {
       if (error) reject(error)
       else resolve()
     })
+    // execFile captures output even when passed stdio: 'inherit'.
+    child.stdout?.pipe(process.stdout, { end: false })
+    child.stderr?.pipe(process.stderr, { end: false })
   })
 }
 
@@ -216,7 +219,10 @@ export async function timestampChunk(files, opts) {
     '/td', 'SHA256',
     ...files
   ]
+  let attempt = 0
   const run = async () => {
+    attempt += 1
+    console.log(`[batch-sign] timestamp attempt ${attempt}/${opts.timestampAttempts ?? 3} (${files.length} binaries)`)
     if (opts.exec) {
       await opts.exec(opts.signtool, args, opts.execOptions)
       return
@@ -250,6 +256,7 @@ export async function batchSignBinaries(binaries, opts = {}) {
   if (binaries.length === 0) {
     return { signed: 0, chunks: 0, skipped: false }
   }
+  console.log('[batch-sign] preparing Windows signing tools')
   // afterPack runs before the per-file Azure signer downloads its tools.
   const { signtool, dlib, dotnetRoot } = opts.signtool && opts.dlib
     ? opts
@@ -259,6 +266,7 @@ export async function batchSignBinaries(binaries, opts = {}) {
     root: env.ELECTRON_BUILDER_CACHE ? `${env.ELECTRON_BUILDER_CACHE}-payload-signatures` : null,
     env, signtool, dlib, timestampUrl: opts.timestampUrl ?? TIMESTAMP_URL
   }) : opts.cache
+  console.log(`[batch-sign] checking signature cache for ${binaries.length} binaries${cache ? '' : ' (cache disabled)'}`)
   const plan = cache ? await cache.prepare(binaries) : null
   const toSign = plan?.files ?? binaries
   console.log(`[batch-sign] ${plan?.restored ?? 0} cache hits, ${toSign.length} to sign, ${plan?.duplicates ?? 0} duplicate copies`)
@@ -278,12 +286,19 @@ export async function batchSignBinaries(binaries, opts = {}) {
   const execOptions = { stdio: 'inherit', env: signEnv }
   try {
     // Pass 1: Azure Authenticode sign — concurrent, no timestamp.
-    await runPool(batches, concurrency, (batch) =>
-      signChunk(batch, { signtool, dlib, metadataPath, exec: opts.exec, execOptions })
-    )
+    console.log(`[batch-sign] Azure signing: ${batches.length} batches, up to ${concurrency} concurrent`)
+    await runPool(batches, concurrency, async (batch, index) => {
+      const start = performance.now()
+      console.log(`[batch-sign] signing batch ${index + 1}/${batches.length} (${batch.length} binaries)`)
+      await signChunk(batch, { signtool, dlib, metadataPath, exec: opts.exec, execOptions })
+      console.log(`[batch-sign] signed batch ${index + 1}/${batches.length} in ${((performance.now() - start) / 1000).toFixed(1)}s`)
+    })
     // Pass 2: RFC3161 timestamp — concurrent, no Azure/dlib, retried.
-    await runPool(batches, concurrency, (batch) =>
-      timestampChunk(batch, {
+    console.log(`[batch-sign] timestamping: ${batches.length} batches`)
+    await runPool(batches, concurrency, async (batch, index) => {
+      const start = performance.now()
+      console.log(`[batch-sign] timestamping batch ${index + 1}/${batches.length} (${batch.length} binaries)`)
+      await timestampChunk(batch, {
         signtool,
         timestampUrl: opts.timestampUrl,
         exec: opts.exec,
@@ -291,8 +306,12 @@ export async function batchSignBinaries(binaries, opts = {}) {
         timestampAttempts: opts.timestampAttempts,
         timestampRetryDelayMs: opts.timestampRetryDelayMs
       })
-    )
-    if (cache) await cache.publish(plan)
+      console.log(`[batch-sign] timestamped batch ${index + 1}/${batches.length} in ${((performance.now() - start) / 1000).toFixed(1)}s`)
+    })
+    if (cache) {
+      console.log('[batch-sign] verifying signed binaries and publishing signature cache')
+      await cache.publish(plan)
+    }
     console.log(`[batch-sign] completed in ${((performance.now() - started) / 1000).toFixed(1)}s`)
     return { signed: toSign.length, chunks: batches.length, skipped: false }
   } finally {
@@ -325,10 +344,12 @@ export async function batchSignAppTree(appOutDir, productExePath, opts = {}) {
   // on dead weight and can FAIL: locally the cache may hold files that
   // were removed between pm bundle staging and the afterPack walk.
   const inCache = (file) => /(^|[\\/])uv-cache[\\/]/.test(path.resolve(file))
+  console.log(`[batch-sign] collecting signable binaries in ${appOutDir} (excluding product exe and uv-cache)`)
   const binaries = getBinaries(appOutDir, {
     skip: (file) =>
       inCache(file) || (productExe ? path.resolve(file) === productExe : false)
   })
+  console.log(`[batch-sign] collected ${binaries.length} binaries`)
   if (binaries.length === 0) return { signed: 0, chunks: 0, skipped: false }
   const result = await batchSignBinaries(binaries, opts)
   console.log(

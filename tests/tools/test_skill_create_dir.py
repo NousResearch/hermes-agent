@@ -25,10 +25,8 @@ def isolated_home(tmp_path, monkeypatch):
     from agent import skill_utils as su
     su._external_dirs_cache_clear()
 
-    import tools.skills_tool as skills_tool
-    import tools.skill_manager_tool as smt
+    from tools import skills_tool
     monkeypatch.setattr(skills_tool, "SKILLS_DIR", home / "skills")
-    monkeypatch.setattr(smt, "SKILLS_DIR", home / "skills")
     yield home
     su._external_dirs_cache_clear()
 

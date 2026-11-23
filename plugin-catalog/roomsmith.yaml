@@ -1,0 +1,41 @@
+name: roomsmith
+title: Roomsmith
+repo: https://github.com/devSebb/roomsmith
+sha: "421e6f30fca43066f75ed7258281315c7eeb2fde"
+description: "One 3D room that you and Hermes both edit. It tells you whether things fit and what they cost. Drag furniture in a live editor inside Hermes Desktop or the dashboard, or tell Hermes what to change: one saved room with undo, and each sees what the other did. Give a budget and Hermes furnishes the room with real products, read from their pages and checked against your room and your money. Start from a photo or measurements. No accounts or keys. Network: only GETs to product pages (public addresses only, rate-capped). Never buys anything. Disclosure — the agent's product tools make GET requests to product-page and product-image URLs that you or the agent give (http/https on public addresses only; private/LAN/loopback hosts and redirects to them are refused; rate-capped; results cached under the plugin's data folder); roomsmith_from_photo reads JPEG/PNG/WebP files at paths the agent names and sends them to your active Hermes model to draft the room; a pre_llm_call hook adds a few lines about your editor changes and furnishing budget to turns in rooms sessions; all data stays in <HERMES_HOME>/plugin-data/roomsmith; it never buys anything."
+maintainer: devSebb
+tier: community
+category: desktop
+requires_hermes: ">=0.21.0"
+version: "0.1.0"
+platforms: [macos, linux]
+docs_url: https://github.com/devSebb/roomsmith#readme
+image: "https://raw.githubusercontent.com/devSebb/roomsmith/421e6f30fca43066f75ed7258281315c7eeb2fde/docs/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/devSebb/roomsmith/421e6f30fca43066f75ed7258281315c7eeb2fde/docs/screenshots/01-furnished-to-budget.png"
+  - "https://raw.githubusercontent.com/devSebb/roomsmith/421e6f30fca43066f75ed7258281315c7eeb2fde/docs/screenshots/02-real-product.png"
+  - "https://raw.githubusercontent.com/devSebb/roomsmith/421e6f30fca43066f75ed7258281315c7eeb2fde/docs/screenshots/03-blocks-the-door.png"
+  - "https://raw.githubusercontent.com/devSebb/roomsmith/421e6f30fca43066f75ed7258281315c7eeb2fde/docs/screenshots/04-over-budget.png"
+  - "https://raw.githubusercontent.com/devSebb/roomsmith/421e6f30fca43066f75ed7258281315c7eeb2fde/docs/screenshots/05-plan-view.png"
+  - "https://raw.githubusercontent.com/devSebb/roomsmith/421e6f30fca43066f75ed7258281315c7eeb2fde/docs/screenshots/06-light-theme.png"
+readme: true
+known_issues:
+  - "Sizes read from a photo are estimates until you set one real measurement (a wall, the door, or an object)."
+  - "iPhone HEIC photos must be exported as JPEG/PNG first."
+  - "Furnishing with real products depends on the shops: some refuse automated reads or print no size; the plugin says so and never invents a size or price."
+capabilities:
+  provides_tools:
+    - roomsmith_projects
+    - roomsmith_new_room
+    - roomsmith_from_photo
+    - roomsmith_inspect
+    - roomsmith_apply
+    - roomsmith_check
+    - roomsmith_read_product
+    - roomsmith_shortlist
+    - roomsmith_add_product
+    - roomsmith_history
+    - roomsmith_export
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

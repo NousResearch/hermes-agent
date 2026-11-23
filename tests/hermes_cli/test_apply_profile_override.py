@@ -59,6 +59,8 @@ def _run_apply_profile_override(
         "HERMES_S6_SUPERVISED_CHILD",
         "INVOCATION_ID",
         "HERMES_GATEWAY_EXTERNAL_SUPERVISOR",
+        "HERMES_SESSION_PROFILE",
+        "HERMES_DELEGATED_CHILD_CONTEXT",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -458,3 +460,139 @@ def test_module_entry_keeps_an_explicit_default_profile_over_the_sticky_one(tmp_
                          env=env, capture_output=True, text=True, timeout=120, check=True).stdout
 
     assert Path(out.strip().splitlines()[-1]).resolve() == (root / "config.yaml").resolve()
+
+
+class TestSessionProfileOverridesStickyProfile:
+    """Regression tests for #159008.
+
+    A bare ``hermes <cmd>`` spawned from inside an agent session must act on that
+    session's profile rather than following ``~/.hermes/active_profile`` into an
+    unrelated profile, while preserving explicit ``-p`` flags and profile-routed
+    subagent ``HERMES_HOME`` bindings.
+    """
+
+    @pytest.mark.parametrize("exported_root", [True, False])
+    def test_default_session_profile_ignores_sticky_active_profile(
+        self, tmp_path, monkeypatch, exported_root,
+    ):
+        root = tmp_path / ".hermes"
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(root) if exported_root else None,
+            active_profile="someprofile",
+            argv=["hermes", "config", "set", "display.skin", "mono"],
+            extra_env={"HERMES_SESSION_PROFILE": "default"},
+        )
+        assert result == str(root)
+
+    def test_named_session_profile_overrides_sticky_active_profile(
+        self, tmp_path, monkeypatch,
+    ):
+        root = tmp_path / ".hermes"
+        (root / "profiles" / "coder").mkdir(parents=True, exist_ok=True)
+        (root / "profiles" / "coder" / "config.yaml").write_text("{}\n", encoding="utf-8")
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(root),
+            active_profile="someprofile",
+            argv=["hermes", "cron", "list"],
+            extra_env={"HERMES_SESSION_PROFILE": "coder"},
+        )
+        assert result == str(root / "profiles" / "coder")
+
+    def test_custom_session_profile_preserves_custom_home(
+        self, tmp_path, monkeypatch,
+    ):
+        custom_home = tmp_path / "custom-hermes-home"
+        (custom_home / "profiles" / "someprofile").mkdir(parents=True, exist_ok=True)
+        (custom_home / "profiles" / "someprofile" / "config.yaml").write_text("{}\n", encoding="utf-8")
+        (custom_home / "active_profile").write_text("someprofile\n", encoding="utf-8")
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(custom_home),
+            active_profile="someprofile",
+            argv=["hermes", "config", "path"],
+            extra_env={"HERMES_SESSION_PROFILE": "custom"},
+        )
+        assert result == str(custom_home)
+
+    def test_explicit_profile_flag_still_wins_over_session_profile(
+        self, tmp_path, monkeypatch,
+    ):
+        root = tmp_path / ".hermes"
+        (root / "profiles" / "target").mkdir(parents=True, exist_ok=True)
+        (root / "profiles" / "target" / "config.yaml").write_text("{}\n", encoding="utf-8")
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(root),
+            active_profile="someprofile",
+            argv=["hermes", "-p", "target", "config", "path"],
+            extra_env={"HERMES_SESSION_PROFILE": "default"},
+        )
+        assert result == str(root / "profiles" / "target")
+
+    def test_routed_subagent_profile_home_wins_over_parent_session_profile(
+        self, tmp_path, monkeypatch,
+    ):
+        """A profile-routed subagent binds target ``HERMES_HOME`` while keeping the
+        parent's ``HERMES_SESSION_PROFILE`` for delivery; both directions (default ->
+        named and named -> default) must stay on the subagent's bound ``HERMES_HOME``."""
+        root = tmp_path / ".hermes"
+        coder_dir = root / "profiles" / "coder"
+        coder_dir.mkdir(parents=True, exist_ok=True)
+        (coder_dir / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+        to_named = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(coder_dir),
+            active_profile="someprofile",
+            argv=["hermes", "config", "path"],
+            extra_env={
+                "HERMES_SESSION_PROFILE": "default",
+                "HERMES_DELEGATED_CHILD_CONTEXT": str(root),
+            },
+        )
+        assert to_named == str(coder_dir)
+
+        to_default = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(root),
+            active_profile="someprofile",
+            argv=["hermes", "config", "path"],
+            extra_env={
+                "HERMES_SESSION_PROFILE": "coder",
+                "HERMES_DELEGATED_CHILD_CONTEXT": str(coder_dir),
+            },
+        )
+        assert to_default == str(root)
+
+    def test_bare_cli_subprocess_in_default_session_keeps_default_config_path(self, tmp_path):
+        """End-to-end subprocess check: ``python -m hermes_cli.main config path`` inside a
+        default-profile session resolves ``~/.hermes/config.yaml``, not ``active_profile``."""
+        import subprocess
+
+        root = tmp_path / ".hermes"
+        (root / "profiles" / "someprofile").mkdir(parents=True)
+        (root / "profiles" / "someprofile" / "config.yaml").write_text("{}\n", encoding="utf-8")
+        (root / "active_profile").write_text("someprofile\n", encoding="utf-8")
+        env = {k: v for k, v in os.environ.items() if not k.startswith("HERMES_")}
+        env.update(
+            HOME=str(tmp_path),
+            USERPROFILE=str(tmp_path),
+            HERMES_HOME=str(root),
+            HERMES_SESSION_PROFILE="default",
+            PYTHONPATH=str(Path(__file__).resolve().parents[2]),
+        )
+
+        out = subprocess.run(
+            [sys.executable, "-m", "hermes_cli.main", "config", "path"],
+            env=env, capture_output=True, text=True, timeout=120, check=True,
+        ).stdout
+
+        assert Path(out.strip().splitlines()[-1]).resolve() == (root / "config.yaml").resolve()

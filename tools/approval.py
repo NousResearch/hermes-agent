@@ -2,8 +2,8 @@
 
 Owns the session state (approvals, yolo, gateway queues, denial breaker), the guard
 entry points (``check_all_command_guards``, ``check_preconfirmed_command_guards``,
-``check_execute_code_guard``, ``request_tool_approval`` / ``_run_approval_gate``) and the shared human-decision engine
-behind them. Leaves: ``approval_detection`` (hardline/dangerous patterns), ``approval_context``
+``check_execute_code_guard``, ``request_tool_approval`` / ``_run_approval_gate``) and the
+shared human-decision engine behind them. Leaves: ``approval_detection`` (hardline/dangerous patterns), ``approval_context``
 (contextvars, config readers), ``approval_floors`` (pre-gate blocks, allowlist match),
 ``approval_prompt`` (CLI prompt, plugin transports, MCP elicitation), ``approval_gateway_wait``
 (blocking gateway round-trip), ``approval_smart`` (guardian LLM), ``approval_human_wait``.
@@ -665,8 +665,8 @@ _SCAN_INCOMPLETE_BLOCK_MESSAGE = (
 def _scan_incomplete_block(why: str) -> dict:
     """Refusal for a command the hardline scan could not finish where no human reviews it (YOLO,
     ``approvals.mode: off``, cron / -q / unattended approve-mode, no prompt surface, a pre-confirmed
-``terminal(force=True)``). Its hardline
-    coverage is only the linear fallback, so nothing but a person may wave it through."""
+    ``terminal(force=True)``). Its hardline coverage is only the linear fallback, so nothing but a
+    person may wave it through."""
     return _blocked(_SCAN_INCOMPLETE_BLOCK_MESSAGE.format(why=why),
                     pattern_key=_SCAN_INCOMPLETE_DESCRIPTION, description=_SCAN_INCOMPLETE_DESCRIPTION)
 

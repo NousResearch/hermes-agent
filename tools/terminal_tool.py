@@ -1180,7 +1180,7 @@ class _ApprovalVerdict:
     """Outcome of the pre-exec guard pass.
 
     ``note`` is the audit note attached to the result. ``approved_run`` is True
-    when the user explicitly approved (or pre-confirmed via ``force``); it drives
+    when a human approved it or its caller vetted it via ``force``; it drives
     the clean-interrupt-slate clear before ``env.execute`` so an approved command
     can't be SIGINT-killed by a bit that landed during the approval-wait.
     """

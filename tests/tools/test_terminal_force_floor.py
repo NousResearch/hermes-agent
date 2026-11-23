@@ -57,3 +57,11 @@ def test_force_keeps_the_operators_deny_rules_in_an_isolated_container(monkeypat
 def test_force_runs_a_confirmed_command_the_floor_allows(command, config):
     verdict = terminal_tool._run_approval_guards(command, config["env_type"], config, force=True)
     assert verdict.approved_run is True
+
+
+def test_force_skips_the_approval_layers(monkeypatch):
+    """Only the floor binds a forced command, not an approval layer that refuses it unforced (cron's default deny)."""
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    with pytest.raises(terminal_tool._Rejected):
+        terminal_tool._run_approval_guards("rm -rf build/", "local", LOCAL, force=False)
+    assert terminal_tool._run_approval_guards("rm -rf build/", "local", LOCAL, force=True).approved_run is True

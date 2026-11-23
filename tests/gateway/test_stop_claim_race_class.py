@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_state_runtime import claim_session_input, list_session_admissions
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _claim_after_read(authority, session_id):
@@ -14,49 +15,48 @@ def _claim_after_read(authority, session_id):
 
     async def claimed(actor, ref, admission_id):
         seen = await receipt(actor, ref, admission_id)
-        claim_session_input(authority.db, epoch=authority.epoch, session_id=session_id)
+        authority.persistence.admissions.claim(epoch=authority.epoch, session_id=session_id)
         return seen
     authority.receipt = claimed
 
 
 def _hosted(hosted_owner, tmp_path, monkeypatch):
-    from gateway.hosted_room_driver import TaskIdentity
+    from persistence.gateway.hosted_rooms import HostedTaskIdentity
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     authority, loop, principal, agent = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default',
                                  principal=principal, authorize=lambda *args: True)
     coords = dict(profile='default', source='bot_room')
     sid = rpc.create(**coords, title='Group: room')['session_id']
-    rpc.submit(**coords, session_id=sid, prompt='input', task=TaskIdentity('room', 'task', 'thread', 'turn'),
+    rpc.submit(**coords, session_id=sid, prompt='input', task=HostedTaskIdentity('room', 'task', 'thread', 'turn'),
                execution_generation=1, on_terminal=lambda receipt: None)
     _claim_after_read(authority, sid)
     reply = rpc.interrupt(**coords, session_id=sid, expected_task_id='task')
-    [row] = list_session_admissions(authority.db, session_id=sid)
-    return reply == {'interrupted': True, 'status': 'interrupted'} and row['status'] == 'started' and agent.interrupted
+    [row] = authority.persistence.admissions.list(session_id=sid)
+    return reply == {'interrupted': True, 'status': 'interrupted'} and row.status == 'started' and agent.interrupted
 
 
 def _cron(hosted_owner, tmp_path, monkeypatch):
     from gateway import session_cron
     from gateway.session_authority import LiveSession, SessionAuthority
     from gateway.session_contract import SessionActor
-    from hermes_state import SessionDB
-    from hermes_state_runtime import admit_session_input, begin_runtime_epoch
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    db = SessionDB(tmp_path / 'cron.db')
-    db.create_session('s', source='cron')
-    authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='p', instance_id='t', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='t'))
+    (home := tmp_path / 'cron').mkdir()
+    db = storage_handle(home)
+    seed_session(db, 's', 'cron')
+    authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='p', instance_id='t',
+                                 persistence=db,
+                                 epoch=db.runtime.begin_epoch(instance_id='t'))
     authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='cron-owner'), 'route')
     authority._schedule = lambda ref: None
     actor = SessionActor('cron-owner', 'p', frozenset({'session:create', 'session:submit', 'session:control'}), 'ticker')
-    with db:
-        row = admit_session_input(db, epoch=authority.epoch, principal_id='cron-owner', session_id='s',
-                                  request_id='cron:job:fire', payload={'text': ''})
-        _claim_after_read(authority, 's')
-        reply = asyncio.run(session_cron.operation(
-            authority, 'cancel', {'session_id': 's', 'admission_id': row['admission_id']}, actor))
-        event = getattr(authority, '_cron_cancellations', {}).get(row['admission_id'])
-        return reply == {'ok': True} and event is not None and event.is_set()
+    row, _ = db.admissions.admit(epoch=authority.epoch, principal_id='cron-owner', session_id='s',
+                                 request_id='cron:job:fire', payload={'text': ''})
+    _claim_after_read(authority, 's')
+    reply = asyncio.run(session_cron.operation(
+        authority, 'cancel', {'session_id': 's', 'admission_id': row.admission_id}, actor))
+    event = getattr(authority, '_cron_cancellations', {}).get(row.admission_id)
+    return reply == {'ok': True} and event is not None and event.is_set()
 
 
 @pytest.mark.parametrize('surface', [_hosted, _cron], ids=['hosted_rpc_interrupt', 'cron_cancel'])

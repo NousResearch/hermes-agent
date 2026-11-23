@@ -70,14 +70,15 @@ def _fire(home: Path, job_id: str):
     """Run one job through the owner bridge for *home*'s authority."""
     from gateway.session_contract import SessionRef
     from gateway.session_cron import execute
-    from hermes_state_registry import acquire, release
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     job = {"id": job_id, "name": job_id, "schedule_display": "manual", "model": "test-model"}
     ref = SessionRef(home.name, f"cron-{job_id}")
-    db = acquire(home / "state.db")
-    db.create_session(ref.session_id, source="cron")
+    store = open_persistence(profile_scope(home=home))
+    seed_session(store, ref.session_id, "cron")
     authority = SimpleNamespace(
-        db=db, profile_id=home.name, pending_results={},
+        persistence=store, profile_id=home.name, pending_results={},
         sessions={ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))})
     row = {"admission_id": f"adm-{job_id}", "request_id": f"req-{job_id}", "principal_id": "cron-owner",
            "owner_epoch": 1, "generation": 1, "payload": {"text": ""}}
@@ -86,7 +87,7 @@ def _fire(home: Path, job_id: str):
     try:
         asyncio.run(execute(authority, ref, row, policy))
     finally:
-        release(db)
+        store.close()
 
 
 def test_secondary_profile_cron_terminal_sees_its_own_hermes_home(two_profiles, monkeypatch):

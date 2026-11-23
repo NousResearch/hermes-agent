@@ -1,3 +1,4 @@
+import { atom, type WritableAtom } from 'nanostores'
 import { useEffect, useRef, useState } from 'react'
 
 import { hostHas } from '@/lib/host-capabilities'
@@ -129,10 +130,19 @@ function startPcmTap(audioContext: AudioContext, source: MediaStreamAudioSourceN
 
 export function useMicRecorder(copy: MicRecorderErrorCopy): {
   handle: MicRecorderHandle
-  level: number
+  /** Audio level mirrored outside React. The meter reports at the audio rate
+   *  (60 Hz); subscribing the composer to that is a re-render per frame, so
+   *  only the meter component reads this atom. */
+  levelStore: WritableAtom<number>
   recording: boolean
 } {
-  const [level, setLevel] = useState(0)
+  // One atom per recorder instance: two engines (and two compositors) can be
+  // mounted at once, so this must not be module-global.
+  const levelStoreRef = useRef<WritableAtom<number> | null>(null)
+  levelStoreRef.current ??= atom(0)
+
+  const levelStore = levelStoreRef.current
+  const setLevel = levelStore.set
   const [recording, setRecording] = useState(false)
 
   const recorderRef = useRef<MediaRecorder | null>(null)
@@ -435,5 +445,5 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
 
   const handle: MicRecorderHandle = { start, stop, cancel }
 
-  return { handle, level, recording }
+  return { handle, levelStore, recording }
 }

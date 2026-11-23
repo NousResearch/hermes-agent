@@ -391,7 +391,9 @@ run while the host is off.
 Noninteractive setup and imports do not install a missing service, even when the imported
 config says `install`. Existing installed services remain authoritative and can be started
 regardless of the saved preference. To opt in explicitly later, run `hermes gateway install`;
-the choice is recorded only after successful installation. To be asked again during setup,
+the choice is recorded only after successful installation. The installers' step after setup,
+`hermes gateway install --if-missing`, is not a second opt-in: it installs nothing after a
+recorded decline and asks the same question when setup never did. To be asked again during setup,
 reset the choice with `hermes config set gateway.service_install_choice null`.
 
 Setup orchestration lives in `hermes_cli/gateway_setup_service.py`. Its
@@ -951,7 +953,7 @@ DM the bot can run it. Operators of shared gateways must set it.
 
 The handler returns its ack at once and drains `anon_auth.run_sign_in` on a **private single-worker
 executor** (`_login_executor`), never the shared 10-thread gateway pool — the token poll can last
-the code's full expiry, and a live worker in the shared pool makes shutdown skip the SessionDB
+the code's full expiry, and a live worker in the shared pool makes shutdown skip the session store's
 close/checkpoint. One attempt per process, stamped with the identity that started it: the same
 identity's second `/login` cancels the first (the loser ends with the cancelled copy pushed into its
 own chat); a different identity is refused. `task.cancel()` cannot interrupt a blocking poll inside

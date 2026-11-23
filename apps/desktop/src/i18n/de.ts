@@ -2616,11 +2616,6 @@ export const deOverrides = {
       openLog: 'Log öffnen',
       actionLog: 'Aktionsprotokoll',
       alreadyInstalled: (name: string) => `"${name}" ist bereits installiert`,
-      pickerTitle: 'Skills Hub',
-      pickerBrowse: 'Den ganzen Hub durchstöbern',
-      pickerHide: 'Hub-Durchsucher ausblenden',
-      pickerHint:
-        'Klicken Sie bei einem beliebigen Skill auf „+ Zu diesem Agenten hinzufügen“ – er wird installiert und erscheint in der Liste oben.',
       loadFailed: 'Skill-Hub konnte nicht geladen werden',
       previewFailed: 'Skill-Vorschau fehlgeschlagen',
       scanFailed: 'Sicherheitsscan fehlgeschlagen',
@@ -3775,7 +3770,10 @@ export const deOverrides = {
   },
   composer: {
     message: 'Nachricht',
-    wakingProfile: profile => `Wecke ${profile}…`,
+    switchingProfile: profile => `Wechsel zu ${profile}…`,
+    switchingProfileSlow: 'Verbindung wird noch hergestellt. Nachrichten, die du jetzt sendest, warten und gehen an diesen Agenten.',
+    switchProfileFailed: profile => `Wechsel zu ${profile} fehlgeschlagen`,
+    willSendTo: profile => `Wird an ${profile} gesendet`,
     placeholderStarting: 'Hermes wird gestartet…',
     placeholderReconnecting: 'Verbindung zu Hermes wird wiederhergestellt…',
     placeholderFollowUp: 'Folge senden',
@@ -4924,6 +4922,7 @@ export const deOverrides = {
       branchNewChat: 'In neuem Chat abzweigen',
       react: 'Reagieren',
       dismissError: 'Fehler schließen',
+      responseContinuing: 'Wird fortgesetzt…',
       responseStopped: 'Antwort gestoppt',
       ...deErrorLayers,
       errorCodes: {

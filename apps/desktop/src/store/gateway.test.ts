@@ -314,49 +314,48 @@ describe('secondary connection timeout (#93454)', () => {
     await pending
   })
 
-  it('does not let a wedged shared-primary-route probe block the secondary dial forever', async () => {
-    // Same unbounded-IPC hazard as above, but for sharedPrimaryRoute's own
-    // getConnection() probe, which runs BEFORE openSecondary on every route —
-    // a wedge there must resolve to "not the shared primary" and fall through
-    // to the ordinary secondary dial instead of hanging the whole route
-    // decision forever.
+  it('fails the switch when the shared-primary route lookup wedges, without dialing a second socket', async () => {
+    // A local profile rides the primary's one multiplexing gateway: main
+    // answers its route with `sharedPrimary: true`, typically while the
+    // primary is still cold-booting. Reading a timed-out lookup as "not
+    // shared" dialed a secondary whose own getConnection waited another 20 s
+    // and then joined the same in-flight boot — a second WebSocket to the
+    // shared process (#120005), or a second 20 s wait the user watched.
     vi.useFakeTimers()
 
-    let callCount = 0
-
-    const getConnection = vi.fn(({ profile }: { profile: string }) => {
-      callCount += 1
-
-      if (callCount === 1) {
-        return new Promise(() => undefined)
-      }
-
-      return Promise.resolve({
-        authMode: 'token',
-        baseUrl: `https://${profile}.invalid`,
-        mode: 'local',
-        profile,
-        token: 'fake-test-token',
-        wsUrl: `wss://${profile}.invalid/ws`
-      })
-    })
+    const getConnection = vi.fn(() => new Promise(() => undefined))
 
     installDesktop({ getConnection })
 
-    // The #92434 pin above leaves gatewayMocks.connect latched on a
-    // never-resolving mockImplementation (vi.clearAllMocks() clears calls, not
-    // implementations). Restore the default resolving dial for this test.
-    gatewayMocks.connect.mockImplementation(async () => undefined)
+    let outcome = 'pending'
 
-    const pending = ensureGatewayForProfile('work')
+    const pending = ensureGatewayForProfile('work').then(
+      () => {
+        outcome = 'resolved'
+      },
+      (error: Error) => {
+        outcome = error.message
+      }
+    )
 
     await vi.advanceTimersByTimeAsync(20_000)
     await pending
 
-    // The probe's own bound (not just openSecondary's) is what let this
-    // resolve after a single 20s timeout instead of two stacked ones.
-    expect(callCount).toBe(2)
-    expect(activeGateway()).toBe(gatewayMocks.instances[0])
+    expect(outcome).toBe('Timed out resolving the shared-primary route for profile "work"')
+    expect(getConnection).toHaveBeenCalledTimes(1)
+    expect(gatewayMocks.instances).toHaveLength(0)
+  })
+
+  it('surfaces a rejected shared-primary route lookup instead of retrying it as a secondary dial', async () => {
+    const getConnection = vi.fn(async () => {
+      throw new Error('Hermes gateway did not start')
+    })
+
+    installDesktop({ getConnection })
+
+    await expect(ensureGatewayForProfile('work')).rejects.toThrow('Hermes gateway did not start')
+    expect(getConnection).toHaveBeenCalledTimes(1)
+    expect(gatewayMocks.instances).toHaveLength(0)
   })
 
   it('waits out a slow registry bring-up instead of failing the dial at the reconnect budget', async () => {

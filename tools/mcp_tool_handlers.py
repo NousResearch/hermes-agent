@@ -848,6 +848,32 @@ def _render_call_tool_result(result, server_name: str, image_paths: Optional[lis
         return json.dumps({"result": text_result}, ensure_ascii=False)
 
 
+@asynccontextmanager
+async def _tool_call_scope(server, parallel: bool, turn_callbacks: tuple):
+    """Keep admission behind discovery, but release the RPC lock for safe HTTP calls.
+
+    Sampling has server-wide tool-loop state and elicitation reads single-slot caller
+    context/callbacks. Neither can safely serve overlapping calls. Check the actual
+    transport on every attempt: a URL can use explicit or latched legacy SSE.
+    """
+    async with server._rpc_lock:
+        shared = (parallel and server._is_http() is True
+                  and server._config.get("transport") != "sse" and not server._sse_fallback
+                  and server._elicitation is None and server._sampling is None)
+        if not shared:
+            server._pending_call_context = contextvars.copy_context()
+            server._pending_call_callbacks = turn_callbacks
+            try:
+                yield
+            finally:
+                server._pending_call_context = None
+                server._pending_call_callbacks = ()
+            return
+    # No await between admission and the handler's hint check/dispatch. Active
+    # requests stay visible to keepalive and teardown through _track_inflight_rpc.
+    yield
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *, native_images: bool = False):
     """Sync handler (``handler(args_dict, **kwargs)``) calling an MCP tool via the background loop. Always a JSON
     string, except with ``native_images`` (the registry handler the agent loop dispatches): a result carrying
@@ -885,10 +911,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
                     return error
         # Still cleared only as read-only: a reconnect (a recoverer's, or one whose tools/list is still running
         # when this call arrives) can rediscover the tool as write-capable before it runs. The grant is read on
-        # this thread (scope-bound); the hint is re-read under _rpc_lock, which every tools/list holds.
+        # this thread (scope-bound); re-check the hint after admission waits for any active tools/list.
         cleared_as_read_only = read_only and _untrusted(server_name)
-        from tools.mcp_tool_scope import _resolve_server_key
+        from tools.mcp_tool_scope import _resolve_server_key, _server_key
         hint_key = _resolve_server_key(server_name)
+        # Policy belongs to the CALLER, not the adopted connection's owner. Resolve
+        # it before crossing to the MCP loop and keep it fixed through recovery.
+        with _core._lock:
+            parallel = _server_key(server_name) in _core._parallel_safe_servers
         image_paths: list[str] = []  # the LAST attempt's cached images (a recoverer may retry _call)
         # Read on the agent's thread: the coroutine below runs on the MCP loop, outside this context.
         from agent.tool_progress_relay import current_tool_progress
@@ -904,17 +934,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
         turn_callbacks = capture_thread_callbacks()
 
         async def _call(still_cleared: bool):
-            async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
+            async with _tool_call_scope(server, parallel, turn_callbacks), _track_inflight_rpc(
+                    server, server_name, op, retry_safe=read_only):
                 if still_cleared and _core._tool_read_only_hints.get(hint_key, {}).get(tool_name) is not True:
                     return await _refuse_unconsented_write(server_name, tool_name)
-                server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
-                server._pending_call_callbacks = turn_callbacks
-                try:
-                    result = await _call_tool_racing_stdio_death(
-                        server, server_name, tool_name, args, _on_progress if report is not None else None)
-                finally:
-                    server._pending_call_context = None
-                    server._pending_call_callbacks = ()
+                result = await _call_tool_racing_stdio_death(
+                    server, server_name, tool_name, args, _on_progress if report is not None else None)
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
             image_paths.clear()

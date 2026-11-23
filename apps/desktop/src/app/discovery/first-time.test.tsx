@@ -143,22 +143,19 @@ describe('the first-time splash in the shell', () => {
     expect(window.document.querySelectorAll('[data-slot="seen-check"]')).toHaveLength(2)
   })
 
-  it('points at the place only while the pointer or focus is on the rows', () => {
+  it('points at the speaking place from the start, until the splash closes', () => {
     renderShell()
     settle([])
     const routines = screen.getByRole('button', { name: name => name.endsWith(`: ${copy.splash.lines.routines.line}`) })
     const spotlight = () => window.document.querySelector('[data-slot="nav-spotlight"]')
 
-    expect(spotlight()).toBeNull()
+    // Chats speaks as the card opens, and is pointed at before anything is hovered.
+    expect(firstTime()?.dataset.place).toBe('chats')
+    expect(spotlight()).not.toBeNull()
 
     fireEvent.focus(routines)
-    expect(spotlight()).not.toBeNull()
-    // Focus leaves the rows: the place stays picked in the splash, nothing points at the navigation.
     fireEvent.blur(routines, { relatedTarget: window.document.body })
     expect(firstTime()?.dataset.place).toBe('routines')
-    expect(spotlight()).toBeNull()
-
-    fireEvent.pointerEnter(routines.closest('ul')!)
     expect(spotlight()).not.toBeNull()
 
     fireEvent.keyDown(window, { key: 'Escape' })

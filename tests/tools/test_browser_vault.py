@@ -1119,7 +1119,8 @@ class TestBrowserVaultTools:
         ({"label": "Security code", "name": "token", "type": "tel"}, 2),
         ({"label": "Enter your phone number to receive a verification code", "name": "phone", "type": "tel",
           "autocomplete": "tel"}, 0),
-    ], ids=["fallback-code-name", "classified-tel-code", "declared-tel-identifier"])
+        ({"label": "Enter the code", "name": "", "type": "text"}, None),
+    ], ids=["fallback-code-name", "classified-tel-code", "declared-tel-identifier", "label-says-enter-the-code"])
     def test_a_code_box_the_otp_classifier_claims_is_never_the_identifier(self, store, box, expected):
         """A password step with a code box that carries no autocomplete: enter_code's classifier knows it
         by its name or label, so the identifier must not land there (a type=tel box would otherwise be

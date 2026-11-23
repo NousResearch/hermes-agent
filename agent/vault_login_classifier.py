@@ -141,6 +141,7 @@ def classify_login_control(control: LoginControl) -> Optional[ClassifiedLoginCon
 _RE_OTP = re.compile(
     r"\b(?:one[\s-]?time|verification|security|auth(?:entication|enticator)?|2fa|two[\s-]?factor|mfa|totp|otp|"
     r"passcode|sms)\b.*\b(?:code|pin|token)\b|\b(?:otp|totp|2fa|mfa|verification\s*code|passcode)\b"
+    r"|\b(?:totp|otp|mfa|2fa)\w*\b|\benter\s+(?:the\s+)?code\b"
 )
 
 

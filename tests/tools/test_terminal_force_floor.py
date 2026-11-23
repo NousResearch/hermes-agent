@@ -53,6 +53,8 @@ def test_force_keeps_the_operators_deny_rules_in_an_isolated_container(monkeypat
 @pytest.mark.parametrize("command,config", [
     pytest.param("ls -la", LOCAL, id="confirmed-command-local"),
     pytest.param("rm -rf /", ISOLATED_DOCKER, id="isolated-container-is-its-own-floor"),
+    # Only the deny rules bind there, as for an unforced command: the unread refusal is part of the floor.
+    pytest.param("\n".join([GREP] * 500), ISOLATED_DOCKER, id="isolated-container-unread-by-the-scan"),
 ])
 def test_force_runs_a_confirmed_command_the_floor_allows(command, config):
     verdict = terminal_tool._run_approval_guards(command, config["env_type"], config, force=True)

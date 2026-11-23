@@ -23,8 +23,11 @@ def test_dead_worker_classification_accepts_managed_and_legacy_results(
     monkeypatch, receipt, reaped, logged, event, rate_limited, terminal_provider,
 ):
     monkeypatch.setattr(dispatch, "_classify_worker_exit", lambda _pid: reaped)
+    monkeypatch.setattr(dispatch.crash_sweep, "_classify_worker_exit", lambda _pid: reaped)
     monkeypatch.setattr(dispatch, "_worker_log_exit_code", lambda *_a, **_k: logged)
+    monkeypatch.setattr(dispatch.crash_sweep, "_worker_log_exit_code", lambda *_a, **_k: logged)
     monkeypatch.setattr(dispatch, "_worker_final_output", lambda *_a, **_k: "worker detail")
+    monkeypatch.setattr(dispatch.crash_sweep, "_worker_final_output", lambda *_a, **_k: "worker detail")
 
     result = dispatch._classify_dead_worker(
         900001, "private-host:owner", receipt, task_id="private-task", board="private-board",

@@ -7,8 +7,8 @@ and the whole machine (dashboard included) became unreachable.
 
 Covers the two safeguards added in response:
 
-1. :func:`hermes_cli.kanban_db_dispatch.derive_default_max_in_progress` /
-   :func:`hermes_cli.kanban_db_dispatch.resolve_max_in_progress` — memory-derived
+1. :func:`hermes_cli.kanban_db_dispatch.concurrency.derive_default_max_in_progress` /
+   :func:`hermes_cli.kanban_db_dispatch.concurrency.resolve_max_in_progress` — memory-derived
    default global concurrency cap when the operator never set one.
 2. The live memory-pressure guard inside ``dispatch_once`` — critical
    pressure spawns nothing; elevated pressure spawns at most one; unknown
@@ -66,6 +66,7 @@ def test_resolve_max_in_progress_explicit_config_wins(monkeypatch):
     monkeypatch.setattr(
         kbd, "_system_memory_sample", lambda: {"mem_total_kib": 1 * GIB}
     )
+    monkeypatch.setattr(kbd.concurrency, "_system_memory_sample", lambda: {"mem_total_kib": 1 * GIB})
     # Operator said 6 on a 1 GiB box — their call, even above the derived 2.
     assert kbd.resolve_max_in_progress(6) == 6
     assert kbd.resolve_max_in_progress(1) == 1
@@ -75,11 +76,13 @@ def test_resolve_max_in_progress_derives_when_unset(monkeypatch):
     monkeypatch.setattr(
         kbd, "_system_memory_sample", lambda: {"mem_total_kib": 1 * GIB}
     )
+    monkeypatch.setattr(kbd.concurrency, "_system_memory_sample", lambda: {"mem_total_kib": 1 * GIB})
     assert kbd.resolve_max_in_progress(None) == 2
 
 
 def test_resolve_max_in_progress_unset_and_unknown_memory_is_uncapped(monkeypatch):
     monkeypatch.setattr(kbd, "_system_memory_sample", dict)
+    monkeypatch.setattr(kbd.concurrency, "_system_memory_sample", dict)
     assert kbd.resolve_max_in_progress(None) is None
 
 
@@ -112,6 +115,7 @@ def test_dispatch_spawns_nothing_under_critical_pressure(
     monkeypatch.setattr(
         kbd, "_system_memory_sample", lambda: _pressure_sample("critical")
     )
+    monkeypatch.setattr(kbd.concurrency, "_system_memory_sample", lambda: _pressure_sample("critical"))
     spawns = []
 
     def fake_spawn(task, workspace, board=None):
@@ -134,6 +138,7 @@ def test_dispatch_critical_pressure_defers_not_drops(
     """Tasks skipped under pressure stay 'ready' and spawn once memory clears."""
     sample = {"value": _pressure_sample("critical")}
     monkeypatch.setattr(kbd, "_system_memory_sample", lambda: sample["value"])
+    monkeypatch.setattr(kbd.concurrency, "_system_memory_sample", lambda: sample["value"])
     spawns = []
 
     def fake_spawn(task, workspace, board=None):
@@ -160,6 +165,7 @@ def test_dispatch_elevated_pressure_spawns_at_most_one(
     monkeypatch.setattr(
         kbd, "_system_memory_sample", lambda: _pressure_sample("elevated")
     )
+    monkeypatch.setattr(kbd.concurrency, "_system_memory_sample", lambda: _pressure_sample("elevated"))
     spawns = []
 
     def fake_spawn(task, workspace, board=None):
@@ -182,6 +188,7 @@ def test_dispatch_elevated_pressure_does_not_widen_tighter_budget(
     monkeypatch.setattr(
         kbd, "_system_memory_sample", lambda: _pressure_sample("elevated")
     )
+    monkeypatch.setattr(kbd.concurrency, "_system_memory_sample", lambda: _pressure_sample("elevated"))
     spawns = []
 
     def fake_spawn(task, workspace, board=None):
@@ -202,6 +209,7 @@ def test_dispatch_unknown_pressure_imposes_no_restriction(
     kanban_home, all_assignees_spawnable, monkeypatch,
 ):
     monkeypatch.setattr(kbd, "_system_memory_sample", dict)
+    monkeypatch.setattr(kbd.concurrency, "_system_memory_sample", dict)
     spawns = []
 
     def fake_spawn(task, workspace, board=None):
@@ -224,6 +232,7 @@ def test_dispatch_critical_pressure_still_runs_reclaim_bookkeeping(
     monkeypatch.setattr(
         kbd, "_system_memory_sample", lambda: _pressure_sample("critical")
     )
+    monkeypatch.setattr(kbd.concurrency, "_system_memory_sample", lambda: _pressure_sample("critical"))
     with kbc.connect() as conn:
         parent = kb.create_task(conn, title="parent", assignee="alice")
         child = kb.create_task(

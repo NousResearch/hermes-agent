@@ -670,6 +670,7 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
             "check_respawn_guard",
             lambda _conn, _task_id, **_kw: "rate_limit_cooldown",
         )
+        monkeypatch.setattr(kbd.tick, "check_respawn_guard", lambda _conn, _task_id, **_kw: "rate_limit_cooldown")
         guarded = kbd.dispatch_once(conn, spawn_fn=spawn)
         assert guarded.respawn_guarded == [(task_id, "rate_limit_cooldown")]
         assert not guarded.spawned
@@ -678,6 +679,7 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         assert guarded_task.status == "review"
 
         monkeypatch.setattr(kbd, "check_respawn_guard", lambda _conn, _task_id, **_kw: None)
+        monkeypatch.setattr(kbd.tick, "check_respawn_guard", lambda _conn, _task_id, **_kw: None)
         result = kbd.dispatch_once(conn, spawn_fn=spawn)
 
     assert task_id in [task[0] for task in result.spawned]

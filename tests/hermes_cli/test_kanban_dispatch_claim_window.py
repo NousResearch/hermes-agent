@@ -52,11 +52,13 @@ def test_reassign_inside_claim_window_does_not_spawn_unvetted_profile(
             return reason
 
         monkeypatch.setattr(kbd, "check_respawn_guard", guard_then_reassign)
+        monkeypatch.setattr(kbd.tick, "check_respawn_guard", guard_then_reassign)
         res = kbd.dispatch_once(
             conn, spawn_fn=lambda task, _ws: spawned_as.append(task.assignee) or 4242,
         )
         task = kb.get_task(conn, tid)
         monkeypatch.setattr(kbd, "check_respawn_guard", real_guard)
+        monkeypatch.setattr(kbd.tick, "check_respawn_guard", real_guard)
         nxt = kbd.dispatch_once(conn, spawn_fn=lambda task, _ws: spawned_as.append(task.assignee) or 4242)
 
     assert task is not None

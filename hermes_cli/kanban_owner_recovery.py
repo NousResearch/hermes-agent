@@ -245,6 +245,62 @@ def apply_attempt_note(conn, task_id, pid, dead) -> None:
     dead.error_text = f"{head} [{note}]{sep}{output}"
 
 
+# The owner's read raises these when the transport to its child closes — which is what a
+# gateway restart does to the stream under it. A worker's own fault arrives as
+# ``managed_worker_failed`` (the worker's own error frame) or ``invalid_worker_frame`` (a
+# protocol violation), and those stay card faults.
+TRANSPORT_CLOSE_REASONS = frozenset({
+    "EOFError", "ConnectionResetError", "BrokenPipeError", "OSError",
+})
+
+
+def owner_shutdown_cancellation(conn, task_id, *, worker_lost_reason=None) -> bool:
+    """True when the attempt ended because the owner process (the gateway) went away, not the card.
+
+    A gateway restart takes the owner's own process down and every managed worker running under
+    it with it; the restarted owner settles the admission ``interrupted``. The card did nothing
+    wrong — the infrastructure it runs on restarted under it — which is the same class as the
+    host's spawn refusal (``infrastructure: true``), so the crash sweep books the run
+    ``cancelled`` and leaves ``consecutive_failures`` alone. Every condition is evidence the
+    board already keeps, and missing evidence is never proof of a cancellation:
+
+      * the run reached an owner (a receipt) whose admission is SETTLED ``interrupted``;
+      * that owner's own process is gone — dead, or its number now belongs to another process
+        (the gateway that admitted this attempt is not the one running now);
+      * the loss the owner recorded (``worker_lost_reason``, from the caller's own read of the
+        event) is either nothing at all, or a transport close. A worker lost while its owner
+        is alive settles the admission ``unknown``, never ``interrupted``; a worker-side fault
+        (``managed_worker_failed``, ``invalid_worker_frame``, the child's own exception type)
+        keeps the breaker charging;
+      * and the attempt was still observable when the sweep ran: the claim has not expired, or
+        the last heartbeat is inside ``DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS``. A lapsed
+        claim with no heartbeat is the ghost shape the TTL path owns and charges — a long
+        outage is not a restart, and it is accounted once.
+    """
+    receipt = _owner_receipt(conn, task_id)
+    if receipt is None:
+        return False  # a run that never reached an owner is the plain dispatcher's
+    admission = _admission_row(receipt)
+    if admission is None or admission[0] != "terminal" or admission[1] != "interrupted":
+        return False
+    if not _owner_process_gone(receipt):
+        return False  # the gateway that admitted the attempt is still the one running
+    if worker_lost_reason and worker_lost_reason not in TRANSPORT_CLOSE_REASONS:
+        return False
+    row = conn.execute(
+        "SELECT claim_expires, last_heartbeat_at FROM tasks WHERE id=?", (task_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    from hermes_cli import kanban_db as kb
+    now = int(time.time())
+    expires = kb._to_epoch(row["claim_expires"])
+    if expires is not None and expires > now:
+        return True
+    heartbeat = kb._to_epoch(row["last_heartbeat_at"])
+    return heartbeat is not None and (now - heartbeat) <= kb.DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
+
+
 def owner_reclaim_blocked(conn, task_id, *, crash_sweep=False) -> bool:
     """True when a reclaim path must leave this task alone.
 

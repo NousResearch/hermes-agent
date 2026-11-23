@@ -32,7 +32,9 @@ def test_native_windows_reaper_and_decode(monkeypatch):
     reaper and the decode runs where ``os.WIFEXITED`` does not exist, so the
     rate-limit sentinel exit is a requeue, not a crash."""
     monkeypatch.setattr(kbd, "_live_worker_procs", {})
+    monkeypatch.setattr(kbd.liveness, "_live_worker_procs", {})
     monkeypatch.setattr(kbd, "_recent_worker_exits", {})
+    monkeypatch.setattr(kbd.liveness, "_recent_worker_exits", {})
     assert not hasattr(os, "WIFEXITED")
     proc = _spawn_exit(kb.KANBAN_RATE_LIMIT_EXIT_CODE)
     kbd._live_worker_procs[proc.pid] = proc

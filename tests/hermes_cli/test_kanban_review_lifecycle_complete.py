@@ -395,7 +395,9 @@ def test_dispatcher_sweeps_survive_iso_text_timestamps(conn, monkeypatch) -> Non
     and the dead-worker backstop reclaims."""
     iso = _iso
     monkeypatch.setattr(kbd, "_terminate_reclaimed_worker", lambda *a, **k: {"terminated": True})
+    monkeypatch.setattr(kbd.reaper, "_terminate_reclaimed_worker", lambda *a, **k: {"terminated": True})
     monkeypatch.setattr(kbd, "_kill_fn", lambda signal_fn: None)
+    monkeypatch.setattr(kbd.reaper, "_kill_fn", lambda signal_fn: None)
 
     def running(title, *, start, heartbeat=None):
         task_id = kb.create_task(conn, title=title, assignee="builder", max_runtime_seconds=60)
@@ -544,6 +546,7 @@ def test_crashed_and_timed_out_review_runs_retry_in_review_phase(
 ) -> None:
     monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
     monkeypatch.setattr(kbd, "_classify_worker_exit", lambda _pid: ("nonzero_exit", 1))
+    monkeypatch.setattr(kbd.crash_sweep, "_classify_worker_exit", lambda _pid: ("nonzero_exit", 1))
     old = int(time.time()) - 1_000
 
     timed_out_id, timed_out_run = _claimed_review(

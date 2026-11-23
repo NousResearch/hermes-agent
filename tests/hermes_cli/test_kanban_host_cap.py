@@ -3,7 +3,7 @@
 Three gaps found in review of the original memory-guard PR:
 
 1. The standalone daemon path (``hermes kanban daemon --force`` /
-   :func:`hermes_cli.kanban_db_dispatch.run_daemon`) never resolved
+   :func:`hermes_cli.kanban_db_dispatch.daemon.run_daemon`) never resolved
    ``kanban.max_in_progress`` at all — the one shipped entry point that
    could still fan out an entire backlog in a single tick.
 2. ``max_in_progress`` was enforced per-board while the gateway dispatcher
@@ -73,9 +73,12 @@ def test_run_daemon_resolves_and_passes_max_in_progress(
         return kb.DispatchResult()
 
     monkeypatch.setattr(kbd, "dispatch_once", fake_dispatch_once)
+    monkeypatch.setattr(kbd.daemon, "dispatch_once", fake_dispatch_once)
     # No explicit config → the derived default must flow through.
     monkeypatch.setattr(kbd, "configured_max_in_progress", lambda: None)
+    monkeypatch.setattr(kbd.daemon, "configured_max_in_progress", lambda: None)
     monkeypatch.setattr(kbd, "derive_default_max_in_progress", lambda sample=None: 3)
+    monkeypatch.setattr(kbd.concurrency, "derive_default_max_in_progress", lambda sample=None: 3)
 
     def on_tick(res):
         stop.set()

@@ -950,7 +950,9 @@ What changes in `host` mode:
   its install directory name to `plugins.host.in_process_providers` (empty by default), for example
   `in_process_providers: [claude-subscription-directsdk]`. Only the profiles that need it then load in the
   Hermes process, outside the host's isolation; a plugin that is not listed never loads there, whatever
-  it reports about itself. Restart Hermes after changing the list.
+  it reports about itself. The list is read from the same place as `plugins.isolation`: when managed scope
+  pins the isolation, only the managed `plugins.host.in_process_providers` counts and a profile's own list
+  is ignored. Restart Hermes after changing the list.
 - **No cookies.** A hosted plugin's API answers are served from the gateway's own address, so Hermes
   drops any `Set-Cookie` header they carry (logging it once per plugin) rather than let a plugin set or
   overwrite the dashboard's cookies. This also applies to another profile's plugins, which always run in
@@ -967,7 +969,7 @@ plugins:
   isolation: host
   host:
     launcher: [...]      # pin the sandbox runner too, if you use one
-    in_process_providers: []   # pin it empty so no profile can let a provider plugin in-process
+    in_process_providers: []   # the only list that counts once isolation is pinned here; [] = none
 ```
 
 Run the agents' terminal on an isolated backend (Docker, SSH, ...) as well, so the agent itself cannot

@@ -141,10 +141,21 @@ def in_process_import_refusal(what: str, *, source: str = "user",
 IN_PROCESS_PROVIDERS_KEY = "plugins.host.in_process_providers"
 
 
+def _managed_isolation_config() -> Optional[Mapping[str, Any]]:
+    """The managed config alone when managed scope pins ``plugins.isolation``, else ``None``."""
+    from hermes_cli.managed_scope import apply_managed_overlay, is_key_managed
+    return apply_managed_overlay({}) if is_key_managed("plugins.isolation") else None
+
+
 def host_in_process_providers(config: Optional[Mapping[str, Any]] = None) -> frozenset[str]:
     """``plugins.host.in_process_providers``: install directory names of the model-provider plugins
-    the operator lets run in the Hermes process under ``host``. Empty by default."""
-    host = _plugins_config(config).get("host")
+    the operator lets run in the Hermes process under ``host``. Empty by default.
+
+    The list comes from whoever set the isolation: when managed scope pins ``plugins.isolation``,
+    only the managed value counts and a profile's own config.yaml cannot add to it.
+    """
+    managed = _managed_isolation_config()
+    host = _plugins_config(managed if managed is not None else config).get("host")
     names = host.get("in_process_providers") if isinstance(host, Mapping) else None
     if isinstance(names, str):
         names = [names]
@@ -169,7 +180,13 @@ def in_process_provider_refusal(plugin: str, profiles: Mapping[str, str], *,
                                         config=config)
     if refusal is None:
         return None
-    return f"{refusal}, or add {plugin!r} to {IN_PROCESS_PROVIDERS_KEY}"
+    if _managed_isolation_config() is None:
+        return f"{refusal}, or add {plugin!r} to {IN_PROCESS_PROVIDERS_KEY}"
+    from hermes_cli.managed_scope import get_managed_dir
+    managed_dir = get_managed_dir()
+    where = f" ({managed_dir / 'config.yaml'})" if managed_dir is not None else ""
+    return (f"{refusal}, or add {plugin!r} to {IN_PROCESS_PROVIDERS_KEY} in the managed config{where}, "
+            f"which sets plugins.isolation here; a profile's own list is ignored")
 
 
 def import_user_code(path: Any, module_name: str) -> Optional[ModuleType]:

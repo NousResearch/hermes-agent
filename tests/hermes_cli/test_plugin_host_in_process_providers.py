@@ -234,6 +234,77 @@ def test_the_list_lets_in_only_the_plugins_it_names(home, caplog):
     assert str(os.getpid()) not in _pids(plain)
 
 
+# ── The list comes from whoever set the isolation ────────────────────────────
+# One Hermes process serving several profiles pins plugins.isolation in managed scope; a profile's own
+# config.yaml must not be able to let its own provider plugin into that process.
+
+
+@pytest.fixture
+def managed(home, tmp_path, monkeypatch):
+    directory = tmp_path / "managed"
+    directory.mkdir()
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(directory))
+    yield directory
+    from hermes_cli import managed_scope
+
+    managed_scope.invalidate_managed_cache()
+
+
+def _managed_config(directory: Path, **plugins) -> None:
+    import hermes_cli.config as cfg
+    from hermes_cli import managed_scope
+
+    (directory / "config.yaml").write_text(yaml.safe_dump({"plugins": plugins}), encoding="utf-8")
+    cfg._LOAD_CONFIG_CACHE.clear()
+    cfg._RAW_CONFIG_CACHE.clear()
+    managed_scope.invalidate_managed_cache()
+
+
+@pytest.mark.platforms("any")
+@pytest.mark.parametrize("managed_list", ["unset", "empty"])
+def test_a_profile_cannot_list_its_own_plugin_when_managed_scope_pins_isolation(home, managed, caplog,
+                                                                                 managed_list):
+    marker = _plugin(home, "ownclient", _OWN_CLIENT)
+    _config(home, host={"in_process_providers": ["ownclient"]})
+    pinned = {"host": {"in_process_providers": []}} if managed_list == "empty" else {}
+    _managed_config(managed, isolation="host", **pinned)
+    with caplog.at_level(logging.WARNING, logger="providers"):
+        _assert_refused("ownclient", marker, caplog, "overrides create_client()")
+    import providers
+
+    error = providers.plugin_load_error("ownclient")
+    assert f"in the managed config ({managed / 'config.yaml'})" in error
+    assert "a profile's own list is ignored" in error
+
+
+@pytest.mark.platforms("any")
+def test_a_plugin_listed_in_managed_scope_beside_the_pinned_isolation_loads_as_before(home, managed, caplog):
+    import providers
+
+    marker = _plugin(home, "ownclient", _OWN_CLIENT)
+    _config(home)
+    _managed_config(managed, isolation="host", host={"in_process_providers": ["ownclient"]})
+    with caplog.at_level(logging.WARNING, logger="providers"):
+        profile = providers.get_provider_profile("ownclient")
+    assert profile is not None and profile.create_client()["pid"] == os.getpid()
+    assert str(os.getpid()) in _pids(marker)
+    [notice] = _messages(caplog, "ownclient")
+    assert "plugins.host.in_process_providers names this plugin" in notice
+
+
+@pytest.mark.platforms("any")
+def test_isolation_set_in_the_profile_config_reads_the_list_beside_it(home, managed, caplog):
+    """A managed scope that pins something else leaves the isolation and its list to the profile."""
+    import providers
+
+    marker = _plugin(home, "ownclient", _OWN_CLIENT)
+    _config(home, isolation="host", host={"in_process_providers": ["ownclient"]})
+    _managed_config(managed, scan_on_install=True)
+    profile = providers.get_provider_profile("ownclient")
+    assert profile is not None and profile.create_client()["pid"] == os.getpid()
+    assert str(os.getpid()) in _pids(marker)
+
+
 # ── Controls: the same on the base and with this change ──────────────────────
 
 

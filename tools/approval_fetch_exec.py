@@ -9,6 +9,8 @@ collects targets per fetch segment, step 2 checks each later command start again
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import hermes_re as re
 
 from tools.approval_pipe_launchers import _PIPE_LAUNCHER_VALUE_FLAGS, _PIPE_PATH_PREFIX_RE
@@ -139,31 +141,21 @@ def _runs(run_at, text: str, pos: int):
             yield run
         # No run here: none either from a newline of the blank run just read (it reads on to the same word),
         # and stepping over that run keeps a long run of blank lines linear.
-        pos = run.end() if run is not None else _RUN_SPACES_RE.match(text, head.start() + 1).end()
+        pos = run.end if run is not None else _RUN_SPACES_RE.match(text, head.start() + 1).end()
 
 
+@dataclass(frozen=True)
 class _Run:
-    """One run match: what `DownloadThenRunMatcher` reads from it."""
+    """A command that runs a program or a file: what `DownloadThenRunMatcher` reads from it."""
 
-    def __init__(self, text: str, start: int, prog, file):
-        self._start, self._end = start, file.end()
-        self._prog_end = prog.end("prog") if prog else -1
-        self._groups = {
-            0: text[start:file.end()],
-            "prog": prog and prog.group("prog"),
-            "tool": prog and (prog.group("tool") or prog.group("py")),
-            "flags": prog and prog.group("flags"),
-            "file": file.group("file"),
-        }
-
-    def start(self) -> int:
-        return self._start
-
-    def end(self, group=0) -> int:
-        return self._prog_end if group == "prog" else self._end
-
-    def group(self, group=0):
-        return self._groups[group]
+    start: int
+    end: int
+    text: str  # from the command head to the end of FILE
+    file: str
+    prog: str | None = None  # the program word, its end, the tool it names and the flags after it
+    prog_end: int = -1
+    tool: str | None = None
+    flags: str | None = None
 
 
 class _RunFinder:
@@ -180,29 +172,27 @@ class _RunFinder:
         for pos in _command_starts(self._carrier_re, text, _skip_launchers(text, head.end())):
             if (prog := self._prog_re.match(text, pos)) is not None and (
                     file := _RUN_FILE_RE.match(text, prog.end())) is not None:
-                return _Run(text, head.start(), prog, file)
+                return _Run(head.start(), file.end(), text[head.start():file.end()], file.group("file"),
+                            prog.group("prog"), prog.end("prog"), prog.group("tool") or prog.group("py"),
+                            prog.group("flags"))
             if (file := _RUN_SOURCED_RE.match(text, pos)) is not None:
-                return _Run(text, head.start(), None, file)
+                return _Run(head.start(), file.end(), text[head.start():file.end()], file.group("file"))
         return None
 
     def finditer(self, text: str, pos: int = 0):
         return _runs(self._run_at, text, pos)
 
 
+@dataclass(frozen=True)
 class _ContentRun:
-    """One content-run match: what `DownloadThenRunMatcher` reads from it."""
+    """A command that runs a FILE's content: what `DownloadThenRunMatcher` reads from it."""
 
-    def __init__(self, start: int, end: int, groups: dict):
-        self._start, self._end, self._groups = start, end, groups
-
-    def start(self) -> int:
-        return self._start
-
-    def end(self) -> int:
-        return self._end
-
-    def group(self, name: str):
-        return self._groups.get(name)
+    start: int
+    end: int
+    file: str
+    tool: str | None  # the program the content goes to (none: eval, source or a bare substitution)
+    args: str  # the words after that program
+    piped: bool  # `cat FILE | tool` rather than a `$(cat FILE)` read
 
 
 class _ContentRunFinder:
@@ -221,15 +211,13 @@ class _ContentRunFinder:
     def _run_at(self, text: str, head) -> _ContentRun | None:
         for pos in _command_starts(self._carrier_re, text, _skip_launchers(text, head.end())):
             if (read := self._read_re.match(text, pos)) is not None:
-                return _ContentRun(head.start(), read.end(), {
-                    "file": read.group("file"), "rtool": read.group("tool") or read.group("py"),
-                    "rflags": read.group("rflags")})
+                return _ContentRun(head.start(), read.end(), read.group("file"),
+                                   read.group("tool") or read.group("py"), read.group("rflags") or "", piped=False)
             if (piped := _CONTENT_PIPED_RE.match(text, pos)) is not None and (
                     tool := self._piped_tool_re.match(text, _skip_launchers(text, piped.end()))) is not None:
                 args = _CONTENT_ARGS_RE.match(text, tool.end())
-                return _ContentRun(head.start(), args.end(), {
-                    "piped": piped.group("piped"), "ptool": tool.group("tool") or tool.group("py"),
-                    "pargs": args.group()})
+                return _ContentRun(head.start(), args.end(), piped.group("piped"),
+                                   tool.group("tool") or tool.group("py"), args.group(), piped=True)
         return None
 
     def finditer(self, text: str, pos: int = 0):
@@ -253,8 +241,8 @@ class DownloadThenRunMatcher:
         self._read_run_re = _ContentRunFinder(shell_names_re)
 
     def _syntax_check_only(self, run: _Run) -> bool:
-        flag = self._check_flags.get((run.group("tool") or "").lower())
-        flags = run.group("flags").split() if flag and run.group("flags") else ()
+        flag = self._check_flags.get((run.tool or "").lower())
+        flags = run.flags.split() if flag and run.flags else ()
         return bool(flags) and all(re.fullmatch(flag, f) for f in flags)
 
     def _split_args(self, tool: str, words: list[str]) -> tuple[list[str], list[str]]:
@@ -274,24 +262,24 @@ class DownloadThenRunMatcher:
 
     def _operand_ran(self, run: _Run, text: str, targets: dict[str, int]) -> bool:
         """`bash -o pipefail job.sh`, `powershell -ExecutionPolicy Bypass -File .\\j.ps1`: the real operand."""
-        tool = run.group("tool").lower()
-        args = _ARGS_RE.match(text, run.end("prog")).group()
+        tool = run.tool.lower()
+        args = _ARGS_RE.match(text, run.prog_end).group()
         flags, rest = self._split_args(tool, _REDIRECT_RE.sub(" ", args).split())
         operand = rest[0] if rest else (stdin.group(1) or stdin.group(2) if (stdin := _STDIN_RE.search(args)) else None)
         if operand is None or self._check_only(tool, flags):
             return False
-        return run.start() >= targets.get(_base(operand.strip("'\"").replace("\\", "/")), len(text))
+        return run.start >= targets.get(_base(operand.strip("'\"").replace("\\", "/")), len(text))
 
     def _runs_content(self, read: _ContentRun) -> bool:
         """`bash -n <(cat f)`, `cat f | bash -n` and `cat f | python3 -m json.tool` don't run f."""
-        tool = (read.group("rtool") or read.group("ptool") or "").lower()
+        tool = (read.tool or "").lower()
         # redirections (`> run.log`, `2>&1`) are not operands
-        flags, rest = self._split_args(tool, _REDIRECT_RE.sub(" ", read.group("rflags") or read.group("pargs") or "").split())
+        flags, rest = self._split_args(tool, _REDIRECT_RE.sub(" ", read.args).split())
         if self._check_only(tool, flags):
             return False
         # A piped program reads its code from stdin unless a script or -c/-m operand comes first.
         shell = self._check_flags.get(tool) == _SHELL_CHECK_FLAG
-        if read.group("piped") is None:
+        if not read.piped:
             return not rest  # `bash other.sh "$(cat f)"` hands f's content to other.sh as an argument
         return not rest or any(
             f == "-" or (shell and re.fullmatch(r"-[a-zA-Z]*s[a-zA-Z]*", f)) for f in flags)
@@ -316,14 +304,14 @@ class DownloadThenRunMatcher:
             return None
         for run in self._run_re.finditer(text, min(targets.values())):
             # A path-qualified program word can itself be the download (`./node.exe --version`).
-            prog = (run.group("prog") or "").strip("'\"")
-            prog_ran = "/" in prog and run.start() >= targets.get(_base(prog), len(text))
-            file_ran = run.start() >= targets.get(_base(run.group("file")), len(text)) and not self._syntax_check_only(run)
-            file_ran = file_ran or bool(run.group("tool")) and self._operand_ran(run, text, targets)
-            if (prog_ran or file_ran) and not _LOOKUP_ONLY_RE.search(run.group()):
+            prog = (run.prog or "").strip("'\"")
+            prog_ran = "/" in prog and run.start >= targets.get(_base(prog), len(text))
+            file_ran = run.start >= targets.get(_base(run.file), len(text)) and not self._syntax_check_only(run)
+            file_ran = file_ran or bool(run.tool) and self._operand_ran(run, text, targets)
+            if (prog_ran or file_ran) and not _LOOKUP_ONLY_RE.search(run.text):
                 return run
         for read in self._read_run_re.finditer(text, min(targets.values())):
-            written = read.start() >= targets.get(_base(read.group("file") or read.group("piped")), len(text))
+            written = read.start >= targets.get(_base(read.file), len(text))
             if written and self._runs_content(read):
                 return read
         for read in _PS_READ_RUN_RE.finditer(text, min(targets.values())):

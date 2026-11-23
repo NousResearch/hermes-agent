@@ -1,8 +1,10 @@
-"""The model-visible marker the context compressor leaves in pruned tool-call arguments.
+"""The model-visible compression/elision marker and its matcher.
 
-Dependency-free leaf shared by the producer (``agent.context_compressor``) and the
-dispatch-boundary detector (``agent.tool_dispatch_helpers``), so the matcher is derived
-from the template instead of re-typing its wording.
+Tool-call arguments are no longer rewritten by the compressor, but legacy sessions may still
+carry this marker inside replayed tool-call arguments. Dependency-free leaf shared by the
+elision renderers (``agent.context_compressor``) and the dispatch-boundary detector
+(``agent.tool_dispatch_helpers``), so the matcher is derived from the template instead of
+re-typing its wording.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ import re
 # something the model would write itself: the bare "...[truncated]" it replaced was imitated into
 # new calls and written to disk. Non-prose delimiters, an explicit "not original content"
 # disclaimer, and per-instance counts keep a copied marker visibly wrong; the counts also make a
-# verbatim copy stale, which is why the marker must never be re-applied (see ``_shrink``).
+# verbatim copy stale, which is why the marker must never be re-applied.
 _COMPRESSION_MARKER_PREFIX = "⟪HERMES-CONTEXT-COMPRESSION:"
 _COMPRESSION_MARKER_TEMPLATE = (
     _COMPRESSION_MARKER_PREFIX
@@ -22,17 +24,28 @@ _COMPRESSION_MARKER_TEMPLATE = (
     "output — always write full, untruncated content.⟫"
 )
 
-# A minted marker (prefix + rendered counts through the first sentence). The prefix alone
-# does not match, so source/docs that mention the constant can still be edited.
+# A rendered omitted/total count inside a minted marker.
+_MARKER_COUNT_RE = r"\d[\d,]*"
+
+# Full rendered first sentence of a minted marker; renderer tests assert this shape
+# (the dispatch guard uses _COMPRESSION_MARKER_ARTIFACT_RE below).
 _COMPRESSION_MARKER_RE = re.compile(
     re.escape(_COMPRESSION_MARKER_TEMPLATE.split(". ", 1)[0] + ".")
-    .replace(re.escape("{omitted:,}"), r"\d[\d,]*")
-    .replace(re.escape("{total:,}"), r"\d[\d,]*")
+    .replace(re.escape("{omitted:,}"), _MARKER_COUNT_RE)
+    .replace(re.escape("{total:,}"), _MARKER_COUNT_RE)
+)
+
+# A marker cut by a later boundary may never reach the fixed sentence above. The
+# dispatch guard therefore recognizes a minted marker as soon as its first numeric
+# count is present. Requiring that rendered count keeps the bare prefix/template
+# editable in source and documentation.
+_COMPRESSION_MARKER_ARTIFACT_RE = re.compile(
+    re.escape(_COMPRESSION_MARKER_PREFIX) + r"\s+" + _MARKER_COUNT_RE
 )
 
 # #121548 — every OTHER model-visible elision (turn text, summaries, skill bodies, diagnostics)
-# mints the args marker's first sentence only (so the dispatch-boundary guard's
-# _COMPRESSION_MARKER_RE catches a copy from any renderer) and fits small caps like clarify's 199.
+# mints the args marker's first sentence only (so the dispatch-boundary artifact
+# matcher catches a copy from any renderer) and fits small caps like clarify's 199.
 _ELISION_MARKER_TEMPLATE = _COMPRESSION_MARKER_TEMPLATE.split(". ", 1)[0] + ".⟫"
 
 

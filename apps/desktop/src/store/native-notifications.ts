@@ -4,7 +4,9 @@ import { translateNow } from '@/i18n'
 import { type HermesOpenTarget, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { persistString, storedString } from '@/lib/storage'
 
+import { recordFeatureToggle } from './desktop-metrics'
 import { $gateway } from './gateway'
+import { $hapticsMuted } from './haptics'
 import { withinNativeNotifyBaseline } from './notify-baseline'
 import {
   answerApproval,
@@ -93,11 +95,13 @@ function writePrefs(next: NativeNotificationPrefs) {
 }
 
 export function setNativeNotifyEnabled(enabled: boolean) {
+  recordFeatureToggle('native_notifications', $nativeNotifyPrefs.get().enabled, enabled)
   writePrefs({ ...$nativeNotifyPrefs.get(), enabled })
 }
 
 export function setNativeNotifyKind(kind: NativeNotificationKind, on: boolean) {
   const prev = $nativeNotifyPrefs.get()
+  recordFeatureToggle('notification_kind', prev.kinds[kind], on)
   writePrefs({ ...prev, kinds: { ...prev.kinds, [kind]: on } })
 }
 
@@ -250,7 +254,8 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
     kind: input.kind,
     notifyId: input.notifyId,
     sessionId: input.sessionId ?? undefined,
-    silent: input.silent,
+    // The app-sounds mute also silences OS notification sounds.
+    silent: $hapticsMuted.get() || input.silent,
     tag: input.tag,
     title
   })
@@ -358,7 +363,8 @@ export function dispatchPluginNativeNotification(pluginId: string, input: Plugin
     icon: input.icon,
     kind: 'plugin',
     notifyId,
-    silent: input.silent,
+    // The app-sounds mute also silences OS notification sounds.
+    silent: $hapticsMuted.get() || input.silent,
     tag: pluginId,
     title: input.title
   })

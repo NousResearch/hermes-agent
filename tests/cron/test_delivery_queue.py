@@ -24,6 +24,30 @@ def test_pending_delivery_is_claimed_and_sent_once(tmp_path, monkeypatch):
     assert status["content"] == ""
 
 
+def test_pending_deliveries_are_claimed_in_instant_order_across_dst_fall_back(
+    tmp_path, monkeypatch
+):
+    """01:10-05:00 is 20 minutes after 01:50-04:00 but sorts first as text."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    import cron.delivery_queue as queue
+
+    monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
+    new_york = ZoneInfo("America/New_York")
+    monkeypatch.setattr(
+        queue, "_hermes_now", lambda: datetime(2026, 11, 1, 1, 50, tzinfo=new_york, fold=0)
+    )
+    queue.enqueue("exec-z-earlier", {"id": "job-1"}, "first")
+    monkeypatch.setattr(
+        queue, "_hermes_now", lambda: datetime(2026, 11, 1, 1, 10, tzinfo=new_york, fold=1)
+    )
+    queue.enqueue("exec-a-later", {"id": "job-2"}, "second")
+
+    assert queue.claim_next()["execution_id"] == "exec-z-earlier"
+    assert queue.claim_next()["execution_id"] == "exec-a-later"
+
+
 def test_terminal_delivery_retention_is_bounded(tmp_path, monkeypatch):
     import cron.delivery_queue as queue
 

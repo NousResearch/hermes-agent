@@ -30,7 +30,7 @@ from unittest.mock import MagicMock
 import pytest
 
 pytest.importorskip("mcp")
-from tools import mcp_tool_loop as _mcp_loop  # noqa: E402
+from tools import mcp_tool_loop as _mcp_loop
 
 
 def _success_result():
@@ -79,6 +79,7 @@ def _install_stub_server(mcp_tool_module, name: str, call_tool_impl,
     server._stdio_children_dead = children_dead
 
     mcp_tool_module._servers[name] = server
+    mcp_tool_module._server_trust_levels[name] = "full"  # registration records one for every server
     mcp_tool_module._server_error_counts.pop(name, None)
     if hasattr(mcp_tool_module, "_server_breaker_opened_at"):
         mcp_tool_module._server_breaker_opened_at.pop(name, None)
@@ -87,6 +88,7 @@ def _install_stub_server(mcp_tool_module, name: str, call_tool_impl,
 
 def _cleanup(mcp_tool_module, name: str) -> None:
     mcp_tool_module._servers.pop(name, None)
+    mcp_tool_module._server_trust_levels.pop(name, None)
     mcp_tool_module._server_error_counts.pop(name, None)
     if hasattr(mcp_tool_module, "_server_breaker_opened_at"):
         mcp_tool_module._server_breaker_opened_at.pop(name, None)

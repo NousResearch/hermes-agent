@@ -27,13 +27,13 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_bootstrap  # noqa: F401  (process boot before tui_gateway.server)
+import hermes_bootstrap
 
 
 class RecordingAgent:
     """Minimal AIAgent stand-in: records close() and optional run failure."""
 
-    instances: list["RecordingAgent"] = []
+    instances: list[RecordingAgent] = []
 
     def __init__(self, *args, **kwargs):
         self.closed = False

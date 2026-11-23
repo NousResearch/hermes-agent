@@ -11,10 +11,24 @@ from hermes_cli.dashboard_auth.base import (
 # — otherwise a provider auto-registered during one test leaks into the next.
 from hermes_cli.dashboard_auth.registry import (
     register_provider, get_provider, list_providers, list_token_providers,
-    list_session_providers, clear_providers)
+    list_session_providers, list_interactive_providers, clear_providers)
 
 __all__ = [
-    "DashboardAuthProvider", "Session", "TokenPrincipal", "LoginStart", "InvalidCodeError",
-    "InvalidCredentialsError", "ProviderError", "RefreshExpiredError", "assert_protocol_compliance",
-    "classify_jwks_lookup_error", "register_provider", "get_provider", "list_providers",
-    "list_token_providers", "list_session_providers", "clear_providers"]
+    "DashboardAuthProvider",
+    "InvalidCodeError",
+    "InvalidCredentialsError",
+    "LoginStart",
+    "ProviderError",
+    "RefreshExpiredError",
+    "Session",
+    "TokenPrincipal",
+    "assert_protocol_compliance",
+    "classify_jwks_lookup_error",
+    "clear_providers",
+    "get_provider",
+    "list_interactive_providers",
+    "list_providers",
+    "list_session_providers",
+    "list_token_providers",
+    "register_provider",
+]

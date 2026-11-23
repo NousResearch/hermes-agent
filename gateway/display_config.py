@@ -1,7 +1,8 @@
 """Per-platform display/verbosity resolver (``resolve_display_setting``).
 
 Resolution order, first non-None wins: ``display.platforms.<platform>.<key>`` →
-``display.<key>`` → ``_PLATFORM_DEFAULTS[platform][key]`` → ``_GLOBAL_DEFAULTS[key]``.
+``display.<key>`` → ``_PLATFORM_DEFAULTS[platform][key]`` (a plugin platform: its registered
+``display_tier`` + ``display_overrides``) → ``_GLOBAL_DEFAULTS[key]``.
 Exception: ``display.streaming`` is CLI-only; gateway streaming follows the top-level
 ``streaming`` config unless a per-platform override sets it. Legacy
 ``display.tool_progress_overrides`` is still read as a ``tool_progress`` fallback.
@@ -9,7 +10,10 @@ Exception: ``display.streaming`` is CLI-only; gateway streaming follows the top-
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Settings configurable per-platform; other display settings are CLI-only.
 _GLOBAL_DEFAULTS: dict[str, Any] = {
@@ -47,33 +51,30 @@ _TIER_LOW = {
 }
 _TIER_MINIMAL = {**_TIER_LOW, "tool_preview_length": 0}
 
+# Core-only surfaces. A plugin platform declares ``display_tier`` (+ optional ``display_overrides``)
+# on its ``PlatformEntry``; _platform_defaults() reads it from the registry.
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
-    # Mobile inbox: quiet tool_progress / busy-ack, but keep interim commentary and heartbeats so it
-    # doesn't look like "typing..." for 30 minutes.
-    "telegram": {**_TIER_HIGH, "tool_progress": "off", "busy_ack_detail": False},
-    "discord": {**_TIER_HIGH, "reasoning_style": "subtext"},  # "-# " subtext reads as metadata
-    # Slack: Bolt posts cannot be edited like CLI; "new"/"all" spam permanent lines.
-    "slack": {**_TIER_MEDIUM, "tool_progress": "off", "long_running_notifications": False, "busy_ack_detail": False},
-    "mattermost": _TIER_MEDIUM,
-    "matrix": _TIER_MEDIUM,
-    "feishu": _TIER_MEDIUM,
-    "buzz": _TIER_MEDIUM,  # Nostr: edits in place but channels are shared community spaces
-    "signal": _TIER_LOW,
-    "whatsapp": _TIER_MEDIUM,  # Baileys bridge supports /edit
-    "whatsapp_cloud": _TIER_LOW,  # adapter lacks edit_message; promote once it lands
-    "photon": _TIER_LOW,  # permanent-message iMessage inboxes (no edit)
-    "bluebubbles": _TIER_LOW,
-    "weixin": _TIER_LOW,
-    # Non-editable, but its native "stream" msgtype gives a typing animation + cumulative updates.
-    "wecom": {**_TIER_LOW, "streaming": True},
-    "wecom_callback": _TIER_LOW,
-    "dingtalk": _TIER_LOW,
-    "email": _TIER_MINIMAL,
-    "sms": _TIER_MINIMAL,
     "webhook": _TIER_MINIMAL,
-    "homeassistant": _TIER_MINIMAL,
     "api_server": {**_TIER_HIGH, "tool_preview_length": 0},
 }
+
+_TIERS = {"high": _TIER_HIGH, "medium": _TIER_MEDIUM, "low": _TIER_LOW, "minimal": _TIER_MINIMAL}
+
+
+def _platform_defaults(platform_key: str) -> dict[str, Any]:
+    """Built-in defaults for *platform_key*: the table above, else the ``display_tier`` a plugin
+    platform registered (``PlatformEntry.display_tier``) with its ``display_overrides`` on top."""
+    if platform_key in _PLATFORM_DEFAULTS:
+        return _PLATFORM_DEFAULTS[platform_key]
+    try:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get(platform_key)
+    except Exception:
+        return {}
+    tier = _TIERS.get(str(getattr(entry, "display_tier", "") or "").lower(), {})
+    overrides = getattr(entry, "display_overrides", None)
+    return {**tier, **overrides} if overrides else tier
+
 
 # Canonical set of per-platform overrideable keys (for validation).
 OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
@@ -85,44 +86,57 @@ def resolve_display_setting(user_config: dict, platform_key: str, setting: str, 
     ``platform_key`` is the platform config key (``"telegram"``; see ``_platform_config_key`` in
     gateway/run.py). Returns *fallback* when nothing is configured.
     """
-    configured = _configured_display_value(user_config, platform_key, setting)
-    if configured is not None:
-        return _normalise(setting, configured)
-    val = _PLATFORM_DEFAULTS.get(platform_key, {}).get(setting)
+    for configured in _configured_display_values(user_config, platform_key, setting):
+        value = _normalise(setting, configured)
+        if value is not None:
+            return value
+        _warn_unsupported_value(platform_key, setting, configured)
+    val = _platform_defaults(platform_key).get(setting)
     if val is None:
         val = _GLOBAL_DEFAULTS.get(setting)
     return fallback if val is None else val
 
 
-def _configured_display_value(user_config: dict, platform_key: str, setting: str) -> Any:
-    """First non-None operator value, without introducing tier defaults."""
+def _configured_display_values(user_config: dict, platform_key: str, setting: str) -> list[Any]:
+    """Every operator value for *setting*, highest precedence first (nulls omitted).
+
+    The list — not just the winner — lets resolution skip an unsupported value and still honour a
+    valid lower-precedence one (#142368).
+    """
     display_cfg = user_config.get("display")
     if not isinstance(display_cfg, dict):
-        return None
+        return []
+    values: list[Any] = []
     platforms = display_cfg.get("platforms")
     plat_overrides = platforms.get(platform_key) if isinstance(platforms, dict) else None
     if isinstance(plat_overrides, dict) and plat_overrides.get(setting) is not None:
-        return plat_overrides[setting]
+        values.append(plat_overrides[setting])
     if setting == "tool_progress":
         legacy = display_cfg.get("tool_progress_overrides")
         if isinstance(legacy, dict) and legacy.get(platform_key) is not None:
-            return legacy[platform_key]
-    if setting != "streaming":  # display.streaming is CLI-only
-        return display_cfg.get(setting)
-    return None
+            values.append(legacy[platform_key])
+    if setting != "streaming" and display_cfg.get(setting) is not None:  # display.streaming is CLI-only
+        values.append(display_cfg[setting])
+    return values
 
 
 def resolve_tool_progress(user_config: dict, platform_key: str, env_mode: str | None = None) -> tuple[str, bool]:
     """Return (mode, explicit intent) from the same winning source.
 
     Non-None YAML wins over the legacy env bridge. Null inherits through to env,
-    then tier defaults. A tier's off is not an operator request to disable cards.
+    then tier defaults. A tier's off is not an operator request to disable cards, and neither is an
+    unsupported value: it is logged once and skipped, so a typo cannot turn a quiet chat verbose.
     """
-    configured = _configured_display_value(user_config, platform_key, "tool_progress")
-    if configured is not None:
-        return _normalise("tool_progress", configured), True
+    for configured in _configured_display_values(user_config, platform_key, "tool_progress"):
+        mode = _normalise("tool_progress", configured)
+        if mode is not None:
+            return mode, True
+        _warn_unsupported_value(platform_key, "tool_progress", configured)
     if env_mode:
-        return _normalise("tool_progress", env_mode), True
+        mode = _normalise("tool_progress", env_mode)
+        if mode is not None:
+            return mode, True
+        _warn_unsupported_value(platform_key, "tool_progress", env_mode)
     return resolve_display_setting(user_config, platform_key, "tool_progress"), False
 
 
@@ -133,8 +147,9 @@ _FALSY = {"false", "0", "no"}
 
 
 def _norm_tristate(on: str, off: str, choices: set, extra_truthy: set = frozenset()):
-    """Normaliser for bool-or-keyword settings: bools/truthy tokens → *on*, falsy → *off*, else a known choice or *on*."""
-    def norm(value: Any) -> str:
+    """Normaliser for bool-or-keyword settings: bools/truthy tokens → *on*, falsy → *off*, a known
+    choice → itself. An unrecognised value → ``None``: a typo must not fail open into *on* (#142368)."""
+    def norm(value: Any) -> str | None:
         if isinstance(value, bool):
             return on if value else off
         val = str(value).strip().lower()
@@ -142,7 +157,7 @@ def _norm_tristate(on: str, off: str, choices: set, extra_truthy: set = frozense
             return off
         if val in _TRUTHY | extra_truthy:
             return on
-        return val if val in choices else on
+        return val if val in choices else None
     return norm
 
 
@@ -201,6 +216,52 @@ _NORMALISERS: dict[str, Any] = {
 
 
 def _normalise(setting: str, value: Any) -> Any:
-    """Normalise a user-supplied value for *setting*; unknown settings pass through."""
+    """Normalise a user-supplied value for *setting*; unknown settings pass through. ``None`` means
+    an unsupported value for a choice-bearing setting (see ``_norm_tristate``)."""
     norm = _NORMALISERS.get(setting)
     return norm(value) if norm else value
+
+
+# (platform, setting, value) triples already reported: a turn resolves display settings per message,
+# so one typo would otherwise fill the log with the same line.
+_UNSUPPORTED_DISPLAY_WARNED: set[tuple[str, str, str]] = set()
+
+
+def _warn_unsupported_value(platform_key: str, setting: str, value: Any) -> None:
+    """Name an unsupported display value once. Resolution then treats it as unset (#142368)."""
+    key = (platform_key, setting, str(value).strip().lower())
+    if key in _UNSUPPORTED_DISPLAY_WARNED:
+        return
+    _UNSUPPORTED_DISPLAY_WARNED.add(key)
+    logger.warning(
+        "display.%s for platform %r is set to unsupported value %r; ignoring it and inheriting the "
+        "platform default (accepted values are listed in "
+        "website/docs/user-guide/messaging/index.md)",
+        setting, platform_key, value,
+    )
+
+
+# LOCAL's per-platform config key (``_platform_config_key(Platform.LOCAL)``): where a local session's
+# ``/reasoning show|hide`` and ``/footer`` save, and what every local surface reads.
+LOCAL_DISPLAY_KEY = "cli"
+# The per-platform display settings a local surface takes from the local key over the global one.
+_LOCAL_OVERLAY_KEYS = ("show_reasoning", "runtime_footer")
+
+
+def local_display_config(display: Any) -> dict[str, Any]:
+    """*display* (a ``config.yaml`` ``display`` block) as a local surface (classic CLI, Ink, Desktop,
+    a local turn) resolves it: ``display.platforms.cli.<key>`` over ``display.<key>`` for the settings
+    the local commands save there. No second key is written; the block is returned copied."""
+    display = dict(display) if isinstance(display, dict) else {}
+    platforms = display.get("platforms")
+    local = platforms.get(LOCAL_DISPLAY_KEY) if isinstance(platforms, dict) else None
+    if not isinstance(local, dict):
+        return display
+    for key in _LOCAL_OVERLAY_KEYS:
+        value = local.get(key)
+        if value is None:
+            continue
+        if isinstance(value, dict) and isinstance(display.get(key), dict):
+            value = {**display[key], **value}
+        display[key] = _normalise(key, value)
+    return display

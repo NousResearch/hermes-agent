@@ -8,6 +8,9 @@ constants with tolerance bands, not change-detecting catalog snapshots).
 
 from __future__ import annotations
 
+import re
+from dataclasses import replace
+
 import pytest
 
 from hermes_cli.local_runtime.context_policy import (
@@ -18,6 +21,7 @@ from hermes_cli.local_runtime.context_policy import (
     initial_window,
     ladder,
     launch_args,
+    recurrent_spill_blocks,
     spill_overrides,
     ub_logits_bytes,
 )
@@ -29,8 +33,10 @@ from hermes_cli.local_runtime.estimator import (
     ctx_bytes,
     physics_check,
 )
+import itertools
 
 GIB = 1 << 30
+MIB = 1 << 20
 KIB = 1024
 
 
@@ -167,9 +173,9 @@ def test_ladder_shape():
     rungs = ladder(262144)
     assert rungs[0] == FLOOR
     assert rungs[-1] == 262144
-    assert all(a < b for a, b in zip(rungs, rungs[1:]))
+    assert all(a < b for a, b in itertools.pairwise(rungs))
     # geometric-ish: each step grows, none more than 2x
-    assert all(b / a <= 2.0 for a, b in zip(rungs, rungs[1:]))
+    assert all(b / a <= 2.0 for a, b in itertools.pairwise(rungs))
 
 
 def test_initial_window_never_below_floor_and_never_above_native():
@@ -188,7 +194,7 @@ def test_initial_window_monotone_in_vram():
         d = initial_window(p, card(vram))
         assert isinstance(d, WindowDecision)
         windows.append(d.window)
-    assert all(a <= b for a, b in zip(windows, windows[1:]))
+    assert all(a <= b for a, b in itertools.pairwise(windows))
 
 
 def test_flat_curve_reaches_native_where_dense_does_not():
@@ -286,6 +292,54 @@ def test_spill_overrides_prefer_expert_and_recurrent_ffn():
     assert "exps" in " ".join(spill_overrides(moe()))
     assert "ffn" in " ".join(spill_overrides(hybrid()))
     assert spill_overrides(dense()) == []
+
+
+def _ot_pattern(args: list[str]) -> str:
+    assert args[0] == "-ot" and args[1].endswith("=CPU")
+    return args[1].removesuffix("=CPU")
+
+
+def _moved(pattern: str, n_layers: int) -> list[int]:
+    # llama.cpp matches -ot patterns with std::regex_search against tensor names.
+    return [i for i in range(n_layers) if re.search(pattern, f"blk.{i}.ffn_down.weight")]
+
+
+def test_hybrid_spill_moves_only_recurrent_blocks_needed_for_spill_bytes():
+    """#113329: a hybrid spill must not move every block's FFN. Interleaved qwen35-style
+    layout (every 4th block full attention), 100 MiB of FFN per block."""
+    kinds = [LayerKind.FULL if i % 4 == 3 else LayerKind.RECURRENT for i in range(16)]
+    profile = ModelProfile(
+        name="interleaved-hybrid", weights_bytes=8 * GIB, embd_table_bytes=0, n_ctx_train=FLOOR,
+        layers=[(k, 4096 if k == LayerKind.FULL else 0) for k in kinds],
+        ffn_block_bytes={i: 100 * MIB for i in range(16)})
+
+    assert recurrent_spill_blocks(profile, 250 * MIB) == [0, 1, 2]
+    assert recurrent_spill_blocks(profile, 300 * MIB) == [0, 1, 2]
+    assert recurrent_spill_blocks(profile, 301 * MIB) == [0, 1, 2, 4]
+    assert _moved(_ot_pattern(spill_overrides(profile, 250 * MIB)), 16) == [0, 1, 2]
+    # Not "blk.1" matching blk.10..blk.15.
+    assert _moved(_ot_pattern(spill_overrides(profile, 150 * MIB)), 16) == [0, 1]
+
+    # More spill than all recurrent FFNs hold: every recurrent block, never a full-attention one.
+    recurrent = [i for i, k in enumerate(kinds) if k == LayerKind.RECURRENT]
+    assert _moved(_ot_pattern(spill_overrides(profile, 20 * GIB)), 16) == recurrent
+    assert not re.search(_ot_pattern(spill_overrides(profile, 20 * GIB)), "blk.3.ffn_up.weight")
+
+
+def test_hybrid_spill_without_ffn_sizes_moves_every_recurrent_block_only():
+    profile = hybrid(full_layers=16, recurrent_layers=48)   # no tensor-table sizes
+    assert _moved(_ot_pattern(spill_overrides(profile, GIB)), 64) == list(range(16, 64))
+    partial = replace(profile, ffn_block_bytes={i: GIB for i in range(16, 63)})  # block 63 unknown
+    assert recurrent_spill_blocks(partial, GIB) == list(range(16, 64))
+
+
+def test_launch_args_sizes_hybrid_spill_from_decision():
+    profile = replace(hybrid(full_layers=2, recurrent_layers=6),
+                      ffn_block_bytes={i: GIB for i in range(8)})
+    spilled = WindowDecision(window=FLOOR, spill_bytes=int(1.5 * GIB), kv_on_gpu=True)
+    args = launch_args(profile, spilled)
+    assert _moved(_ot_pattern(args[args.index("-ot"):args.index("-ot") + 2]), 8) == [2, 3]
+    assert "-ot" not in launch_args(profile, spilled, uma=True)
 
 
 def test_launch_args_contract():

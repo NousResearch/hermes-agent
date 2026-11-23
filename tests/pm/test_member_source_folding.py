@@ -1,6 +1,8 @@
 """Fold only members with the same effective installed dependency inputs."""
 
+import sys
 import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -45,7 +47,8 @@ def test_folding_respects_installed_path_sources(tmp_path, staged, kind):
         expected_paths.add(relative if kind == "internal" else (identity / relative).resolve().as_posix())
 
     root = tmp_path / "workspace"
-    _generate_pyproject(inputs if staged else list(inputs), root, source=core)
+    _generate_pyproject(inputs if staged else list(inputs), root, source=core,
+                       python=Path(sys.executable))
     document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     members = document["tool"]["uv"]["workspace"]["members"]
     assert len(members) == (2 if kind == "distinct" else 1)
@@ -80,7 +83,7 @@ def test_buildable_twins_with_distinct_directory_symlinks_stay_separate(tmp_path
         plugins.append(plugin)
 
     root = tmp_path / "workspace"
-    _generate_pyproject(plugins, root, source=core)
+    _generate_pyproject(plugins, root, source=core, python=Path(sys.executable))
     members = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))[
         "tool"]["uv"]["workspace"]["members"]
     assert len(members) == 2

@@ -67,11 +67,8 @@ def test_live_index_lock_is_refused_truthfully(w):
     assert "index.lock" in out, f"refusal does not name the lock:\n{w.diag(cp)}"
     assert w.head() == before and not w.status(), f"refusal moved HEAD or dirtied the tree:\n{w.diag(cp)}"
     assert lock.exists(), f"update deleted a lock another git may still hold:\n{w.diag(cp)}"
-    with known_failure(r"claims .*history diverged",
-                       "gated on #124642: a ff-merge blocked by index.lock is reported as diverged history, "
-                       "a rescue ref is written and `git reset --hard` is advised"):
-        assert "diverged" not in out and not w.refs("refs/hermes-update-backups"), (
-            f"an index.lock refusal claims local history diverged (and writes a rescue ref):\n{w.diag(cp)}")
+    assert "diverged" not in out and not w.refs("refs/hermes-update-backups"), (
+        f"an index.lock refusal claims local history diverged (and writes a rescue ref):\n{w.diag(cp)}")
 
 
 def test_detached_head_at_an_older_commit_is_brought_back_to_main(w):
@@ -96,12 +93,9 @@ def test_work_committed_on_a_detached_head_stays_reachable(w):
     cp = w.update()
 
     assert w.head() == target or cp.returncode != 0, f"update neither landed nor refused:\n{w.diag(cp)}"
-    with known_failure(r"reachable only from the reflog",
-                       "gated on #124643: switching a detached HEAD to main leaves commits made on it "
-                       "reachable only from the reflog, and the output never mentions them"):
-        assert w.refs_containing(work) or w.head() == work, (
-            f"commit {work[:12]} made on the detached HEAD is reachable only from the reflog after the update:\n"
-            f"{w.diag(cp)}")
+    assert w.refs_containing(work) or w.head() == work, (
+        f"commit {work[:12]} made on the detached HEAD is reachable only from the reflog after the update:\n"
+        f"{w.diag(cp)}")
 
 
 def test_abandoned_interactive_rebase_is_healed_or_refused(w):
@@ -124,9 +118,6 @@ def test_abandoned_interactive_rebase_is_healed_or_refused(w):
         assert w.head() == before, f"refusal moved HEAD:\n{w.diag(cp)}"
         return
     assert w.head() == target and w.branch() == "main", f"update reported rc=0 but did not land:\n{w.diag(cp)}"
-    with known_failure(r"rebase still in progress",
-                       "gated on #124644: update switches to main under a stopped rebase and leaves "
-                       ".git/rebase-merge, so a later `git rebase --abort` rolls the update back"):
-        assert not rebase_left, (
-            f"update succeeded but left a rebase still in progress (.git/rebase-merge); `git rebase --abort` "
-            f"would now reset main to {before[:12]}:\n{w.diag(cp)}")
+    assert not rebase_left, (
+        f"update succeeded but left a rebase still in progress (.git/rebase-merge); `git rebase --abort` "
+        f"would now reset main to {before[:12]}:\n{w.diag(cp)}")

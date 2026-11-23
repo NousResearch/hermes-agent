@@ -14,8 +14,9 @@
  * renderer groups bubbles (live vs hydrated grouping legitimately differs).
  *
  * Final-state checks converge with a deadline (hydration is asynchronous);
- * transient duplicates are caught separately by an in-page MutationObserver
- * sampler that is never allowed to see a marker twice.
+ * transient faults are caught separately by an in-page MutationObserver
+ * sampler that is never allowed to see a marker twice, a reply above its own
+ * prompt, or two messages swap places between frames.
  */
 
 import { expect, type Page } from '@playwright/test'
@@ -54,7 +55,7 @@ export function userMarkerFor(marker: string): string {
   return marker.replace(/^[AR](\d+)i?-/, 'U$1-')
 }
 
-// ─── Transient-duplicate sampler ────────────────────────────────────────
+// ─── Transient duplicate / order sampler ────────────────────────────────
 
 /** Idempotent; re-run after every reload (the observer dies with the document). */
 export async function installDuplicateSampler(page: Page): Promise<void> {
@@ -66,8 +67,54 @@ export async function installDuplicateSampler(page: Page): Promise<void> {
     }
 
     const re = new RegExp(source, 'g')
-    w.__coreSampler = { samples: 0, violations: [] as { marker: string; count: number; text: string }[] }
+    w.__coreSampler = {
+      samples: 0,
+      violations: [] as { marker: string; count: number; text: string }[],
+      order: [] as { detail: string; text: string }[]
+    }
+    // "x|y": x has been seen above y. A later frame with y above x is a flip.
+    const above = new Set<string>()
     let scheduled = false
+    // The last few bubble layouts (newest bubbles: id = markers), so a red
+    // says which rows drew the copy and what the view showed just before.
+    const timeline: { at: number; route: string; layout: string[] }[] = []
+    let lastLayout = ''
+
+    const seen = (text: string) => {
+      const flat = text.replace(/\s+/g, ' ')
+
+      return flat.length > 600 ? `${flat.slice(0, 150)} … ${flat.slice(-450)}` : flat
+    }
+
+    const recordLayout = (viewport: HTMLElement) => {
+      const layout = (
+        [
+          ...viewport.querySelectorAll('[data-slot="aui_user-message-root"], [data-slot="aui_assistant-message-root"]')
+        ] as HTMLElement[]
+      )
+        .slice(-6)
+        .map(el => `${el.getAttribute('data-message-id') ?? '?'}=${[...new Set(el.innerText.match(re) ?? [])].join('+')}`)
+
+      const key = `${location.hash}|${layout.join('|')}`
+
+      if (key !== lastLayout) {
+        lastLayout = key
+        timeline.push({ at: Math.round(performance.now()), route: location.hash, layout })
+        timeline.splice(0, Math.max(0, timeline.length - 8))
+      }
+    }
+
+    const orderViolation = (detail: string, text: string) => {
+      if (w.__coreSampler.order.length < 20) {
+        w.__coreSampler.order.push({
+          detail,
+          at: Math.round(performance.now()),
+          route: location.hash,
+          text: seen(text),
+          ...(w.__coreSampler.order.length === 0 ? { timeline: [...timeline] } : {})
+        })
+      }
+    }
 
     const sample = () => {
       scheduled = false
@@ -80,11 +127,32 @@ export async function installDuplicateSampler(page: Page): Promise<void> {
 
         const text = viewport.innerText
         w.__coreSampler.samples++
+        recordLayout(viewport)
         const counts = new Map<string, number>()
 
         for (const match of text.match(re) ?? []) {
           counts.set(match, (counts.get(match) ?? 0) + 1)
         }
+
+        // Message order, top to bottom by first appearance. Reasoning is left
+        // out: live and history place the thinking block differently.
+        const sequence = [...counts.keys()].filter(marker => !marker.startsWith('R'))
+
+        sequence.forEach((marker, index) => {
+          const prompt = marker.replace(/^A(\d+)i?-/, 'U$1-')
+
+          if (prompt !== marker && sequence.indexOf(prompt) > index) {
+            orderViolation(`reply ${marker} rendered above its prompt ${prompt}`, text)
+          }
+
+          for (const later of sequence.slice(index + 1)) {
+            if (above.has(`${later}|${marker}`)) {
+              orderViolation(`${marker} moved above ${later}`, text)
+            }
+
+            above.add(`${marker}|${later}`)
+          }
+        })
 
         for (const [marker, count] of counts) {
           if (count > 1 && w.__coreSampler.violations.length < 20) {
@@ -105,7 +173,8 @@ export async function installDuplicateSampler(page: Page): Promise<void> {
               at: Math.round(performance.now()),
               route: location.hash,
               bubbles,
-              text: text.replace(/\s+/g, ' ').slice(0, 600)
+              text: seen(text),
+              ...(w.__coreSampler.violations.length === 0 ? { timeline: [...timeline] } : {})
             })
           }
         }
@@ -121,8 +190,8 @@ export async function installDuplicateSampler(page: Page): Promise<void> {
   }, ANY_MARKER_RE.source)
 }
 
-async function samplerViolations(page: Page): Promise<{ samples: number; violations: any[] }> {
-  return page.evaluate(() => (window as any).__coreSampler ?? { samples: 0, violations: [] })
+async function samplerViolations(page: Page): Promise<{ order: any[]; samples: number; violations: any[] }> {
+  return page.evaluate(() => (window as any).__coreSampler ?? { order: [], samples: 0, violations: [] })
 }
 
 // ─── Rendered view ──────────────────────────────────────────────────────
@@ -341,6 +410,29 @@ function wireViolations(
 
 // ─── The oracle ─────────────────────────────────────────────────────────
 
+// A steer that lands at a tool boundary is stored as its own user row, wrapped
+// for the model in the out-of-band marker (agent/prompt_builder.py); the user
+// sees only their words.
+const STEER_RE = /\[OUT-OF-BAND USER MESSAGE[^\]]*\]\s*([\s\S]*?)\s*\[\/OUT-OF-BAND USER MESSAGE\]/
+
+function unwrapSteer(content: string): string {
+  return STEER_RE.exec(content)?.[1] ?? content
+}
+
+// Rows the backend writes itself (hydration.ts NOTICE_DISPLAY_KINDS, plus
+// hidden scaffolding): drawn as a notice or not at all, never as a message.
+const NOTICE_KINDS = new Set([
+  'model_switch',
+  'async_delegation_complete',
+  'process_complete',
+  'auto_continue',
+  'personality_switch',
+  'failed_turn',
+  'hidden'
+])
+
+const isNotice = (m: PersistedMessage) => m.displayKind !== undefined && NOTICE_KINDS.has(m.displayKind)
+
 export interface OracleTarget {
   /** Stored session id (the route id). */
   sessionId: string
@@ -353,7 +445,11 @@ export interface OracleTarget {
 
 function transcriptViolations(persisted: PersistedMessage[], view: RenderedView, target: OracleTarget): string[] {
   const problems: string[] = []
-  const rows = persisted.filter(m => (m.role === 'user' || m.role === 'assistant') && norm(m.content))
+
+  const rows = persisted
+    .filter(m => (m.role === 'user' || m.role === 'assistant') && !isNotice(m) && norm(m.content))
+    .map(m => (m.role === 'user' ? { ...m, content: unwrapSteer(m.content) } : m))
+
   const persistedMarkers = new Set<string>()
 
   for (const marker of target.expectUserMarkers) {
@@ -475,4 +571,5 @@ export async function assertTranscriptOracle(
   expect(transient.violations, `transient duplicate render during [${label}] (${transient.samples} samples)`).toEqual(
     []
   )
+  expect(transient.order, `transient misordered render during [${label}] (${transient.samples} samples)`).toEqual([])
 }

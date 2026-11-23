@@ -1,0 +1,19 @@
+name: memex8
+repo: https://github.com/Ex8-ca/memex8
+sha: d4037ac0992f1be84cf5d888809dc48da9f1c3dd
+subdir: plugins/memex8
+version: "1.2.0"
+description: "Self-hosted vector memory (Qdrant + TurboQuant compression) with auto-discovered knowledge realms, semantic search across conversations and ingested documents, and a slumber pipeline for memory consolidation. v1.2.0 adds private-span redaction before capture, compact retrieval with ordered batch get, scoped chronological timeline, user-certified memory protection, and recoverable consolidation/dedup archives. v1.1.0 added optional per-session injection dedup with char-budget gate, decision/evaluation memory-type promotion (slower decay for load-bearing turns), prompt-injection sanitization on read, configurable system-prompt template, export/import memories as JSON, and a /memex8 slash command. New memory behaviours are opt-in; /memex8 export|import is confined to $HERMES_HOME/plugin-data/memex8 unless enable_export_import=true. Disclosure — auto-stores a truncated copy (first 300 chars) of every user and assistant turn, plus per-message previews of the whole transcript at session end and before context compression, and in scheduled cron runs the job's reported output (up to 2000 chars), to the memex8 server at MEMEX8_BASE_URL (self-hosted; default http://localhost:8080) using MEMEX8_API_KEY; the agent can mark a memory \"public\" (or the user with `/memex8 remember --public`), which makes it shareable with peers through the separate Hermes-A2A bridge."
+maintainer: Ex8-ca
+tier: community
+category: memory
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/Ex8-ca/memex8/blob/main/plugins/memex8/README.md
+image: https://raw.githubusercontent.com/Ex8-ca/memex8/d4037ac0992f1be84cf5d888809dc48da9f1c3dd/plugins/memex8/docs/banner.png
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_end
+  provides_middleware: []
+  requires_env:
+    - MEMEX8_API_KEY

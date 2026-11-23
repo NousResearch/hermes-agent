@@ -1,0 +1,19 @@
+name: jira-browser
+repo: https://github.com/LikelyLucid/hermes-jira-browser
+sha: 03ba860d7241af620860968fa747b109d4664cc2
+description: "Jira workspace for Hermes Desktop, linking tickets to Hermes Projects, worktrees, and conversations. Disclosure — reads a Jira API token from JIRA_* env vars or ~/jira-config/config.json (owner-only, read-only) and sends it only to your configured https Jira origin; agent tools are read-only but return Jira text (untrusted) to the model; Start work / Draft update create chats seeded with ticket descriptions (Draft update auto-runs a turn); PR/CI status is read through your local gh CLI login."
+maintainer: LikelyLucid
+tier: community
+category: desktop
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - jira_assigned_issues
+    - jira_search_issues
+    - jira_issue_detail
+    - jira_issue_transitions
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -5,8 +5,8 @@ import subprocess
 
 import pytest
 
-from tests.hermes_cli.test_plugin_update_transaction import installed, _version  # noqa: F401
-from tests.pm.test_plugin_survival_contract import admission_env  # noqa: F401
+from tests.hermes_cli.test_plugin_update_transaction import installed, _version
+from tests.pm.test_plugin_survival_contract import admission_env
 
 
 @pytest.mark.parametrize("installed", ["catalog", "custom"], indirect=True)

@@ -67,9 +67,13 @@ class Window extends EventEmitter {
   setSkipTaskbar(on: boolean) {
     this.skipped = on
   }
-  hide() {
-    this.visible = false
+  blur() {
     this.focused = false
+  }
+  hide() {
+    // A real Win32 window does NOT release keyboard focus by being hidden
+    // (#126570); only an explicit blur does.
+    this.visible = false
     this.emit('hide')
   }
   show() {
@@ -191,6 +195,77 @@ test('Windows restore re-activates the window instead of showInactive (#119252)'
   }
 })
 
+test('Windows restore of a tray-hidden window by any other path activates it (#127349)', async () => {
+  setPlatform('win32')
+
+  try {
+    const { controller, main } = setup()
+    await controller.start()
+    await controller.setEnabled(true)
+
+    main.minimize()
+    await flushDeferredHide()
+
+    const show = vi.spyOn(main, 'show')
+    const focus = vi.spyOn(main, 'focus')
+
+    // A relaunch, deep link or notification click restores without the tray.
+    // restore() alone leaves a painted window that is not the OS foreground
+    // window, so it drops all input. It needs show() then focus().
+    main.restore()
+    await flushDeferredHide()
+    expect(show).toHaveBeenCalledOnce()
+    expect(focus).toHaveBeenCalledOnce()
+    expect(main.skipped).toBe(false)
+    expect(show.mock.invocationCallOrder[0]).toBeLessThan(focus.mock.invocationCallOrder[0])
+  } finally {
+    restorePlatform()
+  }
+})
+
+test('a restore of a window the tray never hid is left alone', async () => {
+  setPlatform('win32')
+
+  try {
+    const { main } = setup()
+    const show = vi.spyOn(main, 'show')
+    const focus = vi.spyOn(main, 'focus')
+
+    main.minimize()
+    main.restore()
+    await flushDeferredHide()
+    expect(show).not.toHaveBeenCalled()
+    expect(focus).not.toHaveBeenCalled()
+  } finally {
+    restorePlatform()
+  }
+})
+
+test('Windows tray hide releases keyboard focus before hiding (#126570)', async () => {
+  setPlatform('win32')
+
+  try {
+    const { controller, main } = setup()
+    await controller.start()
+    await controller.setEnabled(true)
+
+    // The close-to-tray path hides a focused window; a real hidden Win32
+    // window keeps the UI thread's keyboard focus (the fake above models
+    // that: hide does not touch focus), so the shared hide path must blur
+    // explicitly, before the hide itself -- after it, it no longer takes.
+    main.focused = true
+    const blur = vi.spyOn(main, 'blur')
+    const hide = vi.spyOn(main, 'hide')
+    main.close()
+    expect(main.visible).toBe(false)
+    expect(main.focused).toBe(false)
+    expect(blur).toHaveBeenCalledOnce()
+    expect(blur.mock.invocationCallOrder[0]).toBeLessThan(hide.mock.invocationCallOrder[0])
+  } finally {
+    restorePlatform()
+  }
+})
+
 test('a restore before the deferred hide fires cancels the stale hide', async () => {
   const { controller, main } = setup()
   await controller.start()
@@ -263,6 +338,36 @@ test('opt-in minimize and primary Close preserve windows while explicit Quit sti
   expect(native.trays[0].destroyed).toBe(true)
 })
 
+test('linux reuses one tray when minimize-to-tray is toggled off and on (#126353)', async () => {
+  setPlatform('linux')
+
+  try {
+    const { controller, main } = setup()
+    await controller.start()
+    await controller.setEnabled(true)
+    expect(native.trays).toHaveLength(1)
+    main.minimize()
+    await flushDeferredHide()
+    expect(main.visible).toBe(false)
+
+    await controller.setEnabled(false)
+    expect(main.visible).toBe(true)
+    expect(native.trays).toHaveLength(1)
+    expect(native.trays[0].destroyed).toBe(false)
+
+    await controller.setEnabled(true)
+    expect(native.trays).toHaveLength(1)
+    expect(native.trays[0].destroyed).toBe(false)
+    main.minimize()
+    await flushDeferredHide()
+    expect(main.visible).toBe(false)
+    native.trays[0].menu[0].click()
+    expect(main.visible).toBe(true)
+  } finally {
+    restorePlatform()
+  }
+})
+
 test('persistence, disabling, failed tray creation, and handoff never strand hidden windows', async () => {
   const first = setup()
   await first.controller.start()
@@ -270,7 +375,8 @@ test('persistence, disabling, failed tray creation, and handoff never strand hid
   first.main.minimize()
   await first.controller.setEnabled(false)
   expect(first.main.visible).toBe(true)
-  expect(native.trays[0].destroyed).toBe(true)
+  // Linux parks the tray so a later enable can reuse it (#126353).
+  expect(native.trays[0].destroyed).toBe(process.platform !== 'linux')
   await first.controller.setEnabled(true)
   const restarted = setup()
   expect(await restarted.controller.start()).toEqual({ enabled: true, available: true })

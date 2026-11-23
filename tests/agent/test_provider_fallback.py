@@ -98,6 +98,8 @@ class TestFallbackChainAdvancement:
         )
         agent.model = "gpt-5.6-sol"
         agent.provider = "openai-codex"
+        shown = []
+        agent.status_callback = lambda kind, text: shown.append((kind, str(text)))
         clients = [
             _mock_client(base_url="https://api.z.ai/v1"),
             _mock_client(base_url="https://api.deepseek.com/v1"),
@@ -106,15 +108,26 @@ class TestFallbackChainAdvancement:
             "agent.auxiliary_client.resolve_provider_client",
             side_effect=[(clients[0], "glm-5.2"), (clients[1], "deepseek-v4-flash")],
         ):
+            # The error handler records the provider's words while the failing route's key is still on the
+            # agent; the switch for that reason quotes them, the echoed key masked by value.
+            from agent.fallback_notice import record_fallback_trigger
+            agent.api_key = "opaque-primary-credential-9f3"
+            record_fallback_trigger(agent, FailoverReason.rate_limit,
+                                    "HTTP 429: quota exceeded; credential opaque-primary-credential-9f3 rejected")
             assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
+            # Shown at the switch, before the fallback model is called: not held for the turn's end.
+            assert len(shown) == 1
             assert agent._try_activate_fallback(FailoverReason.overloaded) is True
 
-        # One user-visible notice per switch, in order, each naming from/to.
-        notices = agent._pending_fallback_notice
-        assert len(notices) == 2
-        assert "gpt-5.6-sol" in notices[0] and "glm-5.2" in notices[0]
-        assert "glm-5.2" in notices[1] and "deepseek-v4-flash" in notices[1]
-        assert agent._retry_status_buffer[-1] == ("status", notices[1])
+        # One user-visible notice per switch, in order, each naming from/to, on its own status kind so a
+        # messaging adapter's next lifecycle line cannot edit it away.
+        assert [kind for kind, _ in shown] == ["fallback", "fallback"]
+        texts = [text for _, text in shown]
+        assert "gpt-5.6-sol" in texts[0] and "glm-5.2" in texts[0]
+        assert "quota exceeded" in texts[0] and "opaque-primary-credential-9f3" not in texts[0]
+        # The second switch had no recorded error of its own: it never borrows the first one's.
+        assert "glm-5.2" in texts[1] and "deepseek-v4-flash" in texts[1] and "quota" not in texts[1]
+        assert not getattr(agent, "_pending_fallback_notice", None)
 
     def test_skips_unconfigured_provider_to_next(self):
         """If resolve_provider_client returns None, skip to next in chain."""
@@ -132,6 +145,24 @@ class TestFallbackChainAdvancement:
             assert agent.model == "gpt-4o"
             assert agent._fallback_index == 2
             assert agent._rate_limit_backoff_count == 1
+
+    def test_activation_counts_once_with_classifier_reason(self, monkeypatch):
+        """A skipped candidate is not an activation; the one that binds records its FailoverReason."""
+        from hermes_cli.observability import shared_metrics_events
+        from hermes_cli.observability.shared_metrics_fields import fallback_fields
+
+        calls = []
+        monkeypatch.setattr(shared_metrics_events, "record_fallback", lambda **kw: calls.append(kw))
+        agent = _make_agent(fallback_model=[
+            {"provider": "broken", "model": "nope"}, {"provider": "zai", "model": "glm-5.2"},
+        ])
+        agent.provider = "nous"
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                   side_effect=[(None, None), (_mock_client(base_url="https://api.z.ai/v1"), "glm-5.2")]):
+            assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
+
+        assert [(kw["from_provider"], kw["to_provider"]) for kw in calls] == [("nous", "zai")]
+        assert fallback_fields(**calls[0])["error_class"] == "rate_limit"
 
     def test_skips_provider_that_raises_to_next(self):
         """If resolve_provider_client raises, skip to next in chain."""

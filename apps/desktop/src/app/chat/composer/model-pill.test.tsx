@@ -8,7 +8,14 @@ import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { registry } from '@/contrib/registry'
 import { formatModelPillLabel } from '@/lib/model-status-label'
-import { $activeSessionId, $currentModel, setCurrentModel, setCurrentModelSource } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentModel,
+  setCurrentFastMode,
+  setCurrentModel,
+  setCurrentModelSource,
+  setCurrentServiceTier
+} from '@/store/session'
 
 import { COMPOSER_AREAS, type ComposerModelPillContext, type ComposerModelPillProvider } from './contrib'
 import { requestModelMenuToggle } from './focus'
@@ -25,8 +32,10 @@ const modelState = (over: Partial<ChatBarState['model']> = {}): ChatBarState['mo
 afterEach(() => {
   cleanup()
   $activeSessionId.set(null)
+  setCurrentFastMode(false)
   setCurrentModel('')
   setCurrentModelSource('')
+  setCurrentServiceTier('')
 })
 
 // #62055: a manual composer pick is sticky and silently overrides the
@@ -168,6 +177,27 @@ describe('ModelPill per-surface model label', () => {
   })
 })
 
+// #49340: long model names ("DeepSeek V4 Flash · Med") were truncated with a
+// finite `max-w-*` cap even when the composer row had room to spare. The pill
+// now sizes to its content and only gives width back (shrink + min-w-0) under
+// real space pressure, so the label never clips unless the row is actually
+// out of room.
+describe('ModelPill width', () => {
+  it('imposes no finite width cap on the label', () => {
+    setCurrentModel('deepseek/deepseek-v4-flash')
+    $activeSessionId.set(null)
+
+    render(<ModelPill disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />)
+
+    const pill = screen.getByRole('button')
+    expect(pill.className).not.toMatch(/\bmax-w-/)
+    // The squeeze path (collapse stages) still has to work: the pill must keep
+    // yielding width, not overflow the composer row.
+    expect(pill.className).toMatch(/\bmin-w-0\b/)
+    expect(pill.className).toMatch(/\bshrink\b/)
+  })
+})
+
 // The `composer.modelPill` slot: a provider may override the pill's LABEL
 // (compact reasoning label, custom naming) while the pill keeps its chrome,
 // pin dot, and menu. A declining provider leaves the core label untouched.
@@ -244,5 +274,70 @@ describe('ModelPill label providers', () => {
 
     expect(screen.getByText('first wins')).toBeTruthy()
     expect(second).not.toHaveBeenCalled()
+  })
+})
+
+describe('ModelPill speed-tier gating', () => {
+  it('omits Ultrafast when a live session reports fast=false for an unsupported model', () => {
+    $activeSessionId.set('live-gemini')
+    setCurrentFastMode(false)
+    setCurrentServiceTier('ultrafast')
+
+    render(<ModelPill disabled={false} model={modelState({ model: 'gemini-4-neon', provider: 'gemini' })} />)
+
+    expect(screen.getByText('Gemini 4 Neon')).toBeTruthy()
+    expect(screen.queryByText(/Ultrafast/)).toBeNull()
+  })
+
+  it('omits Ultrafast on a draft when model capabilities report no ultrafast support', () => {
+    $activeSessionId.set(null)
+    setCurrentFastMode(true)
+    setCurrentServiceTier('ultrafast')
+
+    render(
+      <ModelPill
+        disabled={false}
+        model={modelState({
+          model: 'gemini-4-neon',
+          provider: 'gemini',
+          supportsFast: false,
+          supportsUltrafast: false
+        })}
+      />
+    )
+
+    expect(screen.getByText('Gemini 4 Neon')).toBeTruthy()
+    expect(screen.queryByText(/Ultrafast/)).toBeNull()
+  })
+
+  it('omits Ultrafast on a draft before model capabilities load', () => {
+    $activeSessionId.set(null)
+    setCurrentFastMode(true)
+    setCurrentServiceTier('ultrafast')
+
+    render(<ModelPill disabled={false} model={modelState({ model: 'gemini-4-neon', provider: 'gemini' })} />)
+
+    expect(screen.getByText('Gemini 4 Neon')).toBeTruthy()
+    expect(screen.queryByText(/Ultrafast/)).toBeNull()
+  })
+
+  it('shows Ultrafast when both fastMode and ultrafast support are true', () => {
+    $activeSessionId.set('live-codex')
+    setCurrentFastMode(true)
+    setCurrentServiceTier('ultrafast')
+
+    render(
+      <ModelPill
+        disabled={false}
+        model={modelState({
+          model: 'openai/gpt-6.1-sol',
+          provider: 'openai-codex',
+          supportsFast: true,
+          supportsUltrafast: true
+        })}
+      />
+    )
+
+    expect(screen.getByText('GPT-6.1-sol · Ultrafast')).toBeTruthy()
   })
 })

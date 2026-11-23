@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -76,7 +77,8 @@ def test_only_exact_editable_package_sources_prefer_a_twin(tmp_path, twins, stag
     elif reference == "both":
         text += _seed(first)
     root = tmp_path / "generated"
-    _generate_pyproject(inputs if staged else list(inputs), root, source=core, seed_text=text)
+    _generate_pyproject(inputs if staged else list(inputs), root, source=core,
+                       python=Path(sys.executable), seed_text=text)
     chosen = second if reference == "exact" else first
     assert _members(root) == [f"plugin-sources/{_member_key(chosen)}"]
     assert not (root / "plugin-sources" / _member_key(third)).exists()
@@ -94,7 +96,8 @@ def test_seed_preference_never_shadows_different_inputs(tmp_path, twins, differe
             with (source / "pyproject.toml").open("a") as f:
                 f.write('[tool.uv.sources]\nlocal-dep={path="../local-dep"}\n')
     root = tmp_path / "generated"
-    _generate_pyproject(inputs, root, source=core, seed_text=_seed(second))
+    _generate_pyproject(inputs, root, source=core, python=Path(sys.executable),
+                        seed_text=_seed(second))
     assert set(_members(root)) == {f"plugin-sources/{_member_key(identity)}" for identity in inputs}
 
 
@@ -113,7 +116,9 @@ def test_real_offline_lock_keeps_seeded_editable_through_profile_changes(tmp_pat
                MEMBER_METADATA_LOG=str(tmp_path / "metadata.log"))
 
     class LockOnlyEnvironment:
-        def sync(self, root, *, extras, frozen):
+        python = Path(sys.executable)
+
+        def sync(self, root, *, extras, frozen, upgrade=()):
             # Exercise generation -> seed copying -> real uv metadata resolution,
             # without installing anything or creating a managed environment.
             result = subprocess.run(

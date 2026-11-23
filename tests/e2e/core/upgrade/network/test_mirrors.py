@@ -7,11 +7,11 @@ registry.npmjs.org are unreachable. Every command runs in a private network name
 is a plain-HTTP server bridged onto the namespace's loopback (what users configure), the proxy
 is the only other egress and refuses (and logs) every public index. The mirror holds a small set
 pre-fetched at fixture time and verified against the pins: the PM runtime's locked wheels
-(``pm/uv.lock``) and the npm tarball PM provisions.
+(``pm/uv.lock``) and the npm-hosted tarballs PM provisions (npm, pnpm).
 
 Classes: an update that ships a PM runtime change restages it with ``uv sync --locked`` against
 the committed lock while pip's mirror is bridged into uv (#124418, #123943, #122112), and PM's
-npm-hosted tool downloads (#123132: hardcoded registry.npmjs.org).
+npm-hosted tool downloads (#123132: the configured npm registry serves the pinned tarball).
 """
 
 from __future__ import annotations
@@ -47,6 +47,7 @@ def _public_index_hits(edge: S.Edge) -> list[str]:
     return [str(h) for h in edge.proxy.hits if h.host in S.PUBLIC_INDEXES]
 
 
+@pytest.mark.allow_network  # S.prefetch seeds the mirror with the pinned wheels from PyPI
 def test_pip_mirror_update_restages_pm_runtime_through_the_mirror(inst):
     """The new upstream commit changes the PM runtime's inputs (``pm/pyproject.toml``), so the
     update must restage that runtime from ``pm/uv.lock``. pip.conf names the mirror; the public
@@ -70,17 +71,13 @@ def test_pip_mirror_update_restages_pm_runtime_through_the_mirror(inst):
         edge.close()
         pip_conf.unlink()
     public = _public_index_hits(edge)
-    with known_failure(
-        r"needs to be updated, but `--locked` was provided",
-        "gated on #124418: with a pip index mirror bridged into uv, `uv sync --locked` rejects the "
-        "committed pm/uv.lock (registry URL mismatch) and the update fails restaging the PM runtime",
-    ):
-        assert r.rc == 0 and inst.head() == new, "update with a pip mirror configured failed\n" + r.report(inst)
+    assert r.rc == 0 and inst.head() == new, "update with a pip mirror configured failed\n" + r.report(inst)
     after = inst.state()
     assert after["pm_runtime"] != before["pm_runtime"], "the PM runtime was not restaged for its new inputs\n" + r.report(inst)
     assert not public, f"a public index was contacted despite the mirror: {public}\n" + r.report(inst)
 
 
+@pytest.mark.allow_network  # S.prefetch seeds the mirror with the pinned npm tarball
 def test_npm_registry_mirror_serves_pm_npm_download(inst):
     """``~/.npmrc`` names the mirror; the npm tool's store entry is missing, so
     `hermes pm install npm` has to fetch its pinned tarball: from the mirror, never from
@@ -105,16 +102,47 @@ def test_npm_registry_mirror_serves_pm_npm_download(inst):
             finally:
                 edge.close()
             public = _public_index_hits(edge)
-            with known_failure(
-                r"reached the public registry \['refused registry\.npmjs\.org",
-                "gated on #123132: PM downloads npm-hosted tools from a hardcoded registry.npmjs.org "
-                "URL and ignores the configured npm registry",
-            ):
-                assert not public and r.rc == 0, (
-                    f"npm provisioning with a registry mirror failed or reached the public registry {public}\n"
-                    + r.report(inst))
+            assert not public and r.rc == 0, (
+                f"npm provisioning with a registry mirror failed or reached the public registry {public}\n"
+                + r.report(inst))
             assert (inst.sb.hermes_home / "tools" / tool["entry"]).is_dir(), "npm was not re-provisioned\n" + r.report(inst)
             assert any(h.path.endswith(tarball) and h.status == 200 for h in mirror.hits), (
                 "the tarball was not served by the mirror\n" + r.report(inst))
+    finally:
+        npmrc.unlink()
+
+
+@pytest.mark.allow_network  # S.prefetch seeds the mirror with the pinned pnpm tarballs
+def test_npm_registry_mirror_serves_both_pm_pnpm_downloads(inst):
+    """pnpm is two npm-hosted archives (the native executable, then the launcher whose dist/ it
+    needs): with ``~/.npmrc`` naming the mirror, `hermes pm install pnpm` fetches both from it,
+    never from registry.npmjs.org."""
+    from pm.lock import Lockfile
+    from pm.store import current_target
+
+    artifacts = Lockfile(inst.sb.checkout / "pm" / "lock.json").artifacts("pnpm", current_target())
+    assert len(artifacts) == 2, artifacts
+    routes: dict = {}
+    for artifact in artifacts:
+        path = artifact["url"].removeprefix("https://registry.npmjs.org")
+        blob = S.prefetch(artifact["url"], artifact["sha256"], inst.root / "npm-mirror" / path.rsplit("/", 1)[1])
+        routes[path] = blob.read_bytes()
+    mirror = N.HttpSite(N.static_app(routes))
+    npmrc = inst.sb.home / ".npmrc"
+    npmrc.write_text(f"registry={mirror.url}/\n", encoding="utf-8")
+    try:
+        with S.tool_missing(inst, "pnpm") as tool:
+            edge = inst.edge(sites=[mirror])
+            try:
+                r = inst.hermes("pm", "install", "pnpm", edge=edge, timeout=600)
+            finally:
+                edge.close()
+            public = _public_index_hits(edge)
+            assert not public and r.rc == 0, (
+                f"pnpm provisioning with a registry mirror failed or reached the public registry {public}\n"
+                + r.report(inst))
+            assert (inst.sb.hermes_home / "tools" / tool["entry"]).is_dir(), "pnpm was not re-provisioned\n" + r.report(inst)
+            served = {h.path.split("?", 1)[0] for h in mirror.hits if h.status == 200}
+            assert set(routes) <= served, f"the mirror served {served}, not both archives\n" + r.report(inst)
     finally:
         npmrc.unlink()

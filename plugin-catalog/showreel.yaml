@@ -1,0 +1,29 @@
+# Catalog entry for Showreel. Pin matches Duffey234/hermes-showreel main.
+# sha a8f404a0481408af8f56b514e47905dfd3565fa7 (2026-11-04).
+name: showreel
+title: Showreel
+repo: https://github.com/Duffey234/hermes-showreel
+sha: "a8f404a0481408af8f56b514e47905dfd3565fa7"
+version: "0.1.0"
+description: "Turn any Hermes session into a demo video under 90 seconds. Six observer hooks record what the session actually did (the ask, terminal commands and output, file edits, screenshots, token usage), scrubbed twice for secrets; a deterministic storyboard keeps a failing test and its fix together and fits a hard 89 s budget; Pillow and your own ffmpeg render a 1080p MP4 (16:9, 9:16 or 1:1) with burned-in captions, an .srt and a poster. Desktop half: a Showreel page with a moment editor (drop beats, edit captions) and inline player, a REC chip, and a player card for showreel_render results. Narration is off by default; optional free offline voice (espeak-ng or piper on PATH), Hermes text_to_speech, or the user's own ElevenLabs key only when explicitly chosen, with `hermes showreel plan` showing the exact text and character count first. Disclosure — records every session by default (capture on): the user's prompts, terminal commands and output, file edits, token usage and any image file whose path appears in tool output, scrubbed for secret patterns (best effort; screenshot and image pixels are not scrubbed) into its plugin-data SQLite DB; old recordings are pruned to the newest keep_sessions (30) only when a video is rendered; runs ffmpeg/ffprobe (and espeak-ng or piper with local narration) as subprocesses with fixed argument lists; writes renders to its plugin-data renders folder or the user's output_dir; no network unless narration is set to elevenlabs (HTTPS to api.elevenlabs.io with the caption text, using the user's ELEVENLABS_API_KEY) or hermes (the TTS the user configured); no telemetry, no background processes, no self-updates."
+maintainer: Duffey234
+tier: community
+category: tools
+docs_url: https://github.com/Duffey234/hermes-showreel#readme
+requires_hermes: ">=0.22.7"
+readme: true
+platforms: []
+known_issues:
+  - "Needs ffmpeg on PATH (not bundled); `hermes showreel status` reports what it found."
+capabilities:
+  provides_tools:
+    - showreel_render
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - post_tool_call
+    - post_api_request
+    - post_llm_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

@@ -1,6 +1,8 @@
 """Workspace folding must preserve distinct resolved dependency inputs (PR #125272)."""
 
+import sys
 import tomllib
+from pathlib import Path
 
 from pm.workspace import _generate_pyproject
 
@@ -30,7 +32,7 @@ def test_identical_plugin_text_with_distinct_relative_dependencies_is_not_folded
         dependency_paths.add(dependency.resolve().as_posix())
 
     root = tmp_path / "generated"
-    _generate_pyproject(plugins, root, source=core)
+    _generate_pyproject(plugins, root, source=core, python=Path(sys.executable))
     document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     retained_paths = set()
     for member in document["tool"]["uv"]["workspace"]["members"]:

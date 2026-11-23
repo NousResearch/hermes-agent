@@ -1,3 +1,5 @@
+import { keybindActionAllowedInEditableTarget } from './actions'
+
 // Keybind combo normalization + display.
 //
 // A combo is a canonical lowercase string like "mod+k", "mod+shift+]", "shift+x",
@@ -137,6 +139,14 @@ export function comboFromEvent(event: KeyboardEvent): string | null {
     return null
   }
 
+  // AltGr typing a character. Windows reports it as Ctrl+Alt; Linux can
+  // report Alt with AltGraph but no Ctrl, which must not read as a plain
+  // Alt chord (the browser-tab defaults are Alt+letter off macOS). Firefox on
+  // macOS reports every Option press as AltGraph, so Option chords stay chords.
+  if (!IS_MAC && event.altKey && !event.ctrlKey && !event.metaKey && event.getModifierState?.('AltGraph')) {
+    return null
+  }
+
   const base = baseKeyFromEventKey(event.key, event.shiftKey) ?? baseKeyFromCode(event.code)
 
   if (!base) {
@@ -229,6 +239,11 @@ export function comboTokens(combo: string): string[] {
   const parts = combo.split('+')
   const base = parts.pop() ?? ''
 
+  // Canonical order keeps `mod` first; macOS writes Control before Command (⌃⌘N).
+  if (IS_MAC && parts[0] === 'mod' && parts[1] === 'ctrl') {
+    parts.splice(0, 2, 'ctrl', 'mod')
+  }
+
   return [...parts.map(formatModifierToken), labelForBase(base)]
 }
 
@@ -310,6 +325,14 @@ export function actionAllowedInInput(actionId: string, combo: string): boolean {
   }
 
   if (/^(?:mod|ctrl)(?:\+|$)/.test(combo)) {
+    return true
+  }
+
+  // An action that opts in (reasoning up/down) fires from an editable target
+  // on any modified combo — including Alt/Numpad chords without a primary
+  // modifier (#71627). Bare/shift-only combos never qualify, so typing is
+  // never hijacked.
+  if (keybindActionAllowedInEditableTarget(actionId, combo)) {
     return true
   }
 

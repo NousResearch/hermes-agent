@@ -6,12 +6,15 @@ the code and PM state (checkout, tool store, ``installs/``) readable but not wri
 who runs Hermes, while their own data under HERMES_HOME stays writable. On such a tree:
 
 * a turn must work: deciding that an install is current is a read, and nothing on the launch
-  path may need write access to the install (gated on #124635 while every launch opens PM
-  lock files for writing);
+  path may need write access to the install, or the launch fails once saying the install is not
+  writable by this user, never pointing at a remedy that needs the same access;
 * ``hermes update`` must exit non-zero with a message that names the permission problem, never
   report success, never crash with a traceback, and leave the install on its old commit;
 * once the tree is writable again, the same ``hermes update`` succeeds: the refused attempt left
-  nothing behind that blocks the next one.
+  nothing behind that blocks the next one;
+* the sandbox shape (OpenShell/Landlock, rootless Podman, systemd ``ReadOnlyPaths=``) runs a turn:
+  the dependency generations and the rest of the install read-only, write access granted only to
+  ``installs/<key>/leases/`` and ``installs/<key>/locks/``, which never move between builds.
 
 One real install through HEAD's ``scripts/install.sh``; upstream then publishes a release. The
 read-only state is real file modes (``chmod -R a-w``), which is exactly what a different uid
@@ -23,10 +26,10 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.hosts import _hosts as X
@@ -48,6 +51,12 @@ ACTIONABLE = re.compile(r"(?i)permission denied|read-only|not writable|no write 
 def _chmod_code(sb: I.Sandbox, *, writable: bool) -> None:
     for name in CODE_DIRS:
         subprocess.run(["chmod", "-R", "u+w" if writable else "a-w", str(sb.hermes_home / name)], check=True)
+
+
+def _sandbox_writable(sb: I.Sandbox) -> list[Path]:
+    """What a sandbox policy grants: each committed install's ``leases/`` and ``locks/``."""
+    states = [s for s in (sb.hermes_home / "installs").iterdir() if (s / "facts.json").is_file()]
+    return [state / name for state in states for name in ("leases", "locks")]
 
 
 @pytest.fixture(scope="module")
@@ -76,7 +85,18 @@ def world(tmp_path_factory, provider):
                 out["ro_turn_requests"] = len(provider.main_requests()) - n
             finally:
                 _chmod_code(sb, writable=True)
-            # Only the checkout read-only: the launch path works (#124635 needs installs/ too), so
+            out["sandbox_writable"] = _sandbox_writable(sb)
+            n = len(provider.main_requests())
+            _chmod_code(sb, writable=False)
+            try:
+                for path in out["sandbox_writable"]:
+                    if path.is_dir():
+                        subprocess.run(["chmod", "-R", "u+w", str(path)], check=True)
+                out["sandbox_turn"] = sb.run([sb.hermes, "-z", "turn with only leases and locks writable"], timeout=900)
+                out["sandbox_turn_requests"] = len(provider.main_requests()) - n
+            finally:
+                _chmod_code(sb, writable=True)
+            # Only the checkout read-only: the launch path works (a read-only installs/ refuses it), so
             # this reaches `hermes update`'s own handling of a tree it cannot write.
             subprocess.run(["chmod", "-R", "a-w", str(sb.checkout)], check=True)
             try:
@@ -96,19 +116,31 @@ def test_read_only_install_tree_still_runs_a_turn(world, provider):
     cp = world["ro_turn"]
     err = cp.stdout + cp.stderr
     assert I.TRACEBACK not in err, "a turn crashed on a read-only install tree:\n" + I.describe(cp)
-    with known_failure(r"read-only install tree: the turn failed .*Permission denied: .*/installs/.*\.lock",
-                       "gated on #124635: every launch opens PM lock files under installs/ for writing, so a "
-                       "uid without write access to the install cannot start Hermes"):
-        # Either it works, or it says the install is not writable by this user without sending them
-        # to a remedy that needs the same write access (`hermes pm repair`, "finish the update").
-        if cp.returncode != 0:
-            misleading = re.findall(r"run `hermes (?:pm repair|update)`[^\n]*", err)
-            assert ACTIONABLE.search(err) and not misleading, (
-                f"read-only install tree: the turn failed (rc={cp.returncode}) and pointed at remedies that need the "
-                f"same write access {misleading}: {cp.stderr.strip()[-800:].replace(chr(10), ' | ')}\n" + I.describe(cp))
+    # Either it works, or it says the install is not writable by this user without sending them
+    # to a remedy that needs the same write access (`hermes pm repair`, "finish the update").
+    if cp.returncode != 0:
+        misleading = re.findall(r"run `hermes (?:pm repair|update)`[^\n]*", err)
+        assert ACTIONABLE.search(err) and not misleading, (
+            f"read-only install tree: the turn failed (rc={cp.returncode}) and pointed at remedies that need the "
+            f"same write access {misleading}: {cp.stderr.strip()[-800:].replace(chr(10), ' | ')}\n" + I.describe(cp))
     if cp.returncode == 0:
         assert provider.default_text in cp.stdout, "the reply never reached stdout:\n" + I.describe(cp)
         assert world["ro_turn_requests"] == 1, f"the turn reached the provider {world['ro_turn_requests']} times (want 1)"
+
+
+def test_turn_runs_with_only_leases_and_locks_writable(world, provider):
+    assert world["install"].returncode == 0, "install.sh failed:\n" + I.describe(world["install"])
+    writable = world["sandbox_writable"]
+    assert writable, "no committed install state under installs/"
+    missing = [str(path) for path in writable if not path.is_dir()]
+    cp = world["sandbox_turn"]
+    assert cp.returncode == 0 and I.TRACEBACK not in cp.stdout + cp.stderr, (
+        f"the turn failed with only installs/<key>/leases/ and locks/ writable (missing: {missing}):\n"
+        + I.describe(cp))
+    assert provider.default_text in cp.stdout, "the reply never reached stdout:\n" + I.describe(cp)
+    assert world["sandbox_turn_requests"] == 1, (
+        f"the turn reached the provider {world['sandbox_turn_requests']} times (want 1)")
+    assert not missing, f"a launch on a writable tree left no directory for a sandbox policy to grant: {missing}"
 
 
 def test_update_on_a_read_only_tree_refuses_with_a_reason_and_recovers(world, provider):

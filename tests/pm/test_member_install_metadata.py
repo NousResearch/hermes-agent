@@ -1,6 +1,8 @@
 """Install-local provenance and tool caches do not distinguish buildable twins."""
 
+import sys
 import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -34,7 +36,8 @@ def test_install_metadata_only_affects_snapshot_not_folding(tmp_path, staged, no
     first, second = inputs
     assert members_stamp({first: inputs[first]}) != members_stamp({first: inputs[second]})
     root = tmp_path / "workspace"
-    _generate_pyproject(inputs if staged else list(inputs), root, source=core)
+    _generate_pyproject(inputs if staged else list(inputs), root, source=core,
+                        python=Path(sys.executable))
     members = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["uv"]["workspace"]["members"]
     assert members == [f"plugin-sources/{_member_key(first)}"]
     # Equality ignores install-local data, but copying and generation stamps do not.
@@ -42,5 +45,6 @@ def test_install_metadata_only_affects_snapshot_not_folding(tmp_path, staged, no
 
     (inputs[second] / "plugin.py").write_text("CHANGED = True\n")
     diverged = tmp_path / "diverged"
-    _generate_pyproject(inputs if staged else list(inputs), diverged, source=core)
+    _generate_pyproject(inputs if staged else list(inputs), diverged, source=core,
+                        python=Path(sys.executable))
     assert len(tomllib.loads((diverged / "pyproject.toml").read_text())["tool"]["uv"]["workspace"]["members"]) == 2

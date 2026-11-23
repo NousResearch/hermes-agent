@@ -197,6 +197,75 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('`items[0]`')
   })
 
+  it('keeps citation markers anchored by a numbered source list', () => {
+    const input = [
+      'Ice floats because it is less dense than liquid water.[1][2]',
+      '',
+      '## Sources',
+      '',
+      '[1] https://example.com/a',
+      '[2] https://example.com/b'
+    ].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('water.[1][2]')
+    expect(output).toMatch(/\[1\][^\n]*example\.com\/a/)
+    expect(output).toMatch(/\[2\][^\n]*example\.com\/b/)
+  })
+
+  it('strips a citation marker whose number is absent from the source list', () => {
+    const input = 'A claim[1] and another[7].\n\n## Sources\n\n[1] https://example.com/a'
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('claim[1]')
+    expect(output).not.toContain('another[7]')
+  })
+
+  it('does not anchor a citation marker on source-list-like prose without a Sources header', () => {
+    const input = 'Claim.[7]\n\n[7] todo'
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).not.toContain('Claim.[7]')
+  })
+
+  it('does not anchor a citation marker on a source entry inside fenced code', () => {
+    const input = 'Claim.[7]\n\n```\n[7] https://example.com/a\n```'
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).not.toContain('Claim.[7]')
+  })
+
+  it('anchors citation markers under a plain Sources: header too', () => {
+    const input = 'Claim.[7]\n\nSources:\n\n[7] https://example.com/a'
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('Claim.[7]')
+  })
+
+  it('collects entries only after the last Sources header', () => {
+    const input = [
+      'Claim one[1] and claim two[7].',
+      '',
+      '## Sources',
+      '',
+      '[1] https://example.com/a',
+      '',
+      '## Sources',
+      '',
+      '[7] https://example.com/b'
+    ].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).not.toContain('one[1]')
+    expect(output).toContain('two[7]')
+  })
+
   it('demotes title/url blocks wrapped in malformed inline fences', () => {
     const input = [
       '**🚢 TOMORROW (Fajardo, crystal clear cays, pickup avail):**',
@@ -572,6 +641,18 @@ describe('preprocessMarkdown', () => {
 
     expect(output).toContain('$x^2 + y^2$')
     expect(output).not.toContain('\\$x^2')
+  })
+
+  it('keeps every real inline math span when CJK prose separates them (#123163)', () => {
+    expect(preprocessMarkdown('$E = mc^2$ 代入 $x$ 求解')).toBe('$E = mc^2$ 代入 $x$ 求解')
+    expect(preprocessMarkdown('$a$ 与 $b$ 之间的说明')).toBe('$a$ 与 $b$ 之间的说明')
+    expect(preprocessMarkdown('$a$ 甲 $b$ 乙 $c$ 丙')).toBe('$a$ 甲 $b$ 乙 $c$ 丙')
+    // Backslash commands are real math too; the closer must not be re-opened.
+    expect(preprocessMarkdown('根据 $\\alpha$ 和 $\\beta$ 计算')).toBe('根据 $\\alpha$ 和 $\\beta$ 计算')
+  })
+
+  it('still escapes a CJK variable inside one equation and keeps the next span (#103546)', () => {
+    expect(preprocessMarkdown('$x = 变量$ 与 $y$')).toBe('\\$x = 变量\\$ 与 $y$')
   })
 
   it('leaves real inline math adjacent to CJK untouched (#103546)', () => {

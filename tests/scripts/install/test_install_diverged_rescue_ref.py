@@ -17,8 +17,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.scripts.install._linux_host import linux_uname_path
-
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 INSTALL_PS1 = REPO_ROOT / "scripts" / "install.ps1"
@@ -67,6 +65,8 @@ def _assert_local_commit_parked(repo: Path, local_sha: str, output: str) -> None
     assert _git(repo, "log", "--format=%H", f"origin/main..{ref}").split() == [local_sha]
 
 
+# install.sh runs on Linux and macOS only; Windows installs through install.ps1, tested below.
+@pytest.mark.platforms("posix")
 @pytest.mark.live_system_guard_bypass
 @pytest.mark.skipif(
     shutil.which("git") is None or shutil.which("bash") is None,
@@ -77,8 +77,6 @@ def test_install_sh_repository_stage_parks_local_commits_before_reset(tmp_path: 
     env = os.environ | {
         "HERMES_HOME": str(tmp_path / "hermes-home"),
         "HERMES_INSTALL_DIR": str(managed),
-        # The reset under test is host-independent; only the platform gate reads the OS.
-        "PATH": linux_uname_path(tmp_path, os.environ["PATH"]),
     }
 
     result = subprocess.run(

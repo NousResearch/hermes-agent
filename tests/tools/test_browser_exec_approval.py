@@ -217,11 +217,48 @@ def test_a_later_duplicate_env_key_is_shown_as_ignored(gateway_user, harness, wo
     assert "LD_PRELOAD=/tmp/evil.so\n# ignored, an earlier line sets LD_PRELOAD: LD_PRELOAD=" in assessed[0]
 
 
-def test_the_harness_reads_neither_the_cwd_nor_a_workspace_bytecode_cache():
-    """Only shown code runs: no cwd module shadows an import, no planted __pycache__ .pyc replaces the source."""
-    env = B._base_subprocess_env()
-    assert env["PYTHONSAFEPATH"] == "1"
-    assert os.path.isdir(env["PYTHONPYCACHEPREFIX"])
+@pytest.mark.platforms("posix")
+def test_the_harness_runs_neither_cwd_modules_nor_a_planted_helpers_bytecode(tmp_path, monkeypatch):
+    """Only shown code runs: a json.py in Hermes's cwd does not shadow the stdlib, and a .pyc whose header matches
+    agent_helpers.py (so Python would trust it) does not run instead of that source. Real launcher, real env."""
+    import importlib._bootstrap_external as bootstrap
+    import importlib.util
+
+    from tools.browser_use_shot import ACTIVATE_NEVER, harness_command
+
+    cli = B._find_cli_unpatched()  # tests/tools/conftest.py hides the harness from every other test
+    if not cli:
+        pytest.skip("browser-harness is not installed in this environment")
+    cwd, ws = tmp_path / "cwd", tmp_path / "ws"
+    cwd.mkdir()
+    ws.mkdir()
+    (cwd / "json.py").write_text(f"open({str(cwd / 'SHADOW_RAN')!r}, 'w').close()\nraise ImportError\n")
+    helpers = ws / "agent_helpers.py"
+    helpers.write_text("x = 1\n")
+    planted = compile(f"open({str(ws / 'PYC_RAN')!r}, 'w').close()\n", str(helpers), "exec")
+    pyc = __import__("pathlib").Path(importlib.util.cache_from_source(str(helpers)))
+    pyc.parent.mkdir()
+    pyc.write_bytes(bootstrap._code_to_timestamp_pyc(planted, int(helpers.stat().st_mtime), helpers.stat().st_size))
+    env = {**B._base_subprocess_env(), "BH_AGENT_WORKSPACE": str(ws)}
+    monkeypatch.chdir(cwd)
+    B._run_cli_killing_process_group(harness_command(cli, ACTIVATE_NEVER), "print(x)", env, 60)
+    assert not (cwd / "SHADOW_RAN").exists() and not (ws / "PYC_RAN").exists()
+
+
+def test_a_daemon_reload_loads_no_workspace(monkeypatch):
+    """--reload runs no approved code, so the CLI's helpers import must not load any workspace's agent_helpers.py
+    or .env (without BH_AGENT_WORKSPACE it falls back to the harness's default workspace)."""
+    seen = []
+
+    def run(cmd, code, env, timeout):
+        workspace = env.get("BH_AGENT_WORKSPACE")
+        seen.append(bool(workspace) and os.path.isdir(workspace) and not os.listdir(workspace))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(B, "_find_cli", lambda: ["python", "-m", "browser_harness.run"])
+    monkeypatch.setattr(B, "_run_cli_killing_process_group", run)
+    B._reload_daemons([("", "", "", "", "default")])
+    assert seen == [True]
 
 
 def test_a_helpers_directory_refuses_the_call(gateway_user, harness, workspace):

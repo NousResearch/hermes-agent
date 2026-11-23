@@ -204,17 +204,10 @@ def _base_subprocess_env() -> dict:
     namespace_harness_dirs(env, hermes_home_key())
     # A daemon the CLI starts inherits this tag; _own_harness_daemon owns only one that names us.
     env.update(spawn_env("browser-harness-daemon"))
-    # Only approved code may run (#157913): no module from Hermes's working directory shadows an import, and no
-    # bytecode cache in the workspace (__pycache__/agent_helpers.*.pyc) runs instead of the shown source.
+    # Only approved code may run (#157913): no module from Hermes's working directory shadows an import. (The
+    # workspace agent_helpers.py is compiled from its shown source, never a cached .pyc: tools/browser_use_shot.py.)
     env["PYTHONSAFEPATH"] = "1"
-    env["PYTHONPYCACHEPREFIX"] = _private_pycache_dir()
     return env
-
-
-@functools.cache
-def _private_pycache_dir() -> str:
-    """This process's own bytecode cache for the harness, so a planted .pyc beside a source is never read."""
-    return tempfile.mkdtemp(prefix="hermes-harness-pycache-")
 
 
 def _read_browser_cfg() -> dict:
@@ -674,8 +667,10 @@ def _reload_daemons(daemons) -> None:  # each ``daemon_identity`` daemon, with i
         return
     env = _base_subprocess_env()
     for daemon in daemons:
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            _run_cli_killing_process_group([*cmd, "--reload"], "", daemon_env(env, daemon), 15)
+        # The CLI imports the helpers, which load a workspace's agent_helpers.py and .env: --reload runs no approved
+        # code, so it gets an empty workspace instead of the harness's default one (#157913).
+        with contextlib.suppress(OSError, subprocess.SubprocessError), tempfile.TemporaryDirectory() as empty:
+            _run_cli_killing_process_group([*cmd, "--reload"], "", {**daemon_env(env, daemon), "BH_AGENT_WORKSPACE": empty}, 15)
         with _owned_daemon_groups_lock:
             pgid = _owned_daemon_groups.pop(daemon, None)
         if pgid is not None:

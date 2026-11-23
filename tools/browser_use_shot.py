@@ -149,7 +149,14 @@ def install(helpers: Any, activate: str = ACTIVATE_NEVER) -> None:
 
 _HARNESS_MODULE_ARGS = ["-m", "browser_harness.run"]
 _LAUNCHER = """\
-import importlib.util, runpy
+import importlib.machinery, importlib.util, runpy
+# The workspace agent_helpers.py runs from its source as approved, never from a .pyc planted beside it (#157913).
+_get_code = importlib.machinery.SourceFileLoader.get_code
+def _helpers_from_source(self, fullname):
+    if fullname != 'browser_harness_agent_helpers':
+        return _get_code(self, fullname)
+    return compile(self.get_data(self.path), self.path, 'exec', dont_inherit=True)
+importlib.machinery.SourceFileLoader.get_code = _helpers_from_source
 spec = importlib.util.spec_from_file_location('hermes_browser_use_shot', {path!r})
 shot = importlib.util.module_from_spec(spec); spec.loader.exec_module(shot)
 import browser_harness.helpers

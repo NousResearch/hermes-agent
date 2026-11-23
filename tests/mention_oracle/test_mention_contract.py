@@ -11,17 +11,19 @@ Boundary rules (owner contract): only external edges are substituted — the loo
 server, the recording adapter, and the plugin's reader file. Expected values are independent
 literals (``CANARY_DM_SECRET``), never computed by the code under test.
 """
-import asyncio
 import json
 import os
-import sqlite3
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+# Imported at module top on purpose: run_agent's import-time early-recovery probe stats a
+# marker inside the repo .git dir, which must fire during collection — inside a test the
+# per-test home-io guard would flag that legitimate probe of the checkout's own .git.
+import gateway.run  # collection-time import is the point; the module is exercised via _make_runner
+import run_agent
 from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
@@ -137,21 +139,26 @@ async def test_telegram_group_message_without_mention_is_not_dispatched():
 async def test_group_turn_excludes_dm_memory_and_marks_scope(monkeypatch, tmp_path):
     """A DM canary in MEMORY.md/USER.md must appear 0 times in the model request of a
     group turn; the assembled context must carry an explicit chat_scope=group marker."""
-    import gateway.run as gateway_run
 
-    home = Path(os.environ["HERMES_HOME"])  # sandboxed per-test by conftest
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = Path(os.environ["HERMES_HOME"])  # per-test sandbox from conftest
     with FakeLLMServer([Text("pong from group")]) as srv:
-        write_hermes_home(home, srv.base_url)
+        # Real deployment inputs, not code substitutions: config.yaml keys and the
+        # production home-override are the user's own mechanisms — the real resolver
+        # (config.yaml -> resolve_runtime_with_fallback) must reach the fake server by itself.
+        write_hermes_home(home, srv.base_url, api_mode="chat_completions",
+                          model_api_key="sk-fake-e2e")
         mem_dir = home / "memories"
         mem_dir.mkdir(parents=True, exist_ok=True)
         (mem_dir / "MEMORY.md").write_text(f"- dm note {CANARY_DM_SECRET}\n", encoding="utf-8")
         (mem_dir / "USER.md").write_text(f"- dm profile {CANARY_DM_SECRET}\n", encoding="utf-8")
 
         plugins._reset_plugin_managers_for_tests()
-        monkeypatch.setattr(gateway_run, "_hermes_home", home)
-        monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {
-            "api_key": "sk-fake-e2e", "base_url": srv.base_url,
-            "provider": "custom", "api_mode": "chat_completions"})
+        # gateway.run froze its module-level _hermes_home at import (the session sandbox);
+        # conftest gives each test its own HERMES_HOME — bind it the same way production
+        # profile routing binds a home, so _load_gateway_config reads this test's config.yaml.
+        home_token = set_hermes_home_override(str(home))
         chat = _RecordingChat()
         runner = _make_runner(chat)
         runner.adapters[Platform.TELEGRAM] = chat
@@ -165,6 +172,7 @@ async def test_group_turn_excludes_dm_memory_and_marks_scope(monkeypatch, tmp_pa
                 message="hqecea_bot status?", context_prompt="", history=[],
                 source=source, session_id="sess-group-1", session_key=session_key)
         finally:
+            reset_hermes_home_override(home_token)
             plugins._reset_plugin_managers_for_tests()
 
     assert result["final_response"], "a valid mention must produce a non-empty reply"
@@ -180,20 +188,19 @@ async def test_group_turn_excludes_dm_memory_and_marks_scope(monkeypatch, tmp_pa
 async def test_dm_turn_still_sees_dm_memory(monkeypatch, tmp_path):
     """Control arm: the same seeded store in a DM turn keeps memory — the fix must narrow
     group scope only, never break DM recall."""
-    import gateway.run as gateway_run
 
-    home = Path(os.environ["HERMES_HOME"])  # sandboxed per-test by conftest
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = Path(os.environ["HERMES_HOME"])  # per-test sandbox from conftest
     with FakeLLMServer([Text("pong from dm")]) as srv:
-        write_hermes_home(home, srv.base_url)
+        write_hermes_home(home, srv.base_url, api_mode="chat_completions",
+                          model_api_key="sk-fake-e2e")
         mem_dir = home / "memories"
         mem_dir.mkdir(parents=True, exist_ok=True)
         (mem_dir / "MEMORY.md").write_text(f"- dm note {CANARY_DM_SECRET}\n", encoding="utf-8")
 
         plugins._reset_plugin_managers_for_tests()
-        monkeypatch.setattr(gateway_run, "_hermes_home", home)
-        monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {
-            "api_key": "sk-fake-e2e", "base_url": srv.base_url,
-            "provider": "custom", "api_mode": "chat_completions"})
+        home_token = set_hermes_home_override(str(home))
         chat = _RecordingChat()
         runner = _make_runner(chat)
         runner.adapters[Platform.TELEGRAM] = chat
@@ -207,6 +214,7 @@ async def test_dm_turn_still_sees_dm_memory(monkeypatch, tmp_path):
                 source=source, session_id="sess-dm-1",
                 session_key="agent:main:telegram:dm:dm-1")
         finally:
+            reset_hermes_home_override(home_token)
             plugins._reset_plugin_managers_for_tests()
 
     assert result["final_response"]

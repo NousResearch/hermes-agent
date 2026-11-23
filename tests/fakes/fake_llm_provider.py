@@ -422,13 +422,17 @@ def write_hermes_home(
     base_url: str,
     *,
     api_key: str = "sk-fake-e2e",
+    api_mode: str | None = None,
+    model_api_key: str | None = None,
     extra_config: str = "",
 ) -> Path:
     """Write a minimal config.yaml + .env routing the main model to ``base_url``.
 
     Auxiliary tasks use the same endpoint (``auto`` resolves to the main
     provider), retries are capped so fault tests finish quickly, and no real
-    provider credential is ever present.
+    provider credential is ever present. ``model_api_key`` persists the key in
+    ``model.api_key`` (the plain-custom credential source); ``api_key`` only
+    seeds ``OPENAI_API_KEY`` in the written ``.env``.
     """
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(
@@ -436,7 +440,9 @@ def write_hermes_home(
         "  provider: custom\n"
         f"  base_url: {base_url}\n"
         f"  default: {MODEL_ID}\n"
-        "  context_length: 128000\n"
+        + (f"  api_mode: {api_mode}\n" if api_mode else "")
+        + (f"  api_key: {model_api_key}\n" if model_api_key else "")
+        + "  context_length: 128000\n"
         "agent:\n"
         "  api_max_retries: 1\n"
         # Answered at the current offer version, so an interactive chat never stops on the

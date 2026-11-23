@@ -728,6 +728,163 @@ describe('a plugin re-routes one profile', () => {
     expect(beforeConnectionSwitch).toHaveBeenCalled()
     expect($gatewaySwitching.get()).toBe(false)
   })
+
+  // A window also reaches this computer's profiles through the explicit `local`
+  // connection (the gateways list's "This device"). Such a socket has a scope
+  // of its own, beside the profile's legacy one.
+  function localConnectionDesktop(world: { sandboxed: boolean }) {
+    const hostWork = {
+      authMode: 'token' as const,
+      baseUrl: 'http://127.0.0.1:9120',
+      connectionId: 'local',
+      profile: 'work',
+      token: 'h',
+      wsUrl: 'ws://127.0.0.1:9120/api/ws?token=h'
+    }
+
+    const launcherWork = { ...launcherConn, connectionId: 'local', profile: 'work' }
+
+    const route = () => (world.sandboxed ? launcherWork : hostWork)
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      ...fakeDesktop(),
+      getConnectionFor: vi.fn(async () => route()),
+      getGatewayWsUrlFor: vi.fn(async () => route().wsUrl)
+    }
+
+    return { hostWork, launcherWork }
+  }
+
+  const socketAt = (url: string) => FakeWebSocket.instances.filter(socket => socket.url === url).at(-1)
+
+  const connectionAt = async (baseUrl: string) => {
+    for (let i = 0; i < 100 && $connection.get()?.baseUrl !== baseUrl; i += 1) {
+      await pause(10)
+    }
+
+    await pause(20)
+  }
+
+  it('a profile on its own socket of the explicit `local` connection follows the plugin there and back', async () => {
+    const world = { sandboxed: false }
+    const { hostWork, launcherWork } = localConnectionDesktop(world)
+
+    render(<Harness />)
+    await flushAsync()
+    vi.useRealTimers()
+    await ensureGatewayAgent('local', 'work')
+    const primarySocket = FakeWebSocket.instances[0]
+    const hostSocket = socketAt(hostWork.wsUrl)
+    expect(hostSocket?.readyState).toBe(1)
+
+    world.sandboxed = true
+    act(() => connectionApplied?.({ profile: 'work' }))
+    await connectionAt(launcherWork.baseUrl)
+
+    const launcherSocket = socketAt(launcherWork.wsUrl)
+    expect(hostSocket?.readyState).toBe(FakeWebSocket.CLOSED)
+    expect(launcherSocket?.readyState).toBe(1)
+    expect($connection.get()?.baseUrl).toBe(launcherWork.baseUrl)
+    expect($activeGatewayProfile.get()).toBe('work')
+
+    world.sandboxed = false
+    act(() => connectionApplied?.({ profile: 'work' }))
+    await connectionAt(hostWork.baseUrl)
+    vi.useFakeTimers()
+
+    expect(launcherSocket?.readyState).toBe(FakeWebSocket.CLOSED)
+    expect(socketAt(hostWork.wsUrl)?.readyState).toBe(1)
+    expect($connection.get()?.baseUrl).toBe(hostWork.baseUrl)
+    expect($activeGatewayProfile.get()).toBe('work')
+    // The window's primary socket serves another profile and was never touched.
+    expect(primarySocket?.readyState).toBe(1)
+  })
+
+  it('a socket of the explicit `local` connection in the background is retired, and the next pick reads the new route', async () => {
+    const world = { sandboxed: false }
+    const { hostWork, launcherWork } = localConnectionDesktop(world)
+
+    render(<Harness />)
+    await flushAsync()
+    vi.useRealTimers()
+    await ensureGatewayAgent('local', 'work')
+    await ensureGatewayProfile('coder')
+    const hostSocket = socketAt(hostWork.wsUrl)
+    // The socket the pick of `coder` opened: another chat's.
+    const coderSocket = FakeWebSocket.instances.at(-1)
+    expect(hostSocket?.readyState).toBe(1)
+    expect(coderSocket).not.toBe(hostSocket)
+
+    world.sandboxed = true
+    act(() => connectionApplied?.({ profile: 'work' }))
+    await pause(60)
+
+    expect(hostSocket?.readyState).toBe(FakeWebSocket.CLOSED)
+    expect(coderSocket?.readyState).toBe(1)
+    expect($activeGatewayProfile.get()).toBe('coder')
+
+    await ensureGatewayAgent('local', 'work')
+    vi.useFakeTimers()
+
+    expect(socketAt(launcherWork.wsUrl)?.readyState).toBe(1)
+    expect($connection.get()?.baseUrl).toBe(launcherWork.baseUrl)
+  })
+
+  it('in a window opened on This device, a profile the plugin gives back stays shown on the one host socket', async () => {
+    const world = { sandboxed: true }
+
+    // The window's primary connection is the explicit `local` one, so a profile
+    // the host backend serves rides the primary socket (no second socket to it).
+    const hostDefault = {
+      authMode: 'token' as const,
+      baseUrl: 'http://127.0.0.1:9120',
+      connectionId: 'local',
+      profile: 'default',
+      registryScoped: true,
+      token: 'h',
+      wsUrl: 'ws://127.0.0.1:9120/api/ws?token=h'
+    }
+
+    const sharedWork = { ...hostDefault, profile: 'work', sharedPrimary: true }
+    const launcherWork = { ...launcherConn, connectionId: 'local', profile: 'work' }
+    const route = () => (world.sandboxed ? launcherWork : sharedWork)
+    const desktop = fakeDesktop()
+
+    desktop.getConnection.mockImplementation(async (profile?: null | string) => {
+      const key = (profile ?? '').trim()
+
+      return !key || key === 'default' ? hostDefault : route()
+    })
+    desktop.getGatewayWsUrl.mockImplementation(async (profile?: unknown) =>
+      profile === 'work' ? route().wsUrl : hostDefault.wsUrl
+    )
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      ...desktop,
+      getConnectionFor: vi.fn(async () => route()),
+      getGatewayWsUrlFor: vi.fn(async () => route().wsUrl)
+    }
+
+    render(<Harness />)
+    await flushAsync()
+    vi.useRealTimers()
+    await ensureGatewayAgent('local', 'work')
+    const launcherSocket = socketAt(launcherWork.wsUrl)
+    expect(launcherSocket?.readyState).toBe(1)
+    expect($activeGatewayProfile.get()).toBe('work')
+    const socketsBefore = FakeWebSocket.instances.length
+
+    world.sandboxed = false
+    act(() => connectionApplied?.({ profile: 'work' }))
+    await connectionAt(hostDefault.baseUrl)
+    vi.useFakeTimers()
+
+    expect(launcherSocket?.readyState).toBe(FakeWebSocket.CLOSED)
+    expect(isActivePrimary()).toBe(true)
+    expect($activeGatewayProfile.get()).toBe('work')
+    expect($connection.get()?.profile).toBe('work')
+    // The host backend already serves the window through its primary socket: no second socket to it.
+    expect(FakeWebSocket.instances).toHaveLength(socketsBefore)
+  })
 })
 
 // connection-applied { profile } names a profile of THIS computer. A registered
@@ -1077,5 +1234,46 @@ describe('a local profile moves while the window is on another gateway', () => {
     expect(seen.loading).toEqual([])
     expect(seen.profiles).toEqual([])
     expect(beforeConnectionSwitch).not.toHaveBeenCalled()
+  })
+
+  it("this computer's profile held through the explicit `local` connection is re-dialed, and that gateway's sockets stay", async () => {
+    const local = { sandboxed: false }
+
+    const thisDevice = () => ({ ...(local.sandboxed ? launcherWork : hostWork), connectionId: 'local' })
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      ...teamDesktop(teamDefault, local),
+      getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+        connectionId === 'local' ? thisDevice() : { ...teamDefault, profile }
+      ),
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId }: { connectionId: string }) =>
+        connectionId === 'local' ? thisDevice().wsUrl : teamWork.wsUrl
+      )
+    }
+    render(<Harness />)
+    await flushAsync()
+    vi.useRealTimers()
+    // That gateway's own `work` on a socket of that gateway, then this computer's `work`.
+    await ensureGatewayAgent('team-gw', 'work')
+    await ensureGatewayAgent('local', 'work')
+    vi.useFakeTimers()
+    const teamSockets = FakeWebSocket.instances.filter(socket => socket.url === teamWork.wsUrl)
+    const hostSocket = FakeWebSocket.instances.find(socket => socket.url === hostWork.wsUrl)
+    expect(teamSockets).toHaveLength(2)
+    expect(hostSocket?.readyState).toBe(1)
+    const socketsBefore = FakeWebSocket.instances.length
+    const seen = watchWindow()
+
+    local.sandboxed = true
+    await applied('work')
+    seen.stop()
+
+    expect(FakeWebSocket.instances.slice(socketsBefore).map(socket => socket.url)).toEqual([launcherWork.wsUrl])
+    expect(hostSocket?.readyState).toBe(FakeWebSocket.CLOSED)
+    expect(teamSockets.map(socket => socket.readyState)).toEqual([1, 1])
+    expect($connection.get()?.baseUrl).toBe(launcherWork.baseUrl)
+    expect($activeGatewayProfile.get()).toBe('work')
+    expect(seen.profiles.filter(profile => profile !== 'work')).toEqual([])
+    expect(seen.switching).toEqual([])
   })
 })

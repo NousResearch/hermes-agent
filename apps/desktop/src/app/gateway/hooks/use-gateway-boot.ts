@@ -293,6 +293,9 @@ async function redialMovedProfile(
 ): Promise<boolean> {
   try {
     if (!otherGateway && profile === normalizeProfileKey(primaryGatewayProfile())) {
+      // A socket the window dialed for the profile beside its primary one moved too.
+      await redialProfileGateway(profile)
+
       return await redialPrimary(profile)
     }
   } catch (error) {

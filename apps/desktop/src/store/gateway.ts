@@ -2159,9 +2159,12 @@ export function closeLegacySecondaryGateways(): void {
 
 /**
  * A plugin moved one profile's backend (host.setProfileBackend /
- * clearProfileBackend): retire that profile's legacy socket and, when it was
+ * clearProfileBackend): retire that profile's own sockets and, when one was
  * the active route, dial the new one at once. The window stays on the profile
  * (no hop to the primary, no session-list wipe), unlike a connection apply.
+ * The profile is this computer's and has two scopes in a window: the legacy
+ * one and that of the explicit `local` connection. A same-named profile of a
+ * gateway on another computer has a scope of its own and did not move.
  *
  * `shown`: the window shows this profile. It may ride the shared primary
  * socket: moved to a plugin's backend it must leave that socket now, or the
@@ -2169,33 +2172,44 @@ export function closeLegacySecondaryGateways(): void {
  */
 export async function redialProfileGateway(profile: string, { shown = false } = {}): Promise<void> {
   const key = normKey(profile)
-  const entry = g.secondaries.get(key)
+  // Whether the window shows the profile without a socket of its own.
+  let rides = shown
 
-  // What failed on the route the profile left says nothing about its new one.
-  g.reauthFailures.delete(key)
-  g.dialFailures.delete(key)
+  for (const scope of [registryBackendScopeKey('local', key), key]) {
+    const entry = g.secondaries.get(scope)
 
-  if (!entry || !isLegacySecondary(entry)) {
-    // Not dialed: its next dial reads the new route.
-    if (shown && key !== g.primaryProfile && g.activeKey === g.primaryProfile) {
-      await ensureGatewayForProfile(key, { keepShown: true })
+    // What failed on the route the profile left says nothing about its new one.
+    g.reauthFailures.delete(scope)
+    g.dialFailures.delete(scope)
+
+    if (!entry || (scope === key && !isLegacySecondary(entry))) {
+      continue
     }
 
-    return
+    const wasActive = scope === g.activeKey
+    reactivatingScopes().add(scope)
+    disposeSecondary(entry)
+    g.secondaries.delete(scope)
+
+    try {
+      if (wasActive && scope === key) {
+        rides = false
+        await ensureGatewayForProfile(key, { keepShown: shown })
+      } else if (wasActive) {
+        // Through its own door. A route that rides the window's primary
+        // socket lands on it, and the profile stays shown (below).
+        rides = true
+        await ensureGatewayForAgent('local', key)
+      }
+    } finally {
+      reactivatingScopes().delete(scope)
+      restoreActiveToPrimaryIfEvicted()
+    }
   }
 
-  const wasActive = key === g.activeKey
-  reactivatingScopes().add(key)
-  disposeSecondary(entry)
-  g.secondaries.delete(key)
-
-  try {
-    if (wasActive) {
-      await ensureGatewayForProfile(key, { keepShown: shown })
-    }
-  } finally {
-    reactivatingScopes().delete(key)
-    restoreActiveToPrimaryIfEvicted()
+  // Not on a socket of its own: its next dial reads the new route.
+  if (rides && key !== g.primaryProfile && g.activeKey === g.primaryProfile) {
+    await ensureGatewayForProfile(key, { keepShown: true })
   }
 }
 

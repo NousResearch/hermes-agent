@@ -319,6 +319,30 @@ Semantics are honest at-least-once:
 Disable with `gateway.delivery_ledger: false` in `config.yaml` (restores the
 old behavior: in-flight responses are lost on crash).
 
+### Plain failure reply (`gateway.failure_reply`)
+
+When the model provider fails, Hermes tells the chat in its own words: the provider, the attempt
+count, `/retry`, `/model`. That helps an operator and confuses a team that only talks to a bot (a
+front desk, a support room), and no prompt rule can reword it because the model never ran. Set one
+message to send instead:
+
+```yaml
+gateway:
+  failure_reply:
+    text: "Sorry, something went wrong on my side and I couldn't finish that. I'll get back to you here."
+    scope: non_dm   # non_dm (default) = every chat except a DM; all = DMs too
+```
+
+- Off by default: with `text` empty or unset nothing changes.
+- Replaces Hermes's own failure copy only: provider-error replies (rate limit, outage), failed-turn
+  notices, "no reply" explanations, and the last-resort error notice. A normal model reply is never
+  replaced, whatever words it contains.
+- While it is set, diagnostic status lines (retry chatter, fallback notices) are held back from the
+  chats in scope, so the plain message is the only thing they see.
+- The original text is logged at WARNING in `gateway.log` (secrets redacted); look there for the real cause.
+- CLI, TUI, desktop, `api_server` and webhooks keep the raw copy.
+- Per profile: set it in that profile's `config.yaml`.
+
 ### Session continuity
 
 Gateway conversations do not reset after inactivity or at a daily boundary. Use `/new`

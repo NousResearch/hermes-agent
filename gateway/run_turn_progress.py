@@ -1188,6 +1188,7 @@ class GatewayTurnProgressMixin:
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
         from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
+        from gateway.failure_reply import failure_reply_for
         from gateway.run_status_filter import status_chat_type
         from gateway.warning_notifications import is_warning_status, render_notification
         ctx = self._ctx
@@ -1206,6 +1207,12 @@ class GatewayTurnProgressMixin:
                 ctx.source.platform.value if ctx.source.platform else "unknown", event_type,
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
+            return
+        # Diagnostics (retry chatter, fallback notices) name providers and attempts: with
+        # gateway.failure_reply set, that chat sees only the plain failure message, never these.
+        if is_warning_status(event_type, message) and failure_reply_for(ctx.source) is not None:
+            logger.warning("Diagnostic status held back by gateway.failure_reply: %s",
+                           _redact_gateway_user_facing_secrets(str(message or ""))[:500])
             return
         # Session keys identify lanes; generations distinguish turns in each lane.
         status_key = event_type

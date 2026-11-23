@@ -20,6 +20,7 @@ from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.bot_peer_notices import automatic_notices_allowed
 from gateway.config import Platform
+from gateway.failure_reply import ReplacedFailureText, apply_failure_reply
 from storage_user_copy import error_type_name
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
@@ -115,6 +116,9 @@ class GatewayTurnPersistenceMixin:
             _sanitize_gateway_final_response, _should_clear_resume_pending_after_turn,
         )
         response = agent_result.get("final_response") or ""
+        # True once ``response`` is text Hermes wrote about a failure, not the model's answer: only that
+        # text may become the configured ``gateway.failure_reply`` (gateway/failure_reply.py).
+        failure_copy = bool(agent_result.get("failed")) or agent_result.get("gateway_failure_copy") is True
         # Hidden-reasoning-only retry exhaustion: the loop's sentinel text doubles as final_response
         # and would be delivered verbatim (peer agents would ingest it as a completed turn).
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
@@ -141,6 +145,7 @@ class GatewayTurnPersistenceMixin:
             )
             _intentional_silence = False
             response = _unexpected_silence_reply()
+            failure_copy = True
         elif _intentional_silence and not is_machinery_display_kind(_silence_kind):
             logger.debug(
                 "silence marker suppressed on an unaddressed or opted-in turn: platform=%s chat=%s",
@@ -159,6 +164,7 @@ class GatewayTurnPersistenceMixin:
 
             _model = str(agent_result.get("model") or "").strip() or t("gateway.errors.empty_response_model_label")
             response = t("gateway.shared.warn_passthrough", error=EMPTY_RESPONSE_EXPLANATION.format(model=_model))
+            failure_copy = True
         agent_messages = agent_result.get("messages", [])
         logger.info(
             "response ready: platform=%s chat=%s session=%s time=%.1fs api_calls=%d response=%d chars",
@@ -182,8 +188,13 @@ class GatewayTurnPersistenceMixin:
             # A bot peer gets the model's own words only: the runtime's retry hints and "not
             # processed" lines are new inbound messages for its turn loop (#137027).
             if automatic_notices_allowed(source):
+                _model_text = response
                 response = _normalize_empty_agent_response(agent_result, response, history_len=len(history))
-            response = _sanitize_gateway_final_response(source.platform, response)
+                # Text where the model gave none is Hermes's explanation of that (a failure notice).
+                failure_copy = failure_copy or (not _model_text and bool(response))
+            response = _sanitize_gateway_final_response(source.platform, response, source=source)
+            if failure_copy:
+                response = apply_failure_reply(source, response)
 
         # The agent thread already updated the contextvar; propagate to SessionEntry + _save() only
         # if the binding still points at the session this run was launched against.
@@ -329,6 +340,8 @@ class GatewayTurnPersistenceMixin:
 
     def _hmwa_add_failed_turn_notice(self, response, notice):
         """Make failed-turn delivery explicit without replacing the provider-specific guidance."""
+        if isinstance(response, ReplacedFailureText):
+            return response  # the configured plain message stands alone: the notice names /retry and /new
         response = str(response or "").strip()
         return f"{response}\n\n{notice}" if response else notice
 
@@ -732,7 +745,8 @@ class GatewayTurnPersistenceMixin:
         )
         if (delivered or agent_result.get("already_sent")) and not intentional_silence:
             self._note_bot_reply(source)
-        if isinstance(agent_result.get("usage_limit"), dict):
+        # A plain replacement never carries the plan-model button: that offer names models and /retry.
+        if isinstance(agent_result.get("usage_limit"), dict) and not isinstance(response, ReplacedFailureText):
             self._schedule_usage_limit_offer(event, agent_result["usage_limit"], session_key=session_key,
                                              generation=run_generation)
         return delivered
@@ -854,7 +868,7 @@ class GatewayTurnPersistenceMixin:
             # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
             from gateway.run import _context_overflow_reply
             from gateway.session_results import record_unexecuted_failure
-            return record_unexecuted_failure(_context_overflow_reply())
+            return apply_failure_reply(source, record_unexecuted_failure(_context_overflow_reply()))
         # Replay can coalesce inputs; only this input's durable marker establishes ownership.
         try:
             if prepared.message_text is not None and session_entry is not None:
@@ -902,13 +916,14 @@ class GatewayTurnPersistenceMixin:
         if getattr(e, "reason", None) == "launch_credentials_unavailable":
             # The session's own route key is gone or changed: /retry repeats it, /new is the way out.
             from agent.turn_failure_copy import launch_credentials_copy
-            return record_unexecuted_failure(launch_credentials_copy(e), 'launch_credentials_unavailable')
+            return apply_failure_reply(source, record_unexecuted_failure(
+                launch_credentials_copy(e), 'launch_credentials_unavailable'))
         # A local client (CLI, TUI, Desktop) is the operator at this host: its result carries the
         # real cause, so its details line is not the chat apology with the log pointer cut off.
         local_error = f"{error_type_name(e)}: {e}"[:500] if source.platform == Platform.LOCAL else None
-        return record_unexecuted_failure(self._hmwa_add_failed_turn_notice(
+        return apply_failure_reply(source, record_unexecuted_failure(self._hmwa_add_failed_turn_notice(
             t("gateway.errors.generic_failed_with_hint", hint=status_hint), PARTIAL_FAILED_TURN_NOTICE,
-        ), error=local_error)
+        ), error=local_error))
 
     def _hmwa_discard_stale_result(self, source, _quick_key, run_generation):
         """A newer run generation superseded this turn: drop its deferred post-delivery callback."""

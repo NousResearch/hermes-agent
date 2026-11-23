@@ -1,7 +1,7 @@
 """Credential-pool disk-boundary sanitization: strip raw secrets from *borrowed*
-pool entries before they reach ``auth.json``. Deliberately free of
-``hermes_cli.auth`` imports so the pool model and the auth-store write boundary
-share one policy without import cycles."""
+pool entries (and coerce priorities to int) before they reach ``auth.json``.
+Deliberately free of ``hermes_cli.auth`` imports so the pool model and the
+auth-store write boundary share one policy without import cycles."""
 
 from __future__ import annotations
 
@@ -114,3 +114,20 @@ def sanitize_borrowed_credential_payload(
     if fingerprint:
         sanitized["secret_fingerprint"] = fingerprint
     return sanitized
+
+
+def coerce_credential_priority(value: Any) -> int:
+    """Return an int priority for hand-written or older-build pool rows ("1", None, junk -> int)."""
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def persistable_pool_row(payload: Mapping[str, Any], provider_id: Any = None) -> dict[str, Any]:
+    """The row ``auth.json`` stores: borrowed secrets stripped and ``priority`` an int, so a
+    later sort never compares str with int."""
+    row = sanitize_borrowed_credential_payload(payload, provider_id)
+    if not isinstance(row.get("priority", 0), int):
+        row["priority"] = coerce_credential_priority(row.get("priority"))
+    return row

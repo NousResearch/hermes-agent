@@ -30,7 +30,7 @@ from tools.approval_pipe_launchers import (
 from tools.approval_grep_spans import _grep_safe_detection_variant, _quoted_grep_pattern_spans  # re-exported
 from tools.approval_hermes_store import (
     _HERMES_HOME_ROOT, _HERMES_STORE_FILE, _HERMES_STORE_PATH, _HERMES_STORE_ROOT, _HERMES_STORE_ROOT_WORD,
-    _SQLITE3_STORE_WRITE,
+    SqliteStoreWriteMatcher,
 )
 from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
 from tools.approval_sensitive_paths import (
@@ -230,6 +230,7 @@ _SHELL_CARRIER_NAMES = frozenset({"eval", "sh", "bash", "zsh", "ksh", "dash", "s
 
 _WMIC_SHADOW_DELETE_DESCRIPTION = "delete volume shadow copies (wmic)"
 _DOWNLOAD_THEN_RUN_DESCRIPTION = "execute a just-downloaded file"
+_SQLITE3_STORE_WRITE_DESCRIPTION = "modify Hermes session store via sqlite3"
 class _PipeRemoteToShellMatcher:
     """Linear stand-in for the pipe-to-shell regex: find the first curl/wget, then try a sink only at
     each later `|` / `>(` (a leading `.*` rescanned the tail from every fetch word: quadratic).
@@ -780,8 +781,11 @@ DANGEROUS_PATTERNS = [
     (rf'>[>|]?\s*["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
     # sqlite3 writing a Hermes store is keyed on the write verb, not on a missing WHERE (`where 1=1`
     # deletes the same rows), and any heredoc into a store prompts (its SQL sits past the newline).
-    # (_SQLITE3_STORE_WRITE spells out both orders of "names a store" and "writes"; see tools.approval_hermes_store.)
-    (_CMDPOS + 'sqlite3' + _SQLITE3_STORE_WRITE, "modify Hermes session store via sqlite3"),
+    # Not compiled: DANGEROUS_PATTERNS_COMPILED swaps in SqliteStoreWriteMatcher (each lookahead as its own search).
+    (_CMDPOS + rf'sqlite3\b(?=[^\n]*{_HERMES_STORE_FILE})(?=[^\n]*(?:\b(?:delete\s+from|drop\s+\w+'
+     r'|update\s+(?:or\s+\w+\s+)?\S+\s+(?:as\s+\S+\s+)?set|insert\s+(?:or\s+\w+\s+)?into|replace\s+into'
+     r'|alter\s+table|vacuum(?!\s+(?:\w+\s+)?into))\b|\.restore\b|(?<!<)<<(?!<)))',
+     _SQLITE3_STORE_WRITE_DESCRIPTION),
     # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
     # startup/credential files.
     (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})', "in-place edit of sensitive credential/SSH/shell-rc path"),
@@ -873,6 +877,7 @@ _CUSTOM_MATCHERS = {
     _WMIC_SHADOW_DELETE_DESCRIPTION: WmicShadowDeleteMatcher,
     _DEV_TCP_REDIRECT_DESCRIPTION: _DevSocketRedirectMatcher,
     "SQL DELETE without WHERE": _SqlDeleteWithoutWhereMatcher,
+    _SQLITE3_STORE_WRITE_DESCRIPTION: lambda: SqliteStoreWriteMatcher(_CMDPOS),
     _DOWNLOAD_THEN_RUN_DESCRIPTION: lambda: DownloadThenRunMatcher(_SHELL_NAMES_RE),
 }
 # Rules whose `{_GIT}` option run RE2 cannot compile: GitCommandMatcher walks the run, the rest of the rule stays a regex.

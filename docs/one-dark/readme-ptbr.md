@@ -46,4 +46,4 @@ cd .build/webapp-workspace/apps/desktop
 - Decisões arquiteturais (ADRs): [`.ai/adr/`](../../.ai/adr/)
 - Armadilhas e comportamentos conhecidos: [`.ai/pitfalls.md`](../../.ai/pitfalls.md)
 - Regras técnicas e limites de escopo: [`.ai/regras.md`](../../.ai/regras.md), [`.ai/teto.md`](../../.ai/teto.md)
-- Skills disponíveis para o agente: [`.agents/skills/README.md`](../../.agents/skills/README.md)
+- Skills específicas do projeto (Código/Infra, Design, Segurança/Performance): [`.agents/skills/README.md`](../../.agents/skills/README.md)

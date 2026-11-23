@@ -46,4 +46,4 @@ cd .build/webapp-workspace/apps/desktop
 - Architecture decisions: [`.ai/adr/`](../../.ai/adr/)
 - Known pitfalls & behaviors: [`.ai/pitfalls.md`](../../.ai/pitfalls.md)
 - Technical rules & boundaries: [`.ai/regras.md`](../../.ai/regras.md), [`.ai/teto.md`](../../.ai/teto.md)
-- Available agent skills: [`.agents/skills/README.md`](../../.agents/skills/README.md)
+- Project-specific skills (Code/Infra, Design, Security/Performance): [`.agents/skills/README.md`](../../.agents/skills/README.md)

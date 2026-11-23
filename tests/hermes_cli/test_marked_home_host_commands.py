@@ -226,6 +226,28 @@ def test_a_marked_profiles_speech_command_is_not_run(home, tmp_path):
     assert tts_command_provider.run_command_provider(str(program), 30).returncode == 0 and ran.exists()
 
 
+def test_a_marked_profiles_password_manager_binary_is_not_run(home, tmp_path):
+    """``vault.bitwarden.binary_path`` and ``vault.onepassword.binary_path`` name a password manager's CLI in
+    the profile's own ``config.yaml``. ``vault.unlock`` (the Desktop and TUI Settings dialog) hands that
+    program the master password without building an agent."""
+    from agent.vault_backends import unlock
+    from agent.vault_backends.bitwarden import BitwardenLoginBackend
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    program, ran = _program(tmp_path, "manager", says="session-token")
+    _mark(home)
+    for backend in (BitwardenLoginBackend, OnePasswordLoginBackend):
+        with pytest.raises(RuntimeError, match="runs elsewhere"):
+            backend({"binary_path": str(program)}).unlock("master-password")
+    assert not ran.exists()
+    assert pre.clear_profile_run_elsewhere("ops", PLUGIN, root=home)
+    try:
+        BitwardenLoginBackend({"binary_path": str(program)}).unlock("master-password")
+    finally:
+        unlock.lock(None)
+    assert ran.exists()
+
+
 # -- `hermes secrets <source> <verb>` -----------------------------------------------------------------
 
 def _secrets_verb(*argv: str) -> argparse.Namespace:

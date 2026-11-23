@@ -261,6 +261,41 @@ def test_installed_openai_fallback_uses_primary_policy(configure):
         auxiliary.close()
 
 
+@pytest.mark.parametrize("provider,base_url", [
+    ("redirect-provider", "https://redirect.example/v1"),
+    ("gemini", "https://generativelanguage.googleapis.com/v1beta"),
+])
+@pytest.mark.parametrize("policy", [None, False, True])
+def test_fallback_replacement_preserves_provider_tls(configure, monkeypatch, provider, base_url, policy):
+    from agent.auxiliary_client import resolve_provider_client
+
+    entry = {"base_url": base_url, "api_key": "fixture-key", "ssl_verify": False,
+             "request_timeout_seconds": 123}
+    if policy is not None:
+        entry["follow_redirects"] = policy
+    configure({provider: entry})
+    auxiliary, model = resolve_provider_client(provider, model="fixture-model")
+    agent = _agent(provider, base_url)
+    seen = []
+    build = agent._build_keepalive_http_client
+
+    def build_transport(base_url, *, verify, follow_redirects):
+        seen.append(verify)
+        return build(base_url, verify=verify, follow_redirects=follow_redirects)
+
+    monkeypatch.setattr(agent, "_build_keepalive_http_client", build_transport)
+    try:
+        _swap_fallback_clients(agent, auxiliary, provider, model, base_url, agent.api_mode)
+        assert agent.client is not auxiliary
+        assert seen == [False]
+        assert agent._client_kwargs["ssl_verify"] is False
+        assert "http_client" not in agent._client_kwargs
+    finally:
+        if getattr(agent, "client", None) is not None:
+            agent.client.close()
+        auxiliary.close()
+
+
 @pytest.mark.parametrize("policy", [False, True])
 def test_resolved_fallback_replacement_preserves_query_on_request(configure, monkeypatch, policy):
     from agent.auxiliary_client import resolve_provider_client

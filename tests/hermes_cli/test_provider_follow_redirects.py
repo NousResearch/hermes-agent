@@ -198,6 +198,20 @@ def test_builtin_policy_does_not_follow_stale_requested_provider(configure):
     ) is False
 
 
+@pytest.mark.parametrize("policy", [False, True])
+@pytest.mark.parametrize("model", [None, "override"])
+def test_builtin_tuning_policy_wins_over_unrelated_same_url_entry(configure, policy, model):
+    configure({"providers": {
+        "anthropic": {"follow_redirects": policy,
+                      "models": {"override": {"follow_redirects": not policy}}},
+        "unused": {"base_url": "https://api.anthropic.com", "follow_redirects": not policy,
+                   "models": {"override": {"follow_redirects": policy}}},
+    }})
+    assert get_provider_follow_redirects(
+        "anthropic", model, base_url="https://api.anthropic.com", requested_provider="anthropic",
+    ) is (policy if model is None else not policy)
+
+
 @pytest.mark.parametrize("value", [True, False, "garbage"])
 def test_key_survives_normalization_without_warning_or_cache_mutation(configure, caplog, value):
     configure({"providers": {"durable-key": {

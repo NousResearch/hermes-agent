@@ -54,8 +54,8 @@ def get_provider_follow_redirects(
     """
     from hermes_cli.config import load_config_readonly
     from hermes_cli.config_providers import (
-        _coerce_ssl_verify, _normalize_custom_provider_entry, _normalize_provider_models, find_provider_entry,
-        providers_dict_to_custom_providers,
+        ENDPOINT_ADDRESS_FIELDS, _coerce_ssl_verify, _normalize_custom_provider_entry,
+        _normalize_provider_models, find_provider_entry, providers_dict_to_custom_providers,
     )
     from hermes_cli.providers import custom_provider_aliases
     from hermes_cli.route_identity import normalize_route_base_url
@@ -87,7 +87,10 @@ def get_provider_follow_redirects(
         provider_config = next((entry for key, entry in providers.items()
                                 if isinstance(entry, dict) and identity in custom_provider_aliases("", key)), None)
     active_route = route_normalize(base_url) if base_url else ""
-    if provider_config is not None and base_url:
+    # Built-in tuning-only blocks have no endpoint; their selected identity still owns the policy.
+    if provider_config is not None and base_url and any(
+        provider_config.get(field) for field in ENDPOINT_ADDRESS_FIELDS
+    ):
         normalized = _normalize_custom_provider_entry(provider_config, provider_key=identity)
         if normalized is None or not active_route or route_normalize(normalized["base_url"]) != active_route:
             provider_config = None

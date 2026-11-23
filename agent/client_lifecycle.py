@@ -124,6 +124,9 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
     if timeout is not None:
         agent._client_kwargs["timeout"] = timeout
     policy = resolve_primary_follow_redirects(agent, fb_base_url)
+    if timeout is not None or policy is not None:
+        from hermes_cli.config import apply_custom_provider_tls_to_client_kwargs
+        apply_custom_provider_tls_to_client_kwargs(agent._client_kwargs, fb_base_url)
     if policy is not None:
         # The generic replacement helper swallows failures; never leave an unguarded fallback installed.
         try:

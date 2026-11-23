@@ -9,6 +9,7 @@ pin the cost: no program holding the Unicode `\w` class is built for a run-time 
 """
 import itertools
 import re as std
+import time
 
 import hermes_re as hre
 from tests.hermes_re._support import same_everywhere, view
@@ -130,3 +131,25 @@ def test_build_reports_an_exact_program_over_the_budget_that_matching_would_meet
     finally:
         _engine.MAX_MEM = real
         hre.purge()
+
+
+def test_one_search_stays_linear_when_the_cheap_guard_is_refused_before_a_long_lookahead():
+    # Each candidate's neighbour passes the cheap class and fails the exact test, and the trailing
+    # lookahead reads to the end of the text: retrying one character further after each refusal
+    # made ONE search quadratic (about 15 s here at this size). Stdlib takes milliseconds.
+    n = 30_000
+    cases = [
+        (r"(?<=\w)a(?=.*z)", "\u2014a" * n + "z"),
+        (r"(?<!\w)ab(?=[^z]*z)", "\u00e9ab" * n + "z"),
+        (r"(?<=\d)a(?=(?:..)+$)", "\u2014a" * n),
+    ]
+    for source, subject in cases:
+        compiled, ref = hre.compile(source), std.compile(source)
+        began = time.monotonic()
+        found = compiled.search(subject)
+        spans = [m.span() for m in compiled.finditer(subject)]
+        replaced = compiled.sub("", subject)
+        elapsed = time.monotonic() - began
+        assert found is None and spans == [] and replaced == subject == ref.sub("", subject), source
+        assert ref.search(subject) is None
+        assert elapsed < 2.0, (source, elapsed)

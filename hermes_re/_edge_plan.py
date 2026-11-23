@@ -288,13 +288,19 @@ def _fixed(pattern: str, node) -> bool:
 def _simple(pattern: str, branches, ml: bool) -> bool:
     """Whether a match that begins at one place can end at one place only and always passes the
     same guards: ONE alternative of fixed width between its guards. For such a pattern a guard
-    that fails on a neighbour rules out every match beginning there (see ``_edge_run``)."""
+    that fails on a neighbour rules out every match beginning there (see ``_edge_run``).
+
+    The runner retries such a pattern one character further, and each attempt reads the text the
+    scan program consumes, the trailing lookahead included: its body must be of bounded width too,
+    or ``(?<=\\w)a(?=.*z)`` reads the rest of the text once per refused neighbour."""
     if len(branches) != 1:
         return False
     body = [node for node in branches[0] if node.kind != "flags"]
     if body and body[0].kind == "look":
         body = body[1:]
-    if body and (body[-1].kind == "look" or _is_dollar(body[-1], ml)):
+    if body and body[-1].kind == "look":
+        body = body[:-1] + [node for seq in body[-1].branches for node in seq]
+    elif body and _is_dollar(body[-1], ml):
         body = body[:-1]
     return all(_fixed(pattern, node) for node in body)
 

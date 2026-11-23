@@ -197,6 +197,20 @@ def test_a_marked_profiles_cron_script_and_inline_skill_shell_do_not_start(home,
     assert ok is False and "runs elsewhere" in output
 
 
+def test_a_marked_profiles_key_cmd_is_not_run(home, tmp_path):
+    from agent import command_token_source
+
+    program, ran = _program(tmp_path, "key_cmd", says="tok")
+    source = command_token_source.build_command_token_provider(str(program), "myprov")
+    _mark(home)
+    with pytest.raises(command_token_source.CommandTokenError, match="runs elsewhere"):
+        source()
+    assert command_token_source.materialize_probe_api_key(source) == ""
+    assert not ran.exists()
+    assert pre.clear_profile_run_elsewhere("ops", PLUGIN, root=home)
+    assert source() == "tok" and ran.exists()
+
+
 # -- `hermes secrets <source> <verb>` -----------------------------------------------------------------
 
 def _secrets_verb(*argv: str) -> argparse.Namespace:

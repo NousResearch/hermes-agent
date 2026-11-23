@@ -7,8 +7,9 @@ description: "How Hermes code writes regexes: hermes_re, the stdlib re API on Go
 # Regular Expressions
 
 Product code matches regular expressions with **`hermes_re`**, a first-party package that offers the
-stdlib `re` API on top of Google RE2. RE2 matches in time linear in the input, so no pattern, bundled or
-user-supplied, can hang a turn through backtracking.
+stdlib `re` API on top of Google RE2. One RE2 search takes time linear in the input, so no pattern, bundled
+or user-supplied, can hang a turn through backtracking (a scan for many matches with a lookahead edge guard
+is the one exception, below).
 
 ```python
 import hermes_re as re
@@ -36,7 +37,7 @@ another engine.
 |---|---|---|
 | Lookahead / lookbehind that is not an *edge guard* | `a(?=b)c`, `(?<=ab)c` | Match the context and capture what you need: `a(b)c`; or check the neighbour in Python after the match. |
 | Backreference | `(["'])x\1`, `(?P=name)` | One alternative per case: `"x"\|'x'`; or capture both and compare in Python. |
-| Possessive quantifier, atomic group | `a++`, `(?>a+)` | The plain quantifier: `a+`. RE2 cannot backtrack, so the possessive form buys nothing. |
+| Possessive quantifier, atomic group | `a++`, `(?>a+)` | No drop-in replacement: dropping the `+` or the `(?>` can change which strings match (`fullmatch(r"a++a", "aa")` and `fullmatch(r"(?>a+)a", "aa")` are `None`, `fullmatch(r"a+a", "aa")` matches). The plain form is equivalent only where nothing after the repeat can start with a character it consumes (`[^"]*+"` → `[^"]*"`); otherwise rewrite for the intended match. Either way, check the rewrite against the original on the inputs that matter. |
 | Conditional | `(a)?(?(1)b\|c)` | Two alternatives: `ab\|c`. |
 | Two capture groups in one repeat that can both match empty, one at the start and one at the end of an iteration | `(?:(?P<y>)b\|a(?P<x>))+` | Give one of them text to match, or move it out of the repeat: which one closed last (`lastindex`, `lastgroup`) cannot be told from RE2's spans. |
 | `VERBOSE`, `LOCALE`, `DEBUG`; inline `(?x)`, `(?a)`, `(?u)`, `(?L)` | `re.compile(p, re.X)` | Build the pattern from commented string pieces; pass `re.ASCII` as a flag. These raise `ValueError`. |
@@ -51,6 +52,12 @@ Syntax the running stdlib refuses raises `hermes_re.error` as well, even where R
 **Edge guards are supported.** One guard per edge of a top-level alternative: a one-character lookbehind
 at its start (`(?<!\w)`, `(?<=[.!])`), a lookahead at its end (`(?!\w)`, `(?=\s|$)`), and a tail `$`.
 That covers the usual "not part of a longer word" patterns unchanged.
+
+A lookahead guard is evaluated once per match, as in stdlib. With an unbounded body (`a(?=.*z)`) every
+match of `findall` / `finditer` / `sub` re-reads the rest of the line, so a scan for many matches is
+quadratic in both engines, and slower here: `findall(r"a(?=.*z)", "a" * 16000 + "z")` takes 0.03 s in
+stdlib and 0.75 s through the facade. Keep a lookahead's body short (`(?=\s|$)`), or test the condition once
+in Python.
 
 ### Bounded repeats of Unicode classes
 

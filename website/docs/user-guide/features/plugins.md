@@ -602,7 +602,7 @@ share control next to the reveal and settings actions. A package that came
 from the catalog copies its `catalog=<name>` link; a package cloned from a
 git URL copies its `repo=<url>` link — both open the dialogs above on any
 Hermes Desktop install. A folder copied in by hand has no origin to link,
-so its share control opens the catalog submission guide instead: publish the
+so its share control opens the catalog submission flow instead: publish the
 plugin, then share its catalog name.
 
 ### Plugin capabilities and consent

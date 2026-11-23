@@ -192,8 +192,11 @@ def _resolve_openrouter_runtime(
     cfg_api_mode = rp._parse_api_mode(model_cfg.get("api_mode"))
     # Explicit "custom" stays "custom" rather than relabeling to "openrouter".
     if requested_norm != "custom":
+        # Same gate as _resolve_from_pool: plain OpenRouter only, never a mirror, owned URL or explicit key.
+        pool = (rp.env_key_pool("openrouter", api_key, base_url) if not declared and is_openrouter_url
+                and rp._openrouter_should_use_pool(requested_provider, model_cfg, explicit_api_key, explicit_base_url) else None)
         return rp._runtime("openrouter", cfg_api_mode or rp._detect_api_mode_for_url(base_url) or "chat_completions", base_url,
-                           api_key, source=source)
+                           api_key, source=source, credential_pool=pool)
     # An explicit launch key is the operator's credential for this route and wins over the pool (R2-M1).
     if base_url and not rp.has_usable_secret(explicit_api_key):
         pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", cfg_api_mode, provider_name=None)

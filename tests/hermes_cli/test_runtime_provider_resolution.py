@@ -712,7 +712,7 @@ def test_openrouter_env_file_key_survives_exhausted_pool(monkeypatch):
     monkeypatch.setattr(rp, "_get_model_config", dict)
     monkeypatch.setattr(
         rp, "load_pool",
-        lambda _provider: SimpleNamespace(has_credentials=lambda: True, select=lambda **_kw: None),
+        lambda _provider: SimpleNamespace(has_credentials=lambda: True, select=lambda **_kw: None, entries=list),
     )
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
@@ -741,7 +741,7 @@ def test_openrouter_raw_op_ref_in_dotenv_loses_to_resolved_env(monkeypatch):
     monkeypatch.setattr(rp, "_get_model_config", dict)
     monkeypatch.setattr(
         rp, "load_pool",
-        lambda _provider: SimpleNamespace(has_credentials=lambda: True, select=lambda **_kw: None),
+        lambda _provider: SimpleNamespace(has_credentials=lambda: True, select=lambda **_kw: None, entries=list),
     )
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
@@ -767,7 +767,7 @@ def test_openai_env_file_key_used_as_fallback_without_openrouter_key(monkeypatch
     monkeypatch.setattr(rp, "_get_model_config", dict)
     monkeypatch.setattr(
         rp, "load_pool",
-        lambda _provider: SimpleNamespace(has_credentials=lambda: True, select=lambda **_kw: None),
+        lambda _provider: SimpleNamespace(has_credentials=lambda: True, select=lambda **_kw: None, entries=list),
     )
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)

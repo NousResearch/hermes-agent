@@ -3938,7 +3938,12 @@ export const ruOverrides = {
       signIn: 'Войти',
       notNow: 'Не сейчас'
     }
-  }
+  },
+  inAppOffer: {
+    dismiss: 'Может быть, позже',
+    describedBy: 'Сообщение от команды Nous.',
+    claimBy: (deadline: string) => `Получите до ${deadline}`
+  },
 } satisfies TranslationOverrides
 
 export const ru = defineLocale(ruOverrides)

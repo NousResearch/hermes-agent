@@ -4473,6 +4473,11 @@ export const deOverrides = {
       retrying: 'Wird erneut versucht…'
     }
   },
+  inAppOffer: {
+    dismiss: 'Vielleicht später',
+    describedBy: 'Eine Nachricht vom Nous-Team.',
+    claimBy: (deadline: string) => `Einlösbar bis ${deadline}`
+  },
   modelPicker: {
     title: 'Modell wechseln',
     current: 'aktuell:',

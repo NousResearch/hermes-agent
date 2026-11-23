@@ -4032,6 +4032,11 @@ export const en: Translations = {
       retrying: 'Trying again…'
     }
   },
+  inAppOffer: {
+    dismiss: 'Maybe later',
+    describedBy: 'A message from the Nous team.',
+    claimBy: (deadline: string) => `Claim by ${deadline}`
+  },
 
   modelPicker: {
     title: 'Switch model',

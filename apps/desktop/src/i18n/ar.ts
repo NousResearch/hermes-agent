@@ -155,7 +155,12 @@ export const arOverrides = {
       signIn: 'تسجيل الدخول',
       notNow: 'ليس الآن'
     }
-  }
+  },
+  inAppOffer: {
+    dismiss: 'لاحقًا',
+    describedBy: 'رسالة من فريق Nous.',
+    claimBy: (deadline: string) => `اطلبه قبل ${deadline}`
+  },
 } satisfies TranslationOverrides
 
 export const ar = defineLocale(arOverrides)

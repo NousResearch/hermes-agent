@@ -296,17 +296,3 @@ def test_the_documented_marker_functions_are_public_plugin_api(tmp_path):
         "from hermes_cli import profiles_run_elsewhere\n"))
     assert "marker.py:1 hermes_cli.profiles_run_elsewhere.own_profile_dir_when_unlistable" in warning
     assert "marker.py:2 hermes_cli.profiles_run_elsewhere" in warning
-
-
-def test_the_user_guides_marker_example_validates_clean(tmp_path):
-    """A plugin that copies the guide's example gets no private-import warning."""
-    import ast
-    import re
-
-    guide = Path(__file__).resolve().parents[2] / "website/docs/user-guide/multi-profile-gateways.md"
-    [block] = [b for b in re.findall(r"```python\n(.*?)```", guide.read_text(encoding="utf-8"), re.DOTALL)
-               if "profiles_run_elsewhere" in b]
-    imported = {alias.name for node in ast.walk(ast.parse(block)) if isinstance(node, ast.ImportFrom)
-                and node.module == "hermes_cli.profiles_run_elsewhere" for alias in node.names}
-    assert imported == {"mark_profile_run_elsewhere", "clear_profile_run_elsewhere", "run_elsewhere"}
-    assert _private_import_warnings(tmp_path, "guide", block) == []

@@ -149,11 +149,14 @@ def _callback_name(cb: Callable) -> str:
     return f"{getattr(target, '__module__', None) or 'unknown'}.{getattr(target, '__qualname__', '?')}"
 
 
-def _required_decision(hook_name: str, cb: Callable, ret: Any, exc: Optional[BaseException] = None) -> Any:
+def _required_decision(hook_name: str, cb: Callable, ret: Any, exc: Optional[BaseException] = None,
+                       reported: Optional[set] = None) -> Any:
     """What a required callback's call counts as: its result when that is a valid
     ``pre_gateway_dispatch`` decision (``skip``, ``allow``, ``rewrite`` with a non-empty text), else a
     ``skip`` naming the callback, the hook and why. Never the event, the error text or arguments.
-    The decision is rebuilt from the values read once, never the callback's own object."""
+    The decision is rebuilt from the values read once, never the callback's own object.
+    The refusal is a WARNING the first time and DEBUG while it repeats for the same callback and
+    cause (*reported*, the manager's warn-once set, #111922); every refused event keeps its skip."""
     action = ret.get("action") if exc is None and isinstance(ret, dict) else None
     text = ret.get("text") if action == "rewrite" else None
     if isinstance(action, str) and action in _PRE_GATEWAY_DISPATCH_ACTIONS and (
@@ -166,7 +169,14 @@ def _required_decision(hook_name: str, cb: Callable, ret: Any, exc: Optional[Bas
         return decision
     why = f"raised {type(exc).__name__}" if exc is not None else "returned no valid decision"
     name = _callback_name(cb)
-    logger.warning("Required '%s' callback %s %s: the event is refused", hook_name, name, why)
+    key = ("required", hook_name, name, why)
+    if reported is not None and key in reported:
+        logger.debug("Required '%s' callback %s %s again: the event is refused", hook_name, name, why)
+    else:
+        if reported is not None:
+            reported.add(key)
+        logger.warning("Required '%s' callback %s %s: the event is refused (identical refusals are logged "
+                       "at DEBUG from now on)", hook_name, name, why)
     return RequiredDecision(action="skip", reason=f"required {hook_name} callback {name} {why}")
 
 # System-prompt sections are tightly bounded: they become high-trust prompt bytes charged every turn.
@@ -376,31 +386,35 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+        reported = self._hook_failures_reported
         for cb in tuple(callbacks):  # a snapshot: an unload during the loop must not skip a callback
             try:
                 if use_timeout:
                     ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
-                    # Never taken by a required gate: pre_gateway_dispatch is unbounded. A bounded hook
-                    # with required gates would have to refuse here (_required_decision).
                     if ret is _HOOK_SKIPPED:
                         if failed is not None:
                             failed.append(cb)
-                        if fail_closed:  # policy hook: fail closed with a block directive
+                        # pre_gateway_dispatch is unbounded today; should it become bounded, a required
+                        # gate that timed out or is suppressed still refuses, in its own result type.
+                        if _is_required_gate(cb):
+                            results.append(_required_decision(hook_name, cb, None, TimeoutError(), reported))
+                        elif fail_closed:  # policy hook: fail closed with a block directive
                             results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
-                ret = _required_decision(hook_name, cb, ret) if _is_required_gate(cb) else _ordinary_result(ret)
+                ret = (_required_decision(hook_name, cb, ret, None, reported) if _is_required_gate(cb)
+                       else _ordinary_result(ret))
                 if ret is not None:
                     results.append(ret)
             except (Exception, SystemExit) as exc:  # health: allow BLE001 -- moved from invoke_hook: plugin callbacks are untrusted; each failure is reported and isolated
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
                 if failed is not None:
                     failed.append(cb)
-                if fail_closed:  # a guard that raised made no decision: same veto as a timeout
+                if _is_required_gate(cb):  # a required gate that raised refuses
+                    results.append(_required_decision(hook_name, cb, None, exc, reported))
+                elif fail_closed:  # a guard that raised made no decision: same veto as a timeout
                     results.append(_policy_error_block_directive(hook_name, cb, exc))
-                elif _is_required_gate(cb):  # a required gate that raised refuses
-                    results.append(_required_decision(hook_name, cb, None, exc))
         return results
 
     def has_fail_closed_hook(self, hook_name: str) -> bool:
@@ -721,6 +735,7 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+        reported = self._hook_failures_reported
         # A snapshot: a plugin unloaded while an earlier callback awaits must not make the loop skip
         # the next one (a required gate among them); one registered meanwhile runs from the next event.
         for cb in tuple(self._hooks.get(hook_name, ())):
@@ -729,24 +744,25 @@ class PluginDispatchMixin:
                 ret = cb(**self._hook_callback_kwargs(cb, kwargs))
                 if inspect.isawaitable(ret):
                     ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
-                ret = _required_decision(hook_name, cb, ret) if _is_required_gate(cb) else _ordinary_result(ret)
+                ret = (_required_decision(hook_name, cb, ret, None, reported) if _is_required_gate(cb)
+                       else _ordinary_result(ret))
                 if ret is not None:
                     results.append(ret)
             except TimeoutError as exc:
                 if use_timeout or not _is_required_gate(cb):  # a required gate's own TimeoutError is no deadline
                     logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
-                if fail_closed:  # policy hook: fail closed with a block directive
+                if _is_required_gate(cb):  # before the hook-wide veto: the gateway reads this result type
+                    results.append(_required_decision(hook_name, cb, None, exc, reported))
+                elif fail_closed:  # policy hook: fail closed with a block directive
                     results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
-                elif _is_required_gate(cb):
-                    results.append(_required_decision(hook_name, cb, None, exc))
             except (Exception, SystemExit) as exc:
                 # Same isolation + failure contract as the sync path (#111922 warn-once, #109624
                 # a raising policy guard fails closed).
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
-                if fail_closed:
+                if _is_required_gate(cb):
+                    results.append(_required_decision(hook_name, cb, None, exc, reported))
+                elif fail_closed:
                     results.append(_policy_error_block_directive(hook_name, cb, exc))
-                elif _is_required_gate(cb):
-                    results.append(_required_decision(hook_name, cb, None, exc))
         return results
 
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:

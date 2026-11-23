@@ -126,14 +126,15 @@ class GatewayInboundHooksMixin:
                 # getattr: bare-runner tests build GatewayRunner via object.__new__ without __init__.
                 session_store=getattr(self, "session_store", None),
             )
+            # A required gate's failure or invalid result is already its skip (plugins_dispatch); its
+            # decision binds over ordinary callbacks' results. Inside the guard: a fault here is a
+            # failed invocation, refused only while a required gate is registered.
+            _hook_results = _bind_required_decisions(_hook_results)
         except Exception as _hook_exc:  # health: allow BLE001 -- moved unchanged from run_inbound.py (main has the same handler): a plugin hook must never stop dispatch
             logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
             _hook_results = []
             if _required_gate_registered():  # a required (fail_closed) gate made no decision: refuse
                 _hook_results = [{"action": "skip", "reason": "required pre_gateway_dispatch gate did not run"}]
-        # A required gate's failure or invalid result is already its skip (plugins_dispatch); its
-        # decision binds over ordinary callbacks' results.
-        _hook_results = _bind_required_decisions(_hook_results)
 
         for _result in _hook_results:
             if not isinstance(_result, dict):

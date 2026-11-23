@@ -480,3 +480,99 @@ async def test_a_command_typed_while_the_session_is_busy_meets_the_gate(manager,
 
     await adapter.handle_message(event)
     assert sent == answered
+
+
+@pytest.mark.parametrize("fail_closed, committed", [(True, []), (False, ["d-raise"])])
+@pytest.mark.asyncio
+async def test_a_webhook_delivery_meets_the_gate(manager, fail_closed, committed):
+    """Receipt-only ingress (``admit_producer``, webhook and relay) runs the hook through the same
+    function: a delivery a required gate refuses is acknowledged and commits no admission, where an
+    ordinary callback that raises still lets it through."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.gateway.test_pre_gateway_dispatch import _post_webhook, _webhook_app
+
+    _plugin(manager, "policy").register_hook("pre_gateway_dispatch", _raise, fail_closed=fail_closed)
+    adapter, app = _webhook_app()
+    async with TestClient(TestServer(app)) as client:
+        authority = adapter._message_handler.__self__.session_authority
+        assert (await _post_webhook(client, "hello", "d-raise")).status == 202
+        rows = raw_holder(authority.persistence)._read_all("SELECT request_id FROM session_admissions")
+    assert [row["request_id"] for row in rows] == committed
+
+
+# ── the refusal line, the guard around the binding step, a bounded hook ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_that_repeats_is_warned_once_and_still_refuses_every_message(manager, caplog):
+    """A gate whose backend is down fails the same way for every message. The refusal line follows
+    the dispatcher's warn-once rule (#111922): WARNING for the first, DEBUG for identical repeats,
+    WARNING again for a new cause. Each refused message keeps its own ``skip`` line."""
+    causes = iter([RuntimeError, RuntimeError, RuntimeError, ValueError])
+
+    def gate(event, **_kwargs):
+        raise next(causes)("backend down")
+
+    _plugin(manager, "policy").register_hook("pre_gateway_dispatch", gate, fail_closed=True)
+    runner = _runner()
+    with caplog.at_level(logging.DEBUG):
+        assert [await runner._handle_message(_event()) for _ in range(4)] == [None] * 4
+
+    refusals = [r.levelname for r in caplog.records if r.getMessage().startswith("Required ")]
+    assert refusals == ["WARNING", "DEBUG", "DEBUG", "WARNING"]
+    skips = [r.levelname for r in caplog.records if r.getMessage().startswith("pre_gateway_dispatch skip")]
+    assert skips == ["INFO"] * 4
+
+
+@pytest.mark.parametrize("with_gate, expected", [(False, DISPATCHED), (True, None)])
+@pytest.mark.asyncio
+async def test_a_fault_in_the_binding_step_counts_as_a_failed_invocation(manager, monkeypatch, with_gate, expected):
+    """The binding step runs inside the guard around the hook invocation: without a required gate a
+    fault there never stops dispatch, with one the message is refused."""
+    from gateway import run_inbound_hooks
+
+    def broken(_results):
+        raise ImportError("plugin layer unavailable")
+
+    monkeypatch.setattr(run_inbound_hooks, "_bind_required_decisions", broken)
+    _plugin(manager, "observer").register_hook("pre_gateway_dispatch", lambda **_: {"action": "allow"})
+    if with_gate:
+        _plugin(manager, "policy").register_hook(
+            "pre_gateway_dispatch", lambda **_: {"action": "allow"}, fail_closed=True)
+    assert await _runner()._handle_message(_event()) == expected
+
+
+@pytest.mark.parametrize("hook_set", ["_HOOK_TIMEOUT_BOUNDED_HOOKS", "_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS"])
+@pytest.mark.asyncio
+async def test_a_required_gate_refuses_in_its_own_result_type_if_the_hook_were_bounded(manager, monkeypatch, hook_set):
+    """``pre_gateway_dispatch`` has no host deadline today. If it gets one (fail-open or with the
+    hook-wide veto ``pre_tool_call`` has), a required gate that times out or raises still answers
+    with a required ``skip`` in both dispatchers, not with a ``block`` the gateway does not read."""
+    import threading
+
+    from hermes_cli import plugins, plugins_dispatch
+    from hermes_cli.plugins_dispatch import RequiredDecision
+
+    monkeypatch.setattr(plugins_dispatch, hook_set, getattr(plugins_dispatch, hook_set) | {"pre_gateway_dispatch"})
+    monkeypatch.setattr(plugins, "_resolve_hook_callback_timeout", lambda: 0.05)
+
+    async def slow(**_kwargs):
+        await asyncio.Event().wait()  # never set: only the deadline ends it
+
+    handle = _plugin(manager, "policy").register_hook("pre_gateway_dispatch", slow, fail_closed=True)
+    assert await _runner()._handle_message(_event()) is None  # the awaited gate ran into the deadline
+    handle.dispose()
+    _plugin(manager, "policy").register_hook("pre_gateway_dispatch", _raise, fail_closed=True)
+    assert await _runner()._handle_message(_event()) is None
+
+    release = threading.Event()
+    try:
+        for gate in (lambda **_: release.wait(10), _raise):  # the sync dispatcher: a deadline, then a raise
+            sync_manager = PluginManager()
+            _plugin(sync_manager, "policy").register_hook("pre_gateway_dispatch", gate, fail_closed=True)
+            results = sync_manager.invoke_hook("pre_gateway_dispatch", event=None, gateway=None, session_store=None)
+            assert [(type(r), r["action"]) for r in results] == [(RequiredDecision, "skip")]
+    finally:
+        release.set()  # let the abandoned worker go

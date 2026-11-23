@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+from contextlib import asynccontextmanager
 from functools import partial, wraps
 from weakref import WeakValueDictionary
 
@@ -23,6 +24,9 @@ _ID = re.compile(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'
 _HASH = re.compile(r'[a-f0-9]{64}')
 _MAX_FILE = 64 * 1024 * 1024
 _MAX_TOTAL = 256 * 1024 * 1024
+# Durable RPCs can arrive on distinct authority connections or gateway processes. A
+# profile-scoped lock serializes admission and cancellation across both boundaries.
+_DURABLE_SEND_LOCKS = WeakValueDictionary()
 
 
 def handlers(connection):
@@ -174,14 +178,48 @@ def _submission_key(connection, ref, params):
                                      ref.session_id, submission]).encode()).hexdigest()
 
 
+@asynccontextmanager
+async def _submission_file_lock(connection):
+    root = _private_root(connection.authority.profile_id, 'durable-desktop-uploads')
+    path = root / 'durable-send.lock'
+    if path.is_symlink():
+        raise AuthorityRefusal('storage_unavailable')
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    lock_file = os.fdopen(fd, 'a+')
+    acquired = False
+    try:
+        from hermes_cli.auth import _is_lock_contention, _kernel_lock
+        if os.name == 'nt' and os.fstat(fd).st_size == 0:
+            lock_file.write(' ')
+            lock_file.flush()
+        deadline = asyncio.get_running_loop().time() + 30
+        while True:
+            try:
+                _kernel_lock(lock_file, True)
+                acquired = True
+                break
+            except OSError as exc:
+                if not _is_lock_contention(exc):
+                    raise
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise AuthorityRefusal('storage_unavailable') from exc
+                await asyncio.sleep(0.05)
+        yield
+    finally:
+        if acquired:
+            _kernel_lock(lock_file, False)
+        lock_file.close()
+
+
 def _serialized(function):
     @wraps(function)
     async def dispatch(connection, ref, params):
-        key = _submission_key(connection, ref, params)
-        locks = connection.authority.__dict__.setdefault('_durable_send_locks', WeakValueDictionary())
-        lock = locks.setdefault(key, asyncio.Lock())
+        _submission_key(connection, ref, params)
+        profile_key = str(connection.authority.profile_id)
+        lock = _DURABLE_SEND_LOCKS.setdefault(profile_key, asyncio.Lock())
         async with lock:
-            return await function(connection, ref, params)
+            async with _submission_file_lock(connection):
+                return await function(connection, ref, params)
     return dispatch
 
 
@@ -242,7 +280,7 @@ def _materialize(home, key, metadata, file, session):
         # directory as a context root: it contains private metadata, not model attachments.
         from tui_gateway import server
         from hermes_dir_acl import make_user_dir
-        root = server._session_home_dir(session, 'attachments')
+        root = server.__dict__['_session_home_dir'](session, 'attachments')
         base = Path(home) if root.is_relative_to(Path(home)) else Path(session['cwd']).resolve()
         current = base
         for part in root.relative_to(base).parts:
@@ -272,6 +310,27 @@ def _materialize(home, key, metadata, file, session):
     finally:
         db.close()
     return str(target), image
+
+
+def _orphaned_materialization_path(home, key, file, session):
+    """Reconstruct the deterministic destination even if its DB-path update was lost."""
+    if file['mediaType'].startswith('image/'):
+        root = _private_root(home, 'images')
+    else:
+        from tui_gateway import server
+        from hermes_dir_acl import make_user_dir
+        root = server.__dict__['_session_home_dir'](session, 'attachments')
+        base = Path(home) if root.is_relative_to(Path(home)) else Path(session['cwd']).resolve()
+        current = base
+        for part in root.relative_to(base).parts:
+            current = current / part
+            if current.is_symlink():
+                raise AuthorityRefusal('storage_unavailable')
+            make_user_dir(current, mode=0o700, parents=False, exist_ok=True)
+    suffix = Path(file['name']).suffix
+    suffix = suffix if (suffix.startswith('.') and suffix[1:].isascii()
+                        and suffix[1:].isalnum() and len(suffix) <= 13) else ''
+    return root / (f'durable_{key}_{file["sha256"]}' + suffix)
 
 
 def _retire_uploads(home, keys):
@@ -305,15 +364,22 @@ async def cancel(connection, ref, params):
     if row is not None:
         # An admitted/unknown execution is not cancellable by deleting its staging bytes.
         return {'cancelled': False}
+    from gateway.session_policy import policy_for_source
+    policy = policy_for_source(connection.authority.runner, connection.authority.sessions[ref.session_id].source)
+    if policy is None:
+        raise AuthorityRefusal('permission_denied')
+    session = {'cwd': policy.cwd, 'profile_home': connection.authority.profile_id}
+    orphan_paths = {_orphaned_materialization_path(connection.authority.profile_id, key, file, session)
+                    for key, file in zip(keys, params['files'])}
     db = _database(connection.authority.profile_id)
     try:
         db.execute('BEGIN IMMEDIATE')
         db.execute('INSERT OR IGNORE INTO cancelled_submissions VALUES (?)', (_submission_key(connection, ref, params),))
-        paths = []
+        paths = set(orphan_paths)
         for key in keys:
             row = db.execute('SELECT path FROM uploads WHERE id=?', (key,)).fetchone()
             if row and row[0]:
-                paths.append(row[0])
+                paths.add(Path(row[0]))
             db.execute('DELETE FROM uploads WHERE id=?', (key,))
         db.commit()
         for path in paths:

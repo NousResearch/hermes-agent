@@ -111,6 +111,93 @@ def test_durable_upload_reconnect_and_exact_admission(tmp_path, monkeypatch):
         owner.close()
 
 
+def test_submission_serialization_is_shared_by_distinct_authorities(tmp_path, monkeypatch):
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    from types import SimpleNamespace
+    from gateway import session_durable_send as durable
+
+    async def scenario():
+        active = 0
+        overlapped = False
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        @durable._serialized
+        async def critical(connection, ref, params):
+            nonlocal active, overlapped
+            active += 1
+            if active > 1:
+                overlapped = True
+            entered.set()
+            await release.wait()
+            active -= 1
+
+        identity = {'submission_id': str(uuid.uuid4())}
+        ref = SimpleNamespace(session_id='same-session')
+        connections = [
+            SimpleNamespace(authority=SimpleNamespace(profile_id=str(tmp_path)),
+                            actor=SimpleNamespace(subject='same-principal'))
+            for _ in range(2)
+        ]
+        first = asyncio.create_task(critical(connections[0], ref, identity))
+        await entered.wait()
+        second = asyncio.create_task(critical(connections[1], ref, identity))
+        await asyncio.sleep(0.1)
+        release.set()
+        await asyncio.gather(first, second)
+        assert not overlapped
+
+    import asyncio
+    asyncio.run(scenario())
+
+
+def test_cancel_removes_document_materialized_before_path_record(tmp_path, monkeypatch):
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    from hermes_cli import _early_recovery
+    monkeypatch.setattr(_early_recovery, 'restore_interrupted_pull', lambda root: False)
+    from pathlib import Path
+    from gateway import session_durable_send as durable
+    owner = GatewayOwner(tmp_path, monkeypatch)
+    life = owner._run(owner._open())
+
+    def rpc(method, **params):
+        result = owner._run(life.connection.dispatch({'id': 1, 'method': method, 'params': params}))
+        assert 'error' not in result, result
+        return result['result']
+
+    try:
+        description = rpc('durable.describe')
+        fence = {key: description[key] for key in ('store_id', 'profile_id', 'principal_id')}
+        sid = rpc('session.create', request_id=str(uuid.uuid4()), source='gui')['session_id']
+        data = b'crash between materialization and path commit'
+        file = {'id': str(uuid.uuid4()), 'name': 'crash.txt', 'mediaType': 'text/plain',
+                'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+        submission = str(uuid.uuid4())
+        uploaded = rpc('durable.upload', owner=fence, session_id=sid, submission_id=submission,
+                       file=file, offset=0, data=base64.b64encode(data).decode())
+        from types import SimpleNamespace
+        ref = SimpleNamespace(session_id=sid)
+        key, metadata = durable._identity(life.connection, ref, submission, file)
+        from gateway.session_policy import policy_for_source
+        policy = policy_for_source(owner.authority.runner, owner.authority.sessions[sid].source)
+        assert policy is not None
+        session = {'cwd': policy.cwd, 'profile_home': fence['profile_id']}
+        path, image = durable._materialize(fence['profile_id'], key, metadata, file, session)
+        assert not image
+        assert Path(path).read_bytes() == data
+        db = durable._database(fence['profile_id'])
+        db.execute('UPDATE uploads SET path=NULL WHERE id=?', (key,))
+        db.commit()
+        db.close()
+
+        assert rpc('durable.cancel', owner=fence, session_id=sid, submission_id=submission,
+                   files=[file]) == {'cancelled': True}
+        assert not Path(path).exists()
+        assert uploaded['reference'] == key
+    finally:
+        owner.close()
+
+
 def test_staging_quota_reuse_and_cancellation_reconciliation(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     from hermes_cli import _early_recovery

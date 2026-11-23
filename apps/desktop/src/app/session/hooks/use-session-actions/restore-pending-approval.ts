@@ -1,12 +1,18 @@
 import { $gateway } from '@/store/gateway'
-import { approvalKindFields, receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
+import {
+  approvalKindFields,
+  approvalNamesNothing,
+  receiveApprovalRequest,
+  replayPendingApproval
+} from '@/store/prompts'
 import type { SessionResumeResult } from '@/types/hermes'
 
 /** Re-park a resume snapshot's pending approval; true when one was restored. */
 export function restorePendingApproval(response: SessionResumeResult, sessionId: string): boolean {
   const pending = response.pending_approval
 
-  if (!pending) {
+  // A folder or site request that names no folder or site is refused, as a live one is.
+  if (!pending || approvalNamesNothing(approvalKindFields(pending as Record<string, unknown>))) {
     return false
   }
 

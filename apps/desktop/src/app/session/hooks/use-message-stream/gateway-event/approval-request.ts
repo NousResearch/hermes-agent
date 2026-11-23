@@ -4,6 +4,7 @@ import {
   accessTarget,
   type ApprovalAccessTarget,
   approvalKindFields,
+  approvalNamesNothing,
   type ApprovalRequest,
   networkTarget,
   networkTargetName,
@@ -13,6 +14,9 @@ import { rememberServerRequest } from '@/store/server-requests'
 
 import { declineIfSessionStopped, type Handler, markNeedsInput, str } from './server-request-context'
 
+/** JSON-RPC "invalid params". */
+const JSON_RPC_INVALID_PARAMS = -32602
+
 /** The `approval` server request: a command, folder or site card parked for its session. */
 export const approval: Handler = ctx => {
   const { request, sessionId } = ctx
@@ -21,6 +25,16 @@ export const approval: Handler = ctx => {
   const description = str(p.description) || 'dangerous command'
 
   if (declineIfSessionStopped(ctx)) {
+    return
+  }
+
+  const kindFields = approvalKindFields(p)
+
+  // A folder or site request that names no folder or site is refused: its sender gets an error
+  // and no card is shown.
+  if (approvalNamesNothing(kindFields)) {
+    request.fail(JSON_RPC_INVALID_PARAMS, 'an access request needs a path and a network request needs a host')
+
     return
   }
 
@@ -37,7 +51,7 @@ export const approval: Handler = ctx => {
     serverRequestId: request.id,
     sessionId: sessionId || null,
     smartDenied: p.smart_denied === true,
-    ...approvalKindFields(p)
+    ...kindFields
   }
 
   rememberServerRequest(request)

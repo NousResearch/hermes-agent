@@ -167,6 +167,11 @@ export function approvalKindFields(raw: Record<string, unknown> | null | undefin
 export const isCommandApproval = (request: Pick<ApprovalRequest, 'kind'>): boolean =>
   !request.kind || request.kind === 'command'
 
+/** A folder or site request that names no folder or site. It is refused and never parked:
+ *  its card would offer Allow for something the user cannot read. */
+export const approvalNamesNothing = (request: Pick<ApprovalRequest, 'kind' | 'target'>): boolean =>
+  !isCommandApproval(request) && !request.target
+
 export const accessTarget = (request: ApprovalRequest): ApprovalAccessTarget | null =>
   request.kind === 'access' && request.target && 'path' in request.target && !('host' in request.target)
     ? (request.target as ApprovalAccessTarget)
@@ -240,6 +245,10 @@ const approval = {
     $approvalQueues.set({})
   },
   set(request: ApprovalRequest) {
+    if (approvalNamesNothing(request)) {
+      return
+    }
+
     const key = keyFor(request.sessionId)
     const queues = $approvalQueues.get()
     const queue = queues[key] ?? EMPTY_APPROVALS
@@ -336,6 +345,11 @@ export const setApprovalRequest = approval.set
 export const clearApprovalRequest = approval.clear
 
 export async function receiveApprovalRequest(gateway: ApprovalGateway | null, request: ApprovalRequest): Promise<void> {
+  // Nothing is parked for it, so nothing is acknowledged either.
+  if (approvalNamesNothing(request)) {
+    return
+  }
+
   // A prompt restored from `approval.pending` must not clobber the live server
   // request that already carries the same queue entry (it knows how to answer).
   const current = $approvalQueues.get()[keyFor(request.sessionId)]?.find(item => item.requestId === request.requestId)

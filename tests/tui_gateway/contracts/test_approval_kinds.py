@@ -46,3 +46,13 @@ def test_a_deny_reason_rides_the_answer_and_approval_respond():
     assert problem is None
     _, problem = contracts.validate_params(respond, {**_IDS, "choice": "deny", "why": "x"})
     assert problem is not None and "why" in problem
+
+
+@pytest.mark.parametrize("params", [{"kind": "access"}, {"kind": "access", "host": "example.com"},
+                                    {"kind": "access", "path": " "},
+                                    {"kind": "network"}, {"kind": "network", "path": "/srv"}])
+def test_a_folder_or_site_card_without_its_target_is_refused(params):
+    """An ``access`` card names a ``path`` and a ``network`` card names a ``host``; a request without
+    it would offer Allow for something the user cannot read."""
+    with pytest.raises(ValidationError):
+        ApprovalRequestParams.model_validate({**_IDS, **params})

@@ -799,6 +799,20 @@ class TestSteerSurvivesRedirectRebuild:
         agent._interrupt_requested = False
         assert agent._drain_pending_steer() == self.STEER_TEXT
 
+    def test_the_restored_steer_takes_no_ticket_and_keeps_its_place(self):
+        """The put-back text is ticketless (a consumed transfer with the same text stays settled) and goes
+        ahead of a steer accepted since the drain."""
+        from agent.interrupt_control import restore_leftover_steer
+
+        agent = self._loop_agent()
+        assert agent.steer("same text", ticket="t1") is True
+        assert agent._drain_pending_steer() == "same text"  # the ticketed transfer is consumed
+        assert agent.withdraw_steer("t1") is False
+        assert agent.steer("newer") is True
+        restore_leftover_steer(agent, "same text")
+        assert agent.withdraw_steer("t1") is False
+        assert agent._drain_pending_steer() == "same text\nnewer"
+
     def test_early_exit_hands_back_on_an_ordinary_failure(self):
         from agent.conversation_loop import _hand_back_leftover_steer
 

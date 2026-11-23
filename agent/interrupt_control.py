@@ -120,6 +120,13 @@ def requeue_drained_steer(agent, steer_text: str) -> None:
         _set_steer_parts(agent, _steer_parts(agent) + parts)
 
 
+def restore_leftover_steer(agent, steer_text: str) -> None:
+    """Put back text ``_drain_leftover_steer`` just returned, ahead of anything steered since. That drain
+    exports only ticketless steers, so the text goes back ticketless: no ticket is looked up by its text."""
+    with _ic_lock(agent, "_pending_steer_lock"):
+        _set_steer_parts(agent, [(None, steer_text)] + _steer_parts(agent))
+
+
 def _ic_codex_method(agent, name: str):
     """Codex app-server owns its model/tool loop; return its ``name`` hook or None."""
     if getattr(agent, "api_mode", None) != "codex_app_server":

@@ -1632,8 +1632,8 @@ def _hand_back_leftover_steer(agent, result):
         if getattr(agent, "_interrupt_requested", False):
             # A Stop published between the check above and this drain: put the steer back, so the
             # stop's own clear (hard or soft) decides whether it survives, exactly as before the drain.
-            from agent.interrupt_control import requeue_drained_steer
-            requeue_drained_steer(agent, leftover)
+            from agent.interrupt_control import restore_leftover_steer
+            restore_leftover_steer(agent, leftover)
         else:
             result["pending_steer"] = leftover
     return result

@@ -61,5 +61,12 @@
     "path": "skills/statechart/scripts/run.ts",
     "sha256": "fb6ec4a1835a15e6e72df28bb932b8df5a4c04c5de6f9c270fd63ff5cd148dc7",
     "why": "statechart skill's model-check runner: asks the user's mise to install TLA+ tla2tools v1.7.4 (sha256-pinned in the spec string) and a Temurin JDK into mise's own store, writes only temporary .cfg/.tla files under a mkdtemp dir; never fetches or replaces plugin code (PR #158523)"
+  },
+  {
+    "repo": "https://github.com/LuuMoss/video-xray",
+    "sha": "ae67d00e76a80b00453d91a253aaa16dba4bb98f",
+    "path": "engine/installs.py",
+    "sha256": "0124417b9b1b951cc7ff13afede02172fc3f59ddef502e32dda2f8e03bcc39db",
+    "why": "one-click installers download three engine runtime packs (R2T2 CPU ~50MB, R2T2 CUDA add-on ~490MB, Whisper ~110MB) from the plugin's own GitHub Releases, verify each archive against a SHA-256 pinned in the source and unpack them under HERMES_HOME/asr-*; user-initiated with visible progress, never fetches or replaces the plugin's own files (catalog bump PR for v0.3.3)"
   }
 ]

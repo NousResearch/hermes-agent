@@ -245,10 +245,10 @@ def _inherited_shadows() -> list[str]:
 
 def _multiline_refusal() -> Optional[str]:
     """Why the overrides cannot be removed from this home's ``.env`` without changing other bytes, or None:
-    it holds a value over several lines, is not UTF-8 text (which the rewrite would re-encode) and has an
+    it needs whole-assignment removal, is not UTF-8 text (which the rewrite would re-encode) and has an
     override assignment to remove. With none to remove, the file is left alone, as on main."""
     from hermes_cli.config import get_env_path
-    from hermes_cli.env_loader import dotenv_assigned, dotenv_multiline
+    from hermes_cli.env_loader import _quoted_name, dotenv_assigned, dotenv_multiline
     try:
         raw = get_env_path().read_bytes()
         raw.decode("utf-8")
@@ -256,9 +256,10 @@ def _multiline_refusal() -> Optional[str]:
     except OSError:
         return None
     except UnicodeDecodeError:
-        if not dotenv_multiline(raw) or not set(SHADOWING_ENV) & set(dotenv_assigned(raw)):
+        assigned = set(SHADOWING_ENV) & set(dotenv_assigned(raw))
+        if not assigned or not (dotenv_multiline(raw) or any(_quoted_name(raw, key) for key in assigned)):
             return None
-    return (f"{get_env_path()} holds a quoted value over several lines and is not UTF-8 text, so "
+    return (f"{get_env_path()} is not UTF-8 text, so "
             f"{', '.join(SHADOWING_ENV)} cannot be removed from it safely: remove them there by hand")
 
 

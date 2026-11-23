@@ -9,12 +9,14 @@ from typing import Any, Optional
 
 
 def runtime_with_rotated_pool_key(main_runtime: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
-    """``main_runtime`` with its ``api_key`` swapped for the pool's current key after a rotation.
+    """``main_runtime`` with its ``api_key`` swapped for the pool's best key for its endpoint and model.
 
-    Auto routes rebuild the retry client from the main runtime, whose key is the one the pool just
+    Auto routes rebuild the retry client from the main runtime, whose key may be one the pool just
     benched, so the retry would resend the dead key and never reach the healthy entry. Swap only a
-    key that is itself a member of the runtime provider's pool; any other session key (OAuth,
-    callable token provider, a key from another pool) is returned unchanged.
+    key that is itself a member of the runtime provider's pool, and only for a pool entry that
+    serves the runtime's ``base_url`` and is not cooled down for its model. Anything else (OAuth,
+    callable token provider, a key from another pool or endpoint, no ``base_url``) is returned
+    unchanged.
     """
     from agent.auxiliary_client import (
         _load_pool_with_credentials,

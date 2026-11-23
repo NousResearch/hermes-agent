@@ -1,4 +1,5 @@
-"""Same-provider retries must bench the credential actually sent (PR #106833)."""
+"""Aux retries on a pooled provider bench only keys that failed over HTTP and swap in only a key
+that serves the runtime's own endpoint and model (PR #106833)."""
 import asyncio
 import json
 import threading
@@ -92,7 +93,7 @@ def test_retry_exhausts_only_keys_that_failed_over_http(tmp_path, monkeypatch, c
 
 
 def _zai_runtime_pool(tmp_path, monkeypatch, urls, cooldowns=None):
-    """Pool rows key-0..n on ``urls``; key-0 is benched by a real 429 rotation. Returns the runtime on urls[0]."""
+    """Pool rows key-0..n on ``urls``; key-0 is benched by a 429 rotation. Returns ``(swap, runtime)`` for urls[0]."""
     from agent.auxiliary_pool_retry import runtime_with_rotated_pool_key
     from agent.credential_pool import load_pool
 

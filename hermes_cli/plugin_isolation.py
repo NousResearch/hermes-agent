@@ -116,8 +116,8 @@ def host_launcher(config: Optional[Mapping[str, Any]] = None) -> list[str]:
     plugin runs elsewhere only the managed overlay's counts: that backend writes the profile's config.yaml."""
     from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
     if config is None and run_elsewhere_refusal() is not None:
-        from hermes_cli.managed_scope import load_managed_config
-        config = load_managed_config()
+        from hermes_cli.managed_scope import apply_managed_overlay
+        config = apply_managed_overlay({})  # the overlay alone, its ${VAR} refs expanded as for any profile
     host = _plugins_config(config).get("host")
     launcher = host.get("launcher") if isinstance(host, Mapping) else None
     if not launcher:

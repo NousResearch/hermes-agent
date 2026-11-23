@@ -162,6 +162,24 @@ def test_a_marked_profiles_own_launcher_is_not_used(tmp_path, monkeypatch):
     assert host_launcher() == ["operator-runner"]
 
 
+def test_a_managed_launcher_expands_its_env_refs_for_a_marked_profile_too(tmp_path, monkeypatch):
+    """``${VAR}`` refs in the managed overlay expand against the process env. A profile a plugin runs
+    elsewhere takes its launcher from that overlay alone, and gets the same expanded value as any profile."""
+    from hermes_cli import profiles_run_elsewhere as pre
+    from hermes_cli.plugin_isolation import host_launcher
+
+    home = _home_with_plugins(tmp_path, monkeypatch, {})
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(yaml.safe_dump(
+        {"plugins": {"host": {"launcher": ["${PLUGIN_RUNNER}", "--quiet"]}}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("PLUGIN_RUNNER", "operator-runner")
+    assert host_launcher() == ["operator-runner", "--quiet"]
+    pre.mark_profile_run_elsewhere("default", "sandbox-plugin", root=home)
+    assert host_launcher() == ["operator-runner", "--quiet"]
+
+
 def test_managed_scope_pins_host_isolation_over_the_profiles_own_config(tmp_path, monkeypatch):
     """The isolated party must not be able to opt out: an operator pin in the managed scope
     (/etc/hermes/config.yaml) wins over a profile config that says in_process."""

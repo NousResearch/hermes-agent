@@ -21,11 +21,17 @@ def _resume_live_unpersisted(ctx: "_Resume", live_sid: str, live: dict) -> dict:
             _rebind_live_transport(live_sid, live, transport)
         else:
             _cancel_ws_orphan_reap(live_sid)
-    messages = ctx.messages(live.get("history") or [])  # count the wire, as every other resume path does
+    messages = []
+    if not ctx.omit_messages:
+        # A draft has no stored transcript. Snapshot the writer's list under its own lock,
+        # then project it without holding either the history lock or the global resume lock.
+        with live.setdefault("history_lock", threading.Lock()):
+            history = list(live.get("history") or ())
+        messages = ctx.messages(history)
     # The chat's own pick, not the profile default: a warm reattach that reported `_resolve_model()` flipped the
     # Desktop picker on every reload while the session was still live, and back once it had been dropped.
     model, provider = _live_session_identity(live)
-    return _ok(ctx.rid, _attach_todo_state({
+    return _finish_live_resume(ctx.rid, live_sid, live, _attach_todo_state({
         "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
         "message_count": len(messages), "messages": messages,
         "info": {"model": model, "provider": provider, "lazy": True,
@@ -65,7 +71,13 @@ def _resume_reuse_payload(ctx: "_Resume", sid: str, session: dict) -> dict:
     # A lazy watch session never owns a run loop — overlay the child-run registry.
     if session.get("agent") is None and _child_run_active(ctx.target, ctx.profile_home):
         payload.update(running=True, status="streaming")
-    return _ok(ctx.rid, payload)
+    return _finish_live_resume(ctx.rid, sid, session, payload)
+
+
+def _finish_live_resume(rid, sid: str, session: dict, payload: dict) -> dict:
+    # Close/reap can retire this record while the reply is being built. Do not attach it again.
+    with _session_resume_lock:
+        return _reattach_refusal(rid, sid, session) or _ok(rid, payload)
 
 
 def register(server) -> None:

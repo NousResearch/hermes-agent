@@ -47,7 +47,7 @@ def test_force_keeps_the_operators_deny_rules_in_an_isolated_container(monkeypat
     monkeypatch.setattr(approval_context, "_get_approval_config",
                         lambda: {"mode": "manual", "deny": ["git push --force*"]})
     result = _forced_rejection("git push --force origin main", ISOLATED_DOCKER)
-    assert result["status"] == "blocked"
+    assert result["status"] == "blocked" and "approvals.deny" in result["error"]
 
 
 @pytest.mark.parametrize("command,config", [

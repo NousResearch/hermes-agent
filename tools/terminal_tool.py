@@ -139,7 +139,7 @@ def _container_profile() -> str:
 
 from tools.approval import (
     check_all_command_guards as _check_all_guards_impl,
-    check_preconfirmed_command_guards,
+    check_preconfirmed_command_guards as _check_preconfirmed_guards,
 )
 
 
@@ -1190,12 +1190,12 @@ class _ApprovalVerdict:
 
 def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *, force: bool) -> _ApprovalVerdict:
     """Run the command guards; ``force`` skips the approval layers but not the floor
-    (:func:`tools.approval.check_preconfirmed_command_guards`).
+    (``check_preconfirmed_command_guards``).
     Raises :class:`_Rejected` when the command may not run (denied, or pending
     gateway approval)."""
     has_host_access = _docker_has_host_access(config)
     if force:
-        approval = check_preconfirmed_command_guards(command, env_type, has_host_access=has_host_access)
+        approval = _check_preconfirmed_guards(command, env_type, has_host_access=has_host_access)
         if approval["approved"]:
             return _ApprovalVerdict(approved_run=True)
     else:
@@ -1590,8 +1590,8 @@ def terminal_tool(
 ) -> str:
     """Execute *command* in the configured terminal environment; returns a JSON string.
 
-    ``force`` (internal, not in the model schema) skips the dangerous-command
-    check after the user confirmed; the floor no setting bypasses still applies.
+    ``force`` (internal, not in the model schema) marks a command its caller already
+    vetted: it skips the approval layers, never the floor.
     ``workdir`` is per-command and never
     recorded as the session cwd. ``pty`` applies to the local backend only.
     ``notify_on_complete`` and ``watch_patterns`` are mutually exclusive
@@ -1673,7 +1673,7 @@ def terminal_tool(
                     status="error",
                 ))
             # Pre-exec security checks (floors + dangerous command detection);
-            # force=True means the user already confirmed.
+            # force: the caller already vetted the command; the floor still runs.
             verdict = _run_approval_guards(command, env_type, plan.config, force=force)
 
             pty_disabled = pty and _command_requires_pipe_stdin(command)

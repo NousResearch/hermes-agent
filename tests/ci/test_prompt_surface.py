@@ -13,6 +13,7 @@ from __future__ import annotations
 import filecmp
 import importlib.util
 import shutil
+import subprocess
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -42,6 +43,15 @@ def test_committed_prompt_surface_is_current(tmp_path):
         "    scripts/run-in-hermes-env python scripts/ci/prompt_surface.py render\n"
         + "\n".join(differences[:20])
     )
+
+
+def test_snapshot_is_checked_out_with_the_lf_that_render_writes():
+    """render() writes LF on every host and the check above compares bytes, so a Windows clone with
+    core.autocrlf=true must not check the committed snapshot out as CRLF."""
+    files = "\n".join(p.relative_to(REPO).as_posix() for p in prompt_surface.SNAPSHOT.rglob("*") if p.is_file())
+    attrs = subprocess.run(["git", "check-attr", "--stdin", "eol"], cwd=REPO, input=files,
+                           capture_output=True, text=True, check=True).stdout.splitlines()
+    assert attrs and [line for line in attrs if not line.endswith(": eol: lf")] == []
 
 
 def test_summary_names_the_surface_and_tool_that_changed(tmp_path):

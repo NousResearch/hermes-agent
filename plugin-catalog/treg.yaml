@@ -1,17 +1,17 @@
 name: treg
 title: Treg
 repo: https://github.com/tomcharlesosman/treg-hermes
-sha: fa3add4fcb382d47a6f634f8787cb4620daba260
-version: "1.0.0"
+sha: 3397dc168eca88eace5071db7eefe6e8e6e2bb03
+version: "1.0.1"
 maintainer: tomcharlesosman
 tier: community
 category: tools
 requires_hermes: ">=0.23.3"
 description: >-
-  Find and call tools for web and SEO research, company enrichment, publishing through connected accounts, and image, video and audio generation. Discover your team’s own tools in the same Hermes session. Inspect each tool’s inputs and price before execution.
+  Treg is OpenRouter for agent tools. Hermes users can access 4,200+ tools through one Treg connection, alongside their team’s own tools. Ask Hermes to check search rankings and backlinks, enrich a company profile, publish a post through a connected account, or generate an image, video or voiceover. Hermes can compare providers and inspect each tool’s inputs and price before calling it.
   Hermes sends the team token and requested inputs to https://treg.to/mcp/. Execution can send data to a provider, change a connected account, or spend the team’s prepaid balance. Catalog lookups are free. Hermes applies its untrusted-server approval policy to write-capable calls.
-docs_url: https://github.com/tomcharlesosman/treg-hermes/blob/fa3add4fcb382d47a6f634f8787cb4620daba260/README.md
-image: https://raw.githubusercontent.com/tomcharlesosman/treg-hermes/fa3add4fcb382d47a6f634f8787cb4620daba260/assets/marketplace.png
+docs_url: https://github.com/tomcharlesosman/treg-hermes/blob/3397dc168eca88eace5071db7eefe6e8e6e2bb03/README.md
+image: https://raw.githubusercontent.com/tomcharlesosman/treg-hermes/3397dc168eca88eace5071db7eefe6e8e6e2bb03/assets/marketplace.png
 readme: true
 known_issues:
   - "Requires MCP support and a scoped TREG_TOKEN in the Hermes profile. Limits and available team tools depend on that token."

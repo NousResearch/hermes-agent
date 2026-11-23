@@ -376,3 +376,23 @@ def test_an_unrelated_security_unset_is_not_caught_by_the_guard(tmp_path, monkey
     assert "unknown_key" not in written.read_text()
     assert "RULES.md" in written.read_text()
     assert _gate_after_write(tmp_path) == (True, ["RULES.md"])
+
+
+def test_an_unrelated_security_unset_is_allowed_on_a_flipped_home_too(tmp_path, monkeypatch):
+    """A home whose gate is already OFF is not frozen either: the guard protects what the gate reads,
+    and removing an unrelated key there leaves that reading identical (the flip is not this removal's)."""
+    from hermes_cli import config as cli_config
+
+    monkeypatch.setattr(_guards, "_protected_instruction_config", _REAL_GATE_CONFIG)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    _flipped_home(tmp_path, extra_patterns="  protected_instruction_extra_patterns:\n    - RULES.md\n")
+    written = tmp_path / "config.yaml"
+    written.write_text(written.read_text() + "  unknown_key: value\n")
+    assert _gate_after_write(tmp_path) == (False, ["RULES.md"])
+
+    cli_config.unset_config_value("security.unknown_key")
+
+    assert "unknown_key" not in written.read_text()
+    assert "RULES.md" in written.read_text()
+    assert _gate_after_write(tmp_path) == (False, ["RULES.md"])

@@ -255,11 +255,18 @@ def refuse_unattended_security_unset(key: str, current_config: Any = None) -> No
     that drops the covered patterns are refused, while an unrelated ``security.<key>`` (or the enable
     leaf, whose absence means the documented default ON) still goes through — the section is not frozen.
 
+    A removal that leaves the gate reading *exactly* what it read before is allowed first, before the
+    coverage comparison: the comparison also refuses a config that reads OFF, which is right for a
+    write that flips the switch but wrong for a home where it is already OFF — refusing an unrelated
+    ``security.<key>`` there would freeze the whole section over a state the removal did not create.
+
     Called by :func:`hermes_cli.config.unset_config_value` before ``_unset_nested`` runs.
     """
     if _human_at_a_terminal() or not _key_may_name_switch(key):
         return
     after = _config_after_unset(key, current_config)
+    if after is not None and _read_switch(after) == _read_switch(current_config):
+        return
     if after is not None and _keeps_gate_enabled(after, current_config):
         return
     _refuse_unattended(

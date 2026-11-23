@@ -372,6 +372,8 @@ discord:
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   bots_require_inline_mention: true  # Bot authors must type a literal @mention (default: true)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
+  free_response_thread_mode: inherit  # inherit | never | always (threads under free-response channels)
+  free_response_overrides: {}     # Per channel-or-thread ID true/false
   auto_thread: true               # Auto-create threads on @mention
   free_response_auto_thread: false # If true, free_response_channels also auto-thread (default: inline)
   reactions: true                 # Add emoji reactions during processing
@@ -437,11 +439,49 @@ discord:
     - 9876543210
 ```
 
-If a thread's parent channel is in this list, the thread also becomes mention-free.
+By default (`free_response_thread_mode: inherit`), if a thread's parent channel is in this list, the thread also becomes mention-free. See [`discord.free_response_thread_mode`](#discordfree_response_thread_mode) and [`discord.free_response_overrides`](#discordfree_response_overrides) to change that per thread.
 
 Free-response channels also **skip auto-threading** by default — the bot replies inline rather than spinning off a new thread per message. This keeps the channel usable as a lightweight chat surface.
 
 To opt in to threading for free-response channels, set `discord.free_response_auto_thread: true` (or `DISCORD_FREE_RESPONSE_AUTO_THREAD=true`). In that mode each new top-level message in a free channel still gets its own thread, but the channel remains @mention-free. Requires `discord.auto_thread: true`.
+
+#### `discord.free_response_thread_mode`
+
+**Type:** string (`inherit`, `never` or `always`) — **Default:** `inherit` — **Env mirror:** `DISCORD_FREE_RESPONSE_THREAD_MODE`
+
+How a thread decides whether it is mention-free:
+
+- `inherit` — the thread follows its parent channel: free-response if the parent is in `free_response_channels` (or `"*"`), unless the parent has an override. This is the historical behavior.
+- `never` — a thread is mention-free only if the thread itself is listed in `free_response_channels` or has an override of `true`. `"*"` counts as a channel listing, so it does not free threads either. Use this when threads under a shared free-response channel belong to other agents or bots.
+- `always` — every thread is mention-free.
+
+A thread's own entry in `free_response_overrides` always wins. A thread the bot has already replied in normally skips the mention check; that exemption does not apply to a thread opted out here (its own `false` override, or a thread under a free-response channel with `never`), so the bot answers there only when @mentioned, one message at a time, including in threads it answered in before the setting changed. Under `never`, threads the bot created itself (auto-thread, `/thread`) still continue without a mention.
+
+```yaml
+discord:
+  free_response_channels: "1234567890"   # a shared channel
+  free_response_thread_mode: never           # ...but its threads need an @mention
+```
+
+#### `discord.free_response_overrides`
+
+**Type:** map of channel-or-thread ID to `true`/`false` — **Default:** `{}` — **Env mirror:** `DISCORD_FREE_RESPONSE_OVERRIDES`
+
+Per-ID override of the free-response decision. A thread's own entry wins over everything else; with `free_response_thread_mode: inherit` a thread without one follows its parent's entry, then the parent's listing. A plain channel's entry wins over `free_response_channels` (including `"*"`). Channel names (`general` or `#general`) work as keys too, but IDs are unambiguous.
+
+```yaml
+discord:
+  free_response_channels: "1234567890"
+  free_response_overrides:
+    "1234567890": true       # the channel itself
+    "5555555555": false      # one thread that needs a mention
+```
+
+The map goes in `config.yaml`; a YAML list is ignored with a warning. `DISCORD_FREE_RESPONSE_OVERRIDES` mirrors the key as a JSON object (`{"5555555555": false}`), which is what the config bridge writes. Both settings are read when the gateway connects and re-read when `config.yaml` changes; an invalid value logs one warning naming the key and the allowed values.
+
+> **Native adapter only.** `free_response_thread_mode` and `free_response_overrides` apply to the built-in Discord adapter. The relay connector's relevance policy projects only `free_response_channels` ([contract §7.3](../../developer-guide/relay-connector-contract.md)), so with relay active the connector does not see these keys, and Hermes logs a one-time warning at boot if they are set.
+
+> **Missed-message recovery.** The reconnect scan covers the allowed and free-response channels and their threads. A thread that is mention-free only because of `free_response_thread_mode: always`, or a `true` override under an unlisted parent, is not scanned; list its parent in `free_response_channels` or `missed_message_backfill.channels` to include it.
 
 #### `discord.free_response_auto_thread`
 

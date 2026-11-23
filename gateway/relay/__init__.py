@@ -301,6 +301,23 @@ def _json_post(url: str, token: str, body: dict, timeout: float):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
+_native_only_warned = False
+
+
+def _warn_native_only_free_response(plat_cfg: dict) -> None:
+    """The projection below carries only ``free_response_channels``; warn once at boot that the
+    per-thread keys are enforced by the native adapter and not by the connector's relevance gate."""
+    global _native_only_warned
+    keys = [k for k in ("free_response_thread_mode", "free_response_overrides") if plat_cfg.get(k)
+            and not (k == "free_response_thread_mode" and str(plat_cfg[k]).strip().lower() == "inherit")]
+    if keys and not _native_only_warned:
+        _native_only_warned = True
+        logger.warning(
+            "relay is active but %s set: these keys are native-adapter-only and are not projected to the "
+            "relay connector's relevance policy (only free_response_channels is), so the connector may "
+            "still deliver messages from threads you opted out", " and ".join(keys) + (" is" if len(keys) == 1 else " are"))
+
+
 def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:
     """Project a fronted platform's RELEVANCE config into the connector's generic vocabulary.
 
@@ -333,6 +350,7 @@ def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:
             yield (cfg.get("platforms") or {}).get(platform)
 
         plat_cfg = next((c for c in _candidates() if isinstance(c, dict)), {})
+        _warn_native_only_free_response(plat_cfg)
 
         if "require_mention" in plat_cfg:
             require_mention = plat_cfg.get("require_mention")

@@ -13,7 +13,8 @@ def test_operator_allowlist_shaped_vars_are_not_gates_but_platform_gates_are():
     assert not is_profile_gate_env("ACCESS_ALLOWED_CALLBACK_ACE_TYPE")
     assert not is_profile_gate_env("HERMES_MEDIA_ALLOW_DIRS")
     for gate in ("DISCORD_ALLOWED_CHANNELS", "TELEGRAM_GROUP_ALLOWED_CHATS", "GATEWAY_ALLOW_ALL_USERS",
-                 "WHATSAPP_GROUP_ALLOW_FROM", "QQ_GROUP_ALLOWED_USERS", "IRC_ALLOW_ALL_USERS"):
+                 "WHATSAPP_GROUP_ALLOW_FROM", "QQ_GROUP_ALLOWED_USERS", "IRC_ALLOW_ALL_USERS",
+                 "DISCORD_FREE_RESPONSE_THREAD_MODE", "DISCORD_FREE_RESPONSE_OVERRIDES"):
         assert is_profile_gate_env(gate), gate
 
 

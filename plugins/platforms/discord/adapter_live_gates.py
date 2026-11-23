@@ -16,14 +16,27 @@ from gateway.platforms._shared import bridge_owns_env, mark_live_gate_baseline, 
 # extra never disagree about which config they came from.
 _LIVE_GATE_EXTRA_KEYS = (
     "allow_from", "allowed_users", "allowed_roles", "allowed_channels", "ignored_channels",
-    "no_thread_channels", "free_response_channels", "allow_all_users", "allow_bots",
+    "no_thread_channels", "free_response_channels", "free_response_thread_mode", "free_response_overrides",
+    "allow_all_users", "allow_bots",
 )
 
 
 class DiscordLiveGatesMixin:
     _gate_raw: Callable[..., Any]
     _gate_csv_set: Callable[[Any], set]
+    _gate_env: Callable[..., str]
     _snapshot_gate_env: Callable[[], None]
+
+    def _derive_free_response_settings(self) -> None:
+        """Parse free_response_thread_mode / _overrides once per config load (not per message)."""
+        from plugins.platforms.discord.free_response import derive_settings
+        self._free_response_cache = derive_settings(
+            getattr(getattr(self, "config", None), "extra", None), self._gate_env, self.name)
+
+    def _free_response_settings(self):
+        if getattr(self, "_free_response_cache", None) is None:
+            self._derive_free_response_settings()  # an adapter that never connected
+        return self._free_response_cache
 
     def _mark_live_gate_baseline(self) -> None:
         mark_live_gate_baseline(self)
@@ -42,6 +55,7 @@ class DiscordLiveGatesMixin:
         self._username_to_id = {}
         self._allowed_user_ids = self._get_allowed_users()
         self._allowed_role_ids = self._get_allowed_roles()  # ANY listed role grants access
+        self._derive_free_response_settings()
         self._mark_live_gate_baseline()
 
     def _get_allowed_users(self) -> set:
@@ -74,6 +88,7 @@ class DiscordLiveGatesMixin:
         self._snapshot_gate_env()
         self._allowed_user_ids = self._get_allowed_users()
         self._allowed_role_ids = self._get_allowed_roles()
+        self._derive_free_response_settings()
         resolved = set((getattr(self, "_username_to_id", None) or {}).values())
         self._username_resolved_ids = resolved & self._allowed_user_ids
 

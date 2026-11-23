@@ -185,10 +185,15 @@ it('keeps catalog filtering and shelving off the urgent search render', async ()
   vi.mocked(filterCatalog).mockClear()
   vi.mocked(catalogCategories).mockClear()
 
-  fireEvent.change(screen.getByRole('textbox', { name: 'Search catalog' }), { target: { value: 'alp' } })
+  const search = screen.getByRole('textbox', { name: 'Search catalog' })
+
+  for (const value of ['a', 'al', 'alp']) {
+    fireEvent.change(search, { target: { value } })
+  }
+
   await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(1))
 
-  // Only the deferred render filters, so every pass already sees the new query.
+  // A typing burst settles into one filter pass, run off the urgent render with the final query.
   expect(vi.mocked(filterCatalog).mock.calls.map(([, , query]) => query)).toEqual(['alp'])
   // Facets and discovery shelves depend on the feed, not the query.
   expect(catalogCategories).not.toHaveBeenCalled()

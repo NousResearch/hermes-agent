@@ -361,7 +361,7 @@ describe('PluginsTab', () => {
     })
   })
 
-  it('shows installed plugins in list/detail mode and filters them through the parent search', () => {
+  it('shows installed plugins in list/detail mode and filters them through the parent search', async () => {
     $pluginRecords.set({
       clock: { id: 'clock', name: 'Clock', kind: 'disk', status: 'loaded' },
       weather: { id: 'weather', name: 'Weather', kind: 'disk', status: 'loaded' }
@@ -375,8 +375,8 @@ describe('PluginsTab', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
 
     fireEvent.change(screen.getByRole('textbox', { name: 'Search plugins' }), { target: { value: 'Clock' } })
-    expect(screen.queryByRole('button', { name: 'Weather', pressed: false })).toBeNull()
-    expect(screen.getByRole('switch', { name: 'Desktop: Clock' })).toBeTruthy()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Weather', pressed: false })).toBeNull())
+    expect(await screen.findByRole('switch', { name: 'Desktop: Clock' })).toBeTruthy()
   })
 
   it('toggles by canonical key through plugins.manage', async () => {

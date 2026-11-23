@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { memo, type ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 
+import { useDebounced } from '@/app/hooks/use-debounced'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -333,7 +334,11 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const c = t.catalog
   const cardView = useStore($catalogCardView)
   const { data, isPending, error, refetch } = useCatalog(kind)
-  const deferredQuery = useDeferredValue((query ?? '').trim().toLowerCase())
+  // Debounce first so a typing burst schedules one filter pass over the feed, not one per key.
+  // Clearing skips the wait: it only widens results, and a deep link clears it while selecting its target.
+  const normalizedQuery = (query ?? '').trim().toLowerCase()
+  const settledQuery = useDebounced(normalizedQuery, 300)
+  const deferredQuery = useDeferredValue(normalizedQuery ? settledQuery : '')
   const [selectedId, setSelectedId] = useState<string | null>(selectedEntryId ?? null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [limit, setLimit] = useState(PAGE_SIZE)

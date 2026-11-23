@@ -44,6 +44,36 @@ def _sanitize_telegram_name(raw: str) -> str:
     return _TG_MULTI_UNDERSCORE.sub("_", name).strip("_")
 
 
+def _exec_quick_command_entries() -> list[tuple[str, str]]:
+    """``(name, description)`` for the operator's ``type: exec`` quick commands.
+
+    A quick command is dispatched by the gateway but never appears in a platform menu, so an
+    operator who defines one (``quick_commands:`` in config.yaml) can only use it by remembering
+    its exact spelling. ``description`` supplies the menu label; ``telegram_visible: false`` opts
+    an entry out (e.g. an internal job that makes no sense to trigger from a chat menu).
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        entries = (read_raw_config() or {}).get("quick_commands") or {}
+    except Exception:
+        return []
+    if not isinstance(entries, Mapping):
+        return []
+    found: list[tuple[str, str]] = []
+    for raw_name, spec in entries.items():
+        if not isinstance(raw_name, str) or not isinstance(spec, Mapping):
+            continue  # malformed entry: the gateway refuses it too
+        if str(spec.get("type") or "").lower() != "exec":
+            continue  # aliases only forward to another command; nothing new to advertise
+        if spec.get("telegram_visible") is False:
+            continue
+        description = str(spec.get("description") or "").strip()
+        if not description:
+            description = raw_name.replace("-", " ").replace("_", " ").strip().title()
+        found.append((raw_name, _truncate_desc(description, 40)))
+    return found
+
+
 _TG_DASHES = re.compile("[\u2012\u2013\u2014\u2015\u2212]")
 
 
@@ -95,7 +125,17 @@ def telegram_bot_commands(*, include_plugins: bool = True) -> list[tuple[str, st
     if include_plugins:
         pairs += [(n, d) for n, d, hint in _iter_plugin_command_entries()
                   if not _requires_argument(hint)]
-    return [(tg, _normalize_telegram_desc(desc)) for name, desc in pairs if (tg := _sanitize_telegram_name(name))]
+    result = [(tg, _normalize_telegram_desc(desc)) for name, desc in pairs
+              if (tg := _sanitize_telegram_name(name))]
+    # User ``quick_commands`` are neither built-ins nor plugin commands, so they must be added
+    # AFTER the ``include_plugins`` gate: ``telegram_menu_commands()`` calls this with
+    # ``include_plugins=False`` and a gate would drop every quick command from the menu.
+    reserved = {name for name, _ in result}
+    result.extend(_clamp_command_names(
+        [(tg, _normalize_telegram_desc(desc)) for raw, desc in _exec_quick_command_entries()
+         if (tg := _sanitize_telegram_name(raw))],
+        reserved))
+    return result
 
 
 # Telegram allows 100 BotCommands; the 60-slot default keeps every built-in plus common skill
@@ -166,6 +206,12 @@ def _prioritize_telegram_menu_candidates(
     menu_cfg = _telegram_command_menu_config()
     configured_rank = _sanitized_rank(menu_cfg["priority"])
     default_rank = _sanitized_rank(_TELEGRAM_MENU_PRIORITY)
+    # User quick commands rank immediately after the built-in priority list. Left unranked they
+    # were the first candidates the menu cap dropped — a 60-slot menu silently lost every one of
+    # them (they sort into the same tail as the skill commands).
+    for _raw, _desc in _exec_quick_command_entries():
+        if _tg_name := _sanitize_telegram_name(_raw):
+            default_rank.setdefault(_tg_name, len(default_rank))
     tiers = _TELEGRAM_PRIORITY_TIERS[menu_cfg["priority_mode"]]
 
     def _rank(stable_index: int, candidate: tuple[str, str, str, str]) -> tuple[int, int, int]:

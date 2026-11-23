@@ -5,7 +5,7 @@ from prompt_toolkit.document import Document
 
 from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
-from hermes_cli.commands_platforms import (_CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, discord_skill_commands_by_category, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands)
+from hermes_cli.commands_platforms import (_CMD_NAME_LIMIT, _prioritize_telegram_menu_candidates, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, discord_skill_commands_by_category, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands)
 
 
 def _completions(completer: SlashCommandCompleter, text: str):
@@ -173,6 +173,62 @@ class TestTelegramBotCommands:
         assert "queue" in names
         assert "steer" in names
 
+
+
+class TestTelegramQuickCommands:
+    """Operator ``quick_commands`` (type: exec) are dispatchable but were missing from the menu."""
+
+    @staticmethod
+    def _config(monkeypatch, quick_commands):
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"quick_commands": quick_commands},
+        )
+
+    def test_exec_quick_commands_appear_with_their_description(self, monkeypatch):
+        self._config(monkeypatch, {
+            "wxip": {"type": "exec", "command": "/bin/true", "description": "refresh the office IP"},
+        })
+        assert ("wxip", "refresh the office IP") in telegram_bot_commands()
+
+    def test_menu_includes_quick_commands_even_without_plugins(self, monkeypatch):
+        """``telegram_menu_commands()`` passes ``include_plugins=False``; a quick command must survive."""
+        self._config(monkeypatch, {"wxip": {"type": "exec", "command": "/bin/true"}})
+        menu, _hidden = telegram_menu_commands(max_commands=100)
+        assert "wxip" in {name for name, _ in menu}
+
+    def test_non_exec_and_opted_out_entries_stay_hidden(self, monkeypatch):
+        self._config(monkeypatch, {
+            "alias_only": {"type": "alias", "target": "/new"},
+            "quiet": {"type": "exec", "command": "/bin/true", "telegram_visible": False},
+        })
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "alias_only" not in names
+        assert "quiet" not in names
+
+    def test_description_falls_back_to_a_readable_name(self, monkeypatch):
+        self._config(monkeypatch, {"ship_check": {"type": "exec", "command": "/bin/true"}})
+        assert ("ship_check", "Ship Check") in telegram_bot_commands()
+
+    def test_quick_command_ranks_ahead_of_unranked_core(self, monkeypatch):
+        """The menu cap fills from the ranked list first: an unranked quick command is the first
+        candidate it drops, so it must rank ahead of the unranked core tail."""
+        self._config(monkeypatch, {"wxip": {"type": "exec", "command": "/bin/true"}})
+        # Isolate the mechanism from this install's own priority list.
+        monkeypatch.setattr("hermes_cli.commands_platforms._TELEGRAM_MENU_PRIORITY", ())
+        ordered = _prioritize_telegram_menu_candidates([
+            ("zzz_filler", "filler", "core", "zzz_filler"),
+            ("wxip", "refresh the office IP", "core", "wxip"),
+        ])
+        assert next(row[0] for row in ordered) == "wxip"
+
+    def test_quick_command_never_shadows_a_builtin(self, monkeypatch):
+        self._config(monkeypatch, {
+            "new": {"type": "exec", "command": "/bin/true", "description": "shadow"},
+        })
+        pairs = telegram_bot_commands()
+        assert sum(1 for name, _ in pairs if name == "new") == 1
+        assert ("new", "shadow") not in pairs
 
 
 class TestSkillBundleGatewayCatalogs:

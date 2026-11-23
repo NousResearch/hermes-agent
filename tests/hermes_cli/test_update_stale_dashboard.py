@@ -56,6 +56,16 @@ def _no_real_launchd_jobs():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_real_checkout_probe():
+    """The update path asks which checkout a sibling home's supervisor serves. The process and
+    unit-file probes (psutil, ``systemctl show``) must never reach the host from these tests;
+    tests that need an answer patch them."""
+    with patch("hermes_cli.update_fleet_scope.gateway_pid_foreign_checkout", return_value=None), \
+         patch("hermes_cli.update_fleet_scope.systemd_unit_foreign_checkout", return_value=None) as unit_probe:
+        yield unit_probe
+
+
 def _ps_line(pid: int, cmd: str) -> str:
     """Format a line as it would appear in ``ps -A -o pid=,command=`` output."""
     return f"{pid:>7} {cmd}"
@@ -1035,7 +1045,8 @@ class TestSiblingHomeBackends:
 
     ARGV = ["hermes", "dashboard", "--isolated", "--port", "9200"]
 
-    def _run(self, tmp_path, monkeypatch, pid_homes, *, launchd_jobs=(), launchd_pids=()):
+    def _run(self, tmp_path, monkeypatch, pid_homes, *, launchd_jobs=(), launchd_pids=(), services=None):
+        services = services or {}
         milo = tmp_path / "profiles" / "milo"
         milo.mkdir(parents=True)
         monkeypatch.setenv("HERMES_HOME", str(milo))
@@ -1051,8 +1062,10 @@ class TestSiblingHomeBackends:
 
         with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
              patch.object(main_dashboard, "_find_stale_dashboard_pids", return_value=list(pid_homes)), \
-             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
-             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path",
+                          side_effect=lambda pid: f"/user.slice/{services[pid]}" if pid in services else None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", side_effect=services.get), \
+             patch.object(main_dashboard, "_try_restart_systemd_service", return_value=True) as self.unit_restart, \
              patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=list(self.ARGV)), \
              patch.object(main_dashboard, "_loaded_launchd_backend_jobs", return_value=list(launchd_jobs)), \
              patch.object(main_dashboard, "_launchd_job_owning_backend", side_effect=owner), \
@@ -1086,12 +1099,80 @@ class TestSiblingHomeBackends:
     def test_sibling_launchd_backend_is_still_refreshed(self, tmp_path, monkeypatch):
         """The case this PR exists for: the machine dashboard (default home) under a launchd job,
         updated from a named profile, is stopped and kickstarted."""
+        mine, _other = self._checkouts(tmp_path, monkeypatch)
         result, signalled, respawn, kickstart = self._run(
             tmp_path, monkeypatch, {7003: lambda milo: str(tmp_path)},
-            launchd_jobs=[object()], launchd_pids={7003})
+            launchd_jobs=[self._job(mine)], launchd_pids={7003})
         assert 7003 in signalled and result["killed"] == [7003] and result["spared"] == []
         kickstart.assert_called_once()
         respawn.assert_not_called()
+
+    @staticmethod
+    def _checkouts(tmp_path, monkeypatch):
+        """Two Hermes checkouts on disk; the update runs from the first."""
+        roots = []
+        for name in ("mine", "other"):
+            root = tmp_path / "src" / name
+            (root / "hermes_cli").mkdir(parents=True)
+            (root / "hermes_cli" / "main.py").write_text("")
+            roots.append(root.resolve())
+        monkeypatch.setattr("hermes_cli.update_receipt._updater_code_root", lambda: roots[0])
+        return roots
+
+    @staticmethod
+    def _job(checkout):
+        """A loaded launchd job as ``_loaded_launchd_backend_jobs`` returns it; ``_run``'s owner
+        stub attributes the backend to this domain and label."""
+        return ("gui/501", "ai.hermes.dashboard",
+                [str(checkout / "venv" / "bin" / "hermes"), "dashboard", "--port", "9119"], 7003)
+
+    def test_sibling_launchd_backend_of_another_checkout_is_left_running(self, tmp_path, monkeypatch, capsys):
+        """An update run from a second checkout did not change the code the machine dashboard
+        serves: the job's ProgramArguments name the other checkout, so it is named, not bounced.
+        The running process gives no evidence here (the probe is stubbed to None), as with a job
+        that runs ``python -m hermes_cli.main`` under a managed interpreter."""
+        _mine, other = self._checkouts(tmp_path, monkeypatch)
+        result, signalled, respawn, kickstart = self._run(
+            tmp_path, monkeypatch, {7003: lambda milo: str(tmp_path)},
+            launchd_jobs=[self._job(other)], launchd_pids={7003})
+        assert signalled == set() and result["killed"] == [] and result["spared"] == []
+        kickstart.assert_not_called()
+        respawn.assert_not_called()
+        out = capsys.readouterr().out
+        assert "gui/501/ai.hermes.dashboard" in out and f"another Hermes checkout ({other})" in out
+
+    def test_sibling_systemd_backend_of_another_checkout_is_left_running(
+            self, tmp_path, monkeypatch, capsys, _no_real_checkout_probe):
+        """Same rule through the fleet pass's unit probe, asked in the unit's own manager scope."""
+        _no_real_checkout_probe.return_value = "/srv/other-checkout"
+        unit = "hermes-kay-serve.service"
+        result, signalled, _respawn, _ = self._run(
+            tmp_path, monkeypatch, {7005: lambda milo: str(tmp_path)}, services={7005: unit})
+        _no_real_checkout_probe.assert_called_once_with(["systemctl", "--user"], unit)
+        assert signalled == set() and result["killed"] == []
+        self.unit_restart.assert_not_called()
+        assert f"{unit}: systemd unit of another Hermes checkout (/srv/other-checkout)" in capsys.readouterr().out
+
+    def test_sibling_systemd_backend_of_this_checkout_is_still_restarted(self, tmp_path, monkeypatch):
+        unit = "hermes-kay-serve.service"
+        result, signalled, _respawn, _ = self._run(
+            tmp_path, monkeypatch, {7005: lambda milo: str(tmp_path)}, services={7005: unit})
+        assert 7005 in signalled and result["killed"] == [7005]
+        self.unit_restart.assert_called_once()
+
+    def test_invoking_home_backend_is_never_asked_about_its_checkout(
+            self, tmp_path, monkeypatch, _no_real_checkout_probe):
+        """The checkout rule covers only the homes this change added to the sweep. The invoking
+        home's supervised backend is restarted as on main, whatever its supervisor launches."""
+        _mine, other = self._checkouts(tmp_path, monkeypatch)
+        _no_real_checkout_probe.return_value = "/srv/other-checkout"
+        result, signalled, _respawn, kickstart = self._run(
+            tmp_path, monkeypatch, {7003: lambda milo: str(milo), 7005: lambda milo: str(milo)},
+            launchd_jobs=[self._job(other)], launchd_pids={7003}, services={7005: "hermes-serve.service"})
+        _no_real_checkout_probe.assert_not_called()
+        assert {7003, 7005} <= signalled and sorted(result["killed"]) == [7003, 7005]
+        kickstart.assert_called_once()
+        self.unit_restart.assert_called_once()
 
     def test_unreadable_home_keeps_todays_behaviour(self, tmp_path, monkeypatch):
         """Ownership unknown (environment unreadable) is not evidence of a sibling: the scope

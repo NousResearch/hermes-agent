@@ -711,7 +711,8 @@ def _kill_stale_dashboard_processes(
             if job := _launchd_owner(pid, _dash._dashboard_cmdline_for_pid(pid)):
                 pid_launchd[pid] = job
     pids, spared = _spare_unrestartable_sibling_backends(
-        pids, pid_service, pid_launchd, pid_home, update_path=restart_managed)
+        pids, pid_service, pid_launchd, pid_home, update_path=restart_managed,
+        pid_cgroup=pid_cgroup, launchd_jobs=launchd_jobs)
     if not pids:
         return {**_empty_result(), "spared": [pid for pid, _home in spared]}
     print(f"\n⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
@@ -738,10 +739,41 @@ def _kill_stale_dashboard_processes(
             "unrecovered": list(unrecovered), "spared": [pid for pid, _home in spared]}
 
 
+def _supervisor_foreign_checkout(
+    pid: int, service: str | None, cgroup: str | None,
+    launchd_job: tuple[str, str, int | None] | None, launchd_jobs: list,
+) -> tuple[str, str, str] | None:
+    """``(kind, name, checkout)`` when the supervisor of backend *pid* runs or launches another
+    Hermes checkout than the one running this update, else None (this checkout, or no evidence).
+
+    Same evidence order as the fleet pass (``systemd_unit_foreign_checkout``): the running process,
+    then the supervisor's definition. The definition matters: a launchd job started through a
+    checkout's console script runs as ``python -m hermes_cli.main`` under a managed interpreter,
+    and that argv names no checkout.
+    """
+    from hermes_cli import update_fleet_scope as _scope
+
+    if service:
+        from hermes_cli import main_dashboard as _dash
+        from hermes_cli.update_cmd_fleet import _SYSTEMD_SCOPES
+        scope_cmd = dict(_SYSTEMD_SCOPES).get(_dash._extract_scope_from_cgroup(cgroup or "") or "")
+        checkout = (_scope.systemd_unit_foreign_checkout(scope_cmd, service) if scope_cmd
+                    else _scope.gateway_pid_foreign_checkout(pid))
+        return ("systemd unit", service, checkout) if checkout else None
+    if launchd_job:
+        domain, label, _live_pid = launchd_job
+        checkout = _scope.gateway_pid_foreign_checkout(pid)
+        if checkout is None:
+            argv = next((job[2] for job in launchd_jobs if tuple(job[:2]) == (domain, label)), [])
+            checkout = _scope._foreign_of(_scope._source_checkouts(argv))
+        return ("launchd job", f"{domain}/{label}", checkout) if checkout else None
+    return None
+
+
 def _spare_unrestartable_sibling_backends(
     pids: list[int], pid_service: dict[int, str | None],
     pid_launchd: dict[int, tuple[str, str, int | None]], pid_home: dict[int, str | None],
-    *, update_path: bool,
+    *, update_path: bool, pid_cgroup: dict[int, str | None] | None = None, launchd_jobs: list | None = None,
 ) -> tuple[list[int], list[tuple[int, str]]]:
     """Update path: split *pids* into ``(targets, spared)``; spared = ``(pid, home)``, reported.
     Off the update path (``--stop``) nothing is spared.
@@ -751,6 +783,11 @@ def _spare_unrestartable_sibling_backends(
     home and ``_filter_dashboard_respawn_candidates`` drops foreign-home argv (rule 2), so killing
     a sibling profile's manual backend would leave it down with nothing reported. Such a backend
     is left running and named instead; the survivor probe still sees it on pre-update code.
+
+    A sibling home's supervised backend is a target only when its supervisor serves this
+    checkout. Same home is not same install (the fleet pass's rule): an update run from a second
+    checkout did not change that backend's code, so it is named and left running. The invoking
+    home's backends are handled as before.
     """
     if not update_path:
         return pids, []
@@ -760,12 +797,17 @@ def _spare_unrestartable_sibling_backends(
     targets: list[int] = []
     spared: list[tuple[int, str]] = []
     for pid in pids:
-        if pid_service.get(pid) or pid in pid_launchd:
-            targets.append(pid)
-            continue
+        supervised = bool(pid_service.get(pid)) or pid in pid_launchd
         home = pid_home[pid] if pid in pid_home else _hermes_home_for_pid(pid)
-        if home and _normalized_home_for_compare(home) != own_key:
+        if not home or _normalized_home_for_compare(home) == own_key:
+            targets.append(pid)
+        elif not supervised:
             spared.append((pid, home))
+        elif (other := _supervisor_foreign_checkout(
+                pid, pid_service.get(pid), (pid_cgroup or {}).get(pid), pid_launchd.get(pid),
+                launchd_jobs or [])) is not None:
+            from hermes_cli.update_fleet_scope import announce_skipped_runtime
+            announce_skipped_runtime(other[0], other[1], None, checkout=other[2])
         else:
             targets.append(pid)
     _report_spared_sibling_backends(spared)

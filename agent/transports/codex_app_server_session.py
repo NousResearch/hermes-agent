@@ -24,6 +24,7 @@ from agent.transports.codex_app_server import (
 )
 from agent.transports.codex_event_projector import CodexEventProjector, ProjectionResult
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
+from session_rules.turns import _IMAGE_PART_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,6 @@ def _notification_belongs_to_turn(note: dict, *, thread_id: Optional[str], turn_
 
 
 _TEXT_PART_TYPES = frozenset({"text", "input_text"})
-_IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
 _IMAGE_URL_SCHEMES = ("data:", "http://", "https://")
 
 

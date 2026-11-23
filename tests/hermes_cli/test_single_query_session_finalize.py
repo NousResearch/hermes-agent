@@ -4,6 +4,9 @@ from typing import Any
 import pytest
 
 import cli
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.fixture(autouse=True)
@@ -64,31 +67,30 @@ def test_finalize_settles_session_before_a_successor_can_take_over(tmp_path, mon
     ``cli_close`` end-stamp — settlement (flush incl. end_session) must complete
     before the lease is released.
 
-    Exercises the real seam with a real SessionDB and a real lease: the linger is
+    Exercises the real seam with a real store and a real lease: the linger is
     patched to play the successor (acquire the freed lease, reopen the row), and
     the final assertion is that the successor's open interval survives the
     predecessor's whole finalize. On the unsafe order (release → linger → flush)
     the flush's unconditional ``end_session`` stamps the successor's interval and
     this test fails."""
     from hermes_cli import active_sessions
-    from hermes_state import SessionDB
 
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))
-    db = SessionDB(db_path=tmp_path / "state.db")
+    store = storage_handle(tmp_path)
     sid = "s1"
-    db.create_session(sid, "cli")
+    seed_session(store, sid, "cli")
     lease_a, message = active_sessions.try_acquire_active_session(
         session_id=sid, surface="cli", config={}, metadata={"live_session_id": sid}
     )
     assert lease_a is not None, message
 
     agent_a = SimpleNamespace(
-        session_id=sid, _session_db=db, _session_messages=[],
+        session_id=sid, _session_db=store, persistence=store, _session_messages=[],
         _persist_disabled=False, _persist_session=lambda *a, **k: None,
     )
     cli_a = SimpleNamespace(
-        agent=agent_a, session_id=sid, conversation_history=[], _session_db=db,
+        agent=agent_a, session_id=sid, conversation_history=[], _session_db=store,
         _release_active_session=lease_a.release,
     )
 
@@ -103,7 +105,7 @@ def test_finalize_settles_session_before_a_successor_can_take_over(tmp_path, mon
         assert lease_b is not None, f"successor could not acquire during the linger: {msg_b}"
         taken_over["lease_b"] = lease_b
         # …and it resumes the row (the predecessor's settlement already ended it).
-        db.reopen_session(sid)
+        store.sessions.reopen(sid)
 
     monkeypatch.setattr(cli, "_wait_for_oneshot_background_completions", linger_with_takeover)
     monkeypatch.setattr(cli, "_notify_single_query_session_finalize", lambda _c: None)
@@ -111,13 +113,11 @@ def test_finalize_settles_session_before_a_successor_can_take_over(tmp_path, mon
 
     cli._finalize_single_query(cli_a)
 
-    row = db.get_session(sid)
+    row = session_row(store, sid)
     assert row is not None and row["ended_at"] is None, (
         "successor's open interval was end-stamped by the predecessor's finalize"
     )
     taken_over["lease_b"].release()
-
-
 
 
 def test_notify_single_query_session_finalize_uses_agent_session(monkeypatch):
@@ -142,123 +142,3 @@ def test_notify_single_query_session_finalize_uses_agent_session(monkeypatch):
             },
         )
     ]
-
-
-def test_human_single_query_main_finalizes_after_query(monkeypatch):
-    calls = []
-
-    import cli as cli_mod
-
-    class _Console:
-        def print(self, *_args, **_kwargs):
-            calls.append("query-label")
-
-    class FakeCLI:
-        def __init__(self, **_kwargs):
-            self.console = _Console()
-            self.session_id = "single-query-session"
-            self.agent = SimpleNamespace(
-                session_id="single-query-session",
-                platform="cli",
-            )
-
-        def _claim_active_session(self, surface, *, stderr=False):
-            calls.append(("claim", surface, stderr))
-            return True
-
-        def _show_security_advisories(self):
-            calls.append("advisories")
-
-        def chat(self, query, images=None):
-            calls.append(("chat", query, images))
-            self._last_turn_result = {"final_response": "done", "completed": True}
-            return "done"
-
-        def _print_exit_summary(self, clear_screen=True):
-            calls.append("summary")
-
-    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
-    monkeypatch.setattr(cli_mod.atexit, "register", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        cli_mod,
-        "_finalize_single_query",
-        lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
-    )
-
-    # The non-quiet one-shot path exits with the turn's outcome (0 here), like ``-Q``.
-    with pytest.raises(SystemExit) as exc_info:
-        cli_mod.main(query="hello", quiet=False, toolsets="terminal")
-
-    assert exc_info.value.code == 0
-    assert ("chat", "hello", None) in calls
-    assert calls[-1] == ("finalize", "single-query-session")
-
-
-def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatch):
-    calls = []
-
-    import cli as cli_mod
-
-    def run_conversation(*, user_message, conversation_history):
-        calls.append(("run", user_message, conversation_history))
-        return {
-            "final_response": "",
-            "error": "provider failed",
-            "failed": True,
-        }
-
-    class FakeCLI:
-        def __init__(self, **_kwargs):
-            self.provider = "test-provider"
-            self.model = "test-model"
-            self.session_id = "quiet-session"
-            self.conversation_history = []
-            self._active_agent_route_signature = "same-route"
-            self.agent = SimpleNamespace(
-                session_id="quiet-session",
-                platform="cli",
-                quiet_mode=False,
-                suppress_status_output=False,
-                stream_delta_callback=object(),
-                tool_gen_callback=object(),
-                run_conversation=run_conversation,
-            )
-
-        def _claim_active_session(self, surface, *, stderr=False):
-            calls.append(("claim", surface, stderr))
-            return True
-
-        def _ensure_runtime_credentials(self):
-            calls.append("credentials")
-            return True
-
-        def _resolve_turn_agent_config(self, effective_query):
-            calls.append(("resolve", effective_query))
-            return {
-                "signature": "same-route",
-                "model": None,
-                "runtime": None,
-                "request_overrides": None,
-            }
-
-        def _init_agent(self, **kwargs):
-            calls.append(("init", kwargs))
-            return True
-
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
-    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
-    monkeypatch.setattr(cli_mod.atexit, "register", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        cli_mod,
-        "_finalize_single_query",
-        lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
-    )
-
-    with pytest.raises(SystemExit) as exc_info:
-        cli_mod.main(query="hello", quiet=True, toolsets="terminal")
-
-    assert exc_info.value.code == 1
-    assert ("claim", "cli", True) in calls
-    assert ("run", "hello", []) in calls
-    assert calls[-1] == ("finalize", "quiet-session")

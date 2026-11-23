@@ -141,6 +141,30 @@ def test_passive_reads_and_missing_objects_make_one_attempt(monkeypatch):
     assert waits == []
 
 
+@pytest.mark.parametrize(("base", "headers", "blocked"), [
+    ("https://hermes-assets.nousresearch.com", {"Server": "cloudflare", "Content-Type": "text/html"}, True),
+    ("https://hermes-assets.nousresearch.com", {"Server": "cloudflare", "cf-cache-status": "DYNAMIC"}, False),
+    ("https://other-r2.example", {"Server": "cloudflare", "Content-Type": "text/html"}, False),
+])
+def test_cdn_firewall_403_names_the_network_not_the_install(base, headers, blocked):
+    """#128295: a Cloudflare block that never reached our bucket must not read as a bare HTTP 403."""
+    from email.message import Message
+    from urllib.error import HTTPError
+    from hermes_cli.release_channels import ChannelError, ChannelReader
+
+    hdrs = Message()
+    for key, value in headers.items():
+        hdrs[key] = value
+
+    def opener(request, timeout):
+        raise HTTPError(request.full_url, 403, "Forbidden", hdrs, None)
+
+    with pytest.raises(ChannelError) as raised:
+        ChannelReader(base, opener=opener).read_bytes("releases/channels/pm-preview.json")
+    assert ("CDN firewall (Cloudflare) refused this network" in str(raised.value)) is blocked
+    assert str(raised.value).startswith("Channel read unavailable: HTTP 403")
+
+
 def test_reader_rejects_cycles_identity_substitution_and_cross_authority():
     from hermes_cli.release_channels import ChannelReader, ChannelError, canonical_json
     with object_server() as (url, objects, _headers, _requests, _faults):
@@ -177,11 +201,13 @@ def test_legacy_bootstrap_uses_real_archive_keys_and_source_main_has_no_bundle()
         preview = pub.create("temporary")
         request = pub.allocate("temporary", "a" * 40, "2.0.0")
         manifest, _ = seed_manifest(pub, request, objects)
-        for name, policy, tag in [("stable", "stable-release", "v2.0.0"), ("canary", "canary-release", "v2.1.0+canary.20260913T000100Z")]:
+        from hermes_cli.update_channel import release_version
+
+        for name, policy, tag in [("stable", "stable-release", "v2.0.0"), ("canary", "canary-release", "canary.20260913T000100Z-v2.1.0")]:
             legacy = deepcopy(manifest)
             legacy["request"].update(channel=name, buildId=("a" if name == "stable" else "b") * 32,
-                                     releaseTag=tag, version=tag[1:], windowsVersion="2.0.0.0" if name == "stable" else "2.1.0.10")
-            legacy["packages"][0].update(version=tag[1:])
+                                     releaseTag=tag, version=release_version(tag), windowsVersion="2.0.0.0" if name == "stable" else "2.1.0.10")
+            legacy["packages"][0].update(version=release_version(tag))
             legacy["packages"][0]["artifact"]["key"] = f"releases/tag/{tag}/actual.zip"
             legacy["packages"][0]["feed"]["key"] = f"releases/tag/{tag}/stable-mac.yml"
             record = dict(preview, name=name, policy=policy, nextSequence=2,

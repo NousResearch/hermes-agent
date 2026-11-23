@@ -13,9 +13,7 @@ from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from hermes_cli.config import DEFAULT_CONFIG, get_process_hermes_home
-from hermes_cli.web_models import MCPServerCreate
 from hermes_cli.web_server_gateway import _ACTION_LOG_FILES
-from hermes_cli.web_server_mcp import _normalize_mcp_server_create
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -145,15 +143,14 @@ def _parse_model_ids(resp: Any) -> list[str]:
 def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: bool,
                             has_env: bool, gateway_running: Callable[[], bool]) -> dict[str, Any]:
     model, provider = _safe(lambda: profiles_mod._read_config_model(home), (None, None))
-    meta = lambda key, default: _safe(
-        lambda: profiles_mod.read_profile_meta(home).get(key, default), default)
+    meta = _safe(lambda: profiles_mod.read_profile_meta(home), {}).get
     return {
         "name": name, "path": str(home), "is_default": is_default, "model": model,
         "provider": provider, "has_env": has_env,
         "skill_count": _safe(lambda: profiles_mod._cached_skill_count(home), 0),
         "gateway_running": _safe(gateway_running, False),
         "description": meta("description", ""), "description_auto": meta("description_auto", False),
-        "bot_title": meta("bot_title", ""),
+        "bot_title": meta("bot_title", ""), "ui_meta": meta("ui_meta", {}),
         "distribution_name": None, "distribution_version": None, "distribution_source": None,
         "has_alias": False}
 
@@ -199,38 +196,6 @@ def _resolve_profile_dir(name: str) -> Path:
     return profiles_mod.get_profile_dir(name)
 
 
-def _write_profile_mcp_servers(profile_dir: Path, servers: list[MCPServerCreate]) -> int:
-    """Write MCP server entries into ``profile_dir``'s config.yaml (HERMES_HOME-scoped).
-
-    Mirrors the per-server shape ``POST /api/mcp/servers`` builds, batched so the whole
-    profile-create write is one config save. Returns the number of servers written.
-    """
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.mcp_config import _save_bearer_auth_token
-    written = 0
-    with _hermes_home_scope(profile_dir):
-        cfg = load_config()
-        mcp = cfg.setdefault("mcp_servers", {})
-        for server in servers:
-            try:
-                name, entry, bearer_token = _normalize_mcp_server_create(server)
-            except ValueError as exc:
-                display_name = (server.name or "").strip() or "<unnamed>"
-                _log.warning("Profile-create: skipping MCP server '%s': %s", display_name, exc)
-                continue
-            if bearer_token is not None:
-                entry["headers"] = _save_bearer_auth_token(name, bearer_token)
-            mcp[name] = entry
-            written += 1
-        if written:
-            save_config(cfg)
-        elif not mcp:
-            # Don't leave the stray empty key we just created in the new profile's config.
-            cfg.pop("mcp_servers", None)
-            save_config(cfg)
-    return written
-
-
 # Skills & Tools endpoints accept an optional ``profile`` query param so the dashboard can
 # manage ANY profile's skills/toolsets ("Set as active" only flips the sticky active_profile
 # file for FUTURE invocations, which misled users into thinking toggles landed there).
@@ -241,44 +206,22 @@ _SKILLS_PROFILE_LOCK = threading.RLock()
 
 @contextmanager
 def _profile_scope(profile: Optional[str]):
-    """Scope config + skill-directory resolution to ``profile`` for one request.
+    """``_config_profile_scope(profile)`` held under ``_SKILLS_PROFILE_LOCK``. Yields the profile dir
+    for a named profile, None for the current one.
 
-    Two seams: (1) ``load_config``/``save_config`` resolve ``get_hermes_home()`` at call
-    time, so the contextvar override reaches them; (2) ``tools.skills_tool`` /
-    ``tools.skill_manager_tool`` bind ``SKILLS_DIR`` at import time, so both are retargeted
-    under a lock and restored after. For the dashboard's own profile config resolution is
-    untouched, but the skill-module globals are still retargeted to the *current*
-    ``get_hermes_home()`` so writes land in the live home even when the import-time binding
-    is stale (test isolation, late HERMES_HOME override). Yields the profile dir for a named
-    profile, None for the current one.
-
-    ``tools.skills_sync`` (reset/diff/list-modified/opt-in/opt-out/ repair-official) needs NO retargeting:
-    since #65828 its directory lookups resolve at call time through the same contextvar override set in step
-    1.
+    The lock serializes every scoped request in this process. Several bodies still do a bare
+    ``load_config``/``save_config`` read-modify-write without ``CONFIG_MUTATION_LOCK`` (MCP catalog
+    install, platform toggles, the raw config editor, credential mirror scrubs), and the lock is
+    what keeps them from losing a concurrent ``config_write_scope`` update.
     """
-    from hermes_constants import get_hermes_home
-    from tools import skills_tool as _skills_tool
-    from tools import skill_manager_tool as _skill_mgr
-    with _config_profile_scope(profile) as scoped:
-        profile_dir = get_hermes_home() if scoped is None else scoped
-        modules = (_skills_tool, _skill_mgr)
-        with _SKILLS_PROFILE_LOCK:
-            saved = [(m.HERMES_HOME, m.SKILLS_DIR) for m in modules]
-            for m in modules:
-                m.HERMES_HOME, m.SKILLS_DIR = profile_dir, profile_dir / "skills"
-            try:
-                yield scoped
-            finally:
-                for m, (home, skills_dir) in zip(modules, saved):
-                    m.HERMES_HOME, m.SKILLS_DIR = home, skills_dir
+    with _config_profile_scope(profile) as scoped, _SKILLS_PROFILE_LOCK:
+        yield scoped
 
 
 @contextmanager
 def _config_profile_scope(profile: Optional[str]):
     """Await-safe profile scope: the task-local HERMES_HOME contextvar PLUS the profile's secret
-    scope, never the process-global skills-module attributes ``_profile_scope`` swaps (holding
-    those across an ``await`` lets a concurrent request restore THIS request's dir on its
-    ``finally``). None/""/"current" = no override.
+    scope, without the process-wide lock ``_profile_scope`` adds. None/""/"current" = no override.
 
     Home alone left ``get_secret`` on the dashboard process's ``os.environ`` - the DEFAULT
     profile's values - so ``GET /api/config?profile=B`` expanded B's ``${VAR}`` refs to the default
@@ -290,17 +233,21 @@ def _config_profile_scope(profile: Optional[str]):
 
     Explicit names resolving to the process home retain current-profile semantics.
     Still enter the requested home so a nested scope cannot retain another profile.
+    None/""/"current" mean the request's EFFECTIVE home: a task-local override (a secondary
+    profile's native ticket, ``native_profile_scope``) is that profile, so it gets that profile's
+    secret scope rather than the launch profile's.
     """
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_constants import get_hermes_home, get_hermes_home_override
     from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
 
     process_home = get_process_hermes_home()
     if _is_current_profile(profile):
-        profile_dir, scoped = None, None  # the dashboard's own profile: no home override
+        profile_dir = get_hermes_home() if get_hermes_home_override() else None
     else:
         profile_dir = _resolve_profile_dir(profile.strip())
-        scoped = None if profile_dir.resolve() == process_home.resolve() else profile_dir
+    scoped = None if profile_dir is None or profile_dir.resolve() == process_home.resolve() else profile_dir
     if scoped is not None:
         activate_multi_profile_hosting()
         hydrate_profile_secret_sources(scoped)  # first call may block on the source's fetch
@@ -334,8 +281,6 @@ _TERMINAL_BACKENDS: list[dict[str, str]] = [
         ("local", "Local", "Run commands directly on this machine. No isolation."),
         ("docker", "Docker / Podman",
          "Run commands in an isolated Docker or Podman container with a persistent workspace."),
-        ("singularity", "Singularity / Apptainer",
-         "Run commands in a Singularity/Apptainer container (HPC-friendly, rootless)."),
         ("modal", "Modal", "Run commands in a Modal cloud sandbox."),
         ("daytona", "Daytona", "Run commands in a Daytona cloud sandbox."),
         ("ssh", "SSH", "Run commands on a remote host over SSH."))]
@@ -370,33 +315,15 @@ def _token_volume(row: dict[str, Any]) -> Any:
     return (row.get("input_tokens") or 0) + (row.get("output_tokens") or 0)
 
 
-def _aux_usage_rows(db, cutoff: float) -> list[dict[str, Any]]:
+def _aux_usage_rows(persistence, cutoff: float) -> list[dict[str, Any]]:
     """Per-(model, task) auxiliary usage within the window: the task-dimension rows
-    (task != '') record_auxiliary_usage writes into session_model_usage. [] when the
-    table predates the task column (older DB opened read-only by newer code).
+    (task != '') record_auxiliary_usage writes. [] when the store predates the task
+    column (older DB opened read-only by newer code) or the read fails.
 
     See #23270.
     """
     try:
-        cur = db._conn.execute("""
-            SELECT u.model,
-                   u.task,
-                   u.billing_provider,
-                   SUM(u.input_tokens) as input_tokens,
-                   SUM(u.output_tokens) as output_tokens,
-                   SUM(u.cache_read_tokens) as cache_read_tokens,
-                   SUM(u.reasoning_tokens) as reasoning_tokens,
-                   COALESCE(SUM(u.estimated_cost_usd), 0) as estimated_cost,
-                   COUNT(DISTINCT u.session_id) as sessions,
-                   SUM(COALESCE(u.api_call_count, 0)) as api_calls,
-                   MAX(u.last_seen) as last_used_at
-            FROM session_model_usage u
-            JOIN sessions s ON s.id = u.session_id
-            WHERE s.started_at > ? AND u.task != ''
-            GROUP BY u.model, u.task, u.billing_provider
-            ORDER BY SUM(u.input_tokens) + SUM(u.output_tokens) DESC
-        """, (cutoff,))
-        return [dict(r) for r in cur.fetchall()]
+        return persistence.usage_analytics.auxiliary_usage_by_model_task(started_after=cutoff)
     except Exception:
         return []
 
@@ -450,12 +377,13 @@ def _profile_cli_args(profile: Optional[str]) -> list[str]:
     return ["-p", profiles_mod.normalize_profile_name(requested)]
 
 
-def _hub_action_name(verb: str, key: str) -> str:
+def _hub_action_name(verb: str, key: str, profile: Optional[str] = None) -> str:
     """Unique per-skill hub action name (+ registered log file): ``_spawn_hermes_action``
     tracks one process/log per name, so a shared "skills-install" would make concurrent
     row-level actions overwrite each other. Slug (readable) + hash (collision-proof)."""
     slug = re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")[:48] or "skill"
-    digest = hashlib.sha1(key.encode()).hexdigest()[:8]
+    profile_key = (profile or "current").strip().lower()
+    digest = hashlib.sha1(f"{profile_key}:{key}".encode()).hexdigest()[:8]
     name = f"skills-{verb}-{slug}-{digest}"
     _ACTION_LOG_FILES.setdefault(name, f"action-{name}.log")
     return name
@@ -463,8 +391,13 @@ def _hub_action_name(verb: str, key: str) -> str:
 
 def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
     """identifier -> installed lock entry for hub-installed skills (UI marks installed search
-    results). Scoped to ``profile``'s skills/.hub/lock.json when given — HubLockFile takes an
-    explicit path, sidestepping the import-time LOCK_FILE binding. {} when unreadable."""
+    results and catalog cards). Scoped to ``profile``'s skills/.hub/lock.json when given —
+    HubLockFile takes an explicit path, sidestepping the import-time LOCK_FILE binding. {} when
+    unreadable.
+
+    Keyed by ``HubLockFile.by_identifier``, so a ClawHub install also answers to the
+    ``clawhub/<slug>`` id a catalog card installs. Search lists a ClawHub skill by its bare
+    slug; a client looks such a hit up under that card id, going by the hit's source."""
     try:
         from tools.skills_hub import HubLockFile
         if _is_current_profile(profile):
@@ -473,8 +406,8 @@ def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
             profile_dir = _resolve_profile_dir(profile.strip())
             lock = HubLockFile(profile_dir / "skills" / ".hub" / "lock.json")
         keys = ("name", "trust_level", "scan_verdict")
-        return {entry["identifier"]: {k: entry.get(k) for k in keys}
-                for entry in lock.list_installed() if entry.get("identifier")}
+        return {identifier: {k: entry.get(k) for k in keys}
+                for identifier, entry in lock.by_identifier().items()}
     except HTTPException:
         raise  # an unknown profile is the scope's 404, not an unreadable lock file
     except Exception:

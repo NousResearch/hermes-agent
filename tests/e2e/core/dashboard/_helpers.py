@@ -11,6 +11,7 @@ it as ``X-Hermes-Session-Token`` on REST and ``?token=`` on WebSocket upgrades, 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -155,6 +156,7 @@ class Sandbox:
             for p in self.profiles.values():
                 if p.srv is not None:
                     p.srv.stop()
+            self._stop_gateways()
             leaks = _reaper.reap(_reaper.with_home(self.home), *also)
         finally:
             if not self._released:
@@ -163,6 +165,17 @@ class Sandbox:
         if leaks:
             raise SandboxLeak(f"{len(leaks)} sandbox process(es) outlived the test by "
                               f"{_reaper.REAP_TIMEOUT:.0f}s and were killed:\n  " + "\n  ".join(leaks))
+
+
+    def _stop_gateways(self) -> None:
+        """Under the attach model a TUI starts the gateway daemon (setsid, outside the dashboard's
+        process group), which outlives its viewer by design: stop it the way a user would."""
+        for home in (self.hermes_home, *sorted((self.hermes_home / "profiles").glob("*"))):
+            if (home / "gateway.pid").exists():
+                with contextlib.suppress(Exception):
+                    subprocess.run([sys.executable, "-m", "hermes_cli.main", "gateway", "stop"],
+                                   env=self.env({"HERMES_HOME": str(home)}), cwd=str(self.home),
+                                   capture_output=True, timeout=60, check=False)
 
 
 class SandboxLeak(AssertionError):
@@ -339,14 +352,15 @@ def run_py(sb: Sandbox, code: str, *args: str, hermes_home: Path | None = None,
 
 SEED_SESSIONS = """
 import sys
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 prefix, n = sys.argv[1], int(sys.argv[2])
-db = SessionDB()
+db = open_persistence(profile_scope())
 for i in range(n):
     sid = f"{prefix}-{i:04d}"
-    db.create_session(sid, source="cli", model="seed")
-    db.append_message(sid, "user", f"hello {sid}")
-    db.append_message(sid, "assistant", f"answer {sid}")
+    seed_session(db, sid, "cli", model="seed")
+    seed_messages(db, sid, {"role": "user", "content": f"hello {sid}"},
+                  {"role": "assistant", "content": f"answer {sid}"})
 db.close()
 print("seeded", n)
 """

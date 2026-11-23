@@ -1,13 +1,14 @@
 name: model-drift-watch
 repo: https://github.com/TakeshiTGAL/hermes-plugin-model-drift
-sha: 0102786ba4812e8581f3f6234a453eb26137fa52
-description: "Scheduled check that the model you use in Hermes has not quietly got worse: 34 fixed, exactly graded questions (reasoning, instruction following, Japanese, plus your own) run through Hermes cron, each run tested against the same model's own baseline with an exact per-question test and a same-day confirmation run, and a message only for a confirmed drop, a changed served model or a failed measurement. Not yet tried against a real LLM API (checked with a local mock model and real Hermes cron). Disclosure — each check calls your own model through ctx.llm on your bill, capped per check by the plugin (default 120,000 tokens / $0.50, no daily cap; the agent can start checks itself via the model_drift tool, and the scheduled agent turn is extra); price lookup goes through Hermes's pricing code (may fetch OpenRouter/models.dev prices); 10 optional code questions, off by default, run model-written Python in a limited child process (not a hostile-code sandbox) including in unattended cron runs when enabled; `schedule` creates one Hermes cron job that survives plugin removal (run `unschedule` first); writes run history to plugin-data/model-drift-watch; no telemetry."
+sha: a4283b3816a858b9e851d60caff2607af411cafc
+description: "Catches silent quality drift in your model: 34 questions graded exactly against its baseline. Messages only for a confirmed drop, a changed served model, or a failed measurement. Disclosure — calls your model via ctx.llm on your bill (cap 120,000 tokens and $0.50); model_drift can start one; may fetch OpenRouter or models.dev prices; 10 code questions, off by default, run model-written Python in a limited child, not a sandbox, in unattended cron; job and script stay after removal until unschedule; no extra agent turn; questions still count on the cap; history stays in plugin-data/model-drift-watch; no telemetry; gateway users can run it at your cost; hermes tools turns it off per surface; disable stops /model-drift-watch."
 maintainer: TakeshiTGAL
 tier: community
 category: automation
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-model-drift#readme
-version: "0.1.0"
-requires_hermes: ">=0.21.5"
+version: "0.2.1"
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-model-drift/a4283b3816a858b9e851d60caff2607af411cafc/assets/catalog-banner.png
+requires_hermes: ">=0.21.4"
 platforms: []
 capabilities:
   provides_tools:

@@ -13,26 +13,45 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone, UTC
 from pathlib import Path
+from typing import Iterable
 from urllib.parse import unquote, urlsplit
 
 from hermes_cli.update_channel import STABLE_TAG_RE
-from scripts.releases import optional_platforms
+from scripts.releases import lanes as lane_set
+from scripts.releases.desktop_targets import MANIFEST_TARGETS
 from scripts.releases.draft_warning import strip_draft_warning
-from scripts.releases.optional_platforms import require_targets_match_claim
 from scripts.releases.versioning import tag_record
 SHA = re.compile(r"[a-f0-9]{40}")
 DIGEST = re.compile(r"[a-f0-9]{64}")
-DESKTOP_TARGETS = ("windows/x64", "windows/arm64", "macos/x64", "macos/arm64")
-OPTIONAL_TARGETS = optional_platforms.TARGETS  # built only when the claim opts in
-REQUIRED_DESKTOP_TARGETS = tuple(t for t in DESKTOP_TARGETS if t not in OPTIONAL_TARGETS)
+DESKTOP_TARGETS = tuple(f"{platform}/{arch}" for platform, arch in MANIFEST_TARGETS)
+ALL_TARGETS = tuple(lane_set.TARGET_LANE)
 SMOKE_JOBS = {
     "smoke-darwin-arm64": "macOS DMG + ZIP (arm64)",
-    "smoke-darwin-x64": "macOS DMG + ZIP (x64)",
     "smoke-win32-arm64": "Windows MSIX (arm64)",
     "smoke-win32-x64": "Windows MSIX (x64)",
 }
-SMOKE_TARGETS = {"smoke-darwin-arm64": "macos/arm64", "smoke-darwin-x64": "macos/x64",
+SMOKE_TARGETS = {"smoke-darwin-arm64": "macos/arm64",
                  "smoke-win32-arm64": "windows/arm64", "smoke-win32-x64": "windows/x64"}
+
+
+# Stable releases are cut from ``main`` or from a ``release/*`` maintenance branch.
+RELEASE_LINE_BRANCHES = ("main", "release/*")
+
+
+def release_line_refspecs(remote_prefix: str) -> list[str]:
+    """Fetch refspecs that mirror every release-line branch under ``refs/remotes/<remote_prefix>/``."""
+    return [f"+refs/heads/{branch}:refs/remotes/{remote_prefix}/{branch}"
+            for branch in RELEASE_LINE_BRANCHES]
+
+
+def release_line_contains(commit: str, remote_prefix: str) -> list[str]:
+    """The git command that lists the fetched release-line branches holding ``commit``.
+
+    Empty output means the commit is on no release line. Git matches the
+    ``release/*`` pattern across the slash, so ``release/0.22.1`` qualifies.
+    """
+    return ["git", "for-each-ref", "--contains", commit, "--format=%(refname)",
+            *(f"refs/remotes/{remote_prefix}/{branch}" for branch in RELEASE_LINE_BRANCHES)]
 
 
 def admit_claim(tag: str, commit: str, *, on_main) -> dict:
@@ -40,7 +59,8 @@ def admit_claim(tag: str, commit: str, *, on_main) -> dict:
 
     ``main`` carries ``0.0.0`` on purpose, so the version and the attempt come
     from ``rc.<N>-vX.Y.Z`` and the only question about the commit is whether
-    it is on ``main``.
+    it is on a release line: ``main`` or a ``release/*`` branch. ``on_main`` is
+    that predicate; the name predates release branches.
     """
     from scripts.releases.versioning import parse_attempt_ref
 
@@ -49,7 +69,7 @@ def admit_claim(tag: str, commit: str, *, on_main) -> dict:
         raise ValueError(f"{tag} is not a claim tag")
     version, attempt = parsed
     if not on_main(commit):
-        raise ValueError(f"{commit} is not on main")
+        raise ValueError(f"{commit} is not on main or a release/* branch")
     return {"claim_tag": tag, "tag": f"v{version}", "version": version, "attempt": attempt,
             "commit": commit}
 
@@ -58,6 +78,68 @@ def require_stable_identity(tag: str, commit: str) -> None:
     """Validate the final payload identity without requiring its future ref."""
     if not isinstance(tag, str) or not STABLE_TAG_RE.fullmatch(tag) or not SHA.fullmatch(commit or ""):
         raise ValueError("Invalid stable payload identity")
+
+
+def is_canary_claim(tag: object) -> bool:
+    """A canary runs the stable pipeline on its own annotated ``canary.<stamp>-vX.Y.Z`` tag."""
+    from hermes_cli.update_channel import is_canary_tag
+
+    return is_canary_tag(tag)
+
+
+def _deb_version(tag: str) -> str:
+    # Imported here: release.py's isolated entrypoint copies scripts/releases alone.
+    from scripts.termux.deb_version import deb_version_for_tag
+
+    return deb_version_for_tag(tag)
+
+
+def payload_version(tag: str) -> str:
+    """The version a stable or canary tag publishes (update_channel.release_version)."""
+    from hermes_cli.update_channel import release_version
+
+    version = release_version(tag)
+    if version is None:
+        raise ValueError("Invalid release payload identity")
+    return version
+
+
+def require_release_identity(tag: str, commit: str) -> None:
+    """A payload the pipeline may validate: a stable release or a canary.
+
+    Only the stable shape may ever receive a final receipt tag (require_stable_identity)."""
+    if not isinstance(tag, str) or not (STABLE_TAG_RE.fullmatch(tag) or is_canary_claim(tag)) \
+            or not SHA.fullmatch(commit or ""):
+        raise ValueError("Invalid release payload identity")
+
+
+def canary_epoch(tag: str) -> int:
+    """The canary's immutable build time: the UTC stamp its tag name carries."""
+    from hermes_cli.update_channel import canary_timestamp
+
+    stamp = canary_timestamp(tag)
+    if stamp is None:
+        raise ValueError("Invalid canary release identity")
+    try:
+        instant = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    except ValueError as error:
+        raise ValueError(f"Invalid canary calendar timestamp: {stamp}") from error
+    if instant.strftime("%Y%m%dT%H%M%SZ") != stamp:
+        raise ValueError("Invalid canary calendar timestamp")
+    return int(instant.timestamp())
+
+
+def canary_windows_version(tag: str) -> str:
+    """The canary package quad ``yy.mmdd.hh.mmss`` (scripts/msix-shared.mjs canaryPackageVersionAt)."""
+    instant = datetime.fromtimestamp(canary_epoch(tag), tz=UTC)
+    return (f"{instant.year % 100}.{instant.month * 100 + instant.day}.{instant.hour}."
+            f"{instant.minute * 100 + instant.second}")
+
+
+def release_windows_version(tag: str, epoch: object) -> str:
+    """The Windows package version a release must carry: a canary's comes from its tag stamp,
+    a stable release's from its claim epoch."""
+    return canary_windows_version(tag) if is_canary_claim(tag) else stable_windows_version(epoch)
 
 
 def require_success(needs: dict, required: list[str]) -> None:
@@ -69,55 +151,23 @@ def require_success(needs: dict, required: list[str]) -> None:
         raise ValueError("Release blocked: " + ", ".join(failures))
 
 
-# The claim flags that remove stable-release.yml jobs, per job. A job one of
-# the claim's active removals removes must report `skipped`. Every other gated
-# job must report `success`. Jobs not listed here never skip.
-CLAIM_FLAGS = ("autopublish", "skipBundles", "skipTests")
-# An opt-in platform left out of the claim removes its jobs too
-# (optional_platforms names the reason and the jobs).
-_TESTS, _BUNDLES = frozenset({"skipTests"}), frozenset({"skipBundles"})
-SKIPPED_BY = {
-    **{job: _TESTS for job in ("ci", "nix", "termux-checks", "windows-live", "install-e2e",
-                               "bootstrap-version")},
-    **{job: _BUNDLES for job in ("candidates-darwin-arm64", "candidates-darwin-x64",
-                                 "candidates-win32-arm64", "candidates-win32-x64",
-                                 "candidates-win32-bundle", "candidates-termux",
-                                 "candidate-manifest", "publish-bundles")},
-    # Bundle acceptance is a test of bundles, so either flag removes it.
-    **{job: _TESTS | _BUNDLES for job in ("pm-bundle", "transitions-darwin-arm64",
-                                          "transitions-darwin-x64", "transitions-win32",
-                                          "windows-packaged", "macos-packaged-arm64",
-                                          "macos-packaged-x64")},
-}
-for _platform in optional_platforms.PLATFORMS:
-    for _job in _platform.jobs:
-        SKIPPED_BY[_job] = SKIPPED_BY[_job] | {_platform.exclusion}
-
-
 # Each signed-package upgrade arm and the transitions job that plans it.
 PACKAGED_BY = {"macos-packaged-arm64": "transitions-darwin-arm64",
-               "macos-packaged-x64": "transitions-darwin-x64",
                "windows-packaged": "transitions-win32"}
 
 
-def gate_expectations(required: list[str], *, skip_bundles: bool, skip_tests: bool,
-                      **platforms: bool) -> dict:
-    """Each gated job's required result under the claim's flags (``platforms``:
-    the optional_platforms keys, each false when omitted)."""
-    active = {flag for flag, on in (("skipBundles", skip_bundles), ("skipTests", skip_tests)) if on}
-    if set(platforms) - {p.key for p in optional_platforms.PLATFORMS}:
-        raise TypeError(f"Unknown platform flags: {sorted(platforms)}")
-    active |= {p.exclusion for p in optional_platforms.excluded(platforms)}
-    return {name: "skipped" if SKIPPED_BY.get(name, frozenset()) & active else "success"
-            for name in required}
+def gate_expectations(required: list[str], lanes: Iterable[str], policy: str = "stable") -> dict:
+    """Each gated job's required result under the claim's lanes: `skipped` for a job a
+    lane it needs is off for (or that belongs to the other release policy), `success` for every other."""
+    runs = lane_set.jobs_to_run(lanes, policy)
+    return {name: "success" if runs.get(name, True) else "skipped" for name in required}
 
 
-def require_gate(needs: dict, required: list[str], *, skip_bundles: bool, skip_tests: bool,
-                 **platforms: bool) -> None:
-    """``require_success`` that also demands a flag-removed job really was skipped."""
+def require_gate(needs: dict, required: list[str], *, lanes: Iterable[str], policy: str = "stable") -> None:
+    """``require_success`` that also demands a lane-removed job really was skipped."""
     if not required or len(set(required)) != len(required):
         raise ValueError("Invalid required-job list")
-    expected = gate_expectations(required, skip_bundles=skip_bundles, skip_tests=skip_tests, **platforms)
+    expected = gate_expectations(required, lanes, policy)
     for packaged, planner in PACKAGED_BY.items():
         # Without a published baseline there is no OLD package, so the planner
         # skips the upgrade arm. Only that planner's own successful output can excuse it.
@@ -134,8 +184,8 @@ def require_gate(needs: dict, required: list[str], *, skip_bundles: bool, skip_t
 def accepted_smoke_results(needs: object, *, absent: tuple[str, ...] | frozenset = ()) -> dict:
     """Persist only observed native groups, never infer them from artifacts.
 
-    Every group passed, or every group was skipped. Only a claim that skipped
-    tests may produce the second shape. ``smokes_skipped`` lets claim-aware
+    Every group passed, or every group was skipped. Only a claim whose lanes run
+    no smoke may produce the second shape. ``smokes_skipped`` lets claim-aware
     readers check that. A group whose target the release did not build
     (``absent``) ran no smoke, so it must be recorded as skipped.
     """
@@ -161,9 +211,17 @@ def smokes_skipped(manifest: dict) -> bool:
     return all((results.get(job) or {}).get("result") == "skipped" for job in SMOKE_JOBS)
 
 
-def require_smokes_match_claim(manifest: dict, *, skip_tests: bool) -> None:
-    if smokes_skipped(manifest) != skip_tests:
+def require_smokes_match_claim(manifest: dict, lanes: Iterable[str]) -> None:
+    if smokes_skipped(manifest) == lane_set.runs_smokes(lanes):
         raise ValueError("Candidate smoke results differ from the claim's test policy")
+
+
+def require_targets_match_claim(manifest: dict, lanes: Iterable[str]) -> None:
+    """The manifest carries exactly the targets the claim's build lanes produce."""
+    present = {f"{row.get('platform')}/{row.get('arch')}" for row in manifest.get("packages", [])}
+    wanted = lane_set.targets(lanes)
+    if present != wanted:
+        raise ValueError(f"Candidate manifest targets {sorted(present)} differ from the claim's {sorted(wanted)}")
 
 
 def stable_windows_version(epoch: object) -> str:
@@ -178,32 +236,32 @@ def stable_windows_version(epoch: object) -> str:
 
 RECEIPT_TARGETS = {
     "darwin-arm64": ("macos/arm64",),
-    "darwin-x64": ("macos/x64",),
     "win32-bundle": ("windows/x64", "windows/arm64"),
 }
 
 # The staged handoffs each receipt is assembled from. The Windows bundle
 # receipt reads the per-arch metadata handoffs plus the universal bundle
-# handoff; fetch() re-verifies every staged byte against its receipt digest,
-# and validate_receipt enforces the signing facts (teamId, publisher).
+# handoff. Only the metadata is downloaded: package bytes are bound by their
+# handoff receipt digests here and re-downloaded and digest-checked by
+# release_artifacts.publish before anything goes live. validate_receipt
+# enforces the signing facts (teamId, publisher).
 RECEIPT_HANDOFFS = {
     "darwin-arm64": ("darwin-arm64",),
-    "darwin-x64": ("darwin-x64",),
     "win32-bundle": ("win32-x64", "win32-arm64", "windows-universal"),
 }
-RECEIPT_INCLUDES = ("metadata-*.json", "*.zip", "*.msixbundle")
+RECEIPT_INCLUDES = ("metadata-*.json",)
 
 
 def _validated_rows(manifest: dict, tag: str, commit: str, public_base: str,
                     release_epoch: int | None, *, archive: str) -> dict:
     """The per-row checks shared by the full-manifest and receipt validators."""
-    require_stable_identity(tag, commit)
+    require_release_identity(tag, commit)
     if manifest.get("schema") != 2 or manifest.get("tag") != tag or manifest.get("commit") != commit or not isinstance(manifest.get("packages"), list):
         raise ValueError("Candidate manifest does not match release identity")
     if manifest.get("archive") != archive:
         raise ValueError("Candidate manifest names a different release archive")
     admitted_epoch = manifest.get("releaseEpoch")
-    expected_windows_version = stable_windows_version(admitted_epoch)
+    expected_windows_version = release_windows_version(tag, admitted_epoch)
     if release_epoch is not None and admitted_epoch != release_epoch:
         raise ValueError("Candidate release epoch differs from the admitted claim")
     prefix = urlsplit(f"{public_base.rstrip('/')}/releases/tag/{archive}/")
@@ -212,7 +270,7 @@ def _validated_rows(manifest: dict, tag: str, commit: str, public_base: str,
     rows = {}
     for item in manifest["packages"]:
         target = f"{item.get('platform')}/{item.get('arch')}"
-        if target not in (*DESKTOP_TARGETS, *OPTIONAL_TARGETS) or target in rows or item.get("tag") != tag or item.get("commit") != commit:
+        if target not in ALL_TARGETS or target in rows or item.get("tag") != tag or item.get("commit") != commit:
             raise ValueError(f"Invalid or duplicate candidate target: {target}")
         artifact = item.get("artifact", {})
         url = urlsplit(artifact.get("url", ""))
@@ -231,9 +289,9 @@ def _validated_rows(manifest: dict, tag: str, commit: str, public_base: str,
             if not item.get("publisher") or not item.get("applicationId") or not url.path.endswith(".msixbundle"):
                 raise ValueError("Windows candidate needs publisher, applicationId and MSIX bundle")
         elif item["platform"] == "macos":
-            if item.get("version") != tag[1:] or not re.fullmatch(r"[A-Z0-9]{10}", item.get("teamId", "")) or not url.path.endswith(".zip"):
+            if item.get("version") != payload_version(tag) or not re.fullmatch(r"[A-Z0-9]{10}", item.get("teamId", "")) or not url.path.endswith(".zip"):
                 raise ValueError("macOS candidate needs matching version, signing team and app ZIP")
-        elif item.get("version") != f"{tag[1:]}-1":
+        elif item.get("version") != _deb_version(tag):
             raise ValueError("Termux candidate version differs from the admitted release")
         rows[target] = item
     return rows
@@ -251,10 +309,13 @@ def validate_candidates(manifest: dict, tag: str, commit: str, public_base: str,
     never is.
     """
     rows = _validated_rows(manifest, tag, commit, public_base, release_epoch, archive=archive)
-    if any(target not in rows for target in REQUIRED_DESKTOP_TARGETS):
-        raise ValueError("Candidate manifest must cover Windows on both architectures and macOS arm64")
+    # A Store-only release has no package rows: the Store bundle is a file, never an update target.
+    if not rows and not manifest.get("files"):
+        raise ValueError("Candidate manifest has no packages")
+    # Which targets a release must carry is its claim's business (require_targets_match_claim),
+    # not the manifest's: a release may build any subset of the lanes.
     accepted_smoke_results(manifest.get("smoke_results"),
-                           absent=frozenset(t for t in OPTIONAL_TARGETS if t not in rows))
+                           absent=frozenset(t for t in ALL_TARGETS if t not in rows))
     return rows
 
 
@@ -303,7 +364,7 @@ def plan_transitions(previous: dict, candidate: dict, public_base: str) -> list[
                               archive=previous.get("archive"))
     new = validate_candidates(candidate, candidate.get("tag"), candidate.get("commit"), public_base,
                               archive=candidate.get("archive"))
-    # An opt-in target upgrades only between two releases that both built it.
+    # A target upgrades only between two releases that both built it.
     return [_transition_row(target, old[target], new[target]) for target in DESKTOP_TARGETS
             if target in new and target in old]
 
@@ -311,8 +372,8 @@ def plan_transitions(previous: dict, candidate: dict, public_base: str) -> list[
 def baseline_covers(previous: dict, receipt: str, public_base: str) -> bool:
     """Whether the published baseline built every target of this receipt.
 
-    A release that left macOS Intel out has no OLD Intel package, so the next
-    release that opts back in has nothing to upgrade from on that arch.
+    A release that left a target out has no OLD package for it, so the next
+    release that builds it has nothing to upgrade from on that arch.
     """
     old = validate_candidates(previous, previous.get("tag"), previous.get("commit"), public_base,
                               archive=previous.get("archive"))
@@ -342,8 +403,6 @@ def _receipt_manifest(root: Path, receipt: str, tag: str, commit: str, archive: 
     names = RECEIPT_HANDOFFS.get(receipt)
     if names is None:
         raise ValueError(f"Unknown receipt: {receipt}")
-    # Re-downloading the staged bytes proves the group's handoff is complete
-    # and matches its receipt before this receipt is published.
     fetch(tag=archive, commit=commit, names=list(names), root=root,
           includes=list(RECEIPT_INCLUDES))
     digests = {}
@@ -354,14 +413,14 @@ def _receipt_manifest(root: Path, receipt: str, tag: str, commit: str, archive: 
             for file in sorted(root.glob("metadata-*.json"))]
     universal = None
     if receipt == "win32-bundle":
-        bundles = [file.name for file in root.glob("*.msixbundle") if not file.name.startswith("Store-")]
+        bundles = [name for name in digests if name.endswith(".msixbundle") and not name.startswith("Store-")]
         if len(bundles) != 1:
             raise ValueError(f"Expected one universal bundle, found {len(bundles)}")
         universal = bundles[0]
     packages = []
     for row in rows:
         filename = universal if row["platform"] == "windows" else row.get("filename")
-        if not filename or filename not in digests or not (root / filename).is_file():
+        if not filename or filename not in digests:
             raise ValueError(f"Receipt {receipt} is missing staged bytes for "
                              f"{row['platform']}/{row['arch']}")
         packages.append({
@@ -373,11 +432,6 @@ def _receipt_manifest(root: Path, receipt: str, tag: str, commit: str, archive: 
         })
         if row["platform"] != "windows" and not filename.endswith(".zip"):
             raise ValueError(f"Receipt {receipt} needs a signed app ZIP for {row['platform']}/{row['arch']}")
-    if receipt == "win32-bundle":
-        from scripts.bundles.release_artifacts import validate_windows_bundle
-
-        validate_windows_bundle(root / universal,
-                                [row for row in rows if row["platform"] == "windows"])
     return {"schema": 2, "tag": tag, "commit": commit, "releaseEpoch": release_epoch,
             "archive": archive, "packages": packages}
 
@@ -439,17 +493,47 @@ def output(argv: list[str]) -> str:
 
 def validate_claim(metadata: object, *, version: str, attempt: int, commit: str) -> dict:
     """The claim message's exact shape. It is the one record of the attempt's policy.
-    Opt-in platform flags may be absent (older claims); the copy returned has them."""
+    A claim cut before lanes existed (lanes.claim_lanes); the copy returned has its lanes."""
     expected = {"schema": 1, "version": version, "attempt": attempt, "commit": commit}
-    required = {*expected, *CLAIM_FLAGS, "claimEpoch"}
     if (not isinstance(metadata, dict)
             or any(metadata.get(key) != value for key, value in expected.items())
-            or any(not isinstance(metadata.get(flag), bool) for flag in CLAIM_FLAGS)
+            or not isinstance(metadata.get("autopublish"), bool)
             or not isinstance(metadata.get("claimEpoch"), int)
-            or metadata["claimEpoch"] <= 0
-            or not required <= set(metadata) <= {*required, *optional_platforms.CLAIM_FLAGS}):
+            or metadata["claimEpoch"] <= 0):
         raise ValueError("Stable claim metadata is invalid")
-    return {**metadata, **optional_platforms.claim_flags(metadata)}
+    base = {*expected, "autopublish", "claimEpoch"}
+    legacy = {"skipBundles", "skipTests"}
+    shapes = ({*base, "lanes"}, {*base, "lanes", "lanesRevision"}, {*base, *legacy}, {*base, *legacy, "includeMacosIntel"},
+              {*base, *legacy, "includeTermux"}, {*base, *legacy, "includeMacosIntel", "includeTermux"})
+    if set(metadata) not in shapes:
+        raise ValueError("Stable claim metadata is invalid")
+    return {**metadata, "lanes": lane_set.claim_lanes(metadata)}
+
+
+def canary_claim(raw: str, *, tag: str, commit: str) -> dict:
+    """A canary claim message's exact shape: its lanes and its green policy.
+
+    ``scripts/release.py --canary`` writes it. The lanes are read exactly as a stable claim's
+    (lanes.claim_lanes), then held to what a canary can run (lanes.POLICY_REFUSED).
+    """
+    from hermes_cli.update_channel import tag_core
+
+    try:
+        metadata = tag_record(raw)
+    except (TypeError, AttributeError, json.JSONDecodeError) as error:
+        raise ValueError("Canary claim metadata is invalid") from error
+    expected = {"schema": 1, "kind": "canary", "version": tag_core(tag), "commit": commit,
+                "lanesRevision": lane_set.LANES_REVISION}
+    if (not isinstance(metadata, dict) or set(metadata) != {*expected, "lanes", "requireGreen"}
+            or any(metadata[key] != value for key, value in expected.items())
+            or not isinstance(metadata["requireGreen"], bool)):
+        raise ValueError("Canary claim metadata is invalid")
+    try:
+        lanes = lane_set.claim_lanes(metadata)
+        lane_set.require_allowed(lanes, "canary")
+    except ValueError as error:
+        raise ValueError(f"Canary claim metadata is invalid: {error}") from error
+    return {**metadata, "lanes": lanes}
 
 
 def _claim_metadata(raw: str, *, version: str, attempt: int, commit: str) -> dict:
@@ -464,8 +548,9 @@ def validate_final(final: object, *, version: str, commit: str, claim_tag: str,
                    claim_object: str, claim: dict) -> dict:
     """The final receipt tag's exact shape, bound to its validated claim.
 
-    A claim that skipped bundles has no candidate manifest, so its receipt
-    records ``candidateManifestSha256: null``. Every other receipt pins one.
+    A claim that builds no bundle has no candidate manifest, so its receipt
+    records ``candidateManifestSha256: null``; one that builds no Docker image
+    records ``dockerManifestDigest: null``. Every other receipt pins them.
     """
     if not isinstance(final, dict):
         raise ValueError("Final tag metadata differs from its claim")
@@ -480,11 +565,13 @@ def validate_final(final: object, *, version: str, commit: str, claim_tag: str,
         "archive": f"releases/tag/{claim_tag}/",
     }
     manifest = final.get("candidateManifestSha256")
-    manifest_ok = manifest is None if claim["skipBundles"] else bool(DIGEST.fullmatch(manifest or ""))
+    lanes = claim["lanes"]
+    manifest_ok = bool(DIGEST.fullmatch(manifest or "")) if lane_set.has_bundles(lanes) else manifest is None
+    docker = final["dockerManifestDigest"]
+    docker_ok = bool(re.fullmatch(r"sha256:[a-f0-9]{64}", docker or "")) if "docker" in lanes else docker is None
     if (final != expected
             or not isinstance(final["releaseId"], int) or final["releaseId"] <= 0
-            or not manifest_ok
-            or not re.fullmatch(r"sha256:[a-f0-9]{64}", final["dockerManifestDigest"] or "")):
+            or not manifest_ok or not docker_ok):
         raise ValueError("Final tag metadata differs from its claim")
     return final
 
@@ -503,13 +590,42 @@ def tagger_epoch(tag_object: str, run=output) -> int:
     return epoch
 
 
+CONTROLLER_BRANCH = "main"
+CONTROLLER_REF = f"refs/heads/{CONTROLLER_BRANCH}"
+CONTROLLER_WORKFLOW = "stable-release.yml"
+
+
+def claim_run_title(claim_tag: str) -> str:
+    """The run-name stable-release.yml sets. Every run is on the default branch, so this names the claim."""
+    return f"Stable release {claim_tag}"
+
+
+def is_claim_run(*, title: str | None, head_branch: str | None, head_sha: str | None,
+                 claim_tag: str, commit: str) -> bool:
+    """A Stable Release run for this claim. Runs started before the controller moved sat on the tag."""
+    return title == claim_run_title(claim_tag) or (head_branch == claim_tag and head_sha == commit)
+
+
+def check_controller(env: dict) -> None:
+    """Require the default-branch dispatch of Stable Release.
+
+    Reusable workflows keep the top-level caller's identity, so the same check holds
+    inside every called workflow. The commit under test comes from the claim tag, not
+    from GITHUB_SHA, which is the default branch tip here.
+    """
+    repository = env.get("GITHUB_REPOSITORY", "")
+    expected = f"{repository}/.github/workflows/{CONTROLLER_WORKFLOW}@{CONTROLLER_REF}"
+    if (not repository or env.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+            or env.get("GITHUB_REF") != CONTROLLER_REF or env.get("GITHUB_WORKFLOW_REF") != expected):
+        raise ValueError("Stable release must run from the default-branch controller workflow")
+
+
 def check_claim(env: dict, run=output) -> dict:
     """Bind the run to one remote annotated claim object and its commit."""
-    claim_tag, commit = env.get("RELEASE_CLAIM_TAG"), env.get("GITHUB_SHA")
-    if not isinstance(claim_tag, str) or env.get("GITHUB_REF") != f"refs/tags/{claim_tag}":
-        raise ValueError("Stable release must run on its exact claim ref")
-    if not isinstance(commit, str) or not SHA.fullmatch(commit):
-        raise ValueError("Stable claim needs an exact commit")
+    claim_tag = env.get("RELEASE_CLAIM_TAG")
+    if not isinstance(claim_tag, str) or not claim_tag:
+        raise ValueError("Stable release needs a claim tag")
+    check_controller(env)
     claim_ref = f"refs/tags/{claim_tag}"
     local_object = run(["git", "rev-parse", claim_ref])
     local_commit = run(["git", "rev-parse", f"{claim_ref}^{{commit}}"])
@@ -521,18 +637,30 @@ def check_claim(env: dict, run=output) -> dict:
     remote_object = remote.get(claim_ref)
     remote_commit = remote.get(f"{claim_ref}^{{}}")
     expected_object = env.get("RELEASE_CLAIM_OBJECT")
-    if (local_commit != commit or remote_commit != commit or remote_object != local_object
-            or (expected_object and remote_object != expected_object)
-            or run(["git", "rev-parse", "HEAD"]) != commit):
-        raise ValueError("Stable claim tag or checkout moved")
-    run(["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"])
+    commit = local_commit
+    if not SHA.fullmatch(commit):
+        raise ValueError("Stable claim needs an exact commit")
+    if (remote_commit != commit or remote_object != local_object
+            or (expected_object and remote_object != expected_object)):
+        raise ValueError("Stable claim tag moved")
+    run(["git", "fetch", "origin", *release_line_refspecs("origin")])
+
+    if is_canary_claim(claim_tag):
+        # A canary's tag prefix is its policy and its stamp is its build time; its claim message
+        # records the lanes it runs and whether a red suite holds its publication. Only main may
+        # cut one.
+        if not run(["git", "for-each-ref", "--contains", commit, "--format=%(refname)",
+                    "refs/remotes/origin/main"]):
+            raise ValueError(f"{commit} is not on main")
+        metadata = canary_claim(run(["git", "tag", "-l", claim_tag, "--format=%(contents)"]),
+                                tag=claim_tag, commit=commit)
+        return {"claim_tag": claim_tag, "tag": claim_tag, "version": payload_version(claim_tag),
+                "attempt": None, "commit": commit, "claim_object": local_object, "autopublish": True,
+                "lanes": metadata["lanes"], "require_green": metadata["requireGreen"],
+                "claim_epoch": canary_epoch(claim_tag), "policy": "canary"}
 
     def on_main(sha: str) -> bool:
-        try:
-            run(["git", "merge-base", "--is-ancestor", sha, "origin/main"])
-        except subprocess.CalledProcessError:
-            return False
-        return True
+        return bool(run(release_line_contains(sha, "origin")))
 
     admitted = admit_claim(claim_tag, commit, on_main=on_main)
     raw_metadata = run(["git", "tag", "-l", claim_tag, "--format=%(contents)"])
@@ -542,9 +670,8 @@ def check_claim(env: dict, run=output) -> dict:
     if metadata["claimEpoch"] != claim_epoch:
         raise ValueError("Stable claim epoch differs from its annotated tagger timestamp")
     return {**admitted, "claim_object": local_object,
-            "autopublish": metadata["autopublish"], "skip_bundles": metadata["skipBundles"],
-            "skip_tests": metadata["skipTests"], "claim_epoch": claim_epoch,
-            **{p.key: metadata[p.claim_flag] for p in optional_platforms.PLATFORMS}}
+            "autopublish": metadata["autopublish"], "lanes": metadata["lanes"],
+            "require_green": True, "claim_epoch": claim_epoch, "policy": "stable"}
 
 
 def stable_context(env: dict, run=output) -> tuple[str, str, dict]:
@@ -579,7 +706,7 @@ def final_context(env: dict, run=output) -> tuple[str, str, dict]:
             or not refs.get(f"refs/tags/{tag}")):
         raise ValueError("Final release tag custody changed")
 
-    run(["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main",
+    run(["git", "fetch", "origin", *release_line_refspecs("origin"),
          f"+refs/tags/{claim_tag}:refs/tags/{claim_tag}",
          f"+refs/tags/{tag}:refs/tags/{tag}"])
     for receipt, expected_object in ((claim_tag, claim_object),
@@ -587,7 +714,8 @@ def final_context(env: dict, run=output) -> tuple[str, str, dict]:
         local_object = run(["git", "rev-parse", f"refs/tags/{receipt}"])
         if local_object != expected_object or run(["git", "cat-file", "-t", local_object]) != "tag":
             raise ValueError("Final release local tag differs from the remote")
-    run(["git", "merge-base", "--is-ancestor", commit, "origin/main"])
+    if not run(release_line_contains(commit, "origin")):
+        raise ValueError(f"{commit} is not on main or a release/* branch")
     claim = _claim_metadata(
         run(["git", "tag", "-l", claim_tag, "--format=%(contents)"]),
         version=admitted["version"], attempt=admitted["attempt"], commit=commit,
@@ -606,8 +734,7 @@ def final_context(env: dict, run=output) -> tuple[str, str, dict]:
         raise ValueError("Stable channel requires the published final release")
     return tag, commit, {**admitted, "claim_object": claim_object,
                          "autopublish": claim["autopublish"],
-                         "skip_bundles": claim["skipBundles"],
-                         "skip_tests": claim["skipTests"],
+                         "lanes": claim["lanes"],
                          "claim_epoch": claim["claimEpoch"],
                          "release_id": final["releaseId"],
                          "candidate_manifest_sha256": final["candidateManifestSha256"],
@@ -631,7 +758,7 @@ def read_admitted_candidate(tag: str, commit: str, public_base: str, digest: str
     """The page and package promoter consume the same pinned admission."""
     if not DIGEST.fullmatch(digest or ""):
         raise ValueError("Pinned candidate manifest digest is required")
-    require_stable_identity(tag, commit)
+    require_release_identity(tag, commit)
     manifest = read_manifest(f"{public_base.rstrip('/')}/releases/tag/{archive}/release-candidates.json",
                              digest, expected_origin=public_base)
     validate_candidates(manifest, tag, commit, public_base, archive=archive)
@@ -644,33 +771,43 @@ def summary(text: str, env: dict) -> None:
 
 
 def admit(env: dict) -> None:
-    """Admit the claim. The checkout carries 0.0.0, so the tag is the version."""
+    """Admit the claim. The checkout carries 0.0.0, so the tag is the version.
+
+    A canary tag admits the same pipeline with its claim's lanes; its GitHub release is a prerelease
+    (still a draft, or already published by an earlier attempt that advanced no head)."""
     admitted = check_claim(env)
     repository = env["GITHUB_REPOSITORY"]
+    policy = admitted["policy"]
     release = json.loads(output([
         "gh", "release", "view", admitted["claim_tag"], "--repo", repository,
         "--json", "databaseId,tagName,isDraft,isPrerelease",
     ]))
-    if (release.get("tagName") != admitted["claim_tag"] or release.get("isDraft") is not True
+    if policy == "canary":
+        if (release.get("tagName") != admitted["claim_tag"] or not isinstance(release.get("isDraft"), bool)
+                or release.get("isPrerelease") is not True or not isinstance(release.get("databaseId"), int)):
+            raise ValueError("Canary must already own one prerelease")
+    elif (release.get("tagName") != admitted["claim_tag"] or release.get("isDraft") is not True
             or release.get("isPrerelease") is not False or not isinstance(release.get("databaseId"), int)):
         raise ValueError("Stable claim must already own one non-prerelease draft")
     emit({
         "claim-tag": admitted["claim_tag"], "claim-object": admitted["claim_object"],
         "tag": admitted["tag"], "commit": admitted["commit"], "version": admitted["version"],
         "release-id": release["databaseId"], "release-epoch": admitted["claim_epoch"],
-        "skip-bundles": "true" if admitted["skip_bundles"] else "false",
-        "skip-tests": "true" if admitted["skip_tests"] else "false",
-        **{p.key.replace("_", "-"): "true" if admitted[p.key] else "false"
-           for p in optional_platforms.PLATFORMS},
+        # Which publication jobs run (lanes.POLICY_JOBS); every build and test job is shared.
+        "policy": policy,
+        # `lanes` is every lane's flag; `jobs` is every lane-controlled job's run flag. Each
+        # job's `if` reads `jobs`, so the lane table is the only place that says what runs.
+        "lanes": lane_set.flags(admitted["lanes"]),
+        "jobs": lane_set.jobs_to_run(admitted["lanes"], policy),
+        # Whether the policy's publication job waits for acceptance (every suite green) or only
+        # for the accepted candidate. Always true for a stable release; a canary claim chooses.
+        "require-green": "true" if admitted["require_green"] else "false",
     }, env)
-    skipped = [name for name, on in (("bundles", admitted["skip_bundles"]),
-                                     ("tests", admitted["skip_tests"])) if on]
-    opted = [p.label for p in optional_platforms.PLATFORMS if admitted[p.key]]
     summary(
-        f"## Stable candidate {admitted['claim_tag']}\nCommit: {admitted['commit']}\n"
+        f"## {policy.capitalize()} candidate {admitted['claim_tag']}\nCommit: {admitted['commit']}\n"
         f"Version: {admitted['version']}\nPayload tag: {admitted['tag']}\n"
-        f"Skipped: {', '.join(skipped) or 'nothing'}\n"
-        f"Opt-in packages: {', '.join(opted) or 'none (macOS Intel and Termux are not built)'}\n",
+        f"Lanes {lane_set.describe(admitted['lanes'])}\n"
+        f"Publication {'waits for every suite' if admitted['require_green'] else 'waits only for the built, smoked candidate'}\n",
         env,
     )
 
@@ -678,7 +815,7 @@ def admit(env: dict) -> None:
 def verify(env: dict) -> None:
     """Revalidate claim custody in a reusable privileged workflow."""
     tag, commit, claim = stable_context(env)
-    emit({"tag": tag, "sha": commit, "channel": "stable", "payload-version": tag[1:],
+    emit({"tag": tag, "sha": commit, "channel": claim.get("policy", "stable"), "payload-version": payload_version(tag),
           "release-epoch": claim["claim_epoch"]}, env)
 
 
@@ -745,7 +882,7 @@ def transitions(env: dict) -> None:
     if previous is None or not baseline_covers(previous, receipt, base):
         # Native smokes still gate this release. Its packages become the
         # baseline that the next bundle release must upgrade from. A baseline
-        # that left this receipt's opt-in target out has no OLD package either.
+        # that left this receipt's target out has no OLD package either.
         validate_receipt(receipt_manifest, receipt, receipt_manifest.get("tag"),
                          receipt_manifest.get("commit"), base, archive=receipt_manifest.get("archive"))
         emit({**matrices, "baseline": "none"}, env)
@@ -759,16 +896,16 @@ def transitions(env: dict) -> None:
 # The candidate manifest is written after the smokes (decision 23): the smoke
 # results it records are the candidate calls' own workflow results — each
 # call's stable-phase-result only succeeds when its selected groups' smokes
-# did, so a failed smoke leaves no accepted manifest behind.
-CALL_SMOKE_JOBS = {
-    "candidates-darwin-arm64": "smoke-darwin-arm64",
-    "candidates-darwin-x64": "smoke-darwin-x64",
-    "candidates-win32-arm64": "smoke-win32-arm64",
-    "candidates-win32-x64": "smoke-win32-x64",
+# did, so a failed smoke leaves no accepted manifest behind. The Windows MSIX
+# smokes run in the bundle call, beside assembly, not after each per-arch build.
+SMOKE_CALLS = {
+    "smoke-darwin-arm64": "candidates-darwin-arm64",
+    "smoke-win32-arm64": "candidates-win32-bundle",
+    "smoke-win32-x64": "candidates-win32-bundle",
 }
-CANDIDATE_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64",
+CANDIDATE_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-arm64",
                       "termux", "windows-universal")
-CANDIDATE_INCLUDES = ("metadata-*.json", "*.msixbundle")
+CANDIDATE_INCLUDES = ("metadata-*.json",)
 
 
 def candidate_manifest(env: dict) -> None:
@@ -780,43 +917,50 @@ def candidate_manifest(env: dict) -> None:
     if not isinstance(needs, dict):
         raise ValueError("Candidate call results must be a needs object")
     tag, commit, claim = stable_context(env)
-    if claim["skip_bundles"]:
-        raise ValueError("A claim that skipped bundles has no candidate manifest")
-    handoffs = optional_platforms.claim_handoffs(CANDIDATE_HANDOFFS, claim)
-    # A call the claim did not opt into never ran, so it has no smoke to record.
-    skipped_calls = {p.call for p in optional_platforms.excluded(claim)}
-    calls = {call: job for call, job in CALL_SMOKE_JOBS.items() if call not in skipped_calls}
-    smoke = {job: {"result": "skipped"} for job in CALL_SMOKE_JOBS.values()}
-    if claim["skip_tests"]:
-        # The calls built and staged their groups but ran no smoke. Record
-        # that as skipped. Never let a green call stand in for a smoke.
-        require_success(needs, list(calls))
-    else:
-        ran = {job: {"result": (needs.get(call) or {}).get("result")} for call, job in calls.items()}
+    lanes = claim["lanes"]
+    if not lane_set.has_bundles(lanes):
+        raise ValueError("A claim that builds no bundle has no candidate manifest")
+    handoffs = lane_set.handoffs(lanes, CANDIDATE_HANDOFFS)
+    # A call the claim did not build never ran, so it has no smoke to record.
+    runs = lane_set.jobs_to_run(lanes)
+    # A call whose package is not a target (the Store variant is not install-smoked) has no smoke.
+    built = lane_set.targets(lanes)
+    calls = {job: call for job, call in SMOKE_CALLS.items() if runs[call] and SMOKE_TARGETS[job] in built}
+    smoke = {job: {"result": "skipped"} for job in SMOKE_CALLS}
+    if lane_set.runs_smokes(lanes):
+        ran = {job: {"result": (needs.get(call) or {}).get("result")} for job, call in calls.items()}
         require_success(ran, list(ran))
         smoke.update(ran)
+    # Every call the claim built, smoked or not (Termux has no smoke): a green call never stands in
+    # for a smoke, but a failed or missing one leaves no manifest. A claim that builds a bundle
+    # runs at least one call, so this list is never empty.
+    require_success(needs, [call for call in lane_set.CANDIDATE_CALLS if runs[call]])
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     archive = claim["claim_tag"]
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
+        # A Store-only claim stages no metadata: its receipts alone bind the bytes.
         fetch(tag=archive, commit=commit, names=list(handoffs), root=root,
-              includes=list(CANDIDATE_INCLUDES))
+              includes=list(CANDIDATE_INCLUDES), require_files=False)
         out = root / "release-candidates.json"
         assemble(root, tag, commit, base, out, smoke_results=smoke,
-                 release_epoch=claim["claim_epoch"], archive=archive, handoffs=handoffs)
+                 release_epoch=claim["claim_epoch"], archive=archive, lanes=lanes)
         digest = hashlib.sha256(out.read_bytes()).hexdigest()
     emit({"manifest-url": f"{base}/releases/tag/{archive}/release-candidates.json",
           "manifest-sha256": digest}, env)
 
 
 def _final_metadata(tag: str, commit: str, claim: dict, candidate_manifest_sha256: str | None,
-                    docker_manifest_digest: str, release_id: int) -> dict:
-    if claim["skip_bundles"]:
+                    docker_manifest_digest: str | None, release_id: int) -> dict:
+    if not lane_set.has_bundles(claim["lanes"]):
         if candidate_manifest_sha256 is not None:
-            raise ValueError("A claim that skipped bundles cannot bind a candidate manifest")
+            raise ValueError("A claim that builds no bundle cannot bind a candidate manifest")
     elif not DIGEST.fullmatch(candidate_manifest_sha256 or ""):
         raise ValueError("Final tag candidate manifest digest is invalid")
-    if not re.fullmatch(r"sha256:[a-f0-9]{64}", docker_manifest_digest):
+    if "docker" not in claim["lanes"]:
+        if docker_manifest_digest is not None:
+            raise ValueError("A claim that builds no Docker image cannot bind a Docker digest")
+    elif not re.fullmatch(r"sha256:[a-f0-9]{64}", docker_manifest_digest or ""):
         raise ValueError("Final tag Docker manifest digest is invalid")
     if not isinstance(release_id, int) or release_id <= 0:
         raise ValueError("Final tag release database ID is invalid")
@@ -846,7 +990,7 @@ def authenticated_push(ref: str, env: dict | None = None) -> list[str]:
 
 
 def ensure_final_tag(tag: str, commit: str, claim: dict, *, candidate_manifest_sha256: str | None,
-                     docker_manifest_digest: str, release_id: int, run=output) -> str:
+                     docker_manifest_digest: str | None, release_id: int, run=output) -> str:
     """Create or verify the immutable annotated final tag."""
     require_stable_identity(tag, commit)
     expected = _final_metadata(
@@ -952,12 +1096,14 @@ def publish_attempt(record: dict, *, repository: str, run=output, read_archive) 
     from scripts.releases import docker
 
     claim = {"claim_tag": record["claim_tag"], "claim_object": record["claim_object"],
-             "autopublish": record["autopublish"], "skip_bundles": record["skip_bundles"],
+             "autopublish": record["autopublish"], "lanes": record["lanes"],
              "claim_epoch": record["claim_epoch"]}
-    # A claim that skipped bundles staged no archive, so its receipt binds no manifest.
-    manifest_sha256 = None if record["skip_bundles"] else hashlib.sha256(
-        read_archive(f"releases/tag/{record['claim_tag']}/release-candidates.json")).hexdigest()
-    docker_digest = docker.published_digest(record["claim_tag"], run)
+    # A claim that built no bundle staged no archive, so its receipt binds no manifest. One that
+    # built no image pushed none, so it binds no digest.
+    manifest_sha256 = hashlib.sha256(
+        read_archive(f"releases/tag/{record['claim_tag']}/release-candidates.json")
+    ).hexdigest() if lane_set.has_bundles(record["lanes"]) else None
+    docker_digest = docker.published_digest(record["claim_tag"], run) if "docker" in record["lanes"] else None
     ensure_final_tag(record["tag"], record["commit"], claim,
                      candidate_manifest_sha256=manifest_sha256,
                      docker_manifest_digest=docker_digest,
@@ -970,21 +1116,13 @@ def publish_attempt(record: dict, *, repository: str, run=output, read_archive) 
 def complete(env: dict) -> None:
     """Validate the accepted candidate archive. The final tag moves to publish."""
     tag, commit, claim = stable_context(env)
-    if claim["skip_bundles"]:
-        raise ValueError("A claim that skipped bundles has no candidate archive to validate")
+    if not lane_set.has_bundles(claim["lanes"]):
+        raise ValueError("A claim that builds no bundle has no candidate archive to validate")
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     candidate = read_candidate(env)
     validate_candidates(candidate, tag, commit, base, claim["claim_epoch"], archive=claim["claim_tag"])
-    require_smokes_match_claim(candidate, skip_tests=claim["skip_tests"])
-    require_targets_match_claim(candidate, include_macos_intel=claim["include_macos_intel"],
-                                include_termux=claim["include_termux"])
-
-
-def _flag(env: dict, name: str) -> bool:
-    value = env.get(name)
-    if value not in ("true", "false"):
-        raise ValueError(f"{name} must be the admitted claim's true or false, not {value!r}")
-    return value == "true"
+    require_smokes_match_claim(candidate, claim["lanes"])
+    require_targets_match_claim(candidate, claim["lanes"])
 
 
 def main(argv: list[str] | None = None, env: dict | None = None) -> None:
@@ -993,13 +1131,12 @@ def main(argv: list[str] | None = None, env: dict | None = None) -> None:
     if argv and argv[0] == "gate":
         needs = json.loads(env["RELEASE_NEEDS"])
         summary("\n".join(f"- {name}: {needs.get(name, {}).get('result', 'missing')}" for name in argv[1:]), env)
-        require_gate(needs, argv[1:], skip_bundles=_flag(env, "SKIP_BUNDLES"),
-                     skip_tests=_flag(env, "SKIP_TESTS"),
-                     **{p.key: _flag(env, p.key.upper()) for p in optional_platforms.PLATFORMS})
+        require_gate(needs, argv[1:], lanes=lane_set.from_flags(json.loads(env.get("LANES") or "null")),
+                     policy=env.get("POLICY") or "stable")
         return
     if argv and argv[0] == "stage-receipt":
         if len(argv) != 3 or argv[1] != "--receipt" or argv[2] not in RECEIPT_TARGETS:
-            raise ValueError("Expected stage-receipt --receipt darwin-arm64|darwin-x64|win32-bundle")
+            raise ValueError("Expected stage-receipt --receipt darwin-arm64|win32-bundle")
         stage_receipt(env, argv[2])
         return
     commands = {"admit": admit, "verify": verify, "transitions": transitions,

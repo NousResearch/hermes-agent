@@ -13,6 +13,7 @@
 
 import { atom } from 'nanostores'
 
+import { persistStore } from '@/lib/persist-store'
 import { persistBoolean, storedBoolean } from '@/lib/storage'
 
 const KEY = 'hermes.desktop.alwaysExternalLinks.v1'
@@ -24,7 +25,7 @@ export function setAlwaysExternalLinks(on: boolean): void {
 }
 
 if (typeof window !== 'undefined') {
-  $alwaysExternalLinks.subscribe(on => persistBoolean(KEY, on))
+  persistStore($alwaysExternalLinks, (on, options) => persistBoolean(KEY, on, options), false)
 
   window.addEventListener('storage', event => {
     if (event.key === KEY) {

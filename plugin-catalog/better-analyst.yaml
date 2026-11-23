@@ -1,0 +1,18 @@
+name: better-analyst
+title: Better Analyst
+repo: https://github.com/excelformulabot/better-analyst-hermes-plugin
+sha: fb3e68f5ca5b3f1709c70c2c7bf8bcf37944147c
+version: "1.0.0"
+description: "Convert PDFs such as bank statements, invoices, receipts and reports into Excel workbooks through Better Analyst's hosted MCP server (https://app.betteranalyst.com/api/mcp/connector, OAuth sign-in, no keys in config). Bundles a pdf-to-excel workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: every tool call goes to app.betteranalyst.com and acts on the user's Better Analyst account; PDFs the user uploads or links are sent there for processing. Conversions use the user's AI credits, 10 per page. The tool set is served by that server at runtime and is not covered by the pinned sha. The server records account, tool name, outcome, latency and client user agent per call, not file contents or arguments. Sign-in runs the pinned mcp-remote@0.15.2 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores the OAuth token under ~/.mcp-auth. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: Better Analyst
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://betteranalyst.com/docs/tools/pdf-to-excel
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

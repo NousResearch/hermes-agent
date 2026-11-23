@@ -11,18 +11,20 @@ import pytest
 from tools.bot_desktop import lease
 from tools.computer_use import tool
 from tools.computer_use.backend import ActionResult, CaptureResult
+from tests.bot_desktop_lease import reset_lease
+from tests.computer_use_fakes import NoopBackend, reset_backend
 
 
 @pytest.fixture(autouse=True)
 def _fresh_lease():
-    tool.reset_backend_for_tests()
-    lease._reset_for_tests()
+    reset_backend()
+    reset_lease()
     yield
-    tool.reset_backend_for_tests()
-    lease._reset_for_tests()
+    reset_backend()
+    reset_lease()
 
 
-class _TakeoverBackend(tool._NoopBackend):
+class _TakeoverBackend(NoopBackend):
     """Driver whose capture returns while a take-over / hand-back cycle happened underneath it."""
     _last_target = None
     _last_app = None

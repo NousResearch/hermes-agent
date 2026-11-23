@@ -58,10 +58,11 @@ vi.mock('@/store/gateway', () => ({
   openGatewayForProfile: vi.fn(async () => undefined)
 }))
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
-vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
+vi.mock('@/store/starmap', () => ({ reloadOpenStarmapGraph: vi.fn(), resetStarmapGraph: vi.fn() }))
 
 vi.mock('@/lib/external-link', () => ({
-  openExternalLink: (href: string) => openExternalLink(href)
+  openExternalLink: (href: string) => openExternalLink(href),
+  openLink: vi.fn()
 }))
 
 vi.mock('@/store/notifications', () => ({

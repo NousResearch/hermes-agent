@@ -15,6 +15,10 @@ from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
+from agent.display import redact_tool_args_for_display
+from agent.reasoning_summaries import redact_reasoning_fields
+from agent.redact import redact_sensitive_text
+from agent.redact_phone_policy import redact_assistant_reply
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 from agent.sdk_transform_bypass import bypass_sdk_request_transform
@@ -133,22 +137,22 @@ def _coerce_usage_int(value: Any) -> int:
 
 
 def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable[[], dict]) -> None:
-    """Enqueue per-call accounting for the SessionDB background writer. ``counts`` is built
+    """Enqueue per-call accounting for the session store's usage writer. ``counts`` is built
     lazily inside the guarded try so a stub agent without a session DB is never touched."""
     if not (agent._session_db and agent.session_id):
         return
     try:
         if not agent._session_db_created:
             agent._ensure_db_session()
-        from agent.turn_usage import _agent_session_source
-        agent._session_db.queue_token_counts(agent.session_id, source=_agent_session_source(agent), **counts())
+        from agent.turn_usage import queue_usage
+        queue_usage(agent, **counts())
     except Exception as exc:
         logger.debug(fail_msg, agent.session_id, *fail_extra, exc)
 
 
 def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]:
     """Translate Codex app-server token usage into Hermes accounting. Prompt bucket = uncached + cached
-    input (the protocol exposes no cache-write tokens); a turn with no usage still counts as one API call.
+    + cache-write input; a turn with no usage still counts as one API call.
     ``messages`` (the transcript mirror) lets real usage anchor the next preflight: this runtime bypasses
     the main loop's capture, and the mirror is never compacted natively, so without an anchor the rough
     estimate grows monotonically and hermes-mode fires thread compaction on tiny threads (#100381)."""
@@ -171,11 +175,14 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
     # ``inputTokens`` is INCLUSIVE of ``cachedInputTokens`` (same contract as the Responses API, see
     # normalize_usage's codex_responses branch); CanonicalUsage.prompt_tokens re-adds cache_read on top of
     # input_tokens, so the canonical input bucket must be the UNCACHED remainder or cached tokens count twice.
+    # ``cacheWriteInputTokens`` (codex-rs TokenUsageBreakdown, from Responses
+    # ``input_tokens_details.cache_write_tokens``) is inside ``inputTokens`` too; older servers omit it (0).
     cache_read_tokens = _coerce_usage_int(usage.get("cachedInputTokens"))
+    cache_write_tokens = _coerce_usage_int(usage.get("cacheWriteInputTokens"))
     canonical_usage = CanonicalUsage(
-        input_tokens=max(0, _coerce_usage_int(usage.get("inputTokens")) - cache_read_tokens),
+        input_tokens=max(0, _coerce_usage_int(usage.get("inputTokens")) - cache_read_tokens - cache_write_tokens),
         output_tokens=_coerce_usage_int(usage.get("outputTokens")),
-        cache_read_tokens=cache_read_tokens, cache_write_tokens=0,
+        cache_read_tokens=cache_read_tokens, cache_write_tokens=cache_write_tokens,
         reasoning_tokens=_coerce_usage_int(usage.get("reasoningOutputTokens")), raw_usage=usage,
     )
     prompt_tokens = canonical_usage.prompt_tokens
@@ -208,9 +215,14 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
         agent.session_estimated_cost_usd += cost_usd
     agent.session_cost_status, agent.session_cost_source = cost_result.status, cost_result.source
     cost_fields = {"estimated_cost_usd": cost_usd, "cost_status": cost_result.status, "cost_source": cost_result.source}
+    # The app-server builds its own requests (cache options included), so Hermes cannot know the
+    # window: an explicit unknown keeps an older window from outliving this cache activity.
+    from agent.prompt_cache_clock import record_unobserved_cache_response
+    from agent.turn_usage import cache_clock_column
+    clock = cache_clock_column(record_unobserved_cache_response(agent, canonical_usage, reason="codex_app_server"))
     _queue_token_counts(
         agent, "Codex app-server token persistence failed (session=%s, tokens=%d): %s", total_tokens,
-        counts=lambda: billing(**token_counts, **cost_fields,
+        counts=lambda: billing(**token_counts, **cost_fields, **clock,
                                billing_mode="subscription_included" if cost_result.status == "included" else None),
     )
     return {**usage_dict, "last_prompt_tokens": prompt_tokens, **cost_fields}
@@ -323,20 +335,33 @@ def _codex_item_to_args(item: dict) -> dict:
     return {"query": item.get("query") or ""} if item_type == "webSearch" else {}
 
 
-def _codex_item_to_preview(item: dict) -> Any:
-    """Short preview for the tool.started bubble; None when nothing useful (UI tolerates None)."""
+def _codex_item_to_preview(item: dict, args: dict | None = None) -> Any:
+    """Short preview for the tool.started bubble; None when nothing useful (UI tolerates None).
+
+    ``args`` overrides the item's raw arguments (the display-redacted copy)."""
     item_type = item.get("type") or ""
     if item_type in _PREVIEW_FIELDS:
-        return (item.get(_PREVIEW_FIELDS[item_type]) or "")[:120] or None
+        source = args if args is not None else item
+        return (source.get(_PREVIEW_FIELDS[item_type]) or "")[:120] or None
     if item_type == "fileChange":
         paths = [c.get("path") for c in _item_changes(item) if c.get("path")]
         return (", ".join(paths[:3]) + (f", +{len(paths) - 3} more" if len(paths) > 3 else "")) if paths else None
     if item_type in _MCP_LIKE_ITEM_TYPES:
-        args = item.get("arguments") or {}
+        args = args if args is not None else item.get("arguments") or {}
         if isinstance(args, dict) and args:
             with suppress(TypeError, ValueError):
                 return json.dumps(args, ensure_ascii=False)[:120]
     return None
+
+
+def _codex_display_args(name: str, args: dict) -> dict:
+    """Display-safe copy of a codex item's args for progress previews and tool cards.
+
+    Native ``exec_command`` text gets the same forced secret redaction as the terminal tool's display
+    path; Hermes-tools MCP items carry the bare Hermes tool name, so the shared display redactor applies."""
+    if name == "exec_command" and isinstance(args.get("command"), str):
+        return {**args, "command": redact_sensitive_text(args["command"], force=True)}
+    return redact_tool_args_for_display(name, args) or args
 
 
 def _codex_item_completion_payload(item: dict) -> tuple[str, bool]:
@@ -391,11 +416,12 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         args = _codex_item_to_args(item)
         if item_id:
             started[item_id] = (name, args, time.monotonic())
+        shown = _codex_display_args(name, args)
         agent_cb("tool_progress_callback", "tool_progress_callback raised on tool.started for %s", name,
-                 args=("tool.started", name, _codex_item_to_preview(item), args))
+                 args=("tool.started", name, _codex_item_to_preview(item, shown), shown))
         # Stable-ID tool card (TUI/desktop) fires alongside the progress bubble.
         agent_cb("tool_start_callback", "tool_start_callback raised for %s", name,
-                 args=(_stable_call_id(item, name), name, args))
+                 args=(_stable_call_id(item, name), name, shown))
 
     def _fire_tool_completed(item: dict) -> None:
         name = _codex_item_to_tool_name(item)
@@ -411,7 +437,7 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
                  kwargs={"duration": duration, "is_error": is_error, "result": result})
         args = prior[1] if prior is not None else _codex_item_to_args(item)
         agent_cb("tool_complete_callback", "tool_complete_callback raised for %s", name,
-                 args=(_stable_call_id(item, name), name, args, result))
+                 args=(_stable_call_id(item, name), name, _codex_display_args(name, args), result))
 
     def _fire_delta(params: dict, attr: str) -> None:
         text = _delta_text(params)
@@ -511,7 +537,10 @@ def _stored_codex_thread_id(agent) -> str | None:
     db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
     if db is None or not session_id:
         return None
-    thread_id = db.get_session_model_config_value(session_id, _CODEX_THREAD_ID_KEY)
+    from agent.agent_init_session import agent_interface
+    store = agent_interface(agent)
+    getter = store.sessions.get_model_config_value if store is not None else db.get_session_model_config_value
+    thread_id = getter(session_id, _CODEX_THREAD_ID_KEY)
     return thread_id if isinstance(thread_id, str) and thread_id else None
 
 
@@ -520,7 +549,10 @@ def _store_codex_thread_id(agent, thread_id: str | None) -> None:
     db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
     if db is None or not session_id:
         return
-    _call_guarded(db.patch_session_model_config, "codex thread id could not be stored on the session row",
+    from agent.agent_init_session import agent_interface
+    store = agent_interface(agent)
+    patcher = store.sessions.patch_model_config if store is not None else db.patch_session_model_config
+    _call_guarded(patcher, "codex thread id could not be stored on the session row",
                   args=(session_id, {_CODEX_THREAD_ID_KEY: thread_id}))
 
 
@@ -663,6 +695,19 @@ def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -
     )
 
 
+def _redact_projected_assistant_row(message: dict[str, Any]) -> None:
+    """Storage-boundary scrub of one projected assistant row, as ``build_assistant_message`` does on the
+    chat path (#43666): ``content`` and the unsigned ``reasoning`` copy are masked in place (no-op with
+    ``security.redact_secrets`` off). Runs after ``_transform_codex_reply``, which finds the final row by
+    its raw text. Tool-call arguments stay verbatim (#43083)."""
+    if message.get("role") != "assistant":
+        return
+    content = message.get("content")
+    if isinstance(content, str) and content:
+        message["content"] = redact_assistant_reply(content)
+    redact_reasoning_fields(message)
+
+
 def _persist_projected_messages(agent, turn, messages: list[dict[str, Any]]) -> bool:
     """Splice the projected messages into ``messages`` and flush them to the session DB; True when the
     rows are durable in the session DB (the codex thread binding may then be published).
@@ -682,6 +727,7 @@ def _persist_projected_messages(agent, turn, messages: list[dict[str, Any]]) -> 
             and first.get("content") == submitted_user_text):
         projected_messages = projected_messages[1:]
     for projected_message in projected_messages:
+        _redact_projected_assistant_row(projected_message)
         append_message(messages, projected_message)
     if getattr(agent, "_session_db", None) is None:
         return False
@@ -698,8 +744,9 @@ def _persist_projected_messages(agent, turn, messages: list[dict[str, Any]]) -> 
 
 
 def _finish_codex_turn(agent, turn, messages: list[dict[str, Any]], *, original_user_message: Any,
-                       should_review_memory: bool) -> dict[str, Any]:
-    """Post-turn bookkeeping mirroring the chat_completions loop; returns usage fields."""
+                       should_review_memory: bool, final_response: Any) -> dict[str, Any]:
+    """Post-turn bookkeeping mirroring the chat_completions loop; returns usage fields.
+    ``final_response`` is the reply after ``transform_llm_output``: memory keeps what the user got."""
     # run_conversation() already bumped _turns_since_memory / _user_turn_count; only _iters_since_skill is ours.
     agent._iters_since_skill = getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     _record_codex_app_server_compaction(agent, turn)
@@ -712,7 +759,7 @@ def _finish_codex_turn(agent, turn, messages: list[dict[str, Any]], *, original_
     # External memory sync skipped on interrupt/error (no partial transcripts).
     if not turn.interrupted and turn.error is None:
         _call_guarded(getattr(agent, "_sync_external_memory_for_turn", None), "external memory sync raised", kwargs=dict(
-            original_user_message=original_user_message, final_response=turn.final_text, interrupted=False, messages=messages,
+            original_user_message=original_user_message, final_response=final_response, interrupted=False, messages=messages,
         ))
     # Background review fork: only when a trigger tripped AND a real final response exists.
     if turn.final_text and not turn.interrupted and (should_review_memory or should_review_skills):
@@ -722,14 +769,37 @@ def _finish_codex_turn(agent, turn, messages: list[dict[str, Any]], *, original_
     return usage_result
 
 
+def _transform_codex_reply(agent, turn, turn_id: Any) -> dict[str, Any]:
+    """Run ``transform_llm_output`` on a codex reply before its rows are persisted, as
+    ``finish_text_response`` does on the generic loop: the user and the stored row get the rewrite.
+    A turn that failed after an agentMessage completed still delivers that text, so it is rewritten
+    too; a held turn rewrites even an interrupted one, and its earlier agentMessages (commentary the
+    user never saw) are typed hidden for every history load."""
+    held = getattr(agent, "_hold_stream", False)
+    if not turn.final_text or (turn.interrupted and not held):
+        return {"final_response": turn.final_text}
+    from agent.turn_finalizer import apply_llm_output_transform, public_pre_transform
+    final, transformed, pre_transform = apply_llm_output_transform(agent, turn.final_text, turn_id=turn_id)
+    rows = [m for m in turn.projected_messages or [] if m.get("role") == "assistant" and m.get("content")]
+    final_row = next((m for m in reversed(rows) if m.get("content") == turn.final_text), None)
+    if transformed and final_row is not None:
+        final_row["content"] = final
+    for message in rows if held else ():
+        if message is not final_row and not message.get("display_kind"):
+            message["display_kind"] = "hidden"
+    return {"final_response": final, "response_transformed": transformed,
+            "pre_transform_response": public_pre_transform(agent, pre_transform)}
+
+
 def run_codex_app_server_turn(agent, *, user_message: str, original_user_message: Any, messages: list[dict[str, Any]],
-                              effective_task_id: str, should_review_memory: bool = False) -> dict[str, Any]:
+                              effective_task_id: str, should_review_memory: bool = False,
+                              turn_id: Any = None) -> dict[str, Any]:
     """Hand the turn to a ``codex app-server`` subprocess and project its events into ``messages``.
     Returns the chat_completions result shape. The user message is ALREADY in ``messages`` — never append it again."""
     # Defense in depth for compression.checkpoint_required: agent init refuses the combination, but
     # api_mode is mutable. Explicit-True check matches compress_context().
     if getattr(agent, "compression_checkpoint_required", False) is True:
-        from agent.conversation_compression import _checkpoint_blocked
+        from agent.conversation_compression_checkpoint import _checkpoint_blocked
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
     _ensure_codex_session(agent, messages)
@@ -753,18 +823,19 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     if getattr(turn, "should_retire", False):
         logger.warning("codex app-server session retired (turn error: %s)", turn.error)
         _close_codex_session(agent)
+    reply = _transform_codex_reply(agent, turn, turn_id)
     # The binding is published only once the transcript it belongs to is durable, and never for a
     # retired thread (the next agent would only resume into the same wedge).
     if _persist_projected_messages(agent, turn, messages) and not getattr(turn, "should_retire", False):
         _store_codex_thread_id(agent, turn.thread_id)
     usage_result = _finish_codex_turn(
         agent, turn, messages, original_user_message=original_user_message, should_review_memory=should_review_memory,
+        final_response=reply["final_response"],
     )
     return _turn_result(
         interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
         # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
-        final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
-        **usage_result,
+        agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id, **reply, **usage_result,
     )
 
 
@@ -862,6 +933,9 @@ class _CodexResponseAssembler:
     terminal_service_tier = None  # the tier the backend SERVED (may differ from the one requested)
     # terminal_status defaults to "completed", so settlement needs an explicitly observed response.completed frame.
     saw_response_completed = False
+    # An assistant answer message item was announced (output_item.added, not commentary/analysis): its text deltas
+    # are real answer text even when its done event never arrives. Bare output_text deltas carry no such proof.
+    saw_answer_item_added = False
 
     def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta):
         self.model, self.on_text_delta, self.on_reasoning_delta = model, on_text_delta, on_reasoning_delta
@@ -875,6 +949,9 @@ class _CodexResponseAssembler:
         # first-observed (sequence, output_index) per announced item id so a later .done keeps its announced position.
         self.pending_function_calls: dict[str, dict[str, Any]] = {}
         self.announced_output_order: dict[str, tuple] = {}
+        # Phase per announced message item id: a delta that names its item keeps that item's phase even after a
+        # later item (a function call) was announced, so commentary is never fused into the answer text.
+        self.message_phases: dict[str, str | None] = {}
 
     def _safe(self, cb: Callable | None, label: str, *args: Any) -> None:
         _call_guarded(cb, f"Codex stream {label} raised", args=args)
@@ -883,11 +960,15 @@ class _CodexResponseAssembler:
         item = _event_field(event, "item")
         item_type = _event_field(item, "type", "")
         self.active_message_phase = _message_phase(item) if item_type == "message" else None
+        if item_type == "message" and self.active_message_phase not in ("commentary", "analysis"):
+            self.saw_answer_item_added = True
         if self.active_message_phase == "commentary":
             self.commentary_text_deltas = []
         # Record first-observed ordering for EVERY announced item; .done must reuse it or a mixed
         # announced/pending stream without output_index values reorders the calls.
         item_id = str(_event_field(item, "id", ""))
+        if item_id and item_type == "message":
+            self.message_phases[item_id] = self.active_message_phase
         if item_id and item_id not in self.announced_output_order:
             self.announced_output_order[item_id] = (self.next_output_sequence, _event_field(event, "output_index"))
             self.next_output_sequence += 1
@@ -906,12 +987,13 @@ class _CodexResponseAssembler:
             return
         # Harmony commentary/analysis text is mid-turn narration, never the final answer: route to the
         # reasoning callback, keep only the item for replay.
-        if self.active_message_phase == "commentary":
+        phase = self.message_phases.get(str(_event_field(event, "item_id", "") or ""), self.active_message_phase)
+        if phase == "commentary":
             self.commentary_text_deltas.append(delta_text)
             # Legacy fallback when no first-class commentary consumer is installed.
             if self.on_commentary_message is None:
                 self._safe(self.on_reasoning_delta, "on_reasoning_delta", delta_text)
-        elif self.active_message_phase == "analysis":
+        elif phase == "analysis":
             self._safe(self.on_reasoning_delta, "on_reasoning_delta", delta_text)
         else:
             self.text_deltas.append(delta_text)
@@ -934,7 +1016,7 @@ class _CodexResponseAssembler:
     def _pending_function_key(self, item_id: str, output_index: Any) -> str | None:
         if item_id in self.pending_function_calls:
             return item_id
-        # Copilot rotates opaque item IDs between SSE events. The response-local
+        # Some Responses backends rotate opaque item IDs between SSE events. The response-local
         # output_index still identifies the call, including index zero.
         if output_index is not None:
             return next((key for key, pending in self.pending_function_calls.items()
@@ -1076,10 +1158,21 @@ class _CodexResponseAssembler:
         # Successful completion orders all output, even when no calls remain pending.
         # Done items stay authoritative; only successful streams settle missing done events.
         output: list[Any] = self._settled_output() if self.saw_response_completed else list(self.output_items)
-        # With only plain text deltas (no tool calls), synthesize one message item.
-        if not output and self.text_deltas and not self.has_tool_calls:
+        # Plain text deltas with no output at all: synthesize one message item. Beside tool calls and commentary
+        # items, only an ANNOUNCED answer message whose done event never came is recovered, or the text said around
+        # a call is dropped from the turn (#143893); bare output_text beside commentary stays narration (length).
+        # The recovery needs a terminal frame: a stream cut mid-turn (no terminal, a call still pending) must raise
+        # below and retry, never end the turn on the cut-off sentence with the call silently lost.
+        if self.text_deltas and (
+                (not output and not self.has_tool_calls)
+                or (self.saw_terminal and self.saw_answer_item_added and not any(
+                    _event_field(item, "type", "") == "message"
+                    and _message_phase(item) not in ("commentary", "analysis") for item in output))):
             content = [SimpleNamespace(type="output_text", text="".join(self.text_deltas))]
-            output = [SimpleNamespace(type="message", role="assistant", status="completed", content=content)]
+            message = SimpleNamespace(type="message", role="assistant", status="completed", content=content)
+            first_call = next((i for i, item in enumerate(output)
+                               if "function_call" in str(_event_field(item, "type", ""))), len(output))
+            output.insert(first_call, message)
         # No terminal frame AND no usable content = truncated / rejected stream.
         if not self.saw_terminal and not output:
             raise RuntimeError("Codex Responses stream did not emit a terminal response")

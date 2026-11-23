@@ -5629,6 +5629,26 @@ export const frOverrides = {
       title: 'Barre latérale',
       description: 'Affiche la barre latérale mobile.',
       toggle: open => `${open ? 'Afficher' : 'Masquer'} la barre latérale`
+    },
+    zoom: {
+      openFullView: 'Ouvrir en plein écran',
+      zoomOut: 'Dézoomer',
+      reset: 'Réinitialiser',
+      zoomIn: 'Zoomer'
+    },
+    reactions: {
+      searchPlaceholder: 'Rechercher…',
+      loadingEmoji: 'Chargement des emojis…',
+      noEmojiFound: 'Aucun emoji trouvé.',
+      moreEmoji: 'Plus d’emojis',
+      reactedByHermes: 'Réaction d’Hermes',
+      removeReaction: emoji => `Supprimer la réaction ${emoji}`
+    },
+    systemMessage: {
+      steered: 'réorienté'
+    },
+    embed: {
+      openDiagram: 'Ouvrir le diagramme'
     }
   }
 } satisfies TranslationOverrides

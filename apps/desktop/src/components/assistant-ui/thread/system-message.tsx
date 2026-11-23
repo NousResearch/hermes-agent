@@ -160,7 +160,7 @@ export const SystemMessage: FC = () => {
         data-slot="aui_system-message-root"
       >
         <Codicon className="text-muted-foreground/55" name="compass" size="0.75rem" />
-        <span className="text-muted-foreground/55">steered</span>
+        <span className="text-muted-foreground/55">{t.ui.systemMessage.steered}</span>
         <span className="text-muted-foreground/35">·</span>
         <span className="whitespace-pre-wrap">{steerNote.groups.text.trim()}</span> <MessageTimelineTimestamp />
       </MessagePrimitive.Root>

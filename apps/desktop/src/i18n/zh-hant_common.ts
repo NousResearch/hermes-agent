@@ -73,6 +73,26 @@ export const zhHantCommon = {
       title: '側邊欄',
       description: '顯示行動裝置側邊欄。',
       toggle: open => `${open ? '顯示' : '隱藏'}側邊欄`
+    },
+    zoom: {
+      openFullView: '開啟完整檢視',
+      zoomOut: '縮小',
+      reset: '重設',
+      zoomIn: '放大'
+    },
+    reactions: {
+      searchPlaceholder: '搜尋…',
+      loadingEmoji: '正在載入表情符號…',
+      noEmojiFound: '找不到表情符號。',
+      moreEmoji: '更多表情符號',
+      reactedByHermes: 'Hermes 已回應',
+      removeReaction: emoji => `移除 ${emoji} 回應`
+    },
+    systemMessage: {
+      steered: '已轉向'
+    },
+    embed: {
+      openDiagram: '開啟圖表'
     }
   }
 } satisfies Pick<TranslationOverrides, 'common' | 'billingBlock' | 'ui'>

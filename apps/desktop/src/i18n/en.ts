@@ -4948,6 +4948,26 @@ export const en: Translations = {
       title: 'Sidebar',
       description: 'Displays the mobile sidebar.',
       toggle: open => `${open ? 'Show' : 'Hide'} sidebar`
+    },
+    zoom: {
+      openFullView: 'Open full view',
+      zoomOut: 'Zoom out',
+      reset: 'Reset',
+      zoomIn: 'Zoom in'
+    },
+    reactions: {
+      searchPlaceholder: 'Search…',
+      loadingEmoji: 'Loading emoji…',
+      noEmojiFound: 'No emoji found.',
+      moreEmoji: 'More emoji',
+      reactedByHermes: 'Reacted by Hermes',
+      removeReaction: emoji => `Remove ${emoji} reaction`
+    },
+    systemMessage: {
+      steered: 'steered'
+    },
+    embed: {
+      openDiagram: 'Open diagram'
     }
   }
 }

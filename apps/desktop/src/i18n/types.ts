@@ -4350,5 +4350,25 @@ export interface Translations extends NoticeTranslations {
       description: string
       toggle: (open: boolean) => string
     }
+    zoom: {
+      openFullView: string
+      zoomOut: string
+      reset: string
+      zoomIn: string
+    }
+    reactions: {
+      searchPlaceholder: string
+      loadingEmoji: string
+      noEmojiFound: string
+      moreEmoji: string
+      reactedByHermes: string
+      removeReaction: (emoji: string) => string
+    }
+    systemMessage: {
+      steered: string
+    }
+    embed: {
+      openDiagram: string
+    }
   }
 }

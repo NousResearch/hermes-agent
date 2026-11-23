@@ -5605,6 +5605,26 @@ export const esOverrides = {
       title: 'Barra lateral',
       description: 'Muestra la barra lateral móvil.',
       toggle: open => `${open ? 'Mostrar' : 'Ocultar'} barra lateral`
+    },
+    zoom: {
+      openFullView: 'Abrir vista completa',
+      zoomOut: 'Alejar',
+      reset: 'Restablecer',
+      zoomIn: 'Acercar'
+    },
+    reactions: {
+      searchPlaceholder: 'Buscar…',
+      loadingEmoji: 'Cargando emojis…',
+      noEmojiFound: 'No se encontraron emojis.',
+      moreEmoji: 'Más emojis',
+      reactedByHermes: 'Reacción de Hermes',
+      removeReaction: emoji => `Quitar reacción ${emoji}`
+    },
+    systemMessage: {
+      steered: 'redirigido'
+    },
+    embed: {
+      openDiagram: 'Abrir diagrama'
     }
   }
 } satisfies TranslationOverrides

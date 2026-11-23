@@ -4817,6 +4817,26 @@ export const zhOverrides = {
       title: '侧边栏',
       description: '显示移动端侧边栏。',
       toggle: open => `${open ? '显示' : '隐藏'}侧边栏`
+    },
+    zoom: {
+      openFullView: '打开完整视图',
+      zoomOut: '缩小',
+      reset: '重置',
+      zoomIn: '放大'
+    },
+    reactions: {
+      searchPlaceholder: '搜索…',
+      loadingEmoji: '正在加载表情…',
+      noEmojiFound: '未找到表情。',
+      moreEmoji: '更多表情',
+      reactedByHermes: 'Hermes 已回应',
+      removeReaction: emoji => `移除 ${emoji} 回应`
+    },
+    systemMessage: {
+      steered: '已转向'
+    },
+    embed: {
+      openDiagram: '打开图表'
     }
   }
 } satisfies TranslationOverrides

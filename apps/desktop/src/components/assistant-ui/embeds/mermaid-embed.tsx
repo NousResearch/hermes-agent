@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react'
 
 import { Zoomable } from '@/components/ui/zoomable'
 import { onThemeRepaint } from '@/hooks/use-theme-epoch'
+import { useI18n } from '@/i18n'
 import { copySvgAsPng } from '@/lib/svg-image'
 import { cn } from '@/lib/utils'
 
@@ -195,6 +196,7 @@ function svgAccessibleText(svg: string): string {
 // source while the message streams (partial syntax throws) and falls back to
 // source on parse failure.
 export default function MermaidRenderer({ code, streaming }: RichFenceProps) {
+  const { t } = useI18n()
   const theme = useStore($diagramTheme)
   const [svg, setSvg] = useState('')
   const [failed, setFailed] = useState(false)
@@ -251,7 +253,7 @@ export default function MermaidRenderer({ code, streaming }: RichFenceProps) {
   // renders before any zoom; the inline version stays capped at 33dvh.
   return (
     <Zoomable
-      label="Open diagram"
+      label={t.ui.embed.openDiagram}
       onCopy={() => copySvgAsPng(svg)}
       overlay={
         <img alt={imageAlt} className="mx-auto h-auto max-h-[80vh] max-w-[85vw]" draggable={false} src={imageSrc} />

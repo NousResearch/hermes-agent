@@ -5621,6 +5621,26 @@ export const deOverrides = {
       title: 'Seitenleiste',
       description: 'Zeigt die mobile Sidebar an.',
       toggle: open => `${open ? 'Anzeigen' : 'Ausblenden'}: Sidebar`
+    },
+    zoom: {
+      openFullView: 'Vollansicht öffnen',
+      zoomOut: 'Verkleinern',
+      reset: 'Zurücksetzen',
+      zoomIn: 'Vergrößern'
+    },
+    reactions: {
+      searchPlaceholder: 'Suchen…',
+      loadingEmoji: 'Emojis werden geladen…',
+      noEmojiFound: 'Keine Emojis gefunden.',
+      moreEmoji: 'Mehr Emojis',
+      reactedByHermes: 'Reaktion von Hermes',
+      removeReaction: emoji => `Reaktion ${emoji} entfernen`
+    },
+    systemMessage: {
+      steered: 'umgelenkt'
+    },
+    embed: {
+      openDiagram: 'Diagramm öffnen'
     }
   }
 } satisfies TranslationOverrides

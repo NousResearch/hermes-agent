@@ -92,8 +92,8 @@ def test_search_pin_keeps_direct_search_vendor_under_gateway_selection(web_profi
 
 
 def test_brave_key_is_a_direct_web_credential_in_the_gateway_offer(web_profile, monkeypatch):
-    # A Brave-only install autodetects brave-free, so the Tool Gateway offer must list web as
-    # "keep using your own key" (unchecked) instead of pre-checking it as unconfigured.
+    # Not pre-checked, so Enter does not record web.backend: nous over the user's own Brave key;
+    # list web under has_direct instead of unconfigured (runtime still prefers a ready gateway).
     web_profile({}, credentials="BRAVE_SEARCH_API_KEY=brave-test\n", gateway_ready=True)
     monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **_: NousPortalAccountInfo(
         logged_in=True, source="jwt", fresh=False, paid_service_access=True,

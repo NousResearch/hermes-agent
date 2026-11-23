@@ -297,6 +297,21 @@ def test_a_profile_and_root_copy_enabled_by_directory_name_behave_as_before(dash
     assert dash.ping("foo-tool").status_code == 200
 
 
+def test_a_profile_and_root_copy_whose_dashboard_is_named_like_their_plugin_yaml_stay_listed(dash, profile_process):
+    """The same hand-placed plugin in both places (folder ``foo-dir``, plugin.yaml and dashboard ``foo-tool``):
+    the profile's copy keeps the tab, turned on by its directory name, as when only one copy is installed."""
+    root, profile = profile_process
+    profile_imported = _install(profile, "foo-dir", "foo-tool", yaml_name="foo-tool")
+    root_imported = _install(root, "foo-dir", "foo-tool", yaml_name="foo-tool")
+    _plugins(profile, enabled=["foo-dir"])
+    dash.start()
+
+    assert profile_imported.exists()
+    assert not root_imported.exists()
+    assert dash.listed()["foo-tool"]["source"] == "user"
+    assert dash.ping("foo-tool").status_code == 200
+
+
 @pytest.mark.parametrize("bundled_name", ["telegram", "openai"])
 def test_a_dashboard_name_of_a_bundled_platform_or_backend_plugin_is_not_registered(dash, caplog, bundled_name):
     """A bundled plugin's name (a platform or backend one included) is that plugin's: another plugin's

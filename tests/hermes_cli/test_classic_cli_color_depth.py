@@ -66,3 +66,13 @@ def test_menu_scrollbar_follows_skin(monkeypatch):
     styles = get_prompt_toolkit_style_overrides()
     assert styles["scrollbar.background"] == "bg:#0F1E19"
     assert styles["scrollbar.button"] == "bg:#91AD9F"
+
+
+def test_menu_scrollbar_ignores_light_mode_remap(monkeypatch):
+    # get_color is remapped darker in light mode; the thumb sits on a dark track, so it must use the raw skin color.
+    from hermes_cli import skin_engine
+
+    skin = skin_engine.SkinConfig(name="t", colors={"banner_dim": "#B8860B"})
+    monkeypatch.setattr(skin, "get_color", lambda key, default="": "#5C4500")
+    monkeypatch.setattr(skin_engine, "get_active_skin", lambda: skin)
+    assert get_prompt_toolkit_style_overrides()["scrollbar.button"] == "bg:#B8860B"

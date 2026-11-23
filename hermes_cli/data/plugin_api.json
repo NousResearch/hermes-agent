@@ -217,6 +217,12 @@
       ]
     },
     {
+      "source": "plugins/index.md § Step 4: Write the tool handlers (the accepted request id of the calling turn)",
+      "entries": [
+        "hermes_cli.plugin_session:session_submission_id"
+      ]
+    },
+    {
       "source": "plugins/index.md § Check file paths and read YAML with Hermes's own helpers",
       "entries": [
         "agent.file_safety:get_read_block_error",

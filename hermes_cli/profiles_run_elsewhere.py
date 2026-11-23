@@ -125,6 +125,17 @@ class RunElsewhere:
         return (f"Profile '{self.profile}' runs elsewhere ({owner} its backend): Hermes does not read "
                 "its .env keys on this host, so they show as not set here.")
 
+    def backend_note(self) -> str:
+        """One line for the lists of ``hermes serve`` / ``hermes dashboard`` backends (the backend
+        migration's report, the dashboard's rows): a backend of this home is not one to move."""
+        if self.folder_error is not None:
+            return (f"Hermes cannot read {self.path.parent}, so it cannot tell whether a plugin runs "
+                    f"profile '{self.profile}' elsewhere: it does not move this backend to the gateway "
+                    "on this host.")
+        owner = f"the '{self.plugin}' plugin runs" if self.plugin is not None else "a plugin runs"
+        return (f"Profile '{self.profile}' runs elsewhere ({owner} its backend): Hermes does not move "
+                "this backend to the gateway on this host.")
+
 
 class ProfileRunsElsewhere(RuntimeError):
     """Raised when this host is asked to run a profile a plugin runs elsewhere."""

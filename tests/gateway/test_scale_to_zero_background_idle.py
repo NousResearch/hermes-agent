@@ -245,14 +245,83 @@ def test_pending_watcher_gets_no_grace_beyond_the_window(registry):
     assert s2z.has_live_background_processes(None, now=s.last_touched_at + 31 * MIN) is True
 
 
-def test_pending_watcher_of_an_exited_or_unknown_process_still_blocks(registry):
-    s = _session(registry, notify_on_complete=True)
+def _exited(registry, *, exited_at=5000.0, **kw):
+    s = _session(registry, notify_on_complete=True, **kw)
     registry._finish_exited(s, 0)
+    s.exited_at = exited_at
+    return s
+
+
+def test_pending_watcher_of_an_exited_process_blocks_until_delivered_at_most_10_min(registry):
+    s = _exited(registry)
     _watch(registry, s.id)  # its completion still has to be delivered
-    assert s2z.has_live_background_processes(WINDOW, now=s.last_touched_at + 31 * MIN) is True
-    registry.pending_watchers[:] = []
-    _watch(registry, "proc_unknown01")
-    assert s2z.has_live_background_processes(WINDOW, now=10_000 * MIN) is True
+    assert s2z.has_live_background_processes(WINDOW, now=s.exited_at + 9 * MIN) is True
+    assert s2z.has_live_background_processes(WINDOW, now=s.exited_at + 11 * MIN) is False
+    registry._completion_consumed.add(s.id)  # the agent read it with wait/log
+    assert s2z.has_live_background_processes(WINDOW, now=s.exited_at + 1) is False
+
+
+def test_pending_watcher_of_an_unknown_process_does_not_block(registry):
+    _watch(registry, "proc_unknown01")  # nothing for its watcher to deliver either
+    assert s2z.has_live_background_processes(WINDOW, now=10_000 * MIN) is False
+
+
+def test_delivering_ids_only_matter_for_an_exited_process(registry):
+    running = _session(registry, sid="proc_running01", notify_on_complete=True)
+    assert s2z.has_live_background_processes(
+        WINDOW, now=running.last_touched_at + 31 * MIN, delivering=[running.id]) is False  # window not extended
+    done = _exited(registry, sid="proc_exited001")
+    assert s2z.has_live_background_processes(WINDOW, now=done.exited_at + 1) is False  # no watcher owes it
+    assert s2z.has_live_background_processes(WINDOW, now=done.exited_at + 1, delivering=[done.id]) is True
+
+
+@pytest.mark.asyncio
+async def test_armed_watcher_holds_an_exited_completion_for_at_most_10_min(registry, tmp_path, monkeypatch):
+    """The real armed path: ``_run_process_watcher`` → ``_watch_process`` paused at its first sleep,
+    the process already exited, nothing in ``pending_watchers``."""
+    import asyncio
+
+    import gateway.run as gateway_run
+    from gateway.config import GatewayConfig
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner = GatewayRunner(GatewayConfig())
+    s = _exited(registry, exited_at=time.time())
+    task = asyncio.create_task(runner._run_process_watcher(
+        {"session_id": s.id, "check_interval": 30, "platform": "telegram", "chat_id": "1",
+         "notify_on_complete": True}))
+    try:
+        await wait_until_async(lambda: s.id in getattr(runner, "_live_process_watchers", ()))
+        assert not registry.pending_watchers
+        assert runner._scale_to_zero_has_live_background_work(WINDOW) is True
+        live = tuple(runner._live_process_watchers)
+        assert s2z.has_live_background_processes(WINDOW, now=s.exited_at + 9 * MIN, delivering=live) is True
+        assert s2z.has_live_background_processes(WINDOW, now=s.exited_at + 11 * MIN, delivering=live) is False
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert runner._scale_to_zero_has_live_background_work(WINDOW) is False  # the watcher ended
+
+
+async def wait_until_async(predicate, timeout=5.0):
+    import asyncio
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, "condition not met"
+        await asyncio.sleep(0.01)
+
+
+def test_clock_stepped_back_protects_for_at_most_one_more_window(registry):
+    s = _session(registry, last_touched_at=100_000.0)
+    stepped = 100_000.0 - 6 * 3600  # the wall clock jumps six hours backwards
+    assert s2z.has_live_background_processes(WINDOW, now=stepped) is True
+    assert s.last_touched_at == stepped  # clamped to now, not left six hours in the future
+    assert s2z.has_live_background_processes(WINDOW, now=stepped + 31 * MIN) is False
+
+
+def test_clock_stepped_forward_just_ages_the_touch(registry):
+    s = _session(registry)
+    assert s2z.has_live_background_processes(WINDOW, now=s.last_touched_at + 31 * MIN) is False
+    assert s.last_touched_at == 1000.0
 
 
 # --- diagnosability -----------------------------------------------------------

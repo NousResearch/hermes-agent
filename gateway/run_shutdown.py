@@ -352,8 +352,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             from tools.async_delegation import active_count
             return active_count() > 0
 
-        for label, probe in (("async-delegation", _delegations_active),
-                             ("bg-work", lambda: has_live_background_processes(process_idle_seconds))):
+        for label, probe in (("async-delegation", _delegations_active), ("bg-work", lambda: has_live_background_processes(
+                process_idle_seconds, delivering=tuple(getattr(self, "_live_process_watchers", ()))))):
             with _log_suppressed(logging.DEBUG, f"scale-to-zero {label} check failed", exc_info=True):
                 if probe():
                     return True

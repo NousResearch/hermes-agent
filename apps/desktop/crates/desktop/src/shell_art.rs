@@ -3,7 +3,7 @@
 //! One artwork is picked per launch, in ARTWORKS order after the previous
 //! launch's; its geometry is Figma's, in frame units, scaled to cover the window.
 use iced::{Color, Element, Length, widget::{Space, container, image, pin, responsive, stack, svg}};
-use std::path::Path;
+use std::{path::Path, sync::OnceLock};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Artwork { Ascend, Cathedral, Forest, Angel, Sword, Throne, Lattice, Wing, Karborn, Vanilla }
@@ -39,7 +39,10 @@ impl Artwork {
         }
     }
     pub fn ground(self) -> Color { self.placement().ground }
+    /// One handle per artwork for the life of the app: a handle made in `view` gets a new id every
+    /// redraw, and iced then decodes the full-size JPEG again each frame (constant idle CPU).
     fn image(self) -> Option<image::Handle> {
+        static HANDLES: [OnceLock<image::Handle>; ARTWORKS.len()] = [const { OnceLock::new() }; ARTWORKS.len()];
         let bytes: &'static [u8] = match self {
             Self::Ascend => include_bytes!("../assets/artwork/ascend.jpg"), Self::Cathedral => include_bytes!("../assets/artwork/cathedral.jpg"),
             Self::Forest => include_bytes!("../assets/artwork/forest.jpg"), Self::Angel => include_bytes!("../assets/artwork/angel.jpg"),
@@ -47,12 +50,14 @@ impl Artwork {
             Self::Lattice => include_bytes!("../assets/artwork/lattice.jpg"), Self::Karborn => include_bytes!("../assets/artwork/karborn.jpg"),
             Self::Wing | Self::Vanilla => return None,
         };
-        Some(image::Handle::from_bytes(bytes))
+        Some(HANDLES[self as usize].get_or_init(|| image::Handle::from_bytes(bytes)).clone())
     }
     fn vector(self) -> Option<svg::Handle> {
+        static WING: OnceLock<svg::Handle> = OnceLock::new();
+        static GHOST: OnceLock<svg::Handle> = OnceLock::new();
         match self {
-            Self::Wing => Some(svg::Handle::from_memory(include_bytes!("../assets/artwork/wing.svg").as_slice())),
-            Self::Vanilla => Some(svg::Handle::from_memory(include_bytes!("../assets/artwork/wing-ghost.svg").as_slice())),
+            Self::Wing => Some(WING.get_or_init(|| svg::Handle::from_memory(include_bytes!("../assets/artwork/wing.svg").as_slice())).clone()),
+            Self::Vanilla => Some(GHOST.get_or_init(|| svg::Handle::from_memory(include_bytes!("../assets/artwork/wing-ghost.svg").as_slice())).clone()),
             _ => None,
         }
     }

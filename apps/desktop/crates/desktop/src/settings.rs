@@ -183,7 +183,7 @@ fn accounts(app: &Hermes) -> Element<'_, Message> {
         row![
             column![
                 row![
-                    image(image::Handle::from_bytes(
+                    image(ui::static_image(
                         include_bytes!("../assets/apple-touch-icon.png").as_slice()
                     ))
                     .width(20)
@@ -540,7 +540,7 @@ pub(super) fn icon(name: &str, size: f32, color: Color) -> Element<'static, Mess
         (color.b * 255.0) as u8
     );
     let bytes = format!("<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='{stroke}' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'>{body}</svg>").into_bytes();
-    svg(svg::Handle::from_memory(bytes))
+    svg(ui::cached_svg(String::from_utf8(bytes).unwrap_or_default()))
         .width(Length::Fixed(size))
         .height(Length::Fixed(size))
         .into()
@@ -552,7 +552,7 @@ fn about(app:&Hermes)->Element<'_,Message>{
     let p=ui::palette(app.dark);
     let revision=option_env!("HERMES_DESKTOP_SOURCE_REVISION").unwrap_or("0284ce17d9bf9ed2f1832ad8950dfac2394d45ab");
     let version=env!("CARGO_PKG_VERSION");
-    let brand=iced::widget::image(iced::widget::image::Handle::from_bytes(if app.dark {include_bytes!("../assets/nous-girl-dark.png").as_slice()} else {include_bytes!("../assets/nous-girl.png").as_slice()}))
+    let brand=iced::widget::image(ui::static_image(if app.dark {include_bytes!("../assets/nous-girl-dark.png").as_slice()} else {include_bytes!("../assets/nous-girl.png").as_slice()}))
         .width(Length::Fixed(64.0)).height(Length::Fixed(64.0));
     let hero=column![brand,
         column![text("Hermes").size(18).font(ui::medium()),text(format!("Version {version} · Native (Rust)")).size(12).color(p.muted)].spacing(4).align_x(Alignment::Center)]

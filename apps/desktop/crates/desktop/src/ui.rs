@@ -824,3 +824,19 @@ fn field_input(theme: &Theme, status: text_input::Status) -> text_input::Style {
 fn search_input(theme: &Theme, status: text_input::Status) -> text_input::Style {
     let mut style = field_input(theme, status); style.background = Color::TRANSPARENT.into(); style.border = Border::default(); style
 }
+
+/// Image and SVG handles built once per source. A handle created inside `view` gets a fresh id on
+/// every redraw, so iced would decode and upload the same picture again each frame.
+pub(super) fn static_image(bytes: &'static [u8]) -> iced::widget::image::Handle {
+    static CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<usize, iced::widget::image::Handle>>> = std::sync::LazyLock::new(Default::default);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.entry(bytes.as_ptr() as usize).or_insert_with(|| iced::widget::image::Handle::from_bytes(bytes)).clone()
+}
+pub(super) fn cached_svg(source: String) -> iced::widget::svg::Handle {
+    static CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, iced::widget::svg::Handle>>> = std::sync::LazyLock::new(Default::default);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(handle) = cache.get(&source) { return handle.clone() }
+    let handle = iced::widget::svg::Handle::from_memory(source.clone().into_bytes());
+    cache.insert(source, handle.clone());
+    handle
+}

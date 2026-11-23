@@ -626,4 +626,60 @@ import {
   console.log('  ✓ nested envelopes: quote text resolves through both layers');
 }
 
+// WhatsApp events reach the agent as text
+{
+  const eventMessage = {
+    name: 'Soccer practice',
+    description: 'Bring cleats',
+    // int64 fields arrive as numbers, strings or Long-like objects
+    startTime: { toNumber: () => 1796580000 },
+    endTime: '1796583600',
+    location: { name: 'Community park', address: '1 Main St' },
+    isCanceled: false,
+  };
+  const base = {
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15550001111@s.whatsapp.net',
+    senderNumber: '15550001111',
+    botIds: [],
+    downloadMedia: async () => Buffer.from(''),
+  };
+  const key = { remoteJid: '15551234567@s.whatsapp.net', participant: '15550001111@s.whatsapp.net', fromMe: false };
+  const event = await extractBridgeEvent({
+    ...base,
+    msg: { key: { ...key, id: 'event-1' }, pushName: 'Tester', messageTimestamp: 123, message: { eventMessage } },
+  });
+  assert.equal(event.mediaType, 'event');
+  assert.equal(event.nativeType, 'eventMessage');
+  assert.equal(event.hasMedia, false);
+  assert.equal(
+    event.body,
+    '[Event: Soccer practice]\nWhen: 2026-12-06T18:00:00.000Z to 2026-12-06T19:00:00.000Z\nWhere: Community park, 1 Main St\nDetails: Bring cleats',
+  );
+  assert.deepEqual(Object.keys(event.nativeMetadata), []);
+
+  const cancelled = await extractBridgeEvent({
+    ...base,
+    msg: { key: { ...key, id: 'event-2' }, pushName: 'Tester', messageTimestamp: 123, message: { eventMessage: { name: 'Picnic', isCanceled: true } } },
+  });
+  assert.equal(cancelled.body, '[Event: Picnic (cancelled)]');
+
+  const reply = await extractBridgeEvent({
+    ...base,
+    msg: {
+      key: { ...key, id: 'event-reply-1' },
+      pushName: 'Tester',
+      messageTimestamp: 123,
+      message: {
+        extendedTextMessage: {
+          text: 'add this',
+          contextInfo: { stanzaId: 'event-1', participant: '15550001111@s.whatsapp.net', quotedMessage: { eventMessage } },
+        },
+      },
+    },
+  });
+  assert.ok(reply.quotedText.startsWith('[Event: Soccer practice]'));
+  console.log('  ✓ event messages become text, and quoting one keeps its details');
+}
+
 console.log('\n✅ All WhatsApp native bridge helper tests passed.');

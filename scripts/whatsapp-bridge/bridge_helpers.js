@@ -268,6 +268,7 @@ function textFromQuotedMessage(quotedMessage) {
   if (content.locationMessage) return formatLocationText(content.locationMessage, false);
   if (content.contactMessage) return formatContactText(content.contactMessage);
   if (content.pollCreationMessage) return formatPollText(content.pollCreationMessage);
+  if (content.eventMessage) return formatEventText(content.eventMessage);
   return '';
 }
 
@@ -346,6 +347,31 @@ function formatPollText(poll) {
   const question = poll.name || poll.title || 'poll';
   const options = pollOptions(poll);
   return `[Poll: ${question}${options.length ? ` Options: ${options.join(', ')}` : ''}]`;
+}
+
+// Event start/end are epoch seconds, as a number, string or Long.
+function eventTime(value) {
+  if (value === undefined || value === null || value === '') return '';
+  const seconds = Number(typeof value?.toNumber === 'function' ? value.toNumber() : value);
+  return Number.isFinite(seconds) && seconds > 0 ? new Date(seconds * 1000).toISOString() : '';
+}
+
+function eventPlace(location) {
+  if (!location) return '';
+  return [location.name, location.address].filter(Boolean).join(', ');
+}
+
+function formatEventText(event) {
+  const start = eventTime(event.startTime);
+  const end = eventTime(event.endTime);
+  const where = eventPlace(event.location);
+  return [
+    `[Event: ${event.name || 'untitled'}${event.isCanceled ? ' (cancelled)' : ''}]`,
+    start ? `When: ${start}${end ? ` to ${end}` : ''}` : '',
+    where ? `Where: ${where}` : '',
+    event.joinLink ? `Call link: ${event.joinLink}` : '',
+    event.description ? `Details: ${event.description}` : '',
+  ].filter(Boolean).join('\n');
 }
 
 function formatPollUpdateText(update) {
@@ -549,6 +575,11 @@ export async function extractBridgeEvent({
     nativeType = 'pollUpdateMessage';
     body = formatPollUpdateText(messageContent.pollUpdateMessage);
     nativeMetadata.pollUpdate = messageContent.pollUpdateMessage;
+  } else if (messageContent.eventMessage) {
+    mediaType = 'event';
+    nativeType = 'eventMessage';
+    body = formatEventText(messageContent.eventMessage);
+    // No nativeMetadata here, session_envelope rejects unknown native keys.
   }
 
   // Surface failed downloads to the agent instead of silently losing the

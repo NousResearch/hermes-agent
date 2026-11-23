@@ -684,13 +684,38 @@ class _PluginNameOwners:
         return [d for d, _key, _source in entries if d not in same]
 
 
-def _dashboard_name_taken(name: Any, plugin_dir: Path, source: str, spellings: frozenset,
+def _dashboard_name(plugin_dir: Path) -> Any:
+    """The name ``plugin_dir``'s dashboard manifest gives it, None without a readable one."""
+    try:
+        data = json.loads((plugin_dir / "dashboard" / "manifest.json").read_text(encoding="utf-8-sig"))
+        return data.get("name", plugin_dir.name)
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _dashboard_stamp(plugin_dir: Path) -> tuple:
+    """Size and change time of the files a discovered entry was read from, to notice an update."""
+    def stamp(path: Path) -> Optional[tuple]:
+        try:
+            status = path.stat()
+        except OSError:
+            return None
+        return status.st_mtime_ns, status.st_size
+    return tuple(stamp(plugin_dir / part) for part in ("dashboard/manifest.json", "plugin.yaml", "plugin.yml"))
+
+
+def _dashboard_name_taken(name: Any, plugin_dir: Path, source: str, spellings: frozenset, owned: frozenset,
                           owners: _PluginNameOwners) -> bool:
     """Whether ``name`` (from the plugin's dashboard/manifest.json) is another installed plugin's: then
-    this entry is not registered, so it neither borrows that plugin's enable state nor hides its tab."""
-    if name in spellings or not isinstance(name, str):
+    this entry is not registered, so it neither borrows that plugin's enable state nor hides its tab.
+    ``owned`` are the names only this plugin answers to. A name it declares itself but shares (the same
+    ``plugin.yaml`` name in two directories) is taken only when another of those plugins has a dashboard of
+    that name; with no such tab this one keeps its own, turned on by its directory name."""
+    if name in owned or not isinstance(name, str):
         return False
     others = owners.others(name, plugin_dir, source)
+    if name in spellings:
+        others = [d for d in others if _dashboard_name(d) == name]
     if others:
         _log.warning(
             "Dashboard plugin at %s is not registered: its dashboard name '%s' is the name of the plugin "
@@ -714,7 +739,8 @@ def _discover_dashboard_plugins(search_dirs: Optional[list] = None) -> list:
     project plugin sources — same three sources as ``hermes_cli.plugins`` — or ``search_dirs``.
 
     Each entry also records the names the plugin answers to (``_spellings``, every name the plugin
-    loader accepts for it, and ``_owned``, the ones no other installed plugin answers to) so the
+    loader accepts for it, and ``_owned``, the ones that turn it on: those no other installed plugin
+    answers to, and its dashboard name unless it shares that name as a ``plugin.yaml`` name) so the
     enable check matches the loader's. A dashboard name that is another installed plugin's name is skipped (see
     :func:`_dashboard_name_taken`).
     """
@@ -744,11 +770,12 @@ def _discover_dashboard_plugins(search_dirs: Optional[list] = None) -> list:
                     continue
                 spellings = frozenset(plugin_spellings(child, child.name))
                 owned = _own_spellings(child, source, spellings, owners)
-                if _dashboard_name_taken(name, child, source, owned, owners):
+                if _dashboard_name_taken(name, child, source, spellings, owned, owners):
                     continue
                 seen_names.add(name)
                 entry = _dashboard_plugin_entry(data, name, child / "dashboard", source)
-                plugins.append({**entry, "_spellings": spellings, "_owned": owned})
+                enabled_by = owned if name in spellings else owned | {name}
+                plugins.append({**entry, "_spellings": spellings, "_owned": enabled_by, "_stamp": _dashboard_stamp(child)})
             except OSError as exc:
                 _log.warning("Skipping unreadable dashboard plugin %s: %s", manifest_file, exc)
                 continue
@@ -967,15 +994,15 @@ def _plugin_api_mount_skip_reason(plugin: dict[str, Any], enabled_set: set, disa
 
     ``plugins.disabled`` matches every name the plugin declares (``_spellings`` from discovery:
     directory, key, ``plugin.yaml`` name); ``plugins.enabled`` only the ones no other installed plugin
-    answers to (``_owned``). Both also match its dashboard name, which discovery only registers when no
-    other installed plugin has that name. A project plugin needs no enable entry, but a disabled one
+    answers to, plus its dashboard name unless that is a ``plugin.yaml`` name it shares (``_owned``).
+    ``plugins.disabled`` also matches its dashboard name. A project plugin needs no enable entry, but a disabled one
     stays off like any other.
     """
     source, plugin_name = plugin.get("source"), plugin.get("name", "")
     names = {plugin_name, *plugin.get("_spellings", ())} if source in ("user", "project") else {plugin_name}
     if source in ("user", "bundled", "project") and names & disabled_set:
         return "explicitly disabled"
-    if source == "user" and not {plugin_name, *plugin.get("_owned", ())} & enabled_set:
+    if source == "user" and not set(plugin.get("_owned", (plugin_name,))) & enabled_set:
         return "not in plugins.enabled"
     return None
 
@@ -1167,8 +1194,9 @@ def _hosted_plugin_for_request(name: str) -> Optional[tuple]:
     when that profile has no enabled user copy of it.
 
     The plugin list is the launch profile's cached discovery (the copy the route was mounted from),
-    rescanned once when it has no user copy of ``name`` (installed again since the last scan); the
-    enable check reads the requesting profile's lists on every request."""
+    rescanned once when it has no user copy of ``name`` or that copy's manifest files changed since
+    the scan (installed again or updated); the enable check reads the requesting profile's lists on
+    every request."""
     from hermes_cli.plugins import get_plugin_manager
     from hermes_cli.plugins_cmd import _get_disabled_set, _get_enabled_set
     from hermes_cli.web_server import _get_dashboard_plugins
@@ -1179,7 +1207,7 @@ def _hosted_plugin_for_request(name: str) -> Optional[tuple]:
 
     with _launch_profile_scope():
         plugin = hosted_copy(_get_dashboard_plugins())
-        if plugin is None:
+        if plugin is None or plugin.get("_stamp") != _dashboard_stamp(Path(plugin["_dir"]).parent):
             plugin = hosted_copy(_get_dashboard_plugins(force_rescan=True))
     if plugin is None or _plugin_api_mount_skip_reason(plugin, _get_enabled_set(), _get_disabled_set()):
         return None

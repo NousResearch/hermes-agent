@@ -44,16 +44,22 @@ beforeEach(() => {
     switch (method) {
       case 'onboarding.state':
         return { run: true, eligible: false, started: true, step: 'model' }
+
       case 'onboarding.set_run':
         return { run: params?.run === true, started: true, step: params?.step ?? 'model' }
+
       case 'shared_metrics.status':
         return { decided: true, enabled: false }
+
       case 'setup.status':
         return { provider_configured: false }
+
       case 'setup.runtime_check':
         return { ok: transport.ready, model: 'local-model' }
+
       case 'free_tier.status':
         return { enabled: false }
+
       default:
         throw new Error(`Unexpected setup side effect: ${method}`)
     }
@@ -101,9 +107,11 @@ afterEach(() => {
 
 it('releases the real provider picker for local settings and resumes only on request', async () => {
   await decideOnboarding(transport.request as never, true)
+
   const settingsAction = vi.fn(() => {
     transport.ready = true
   })
+
   render(
     <>
       <button onClick={settingsAction}>Configure local model</button>
@@ -150,6 +158,20 @@ it('shows old-runtime upgrade instructions and retries setup without creating a 
       .filter(([method]) => method === 'onboarding.state')
       .every(([, params]) => params.sessionless === true)
   ).toBe(true)
+})
+
+it('puts the setup offer away on Close, and brings it back when setup fails again', async () => {
+  transport.request.mockRejectedValue(new Error('Invalid params: sessionless [type=extra_forbidden]'))
+  await decideOnboarding(transport.request as never, true)
+  render(<DesktopOnboardingOverlay enabled profile="default" requestGateway={transport.request as never} />)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+  expect(screen.queryByRole('alert')).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+  expect(screen.queryByRole('dialog')).toBeNull()
+
+  await act(() => decideOnboarding(transport.request as never, true))
+  expect(screen.getByRole('alert').textContent).toBe(enFirstRun.guide.upgradeRequired)
 })
 
 it('keeps the classic manual local-model handoff free of the redesigned guide', async () => {

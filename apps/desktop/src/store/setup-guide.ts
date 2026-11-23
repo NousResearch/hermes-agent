@@ -31,18 +31,27 @@ export const $guideRecovery = atom<{
   scope: OnboardingScope
   retry: () => Promise<unknown>
 } | null>(null)
+/** The standing offer, put away by the user. Setup being offered, suspended or failing again brings
+ *  it back, and Settings can rerun setup at any time. */
+export const $guideOfferDismissed = atom(false)
+
+export function dismissGuideOffer(): void {
+  $guideOfferDismissed.set(true)
+}
+
 let generation = 0
 $setupGuideOnboarding.listen(() => {
   generation += 1
 })
 
 computed(
-  [$setupGuidePhase, $setupGuideOnboarding, $guideRecovery],
-  (phase, redesign, recovery) => redesign && (phase === 'shown' || recovery !== null)
+  [$setupGuidePhase, $setupGuideOnboarding, $guideRecovery, $guideOfferDismissed],
+  (phase, redesign, recovery, dismissed) => redesign && !dismissed && (phase === 'shown' || recovery !== null)
 ).subscribe(active => setOnboardingSurfaceActive('setup-guide', active))
 
 function show(state: OnboardingRunStateResult, request: OnboardingRequest, scope: OnboardingScope): void {
   $guideRecovery.set(null)
+  $guideOfferDismissed.set(false)
   const previousScope = $guideScope.get()
 
   if (previousScope?.connectionId !== scope.connectionId || previousScope?.profile !== scope.profile) {
@@ -77,6 +86,7 @@ function pinRequest(request: OnboardingRequest, scope: OnboardingScope): Onboard
 
 function offerRecovery(error: unknown, scope: OnboardingScope, retry: () => Promise<unknown>): void {
   const message = error instanceof Error ? error.message : String(error)
+  $guideOfferDismissed.set(false)
   $guideRecovery.set({
     message,
     upgradeRequired:
@@ -125,6 +135,7 @@ export async function startOnboarding(request: OnboardingRequest, scope = captur
 
 export function suspendOnboarding(): void {
   if ($setupGuideOnboarding.get() && $setupGuidePhase.get() === 'shown') {
+    $guideOfferDismissed.set(false)
     $guideSuspended.set(true)
   }
 }

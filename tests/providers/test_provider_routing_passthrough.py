@@ -3,7 +3,10 @@
 Unknown keys in the ``provider_routing`` config block must be forwarded
 verbatim into the request's provider preference object, while the typed
 keys (sort/only/ignore/order/require_parameters/data_collection) keep
-their attribute-based semantics and win on conflict.
+their attribute-based semantics and win on conflict. Per-model entries
+(``provider_routing.models.<id>``) carry passthrough keys too and outrank
+the flat block. Explicit values — falsy ones included — are sent
+verbatim; ``None`` means unset and is never sent.
 """
 
 import sys
@@ -15,21 +18,27 @@ sys.path.insert(0, str(REPO_ROOT))
 
 def _stub_agent():
     class StubAgent:
-        providers_allowed = None
-        providers_ignored = None
-        providers_order = None
-        provider_sort = None
-        provider_require_parameters = False
-        provider_data_collection = None
-        provider_extra = {}
+        model = ""
+        providers_allowed: object = None
+        providers_ignored: object = None
+        providers_order: object = None
+        provider_sort: object = None
+        provider_require_parameters: object = False
+        provider_data_collection: object = None
+        provider_extra: object = {}
 
     return StubAgent()
 
 
 def _extract_extra(pr):
-    from gateway.run import _provider_routing_extra
+    from hermes_constants import provider_routing_extra
 
-    return _provider_routing_extra(pr)
+    return provider_routing_extra(pr)
+
+
+def _patch_per_model(monkeypatch, per_model):
+    monkeypatch.setattr("hermes_constants.resolve_per_model_provider_routing",
+                        lambda model, models: per_model)
 
 
 def test_unknown_keys_forwarded_typed_keys_dropped():
@@ -48,6 +57,11 @@ def test_unknown_keys_forwarded_typed_keys_dropped():
     }
 
 
+def test_models_key_is_typed_never_forwarded():
+    pr = {"models": {"m1": {"zdr": True}}, "zdr": False}
+    assert _extract_extra(pr) == {"zdr": False}
+
+
 def test_build_preferences_carries_passthrough():
     from agent.chat_completion_helpers import _provider_preferences_for_agent
 
@@ -55,6 +69,15 @@ def test_build_preferences_carries_passthrough():
     agent.provider_extra = _extract_extra({"zdr": True, "allow_fallbacks": False})
     prefs = _provider_preferences_for_agent(agent)
     assert prefs == {"zdr": True, "allow_fallbacks": False}
+
+
+def test_falsy_extra_forwarded_verbatim_none_never():
+    from agent.chat_completion_helpers import _provider_preferences_for_agent
+
+    agent = _stub_agent()
+    agent.provider_extra = {"allow_fallbacks": False, "zdr": False, "partition": None}
+    prefs = _provider_preferences_for_agent(agent)
+    assert prefs == {"allow_fallbacks": False, "zdr": False}
 
 
 def test_typed_keys_win_on_conflict():
@@ -65,6 +88,29 @@ def test_typed_keys_win_on_conflict():
     agent.provider_extra = {"only": ["typo-value"], "zdr": True}
     prefs = _provider_preferences_for_agent(agent)
     assert prefs["only"] == ["real-provider"]
+    assert prefs["zdr"] is True
+
+
+def test_per_model_passthrough_outranks_flat(monkeypatch):
+    from agent.chat_completion_helpers import _provider_preferences_for_agent
+
+    _patch_per_model(monkeypatch, {"quantizations": ["mxfp4"], "zdr": True})
+    agent = _stub_agent()
+    agent.provider_extra = {"quantizations": ["fp8"]}
+    prefs = _provider_preferences_for_agent(agent)
+    assert prefs["quantizations"] == ["mxfp4"]
+    assert prefs["zdr"] is True
+
+
+def test_per_model_typed_keys_still_overlay_flat(monkeypatch):
+    from agent.chat_completion_helpers import _provider_preferences_for_agent
+
+    _patch_per_model(monkeypatch, {"sort": "latency"})
+    agent = _stub_agent()
+    agent.provider_sort = "throughput"
+    agent.provider_extra = {"zdr": True}
+    prefs = _provider_preferences_for_agent(agent)
+    assert prefs["sort"] == "latency"
     assert prefs["zdr"] is True
 
 

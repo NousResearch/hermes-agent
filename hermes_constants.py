@@ -1341,6 +1341,30 @@ def provider_routing_extra(pr: dict | None) -> dict:
     return extra
 
 
+def merge_provider_routing_prefs(merged: dict, per_model: dict, extra: dict) -> dict:
+    """Final OpenRouter provider preference object from the validated merge.
+
+    Falsy typed values are dropped; explicit passthrough values (``extra`` and unknown
+    ``per_model`` entry keys) are forwarded verbatim — falsy included, since e.g.
+    ``allow_fallbacks: false`` is a meaningful OpenRouter pin; ``None`` means unset and
+    is never sent. Typed keys win over flat ``extra`` (``merged`` already carries the
+    typed keys, flat and per-model); unknown per-model keys outrank flat ``extra``."""
+    import logging
+
+    prefs = {key: value for key, value in merged.items() if value}
+    for key, value in (extra or {}).items():
+        if key in merged:
+            logging.getLogger(__name__).debug(
+                "provider_routing passthrough: typed key %r wins over config passthrough value", key,
+            )
+        elif value is not None:
+            prefs[key] = value
+    for key, value in (per_model or {}).items():
+        if key not in merged and value is not None:
+            prefs[key] = value
+    return prefs
+
+
 def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     """Effective reasoning config for *model*: per-model override, then global ``agent.reasoning_effort``.
 

@@ -1,7 +1,7 @@
 name: nagaai
 title: NagaAI
 repo: https://github.com/naga-ai-hub/hermes-provider-nagaai
-sha: 92fa6a11431a65587b36c02a6c2e7b8350936548
+sha: 581580b86cd124ea0accef2a032f841fc3a2647e
 description: >-
   NagaAI as a Hermes model provider (`--provider nagaai`) over the OpenAI Responses API: one key for
   Claude, GPT, Gemini, DeepSeek, MiniMax and other models, paid from a prepaid NagaAI balance. The
@@ -9,17 +9,18 @@ description: >-
   the public GET /v1/models catalog, with a short built-in list when it is unreachable. Disclosure:
   registers one model provider at import and nothing else (no tools, hooks, middleware, commands,
   background work or file access). Prompts, tool schemas and results go to https://api.naga.ac/v1
-  through Hermes' own client with NAGAAI_API_KEY, which Hermes reads; the plugin itself makes one
-  request, GET https://api.naga.ac/v1/models without the key, and sends no telemetry.
+  through Hermes' own client with NAGA_API_KEY (NAGAAI_API_KEY as a fallback), which Hermes reads;
+  the plugin itself makes one request, GET https://api.naga.ac/v1/models without the key, and
+  sends no telemetry.
 maintainer: naga-ai-hub
 tier: community
 category: models
 requires_hermes: ">=0.22.2"
 docs_url: https://github.com/naga-ai-hub/hermes-provider-nagaai#readme
-version: "1.0.0"
+version: "1.0.1"
 capabilities:
   provides_tools: []
   provides_hooks: []
   provides_middleware: []
   requires_env:
-    - NAGAAI_API_KEY
+    - NAGA_API_KEY

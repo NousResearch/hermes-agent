@@ -46,10 +46,12 @@ def test_start_gateway_exits_78_before_reading_config(root, monkeypatch, capsys,
     assert "HERMES_EXEC_ASK" not in os.environ
 
 
-def test_marked_siblings_keep_the_gateway_off_an_external_cron_registry(root, monkeypatch):
+@pytest.mark.parametrize("marked", ["ops", "default"])
+def test_marked_siblings_keep_the_gateway_off_an_external_cron_registry(root, monkeypatch, marked):
     """An external provider reconciles one unscoped registry toward this home's jobs; a marked profile's
     backend elsewhere may arm its jobs there, so the gateway keeps the built-in ticker as for any host
-    with more than one profile."""
+    with more than one profile. With ``default`` marked the gateway is a standalone ``ops``: it ticks only
+    ``ops`` and lists only ``default``, and the registry may still hold both profiles' jobs."""
     import threading
     import types
     from cron import scheduler_provider as sp
@@ -70,10 +72,14 @@ def test_marked_siblings_keep_the_gateway_off_an_external_cron_registry(root, mo
     monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: external)
     monkeypatch.setattr(scheduler_thread, "SupervisedTickerThread", _Ticker)
     monkeypatch.setattr(gateway_run, "_start_gateway_housekeeping", lambda *_a, **_k: None)
+    launch = "default" if marked == "ops" else "ops"
+    if launch == "ops":
+        (root / "profiles" / "ops" / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "ops"))
     runner = types.SimpleNamespace(config=types.SimpleNamespace(multiplex_profiles=True), adapters={},
-                                   _profile_adapters=None, _primary_profile_name="default",
+                                   _profile_adapters=None, _primary_profile_name=launch,
                                    _draining=False, _external_drain_active=False)
-    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin", root=root)
+    pre.mark_profile_run_elsewhere(marked, "sandbox-plugin", root=root)
 
     async def _start():
         return gateway_run._start_gateway_start_cron_and_housekeeping(runner)

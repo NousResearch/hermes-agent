@@ -397,14 +397,16 @@ async def _start_gateway_start_control_socket(runner):
     return _control_server
 
 
-def _cron_registry_profile_count(ticked: int) -> int:
+def _cron_registry_profile_count(ticked: list) -> int:
     """How many profiles one external provider's registry would hold: the *ticked* ones, plus the profiles
-    a plugin runs elsewhere, which are not ticked here but whose backend may arm its jobs in that registry."""
+    a plugin runs elsewhere, which are not ticked here but whose backend may arm its jobs in that registry.
+    By name, as a union: a standalone launch profile is ticked but not listed, a marked default the reverse."""
     from hermes_cli.profiles import profiles_to_serve
     try:
-        return max(ticked, len(profiles_to_serve(multiplex=True, include_run_elsewhere=True)))
+        listed = profiles_to_serve(multiplex=True, include_run_elsewhere=True)
     except OSError:
-        return ticked
+        listed = []
+    return len({name for name, _home in [*ticked, *listed]})
 
 
 def _start_gateway_start_cron_and_housekeeping(runner):
@@ -426,7 +428,7 @@ def _start_gateway_start_cron_and_housekeeping(runner):
         cron_profile_homes = []
     # External providers own one unscoped remote registry, so they can only serve a single home.
     cron_provider = scheduler_for_profile_mode(
-        resolve_cron_scheduler(), multiplex_profiles=_cron_registry_profile_count(len(cron_profile_homes)) > 1)
+        resolve_cron_scheduler(), multiplex_profiles=_cron_registry_profile_count(cron_profile_homes) > 1)
     cron_start_kwargs: Dict[str, Any] = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
 
     if isinstance(cron_provider, InProcessCronScheduler) and cron_profile_homes:

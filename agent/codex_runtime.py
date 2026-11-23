@@ -1302,6 +1302,8 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 if has_progress:
                     first_progress = watchdog_state.last_progress_ts is None
                     watchdog_state.last_progress_ts = now
+                    # Request-wide (a physical retry never clears it): the stale clock's anchor.
+                    watchdog_state.request_progress_ts = now
                     if watchdog_state.phase_aware:
                         watchdog_state.retry_started_ts = None
         if first_event:

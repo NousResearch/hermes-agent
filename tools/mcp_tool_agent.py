@@ -215,8 +215,11 @@ def tool_pin_version() -> str:
 
 
 def persist_agent_tool_names(agent) -> None:
-    """Best-effort: write ``agent.tools`` to the session row (freeze pin). The full definitions,
-    keyed by the code that built them: another process or surface derives different bytes."""
+    """Best-effort: write ``agent.tools`` to the session row (freeze pin) through the agent's storage
+    interface, else through its store. The full definitions, keyed by the code that built them: another
+    process or surface derives different bytes."""
+    from agent.agent_init_session import agent_interface
+
     db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
     if not db or not session_id:
@@ -225,7 +228,10 @@ def persist_agent_tool_names(agent) -> None:
         pin = {"version": tool_pin_version(), "tools": _agent_tool_defs(agent)}
         if isinstance(backend := getattr(agent, "_delegation_backend", None), str) and backend:
             pin["delegation_backend"] = backend  # what its delegate_task was built from: the session routes on it
-        db.update_session_tool_names(session_id, pin)
+        if (store := agent_interface(agent)) is not None:
+            store.sessions.update_tool_pin(session_id, pin)
+        else:
+            db.update_session_tool_names(session_id, pin)
     except Exception:
         logger.debug("tool_names persist skipped", exc_info=True)
         return
@@ -313,6 +319,32 @@ def _pinned_tool_defs(saved, fresh, keep_bytes=False) -> tuple:
     return pinned, same_code, [d for d in map(_pinned_def, pinned) if d]
 
 
+def _refresh_name_dependent_defs(merged: list, dropped: set, fresh: dict) -> list:
+    """A restore that drops a pinned tool has already moved tools[] (the cached prefix is broken
+    there), so a surviving tool whose ``_DYNAMIC_SCHEMA_REWRITERS`` entry derives its text from the
+    other tool names takes this build's definition: pinned bytes would still name what was dropped
+    (execute_code's sandbox list, delegate_task's sibling line). A carried survivor this process did
+    not build is rewritten from its registry schema against the final names. Nothing dropped: bytes untouched."""
+    if not dropped:
+        return merged
+    from model_tools import _DYNAMIC_SCHEMA_REWRITERS
+    from tools.registry import registry
+    from tools.schema_sanitizer import sanitize_tool_schemas
+    available = {_def_name(t) for t in merged}
+
+    def _current(tool):
+        name = _def_name(tool)
+        rewrite = _DYNAMIC_SCHEMA_REWRITERS.get(name)
+        if rewrite is None or name in fresh:
+            return fresh.get(name, tool)
+        entry = registry.definition_for(name)  # the build's steps short of check_fn: overrides, rewrite, sanitize
+        rebuilt = rewrite(entry, available) if entry else None
+        # None only for a gated tool, which _drop_gated_carried_tools already removed
+        return sanitize_tool_schemas([rebuilt])[0] if rebuilt else tool
+
+    return [_current(t) for t in merged]
+
+
 def pinned_tool_defs(saved) -> list:
     """``saved``'s tool definitions as a fresh agent restores them, for an estimate with no agent built:
     pinned definitions keep their bytes, a legacy name list takes each tool's current registry schema."""
@@ -354,6 +386,7 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     merged_names = {_def_name(t) for t in merged}
     _reinject_authorized_dynamic_tools(agent, merged, merged_names)
     merged, merged_names = _drop_session_tools(agent, merged, merged_names)
+    merged = _refresh_name_dependent_defs(merged, {_def_name(d) for d in pinned_defs} - merged_names, fresh)
     changed = merged != fresh_defs
     if changed:
         with _agent_tools_lock:

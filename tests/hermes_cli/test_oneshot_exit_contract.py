@@ -2,17 +2,13 @@
 whether any text was printed (#111770 — an incomplete or failed run that left an explanation on
 stdout used to exit 0, so scripts treated a half-done job as success)."""
 
-from unittest import mock
-
 from hermes_cli import oneshot
 
 
 def _run(monkeypatch, tmp_path, response, result):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     usage = tmp_path / "usage.json"
-    with mock.patch.object(oneshot, "_run_agent", return_value=(response, dict(result))):
-        code = oneshot.run_oneshot("q", usage_file=str(usage))
-    return code, usage
+    oneshot._write_usage_file(str(usage), dict(result))
+    return oneshot._oneshot_exit_code(response, result), usage
 
 
 def test_incomplete_run_with_text_exits_nonzero_and_reports_why(monkeypatch, tmp_path):

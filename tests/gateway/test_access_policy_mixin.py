@@ -33,7 +33,6 @@ def _hosts():
     from plugins.platforms.weixin.adapter import WeixinAdapter
     from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
     from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
-    from plugins.platforms.yuanbao.adapter import AccessPolicy
     from plugins.platforms.wecom.adapter import WeComAdapter
 
     hosts = {
@@ -42,7 +41,6 @@ def _hosts():
         "qqbot": object.__new__(QQAdapter),
         "whatsapp": WhatsAppBehaviorMixin(),
         "whatsapp_cloud": object.__new__(WhatsAppCloudAdapter),
-        "yuanbao": AccessPolicy("open", [], "open", []),
     }
     hosts["whatsapp"]._dm_allowlist_source = "config"
     hosts["whatsapp_cloud"]._dm_allowlist_source = "config"
@@ -67,8 +65,8 @@ def _verdicts(host, name, dm_policy, group_policy):
 # would pass with a host whose prefix is missing — that is exactly how WeCom regressed once.
 PLATFORM_OPT_IN = {"weixin": "WEIXIN_ALLOW_ALL_USERS", "wecom": "WECOM_ALLOW_ALL_USERS",
                    "qqbot": "QQ_ALLOW_ALL_USERS", "whatsapp": "WHATSAPP_ALLOW_ALL_USERS",
-                   "whatsapp_cloud": "WHATSAPP_CLOUD_ALLOW_ALL_USERS", "yuanbao": "YUANBAO_ALLOW_ALL_USERS"}
-# Hosts whose allowlists document ``*`` (weixin/yuanbao match literally, as before).
+                   "whatsapp_cloud": "WHATSAPP_CLOUD_ALLOW_ALL_USERS"}
+# Hosts whose allowlists document ``*`` (weixin matches literally, as before).
 WILDCARD_HOSTS = ("wecom", "qqbot", "whatsapp", "whatsapp_cloud")
 
 

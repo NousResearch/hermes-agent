@@ -368,7 +368,7 @@ The flag is stored as `"locked": true` on the skill's entry in `~/.hermes/skills
 What a lock is not:
 
 - It is a **policy check, not a sandbox.** The terminal check reads the command's write targets; a script that writes into the skill through its own logic, or `execute_code`, is not inspected. Pair it with filesystem permissions if you need a hard boundary.
-- If `.usage.json` is corrupt, the background passes are refused (fail closed) while normal turns proceed, so one broken file does not freeze every skill edit. Repair it, or run `hermes curator unlock <skill>` to rewrite it.
+- If `.usage.json` is damaged (unparsable, or not a JSON object), the agent can't tell which skills are locked: `write_file`, `patch` and `terminal` refuse writes into every skill and into the record, and the background passes refuse every `skill_manage` change, while a normal turn's `skill_manage` still proceeds so one broken file does not freeze every skill edit. `hermes curator lock`/`unlock` and the Desktop switch refuse to rewrite it as well, so the locks it may still hold are not lost: repair the JSON, or move the file aside (that drops every lock, pin and usage count in the profile).
 - It does **not** stop `hermes update` / `hermes skills update` from refreshing a bundled or hub skill you have not modified; those are your commands, not agent writes.
 
 ## Usage telemetry

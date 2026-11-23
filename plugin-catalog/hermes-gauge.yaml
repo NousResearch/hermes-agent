@@ -1,0 +1,19 @@
+name: hermes-gauge
+repo: https://github.com/Asoria-ai/hermes-gauge
+sha: afe7a0007b9198ff7280c6688c52a65c301ee574
+description: "Context gauge — a live ring/dash showing how full your agent's context window is, per session and topic, with a desktop plugin, a memory optimizer (levels lean/standard/roomy, skills grouped by source and category) and tools (gauge_check, gauge_report, gauge_set_window, gauge_render, gauge_action, gauge_setup). Runs fully local: no API key, no telemetry. Disclosure — reads Hermes' state.db (read-only) for session titles; `/gauge setup` (alias `/gauge memory`) and `gauge_setup` read config.yaml, SOUL.md, the memories folders (including other profiles' when run from the default profile) and skills/ for size metrics, and never edit; the plugin never rewrites a skill itself, but `/gauge review apply`, `gauge_setup` review with apply, or the scheduled review when the user sets `memory.review_mode: split`, lets the agent split the user's own long skills listed on the split plan into SKILL.md plus references/ (never published or external skills, never categories in `memory.skip_categories`); `gauge_action` lets the agent queue `/compact` and `/new` in the current session when you answer a gauge alert; with `alerts.route` set to `home` or `custom:` it runs `hermes send` to deliver alerts to that chat; `/gauge review schedule`, typed by the user, runs `hermes cron` to create a nightly review job (the gauge_setup tool cannot schedule, pick a model or provider, or set a project); `gauge_audit()` called directly from Python without a format runs `hermes doctor`; writes only under plugin-data/hermes-gauge/."
+maintainer: Asoria-ai
+tier: community
+category: desktop
+docs_url: https://github.com/Asoria-ai/hermes-gauge
+version: "0.7.0"
+image: https://raw.githubusercontent.com/Asoria-ai/hermes-gauge/afe7a0007b9198ff7280c6688c52a65c301ee574/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Asoria-ai/hermes-gauge/afe7a0007b9198ff7280c6688c52a65c301ee574/assets/dashboard-demo.png
+platforms: []
+capabilities:
+  provides_tools: [gauge_check, gauge_report, gauge_set_window, gauge_render, gauge_action, gauge_setup]
+  provides_hooks: [post_llm_call, on_stream_delta, on_stream_end, api_request_error, post_api_request, post_compaction, on_session_reset, subagent_stop]
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.22.3"

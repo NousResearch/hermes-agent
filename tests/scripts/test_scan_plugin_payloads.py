@@ -68,6 +68,8 @@ def test_source_tarball_is_clean(tmp_path):
     with tarfile.open(arc, "w:gz") as tf:
         for member_name, body in [("a.py", b"x=1\n"), ("docs/readme.md", b"# hi\n"),
                                   ("Dockerfile", b"FROM scratch\n"), ("logs.jsonl", b"{}\n"),
+                                  ("corpus/context.jsonld", b'{"@context": {}}\n'),
+                                  ("corpus/onto.ttl", b"@prefix ex: <http://ex/> .\n"),
                                   ("font.ttf", b"\x00\x01\x00\x00font")]:
             ti = tarfile.TarInfo(member_name); ti.size = len(body)
             tf.addfile(ti, io.BytesIO(body))

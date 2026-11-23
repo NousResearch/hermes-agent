@@ -343,9 +343,9 @@ def test_search_limit_caps_the_group_across_both_legs_and_counts_total():
     matches = out["results"][0]["matches"]
     assert len(matches) == 3  # limit is the per-query cap across BOTH legs
     assert all(m.startswith("connectors__") for m in matches)
-    # total_available counts returned remote tools on top of the local catalog
-    # (empty here: the fake def is not registry-backed in this test env).
-    assert out["total_available"] == 3
+    # total_available counts returned remote tools on top of the local catalog, which holds
+    # manage_connections (deferred by default); the fake MCP def is not registry-backed here.
+    assert out["total_available"] == len(matches) + 1
 
 
 def test_search_drops_remote_group_with_mismatched_use_case_echo():

@@ -26,7 +26,7 @@ from hermes_cli import kanban_worker_client as wc
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 from gateway.session_contract import SessionActor
 from gateway.session_kanban import build_kanban_policy
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 DEAD_PIN = "verification-before-ship"  # exists on some seats, not on the test seat
 
@@ -193,7 +193,7 @@ def test_admission_refuses_a_dead_pin_before_owner_admitted(seat_home, monkeypat
                                  native_owner=True)
     params = dict(board="default", task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
     config = {"model": {"default": "m"}, "platform_toolsets": {"cli": ["terminal"]}}
-    with pytest.raises(RuntimeStoreError) as excinfo:
+    with pytest.raises(AuthorityRefusal) as excinfo:
         build_kanban_policy(connection, params, config)
     assert excinfo.value.reason == "kanban_skill_pin_unavailable"
     assert excinfo.value.detail == _exact("franky", DEAD_PIN)

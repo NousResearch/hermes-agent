@@ -6,6 +6,8 @@ it builds a guidance-laden prompt that the live agent runs as a normal turn
 (the /learn pattern), so these are the load-bearing behavior contracts.
 """
 
+import pytest
+
 from hermes_cli.init_command import (
     build_init_prompt,
     build_init_prompt_for_cwd,
@@ -26,6 +28,22 @@ class TestBuildInitPromptForCwd:
         )
         prompt = build_init_prompt_for_cwd(cwd=str(tmp_path))
         assert "Run `tox -e py311`." in prompt
+
+    @pytest.mark.require_symlinks
+    def test_agents_md_is_read_only_when_it_resolves_inside_the_project(self, tmp_path):
+        outside = tmp_path / "outside.txt"
+        outside.write_text("OUTSIDE-MARKER")
+        project = tmp_path / "project"
+        (project / ".git").mkdir(parents=True)
+        (project / "docs").mkdir()
+        (project / "docs" / "shared.md").write_text("INSIDE-MARKER")
+        link = project / "AGENTS.md"
+
+        link.symlink_to(outside)
+        assert "OUTSIDE-MARKER" not in build_init_prompt_for_cwd(cwd=str(project))
+        link.unlink()
+        link.symlink_to(project / "docs" / "shared.md")
+        assert "INSIDE-MARKER" in build_init_prompt_for_cwd(cwd=str(project))
 
     def test_passes_extra_through(self, tmp_path):
         prompt = build_init_prompt_for_cwd(cwd=str(tmp_path), extra="keep it short")

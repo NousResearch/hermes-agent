@@ -1,10 +1,15 @@
 """Preflight must work while the app is broken and its database is still live."""
 import json
+import os
 import sqlite3
 import subprocess
 import sys
 import threading
 from pathlib import Path
+
+import pytest
+
+from hermes_cli.backup_sqlite import preflight_state_db
 
 
 def test_preflight_finishes_while_another_connection_keeps_writing(tmp_path):
@@ -137,3 +142,28 @@ def test_rollback_journal_copy_lets_a_live_writer_commit_between_steps(tmp_path,
             assert copy.execute("PRAGMA integrity_check").fetchone() == ("ok",)
     else:
         assert not snapshot.exists()
+
+
+@pytest.mark.platforms("posix")  # directory fsync is a no-op on Windows
+def test_preflight_syncs_the_snapshot_entry_after_publishing(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    with sqlite3.connect(home / "state.db") as setup:
+        setup.execute("CREATE TABLE messages (body TEXT)")
+    events: list[tuple[str, int]] = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def spy_fsync(fd):
+        events.append(("fsync", os.fstat(fd).st_ino))
+        return real_fsync(fd)
+
+    def spy_replace(src, dst):
+        events.append(("replace", os.stat(src).st_ino))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", spy_fsync)
+    monkeypatch.setattr(os, "replace", spy_replace)
+    published = Path(preflight_state_db(home)["path"])
+
+    replace_at = events.index(("replace", published.stat().st_ino))
+    assert ("fsync", home.stat().st_ino) in events[replace_at:]

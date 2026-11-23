@@ -1,0 +1,19 @@
+name: hermes-tuneup
+title: tuneup
+repo: https://github.com/GodsBoy/hermes-tuneup
+sha: e844617bb451fa6d19cd6162a25551599f60e5a9
+description: "Shows when compaction really fires on every profile and model route, flags settings that waste quota or break prompt caching, and fixes them only after you confirm, with a diff and a backup. Disclosure — reads every Hermes profile's config.yaml (and four context-length cache files) read-only, through Hermes' own loader on a temporary copy, and shows the model a redacted per-profile digest; writes a profile's config.yaml only when you type a fix and confirm it (never from cron, a group chat or an agent-launched shell), after saving a backup under that profile's backups/config; when you turn receipts on it records compaction, cache and model-use metadata (never message content) in its own plugin-data folder; imports undocumented Hermes resolver modules from one adapter file (validate shows rule 9 warnings); no network calls, credentials, shell commands or background processes."
+maintainer: GodsBoy
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/GodsBoy/hermes-tuneup#readme
+version: "0.1.1"
+image: https://raw.githubusercontent.com/GodsBoy/hermes-tuneup/e844617bb451fa6d19cd6162a25551599f60e5a9/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/GodsBoy/hermes-tuneup/e844617bb451fa6d19cd6162a25551599f60e5a9/docs/screenshots/check.png
+capabilities:
+  provides_tools: [tuneup_check]
+  provides_hooks: [pre_tool_call, post_api_request, post_compaction]
+  provides_middleware: []
+  requires_env: []

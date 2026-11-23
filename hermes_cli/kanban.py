@@ -1152,6 +1152,23 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def _caller_identity_for_target(platform: str, chat_id: str, thread_id, user_id, user_id_alt) -> tuple:
+    """``(user_id, user_id_alt)`` for a subscription, the calling gateway session's sender filled
+    in when the target IS that session's chat and no id was given. An agent running this command
+    from a group chat omits ``--user-id``; under ``group_sessions_per_user`` the wake would then key
+    a second, participant-less session (#147522). Another chat's (or topic's) subscription is
+    never stamped with the caller's identity."""
+    if user_id or user_id_alt:  # an explicit recipient is never paired with the caller's other id
+        return user_id, user_id_alt
+    from gateway.session_context import get_session_env
+    if (str(get_session_env("HERMES_SESSION_PLATFORM", "")).lower() != str(platform or "").lower()
+            or str(get_session_env("HERMES_SESSION_CHAT_ID", "")) != str(chat_id or "")
+            or str(get_session_env("HERMES_SESSION_THREAD_ID", "")) != str(thread_id or "")):
+        return user_id, user_id_alt
+    return (get_session_env("HERMES_SESSION_USER_ID", "") or None,
+            get_session_env("HERMES_SESSION_USER_ID_ALT", "") or None)
+
+
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
     delivery_metadata = {
         key: value
@@ -1161,19 +1178,22 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
         )
         if value
     }
+    from hermes_cli.kanban_notify_thread import resolve_subscribe_thread
     with kbc.connect_closing() as conn:
         if kb.get_task(conn, args.task_id) is None:
             return _err(f"no such task: {args.task_id}")
+        thread_id = resolve_subscribe_thread(conn, args)
+        user_id, user_id_alt = _caller_identity_for_target(
+            args.platform, args.chat_id, thread_id, args.user_id, getattr(args, "user_id_alt", None))
         kbn.add_notify_sub(
             conn, task_id=args.task_id, platform=args.platform, chat_id=args.chat_id,
-            chat_type=args.chat_type, thread_id=args.thread_id, user_id=args.user_id,
-            user_id_alt=getattr(args, "user_id_alt", None),
+            chat_type=args.chat_type, thread_id=thread_id, user_id=user_id,
+            user_id_alt=user_id_alt,
             notifier_profile=args.notifier_profile or _profile_author(),
             delivery_mode=getattr(args, "delivery_mode", None),
             delivery_metadata=delivery_metadata or None,
         )
-    print(f"Subscribed {args.platform}:{args.chat_id}" + (f":{args.thread_id}" if args.thread_id else "")
-          + f" to {args.task_id}")
+    print(f"Subscribed {args.platform}:{args.chat_id}" + (f":{thread_id}" if thread_id else "") + f" to {args.task_id}")
     return 0
 
 
@@ -1199,9 +1219,10 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_unsubscribe(args: argparse.Namespace) -> int:
+    from hermes_cli.kanban_notify_thread import resolve_unsubscribe_thread
     with kbc.connect_closing() as conn:
         ok = kbn.remove_notify_sub(conn, task_id=args.task_id, platform=args.platform, chat_id=args.chat_id,
-                                  thread_id=args.thread_id)
+                                  thread_id=resolve_unsubscribe_thread(conn, args))
     return _ok_or_err(ok, "(no such subscription)", f"Unsubscribed from {args.task_id}")
 
 

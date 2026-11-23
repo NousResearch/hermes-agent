@@ -1,9 +1,10 @@
 """Initial profile files, written on the staging tree before publication."""
 import contextlib
+import errno
 import os
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 
 def clone_staging_dir(profile_dir: Path) -> Path:
@@ -18,12 +19,49 @@ def clone_staging_dir(profile_dir: Path) -> Path:
     return staging
 
 
+def publish_staging(staging: Path, profile_dir: Path, exists_error: Callable[[], Exception]) -> None:
+    """Rename ``staging`` onto ``profile_dir`` (create, import and rename publish a name this way). A
+    create, import or rename that also passed the exists check and published first leaves a non-empty
+    destination: the loser raises ``exists_error()`` (the usual "already exists"), not a raw ENOTEMPTY
+    (Windows: FileExistsError, or PermissionError while the destination exists). Any other failure stays
+    raw; what happens to ``staging`` then is the caller's."""
+    try:
+        staging.rename(profile_dir)
+    except OSError as exc:
+        from hermes_platform.host.facts import os_family
+        lost = isinstance(exc, FileExistsError) or exc.errno in (errno.ENOTEMPTY, errno.EEXIST) or (
+            isinstance(exc, PermissionError) and os_family() == "win32" and os.path.exists(profile_dir))
+        if not lost:
+            raise
+        raise exists_error() from exc
+
+
 def discard_unpublished_vault_key(ref: Optional[dict]) -> None:
     """A create that fails after a --clone-all copy got its own keychain entry (``ref``, returned by
     ``VaultStore.own_copied_key``) deletes exactly that entry; never one inferred from the source."""
     if ref is not None:
         from agent.vault_keychain import delete_key
         delete_key(ref)
+
+
+def prepare_imported_tree(staged: Path) -> None:
+    """Make an extracted ``hermes profile import`` tree safe to publish; runs on the staging tree."""
+    from hermes_cli.config_backend import drop_other_access
+    from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
+    # Remove foreign runtime state before publishing, including file-shaped roots.
+    # A failed removal must abort import rather than install a stale PM selection.
+    for child in staged.iterdir():
+        if child.name in PM_RUNTIME_ROOT_DIRS:
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+    # Extraction applied each archive member's mode: drop world access on config.yaml and make
+    # .env owner-only, as a clone and `hermes import` do (#59726).
+    drop_other_access(staged / "config.yaml")
+    env = staged / ".env"
+    if env.is_file() and not env.is_symlink():
+        os.chmod(env, 0o600)
 
 
 def finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool,
@@ -41,6 +79,9 @@ def finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool
     # had no file until first write and the profile silently inherited shell API keys —
     # read by users as "the new profile reads the root .env". Skipped when a clone copied one.
     _seed_file_if_missing(profile_dir / ".env", _PLACEHOLDER_ENV, 0o600)
+    # A clone's copy2/copytree carries the source config.yaml's mode, world bits included.
+    from hermes_cli.config_backend import drop_other_access
+    drop_other_access(profile_dir / "config.yaml")
 
     # Default SOUL.md to customize immediately (skipped when a clone already provided one).
     with contextlib.suppress(Exception):  # best-effort — don't fail profile creation over this

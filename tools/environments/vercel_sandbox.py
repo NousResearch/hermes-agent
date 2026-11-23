@@ -23,9 +23,10 @@ import httpx
 
 from hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE
 from hermes_constants import get_hermes_home
-from tools.environments.base import BaseEnvironment, _load_json_store, _update_json_store
+from tools.environments.base import BaseEnvironment, _update_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import FileSyncManager, iter_sync_files, quoted_rm_command
+from utils import read_json_or_empty
 
 logger = logging.getLogger(__name__)
 
@@ -52,33 +53,10 @@ def _ensure_vercel_sdk() -> None:
         _lazy_ensure("vercel")
     except Exception as e:
         raise ImportError(str(e))
+
+
 _WRITE_RETRY_ATTEMPTS = 3
-_RETRY_BACKOFF_STEP = timedelta(milliseconds=100)
-_MIN_SANDBOX_TIMEOUT = timedelta(minutes=5)
-_MIN_RUNNING_WAIT = timedelta(seconds=1)
-_RUNNING_WAIT_POLL_INTERVAL = timedelta(milliseconds=250)
-_STOP_TIMEOUT = timedelta(seconds=15)
-_STOP_POLL_INTERVAL = timedelta(milliseconds=500)
-_SNAPSHOT_STORE_NAME = "vercel_sandbox_snapshots.json"
 
-
-def _exception_chain(exc: BaseException) -> list[BaseException]:
-    chain: list[BaseException] = []
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        chain.append(current)
-        seen.add(id(current))
-        current = current.__cause__ or current.__context__
-    return chain
-
-
-def _extract_status_code(exc: BaseException) -> int | None:
-    response = getattr(exc, "response", None)
-    for value in (getattr(exc, "status_code", None), getattr(response, "status_code", None)):
-        if isinstance(value, int):
-            return value
-    return None
 
 @cache
 def _transport_error_types() -> tuple[type[BaseException], ...]:
@@ -140,7 +118,7 @@ def _snapshot_store() -> Path:
 
 
 def _load_snapshots() -> dict:
-    return _load_json_store(_snapshot_store())
+    return read_json_or_empty(_snapshot_store())
 
 
 def _store_snapshot(task_id: str, snapshot_id: str) -> None:
@@ -180,6 +158,9 @@ class VercelSandboxEnvironment(BaseEnvironment):
     """Vercel cloud sandbox backend."""
 
     _stdin_mode = "payload"
+    # The askpass prologue checks sudo ``-A`` support inside each command, so no capability probe
+    # runs here (a timed-out probe could only be cancelled by stopping the sandbox).
+    _sudo_askpass_runtime_checked = True
 
     def __init__(self, runtime: str | None = None, cwd: str = DEFAULT_VERCEL_CWD, timeout: int = 60,
                  cpu: float = 1, memory: int = 5120, disk: int = _DEFAULT_CONTAINER_DISK_MB,
@@ -305,7 +286,14 @@ class VercelSandboxEnvironment(BaseEnvironment):
         if not snapshot_id:
             logger.warning("Vercel: filesystem snapshot for task %s did not return a snapshot id", self._task_id)
             return
-        _store_snapshot(self._task_id, snapshot_id)
+        # snapshot() already stopped the sandbox: a failed metadata write must not escape cleanup
+        # (it would skip the stop below and leave the closed env's processes unsettled).
+        try:
+            _store_snapshot(self._task_id, snapshot_id)
+        except Exception as exc:
+            logger.warning("Vercel: saving snapshot %s for task %s failed: %s", snapshot_id, self._task_id, exc,
+                           exc_info=True)
+            return
         logger.info("Vercel: saved filesystem snapshot %s for task %s", snapshot_id, self._task_id)
 
     def _ensure_sandbox_ready(self) -> None:

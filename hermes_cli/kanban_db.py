@@ -2201,10 +2201,10 @@ def unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[st
 
 def _claim_and_open_run(
     conn: sqlite3.Connection, task_id: str, source_status: str, lock: str, expires: int, now: int,
-    *, event_extra: Optional[dict] = None,
+    *, event_extra: Optional[dict] = None, expect_assignee: Optional[str] = None,
 ) -> Optional[int]:
-    """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
-    when the CAS lost. Caller holds the txn."""
+    """CAS ``source_status -> running`` (and still ``expect_assignee``'s, when given), open a
+    run row, emit ``claimed``; None when the CAS lost. Caller holds the txn."""
     cur = conn.execute(
         f"""
         UPDATE tasks
@@ -2214,9 +2214,9 @@ def _claim_and_open_run(
                started_at    = COALESCE(started_at, ?)
          WHERE id = ?
            AND status = '{source_status}'
-           AND claim_lock IS NULL
+           AND claim_lock IS NULL AND (? IS NULL OR assignee = ?)
         """,
-        (lock, expires, now, task_id),
+        (lock, expires, now, task_id, expect_assignee, expect_assignee),
     )
     if cur.rowcount != 1:
         return None
@@ -2248,12 +2248,12 @@ def _claim_and_open_run(
 
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, expect_assignee: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
-    already claimed (or is not in ``ready`` status).
+    already claimed (or is not ``ready``, or no longer ``expect_assignee``'s).
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
@@ -2273,7 +2273,7 @@ def claim_task(
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
         )
-        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now)
+        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now, expect_assignee=expect_assignee)
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
@@ -2283,7 +2283,7 @@ def claim_task(
 
 def claim_review_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, expect_assignee: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
@@ -2305,7 +2305,7 @@ def claim_review_task(
             return None
         run_id = _claim_and_open_run(
             conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
-        )
+            expect_assignee=expect_assignee)
         if run_id is None:
             return None
         return get_task(conn, task_id)

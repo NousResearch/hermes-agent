@@ -710,8 +710,8 @@ class TestBlueBubblesPluginRegistration:
         assert "BLUEBUBBLES_SERVER_URL/BLUEBUBBLES_PASSWORD" in captured["install_hint"]
 
     def test_core_wiring_removed(self):
-        import tools.send_message_senders as senders
-        import tools.send_message_tool as smt
+        from gateway.outbound import senders
+        import gateway.outbound.send as smt
         from gateway.run import _BUILTIN_ADAPTERS
         from hermes_cli import gateway_setup_wizard as wiz
 

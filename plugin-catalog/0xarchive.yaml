@@ -28,6 +28,7 @@ category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://docs.0xarchive.io/mcp-server
 version: "1.0.0"
+image: https://raw.githubusercontent.com/0xArchiveIO/0xarchive-mcp/abd430ea4c6d627e3a5dc2132b90dde9b2d38077/assets/catalog-banner.jpg
 platforms: []
 known_issues:
   - "Sign in once after installing: hermes mcp add 0xarchive --url https://mcp.0xarchive.io/mcp --auth oauth --connect-timeout 300"

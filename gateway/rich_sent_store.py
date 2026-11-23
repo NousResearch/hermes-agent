@@ -12,12 +12,11 @@ inbound. Best-effort and dependency-free: every operation swallows errors and de
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import threading
 import time
 from typing import Optional
-from utils import atomic_json_write
+from utils import atomic_json_write, read_json_or_empty
 
 _MAX_ENTRIES = 1000
 _MAX_TEXT_CHARS = 2000
@@ -34,22 +33,13 @@ def _store_path() -> str:
     return os.path.join(str(get_hermes_home()), "state", "rich_sent_index.json")
 
 
-def _load(path: str) -> dict:
-    try:
-        with open(path, "r", encoding="utf-8-sig") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError):  # missing, unreadable (permissions, a directory) or corrupt
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 def _update(chat_id, message_id, fields: dict) -> bool:
     """Merge ``fields`` into the ``(chat_id, message_id)`` entry; False (nothing raised) on any failure."""
     path = _store_path()
     with _LOCK:
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            data = _load(path)
+            data = read_json_or_empty(path)
             key = f"{chat_id}:{message_id}"
             entry = data.get(key)
             entry = entry if isinstance(entry, dict) else {}
@@ -92,7 +82,7 @@ async def record_media_async(chat_id, message_id, media: list[tuple[str, str]]) 
 def _entry(chat_id, message_id) -> dict:
     if message_id is None or chat_id is None:
         return {}
-    entry = _load(_store_path()).get(f"{chat_id}:{message_id}")
+    entry = read_json_or_empty(_store_path()).get(f"{chat_id}:{message_id}")
     return entry if isinstance(entry, dict) else {}
 
 

@@ -29,13 +29,19 @@ TARGETS = {
 }
 
 METRIC_FIX = {
-    "CC": "split it: extract phases into a topical sibling (`<stem>_<topic>.py`), or replace a"
-    " branch ladder with a dict/table -> handler",
-    "FUNC_LINES": "extract phases into named helpers or a topical sibling module",
+    "CC": "split it: extract phases into a topic module (in the `<stem>/` folder, see"
+    " FILE_LINES), or replace a branch ladder with a dict/table -> handler",
+    "FUNC_LINES": "extract phases into named helpers or a topic module in the `<stem>/` folder",
     "NESTING": "return early, or extract the inner block into a helper",
-    "FILE_LINES": "offset the growth in the same PR: move an existing function or class into a"
-    " topical sibling `<stem>_<topic>.py` (moved code keeps its cap; see root AGENTS.md), or put"
-    " new tests in a new `test_<stem>_<topic>.py`; new behaviour never goes into a facade",
+    "FILE_LINES": "offset the growth in the same PR by making a folder: turn `<stem>.py` into a"
+    " `<stem>/` package (with `__init__.py`) and move an existing function or class into a topic"
+    " module there (moved code keeps its cap); never a new flat `<stem>_<topic>.py`. A model tool"
+    " in a folder registers from `tools/<stem>/tool.py`, the only file tool discovery imports"
+    " there. A root module or an `acp_adapter/` one also lists its new package in pyproject's"
+    " `[tool.setuptools.packages.find] include`, or the wheel drops it. New tests go in"
+    " `tests/<area>/<stem>/test_<topic>.py` (with `__init__.py`);"
+    " new behaviour never goes into a facade. Folder shape: root AGENTS.md § Packages and"
+    " Python shape",
     "MEASURE": "the file must parse and measure (a file that cannot be measured cannot be"
     " judged); fix the syntax, or report the measurer bug",
 }

@@ -197,7 +197,7 @@ def test_profile_child_reasoning_is_the_target_profiles_resolved_setting(two_pro
     _set_config(coder, agent=agent_cfg)
     parent = _parent()
     parent.reasoning_config = {"enabled": True, "effort": "xhigh"}
-    with patch("tools.delegate_tool._load_config", return_value={"reasoning_effort": "xhigh"}):
+    with patch("tools.delegate_tool_config._load_config", return_value={"reasoning_effort": "xhigh"}):
         _, built = _build(_route_to_task_route({"profile": "coder"}, parent, {}), parent)
     assert built["reasoning_config"] == expected
 

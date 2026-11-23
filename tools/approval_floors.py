@@ -76,12 +76,7 @@ def _save_blocked_payload(command: str) -> str | None:
             "# parser limit and was blocked from direct execution. The approval\n"
             "# guard has not read it: review all of it before running it yourself.\n"
             + command + ("" if command.endswith("\n") else "\n"),
-            # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash the gateway thread on
-            # locale-mismatched Windows (#53137).
-            # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash the gateway thread on
-            # locale-mismatched Windows (#53137).
-            # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash the gateway thread on
-            # locale-mismatched Windows (#53137).
+            # UTF-8 with replacement so a non-UTF-8 command cannot fail the save on a non-UTF-8 locale.
             encoding="utf-8", errors="replace",
         )
         return str(path)

@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 
 from agent.redact import _PREFIX_SUBSTRINGS
+from agent.redact_control_split import _strip_shadow
 from agent.redact_phone_policy import redact_for_chat_egress as redact_for_egress
 
 _TAIL_SCAN = 512        # how far back from the end (or from an open value's start) a label can start
@@ -34,8 +35,14 @@ _CONTINUATIONS = (_PROBE, "." + _PROBE, ":" + _PROBE, "-" + _PROBE, "_" + _PROBE
 # Literal starts of secrets the prefix list does not carry (JWT, base64 PEM, age, Discord mfa).
 # Hold mfa. from its first byte: its 84-char secret body can otherwise be streamed
 # almost in full before the complete-token redactor recognizes it.
-_LITERALS = tuple(lit for lit in (*_PREFIX_SUBSTRINGS, "eyJ", "LS0tLS1CRUdJTi", "AGE-SECRET-KEY-1", "mfa.") if lit)
+_UNANCHORED_LITERALS = ("eyJ", "LS0tLS1CRUdJTi", "AGE-SECRET-KEY-1", "mfa.")
+_LITERALS = tuple(lit for lit in (*_PREFIX_SUBSTRINGS, *_UNANCHORED_LITERALS) if lit)
 _LITERAL_MAX = max(map(len, _LITERALS))
+# The prefix patterns only match a literal that does not follow a letter or digit (agent.redact's
+# prefix matchers), so ``am_`` inside ``stream_accepted`` can never become a key. Only the
+# extra literals above have rules that match glued to a word.
+_ANCHORED_LITERAL_RE = re.compile(r"(?<![A-Za-z0-9])(?:" + "|".join(
+    re.escape(lit) for lit in sorted({lit for lit in _PREFIX_SUBSTRINGS if lit}, key=len, reverse=True)) + r")")
 _NON_KEY_CHAR_RE = re.compile(r"[^A-Za-z0-9_\-]")
 # A Zhipu key's 32-hex id still arriving: no probe completes it until its ``.secret`` part does.
 _HEX_ID_TAIL_RE = re.compile(r"(?<![A-Za-z0-9_.-])[0-9a-f]{8,32}\Z")
@@ -76,15 +83,21 @@ def _token_may_be_secret(context: str, token: str) -> bool:
     """True when the trailing, still-arriving ``token`` is, or could grow into, a secret: it
     holds a secret's literal start or ends in the beginning of one, is masked already, or is
     masked once a continuation is appended."""
-    if any(lit in token for lit in _LITERALS) or _HEX_ID_TAIL_RE.search(token):
+    # Anchors are judged on the raw token AND on the text the redactor matches: it drops CSI
+    # sequences and control chars first, so ``\x1b[32mAKIA…`` (and its ``\x1b[32mAK`` head) is a
+    # key start there although ``m`` precedes it raw.
+    if any(lit in token for lit in _UNANCHORED_LITERALS) or _HEX_ID_TAIL_RE.search(token):
         return True
-    # A bare number may start ``1//0`` (#39654), but the refresh-token mask keeps ``1//0gL``
-    # visible, so showing the digits first leaks nothing and the frames stay prefix-stable.
-    for i in range(max(0, len(token) - _LITERAL_MAX), len(token)):
-        if token[i:].isdigit():
-            continue
-        if (not i or not token[i - 1].isalnum()) and any(lit.startswith(token[i:]) for lit in _LITERALS):
+    for view in {token, _strip_shadow(token)[0]}:
+        if _ANCHORED_LITERAL_RE.search(view):
             return True
+        # A bare number may start ``1//0`` (#39654), but the refresh-token mask keeps ``1//0gL``
+        # visible, so showing the digits first leaks nothing and the frames stay prefix-stable.
+        for i in range(max(0, len(view) - _LITERAL_MAX), len(view)):
+            if view[i:].isdigit():
+                continue
+            if (not i or not view[i - 1].isalnum()) and any(lit.startswith(view[i:]) for lit in _LITERALS):
+                return True
     base = redact_for_egress(context + token)
     return (base != context + token and not base.endswith(token)) or any(
         redact_for_egress(context + token + c) != base + c for c in _CONTINUATIONS)

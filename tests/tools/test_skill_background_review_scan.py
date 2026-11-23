@@ -270,14 +270,14 @@ def _seed_hardlinked_sibling(skills):
 def test_hardlinked_sibling_written_through_by_copy_fallback_is_scanned(skills, monkeypatch):
     """On a bind mount the rename fails with EBUSY and atomic_replace copies through the existing inode,
     so the hardlinked sibling takes the new bytes too; it must be in scope and the write rolled back."""
-    import utils
+    import utils.files
     ref, sibling = _seed_hardlinked_sibling(skills)
     real_replace = os.replace
     def busy_replace(src, dst):
         if os.path.realpath(dst) == str(ref.resolve()):
             raise OSError(errno.EBUSY, "Device or resource busy")
         return real_replace(src, dst)
-    monkeypatch.setattr(utils.os, "replace", busy_replace)
+    monkeypatch.setattr(utils.files.os, "replace", busy_replace)
     with _origin(BACKGROUND_REVIEW):
         before = ref.read_bytes()
         mark_background_review_skill_read(ref)

@@ -553,9 +553,42 @@ def _gateway_loop_exception_handler(
     loop.default_exception_handler(context)
 
 
+def _load_gateway_runtime_config() -> dict:
+    """Test seam for the outbound-redaction gate: the effective user config as a dict."""
+    return _load_gateway_config()
+
+
+def _gateway_outbound_secret_redaction_enabled() -> bool:
+    """Whether final chat replies redact credential-looking text.
+
+    ``security.redact_secrets`` governs logs, tool output and history hygiene. The rewrite here is a
+    second, independent scrub applied to whatever the agent says in a chat. That default stays on —
+    but an operator who deliberately exchanges keys over a trusted chat (pairing a bot, dictating an
+    API key) would otherwise receive a mangled reply with no way out; this config lets them opt out
+    without weakening approval prompts (``_redact_approval_command``) or provider-error rewriting
+    (``_sanitize_gateway_final_response``), which keep their forced redaction.
+    """
+    try:
+        cfg = _load_gateway_runtime_config()
+        value = cfg_get(cfg, "security", "redact_gateway_outbound_secrets", default=True)
+    except Exception:
+        return True
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    return bool(value)
+
+
 def _redact_gateway_user_facing_secrets(text: str) -> str:
     """Secret redaction before text can leave the gateway for a chat platform: the shared egress scrub
-    (``force=True`` holds even when ``security.redact_secrets`` is off; fails closed; #23810, #68911)."""
+    (``force=True`` holds even when ``security.redact_secrets`` is off; fails closed; #23810, #68911).
+
+    ``security.redact_gateway_outbound_secrets: false`` (default true) is the operator's explicit
+    opt-out for final replies only — see ``_gateway_outbound_secret_redaction_enabled``.
+    """
+    if not _gateway_outbound_secret_redaction_enabled():
+        return str(text or "")
     from agent.redact_phone_policy import redact_for_chat_egress
 
     return redact_for_chat_egress(text)

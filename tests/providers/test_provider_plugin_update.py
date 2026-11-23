@@ -244,3 +244,83 @@ def test_a_hosted_plugin_with_no_refused_profile_reports_as_before(plugin, monke
         host = getattr(manager, "_plugin_host_instance", None)
         if host is not None:
             host.shutdown()
+
+
+# ── The same results through a running gateway ───────────────────────────────
+# ``hermes plugins install/update`` asks the running gateway to reload (``reload-plugins``) and reports what
+# the gateway serves. The answer here comes from the gateway's real verb run against this home.
+
+
+def _activate_through_a_running_gateway(monkeypatch) -> dict:
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+
+    from gateway.run_plugin_rewire import reload_plugins_verb
+    from hermes_cli import plugins_activation
+
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    try:
+        answer = reload_plugins_verb(SimpleNamespace(adapters={}), loop)()
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+    monkeypatch.setattr("gateway.control_socket.reload_gateway_plugins",
+                        lambda target, *, profile_home=None, timeout=30.0: answer)
+    monkeypatch.setattr(plugins_activation, "notify_serve_backend", lambda name, home: None)
+    return plugins_activation.activate_plugin_now("demo-provider", in_process=False)
+
+
+@pytest.fixture
+def gateway_home(plugin, monkeypatch):
+    from hermes_cli import plugins
+
+    monkeypatch.setenv("HOME", str(plugin.parent.parent / "os-home"))
+    yield plugin.parent.parent
+    host = getattr(plugins.get_plugin_manager(), "_plugin_host_instance", None)
+    if host is not None:
+        host.shutdown()
+    plugins._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.platforms("any")  # the profile extraction is a child process: its env/home resolution is per-OS
+def test_a_running_gateway_that_refused_one_profile_still_reports_the_hosted_one(plugin, gateway_home,
+                                                                                 monkeypatch):
+    from hermes_cli.plugins_activation import activation_hint
+    from tui_gateway.contracts.tools_mcp_plugins import PluginActivation
+
+    (gateway_home / "config.yaml").write_text("plugins:\n  isolation: host\n", encoding="utf-8")
+    _write(plugin, 1, extra=True)  # demo-provider builds its own client (refused); demo-extra is hosted
+    result = _activate_through_a_running_gateway(monkeypatch)
+    activation = result["activation"]
+    assert result["gateway_reloaded"] is True
+    assert activation_hint(result).startswith(
+        "The updated provider plugin is active; Hermes refused some of its profiles (")
+    assert activation["activated_now"].get("provider") == ["demo-provider"]
+    assert activation["load_refused"] is True and "'demo-provider' (it overrides" in activation["load_error"]
+    PluginActivation.model_validate(activation)
+
+
+@pytest.mark.platforms("any")
+def test_a_running_gateway_that_refused_every_profile_says_it_serves_none(plugin, gateway_home, monkeypatch):
+    from hermes_cli.plugins_activation import activation_hint
+
+    (gateway_home / "config.yaml").write_text("plugins:\n  isolation: host\n", encoding="utf-8")
+    _write(plugin, 1)  # its only profile builds its own client
+    result = _activate_through_a_running_gateway(monkeypatch)
+    assert "provider" not in result["activation"]["activated_now"]
+    assert activation_hint(result).startswith("The updated provider plugin serves no profile: Hermes refused them (")
+
+
+def test_a_running_gateway_that_failed_to_import_the_update_reads_as_before(plugin, gateway_home, monkeypatch):
+    from hermes_cli.plugins_activation import activation_hint
+    from providers import get_provider_profile
+
+    _write(plugin, 1)
+    assert get_provider_profile("demo-provider").create_client().version == "v1"
+    _write(plugin, 2, broken=True)
+    result = _activate_through_a_running_gateway(monkeypatch)
+    assert "provider" not in result["activation"]["activated_now"]
+    assert "load_refused" not in result["activation"]
+    assert activation_hint(result) == ("The updated provider plugin failed to load (RuntimeError: broken "
+                                       "release); the previous version keeps serving.")

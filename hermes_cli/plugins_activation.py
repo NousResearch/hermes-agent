@@ -162,8 +162,16 @@ def activate_plugin_now(name: str, *, in_process: bool = True) -> dict[str, Any]
                       "missing_in": [process for process, deps in gaps.items() if deps]}
     if gateway_error := (gateway_activation or {}).get("load_error"):
         # The gateway's own import result decides what the gateway serves, whatever this process loaded.
+        # A failed import serves the previous version; a refusal (plugins.isolation: host) serves the profiles
+        # the gateway reports.
         now = {k: v for k, v in ((activation or {}).get("activated_now") or {}).items() if k != "provider"}
+        refused = bool((gateway_activation or {}).get("load_refused"))
+        if refused and (served := ((gateway_activation or {}).get("activated_now") or {}).get("provider")):
+            now["provider"] = served
         activation = {**(activation or gateway_activation), "activated_now": now, "load_error": gateway_error}
+        activation.pop("load_refused", None)
+        if refused:
+            activation["load_refused"] = True
     return {"gateway_reloaded": reloaded, "activation": activation,
             "restart_required": not reloaded or bool(missing)}
 

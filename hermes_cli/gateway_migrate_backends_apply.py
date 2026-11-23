@@ -1256,7 +1256,11 @@ def _gateway_service_blockers(host, plan: BackendPlan) -> None:
 def _owner_blockers(host, plan: BackendPlan, *, force_interrupt: bool = False) -> None:
     """Refusals the apply path adds to the plan before anything changes (shown by the dry run too)."""
     from hermes_cli.gateway_migrate_backends_plan import _NEVER_TOUCHED, _for_this_home
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
     rec, item = plan.rec, plan.item
+    if (elsewhere := run_elsewhere_refusal(host.home)) is not None:
+        # A plugin runs this profile elsewhere: the gateway this move starts would refuse to run it.
+        plan.blockers.append(f"{elsewhere} Nothing changed.")
     if (non_file := _non_file_config_backend()) is not None:
         plan.blockers.append(non_file)
     if (managed := _managed_webapp_override(host, plan)) is not None:

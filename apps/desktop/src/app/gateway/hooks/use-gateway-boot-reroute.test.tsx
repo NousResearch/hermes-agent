@@ -5,7 +5,7 @@ import { $apiRequestScope } from '@/api/client'
 import { $desktopBoot } from '@/store/boot'
 import { $connectionsRegistry, _resetConnectionsForTests } from '@/store/connections'
 import { closeSecondaryGateways, isActivePrimary, requestGatewayForProfile } from '@/store/gateway'
-import { $gatewaySwitching, endGatewaySwitch } from '@/store/gateway-switch'
+import { $gatewaySwitching, beginGatewaySwitch, endGatewaySwitch } from '@/store/gateway-switch'
 import { clearNotifications } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, ensureGatewayAgent, ensureGatewayProfile } from '@/store/profile'
 import {
@@ -647,6 +647,86 @@ describe('a plugin re-routes one profile', () => {
     expect($activeGatewayProfile.get()).toBe('default')
     expect(isActivePrimary()).toBe(true)
     expect(refreshSessions).toHaveBeenCalled()
+  })
+
+  it('a profile shown through the primary socket resolves its own route again when the primary profile moves', async () => {
+    const desktop = fakeDesktop()
+    // `work` rides the primary socket of `default` (the one host backend) until a plugin takes
+    // `default` over. Under a plugin-run primary the main process gives `work` a backend of its own.
+    const sharedWork = { ...primaryConn, profile: 'work', sharedPrimary: true }
+
+    const pooledWork = {
+      authMode: 'token' as const,
+      baseUrl: 'http://127.0.0.1:9130',
+      profile: 'work',
+      token: 'p',
+      wsUrl: 'ws://127.0.0.1:9130/api/ws?token=p'
+    }
+
+    let primaryLaunched = false
+
+    const routeOf = (profile?: null | string) => {
+      const key = (profile ?? '').trim()
+
+      if (!key || key === 'default') {
+        return primaryLaunched ? launcherConn : primaryConn
+      }
+
+      return primaryLaunched ? pooledWork : sharedWork
+    }
+
+    desktop.getConnection.mockImplementation(async profile => routeOf(profile))
+    desktop.getGatewayWsUrl.mockImplementation(
+      async profile => routeOf(typeof profile === 'string' ? profile : null).wsUrl
+    )
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    vi.useRealTimers()
+    await ensureGatewayProfile('work')
+    expect(isActivePrimary()).toBe(true)
+
+    primaryLaunched = true
+    act(() => connectionApplied?.({ profile: 'default' }))
+
+    for (let i = 0; i < 200 && isActivePrimary(); i += 1) {
+      await pause(10)
+    }
+
+    await pause(20)
+    vi.useFakeTimers()
+
+    // The primary socket now reaches the plugin's backend for `default`. `work` left it: what this
+    // window sends for `work` goes to work's own backend, not to another profile's plugin backend.
+    expect(isActivePrimary()).toBe(false)
+    expect($activeGatewayProfile.get()).toBe('work')
+    expect($connection.get()?.baseUrl).toBe(pooledWork.baseUrl)
+  })
+
+  it('while a connection-wide switch runs, a move of the primary profile takes that switch and is not redialed in place', async () => {
+    const beforeConnectionSwitch = vi.fn()
+
+    render(<Harness beforeConnectionSwitch={beforeConnectionSwitch} />)
+    await flushAsync()
+    expect(isActivePrimary()).toBe(true)
+
+    // A Settings apply has raised the switch barrier and has not finished.
+    beginGatewaySwitch()
+    beforeConnectionSwitch.mockClear()
+    vi.useRealTimers()
+    act(() => connectionApplied?.({ profile: 'default' }))
+
+    for (let i = 0; i < 100 && $gatewaySwitching.get(); i += 1) {
+      await pause(10)
+    }
+
+    await pause(20)
+    vi.useFakeTimers()
+
+    // The full switch ran and lowered the barrier. A redial in place would have left it raised.
+    expect(beforeConnectionSwitch).toHaveBeenCalled()
+    expect($gatewaySwitching.get()).toBe(false)
   })
 })
 

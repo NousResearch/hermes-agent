@@ -808,7 +808,8 @@ describe('a write the old backend already received, cut off during a planned tra
   it.each([
     { cut: HEARTBEAT_CUT, method: 'session.resume', params: { session_id: 's1' } },
     { cut: CLOSED_CUT, method: 'session.history', params: { session_id: 's1' } },
-    { cut: HEARTBEAT_CUT, method: 'prompt.submit', params: { session_id: 's1', submission_id: 'sub-1', text: 'hi' } }
+    { cut: HEARTBEAT_CUT, method: 'prompt.submit', params: { session_id: 's1', submission_id: 'sub-1', text: 'hi' } },
+    { cut: CLOSED_CUT, method: 'a2a.forward', params: { input_id: 'in-1', text: 'hi' } }
   ])('a read or a keyed write ($method) cut off by a restart is sent again once', async ({ cut, method, params }) => {
     const { primary, ran } = twoBackends(cut)
     beginBackendTransition('work', 'restarting', { source: 'launcher' })

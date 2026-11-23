@@ -340,6 +340,29 @@ def test_a_profile_a_plugin_runs_elsewhere_is_not_moved_from_the_dashboard(home,
     assert any(refusal in blocker for blocker in answer.json()["blockers"])
 
 
+@pytest.mark.parametrize("state", ["done", "failed"])
+def test_a_recorded_move_of_a_profile_a_plugin_runs_elsewhere_is_left_alone_from_the_dashboard(
+        home, work, spawned, monkeypatch, state):
+    """The undo of a finished move stops the gateway, writes the profile's files back and starts the old
+    backend; an unfinished one is answered with the command that rolls it back. For a profile a plugin runs
+    elsewhere both buttons' requests are answered with the refusal, start no run and name no command."""
+    from hermes_cli import profiles_run_elsewhere as pre
+    engine.write_manifest(work, _manifest(state))
+    pre.mark_profile_run_elsewhere("work", "sandbox-plugin", root=home)
+    refusal = pre.run_elsewhere_refusal(work)
+    assert refusal  # the fixture's profile is the marked one
+    client = _client(home, monkeypatch)
+
+    undo = client.post("/api/gateway/migrate/backends/restore", params={"profile": "work"})
+    move = client.post("/api/gateway/migrate/backends/apply", params={"profile": "work"}, json={})
+
+    assert spawned == [], f"a detached run was started for a marked profile: {spawned}"
+    for answer in (undo, move):
+        assert answer.status_code == 409 and answer.json()["error"] == "blocked", answer.text
+        assert any(refusal in blocker for blocker in answer.json()["blockers"])
+        assert "command" not in answer.json()
+
+
 def test_status_says_whether_a_running_records_process_is_alive(home, spawned, monkeypatch):
     client = _client(home, monkeypatch)
     engine.write_manifest(home, _manifest("running", step="start_gateway", pid=_PID, pid_start_time=1))

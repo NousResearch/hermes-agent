@@ -1246,6 +1246,26 @@ class TestPseudoFilesystemWriteGuard:
             shutil.rmtree(scratch)
 
     @pytest.mark.platforms("linux")
+    def test_a_refused_v4a_entry_applies_no_part_of_the_patch(self, tmp_path: Path):
+        """A Delete entry under /proc (reached through a link to /dev) is refused before the patch's earlier
+        Update runs, not after it applied: preflight vets entries like the operation layer does."""
+        import json
+
+        from tools.file_tools import patch_tool
+
+        plain = tmp_path / "plain.txt"
+        plain.write_text("hello\n")
+        (tmp_path / "devdir").symlink_to("/dev")
+        regular = tmp_path / "regular.txt"
+        regular.write_text("")
+        with regular.open() as fh:
+            patch = (f"*** Begin Patch\n*** Update File: {plain}\n@@\n-hello\n+world\n"
+                     f"*** Delete File: {tmp_path / 'devdir' / 'fd' / str(fh.fileno())}\n*** End Patch")
+            result = json.loads(patch_tool(mode="patch", patch=patch))
+        assert "device or kernel pseudo-filesystem" in result.get("error", "")
+        assert plain.read_text() == "hello\n" and regular.exists()
+
+    @pytest.mark.platforms("linux")
     @pytest.mark.parametrize("spelling", ("/dev/fd/{fd}", "//dev/fd/{fd}", "/dev/shm/../fd/{fd}"))
     def test_a_dev_path_that_resolves_outside_dev_is_refused_by_its_text(self, tmp_path: Path, spelling):
         """/dev/fd/N resolves to the open file itself, so only the path text can refuse it."""

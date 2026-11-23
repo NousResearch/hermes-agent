@@ -28,6 +28,9 @@ class _AliasingFileOps:
         self.files[self._key(path)] = content
         return SimpleNamespace(error=None)
 
+    def entry_write_denied(self, path, verb):
+        return None
+
     def delete_file(self, path):
         self.files.pop(self._key(path), None)
         return SimpleNamespace(error=None)

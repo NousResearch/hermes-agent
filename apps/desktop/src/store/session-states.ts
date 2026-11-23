@@ -899,9 +899,9 @@ function runtimeReferenced(runtimeId: string, storedSessionId: null | string): b
  *  on the user) and neither the primary view nor any tile holds the runtime.
  *  `needsInput` states stay — the sidebar's attention dot reads them. */
 function evictable(runtimeId: string, state: ClientSessionState): boolean {
-  return (
-    !state.busy && !state.needsInput && !state.awaitingResponse && !runtimeReferenced(runtimeId, state.storedSessionId)
-  )
+  const live = state.busy || state.awaitingResponse || sessionNeedsInput(state, runtimeId)
+
+  return !live && !runtimeReferenced(runtimeId, state.storedSessionId)
 }
 
 /** Publish one session's state. Automatically fires transition side-effects

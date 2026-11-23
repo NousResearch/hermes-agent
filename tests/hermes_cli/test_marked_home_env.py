@@ -16,6 +16,10 @@ The project ``.env``, the administrator-managed ``.env`` and the terminal bridge
 and still apply. A process that is denied the marker folder is the backend the plugin runs, and
 loads its own files as before.
 
+The home's ``config.yaml`` is that backend's file too. Importing ``gateway.run`` copies settings of
+the launch home's ``config.yaml`` into the process environment, every top-level scalar under its
+own name among them; for a marked home it copies none.
+
 The stand-in helpers here only append a line to a file under ``tmp_path`` and print a value.
 """
 from __future__ import annotations
@@ -23,6 +27,8 @@ from __future__ import annotations
 import errno
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -450,3 +456,41 @@ def test_marked_home_is_recognized_through_another_spelling_of_its_path(root, tm
     _mark(root)
     assert env_loader.load_hermes_dotenv(hermes_home=spelled) == []
     assert "MHE_DOTENV_KEY" not in os.environ
+
+
+_CONFIG_NAMES = ("MHE_CONFIG_SCALAR", "LD_PRELOAD", "NODE_OPTIONS", "HERMES_TIMEZONE")
+
+
+def _env_after_gateway_import(home: Path) -> dict:
+    """What a fresh host process started under *home* holds for ``_CONFIG_NAMES`` once it has
+    imported ``gateway.run``, as ``hermes gateway status`` and the gateway process do."""
+    code = ("import json, os, gateway.run; "
+            f"print('MHE=' + json.dumps({{n: os.environ.get(n) for n in {_CONFIG_NAMES!r}}}))")
+    env = {k: v for k, v in os.environ.items() if k not in _CONFIG_NAMES}
+    env["HERMES_HOME"] = str(home)
+    done = subprocess.run([sys.executable, "-c", code], cwd=str(Path(__file__).resolve().parents[2]), env=env,
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
+                          check=False)
+    lines = [line for line in done.stdout.splitlines() if line.startswith("MHE=")]
+    assert lines, f"the child did not report (exit {done.returncode}): {done.stderr[-600:]}"
+    return json.loads(lines[-1][len("MHE="):])
+
+
+def test_marked_home_config_yaml_puts_no_variable_into_a_host_process(root):
+    """``gateway.run`` copies settings of the home's ``config.yaml`` into the process environment
+    when it is imported: every top-level scalar under the scalar's own name where that name is not
+    set yet (``bridge_config_scalars``), and named settings such as ``timezone``. For a marked home
+    the backend the plugin runs writes that file, so this is the ``.env`` rule again: a host
+    process started under the home takes no variable from it. Otherwise that backend chooses
+    ``LD_PRELOAD``, ``NODE_OPTIONS``, ``PYTHONPATH`` or a proxy for the host process and for every
+    program it starts."""
+    ops = root / "profiles" / "ops"
+    planted = {"MHE_CONFIG_SCALAR": "from-config", "LD_PRELOAD": "/marked-home/x.so",
+               "NODE_OPTIONS": "--require /marked-home/x.js", "timezone": "Antarctica/Troll"}
+    (ops / "config.yaml").write_text(json.dumps(planted), encoding="utf-8")
+    exported = {**{name: planted[name] for name in _CONFIG_NAMES[:3]}, "HERMES_TIMEZONE": planted["timezone"]}
+
+    assert _env_after_gateway_import(ops) == exported  # a profile that runs here: unchanged
+
+    _mark(root)
+    assert _env_after_gateway_import(ops) == dict.fromkeys(_CONFIG_NAMES)

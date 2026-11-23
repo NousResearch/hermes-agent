@@ -627,6 +627,20 @@ def _home_runs_elsewhere(home: Path) -> bool:
     return run_elsewhere_for_home(home) is not None
 
 
+def load_launch_home_dotenv(home: Path, project_env: Path) -> bool:
+    """:func:`load_hermes_dotenv` for a process's launch home; returns whether a plugin runs that
+    home's profile elsewhere, asked once for the load and for the caller.
+
+    The backend that writes a marked home's ``.env`` writes its ``config.yaml`` too. A caller that
+    copies ``config.yaml`` settings into the process environment (``gateway.run`` at import: every
+    top-level scalar under its own name, among others) copies none of them when this is True, or
+    that backend would choose ``LD_PRELOAD`` or a proxy for this process and the programs it starts.
+    """
+    elsewhere = _home_runs_elsewhere(home)
+    load_hermes_dotenv(hermes_home=home, project_env=project_env, home_elsewhere=elsewhere)
+    return elsewhere
+
+
 def _bootstrap_env(home: Path | None = None, project_env: Path | None = None, *,
                    home_elsewhere: bool | None = None) -> dict:
     """The process env as ``load_hermes_dotenv`` leaves it for the names its dotenv layers define:
@@ -806,9 +820,11 @@ def load_hermes_dotenv(
     hermes_home: str | os.PathLike | None = None,
     project_env: str | os.PathLike | None = None,
     load_external_secrets: bool = True,
+    home_elsewhere: bool | None = None,
 ) -> list[Path]:
     """Load Hermes env files: ``~/.hermes/.env`` overrides stale shell exports; project ``.env`` is a dev
-    fallback that only fills gaps when the user env exists (and overrides shell vars when it does not)."""
+    fallback that only fills gaps when the user env exists (and overrides shell vars when it does not).
+    *home_elsewhere* is a caller's answer to :func:`_home_runs_elsewhere` for the home; None asks."""
     from agent.safe_worker_policy import worker_config_snapshot
 
     # The private bootstrap supplies credentials explicitly; do not rehydrate
@@ -861,7 +877,8 @@ def load_hermes_dotenv(
     # While a plugin runs this profile elsewhere, that backend writes the home: nothing in it is
     # loaded here. Its .env and .op.env count as absent and no secrets: source is resolved. The
     # project .env, the managed .env and the terminal bridge below are the host's own and apply.
-    elsewhere = _home_runs_elsewhere(home_path)  # asked once per load; the bootstraps reuse it
+    # Asked once per load, or answered by the caller; the bootstraps reuse it.
+    elsewhere = _home_runs_elsewhere(home_path) if home_elsewhere is None else home_elsewhere
     bootstrap_deployment(home_path, project_env_path, home_elsewhere=elsewhere)
 
     has_user_env = not elsewhere and user_env.exists()

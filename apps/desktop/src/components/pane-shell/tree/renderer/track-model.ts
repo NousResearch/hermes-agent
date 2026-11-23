@@ -187,6 +187,9 @@ export interface TrackContext {
   paneFor: (id: string) => Contribution | undefined
   paneGone: (id: string) => boolean
   overrides: Record<string, { widthOverride?: number; heightOverride?: number }>
+  /** A `placement: 'main'` pane that is docked beside the main column rather than being part of it
+   *  (the redesign's Browser tiles): it does not hold the main floor in `subtreeGone`. */
+  dockedSide?: (id: string) => boolean
 }
 
 /** A group's panes that are actually on screen (not hidden / narrow-collapsed
@@ -332,7 +335,10 @@ export function fixedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: Tr
  * every sessions-scoped tile out of the center and then closing its last bot
  * chat.) An emptied main zone renders its own placeholder instead. Chrome
  * toggles over a terminal, a review rail or an unregistered plugin pane still
- * collapse and still hand their space to their neighbors.
+ * collapse and still hand their space to their neighbors. So does a zone of panes the context
+ * names `dockedSide`: main by placement, but a side surface. In the redesign a Browser tile left
+ * alone in its zone and then hidden (its chat lost focus, the panel moved to another tool) kept
+ * that zone on screen as the empty placeholder, with no chrome there to close it.
  */
 export function subtreeGone(node: LayoutNode, ctx: TrackContext): boolean {
   const ids = allPaneIds(node)
@@ -341,7 +347,7 @@ export function subtreeGone(node: LayoutNode, ctx: TrackContext): boolean {
     return false
   }
 
-  return !ids.some(id => paneChrome(ctx.paneFor(id)).placement === 'main')
+  return !ids.some(id => paneChrome(ctx.paneFor(id)).placement === 'main' && !ctx.dockedSide?.(id))
 }
 
 /**

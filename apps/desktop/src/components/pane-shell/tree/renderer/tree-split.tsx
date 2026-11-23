@@ -26,6 +26,7 @@ import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { $paneStates, type PaneStateSnapshot, setPaneHeightOverride, setPaneWidthOverride } from '@/store/panes'
+import { PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
 import { usePortalShell } from '@/store/shell-variant'
 
 import { $layoutEditMode, $layoutEditRevealsHidden } from '../../edit-mode'
@@ -68,6 +69,9 @@ const SASH_KEY_STEP_LARGE_PX = 64
 
 /** The single group id a subtree resolves to, or null when it holds several
  *  zones — the sash can only collapse a boundary that IS exactly one zone. */
+/** A Browser tab's tile: main by placement, docked beside the main column. */
+const isPreviewTile = (id: string) => id.startsWith(`${PREVIEW_TILE_PREFIX}:`)
+
 function groupIdOf(node: LayoutNode): null | string {
   if (node.type === 'group') {
     return node.id
@@ -188,7 +192,7 @@ export function TreeSplit({
     (!revealsHidden && (hiddenPanes.has(id) || routeCollapsed.has(id))) ||
     (narrow && Boolean(paneChrome(paneFor(id)).collapsible))
 
-  const trackCtx: TrackContext = { paneFor, paneGone, overrides }
+  const trackCtx: TrackContext = { paneFor, paneGone, overrides, dockedSide: portal ? isPreviewTile : undefined }
 
   // Chrome-toggle collapse: a subtree whose every pane is gone renders
   // display:none (content stays MOUNTED — toggling back is instant), and its

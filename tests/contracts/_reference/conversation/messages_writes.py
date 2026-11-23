@@ -275,75 +275,96 @@ class MessageWritesMixin(MessageBase):
         reject_live: tuple[str, ...] = tuple(
             k for k, on in (("compaction", reject_active_compression_lock), ("turn", reject_active_turn_lease)) if on
         )
+        bookkeeping = ("system", "session_meta")
+
+        def _row_tc_ids(row: _StoredRow) -> set[str]:
+            ids: set[str] = set()
+            for tc in row.message.tool_calls:
+                if isinstance(tc, Mapping):
+                    raw_id = tc.get("id")
+                    if isinstance(raw_id, str) and raw_id:
+                        ids.add(raw_id)
+            return ids
+
         with self._write_transaction(p_scope):
             self._write_guards(p_scope, session_id, reject_live=reject_live, insert=False)
             transcript = self._transcript(p_scope, session_id)
             if transcript is None or not isinstance(message_id, int) or isinstance(message_id, bool) or message_id <= 0:
                 return DeleteMessagesResult(deleted_ids=(), remaining_message_count=0, has_compressed_summary=False)
-            active = transcript.active()
-            target_idx = next((i for i, r in enumerate(active) if int(r.id) == int(message_id)), None)
-            uids_to_purge: set[str] = set()
-            if target_idx is not None:
-                if scope is DeleteMessageScope.EXCHANGE:
+            all_rows = sorted(transcript.rows, key=lambda r: int(r.id))
+            active = [r for r in all_rows if r.visibility is RowVisibility.ACTIVE]
+            target_row = next((r for r in all_rows if int(r.id) == int(message_id)), None)
+            if target_row is None:
+                return DeleteMessagesResult(
+                    deleted_ids=(),
+                    remaining_message_count=len(active),
+                    has_compressed_summary=any(r.message.compressed_summary for r in active),
+                )
+
+            if scope is DeleteMessageScope.EXCHANGE:
+                if target_row.message.role in bookkeeping:
+                    initial_ids: set[int] = {int(target_row.id)}
+                else:
+                    partition = active if target_row.visibility is RowVisibility.ACTIVE else [
+                        r for r in all_rows if r.visibility is not RowVisibility.ACTIVE
+                    ]
+                    target_idx = next(i for i, r in enumerate(partition) if int(r.id) == int(message_id))
                     start = target_idx
-                    while start > 0 and active[start].message.role != "user":
-                        if active[start - 1].message.role in ("system", "session_meta"):
+                    while start > 0 and partition[start].message.role != "user":
+                        if partition[start - 1].message.role in bookkeeping:
                             break
                         start -= 1
                     end = target_idx + 1
-                    while end < len(active) and active[end].message.role != "user":
+                    while end < len(partition) and partition[end].message.role not in ("user", *bookkeeping):
                         end += 1
-                    selected_ids = {int(active[i].id) for i in range(start, end)}
-                else:
-                    target_row = active[target_idx]
-                    selected_ids = {int(target_row.id)}
-                    role = target_row.message.role
-                    if role == "assistant":
-                        tc_ids: set[str] = set()
-                        for tc in target_row.message.tool_calls:
-                            if isinstance(tc, Mapping):
-                                raw_id = tc.get("id")
-                                if isinstance(raw_id, str) and raw_id:
-                                    tc_ids.add(raw_id)
-                        if tc_ids:
-                            selected_ids.update(int(r.id) for r in active
-                                                if r.message.role == "tool" and r.message.tool_call_id in tc_ids)
-                    elif role == "tool" and target_row.message.tool_call_id:
-                        tc_id = target_row.message.tool_call_id
-                        parent_tc_ids: set[str] = {tc_id}
-                        for r in active:
-                            if r.message.role == "assistant":
-                                r_tc_ids: set[str] = set()
-                                for tc in r.message.tool_calls:
-                                    if isinstance(tc, Mapping):
-                                        raw_id = tc.get("id")
-                                        if isinstance(raw_id, str) and raw_id:
-                                            r_tc_ids.add(raw_id)
-                                if tc_id in r_tc_ids:
-                                    selected_ids.add(int(r.id))
-                                    parent_tc_ids.update(r_tc_ids)
-                        selected_ids.update(int(r.id) for r in active
-                                            if r.message.role == "tool" and r.message.tool_call_id in parent_tc_ids)
-                for r in active:
-                    if int(r.id) in selected_ids and r.message.message_uid:
-                        uids_to_purge.add(r.message.message_uid)
+                    initial_ids = {int(partition[i].id) for i in range(start, end)}
             else:
-                archived = self._row_in_session(p_scope, session_id, message_id)
-                if archived is None:
-                    return DeleteMessagesResult(
-                        deleted_ids=(),
-                        remaining_message_count=len(active),
-                        has_compressed_summary=any(r.message.compressed_summary for r in active),
-                    )
-                selected_ids = {int(archived.id)}
-                if archived.message.message_uid:
-                    uids_to_purge.add(archived.message.message_uid)
+                initial_ids = {int(target_row.id)}
 
-            all_delete_ids = set(selected_ids)
-            if uids_to_purge:
-                for r in transcript.rows:
-                    if r.message.message_uid in uids_to_purge:
-                        all_delete_ids.add(int(r.id))
+            all_delete_ids: set[int] = set(initial_ids)
+            tc_ids: set[str] = set()
+            uids: set[str] = set()
+            row_tc_map: dict[int, set[str]] = {
+                int(r.id): _row_tc_ids(r) for r in all_rows if r.message.role == "assistant"
+            }
+
+            changed = True
+            while changed:
+                changed = False
+                for r in all_rows:
+                    rid = int(r.id)
+                    if rid not in all_delete_ids:
+                        continue
+                    if r.message.message_uid and r.message.message_uid not in uids:
+                        uids.add(r.message.message_uid)
+                        changed = True
+                    if r.message.role == "assistant":
+                        r_tcs = row_tc_map.get(rid, set())
+                        if not r_tcs.issubset(tc_ids):
+                            tc_ids.update(r_tcs)
+                            changed = True
+                    elif r.message.role == "tool" and r.message.tool_call_id:
+                        if r.message.tool_call_id not in tc_ids:
+                            tc_ids.add(r.message.tool_call_id)
+                            changed = True
+
+                for r in all_rows:
+                    rid = int(r.id)
+                    if rid in all_delete_ids:
+                        continue
+                    if r.message.message_uid and r.message.message_uid in uids:
+                        all_delete_ids.add(rid)
+                        changed = True
+                        continue
+                    if r.message.role == "assistant":
+                        r_tcs = row_tc_map.get(rid, set())
+                        if r_tcs and (r_tcs & tc_ids):
+                            all_delete_ids.add(rid)
+                            tc_ids.update(r_tcs)
+                            changed = True
+                    elif r.message.role == "tool" and r.message.tool_call_id and r.message.tool_call_id in tc_ids:
+                        all_delete_ids.add(rid)
+                        changed = True
 
             transcript.rows = [r for r in transcript.rows if int(r.id) not in all_delete_ids]
             transcript.recount()

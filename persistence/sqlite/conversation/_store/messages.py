@@ -696,41 +696,81 @@ def _extract_tool_call_ids(raw_tool_calls: Any) -> set[str]:
     return ids
 
 
-def _select_active_ids_to_delete(active_rows: list[Any], target_idx: int, scope: str) -> set[int]:
-    """Select active row ids to delete for *target_idx* under *scope* (``'message'`` or ``'exchange'``)."""
-    target = active_rows[target_idx]
-    if scope == "exchange":
-        start = target_idx
-        while start > 0 and active_rows[start]["role"] != "user":
-            if active_rows[start - 1]["role"] in ("system", "session_meta"):
-                break
-            start -= 1
-        end = target_idx + 1
-        while end < len(active_rows) and active_rows[end]["role"] != "user":
-            end += 1
-        return {int(active_rows[i]["id"]) for i in range(start, end)}
+_DELETE_BOOKKEEPING_ROLES = ("system", "session_meta")
 
-    ids_to_delete: set[int] = {int(target["id"])}
-    role = target["role"]
-    if role == "assistant":
-        tc_ids = _extract_tool_call_ids(target["tool_calls"])
-        if tc_ids:
-            for row in active_rows:
-                if row["role"] == "tool" and row["tool_call_id"] in tc_ids:
-                    ids_to_delete.add(int(row["id"]))
-    elif role == "tool" and target["tool_call_id"]:
-        tc_id = target["tool_call_id"]
-        parent_tc_ids: set[str] = {tc_id}
-        for row in active_rows:
-            if row["role"] == "assistant":
-                row_tc_ids = _extract_tool_call_ids(row["tool_calls"])
-                if tc_id in row_tc_ids:
-                    ids_to_delete.add(int(row["id"]))
-                    parent_tc_ids.update(row_tc_ids)
-        for row in active_rows:
-            if row["role"] == "tool" and row["tool_call_id"] in parent_tc_ids:
-                ids_to_delete.add(int(row["id"]))
-    return ids_to_delete
+
+def _select_exchange_ids(rows: list[Any], target_idx: int) -> set[int]:
+    """Select the exchange row ids containing *target_idx* without consuming ``system``/``session_meta`` rows."""
+    target = rows[target_idx]
+    if target["role"] in _DELETE_BOOKKEEPING_ROLES:
+        return {int(target["id"])}
+    start = target_idx
+    while start > 0 and rows[start]["role"] != "user":
+        if rows[start - 1]["role"] in _DELETE_BOOKKEEPING_ROLES:
+            break
+        start -= 1
+    end = target_idx + 1
+    while end < len(rows) and rows[end]["role"] not in ("user", *_DELETE_BOOKKEEPING_ROLES):
+        end += 1
+    return {int(rows[i]["id"]) for i in range(start, end)}
+
+
+def _expand_delete_ids(all_rows: list[Any], initial_ids: set[int]) -> set[int]:
+    """Expand *initial_ids* across all session rows (active and archived) to preserve tool-call pairing
+    and remove copies sharing ``message_uid``."""
+    all_delete_ids: set[int] = set(initial_ids)
+    tc_ids: set[str] = set()
+    uids: set[str] = set()
+    row_tc_map: dict[int, set[str]] = {
+        int(row["id"]): _extract_tool_call_ids(row["tool_calls"])
+        for row in all_rows
+        if row["role"] == "assistant"
+    }
+
+    changed = True
+    while changed:
+        changed = False
+        for row in all_rows:
+            rid = int(row["id"])
+            if rid not in all_delete_ids:
+                continue
+            uid = row["message_uid"]
+            if uid and str(uid) not in uids:
+                uids.add(str(uid))
+                changed = True
+            role = row["role"]
+            if role == "assistant":
+                r_tcs = row_tc_map.get(rid, set())
+                if not r_tcs.issubset(tc_ids):
+                    tc_ids.update(r_tcs)
+                    changed = True
+            elif role == "tool" and row["tool_call_id"]:
+                tc_id = str(row["tool_call_id"])
+                if tc_id not in tc_ids:
+                    tc_ids.add(tc_id)
+                    changed = True
+
+        for row in all_rows:
+            rid = int(row["id"])
+            if rid in all_delete_ids:
+                continue
+            uid = row["message_uid"]
+            if uid and str(uid) in uids:
+                all_delete_ids.add(rid)
+                changed = True
+                continue
+            role = row["role"]
+            if role == "assistant":
+                r_tcs = row_tc_map.get(rid, set())
+                if r_tcs and (r_tcs & tc_ids):
+                    all_delete_ids.add(rid)
+                    tc_ids.update(r_tcs)
+                    changed = True
+            elif role == "tool" and row["tool_call_id"] and str(row["tool_call_id"]) in tc_ids:
+                all_delete_ids.add(rid)
+                changed = True
+
+    return all_delete_ids
 
 
 def delete_message(
@@ -738,7 +778,8 @@ def delete_message(
     reject_active_turn_lease: bool = True, reject_active_compression_lock: bool = True,
 ) -> dict[str, Any]:
     """Permanently delete a specific message (or its enclosing user exchange when ``scope='exchange'``)
-    from *session_id* without removing later messages. Preserves tool-call pairing, removes any
+    from *session_id* without removing later messages. Preserves tool-call pairing across active and
+    archived rows, preserves interleaved ``system``/``session_meta`` bookkeeping rows, removes any
     compaction-archived copies sharing the same ``message_uid``, recomputes session counters, and
     bumps ``transcript_revision`` in one write transaction under the transcript write guards."""
     if scope not in ("message", "exchange"):
@@ -752,43 +793,28 @@ def delete_message(
             reject_active_turn_lease=reject_active_turn_lease,
             reject_active_compression_lock=reject_active_compression_lock,
         )
-        active_rows = conn.execute(
-            "SELECT id, role, tool_calls, tool_call_id, message_uid, _compressed_summary "
-            "FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+        all_rows = conn.execute(
+            "SELECT id, active, role, tool_calls, tool_call_id, message_uid, _compressed_summary "
+            "FROM messages WHERE session_id = ? ORDER BY id",
             (session_id,),
         ).fetchall()
-        active_idx_by_id = {int(r["id"]): i for i, r in enumerate(active_rows)}
-        target_idx = active_idx_by_id.get(row_id)
+        active_rows = [r for r in all_rows if r["active"]]
+        target_row = next((r for r in all_rows if int(r["id"]) == row_id), None)
+        if target_row is None:
+            return {
+                "deleted_ids": [],
+                "remaining_message_count": len(active_rows),
+                "has_compressed_summary": any(bool(r["_compressed_summary"]) for r in active_rows),
+            }
 
-        uids_to_purge: set[str] = set()
-        if target_idx is not None:
-            selected_ids = _select_active_ids_to_delete(active_rows, target_idx, scope)
-            for row in active_rows:
-                if int(row["id"]) in selected_ids and row["message_uid"]:
-                    uids_to_purge.add(str(row["message_uid"]))
+        if scope == "exchange":
+            partition = active_rows if target_row["active"] else [r for r in all_rows if not r["active"]]
+            target_idx = next(i for i, r in enumerate(partition) if int(r["id"]) == row_id)
+            initial_ids = _select_exchange_ids(partition, target_idx)
         else:
-            archived = conn.execute(
-                "SELECT id, message_uid FROM messages WHERE session_id = ? AND id = ?",
-                (session_id, row_id),
-            ).fetchone()
-            if archived is None:
-                return {
-                    "deleted_ids": [],
-                    "remaining_message_count": len(active_rows),
-                    "has_compressed_summary": any(bool(r["_compressed_summary"]) for r in active_rows),
-                }
-            selected_ids = {int(archived["id"])}
-            if archived["message_uid"]:
-                uids_to_purge.add(str(archived["message_uid"]))
+            initial_ids = {row_id}
 
-        all_delete_ids = set(selected_ids)
-        if uids_to_purge:
-            uid_list = sorted(uids_to_purge)
-            for peer in conn.execute(
-                f"SELECT id FROM messages WHERE session_id = ? AND message_uid IN ({_placeholders(uid_list)})",
-                [session_id, *uid_list],
-            ).fetchall():
-                all_delete_ids.add(int(peer["id"]))
+        all_delete_ids = _expand_delete_ids(all_rows, initial_ids)
 
         ordered_delete_ids = sorted(all_delete_ids)
         conn.execute(

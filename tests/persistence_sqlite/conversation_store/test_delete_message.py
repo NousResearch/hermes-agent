@@ -224,3 +224,146 @@ def test_web_api_delete_session_message(tmp_path: Path, monkeypatch):
     # Unknown session returns 404
     resp3 = client.delete("/api/sessions/no-such-session/messages/1")
     assert resp3.status_code == 404
+
+
+def test_delete_exchange_preserves_interleaved_system_and_session_meta(tmp_path: Path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("sess-meta", source="cli")
+    sys_top = db.append_message("sess-meta", "system", "System prompt")
+    u1 = db.append_message("sess-meta", "user", "Question A")
+    a1 = db.append_message("sess-meta", "assistant", "Answer A")
+    meta = db.append_message("sess-meta", "session_meta", "compaction marker")
+    u2 = db.append_message("sess-meta", "user", "Question B")
+    a2 = db.append_message("sess-meta", "assistant", "Answer B")
+    sys_mid = db.append_message("sess-meta", "system", "Mid-session system notice")
+    u3 = db.append_message("sess-meta", "user", "Question C")
+
+    # Deleting exchange A stops at session_meta (does not consume it)
+    res_a = db.delete_message("sess-meta", u1, scope="exchange")
+    assert res_a["deleted_ids"] == [u1, a1]
+    assert [m["id"] for m in db.get_messages("sess-meta")] == [sys_top, meta, u2, a2, sys_mid, u3]
+
+    # Deleting exchange B stops at trailing system row (does not consume it)
+    res_b = db.delete_message("sess-meta", a2, scope="exchange")
+    assert res_b["deleted_ids"] == [u2, a2]
+    assert [m["id"] for m in db.get_messages("sess-meta")] == [sys_top, meta, sys_mid, u3]
+
+    # Targeting session_meta directly with scope="exchange" removes only that row
+    res_meta = db.delete_message("sess-meta", meta, scope="exchange")
+    assert res_meta["deleted_ids"] == [meta]
+    assert [m["id"] for m in db.get_messages("sess-meta")] == [sys_top, sys_mid, u3]
+
+
+def test_delete_archived_tool_result_cascades_archived_tool_group(tmp_path: Path):
+    import sqlite3
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    db.create_session("sess-arch-tools", source="cli")
+    u1 = db.append_message("sess-arch-tools", "user", "Run tools")
+    a_tc = db.append_message(
+        "sess-arch-tools", "assistant", None,
+        tool_calls=[
+            {"id": "arch_call_1", "type": "function", "function": {"name": "t1", "arguments": "{}"}},
+            {"id": "arch_call_2", "type": "function", "function": {"name": "t2", "arguments": "{}"}},
+        ],
+    )
+    t1 = db.append_message("sess-arch-tools", "tool", "out1", tool_call_id="arch_call_1", tool_name="t1")
+    t2 = db.append_message("sess-arch-tools", "tool", "out2", tool_call_id="arch_call_2", tool_name="t2")
+    summary = db.append_message(
+        "sess-arch-tools", "user", "[CONTEXT COMPACTION] Summary", _compressed_summary=True,
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE messages SET active = 0, compacted = 1 WHERE id IN (?, ?, ?, ?)",
+            (u1, a_tc, t1, t2),
+        )
+
+    res = db.delete_message("sess-arch-tools", t1, scope="message")
+    assert res["deleted_ids"] == sorted([a_tc, t1, t2])
+    assert res["remaining_message_count"] == 1
+    assert res["has_compressed_summary"] is True
+    assert [m["id"] for m in db.get_messages("sess-arch-tools", include_inactive=True)] == [u1, summary]
+
+
+def test_delete_mixed_active_and_archived_tool_group(tmp_path: Path):
+    import sqlite3
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    db.create_session("sess-mixed-tools", source="cli")
+    u1 = db.append_message("sess-mixed-tools", "user", "Run mixed tools")
+    a_tc = db.append_message(
+        "sess-mixed-tools", "assistant", None,
+        tool_calls=[
+            {"id": "mix_call_1", "type": "function", "function": {"name": "t1", "arguments": "{}"}},
+            {"id": "mix_call_2", "type": "function", "function": {"name": "t2", "arguments": "{}"}},
+        ],
+    )
+    t1 = db.append_message("sess-mixed-tools", "tool", "out1", tool_call_id="mix_call_1", tool_name="t1")
+    t2 = db.append_message("sess-mixed-tools", "tool", "out2", tool_call_id="mix_call_2", tool_name="t2")
+    a_final = db.append_message("sess-mixed-tools", "assistant", "Done")
+
+    # Archive only one tool result (mixed active/inactive tool-call group)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE messages SET active = 0, compacted = 1 WHERE id = ?", (t1,))
+
+    # Deleting the archived tool result removes the active assistant call and active sibling too
+    res = db.delete_message("sess-mixed-tools", t1, scope="message")
+    assert res["deleted_ids"] == sorted([a_tc, t1, t2])
+    assert res["remaining_message_count"] == 2
+    assert [m["id"] for m in db.get_messages("sess-mixed-tools", include_inactive=True)] == [u1, a_final]
+    sess = db.get_session("sess-mixed-tools")
+    assert sess is not None
+    assert sess["tool_call_count"] == 0
+
+
+def test_reference_backend_matches_sqlite_for_meta_and_archived_tools(tmp_path: Path):
+    from persistence import RowVisibility
+    from persistence.conversation.messages import NewMessage, TranscriptRead, TranscriptView
+    from persistence.conversation.sessions import NewSession
+    from persistence.core.identity import SessionId
+    from persistence_assembly import profile_scope
+    from tests.contracts._reference import open_reference_backend
+
+    with open_reference_backend() as backend:
+        store = backend.open(profile_scope(home=tmp_path))
+        sid = SessionId("ref-sess")
+        store.sessions.create(NewSession(session_id=sid, source="cli"))
+
+        u1 = store.messages.append(sid, NewMessage(role="user", content="Question A"))
+        a1 = store.messages.append(sid, NewMessage(role="assistant", content="Answer A"))
+        meta = store.messages.append(sid, NewMessage(role="session_meta", content="meta"))
+        u2 = store.messages.append(sid, NewMessage(role="user", content="Question B"))
+
+        res_ex = store.messages.delete_message(sid, u1, scope=DeleteMessageScope.EXCHANGE)
+        assert res_ex.deleted_ids == (u1, a1)
+        assert res_ex.remaining_message_count == 2
+
+        # Archived tool group in reference store
+        a_tc = store.messages.append(
+            sid,
+            NewMessage(
+                role="assistant",
+                content="",
+                tool_calls=(
+                    {"id": "ref_c1", "type": "function", "function": {"name": "t1", "arguments": "{}"}},
+                    {"id": "ref_c2", "type": "function", "function": {"name": "t2", "arguments": "{}"}},
+                ),
+            ),
+        )
+        t1 = store.messages.append(sid, NewMessage(role="tool", content="r1", tool_call_id="ref_c1", tool_name="t1"))
+        t2 = store.messages.append(sid, NewMessage(role="tool", content="r2", tool_call_id="ref_c2", tool_name="t2"))
+        # Mark tool group inactive (compaction-archived)
+        transcript = store.messages._transcript(store.scope, sid)
+        assert transcript is not None
+        for row in transcript.rows:
+            if row.id in {int(a_tc), int(t1), int(t2)}:
+                row.visibility = RowVisibility.COMPACTION_ARCHIVED
+
+        res_tc = store.messages.delete_message(sid, t1, scope=DeleteMessageScope.MESSAGE)
+        assert res_tc.deleted_ids == tuple(sorted((a_tc, t1, t2)))
+        assert res_tc.remaining_message_count == 2
+        remaining_all = store.messages.read_transcript(sid, TranscriptRead(view=TranscriptView.ALL))
+        assert [int(r.id) for r in remaining_all] == [int(meta), int(u2)]

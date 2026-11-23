@@ -2186,10 +2186,6 @@ export const zhOverrides = {
       actionFailed: '技能操作失败',
       actionLog: '操作日志',
       alreadyInstalled: name => `“${name}”已安装`,
-      pickerTitle: '技能中心',
-      pickerBrowse: '浏览完整技能中心',
-      pickerHide: '隐藏技能中心浏览器',
-      pickerHint: '点击任意技能上的“+ Add to this Agent”即可安装，安装后会出现在上方列表中。',
       loadFailed: '技能中心加载失败',
       previewFailed: '技能预览失败',
       scanFailed: '安全扫描失败',
@@ -3238,7 +3234,10 @@ export const zhOverrides = {
 
   composer: {
     message: '消息',
-    wakingProfile: profile => `正在唤醒 ${profile}…`,
+    switchingProfile: profile => `正在切换到 ${profile}…`,
+    switchingProfileSlow: '仍在连接。现在发送的消息会等待连接完成后发给此智能体。',
+    switchProfileFailed: profile => `无法切换到 ${profile}`,
+    willSendTo: profile => `将发送给 ${profile}`,
     placeholderStarting: '正在启动 Hermes…',
     placeholderReconnecting: '正在重新连接 Hermes…',
     placeholderFollowUp: '发送后续消息',

@@ -7,9 +7,9 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 
 it.each([
   ['bundled', 'v0.28.0', 'stable', false],
-  ['bundled', 'v0.29.0+canary.20260906T000000Z', 'canary', false],
+  ['bundled', 'canary.20260906T000000Z-v0.29.0', 'canary', false],
   ['light', 'v0.28.0', 'stable', true],
-  ['light', 'v0.29.0+canary.20260906T000000Z', 'canary', true]
+  ['light', 'canary.20260906T000000Z-v0.29.0', 'canary', true]
 ])('packaging and runtime agree for %s %s', (variant, tag, channel, light) => {
   const result = execFileSync(process.execPath, ['-e', "const c=require('./apps/desktop/electron-builder.config.cjs'); console.log(JSON.stringify({publish:c.mac.publish,notarize:c.mac.notarize,targets:c.mac.target}))"], {
     cwd: root,

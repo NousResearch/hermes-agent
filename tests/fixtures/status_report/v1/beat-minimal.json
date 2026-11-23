@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "kind": "beat",
+  "seq": 1,
+  "boot_id": "0123456789abcdef0123456789abcdef",
+  "status": {
+    "gateway_running": true,
+    "gateway_state": null,
+    "gateway_exit_reason": null,
+    "gateway_platforms": {}
+  }
+}

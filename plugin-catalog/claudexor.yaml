@@ -1,0 +1,23 @@
+name: claudexor
+title: Claudexor
+repo: https://github.com/razzant/claudexor
+sha: "6bc0ed57c0012bd6a636ab46865389df3269be9d"
+subdir: plugins/hermes
+description: "Ask another coding agent from Hermes or delegate work on a project you select through your local Claudexor CLI. Integration by Ouroboros. Disclosure — Runs your separately installed, unpinned Claudexor CLI as an MCP server; it can start a local daemon and third-party coding agents (Claude Code, Codex, Cursor, OpenCode) that send prompts and selected project files to their providers, spend subscription quota or money, and, once you approve a call, write to your project."
+maintainer: ouroboros-agent
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/razzant/claudexor/tree/6bc0ed57c0012bd6a636ab46865389df3269be9d/plugins/hermes
+version: "6.3.0"
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - Install Claudexor CLI 6.3.0 or later separately on the Hermes machine. Both node and claudexor must be on the Hermes process's PATH.
+  - The pin covers the Hermes plug-in, not the separately installed CLI or vendor harnesses.
+  - The CLI can start a local daemon and coding agents. Prompts and selected files can reach configured providers and consume quota or incur charges.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

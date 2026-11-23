@@ -125,7 +125,8 @@ previous-version upgrade baselines.
 
 This covers signed downloadable commit builds, canaries with upload enabled,
 and stable candidates. No-upload tag builds have no cross-job download handoff.
-Linux bundle jobs remain disabled, but Linux source-install desktop checks run.
+Linux AppImages are not smoked yet (their builds are diagnostic), but Linux
+source-install desktop checks run.
 Unsigned Store submissions are not sideloaded or re-signed for this smoke;
 their Store acceptance remains separate. Passing helper tests does not establish
 native installation or chat acceptance: those require the corresponding runner.
@@ -166,9 +167,10 @@ The result chart on the run summary shows each leg as passed, failed, or skipped
 
 ## Triggers and cost
 
-The matrix runs on release builds only. It never runs on pull requests, pushes to main, or a schedule: one leg installs real toolchains and takes more than 10 minutes. The triggers are:
+The matrix never runs on pull requests or pushes to main: one leg installs real toolchains and takes more than 10 minutes. The triggers are:
 
-- A reusable workflow call from the stable release gate (`route=all`).
+- A reusable workflow call from Stable Release (`route=all`, for both stable claims and daily canary runs; `stable-release.yml`'s `track-canary-red` job keeps one `install-e2e-red` issue in step with the latest `Canary release` run).
+- An on-demand manual dispatch of `.github/workflows/canary-e2e.yml` for a single commit SHA without cutting a canary tag.
 - Manual dispatch. You can select the route and the tag count:
 
 ```

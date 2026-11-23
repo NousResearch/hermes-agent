@@ -2036,10 +2036,6 @@ export interface Translations extends NoticeTranslations {
       openLog: string
       actionLog: string
       alreadyInstalled: (name: string) => string
-      pickerTitle: string
-      pickerBrowse: string
-      pickerHide: string
-      pickerHint: string
       loadFailed: string
       previewFailed: string
       scanFailed: string
@@ -2941,7 +2937,10 @@ export interface Translations extends NoticeTranslations {
 
   composer: {
     message: string
-    wakingProfile: (profile: string) => string
+    switchingProfile: (profile: string) => string
+    switchingProfileSlow: string
+    switchProfileFailed: (profile: string) => string
+    willSendTo: (profile: string) => string
     placeholderStarting: string
     placeholderReconnecting: string
     placeholderFollowUp: string
@@ -3957,6 +3956,8 @@ export interface Translations extends NoticeTranslations {
       branchNewChat: string
       react: string
       dismissError: string
+      /** A reply paused for an automatic continuation (store/paused-replies.ts). */
+      responseContinuing: string
       responseStopped: string
       /** Greyed notice on a safety-refused turn kept for display, used when the
        *  backend sent none in display_metadata.content_refused.notice. */

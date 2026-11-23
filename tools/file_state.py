@@ -53,6 +53,14 @@ def _fmt_ts(ts: float) -> str:
     return time.strftime("%H:%M:%S", time.localtime(ts))
 
 
+def _sibling_after_read_msg(resolved: str, writer_tid: str, writer_ts: float, read_ts: float) -> str:
+    return (
+        f"{resolved} was modified by sibling subagent "
+        f"{writer_tid!r} at {_fmt_ts(writer_ts)} — after "
+        f"this agent's last read at {_fmt_ts(read_ts)}. "
+        "Re-read the file before writing.")
+
+
 def _evict_oldest(container, cap: int) -> None:
     """Pop entries until *container* is within *cap* (sets: arbitrary; dicts: oldest
     by insertion order). An eviction only costs one redundant re-send or staleness check."""
@@ -151,13 +159,8 @@ class FileStateRegistry:
                         f"{writer_tid!r} but this agent never read it. "
                         "Read the file before writing to avoid overwriting "
                         "the sibling's changes.")
-                read_ts = stamp[1]
-                if writer_ts > read_ts:
-                    return (
-                        f"{resolved} was modified by sibling subagent "
-                        f"{writer_tid!r} at {_fmt_ts(writer_ts)} — after "
-                        f"this agent's last read at {_fmt_ts(read_ts)}. "
-                        "Re-read the file before writing.")
+                if writer_ts > stamp[1]:
+                    return _sibling_after_read_msg(resolved, writer_tid, writer_ts, stamp[1])
 
         if stamp is not None:
             read_mtime, _read_ts, partial = stamp
@@ -176,6 +179,20 @@ class FileStateRegistry:
         return (
             f"{resolved} was not read by this agent. "
             "Read the file first so you can write an informed edit.")
+
+    def sibling_wrote_after_read(self, task_id: str, resolved: str) -> Optional[str]:
+        """``check_stale``'s sibling message, only when another task wrote the file after
+        this task's last read of it; ``None`` for every other kind of staleness."""
+        if _disabled():
+            return None
+        with self._state_lock:
+            stamp = self._reads.get(task_id, {}).get(resolved)
+            last_writer = self._last_writer.get(resolved)
+        if stamp is None or last_writer is None or last_writer[0] == task_id:
+            return None
+        if last_writer[1] <= stamp[1] or _mtime_or_none(resolved) is None:
+            return None
+        return _sibling_after_read_msg(resolved, last_writer[0], last_writer[1], stamp[1])
 
     def writes_since(self, exclude_task_id: str, since_ts: float,
                      paths: Iterable[str]) -> dict[str, list[str]]:
@@ -238,6 +255,10 @@ def note_write(task_id: str, resolved_or_path: str | Path) -> None:
 
 def check_stale(task_id: str, resolved_or_path: str | Path) -> Optional[str]:
     return _registry.check_stale(task_id, str(resolved_or_path))
+
+
+def sibling_wrote_after_read(task_id: str, resolved_or_path: str | Path) -> Optional[str]:
+    return _registry.sibling_wrote_after_read(task_id, str(resolved_or_path))
 
 
 def lock_path(resolved_or_path: str | Path):

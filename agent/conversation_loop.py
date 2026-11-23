@@ -1614,25 +1614,6 @@ def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
     return None
 
 
-def _hand_back_leftover_steer(agent, result):
-    """A loop exit that skips ``finalize_turn`` (a terminal API error, a preflight refusal) would leave a
-    steer the pre-API drain requeued buffered on the agent; hand it back as the finalizer does.
-
-    Not after a Stop that landed once the error handler had checked for one: the stopped turn's steer
-    is dropped, as ``abort_turn_on_interrupt`` drops it when the Stop lands first (ticketed transfers
-    stay buffered for their settlement). Not on a failure the gateway settles before the session takes
-    more input (a content-policy refusal's rewind, a compression-exhausted reset): a follow-up there
-    would run first."""
-    if not isinstance(result, dict) or result.get("pending_steer"):
-        return result
-    if result.get("failure_reason") == "content_policy_blocked" or result.get("compression_exhausted"):
-        return result
-    leftover = agent._drain_leftover_steer()
-    if leftover and not getattr(agent, "_interrupt_requested", False):
-        result["pending_steer"] = leftover
-    return result
-
-
 def _run_conversation_turn(
     agent,
     user_message: Any,
@@ -1748,7 +1729,7 @@ def _run_conversation_turn(
         _run_phase(assemble_api_request, agent, s)
         _pg = _run_phase(run_preflight_gate, agent, s)
         if _pg.action == "return":
-            return _hand_back_leftover_steer(agent, _pg.result)
+            return _pg.result
         if _pg.action == "break":
             break
         if _pg.action == "continue":
@@ -1761,7 +1742,7 @@ def _run_conversation_turn(
 
         early_result = _run_api_retry_loop(agent, s)
         if early_result is not None:
-            return _hand_back_leftover_steer(agent, early_result)
+            return early_result
 
         _rs = _run_phase(apply_retry_restarts, agent, s)
         if _rs.action == "break":
@@ -1772,14 +1753,14 @@ def _run_conversation_turn(
         try:
             _ri = _run_phase(normalize_model_response, agent, s)
             if _ri.action == "return":
-                return _hand_back_leftover_steer(agent, _ri.result)
+                return _ri.result
             if _ri.action == "continue":
                 continue
             _v = _run_phase(
                 run_tool_round if s.assistant_message.tool_calls else finish_text_response, agent, s
             )
             if _v.action == "return":
-                return _hand_back_leftover_steer(agent, _v.result)
+                return _v.result
             if _v.action == "break":
                 break
             if _v.action == "continue":

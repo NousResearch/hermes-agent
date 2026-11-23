@@ -96,6 +96,15 @@ def _touches_protected_switch(key: str, value: Any) -> bool:
     ``config set security '{"protected_instruction_files": false}'`` replaces the whole section, so the
     leaf alone does not recognise every weakening write. *value* is the parsed structure (see
     :func:`_parsed_value`).
+
+    A write to the ``security`` section *itself* counts whatever its payload looks like: replacing the
+    section with a scalar or a list removes both leaves without naming either of them, and
+    ``config set --force security false`` then silently dropped ``protected_instruction_extra_patterns``
+    (measured on a fixture home: gate ``(True, ['RULES.md'])`` → ``(True, [])``). Only a payload that
+    merely names the leaves was recognised before, so the coverage comparison in
+    :func:`_leaves_gate_enabled` was never reached for a non-mapping replacement. Judging the section
+    write and leaving the outcome to that comparison is what lets the repair paths through: a mapping
+    payload that keeps the leaves, and ``..._files true``, still leave the gate exactly as covered.
     """
     parts = [part for part in str(key).split(".") if part]
     if not parts:
@@ -104,6 +113,8 @@ def _touches_protected_switch(key: str, value: Any) -> bool:
         return True
     if _SECURITY_SECTION not in parts:
         return False
+    if parts[-1] == _SECURITY_SECTION:
+        return True
     return _names_switch_leaf(value)
 
 

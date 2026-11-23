@@ -270,3 +270,64 @@ def test_an_unrelated_config_write_is_not_caught_by_the_guard(tmp_path, monkeypa
 
     assert "ares" in (tmp_path / "config.yaml").read_text()
 
+
+def _covered_home(home):
+    """A home whose gate is ON and covers ``RULES.md`` — the state a section replacement used to lose."""
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "security:\n"
+        "  protected_instruction_files: true\n"
+        "  protected_instruction_extra_patterns:\n"
+        "    - RULES.md\n")
+
+
+# Replacing the ``security`` section with a payload that names neither leaf: the detector only looked
+# inside mapping payloads, so nothing was judged and the write went through — the gate stayed ON but
+# stopped covering ``RULES.md`` (and any other sub-key the user had set).
+_SECTION_REPLACEMENTS = [
+    ("false", "scalar"),
+    ("[]", "list"),
+    ("{}", "empty_mapping"),
+]
+
+
+@pytest.mark.parametrize("payload,case", _SECTION_REPLACEMENTS, ids=[c for _, c in _SECTION_REPLACEMENTS])
+def test_replacing_the_security_section_cannot_drop_its_coverage(tmp_path, monkeypatch, capsys,
+                                                                payload, case):
+    """``config set --force security false`` (and ``'[]'``, ``'{}'``) left the gate on but covering
+    nothing: one flag away for an unattended agent, since the CLI itself prints the ``--force`` hint."""
+    from hermes_cli import config as cli_config
+
+    monkeypatch.setattr(_guards, "_protected_instruction_config", _REAL_GATE_CONFIG)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    _covered_home(tmp_path)
+    assert _gate_after_write(tmp_path) == (True, ["RULES.md"])
+    before = (tmp_path / "config.yaml").read_text()
+
+    with pytest.raises(SystemExit) as refused:
+        cli_config.set_config_value("security", payload, force=True)
+
+    assert refused.value.code == 1
+    assert "Refusing to set 'security'" in capsys.readouterr().err
+    assert (tmp_path / "config.yaml").read_text() == before
+    assert _gate_after_write(tmp_path) == (True, ["RULES.md"])
+
+
+def test_a_section_replacement_that_keeps_the_coverage_is_allowed(tmp_path, monkeypatch):
+    """Judging the section write must not freeze it: a payload that leaves the gate as covered as it was
+    is still a legitimate write without a terminal."""
+    from hermes_cli import config as cli_config
+
+    monkeypatch.setattr(_guards, "_protected_instruction_config", _REAL_GATE_CONFIG)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    _covered_home(tmp_path)
+
+    cli_config.set_config_value(
+        "security",
+        '{"protected_instruction_files": true, "protected_instruction_extra_patterns": ["RULES.md"]}',
+        force=True)
+
+    assert _gate_after_write(tmp_path) == (True, ["RULES.md"])
+

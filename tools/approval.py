@@ -1566,15 +1566,18 @@ def check_browser_exec_guard(code: str) -> dict:
 
     The code runs in a Python process on this host whichever browser it drives (local, CDP
     override, cloud), so this is the execute_code whole-script gate without the container fast
-    path. Unlike execute_code, unattended contexts (cron, -q, unattended platforms) are not
-    decided by their approval modes: scheduled browser runs are a documented feature and those
-    modes default to deny. They stay trusted-by-config, like a headless local session.
+    path. Unlike execute_code, a context with nobody to answer (cron, -q, an unattended platform
+    with no approval client) is not decided by its approval mode: scheduled browser runs are a
+    documented feature and those modes default to deny. They stay trusted-by-config, like a
+    headless local session. An unattended platform whose client can answer is asked.
     """
     approval_mode = approval_context._get_approval_mode()
-    if _yolo_active() or approval_mode == "off" or _unattended_contexts():
+    if _yolo_active() or approval_mode == "off":
         return _approved()
+    # _presence() clears every flag where nobody can answer (cron, -q, an api_server turn with no approval
+    # client, webhooks). Same rule as execute_code: an interactive CLI or a local viewer's own turn is not
+    # asked per script.
     approval_callback, is_cli, is_gateway, is_ask = _presence()
-    # Same rule as execute_code: an interactive CLI or a local viewer's own turn is not asked per script.
     if (not is_gateway and not is_ask) or _is_local_viewer_turn():
         return _approved()
     return _whole_script_decision(

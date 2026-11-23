@@ -307,6 +307,51 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(
         adapter._background_read_receipt.assert_any_call("!room1:example.org", "$text")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authorized, expected_event_ids", [
+    (False, []),
+    (True, ["$voice", "$text"]),
+])
+async def test_voice_claim_reads_receipts_only_after_admission(
+        monkeypatch, authorized, expected_event_ids):
+    import asyncio
+
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._download_and_cache_media = AsyncMock(return_value="/tmp/voice.ogg")
+    adapter._reactions_enabled = False
+    adapter.send_read_receipt = AsyncMock(return_value=True)
+    check = MagicMock(return_value=authorized)
+    adapter.gateway_runner = SimpleNamespace(
+        _is_user_authorized_for_source=check,
+        _profile_name_for_source=MagicMock(return_value="default"),
+    )
+
+    async def start_processing(message):
+        await adapter._run_processing_hook("on_processing_start", message)
+
+    adapter.handle_message = start_processing
+    voice = _make_event("voice message", event_id="$voice")
+    voice.content.update({
+        "msgtype": "m.audio",
+        "url": "mxc://example.org/v",
+        "info": {"mimetype": "audio/ogg"},
+        "org.matrix.msc3245.voice": {},
+        "m.mentions": {},
+    })
+    await adapter._on_room_message(voice)
+    await adapter._on_room_message(_make_event(
+        "@hermes:example.org", event_id="$text", mention_user_ids=["@hermes:example.org"]))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert [call.args[1] for call in adapter.send_read_receipt.await_args_list] == expected_event_ids
+    check.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # Auto-thread in _on_room_message
 # ---------------------------------------------------------------------------

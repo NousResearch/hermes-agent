@@ -1990,7 +1990,6 @@ class MatrixAdapter(BasePlatformAdapter):
             is_bot=is_bot)
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
-        self._background_read_receipt(room_id, event_id)
         return body, is_dm, chat_type, thread_id, display_name, source
 
     async def _extract_reply_context(
@@ -2015,7 +2014,7 @@ class MatrixAdapter(BasePlatformAdapter):
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
         still change (reply-fallback strip); ``extra`` carries media fields / message_type.
         ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
-        downloading); resolving it twice would double the read receipt / thread mark."""
+        downloading); resolving it twice would repeat the thread mark."""
         if ctx is None:
             ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
         if ctx is None:
@@ -2052,10 +2051,12 @@ class MatrixAdapter(BasePlatformAdapter):
             parked = self._parked_voices.claim(room_id, sender, before=limit)
             if parked:  # answer the voice this bare mention was typed for, not an empty text
                 voice_id, voice_content, voice_relates = parked
-                await self._handle_media_message(
+                claimed_event = await self._handle_media_message(
                     room_id, sender, voice_id, event_ts, voice_content, voice_relates, "m.audio",
                     mention_claimed=True)
-                self._background_read_receipt(room_id, event_id)  # the claim receipted the voice
+                if claimed_event is not None:
+                    await self._run_processing_hook(
+                        "_schedule_admitted_read_receipt", claimed_event, receipt_event_id=event_id)
                 return
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
@@ -2068,7 +2069,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _handle_media_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
-        relates_to: dict, msgtype: str, mention_claimed: bool = False) -> None:
+        relates_to: dict, msgtype: str, mention_claimed: bool = False) -> Optional[MessageEvent]:
         body = source_content.get("body", "") or ""
         url = source_content.get("url", "")
         if url and not str(url).startswith("mxc://"):
@@ -2129,6 +2130,7 @@ class MatrixAdapter(BasePlatformAdapter):
             media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
         if msg_event is not None:
             await self.handle_message(msg_event)
+        return msg_event
 
     @staticmethod
     def _classify_inbound_media(
@@ -2334,6 +2336,7 @@ class MatrixAdapter(BasePlatformAdapter):
         task.add_done_callback(self._reaction_redaction_tasks.discard)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
+        await self._run_processing_hook("_schedule_admitted_read_receipt", event)
         msg_id, room_id = event.message_id, event.source.chat_id
         if self._reactions_enabled and msg_id and room_id:
             reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
@@ -2529,6 +2532,13 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.debug("Matrix: redacted model picker reaction %s (%s)", emoji, evt_id)
             except Exception as exc:
                 logger.debug("Matrix: failed to redact model picker reaction %s: %s", emoji, exc)
+
+    async def _schedule_admitted_read_receipt(
+            self, event: MessageEvent, *, receipt_event_id: Optional[str] = None) -> None:
+        """Queue a receipt behind the activity hook's cached sender-authorization verdict."""
+        room_id, event_id = event.source.chat_id, receipt_event_id or event.message_id
+        if room_id and event_id:
+            self._background_read_receipt(room_id, event_id)
 
     def _background_read_receipt(self, room_id: str, event_id: str) -> None:
 

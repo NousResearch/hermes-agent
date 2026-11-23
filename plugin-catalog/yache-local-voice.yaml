@@ -3,12 +3,12 @@
 # `version` is the human-facing label shown on the install button, in quotes.
 
 name: yache-local-voice
-version: "0.1.1"
+version: "0.1.2"
 tier: community
 author: LuuMoss
 maintainer: LuuMoss
 repo: https://github.com/LuuMoss/yache-local-voice
-sha: 4c71436df534f3764236b8597b0f84008d169a0a     # full 40-char commit (0.1.1 tip)
+sha: 104e9e4b168e8a22a057e500d33a79c58daac70d     # full 40-char commit (0.1.2 tip)
 requires_hermes: ">=0.22.5"
 platforms: [windows]
 category: voice
@@ -43,18 +43,18 @@ description_i18n:
 
 short_description: Local TTS (Qwen3-TTS, zero-disk streaming) + faster-whisper STT + sherpa-onnx wake word + voice cloning + transcription workbench — one wake-and-talk loop, fully offline by default.
 
-docs_url: https://github.com/LuuMoss/yache-local-voice/blob/v0.1.1/README.md
+docs_url: https://github.com/LuuMoss/yache-local-voice/blob/v0.1.2/README.md
 
 # Card icon + gallery (the docs plugin page renders the pinned README below
 # this block). Tag-pinned raw URLs; re-pin on every SHA bump PR.
-image: https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.1/docs/screenshots/02-console-home.png
+image: https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.2/docs/screenshots/02-console-home.png
 screenshots:
-  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.1/docs/screenshots/01-quickpanel-status.png
-  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.1/docs/screenshots/02-console-home.png
-  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.1/docs/screenshots/03-panel-tts-synthesis.png
-  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.1/docs/screenshots/04-panel-voice-cloning.png
-  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.1/docs/screenshots/05-panel-wake-conversation.png
-  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.1/docs/screenshots/06-panel-stt-transcription.png
+  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.2/docs/screenshots/01-quickpanel-status.png
+  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.2/docs/screenshots/02-console-home.png
+  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.2/docs/screenshots/03-panel-tts-synthesis.png
+  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.2/docs/screenshots/04-panel-voice-cloning.png
+  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.2/docs/screenshots/05-panel-wake-conversation.png
+  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.2/docs/screenshots/06-panel-stt-transcription.png
 
 # Binaries vendored in-tree are compiled by this repo's GitHub Actions and
 # carry SLSA build provenance (rule 17): CI joins each path onto the pinned

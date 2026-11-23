@@ -19,18 +19,23 @@ IMAGE = "python@sha256:ffb752e139c0a19692a43af8d8523b274222dd68eebad5d583b45c220
 def test_assembly_publishes_facts_as_termux_uid_and_returns_host_owned_output(tmp_path, build_exit):
     if not shutil.which("docker"):
         pytest.skip("Docker is required for the bind-mount ownership regression")
-    available = subprocess.run(
-        ["docker", "info"], capture_output=True, timeout=15,
-        check=False,
-    )
-    if available.returncode:
-        pytest.skip("Docker daemon is unavailable")
-    image = subprocess.run(
-        ["docker", "image", "inspect", IMAGE], capture_output=True, timeout=15,
-        check=False,
-    )
-    if image.returncode:
-        pytest.skip(f"Pre-pull the native Linux test image: docker pull {IMAGE}")
+    # A daemon that hangs past the probe timeout is as unavailable as one that refuses
+    # (CI runner daemons do both); only the assembly run below may fail this test.
+    try:
+        available = subprocess.run(
+            ["docker", "info"], capture_output=True, timeout=15,
+            check=False,
+        )
+        if available.returncode:
+            pytest.skip("Docker daemon is unavailable")
+        image = subprocess.run(
+            ["docker", "image", "inspect", IMAGE], capture_output=True, timeout=15,
+            check=False,
+        )
+        if image.returncode:
+            pytest.skip(f"Pre-pull the native Linux test image: docker pull {IMAGE}")
+    except subprocess.TimeoutExpired:
+        pytest.skip("Docker daemon did not answer within 15 s")
 
     payload = tmp_path / "payload"
     payload.mkdir()

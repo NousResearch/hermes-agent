@@ -122,7 +122,14 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
                 does: Radix positions against it like a real trigger and flips or
                 shifts the menu back inside the viewport near the window edges,
                 so the destructive row can never be clipped off-window. */}
-            <span aria-hidden style={{ left: target.x, position: 'fixed', top: target.y }} />
+            <span
+              aria-hidden
+              style={{
+                left: `calc(${target.x}px / var(--browser-ui-scale, 1))`,
+                position: 'fixed',
+                top: `calc(${target.y}px / var(--browser-ui-scale, 1))`
+              }}
+            />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" onCloseAutoFocus={e => e.preventDefault()} side="bottom">
             <DropdownMenuLabel className="truncate text-[0.68rem] font-normal text-muted-foreground">

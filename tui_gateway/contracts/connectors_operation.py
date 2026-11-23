@@ -78,6 +78,7 @@ class ConnectionTargetEnvField(Payload):
 
 class CatalogTier(WireEnum):
     official = "official"
+    verified = "verified"
     community = "community"
 
 
@@ -119,6 +120,23 @@ class CatalogServerError(Payload):
     error: str
 
 
+class ConnectionTargetLaunchKind(WireEnum):
+    remote = "remote"
+    stdio = "stdio"
+
+
+class ConnectionTargetLaunch(Payload):
+    """What an MCP row will run (``stdio`` command line) or contact (``remote`` URL); scrubbed
+    display text, never env values or headers."""
+
+    kind: ConnectionTargetLaunchKind
+    target: str
+    # stdio only: the names of the env vars the entry adds to the child (values never ride here).
+    env: list[str] | None = None
+    # stdio only: the configured working directory, when one is set.
+    cwd: str | None = None
+
+
 class ConnectionOperationTarget(Payload):
     """``Target.snapshot``: the link minted up front rides here, never in the model result. ``extra``
     keys a leg records (``tools``, ``hint``) are typed here as they appear."""
@@ -140,6 +158,8 @@ class ConnectionOperationTarget(Payload):
     attempt: str | None = None
     # Present only on an MCP install that is waiting for credentials.
     required_env: list[ConnectionTargetEnvField] | None = None
+    # MCP rows only: shown on the card before the user approves.
+    launch: ConnectionTargetLaunch | None = None
     tools: list[str] | None = None
     hint: str | None = None
     # Catalog rows (kind ``plugin`` / ``skill``) only; field set agreed in CATALOG-ROW-CONTRACT.md.
@@ -166,6 +186,8 @@ class ConnectionOperationTarget(Payload):
     missing_env: list[str] | None = None
     server_errors: list[CatalogServerError] | None = None
     already_installed: bool | None = None
+    # Installed skill row from an optional-skill stub that pulls a third-party repo live: that repo.
+    upstream_repo: str | None = None
 
 
 class ConnectionDisplay(Payload):
@@ -262,6 +284,8 @@ class ConnectionAnswer(Params):
 
     targets: list[ConnectionAnswerTarget] = Field(default_factory=list)
     settled_by: ConnectionSettleReason | None = None
+    # A display card answered by the user's words typed in the composer; it settles the card like Continue.
+    said: str | None = None
 
 
 class ConnectionRespondParams(ConnectionOperationParams):

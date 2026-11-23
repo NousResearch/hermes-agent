@@ -68,6 +68,8 @@ def test_source_tarball_is_clean(tmp_path):
     with tarfile.open(arc, "w:gz") as tf:
         for member_name, body in [("a.py", b"x=1\n"), ("docs/readme.md", b"# hi\n"),
                                   ("Dockerfile", b"FROM scratch\n"), ("logs.jsonl", b"{}\n"),
+                                  ("corpus/context.jsonld", b'{"@context": {}}\n'),
+                                  ("corpus/onto.ttl", b"@prefix ex: <http://ex/> .\n"),
                                   ("font.ttf", b"\x00\x01\x00\x00font")]:
             ti = tarfile.TarInfo(member_name); ti.size = len(body)
             tf.addfile(ti, io.BytesIO(body))
@@ -92,6 +94,19 @@ def test_tarball_with_unknown_blob_member_fails(tmp_path):
         tf.addfile(ti, io.BytesIO(body))
     findings = _scan(tmp_path)
     assert any("not reviewable source" in f for f in findings), findings
+
+
+@pytest.mark.parametrize("name, body, expect", [
+    ("words.tsv.gz", "haus\thäuser\n".encode(), None),       # gzipped UTF-8 data: reviewable
+    ("tool.py.gz", b"import os\n", "not plain data"),          # code may not hide compressed
+    ("words.txt.gz", b"\x7fELF" + b"\x00" * 40, "not text"),   # binary under a data name
+    ("payload.bin.gz", b"opaque", "not plain data"),
+])
+def test_single_compressed_file_is_judged_by_what_it_decompresses_to(tmp_path, name, body, expect):
+    import gzip
+    (tmp_path / name).write_bytes(gzip.compress(body))
+    findings = _scan(tmp_path)
+    assert (findings == []) if expect is None else any(expect in f for f in findings), findings
 
 
 def test_zip_hiding_a_binary_fails(tmp_path):

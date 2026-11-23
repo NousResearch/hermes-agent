@@ -26,7 +26,7 @@ def channel_request(commit: str, sequence: int = 65536) -> dict:
             "cliName": "hermes-unregistered-preview", "windowsExecutableName": "hermes-unregistered-preview",
             "msixAppIdWithOrg": f"NousResearch.HermesChannel{token}",
         },
-        "bundleEnv": {"HERMES_GUEST_ONBOARDING": "1", "HERMES_HOME": None},
+        "bundleEnv": {"HERMES_PREVIEW_FULL_CONNECTORS": "1", "HERMES_HOME": None},
         "publicBase": "https://builds.example.test",
     }
 

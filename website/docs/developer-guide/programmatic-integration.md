@@ -36,28 +36,81 @@ hermes acp --setup          # interactive provider/model setup for ACP terminal 
 
 ## TUI Gateway JSON-RPC
 
-`tui_gateway/server.py` is the protocol the Ink TUI (`hermes --tui`) and the embedded dashboard PTY bridge talk to. Any external host can speak the same protocol over stdio (or WebSocket via `tui_gateway/ws.py`).
+`tui_gateway/server.py` is the method and event catalog behind the Ink TUI (`hermes --tui`), the Desktop app and the embedded dashboard PTY bridge. The Ink TUI reaches it on the profile's shared gateway over WebSocket (`/api/ws`, protocol `hermes-gateway-v1`, a single-use ticket per connection); any external host can speak the same frames over stdio (`tui_gateway/entry.py`) or a WebSocket (`tui_gateway/ws.py`).
 
-### Method catalog (selected)
+### A Node client: `@hermes/shared/gateway-client`
 
+The Ink TUI's gateway client lives in `apps/shared` (`@hermes/shared`), so another Node frontend can use it without compiling Ink's source. It dials the owner with a ticket, reads `runtime.describe` before `session.create`, translates requests and results for `hermes-gateway-v1` (`@hermes/shared/gateway-canonical`), reconnects with backoff, re-ensures a gone owner a bounded number of times per minute, and emits typed events (`@hermes/shared/gateway-types`).
+
+The client does not know where its connection comes from. The caller passes `connect(start, recover)`, which returns `{url, protocols, profile_id, instance_id}` and runs again for every reconnect (tickets are single-use). Ink passes its `gateway_bootstrap.py` helper; any other local client can run [`hermes gateway attach --json`](./gateway-internals.md#hermes-gateway-attach), with `--start` on the first call and `--recover` when asked to recover, and pass its `url` and `protocols`:
+
+```ts
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+import { GatewayClient } from '@hermes/shared/gateway-client'
+import type { AnyGatewayEvent } from '@hermes/shared/gateway-types'
+
+const gw = new GatewayClient({
+  connect: async (start, recover) => {
+    const flags = start ? ['--start'] : recover ? ['--recover'] : []
+    const { stdout } = await promisify(execFile)('hermes', ['gateway', 'attach', '--json', ...flags])
+    const { url, protocols, endpoint } = JSON.parse(stdout)
+
+    return { url, protocols, profile_id: endpoint.profile_id, instance_id: endpoint.instance_id }
+  }
+})
+
+gw.on('event', (event: AnyGatewayEvent) => { /* … */ })
+gw.start()
+gw.drain()
+const session = await gw.request('session.create', {})
 ```
-prompt.submit           prompt.background       session.steer
-session.create          session.list            session.active_list
-session.activate        session.close           session.interrupt
-session.history         session.compress        session.branch
-session.title           session.usage           session.status
-clarify.lock            config.set / config.get commands.catalog
-client.capabilities     gateway.capabilities    ping
-command.resolve         command.dispatch        cli.exec
-reload.mcp              reload.env              process.stop
-delegation.status       subagent.interrupt      subagent.steer
-spawn_tree.save / list / load
-terminal.resize         clipboard.paste         image.attach
+
+`hermes gateway attach` exits non-zero with the verdict on stdout when there is no owner to attach, so `execFile` rejects and the client retries on its backoff. Sessions are created with `source: "tui"`, the gateway's terminal-client policy, and `session.create` refuses an owner whose `runtime.describe` does not offer it.
+
+Two options say who is launching. `source` picks another policy label from `runtime.describe`'s `session_create.sources` (`session.create` is refused if the owner does not list it). `client` is your client's own name, sent on `session.create` only when the owner lists `client` in `session_create.parameters`; an older owner gets the request without it. `name` is 1-64 characters of `a-z`, `0-9`, `.`, `_` and `-`, starting with a letter or digit (`my-client`, not `My Client` or `@acme/client`), and the optional `version` is 1-64 printable ASCII characters without spaces, with no other keys: an owner that takes `client` refuses `session.create` for anything else. The name is a label for attribution: Hermes never grants anything because of it.
+
+```ts
+const gw = new GatewayClient({
+  connect,                                           // as above
+  source: 'tui',                                     // the default: the terminal-client policy
+  client: { name: 'my-client', version: '1.4.0' }    // version is optional
+})
 ```
 
-`session.active_list`, `session.activate`, and `session.close` are the process-local live-session controls used by the TUI session switcher. Use `session.list` / `/resume` for saved transcript discovery; use the active-session methods only for sessions that are currently open in the TUI gateway process.
+Other options (`terminalConnectFailure`, `attachUrl`, `sidecarUrl`, timeouts, `toolProgress`, `onLifecycle`, `text`, `fallbackWebSocket`) are documented on `GatewayClientOptions`. Browser-safe modules stay in `apps/shared/src/`; Node-only ones (the client, `prompt-history`) are in `apps/shared/src/node/`, and `apps/shared/src/node/boundary.test.ts` fails if the package's program ever includes a file from another workspace.
 
-Within one authenticated gateway, resuming or activating a live session attaches another event subscriber rather than replacing the previous connection. Streaming and terminal events go to all attached clients; disconnecting one client does not end a session another client is viewing. Existing submit exclusivity and configured busy-input policy remain in force. Attached clients can steer the session's subagents; browser-controller results still require the connection that registered that controller. This does not enable independent gateway processes to write the same session, nor does it imply durable prompt admission across an owner restart.
+### Which methods the shared gateway answers
+
+On the shared gateway's `/api/ws` socket (the one `hermes gateway attach --json` opens), the socket answers the heartbeat `gateway.ping` itself, and every other frame goes to the session authority first. A method the authority does not serve can still reach an older handler in `tui_gateway/server.py`, but only for a connection whose ticket carries the full interactive grant (an attach ticket does). The older handler is never used for a method that acts on the whole process, or for a `session.*`, `prompt.*` or `message.*` method other than a few store-wide reads and the foreign-history import (`session.most_recent`, `session.active_list`, `session.events.stats`, `session.foreign.*`; `tui_gateway/ws_legacy_fallback.py`). Everything else gets `-32601`.
+
+The OpenRPC document's `x-canonical-methods` (53 names) is not the list of methods a client may call. It lists the methods with a `hermes-gateway-v1` wire model of their own (`tui_gateway/contracts/canonical*.py`). The authority also serves methods whose wire is the same as the older catalog's (`RpcMethods` in the generated TypeScript), and validates those against that model.
+
+Build on the methods the gateway serves. The methods answered by an older handler have no owner decision yet (`tests/hermes_cli/serve_handler_ledger.json`, `decision: undecided`), so treat `-32601` from one of them as "not available here". The lists below are generated from the dispatch tables:
+
+<!-- gateway-methods:start -->
+<!-- Generated by scripts/gen_serve_handler_ledger.py from the /api/ws dispatch tables. Do not edit. -->
+
+**Method families served by the gateway (one name per pattern)** (1): `plugin.{plugin_id}.{name}`
+
+**Served for a call about a session the client holds; an account-wide call uses the older handler** (4): `connection.respond`, `connectors.connect`, `connectors.operation.status`, `connectors.operation.wake`
+
+**Refused (`-32601`)** (16): `agents.list`, `session.activate`, `session.archive`, `session.branch`, `session.branch_stored`, `session.branch_whole`, `session.close`, `session.compress`, `session.cwd.set`, `session.delete`, `session.set_hidden`, `session.status`, `session.title`, `session.undo`, `session.usage`, `session.workspace.move`
+
+**Served by the gateway** (112): `a2a.forward`, `approval.pending`, `approval.received`, `approval.respond`, `bot_delivery.list`, `bot_relay.cancel`, `bot_relay.deliver`, `bot_relay.outbox.drain`, `bot_relay.reply`, `bot_relay.roster.sync`, `bot_relay.settle`, `clarify.lock`, `clarify.respond`, `command.dispatch`, `command.observe`, `commands.catalog`, `complete.path`, `complete.slash`, `config.get`, `config.set`, `cron.cancel`, `cron.recover`, `cron.status`, `cron.submit`, `delegation.pause`, `file.attach`, `groups.approve`, `groups.attachment.download`, `groups.attachment.upload`, `groups.capabilities`, `groups.context`, `groups.continue`, `groups.create`, `groups.disband`, `groups.discard`, `groups.list`, `groups.log`, `groups.peer.invite`, `groups.peer.register`, `groups.peer.revoke`, `groups.rename`, `groups.retry`, `groups.send`, `groups.state`, `groups.stop`, `handoff.fail`, `handoff.request`, `handoff.state`, `image.attach_bytes`, `kanban.run`, `llm.oneshot`, `message.react`, `model.options`, `onboarding.skip`, `onboarding.start`, `ping`, `plugins.list`, `preview.restart`, `process.kill`, `process.list`, `process.stop`, `profiles.list`, `prompt.background`, `prompt.btw`, `prompt.cancel`, `prompt.receipt`, `prompt.replace_queued`, `prompt.resolve_unknown`, `prompt.steer_queued`, `prompt.submit`, `reload.env`, `reload.mcp`, `rollback.diff`, `rollback.list`, `rollback.restore`, `rollback.session_diff`, `runtime.describe`, `session.account_usage`, `session.active_list`, `session.automation`, `session.context_breakdown`, `session.control`, `session.control.read`, `session.create`, `session.detach`, `session.events.since`, `session.export`, `session.history`, `session.info`, `session.interrupt`, `session.list`, `session.mutate`, `session.prune`, `session.redirect`, `session.resume`, `session.save`, `session.stats`, `session.steer`, `session.transcript`, `setup.runtime_check`, `setup.status`, `shell.exec`, `skills.reload`, `slash.exec`, `subagent.interrupt`, `subagent.list`, `subagent.steer`, `subagent.tail`, `tools.show`, `worker.adopt`, `worker.persist`, `worker.register`
+
+**Answered by an older handler** (161): `billing.auto_reload`, `billing.charge`, `billing.charge_status`, `billing.keep_going_on_credits`, `billing.state`, `billing.step_up`, `browser.manage`, `cli.exec`, `client.capabilities`, `clipboard.paste`, `command.resolve`, `config.show`, `connectors.accounts`, `connectors.accounts.remove`, `connectors.accounts.rename`, `connectors.catalog`, `connectors.list`, `connectors.policy.get`, `connectors.policy.set`, `connectors.tools`, `cron.manage`, `delegation.status`, `diagnostics.share_nous`, `display.install`, `display.lease.acquire`, `display.lease.release`, `display.observe`, `display.start`, `display.status`, `display.stop`, `display.switchSandboxImage`, `display.thumbnail`, `free_tier.ack_notice`, `free_tier.challenge_result`, `free_tier.claim_nudge`, `free_tier.provision`, `free_tier.status`, `gateway.capabilities`, `groups.demote`, `groups.promote`, `groups.replica_state`, `groups.replicate`, `i18n.catalog`, `i18n.languages`, `image.attach`, `image.detach`, `image.generate`, `image.render`, `input.detect_drop`, `insights.get`, `learning.delete`, `learning.detail`, `learning.edit`, `learning.frames`, `machine.facts`, `mcp.catalog`, `mcp.servers.add`, `mcp.servers.list`, `mcp.servers.oauth.callback`, `mcp.servers.oauth.cancel`, `mcp.servers.oauth.poll`, `mcp.servers.oauth.start`, `mcp.servers.remove`, `mcp.servers.set_api_key`, `mcp.servers.status`, `mcp.servers.test`, `model.disconnect`, `model.save_key`, `onboarding.set_run`, `onboarding.state`, `paste.collapse`, `pdf.attach`, `pet.cancel`, `pet.cells`, `pet.disable`, `pet.export`, `pet.gallery`, `pet.generate`, `pet.generate.status`, `pet.hatch`, `pet.info`, `pet.info.meta`, `pet.remove`, `pet.rename`, `pet.scale`, `pet.select`, `pet.thumb`, `plugins.catalog.lookup`, `plugins.manage`, `profiles.configure`, `profiles.create`, `profiles.describe`, `profiles.get_asset`, `profiles.set_asset`, `project.facts`, `projects.add_folder`, `projects.archive`, `projects.create`, `projects.delete`, `projects.discover_repos`, `projects.for_cwd`, `projects.get`, `projects.list`, `projects.project_sessions`, `projects.record_repos`, `projects.remove_folder`, `projects.set_active`, `projects.set_primary`, `projects.tree`, `projects.update`, `request.answer`, `session.events.stats`, `session.foreign.import`, `session.foreign.list`, `session.foreign.preview`, `session.most_recent`, `shared_metrics.desktop_daily`, `shared_metrics.desktop_dislike`, `shared_metrics.desktop_feature_use`, `shared_metrics.desktop_friction`, `shared_metrics.desktop_long_frames`, `shared_metrics.desktop_onboarding`, `shared_metrics.set`, `shared_metrics.slash_command`, `shared_metrics.startup_latency`, `shared_metrics.status`, `shared_metrics.update_run`, `skills.manage`, `spawn_tree.list`, `spawn_tree.load`, `spawn_tree.save`, `subagent.roster`, `subscription.change`, `subscription.preview`, `subscription.resume`, `subscription.state`, `subscription.upgrade`, `system.battery`, `terminal.resize`, `tools.configure`, `tools.list`, `toolsets.list`, `usage.bars`, `vault.add`, `vault.list`, `vault.lock`, `vault.preview.fill`, `vault.remove`, `vault.source.set`, `vault.sources`, `vault.unlock`, `verification.status`, `voice.record`, `voice.toggle`, `voice.tts`, `wake.feed`, `wake.pause`, `wake.resume`, `wake.start`, `wake.status`, `wake.stop`
+
+<!-- gateway-methods:end -->
+
+Plugins add `plugin.<plugin_id>.<name>` methods (`ctx.register_rpc`) and session events of type `plugin.<plugin_id>.<event>` (`ctx.emit_to_session`); an owner serving them lists `plugin-rpc-v1` in `runtime.describe`'s `capabilities`. See [plugin RPC methods and session events](./plugins/index.md#talk-to-your-own-frontend-plugin-rpc-methods-and-session-events).
+
+`session.active_list`, `session.activate`, and `session.close` are the live-session controls of a standalone `tui_gateway` process (stdio or its own WebSocket). On the shared gateway, `session.activate` and `session.close` are refused: use `session.resume` and `session.detach`. Use `session.list` for saved conversations.
+
+On the shared gateway's `hermes-gateway-v1` socket, a session picker reads stored conversations without attaching: `session.list` takes a `workspace` folder filter and, with `picker: true`, returns each row's `preview`, `last_reply`, `cwd`, `git_branch`, `workspace`, `last_active_at` and `pinned`; with `scope: "stored"` it also takes a `query` (title or id text) and pages with `cursor` / `next_cursor` (capability `session-list-cursor-v1`); `session.transcript({session_id, subagent_id?, cursor?, limit?, order?})` pages a conversation's display rows across its compression lineage from the oldest or the newest, each compaction handoff a `row_kind: "compaction"` row at its position (`{rows, next_cursor, reset}`, opaque cursor, at most 2 MiB a page); an oldest-order cursor also polls for rows written since (`reset: true` when the rows it covered changed shape), and `subagent_id` reads a delegated child of the session. None of them subscribes the caller or starts an agent. Details: [Gateway local sessions](./gateway-local-sessions.md).
+
+Within one authenticated gateway, resuming or activating a live session attaches another event subscriber rather than replacing the previous connection. Streaming and terminal events go to all attached clients; disconnecting one client does not end a session another client is viewing. Existing submit exclusivity and configured busy-input policy remain in force. Attached clients can steer the session's subagents. This does not enable independent gateway processes to write the same session, nor does it imply durable prompt admission across an owner restart.
 
 ### Model overrides on `session.create`
 
@@ -138,10 +191,9 @@ GET  /v1/runs/{id}               Run status
 GET  /v1/runs/{id}/events        SSE stream of lifecycle events
 POST /v1/runs/{id}/approval      Resolve a pending approval
 POST /v1/runs/{id}/steer         Inject mid-run guidance at the next tool boundary
+POST /v1/runs/{id}/resolve-unknown Acknowledge an exact restart-unknown admission
 POST /v1/runs/{id}/stop          Interrupt the run
 GET  /v1/capabilities            Machine-readable feature flags
-POST /v1/browser-control/register Register a browser controller
-GET  /v1/browser-control/ws       Browser-controller WebSocket
 GET  /v1/models                  Lists hermes-agent
 GET  /api/model/options          Provider-aware picker inventory
 GET  /health, /health/detailed
@@ -149,10 +201,8 @@ GET  /health, /health/detailed
 
 Setup, headers (`X-Hermes-Session-Id`, `X-Hermes-Session-Key`), and frontend wiring: [API Server](../user-guide/features/api-server).
 
-Browser extensions can opt into the disabled-by-default controller protocol to
-drive the exact browser session that opened the Hermes conversation. The API
-and dashboard transports share one principal-bound broker and one explicit
-capability allowlist; see [Browser-extension control](../user-guide/features/api-server#browser-extension-control).
+The browser-extension controller protocol has been removed; to let Hermes drive a browser you
+already run, use `browser.cdp_url` or `/browser connect` — see [Browser-extension control (removed)](../user-guide/features/api-server#browser-extension-control-removed).
 
 ### Model catalog surfaces
 
@@ -198,6 +248,27 @@ The terminal status of a run is derived from how the agent's turn actually ended
 
 A run is never reported as `completed` with `completed: false` or `partial: true` in the same payload. The same rule applies to `/api/sessions/{id}/chat/stream`, whose `assistant.completed` payload carries the real `completed` / `partial` / `interrupted` flags and whose terminal event is `run.completed`, `run.failed`, or `run.cancelled`.
 
+`POST /v1/runs/{id}/resolve-unknown` is a canonical-authority recovery
+operation, not a generic status mutation. Send exactly the `admission_id` and
+integer `execution_generation` projected by the run status. The server binds the
+authenticated owner, selected profile, path run, API principal, target session,
+admission, and generation before the authority performs its compare-and-set.
+Resolution settles the lost head as interrupted and releases the next FIFO item;
+it never requeues the head. Feature-detect
+`features.run_unknown_resolution` because legacy execution mode does not
+advertise this endpoint.
+
+New canonical API admissions retain an opaque owner scope in the admission row,
+so keyed and non-keyed runs can be authorized after an adapter restart for as
+long as that canonical admission remains available. This does not change
+non-keyed request semantics: identical submissions still create distinct runs.
+Pre-upgrade non-keyed admissions contain no owner scope and remain deliberately
+unresolvable after restart; there is no safe credential ownership to backfill.
+Existing keyed records retain their replay-ledger recovery path. Explicit
+session retirement removes the canonical payload and therefore ends this owner
+recovery path. Replay reservation and canonical admission still use separate
+databases, so this endpoint does not provide a global exactly-once guarantee.
+
 ---
 
 ## Which one should I use?
@@ -206,6 +277,7 @@ A run is never reported as `completed` with `completed: false` or `partial: true
 - **You're writing a custom desktop / web / TUI host and want every Hermes feature** (slash commands, approvals, clarify, multi-agent, session branching) → TUI gateway JSON-RPC.
 - **You want any OpenAI-compatible frontend, a language-agnostic HTTP client, or curl-driven automation** → API server.
 - **You want a Python in-process embed without a subprocess** → import `run_agent.AIAgent` directly. See [Agent Loop](./agent-loop).
+- **Your client needs the user's clipboard image** (image paste) → run `hermes clipboard image --out PATH --json` on the user's machine. It is device-local, never a gateway call, because the gateway may be remote. See [`hermes clipboard`](../reference/cli-commands.md#hermes-clipboard).
 
 ---
 

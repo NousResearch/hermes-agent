@@ -34,7 +34,7 @@ def test_admission_reads_the_version_and_attempt_from_the_attempt_ref():
 def test_admission_refuses_a_claim_for_a_commit_off_main():
     from scripts.releases.stable import admit_claim
 
-    with pytest.raises(ValueError, match="not on main"):
+    with pytest.raises(ValueError, match="not on main or a release/"):
         admit_claim("rc.1-v0.21.5", "b" * 40, on_main=lambda _sha: False)
 
 
@@ -75,6 +75,6 @@ def test_a_signed_claim_tag_is_read_through_the_jobs_own_git_read(tmp_path, monk
     assert "-----BEGIN SSH SIGNATURE-----" in raw
     with pytest.raises(json.JSONDecodeError):  # the shape that failed admission
         json.loads(raw)
-    # The record predates the opt-in platform keys, which read as false.
+    # The record predates lanes: skipTests=true reads as the build lanes alone.
     assert _claim_metadata(raw, version="0.21.5", attempt=19, commit="3" * 40) == {
-        **record, "includeMacosIntel": False, "includeTermux": False}
+        **record, "lanes": frozenset({"docker", "windows", "windows-store", "macos-arm64"})}

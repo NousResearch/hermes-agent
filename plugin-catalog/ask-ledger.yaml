@@ -1,0 +1,27 @@
+name: ask-ledger
+version: "0.2.0"
+repo: https://github.com/bhaskarduvvuri/hermes-ask-ledger
+sha: 1986b146f7fbddf5437744ec9d72bf8caa88cb8a
+subdir: plugin
+title: Ask Ledger
+description: "Keeps a durable ledger of what you asked and promised: each message becomes an ask (A1, A2 ...) with a state (open, in progress, needs you, answered, closed), and todos (T1, T2 ...) that you add, or that the agent adds when you commit to something (marked added by agent; at most 2 a turn and 10 a day; can be turned off), with a category and due date. Snooze, done and drop work by command (/snooze, /done, /drop) or in plain words; the agent can only suggest them, and a words action must match your current message. Unresolved items are reminded to the agent every turn across restarts and compaction, and /asks, /todos plus a static no-JavaScript page show where everything stands. Disclosure — stores your messages and todos (trimmed, common secret shapes redacted) in plaintext under HERMES_HOME/plugin-data/ask-ledger/, append-only and never pruned, with local counts of how you snooze and close; injects a short block of your unresolved asks and up to 3 todos into each turn's user message, so they reach your model provider; appends up to 3 plain reminder lines and a hint to the assistant's reply (transform_llm_output); keeps one plain Open todos message per chat, edited in place, only in conversations it is already part of (setting board, on by default); in group, channel and thread chats it shows only counts, no todo text, unless the chat is listed in trusted_chats; an optional ntfy push (off by default, https only) sends only a count and the page link; no shell commands, no reads outside its data folder, no telemetry."
+maintainer: bhaskarduvvuri
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/bhaskarduvvuri/hermes-ask-ledger#readme
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+    - ask_update
+    - ask_list
+    - todo_add
+    - todo_update
+    - todo_suggest
+    - todo_items
+  provides_hooks:
+    - pre_llm_call
+    - post_gateway_admission
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

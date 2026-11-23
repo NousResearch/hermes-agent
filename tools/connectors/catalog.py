@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # The Advanced modal's own keys (CATALOG-ROW-CONTRACT.md); every other answer key is a credential.
 _OPTION_KEYS = frozenset({"target_profile", "agent_half", "desktop_half", "enable", "force", "ref"})
 _COMMIT_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
-_TIERS = frozenset({"official", "community"})
+_TIERS = frozenset({"official", "verified", "community"})
 
 
 def _flag(value: Optional[str], default: bool) -> bool:
@@ -85,10 +85,10 @@ class HostInstaller:
 
     def refuse(self, entry: Any) -> None:
         """Raise with the installer's own text when the catalog would refuse this entry here."""
-        from hermes_cli.plugins_cmd_catalog import _refuse_unsupported_catalog_platform, raise_if_removed
+        from hermes_cli.plugins_cmd_catalog import raise_if_removed, refuse_incompatible_catalog_entry
 
         raise_if_removed(entry.name, entry.repo)
-        _refuse_unsupported_catalog_platform(entry)
+        refuse_incompatible_catalog_entry(entry)
 
     def install_plugin(self, name: str, *, force: bool, enable: bool, ref: Optional[str],
                        on_step: Callable[[InstallPhase], None]) -> dict[str, Any]:
@@ -112,21 +112,23 @@ class HostInstaller:
                             "identifier": meta.identifier or identifier}
         return None
 
-    def install_skill(self, identifier: str, *, force: bool) -> dict[str, Any]:
+    def install_skill(self, identifier: str, *, force: bool, source: Optional[str] = None) -> dict[str, Any]:
         """Install headless; ``{name, already_installed}``. ``do_install`` reports only by printing, so
         success is read from the hub lock file and failure from its last line. A skill that is already
-        installed (force off) is left as it is and reported so."""
+        installed (force off) is left as it is and reported so. ``source`` is the hub source that
+        resolved ``identifier``; the lock records a ClawHub skill as ``@owner/slug``, so a ClawHub
+        hit's bare slug is read back through its ``clawhub/<slug>`` card id."""
         from rich.console import Console
 
         from hermes_cli.skills_hub import do_install
-        from tools.skills_hub import HubLockFile
+        from tools.skills_hub import HubLockFile, installed_entry
 
         def entry() -> Optional[dict[str, Any]]:
-            return next((e for e in HubLockFile().list_installed() if e.get("identifier") == identifier), None)
+            return installed_entry(HubLockFile().by_identifier(), identifier, source)
 
         before = entry()
         if before is not None and not force:
-            return {"name": str(before["name"]), "already_installed": True}
+            return {"name": str(before["name"]), "already_installed": True, **_upstream_of(before)}
         out = io.StringIO()
         verdict = do_install(identifier, force=force, skip_confirm=True,
                              console=Console(file=out, width=200, no_color=True, highlight=False))
@@ -137,7 +139,12 @@ class HostInstaller:
         if after is None or (before is not None and after.get("updated_at") == before.get("updated_at")):
             lines = [line.strip() for line in out.getvalue().splitlines() if line.strip()]
             raise RuntimeError(lines[-1] if lines else "the skill was not installed")
-        return {"name": str(after["name"]), "already_installed": False}
+        return {"name": str(after["name"]), "already_installed": False, **_upstream_of(after)}
+
+
+def _upstream_of(lock_entry: dict[str, Any]) -> dict[str, str]:
+    repo = (lock_entry.get("metadata") or {}).get("upstream_repo") if lock_entry.get("source") == "official" else None
+    return {"upstream_repo": str(repo)} if repo else {}
 
 
 @dataclass
@@ -264,9 +271,10 @@ class _Runner:
         with target_scope(_named_home(named) if named else self.home):
             _save_credentials({k: v for k, v in env.items() if k not in _OPTION_KEYS and v})
             if target.kind == "skill":
-                identifier = str(self.facts[target.name].get("identifier") or target.name)
+                meta = self.facts[target.name]
+                identifier = str(meta.get("identifier") or target.name)
                 step(InstallPhase.downloading)
-                return self.installer.install_skill(identifier, force=options["force"])
+                return self.installer.install_skill(identifier, force=options["force"], source=meta.get("source"))
             result = self.installer.install_plugin(target.name, force=options["force"], enable=options["enable"],
                                                    ref=options["ref"], on_step=step)
         if not result.get("ok"):
@@ -335,7 +343,11 @@ def _installed_row(target: Target, outcome: dict[str, Any]) -> tuple:
     if target.kind == "skill":
         already = bool(outcome.get("already_installed"))
         detail = "already installed; left as it is (Advanced, force reinstall replaces it)" if already else ""
-        return {**extra, "skill": outcome["name"], "tools": [], "already_installed": already}, detail
+        if upstream := outcome.get("upstream_repo"):
+            third_party = f"third-party content from https://github.com/{upstream} (not maintained by Nous Research)"
+            detail = f"{detail}; {third_party}" if detail else third_party
+        return {**extra, "skill": outcome["name"], "tools": [], "already_installed": already,
+                **({"upstream_repo": upstream} if upstream else {})}, detail
     live = (outcome.get("activation") or {}).get("live_now") or {}
     servers = live.get("mcp_servers") or []
     tools = [name for server in servers if server.get("connected") for name in server.get("tools") or ()]

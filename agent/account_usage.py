@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass
-from datetime import datetime, timezone, UTC
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import httpx
@@ -18,8 +17,6 @@ if TYPE_CHECKING:
     from typing import TypeGuard
 
 logger = logging.getLogger(__name__)
-
-_DEPLETED_LINE = "Status: access depleted — top up to restore"
 
 
 def _utc_now() -> datetime:
@@ -55,6 +52,9 @@ class AccountUsageSnapshot:
     # Exact decoded provider response body (no headers/credentials) for integrations that need
     # fields Hermes does not normalize yet. Only populated by providers that fetch a JSON body.
     raw: Optional[dict] = None
+    # Usage-window plans only: the stacked bar layout. Every other snapshot
+    # renders exactly as before.
+    usage_window: bool = False
 
     @property
     def available(self) -> bool:
@@ -100,9 +100,23 @@ def _format_reset(dt: Optional[datetime]) -> str:
     return f"in {hours}h {minutes}m ({stamp})" if hours else f"in {minutes}m ({stamp})"
 
 
+def _reset_phrase(dt: Optional[datetime]) -> str:
+    """``resets in 23h`` — no wall-clock stamp (those wrap and collide in the TUI)."""
+    if not dt:
+        return "resets soon"
+    try:
+        from hermes_cli.model_picker_usage import format_resets_in
+        return format_resets_in(int(dt.timestamp() * 1000))
+    except Exception:
+        logger.debug("Reset phrase formatting failed", exc_info=True)
+        return f"resets {_format_reset(dt)}"
+
+
 def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, markdown: bool = False) -> list[str]:
     if not snapshot:
         return []
+    if snapshot.usage_window:
+        return _render_usage_window_lines(snapshot)
     bold = "**" if markdown else ""
     plan = f" ({snapshot.plan})" if snapshot.plan else ""
     lines = [f"📈 {bold}{snapshot.title}{bold}", f"Provider: {snapshot.provider}{plan}"]
@@ -123,194 +137,50 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
     return lines
 
 
-def _fmt_usd(d: float) -> str:
-    return f"${d:,.2f}"
+def account_limit_lines(provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
+                        markdown: bool = False) -> list[str]:
+    """``/usage``'s provider plan-limits block on every surface: the built-in fetcher, else the plugin
+    profile's ``fetch_account_usage`` hook (Claude plan limits on DirectSDK). [] when there is none."""
+    if not provider:
+        return []
+    return render_account_usage_lines(fetch_account_usage(provider, base_url=base_url, api_key=api_key),
+                                      markdown=markdown)
+
+
+def _render_usage_window_lines(snapshot: AccountUsageSnapshot) -> list[str]:
+    """Usage-window plans: plain stacked bar lines for CLI ``/usage`` and the TUI panel. No emoji,
+    no ANSI, no markdown — Ink ``<Text>`` would otherwise count escape bytes as width and smear the wrap."""
+    if snapshot.plan:
+        lines = [snapshot.plan]
+    else:
+        lines = [snapshot.title, f"Provider: {snapshot.provider}"]
+    label_w = max((len(window.label) for window in snapshot.windows), default=0)
+    for window in snapshot.windows:
+        label = f"{window.label:<{label_w}}" if label_w else window.label
+        if window.used_percent is None:
+            base = f"{label}  unavailable"
+        else:
+            used = max(0.0, min(100.0, float(window.used_percent))) / 100.0
+            try:
+                from hermes_cli.model_picker_usage import format_percent_used, render_bar
+                bar, pct = render_bar(used), format_percent_used(used)
+            except Exception:
+                logger.debug("Usage bar rendering failed", exc_info=True)
+                bar, pct = "", f"{int(used * 100)}%"
+            base = f"{label}  {bar}  {pct} used" if bar else f"{label}  {pct} used"
+        if window.reset_at:
+            base += f"  ·  {_reset_phrase(window.reset_at)}"
+        elif window.detail:
+            base += f"  ·  {window.detail}"
+        lines.append(base)
+    lines.extend(snapshot.details)
+    if snapshot.unavailable_reason:
+        lines.append(f"Unavailable: {snapshot.unavailable_reason}")
+    return lines
 
 
 def _is_num(v: Any) -> TypeGuard[float]:
     return isinstance(v, (int, float))
-
-
-def _is_finite_num(v: Any) -> TypeGuard[float]:
-    """True iff v is a real number (int/float, not bool, not NaN/Inf); TypeGuard so callers can do arithmetic."""
-    return _is_num(v) and not isinstance(v, bool) and math.isfinite(v)
-
-
-def _nous_snapshot(windows: list, details: list, tail: list, *, source: str, plan: Optional[str] = None) -> Optional[AccountUsageSnapshot]:
-    """Nous snapshot with *tail* lines appended, or None when there is nothing to show."""
-    if not windows and not details:
-        return None
-    return _snapshot("nous", source, windows, details + tail, title="Nous credits", plan=plan)
-
-
-def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
-    """NousPortalAccountInfo → /usage snapshot: dollar magnitudes + renewal date + portal CTA, plus a ``% used``
-    gauge when the portal supplies ``monthly_credits``. Fail-open → None."""
-    try:
-        from hermes_cli.nous_account import nous_portal_topup_url
-        if account_info is None or not getattr(account_info, "logged_in", False):
-            return None
-        access = getattr(account_info, "paid_service_access_info", None)
-        sub = getattr(account_info, "subscription", None)
-        windows: list[AccountUsageWindow] = []
-        details: list[str] = []
-        # Gauge needs a positive cap AND a finite remaining <= cap (numeric fields, NOT a server *_usd); used =
-        # cap - remaining clamped [0,100] so debt reads 100%. NaN/Inf (json.loads accepts bare NaN → "$nan") and
-        # remaining > cap (rollover makes the cap a meaningless denominator) fall back to the magnitudes lines.
-        if sub is not None:
-            cap = getattr(sub, "monthly_credits", None)
-            sub_remaining = getattr(sub, "credits_remaining", None)
-            if _is_finite_num(cap) and cap > 0 and _is_finite_num(sub_remaining) and sub_remaining <= cap:
-                windows.append(AccountUsageWindow(
-                    label="Subscription", used_percent=max(0.0, min(100.0, (cap - sub_remaining) / cap * 100.0)),
-                    detail=f"{_fmt_usd(sub_remaining)} of {_fmt_usd(cap)} left",
-                ))
-        if access is not None:
-            for attr, label in (("subscription_credits_remaining", "Subscription credits"),
-                                ("purchased_credits_remaining", "Top-up credits"), ("total_usable_credits", "Total usable")):
-                value = getattr(access, attr, None)
-                if _is_finite_num(value):
-                    details.append(f"{label}: {_fmt_usd(value)}")
-        if sub is not None:
-            rollover = getattr(sub, "rollover_credits", None)
-            if _is_finite_num(rollover) and rollover > 0:
-                details.append(f"Rollover: {_fmt_usd(rollover)}")
-            period_end = getattr(sub, "current_period_end", None)
-            if period_end:
-                details.append(f"Renews: {period_end}")
-        if getattr(account_info, "paid_service_access", None) is False:
-            details.append(_DEPLETED_LINE)
-        return _nous_snapshot(windows, details, [f"Top up: {nous_portal_topup_url(account_info)}", "(or run /topup)"],
-                              source="portal-account", plan=getattr(sub, "plan", None) if sub is not None else None)
-    except (AttributeError, TypeError):
-        return None
-
-
-def _nous_logged_in() -> bool:
-    """Cheap local auth-state check: a Nous access token is present. Fail-open False."""
-    try:
-        from hermes_cli.auth import get_provider_auth_state
-        tok = (get_provider_auth_state("nous") or {}).get("access_token")
-        return isinstance(tok, str) and bool(tok.strip())
-    except Exception:
-        return False
-
-
-def _fetch_portal_account(timeout: float):
-    """Wall-clock-bounded fresh portal account fetch (raises on any failure/timeout).
-
-    No ``with`` block on purpose: ``Executor.__exit__`` joins the worker via
-    ``shutdown(wait=True)``, so a portal that accepts the connection but never
-    answers would hold the caller until the provider's own timeout instead of
-    ``timeout``. The abandoned daemon worker runs on to its own network timeout
-    and never blocks the caller or process exit; its eventual exception is
-    drained so GC never logs "exception was never retrieved"."""
-    import contextvars
-    from hermes_cli.nous_account import get_nous_portal_account_info
-    from tools.daemon_pool import DaemonThreadPoolExecutor
-
-    context = contextvars.copy_context()
-    pool = DaemonThreadPoolExecutor(max_workers=1)
-    future = pool.submit(context.run, get_nous_portal_account_info, force_fresh=True)
-    try:
-        return future.result(timeout=timeout)
-    except BaseException:
-        future.add_done_callback(lambda f: f.exception())
-        raise
-    finally:
-        pool.shutdown(wait=False)
-
-
-def nous_credits_lines(*, markdown: bool = False, timeout: float = 10.0) -> list[str]:
-    """Rendered Nous-credits /usage lines, or [] when there's nothing to show. Independent of any live agent
-    (logged-in gate, then a bounded portal fetch); shared by CLI ``_show_usage`` and the TUI ``session.usage`` RPC.
-    Fail-open: any hiccup or timeout → []. HERMES_DEV_CREDITS_FIXTURE renders from the fixture instead of the portal."""
-    try:
-        from agent.credits_tracker import dev_fixture_credits_state
-        fixture = dev_fixture_credits_state()
-    except Exception:
-        fixture = None
-    if fixture is not None:
-        return render_account_usage_lines(_snapshot_from_credits_state(fixture), markdown=markdown)
-    if not _nous_logged_in():
-        return []
-    try:
-        snapshot = build_nous_credits_snapshot(_fetch_portal_account(timeout))
-        return render_account_usage_lines(snapshot, markdown=markdown)
-    except Exception:
-        # Fail-open; breadcrumb so a dead /usage credits block is diagnosable.
-        logger.debug("credits ▸ /usage portal fetch/render failed (fail-open)", exc_info=True)
-        return []
-
-
-def _snapshot_from_credits_state(state) -> Optional[AccountUsageSnapshot]:
-    """Header-shaped CreditsState (dev fixture) → /usage snapshot, same shape as the portal path. *_usd strings
-    are display-only; the % comes from CreditsState.used_fraction. Fail-open → None."""
-    try:
-        if state is None:
-            return None
-        windows: list[AccountUsageWindow] = []
-        details: list[str] = []
-        uf = getattr(state, "used_fraction", None)
-        sub_usd = getattr(state, "subscription_usd", None)
-        cap_usd = getattr(state, "subscription_limit_usd", None)
-        if _is_num(uf) and math.isfinite(uf):
-            windows.append(AccountUsageWindow(
-                label="Subscription", used_percent=max(0.0, min(100.0, uf * 100.0)),
-                detail=f"${sub_usd} of ${cap_usd} left" if sub_usd and cap_usd else None,
-            ))
-        for value, label in ((sub_usd, "Subscription credits"), (getattr(state, "purchased_usd", None), "Top-up credits"),
-                             (getattr(state, "remaining_usd", None), "Total usable")):
-            if value:
-                details.append(f"{label}: ${value}")
-        if getattr(state, "paid_access", True) is False:
-            details.append(_DEPLETED_LINE)
-        return _nous_snapshot(windows, details, ["(dev fixture — HERMES_DEV_CREDITS_FIXTURE)"], source="dev-fixture")
-    except (AttributeError, TypeError):
-        return None
-
-
-@dataclass(frozen=True)
-class CreditsView:
-    """Surface-agnostic ``/topup`` balance view: one portal fetch, consumed identically by every money surface.
-    Fail-open: not logged in / portal unreachable → ``logged_in`` False, ``topup_url`` None."""
-
-    logged_in: bool
-    balance_lines: tuple[str, ...] = ()
-    identity_line: Optional[str] = None
-    topup_url: Optional[str] = None
-    depleted: bool = False
-
-
-def build_credits_view(*, markdown: bool = False, timeout: float = 10.0) -> CreditsView:
-    """/topup view: balance block + identity line + top-up URL. Reuses the /usage fetch + snapshot so numbers
-    match; the balance block drops the trailing top-up/hint lines (/topup has its own affordance).
-    Fail-open → ``CreditsView(logged_in=False)``."""
-    not_logged_in = CreditsView(logged_in=False)
-    if not _nous_logged_in():
-        return not_logged_in
-    try:
-        account = _fetch_portal_account(timeout)
-    except Exception:
-        logger.debug("credits ▸ /topup portal fetch failed (fail-open)", exc_info=True)
-        return not_logged_in
-    if account is None or not getattr(account, "logged_in", False):
-        return not_logged_in
-    from hermes_cli.nous_account import nous_portal_topup_url
-    balance_lines = [
-        line
-        for line in render_account_usage_lines(build_nous_credits_snapshot(account), markdown=markdown)
-        if not line.lstrip().startswith(("Top up:", "(or run"))
-    ]
-    who = [str(v) for v in (getattr(account, "email", None),) if v]
-    org_name = getattr(account, "org_name", None)
-    if org_name:
-        who.append(f"org {org_name}")
-    return CreditsView(
-        logged_in=True, balance_lines=tuple(balance_lines),
-        identity_line=("Topping up as " + " / ".join(who)) if who else None, topup_url=nous_portal_topup_url(account),
-        depleted=getattr(account, "paid_service_access", None) is False,
-    )
 
 
 def _codex_backend_urls(base_url: str) -> tuple[str, str, str]:
@@ -760,3 +630,18 @@ def fetch_account_usage(
     remember_account_usage(provider, snapshot, identity_id=identity_id, base_url=base_url,
                            started_monotonic=started)
     return snapshot
+
+
+# Published plugin API (hermes_cli/data/plugin_api.json lists this whole module): names that moved to the Nous
+# sibling stay importable here; catalog plugins import build_credits_view and build_nous_credits_snapshot.
+# Bottom of the file because the sibling late-imports this facade.
+from agent.usage_gauges import BP_FULL
+from agent.account_usage_nous import (
+    CreditsView,
+    apply_header_gauge,
+    build_credits_view,
+    build_nous_credits_snapshot,
+    nous_credits_lines,
+    nous_credits_usage_fields,
+    nous_credits_view,
+)

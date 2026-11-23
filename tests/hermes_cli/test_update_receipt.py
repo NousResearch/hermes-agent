@@ -191,6 +191,7 @@ class TestCommandBoundaryFinalization:
         from types import SimpleNamespace
 
         from hermes_cli import main as hermes_main
+        from hermes_cli import update_owning_install
 
         def _fake_impl(args, gateway_mode):
             ur.begin_update_receipt()
@@ -198,6 +199,9 @@ class TestCommandBoundaryFinalization:
             sys.exit(2)
 
         monkeypatch.setattr(update_cmd, "_cmd_update_impl", _fake_impl)
+        # A shared dev venv owned by another checkout would re-exec that owner
+        # with pytest's argv before _cmd_update_impl is reached.
+        monkeypatch.setattr(update_owning_install, "retarget_to_owning_install", lambda root: None)
         monkeypatch.setattr(
             hermes_main, "detect_install_method", lambda *a, **k: "git", raising=False
         )

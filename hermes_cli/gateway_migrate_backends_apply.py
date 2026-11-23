@@ -185,12 +185,13 @@ def _backup_folder(home: Path) -> Path:
     return folder
 
 
-def _backup(home: Path, name: str, target: str) -> Optional[str]:
-    """Copy ``home/name`` into the backup folder (mode 600); None when it does not exist."""
+def _backup(home: Path, name: str, target: str, *, home_dir: Optional[Path] = None) -> Optional[str]:
+    """Copy ``home/name`` byte for byte into the backup folder of *home_dir* (default *home*), mode 600;
+    None when it does not exist."""
     src = Path(home) / name
     if not src.exists():
         return None
-    dst = _backup_folder(home) / target
+    dst = _backup_folder(home_dir or home) / target
     write_private_file(dst, src.read_bytes())
     return str(dst)
 
@@ -463,7 +464,8 @@ def _replace_legacy_units(run: Run, plan: BackendPlan) -> list[str]:
     m["legacy_units"] = []
     for unit in plan.legacy_units:
         environment += host.legacy_environment_lines(unit["unit"])
-        backup = _write_private(host.home, f"legacy-{unit['unit']}", Path(unit["path"]).read_text(encoding="utf-8"))
+        backup = _backup(Path(unit["path"]).parent, Path(unit["path"]).name, f"legacy-{unit['unit']}",
+                         home_dir=host.home)
         m["legacy_units"].append({**unit, "backup": backup})
     run.save()  # recorded before the removal: rollback and restore put each one back
     host.remove_legacy_units()
@@ -1391,6 +1393,11 @@ def _owner_blockers(host, plan: BackendPlan, *, force_interrupt: bool = False) -
     if unit and host.own_unit() in (unit, f"{unit}.service"):
         plan.blockers.append(f"This command runs inside {host.own_unit()}, which the migration restarts and a "
                              f"rollback stops. Run it from a terminal, or with --detach.")
+    for legacy in plan.legacy_units:  # replacing it stops it, and this run with it (an agent's terminal)
+        if host.own_unit() == legacy["unit"]:
+            plan.blockers.append(f"This command runs inside {legacy['unit']}, which the move stops and replaces, so "
+                                 f"it would end the run. Run it from a terminal that is not part of that unit, or "
+                                 f"re-run with --detach.")
 
 
 def _managed_webapp_override(host, plan: BackendPlan) -> Optional[str]:

@@ -12,7 +12,8 @@ import stat
 import pytest
 
 from hermes_cli import gateway_migrate_backends_apply as engine
-from hermes_cli.gateway_migrate_backends_host import _carried_assignments
+from hermes_cli import gateway_migrate_backends_host as host_mod
+from hermes_cli.gateway_migrate_backends_host import SystemHost
 from tests.hermes_cli.test_gateway_migrate_backends_apply import (
     FakeHost,
     _args,
@@ -160,11 +161,43 @@ def test_a_legacy_unit_it_cannot_replace_blocks(home, tmp_path, capsys, unit, en
     _nothing_applied(host, home, before)
 
 
-@pytest.mark.parametrize(("line", "kept"), [
-    ('Environment="HOME=/home/u" "TELEGRAM_BOT_TOKEN=a b"', 'Environment="TELEGRAM_BOT_TOKEN=a b"'),
-    ("Environment=PATH=/usr/bin HERMES_HOME=/home/u/.hermes", None),
-    ('Environment="X=say \\"hi\\""', 'Environment="X=say \\"hi\\""'),
-    ('Environment="unterminated', 'Environment="unterminated'),
-])
-def test_carried_assignments_drop_what_the_gateway_unit_sets(line, kept):
-    assert _carried_assignments(line) == kept
+def test_a_run_inside_the_legacy_unit_is_blocked_and_pointed_at_detach(home, tmp_path, capsys):
+    host, _ = _legacy_host(home, tmp_path)
+    host.own_unit = lambda: "hermes.service"  # an agent's terminal under the legacy gateway
+    before = _config_files(home)
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_BLOCKED
+
+    out = capsys.readouterr().out
+    assert "runs inside hermes.service, which the move stops and replaces" in out and "--detach" in out
+    _nothing_applied(host, home, before)
+
+
+# What systemd 255 prints for a unit whose drop-in reset Environment= and set more after it, with a continued
+# line, quoting, an escaped quote, a C escape, a literal % and an optional EnvironmentFile (read live).
+_SHOW = ('Environment=HOME=/home/u "A=one two" B=cont "Q=say \\"hi\\"" P=100% "T=tab\\there" PATH=/usr/bin TOKEN=x\n'
+         "EnvironmentFiles=/home/u/bot.env (ignore_errors=yes)\n"
+         "EnvironmentFiles=/home/u/must.env (ignore_errors=no)\n")
+
+
+def test_the_legacy_environment_is_what_systemd_resolved_carried_verbatim(home, monkeypatch):
+    calls = []
+
+    def systemctl(scope, args, **kw):
+        calls.append((scope, args))
+        return type("R", (), {"returncode": 0, "stdout": _SHOW, "stderr": ""})()
+    monkeypatch.setattr(host_mod, "_systemctl", systemctl)
+
+    lines = SystemHost(home).legacy_environment_lines("hermes.service")
+
+    assert calls == [("user", ["show", "hermes.service", "--no-pager", "--property=Environment",
+                               "--property=EnvironmentFiles"])]
+    assert lines == ['Environment="A=one two" B=cont "Q=say \\"hi\\"" P=100%% "T=tab\\there" TOKEN=x',
+                     "EnvironmentFile=-/home/u/bot.env", "EnvironmentFile=/home/u/must.env"]
+
+
+def test_a_legacy_unit_whose_environment_was_reset_carries_none(home, monkeypatch):
+    monkeypatch.setattr(host_mod, "_systemctl", lambda scope, args, **kw: type(
+        "R", (), {"returncode": 0, "stdout": "Environment=\n", "stderr": ""})())
+
+    assert SystemHost(home).legacy_environment_lines("hermes.service") == []

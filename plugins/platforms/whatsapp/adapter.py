@@ -985,7 +985,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
         try:
-            if not self._ensure_bridge_deps(bridge_path.parent):
+            # npm install runs for minutes on a cold bridge or after an update changes package.json: like
+            # the preflight and the token mint beside it, it stays off the loop so every other platform
+            # on this gateway keeps running.
+            if not await asyncio.to_thread(self._ensure_bridge_deps, bridge_path.parent):
                 return False
             # The session holds the account's keys and bridge.log its QR pairing payloads (#80090).
             store_umask = ensure_private_store(self._session_path, home=self._profile_home)

@@ -1006,6 +1006,92 @@ class TestPlaybackInterrupt:
         with _playback_lock:
             assert vm._active_playback is None
 
+    def test_stop_playback_does_not_close_another_threads_stream(self):
+        """sounddevice's ``stop()`` closes its process-global stream.
+
+        Calling it from the record-key handler closed a stream that a beep/TTS thread was
+        still inside; two threads closing one PortAudio stream double-frees the ALSA handle
+        (SIGABRT in ``snd_pcm_close``) and frees the callback closure under the native thread
+        (SIGSEGV). Interruption is cooperative: raise the cancel flag and let the owning
+        thread stop its own stream.
+        """
+        import tools.voice_mode as vm
+
+        fake_sd = MagicMock(name="sd")
+        with patch.object(vm, "_import_audio", return_value=(fake_sd, MagicMock())):
+            vm.stop_playback()
+
+        fake_sd.stop.assert_not_called()
+
+    def test_playback_is_serialized_across_threads(self):
+        """Only one thread may be inside sounddevice playback at a time.
+
+        The record-start beep, the record-stop beep, TTS and the thinking sound all play from
+        different threads, and ``sd.play``/``sd.stop`` share one global stream slot.
+        """
+        import tools.voice_mode as vm
+
+        device = threading.Lock()  # stands in for the one global sounddevice stream
+        playing = threading.Event()
+        overlap = threading.Event()
+        release = threading.Event()
+
+        class FakeStream:
+            @property
+            def active(self):
+                return False  # one poll tick, then done
+
+        fake_sd = MagicMock(name="sd")
+        fake_sd.get_stream.return_value = FakeStream()
+
+        def _play(*_args, **_kwargs):
+            if device.acquire(blocking=False):
+                playing.set()
+                assert release.wait(2.0), "the test never released the device"
+                device.release()
+            else:
+                overlap.set()  # a second thread reached sd.play while one was inside it
+
+        fake_sd.play.side_effect = _play
+        workers = [
+            threading.Thread(
+                target=lambda: vm._sd_play_blocking(fake_sd, object(), 48000, timeout=2.0),
+                daemon=True,
+            )
+            for _ in range(3)
+        ]
+        for worker in workers:
+            worker.start()
+        assert playing.wait(2.0), "no thread reached playback"
+        release.set()
+        for worker in workers:
+            worker.join(5.0)
+
+        assert not overlap.is_set(), "two threads were inside sounddevice playback at once"
+        assert not any(worker.is_alive() for worker in workers)
+
+    def test_cancel_cuts_a_playing_sound(self):
+        """``stop_playback()`` must still cut TTS: the owner polls the cancel generation."""
+        import tools.voice_mode as vm
+
+        polls = []
+
+        class FakeStream:
+            @property
+            def active(self):
+                polls.append(1)
+                if len(polls) == 1:
+                    vm.stop_playback()  # the user hits the key while the clip is playing
+                return True  # still "playing" until the cancel is seen
+
+        fake_sd = MagicMock(name="sd")
+        fake_sd.get_stream.return_value = FakeStream()
+
+        vm._sd_play_blocking(fake_sd, object(), 48000, timeout=30.0)
+
+        fake_sd.stop.assert_called_once_with()  # the owning thread closed its own stream
+        assert len(polls) == 1, "the poll loop kept running after the cancel"
+
 # ============================================================================
 # Continuous mode flow
 # ============================================================================
@@ -1706,3 +1792,84 @@ class TestWSLAudioEnvironmentGate:
         assert any(
             "PulseAudio" in n and "WSL" in n for n in result["notices"]
         )
+
+class TestPlaybackCancel:
+    """stop_playback() must also cancel a cue that is still queued behind the lock."""
+
+    def test_cancel_issued_while_queued_is_not_lost(self, monkeypatch):
+        """A cancel that arrives while a cue is waiting for the device must still drop it."""
+        from tools import voice_mode
+
+        class _SignalLock:
+            """A lock that reports when a second caller starts waiting on it."""
+
+            def __init__(self):
+                self._lock = threading.Lock()
+                self.attempts = 0
+                self.queued = threading.Event()
+
+            def __enter__(self):
+                self.attempts += 1
+                if self.attempts > 1:
+                    self.queued.set()
+                self._lock.acquire()
+
+            def __exit__(self, *_exc):
+                self._lock.release()
+                return False
+
+        played = []
+        fake = MagicMock(name="sd")
+        fake.play.side_effect = lambda *_a, **_k: played.append(1)
+        fake.get_stream.side_effect = RuntimeError("nothing playing")
+
+        lock = _SignalLock()
+        monkeypatch.setattr(voice_mode, "_PLAYBACK_LOCK", lock, raising=False)
+        with lock:  # another cue owns the device
+            done = threading.Event()
+
+            def _play():
+                voice_mode._sd_play_blocking(fake, object(), 48000, timeout=2.0)
+                done.set()
+
+            worker = threading.Thread(target=_play, daemon=True)
+            worker.start()
+            assert lock.queued.wait(2.0), "the queued cue never reached the lock"
+            voice_mode.stop_playback()  # the user cancels while it waits
+        assert done.wait(2.0)
+        assert not worker.is_alive()
+        assert played == [], "a cancelled cue was started anyway"
+
+class TestAudioOutputMarking:
+    """``is_audio_output_active()`` means speech is playing; beeps must not claim it.
+
+    The barge-in listener switches phase, raises its trigger threshold and filters captures as
+    TTS echo while that flag is up, so a thinking blip that set it made talk-over-the-agent look
+    like speaker bleed instead of an interruption.
+    """
+
+    def test_beep_playback_does_not_claim_the_speaker(self):
+        from tools import voice_mode as vm
+
+        during = []
+        fake = MagicMock(name="sd")
+        fake.play.side_effect = lambda *_a, **_k: during.append(vm.is_audio_output_active())
+        fake.get_stream.side_effect = RuntimeError("nothing playing")
+
+        vm._sd_play_blocking(fake, object(), 48000, timeout=0.2)
+
+        assert during == [False], "a beep raised the speech-playing flag"
+        assert vm.is_audio_output_active() is False
+
+    def test_speech_playback_claims_the_speaker_while_it_plays(self):
+        from tools import voice_mode as vm
+
+        seen = []
+        fake = MagicMock(name="sd")
+        fake.play.side_effect = lambda *_a, **_k: seen.append(vm.is_audio_output_active())
+        fake.get_stream.side_effect = RuntimeError("nothing playing")
+
+        vm._sd_play_blocking(fake, object(), 48000, timeout=0.2, mark_output=True)
+
+        assert seen == [True], "the flag must be up for the whole playback"
+        assert vm.is_audio_output_active() is False, "and released afterwards"

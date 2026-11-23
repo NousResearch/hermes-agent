@@ -28,9 +28,16 @@ import tools.voice_mode as vm
 class _FakeSD:
     def __init__(self):
         self.played = []
+        self.output_active_during_play = []
 
-    def play(self, audio, samplerate=None):
+    def play(self, audio, samplerate=None, blocksize=0):
+        # blocksize: _sd_play_blocking passes the caller's block size through.
+        self.output_active_during_play.append(vm.is_audio_output_active())
         self.played.append((audio, samplerate))
+
+    def get_stream(self):
+        # _sd_play_blocking polls get_stream() to know when playback is over.
+        return None
 
     def stop(self):
         pass
@@ -120,17 +127,58 @@ class TestAudioOutputRefcount:
         vm.mark_audio_output_active(False)
         assert vm.is_audio_output_active() is False
 
-    def test_play_audio_file_brackets_refcount(self, tmp_path):
-        """play_audio_file flags real speaker output for its whole duration,
-        so the thinking loop knows audio is flowing."""
+    def test_play_audio_file_wav_brackets_refcount(self, tmp_path):
+        """WAV playback through play_audio_file -> _play_wav_via_sounddevice marks output."""
         _reset()
+        wav = tmp_path / "speech.wav"
+        with open(wav, "wb") as f:
+            vm._write_wav_frames(f, np.zeros(16, dtype=np.int16).tobytes(), vm.SAMPLE_RATE)
+        fake = _FakeSD()
+        with patch.object(vm, "_sounddevice_output_allowed", return_value=True), \
+             patch.object(vm, "_import_audio", return_value=(fake, np)):
+            assert vm.play_audio_file(str(wav)) is True
+        assert fake.output_active_during_play == [True]
+        assert vm.is_audio_output_active() is False
+
+    def test_play_audio_file_system_player_brackets_refcount(self, tmp_path, monkeypatch):
+        """Subprocess playback through play_audio_file -> _run_system_player marks output."""
+        _reset()
+        audio = tmp_path / "speech.mp3"
+        audio.write_bytes(b"ID3")
         seen = []
 
-        def fake_impl(path):
-            seen.append(vm.is_audio_output_active())
-            return True
+        class _Proc:
+            returncode = 0
 
-        with patch.object(vm, "_play_audio_file_impl", fake_impl):
-            vm.play_audio_file(str(tmp_path / "x.wav"))
+            def wait(self, timeout=None):
+                seen.append(vm.is_audio_output_active())
+                return 0
+
+        monkeypatch.setattr(vm, "_system_player_candidates", lambda p: [["afplay", p]])
+        monkeypatch.setattr(vm.shutil, "which", lambda _cmd: "/usr/bin/afplay")
+        monkeypatch.setattr(vm.subprocess, "Popen", lambda *a, **k: _Proc())
+        assert vm.play_audio_file(str(audio)) is True
         assert seen == [True]
+        assert vm.is_audio_output_active() is False
+
+    def test_sounddevice_beep_and_thinking_blip_do_not_claim_speaker(self):
+        """Sounddevice beeps and thinking blips must not raise is_audio_output_active()."""
+        _reset()
+        fake = _FakeSD()
+        with patch.object(vm, "_sounddevice_output_allowed", return_value=True), \
+             patch.object(vm, "_import_audio", return_value=(fake, np)), \
+             patch.object(vm, "_get_beep_volume", return_value=0.3):
+            vm.play_beep(duration=0.02)
+            stop = threading.Event()
+            t = threading.Thread(
+                target=vm._thinking_sound_loop, args=(stop, None), daemon=True
+            )
+            t.start()
+            deadline = time.monotonic() + 3.0
+            while len(fake.played) < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            stop.set()
+            t.join(timeout=3.0)
+        assert len(fake.output_active_during_play) >= 2
+        assert all(active is False for active in fake.output_active_during_play)
         assert vm.is_audio_output_active() is False

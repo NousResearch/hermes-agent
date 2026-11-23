@@ -369,14 +369,55 @@ def _get_beep_volume() -> float:
     return volume
 
 
-def _sd_play_blocking(sd, audio, sample_rate: int, *, timeout: float, blocksize: int = 0) -> None:
-    """``sd.play`` then poll until idle or *timeout* (``sd.wait()`` has no timeout and
-    hangs forever if the device stalls)."""
-    sd.play(audio, samplerate=sample_rate, blocksize=blocksize)
-    from agent.deadline import poll_until
+# sounddevice's play()/stop() drive ONE process-global stream slot (``_last_callback``) and
+# are not thread-safe: the record-start beep, the record-stop beep, TTS and the thinking sound
+# all play from different threads, and two concurrent callers close the same PortAudio stream
+# twice — a double free in ALSA (SIGABRT inside snd_pcm_close) or a callback thread resuming in
+# freed libffi closure memory (SIGSEGV/SIGILL). Every playback in this module is serialized
+# here, and interruption is cooperative: only the thread that started a stream stops it.
+_PLAYBACK_LOCK = threading.Lock()
+# Bumped by stop_playback(). A playback snapshots it before waiting for the lock and gives up
+# if it changed: an Event would be cleared by the next playback and throw away a cancel that
+# was issued while that playback sat in the queue.
+_PLAYBACK_CANCEL_GEN = 0
 
-    poll_until(lambda: not (sd.get_stream() and sd.get_stream().active), timeout, 0.01)
-    sd.stop()
+
+def _sd_play_blocking(
+    sd, audio, sample_rate: int, *, timeout: float, blocksize: int = 0, mark_output: bool = False
+) -> None:
+    """Play *audio*; block until it finishes, is cancelled, or *timeout* elapses.
+
+    The sounddevice playback entry point for beeps, the thinking sound and WAV playback, so one
+    lock covers every caller (``tools/tts_tool_speaker`` streams through its own OutputStream and
+    does not come here). ``sd.wait()`` has no timeout and hangs forever if the device stalls.
+
+    ``mark_output`` claims the speaker for speech (``is_audio_output_active``). Only speech sets
+    it: beeps and thinking blips must not, or the barge-in listener treats every blip as TTS —
+    phase "playback", a higher trigger threshold, and a capture that gets filtered as TTS echo.
+    """
+    cancel_gen = _PLAYBACK_CANCEL_GEN
+    with _PLAYBACK_LOCK:
+        if _PLAYBACK_CANCEL_GEN != cancel_gen:
+            return  # cancelled while queued: never start, and never stop another thread's stream
+        if mark_output:
+            mark_audio_output_active(True)  # marked here: nothing is audible before this point
+        stream = None
+        try:
+            sd.play(audio, samplerate=sample_rate, blocksize=blocksize)
+            with suppress(RuntimeError):  # nothing playing: no stream to poll
+                stream = sd.get_stream()
+            from agent.deadline import poll_until
+
+            poll_until(
+                lambda: _PLAYBACK_CANCEL_GEN != cancel_gen or stream is None or not stream.active,
+                timeout,
+                0.01,
+            )
+        finally:
+            with suppress(Exception):
+                sd.stop()  # this thread started it, so this thread closes it
+            if mark_output:
+                mark_audio_output_active(False)
 
 
 def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> None:
@@ -484,9 +525,9 @@ def _thinking_sound_loop(stop: threading.Event, should_play) -> None:
             if should_play is None or should_play():
                 blip = blips[i % len(blips)]
                 i += 1
-                sd.play(blip, samplerate=SAMPLE_RATE)
-                stop.wait(len(blip) / SAMPLE_RATE + 0.02)
-                sd.stop()
+                # Serialized with the beeps and TTS: sounddevice playback is single-slot.
+                _sd_play_blocking(sd, blip, SAMPLE_RATE,
+                                  timeout=len(blip) / SAMPLE_RATE + 0.5)
         except Exception as e:
             logger.debug("Thinking sound blip failed: %s", e)
             return
@@ -1080,9 +1121,12 @@ def stop_playback() -> None:
         with suppress(Exception):
             proc.terminate()
             logger.info("Audio playback interrupted")
-    with suppress(Exception):  # also stop sounddevice playback if active
-        sd, _ = _import_audio()
-        sd.stop()
+    # sounddevice playback belongs to the thread that started it: that thread holds
+    # _PLAYBACK_LOCK and closes its own stream. Raising the cancel flag cuts the sound within
+    # one poll tick; calling sd.stop() from here closed a stream another thread was inside
+    # (double free in ALSA, or its callback closure freed under PortAudio's callback thread).
+    global _PLAYBACK_CANCEL_GEN
+    _PLAYBACK_CANCEL_GEN += 1  # int bump under the GIL; queued playbacks compare their snapshot
 
 
 def _wsl_powershell_tts_available() -> bool:
@@ -1095,11 +1139,7 @@ def play_audio_file(file_path: str) -> bool:
     """Play an audio file; True on success. WAV via ``sounddevice.play()`` when allowed,
     else system players: afplay (macOS), WSL2 PowerShell bridge, ffplay, aplay (Linux).
     Interruptible via ``stop_playback()``."""
-    mark_audio_output_active(True)  # ref-count real speaker output for the whole call
-    try:
-        return _play_audio_file_impl(file_path)
-    finally:
-        mark_audio_output_active(False)
+    return _play_audio_file_impl(file_path)
 
 
 def _play_wav_via_sounddevice(file_path: str) -> bool:
@@ -1123,7 +1163,8 @@ def _play_wav_via_sounddevice(file_path: str) -> bool:
                 np.zeros(int(0.05 * sample_rate), dtype=np.int16)])
             blocksize = 4096
         _sd_play_blocking(sd, audio_data, sample_rate,
-                          timeout=len(audio_data) / sample_rate + 2.0, blocksize=blocksize)
+                          timeout=len(audio_data) / sample_rate + 2.0, blocksize=blocksize,
+                          mark_output=True)  # speech: the barge listener keys off this
         return True
     except (ImportError, OSError):
         return False
@@ -1180,6 +1221,7 @@ def _system_player_candidates(file_path: str) -> list[list[str]]:
 def _run_system_player(cmd: list[str]) -> bool:
     """Run one player to completion (interruptible via stop_playback)."""
     proc = None
+    mark_audio_output_active(True)  # subprocess players do not pass through _sd_play_blocking
     try:
         # Sibling of the TTS/STT credential scrub: players must not inherit tokens/keys.
         # See #56332, #70342.
@@ -1202,6 +1244,7 @@ def _run_system_player(cmd: list[str]) -> bool:
         logger.debug("System player %s failed: %s", cmd[0], e)
     finally:
         _set_active_playback(None)
+        mark_audio_output_active(False)
     return False
 
 

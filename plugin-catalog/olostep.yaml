@@ -1,0 +1,22 @@
+name: olostep
+title: Olostep
+repo: https://github.com/olostep-api/olostep-hermes-plugin
+sha: af83a1517d0021723714ce5f6e84bed241523216
+description: "Olostep web data for Hermes: a search and extract backend for the built-in web_search and web_extract tools (JavaScript-rendered pages as clean markdown), plus answers with sources, site maps, crawls and batch scraping of up to 100k URLs per batch. Disclosure — sends search queries, URLs, answer tasks and crawl or batch settings to the Olostep API (api.olostep.com) with your OLOSTEP_API_KEY; every call uses Olostep credits. Reads the key through Hermes' profile-scoped lookup; applies Hermes' URL safety check and website policy before extraction. No shell commands, file reads, background processes, telemetry or self-updater."
+maintainer: olostep-api
+tier: community
+category: web
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/olostep-api/olostep-hermes-plugin#readme
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - olostep_answer
+    - olostep_map
+    - olostep_crawl
+    - olostep_batch
+    - olostep_get_results
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - OLOSTEP_API_KEY

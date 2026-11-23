@@ -15,12 +15,13 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
-import { _electron, type ElectronApplication, expect, type Page } from '@playwright/test'
+import { _electron, type Browser, chromium, type ElectronApplication, expect, type Page, test } from '@playwright/test'
 
 import { resolveElectronBinary } from '../electron-binary'
 import { stopSandboxGatewayDaemons } from '../run-tmp-reaper'
 
 import { type ProcInfo, sandboxProcessesOf } from './process-census'
+import { type ScriptedProvider, startScriptedProvider } from './provider'
 
 export type { ProcInfo } from './process-census'
 
@@ -166,9 +167,85 @@ export function coreAppEnv(sandbox: CoreSandbox, extra: Record<string, string> =
   }
 }
 
+/** A loopback port the OS just handed out and released, for a sandboxed listener to bind. */
+export function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer()
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      server.close(() => resolve(typeof address === 'object' && address ? address.port : 0))
+    })
+  })
+}
+
+/** `hermes <args>` in the sandbox, as an operator runs it. */
+export function hermesCli(sandbox: CoreSandbox, args: string[]): { code: number | null; output: string } {
+  const result = spawnSync(process.env.HERMES_E2E_PYTHON || 'python3', ['-m', 'hermes_cli.main', ...args], {
+    cwd: REPO_ROOT,
+    env: coreAppEnv(sandbox),
+    encoding: 'utf8',
+    timeout: 180_000
+  })
+
+  return { code: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` }
+}
+
+/** Starts the gateway if needed and returns a one-use launch link for its Webapp (`hermes -p <profile> webapp`
+ * when a profile is named). */
+export function webappLaunchLink(sandbox: CoreSandbox, profile?: string): string {
+  const profileArgs = profile ? ['-p', profile] : []
+  const { code, output } = hermesCli(sandbox, [...profileArgs, 'webapp', '--no-open', '--skip-build'])
+  const link = /^\s+(http:\/\/127\.0\.0\.1:\d+\/webapp\/launch#\S+)$/m.exec(output)?.[1]
+  expect(code, `hermes webapp --no-open\n${output.replace(/ticket=\S+/g, 'ticket=<redacted>')}`).toBe(0)
+  expect(link, 'hermes webapp printed a one-use launch link').toBeTruthy()
+
+  return link!
+}
+
+/** One Webapp journey: a sandbox gateway serving the built renderer to a fresh Chromium, the model scripted. */
+export async function withWebapp(
+  label: string,
+  body: (sandbox: CoreSandbox, provider: ScriptedProvider, browser: Browser) => Promise<void>
+) {
+  test.skip(process.platform !== 'linux', 'runs with the other Webapp journeys (Linux CI)')
+  expect(
+    fs.existsSync(path.join(DESKTOP_ROOT, 'dist-webapp', 'index.html')),
+    'the Webapp renderer is built (pnpm run build:webapp)'
+  ).toBe(true)
+
+  const provider = await startScriptedProvider()
+  const sandbox = createCoreSandbox(label)
+  writeProviderHome(sandbox.hermesHome, provider.url)
+  // todo_list is deferred behind tool_search by default; the scripted model calls it directly.
+  fs.appendFileSync(
+    path.join(sandbox.hermesHome, 'config.yaml'),
+    `\nwebapp:\n  enabled: true\n  port: ${await freePort()}\ntools:\n  tool_search:\n    defer: []\n`
+  )
+  let browser: Browser | null = null
+
+  try {
+    browser = await chromium.launch({ executablePath: process.env.HERMES_E2E_CHROMIUM || undefined })
+    await body(sandbox, provider, browser)
+  } finally {
+    await browser?.close().catch(() => undefined)
+
+    for (const proc of sandboxProcesses(sandbox)) {
+      try {
+        process.kill(proc.pid, 'SIGKILL')
+      } catch {
+        /* already gone */
+      }
+    }
+
+    await provider.close()
+    sandbox.cleanup()
+  }
+}
+
 export async function launchCoreApp(env: Record<string, string>): Promise<{ app: ElectronApplication; page: Page }> {
   if (!fs.existsSync(path.join(DESKTOP_ROOT, 'dist', 'electron-main.mjs'))) {
-    throw new Error("Desktop dist not built: run 'npm run build' in apps/desktop first")
+    throw new Error("Desktop dist not built: run 'pnpm run build' in apps/desktop first")
   }
 
   const app = await _electron.launch({

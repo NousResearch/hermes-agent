@@ -75,6 +75,17 @@ export const slashCmdOpsEn = {
       reloaded: 'skills reloaded',
       pageTitle: 'Reload Skills'
     },
+    pluginsUpdate: {
+      running: 'checking installed plugins for updates…',
+      title: 'Plugin updates:',
+      updated: '✓ updated',
+      current: '= already current',
+      failed: '✗ failed',
+      needsReview: '! needs review',
+      skipped: (name: string, reason: string) => `skipped ${name}: ${reason}`,
+      none: 'No plugin updates to apply.',
+      review: 'Review those with `hermes plugins update <name>` in a terminal.'
+    },
     slashWorker: {
       warning: (warning: string) => `warning: ${warning}`,
       skillsNoOutput: '/skills: no output',

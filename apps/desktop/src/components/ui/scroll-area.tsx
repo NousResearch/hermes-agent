@@ -6,7 +6,10 @@ import { cn } from '@/lib/utils'
 function ScrollArea({ className, children, ...props }: React.ComponentProps<typeof ScrollAreaPrimitive.Root>) {
   return (
     <ScrollAreaPrimitive.Root className={cn('relative overflow-hidden', className)} data-slot="scroll-area" {...props}>
-      <ScrollAreaPrimitive.Viewport className="size-full outline-none" data-slot="scroll-area-viewport">
+      <ScrollAreaPrimitive.Viewport
+        className="size-full focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
+        data-slot="scroll-area-viewport"
+      >
         {children}
       </ScrollAreaPrimitive.Viewport>
       <ScrollBar />

@@ -4,6 +4,7 @@ Split out of ``hermes_cli/main.py``. Names that still live in main are imported 
 """
 
 import contextlib
+import json
 import shutil
 import subprocess
 import sys
@@ -93,10 +94,53 @@ def _whatsapp_allowed_users(wa_mode: str, get_env_value, save_env_value) -> None
         print("  ⚠ No allowlist — the agent will respond to ALL incoming messages")
 
 
+def _whatsapp_warn_customer_facing(wa_mode: str, get_env_value) -> None:
+    """A bot number open to anyone with no home channel: every new session's first message gets the
+    /sethome nudge and every sender sees tool progress, so point the operator at the hardening recipe."""
+    from gateway.config import Platform, load_gateway_config
+    from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin as _wa
+    from utils import is_truthy_value
+
+    if wa_mode != "bot":
+        return
+    config = load_gateway_config()
+    extra = getattr(config.platforms.get(Platform.WHATSAPP), "extra", None) or {}
+    # The adapter's own precedence: a config.yaml allow_from beats WHATSAPP_ALLOWED_USERS.
+    _, raw = _wa._select_allowlist(extra, ("allow_from", "allowFrom"), ("WHATSAPP_ALLOWED_USERS",), get_env_value)
+    if "*" not in _wa._coerce_allow_list(raw) and not is_truthy_value(get_env_value("WHATSAPP_ALLOW_ALL_USERS")):
+        return
+    if (get_env_value("WHATSAPP_HOME_CHANNEL") or "").strip() or config.get_home_channel(Platform.WHATSAPP):
+        return
+    _say("", "  ⚠ This bot answers anyone and has no home channel. Before opening it to customers, see",
+         "    https://hermes-agent.nousresearch.com/docs/user-guide/messaging/whatsapp/#customer-facing-bot")
+
+
+def _whatsapp_bridge_dependencies_current(bridge_dir) -> bool:
+    """An existing node_modules directory can still contain the previous bridge build."""
+    try:
+        desired = json.loads((bridge_dir / "package-lock.json").read_text(encoding="utf-8-sig"))
+        installed = json.loads((bridge_dir / "node_modules" / ".package-lock.json").read_text(encoding="utf-8-sig"))
+        packages = desired["packages"]
+        actual = installed["packages"]
+        dependencies = packages[""]["dependencies"]
+        for name in dependencies:
+            key = "node_modules/" + name
+            expected = packages[key]
+            present = actual.get(key, {})
+            if any(present.get(field) != expected.get(field) for field in ("version", "integrity")):
+                return False
+            if not (bridge_dir / key / "package.json").is_file():
+                return False
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+    return True
+
+
 def _whatsapp_install_bridge(bridge_dir) -> bool:
     """Step 4 of ``hermes whatsapp``: ``npm install`` the bridge when needed. False = stop."""
     from hermes_constants import find_node_executable, with_hermes_node_path
-    if (bridge_dir / "node_modules").exists():
+    from utils import env_int
+    if _whatsapp_bridge_dependencies_current(bridge_dir):
         print("✓ Bridge dependencies already installed")
         return True
     print("\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)...")
@@ -114,8 +158,9 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
         result = subprocess.run(
             [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
             cwd=str(bridge_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+            timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
             encoding="utf-8", errors="replace", env=env, check=False)
-    except (pm.InstallError, OSError) as exc:
+    except (pm.InstallError, OSError, subprocess.TimeoutExpired) as exc:
         print(f"  ✗ Bridge dependency preparation failed: {exc}")
         return False
     except KeyboardInterrupt:
@@ -130,12 +175,23 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
     return True
 
 
+def _whatsapp_has_paired_identity(session_dir):
+    """Baileys writes an identity only after validating the primary's pairing response."""
+    try:
+        creds = json.loads((session_dir / "creds.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(creds, dict) or not isinstance(creds.get("me"), dict):
+        return False
+    return isinstance(creds["me"].get("id"), str) and bool(creds["me"]["id"])
+
+
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
     from hermes_cli.main import _require_tty, get_hermes_home
     _require_tty("whatsapp")
     from hermes_cli.config import get_env_value, save_env_value
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_constants import ensure_private_store, find_node_executable, with_hermes_node_path
     _say("", "☤ WhatsApp Setup", "=" * 50)
 
     wa_mode = _whatsapp_choose_mode(get_env_value, save_env_value)
@@ -151,6 +207,7 @@ def cmd_whatsapp(args):
         print("✓ WhatsApp is already enabled")
 
     _whatsapp_allowed_users(wa_mode, get_env_value, save_env_value)
+    _whatsapp_warn_customer_facing(wa_mode, get_env_value)
 
     from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
     bridge_dir = resolve_whatsapp_bridge_dir()
@@ -163,14 +220,18 @@ def cmd_whatsapp(args):
 
     # Existing session: re-pair or keep.
     session_dir = get_hermes_home() / "whatsapp" / "session"
-    session_dir.mkdir(parents=True, exist_ok=True)
+    # The session holds the account's keys: owner-only, and the pairing child writes at that umask (#80090).
+    store_umask = ensure_private_store(session_dir)
     if (session_dir / "creds.json").exists():
         print("✓ Existing WhatsApp session found")
         if _yes_no("\n  Re-pair? This will clear the existing session. [y/N] "):
             shutil.rmtree(session_dir, ignore_errors=True)
-            session_dir.mkdir(parents=True, exist_ok=True)
+            ensure_private_store(session_dir)
             print("  ✓ Session cleared")
         else:
+            if not _whatsapp_has_paired_identity(session_dir):
+                print("Pairing is incomplete. Run 'hermes whatsapp' again and choose to re-pair.")
+                return
             # Older installs may have lost WHATSAPP_ENABLED; a kept pairing re-asserts it.
             if (get_env_value("WHATSAPP_ENABLED") or "").lower() != "true":
                 save_env_value("WHATSAPP_ENABLED", "true")
@@ -197,13 +258,20 @@ def cmd_whatsapp(args):
         except pm.InstallError as exc:
             print(f"  ✗ Node.js preparation failed: {exc}")
             return
+    pair_command = [node, str(bridge_script), "--pair-only", "--session", str(session_dir)]
+    if getattr(args, "passkey_browser", None):
+        pair_command.extend(["--passkey-browser", args.passkey_browser])
+    from tools.environments.local import hermes_subprocess_env
+    # Pair-only bridge.js reads no Hermes env; its npm deps must not see Hermes' credentials.
+    pair_env = with_hermes_node_path(hermes_subprocess_env())
+    pair_result = None
     with contextlib.suppress(KeyboardInterrupt):
-        subprocess.run(
-            [node, str(bridge_script), "--pair-only", "--session", str(session_dir)],
-            cwd=str(bridge_dir), env=with_hermes_node_path(), check=False)
+        # health: allow HX006 -- interactive child: ends on success, failure or Ctrl+C; a fixed bound kills it mid-prompt
+        pair_result = subprocess.run(pair_command, cwd=str(bridge_dir), env=pair_env, check=False,
+                                     umask=store_umask)
 
     print()
-    if not (session_dir / "creds.json").exists():
+    if pair_result is None or pair_result.returncode != 0 or not _whatsapp_has_paired_identity(session_dir):
         print("⚠ Pairing may not have completed. Run 'hermes whatsapp' to try again.")
         return
     # Only enable WhatsApp now that pairing actually succeeded (see above).

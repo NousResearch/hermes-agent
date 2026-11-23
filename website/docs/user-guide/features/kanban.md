@@ -1263,6 +1263,19 @@ hermes kanban notify-unsubscribe t_abcd \
 
 A subscription removes itself automatically once the task reaches `done` or `archived`; no cleanup needed.
 
+When an agent runs `notify-subscribe` from inside a gateway chat (through its terminal tool) and the
+target is that same chat (and topic), a missing `--user-id` is filled with the sender of the turn. In groups with
+`group_sessions_per_user` (the default), that keeps the wake in the participant's own session instead
+of a second, shared one. Subscriptions to any other chat or topic never take the caller's id, and
+neither does one given an explicit `--user-id-alt`.
+
+Without `--thread-id`, the subscription targets the caller's own topic when it subscribes its own chat
+from inside a gateway session. Otherwise it takes the thread of this task's existing subscription to the
+same chat; when several exist, it takes the lowest thread id and names the others on stderr. A Telegram
+DM target with nothing to infer from warns that the ping goes to the DM root.
+`notify-unsubscribe` without `--thread-id` removes the matching row the same way: the chat's root-lane
+subscription when there is one, else the caller's own topic, else the chat's only threaded subscription.
+
 **Discord threads under `profile_routes`:** when the gateway multiplexes profiles and routes a *channel*
 to a profile, a subscription created from the CLI for a *thread* in that channel needs the thread's route
 anchors, or the notifier cannot match it to any route and skips it (logged once at WARNING). Pass them
@@ -1275,6 +1288,10 @@ hermes kanban notify-subscribe t_abcd \
 ```
 
 Subscriptions created from inside the chat (`/kanban create`, `kanban_create`) record these anchors automatically.
+A Telegram forum topic, or a Slack DM thread, lives inside its own chat (`chat_id` is the group or DM, not
+the thread), so it needs no `--parent-chat-id`: the notifier matches it against the route that names that chat.
+That needs a stated `--chat-type` (`dm`, `group` or `channel`; the gateway records it for you). A row without one
+may store the thread's own id as `chat_id`, so it still needs `--parent-chat-id` to reach a channel route.
 
 ### Delivery modes
 

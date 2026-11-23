@@ -3,10 +3,10 @@
  *
  * The root ``package.json`` is installed by ``hermes update`` on every user,
  * including users who never opted into a given browser backend. Anything
- * listed in ``dependencies`` therefore runs its npm postinstall script for
- * everyone, and — per #43564 — is also part of the npm workspace install
+ * listed in ``dependencies`` therefore runs its postinstall script for
+ * everyone, and — per #43564 — was also part of the npm workspace install
  * graph, where a workspace-scoped ``npm ci`` (``--workspace ui-tui
- * --workspace web``) can silently prune it right back out on the next
+ * --workspace web``) could silently prune it right back out on the next
  * ``hermes update``.
  *
  * The contract:

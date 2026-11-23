@@ -99,6 +99,7 @@ def test_shipped_post_swap_argv_enters_takeover_before_current_cli(tmp_path):
     )
     for relative in ("hermes_bootstrap.py", "hermes_cli/update_handoff.py", "hermes_cli/_old_updater.py"):
         shutil.copy2(source / relative, root / relative)
+    shutil.copytree(source / "hermes_agent", root / "hermes_agent", ignore=shutil.ignore_patterns("__pycache__"))
     (package / "_update_takeover.py").write_text(
         "import json, sys\nfrom pathlib import Path\n"
         "request = json.loads(Path(sys.argv[1]).read_text())\n"
@@ -240,9 +241,14 @@ def test_only_known_early_updater_restarts_with_original_arguments(tmp_path, pos
     env.update(HOME=str(home), HERMES_HOME=str(home))
     result = subprocess.run([sys.executable, "-B", *argv], env=env,
                             capture_output=True, text=True, timeout=30, check=False)
+    if module_name == "unrelated":
+        # Not a historical updater entrypoint: the shim refuses, no takeover runs.
+        assert "RetiredUpdaterHook" in result.stderr, result.stdout + result.stderr
+        assert not (home / "request.json").exists()
+        return
     assert result.returncode == 0, result.stdout + result.stderr
     request = json.loads((home / "request.json").read_text())
-    assert request.get("restart_update", False) is (not post_pull and module_name == "update_cmd")
+    assert request.get("restart_update", False) is not post_pull
     assert request["argv"] == argv
 
 
@@ -389,6 +395,7 @@ def test_completed_serve_token_is_acknowledged_without_preparation(tmp_path, enc
     package.mkdir(parents=True)
     for name in ("_update_takeover.py", "update_serve_resume.py"):
         shutil.copy2(source / "hermes_cli" / name, package / name)
+    shutil.copytree(source / "hermes_agent", root / "hermes_agent", ignore=shutil.ignore_patterns("__pycache__"))
     # Only selection is supplied. The two real entrypoints must carry the
     # request without importing PM or launching any completed backend twice.
     (package / "_launchers.py").write_text(

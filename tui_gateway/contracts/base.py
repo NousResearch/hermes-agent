@@ -11,6 +11,8 @@ fails CI on the Python side, and TS that reads a phantom field fails ``tsc``.
 Modelling rules (they keep the generated TS clean and the wire stable):
 
 - ``snake_case`` field names, exactly as they travel.
+- The bases set ``defer_build``: ~850 models would otherwise compile their validators at import
+  (~0.25 s CPU, on every gateway and TUI start); each one now compiles on first use instead.
 - Closed sets are ``StrEnum`` (rendered as literal unions); discriminators are ``Literal``.
 - ``X | None = None`` renders ``x?: X | null``; a plain default renders ``x?: X``.
 - Params models are ``extra="forbid"``: an unknown key is a client bug and answers ``4000``
@@ -32,20 +34,20 @@ JsonValue = Any  # a JSON scalar/array/object the contract deliberately leaves o
 class Params(BaseModel):
     """Client→server method params / server→client request params. Unknown keys are rejected."""
 
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, defer_build=True)
 
 
 class Result(BaseModel):
     """Method / server-request result. Serialised with ``exclude_none=False`` so an explicit
     ``null`` stays a ``null`` on the wire (clients distinguish absent from null)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", defer_build=True)
 
 
 class Payload(BaseModel):
     """Notification payload (``event`` frame ``params.payload``)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", defer_build=True)
 
 
 class WireEnum(StrEnum):

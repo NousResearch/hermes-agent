@@ -1,0 +1,24 @@
+name: nexus-recovery-peer
+repo: https://github.com/rezaaibox-ui/nexus-recovery-peer
+sha: "2d3b15dcc513bab7fc2463d29fb581524a94c8fb"
+title: Nexus Recovery Peer
+description: >-
+  Optional bounded peer-model suggestion after repeated tool failure or a failed
+  delegated child. Disclosure — when an administrator explicitly configures a
+  provider/model route and grants the required LLM override capabilities, the
+  plugin sends a redacted excerpt of the task and failure to that provider via
+  Hermes ctx.llm. Redaction is best-effort, not a confidentiality guarantee;
+  host routing/fallback may change the actual recipient. Empty routes (the
+  default) make no peer requests. The plugin does not replay tools, run shell
+  commands, read files independently, store credentials, or send telemetry.
+maintainer: rezaaibox-ui
+tier: community
+category: models
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/rezaaibox-ui/nexus-recovery-peer/blob/2d3b15dcc513bab7fc2463d29fb581524a94c8fb/README.md
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, transform_tool_result]
+  provides_middleware: []
+  requires_env: []

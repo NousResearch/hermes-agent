@@ -1,0 +1,22 @@
+# Exact qualified source pin; catalog admission requires maintainer review.
+name: hermes-verify
+repo: https://github.com/BrandonDucar/hermes-verify
+sha: 22cd13c6ae7e07296a333b31c828db44455098ef
+description: "Configurable tool-risk flags, bounded local receipt metadata and held unverified-prose labels. Disclosure — prepends an \"unverified agent prose\" banner to every final reply (stored in the transcript), holds streaming so replies arrive only after labeling, and replaces any reply over 100,000 characters with an omission notice; the verify_claim tool fetches model-supplied public http(s) URLs (private addresses refused); flagged tool calls are logged locally and blocked only when blocking_mode is on."
+maintainer: BrandonDucar
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+version: "0.5.0"
+readme: true
+known_issues:
+  - Default observation mode logs and allows; optional blocking is a heuristic, not OS containment.
+  - Whole-output labeling and lexical source comparison do not establish factual truth.
+  - Local receipt records are unauthenticated; action returns do not prove completion.
+  - Host storage-helper errors can select a fallback directory that is not guaranteed to follow the active profile.
+  - End-to-end agent stream delivery and integrated strict-mode actions are not yet qualified.
+capabilities:
+  provides_tools: [verify_claim, query_receipts]
+  provides_hooks: [pre_tool_call, post_tool_call, transform_llm_output]
+  provides_middleware: []
+  requires_env: []

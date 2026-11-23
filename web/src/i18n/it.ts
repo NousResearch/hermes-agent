@@ -370,6 +370,13 @@ export const it: Translations = {
     authRequired: "Autenticazione richiesta",
     authRequiredHint: "Esegui questo comando per autenticarti:",
     updateGit: "Git pull",
+    updateAll: "Aggiorna tutto",
+    updatingAll: "Aggiornamento plugin…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Aggiornati ${updated}, da rivedere ${needsReview}, non riusciti ${failed}`,
+    autoUpdate: "Aggiornamento automatico",
+    autoUpdateDesc: (hours: number) =>
+      `Applica automaticamente gli aggiornamenti dei plugin quando il gateway controlla (ogni ${hours} h). Il codice aggiornato viene caricato nelle nuove sessioni.`,
     versionBadge: "Versione",
     showInSidebar: "Mostra nella barra laterale",
     hideFromSidebar: "Nascondi dalla barra laterale",

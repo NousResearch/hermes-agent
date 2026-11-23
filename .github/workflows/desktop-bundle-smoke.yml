@@ -39,6 +39,10 @@ on:
       commit-build:
         default: false
         type: boolean
+      legacy-commit-build:
+        description: Commit claim built from a pre-claim commit (tagless X.Y.Z install stamp).
+        default: false
+        type: boolean
       channel-build:
         default: ''
         type: string
@@ -73,7 +77,7 @@ jobs:
         shell: bash
         run: |
           case "$TARGET" in
-            darwin/arm64/dmg|darwin/x64/dmg|darwin/arm64/zip|darwin/x64/zip|win32/arm64/msix|win32/x64/msix|win32/arm64/msixbundle|win32/x64/msixbundle) ;;
+            darwin/arm64/dmg|darwin/arm64/zip|win32/arm64/msix|win32/x64/msix|win32/arm64/msixbundle|win32/x64/msixbundle) ;;
             *) echo '::error::unsupported native smoke target'; exit 1 ;;
           esac
 
@@ -81,7 +85,7 @@ jobs:
     name: macOS install and chat
     needs: validate
     if: inputs.platform == 'darwin'
-    runs-on: ${{ inputs.arch == 'x64' && 'macos-15-intel' || 'macos-15' }}
+    runs-on: blacksmith-6vcpu-macos-15
     timeout-minutes: 30
     # Also constrains the recording action's nested cache to read-only.
     cache-mode: read
@@ -90,6 +94,7 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag }}
       ARCHIVE_TAG: ${{ inputs.archive-tag }}
       COMMIT_BUILD: ${{ inputs.commit-build }}
+      LEGACY_COMMIT_BUILD: ${{ inputs.legacy-commit-build }}
       CHANNEL_BUILD: ${{ inputs.channel-build }}
       CHANNEL_REQUEST_SHA256: ${{ inputs.channel-request-sha256 }}
       PUBLIC_BASE: ${{ inputs.public-base }}
@@ -106,7 +111,9 @@ jobs:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           # A dispatch tests the artifact of `sha` with the dispatched ref's scripts.
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || inputs.channel-build != '' && inputs.controller-sha || inputs.sha }}
+          # Channel and commit claims use the trusted controller's smoke driver so pre-PR
+          # commits still receive claim-aware handoff and stamp verification.
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || (inputs.channel-build != '' || startsWith(inputs.tag, 'commit.')) && inputs.controller-sha || inputs.sha }}
           persist-credentials: false
 
       - name: Set up driver tools only
@@ -122,7 +129,7 @@ jobs:
       - name: Install locked chat driver dependencies
         id: dependencies
         shell: bash
-        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+        run: just js-install-tests
 
       - name: Fetch one exact downloadable artifact
         id: artifact
@@ -140,7 +147,7 @@ jobs:
             product=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["identity"]["artifactNamePascal"])' "$SMOKE_ROOT/request.json")
           fi
           case "$PLATFORM/$ARCH/$FORMAT" in
-            darwin/arm64/dmg|darwin/x64/dmg|darwin/arm64/zip|darwin/x64/zip)
+            darwin/arm64/dmg|darwin/arm64/zip)
               name="darwin-$ARCH"; pattern="$product-*-mac-$ARCH.$FORMAT" ;;
             win32/arm64/msix|win32/x64/msix)
               name="win32-$ARCH"; pattern="$product-*-win-$ARCH.msix" ;;
@@ -193,7 +200,7 @@ jobs:
           ARTIFACT: ${{ steps.artifact.outputs.path }}
         run: |
           args=()
-          if [ -n "$RELEASE_TAG" ]; then args+=(--tag "$RELEASE_TAG"); fi
+          if [ -n "$RELEASE_TAG" ] && [ "${LEGACY_COMMIT_BUILD:-false}" != true ]; then args+=(--tag "$RELEASE_TAG"); fi
           if [ -n "${CHANNEL_BUILD:-}" ]; then args+=(--channel-request "$SMOKE_ROOT/request.json"); fi
           bash tests/install/macos-bundle-smoke.sh --artifact "$ARTIFACT" --arch "$ARCH" \
             --commit "$RELEASE_COMMIT" "${args[@]}" --work "$SMOKE_ROOT/work" --out "$SMOKE_ROOT/out"
@@ -206,7 +213,7 @@ jobs:
           ARTIFACT: ${{ steps.artifact.outputs.path }}
         run: |
           $tagArgs = @()
-          if ($env:RELEASE_TAG) { $tagArgs = @('-Tag', $env:RELEASE_TAG) }
+          if ($env:RELEASE_TAG -and $env:LEGACY_COMMIT_BUILD -ne 'true') { $tagArgs = @('-Tag', $env:RELEASE_TAG) }
           if ($env:CHANNEL_BUILD) { $tagArgs = @('-ChannelRequest', "$env:SMOKE_ROOT/request.json") }
           powershell -NoProfile -ExecutionPolicy Bypass -File tests/install/windows-bundle-smoke.ps1 -Artifact $env:ARTIFACT -Arch $env:ARCH -Commit $env:RELEASE_COMMIT @tagArgs -Work "$env:SMOKE_ROOT/work" -Out "$env:SMOKE_ROOT/out"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -249,7 +256,7 @@ jobs:
     # before Playwright attaches (every x64 smoke there failed; the same commit's arm64 MSIX on a
     # GitHub-hosted runner chats), as the install/update GUI legs did (f1b290e7734).
     runs-on: ${{ inputs.arch == 'arm64' && 'windows-latest-32-arm-core' || 'windows-latest-32-core' }}
-    # windows-11-arm runners are much slower (npm ci alone runs 12+ minutes and
+    # windows-11-arm runners are much slower (the dependency install alone runs 12+ minutes and
     # the MSIX leg exceeds 30 total); x64 legs complete in ~14.
     timeout-minutes: 45
     cache-mode: read

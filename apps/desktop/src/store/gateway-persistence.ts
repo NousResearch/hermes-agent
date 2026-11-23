@@ -1,8 +1,9 @@
 import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 
 import type { DesktopConnectionsRegistry, DesktopRegistryConnection } from '@/global'
+import { localBootstrapNeeded } from '@/lib/local-backend-probe'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
-import { liveSecondaryConnectionIds, openGatewayForAgent } from '@/store/gateway'
+import { gatewayRouteState, openGatewayForAgent } from '@/store/gateway'
 import { keepRoute } from '@/store/gateway-kept-routes'
 import { $primaryGatewayRoute, type PrimaryGatewayRoute } from '@/store/gateway-primary-route'
 
@@ -13,6 +14,9 @@ import { $primaryGatewayRoute, type PrimaryGatewayRoute } from '@/store/gateway-
 // rows) shows every gateway at once instead of only the one in front.
 const HOME_PROFILE = 'default'
 const REDIAL_INTERVAL_MS = 30_000
+// A missing This device install is re-probed this often, so one installed
+// while the window stays open still joins the kept gateways.
+const LOCAL_NOT_INSTALLED_RECHECK_MS = 10 * 60_000
 
 /** The window's primary socket already holds this gateway open; a second socket
  *  to the same backend would duplicate its event stream. */
@@ -25,23 +29,25 @@ function servedByPrimary(connection: DesktopRegistryConnection, primary: Primary
 }
 
 /** The registry connections that need their own kept socket. */
-export function persistentGatewayIds(
-  registry: DesktopConnectionsRegistry | null,
-  primary: PrimaryGatewayRoute
-): string[] {
+function persistentGatewayIds(registry: DesktopConnectionsRegistry | null, primary: PrimaryGatewayRoute): string[] {
   return (registry?.connections ?? []).filter(connection => !servedByPrimary(connection, primary)).map(c => c.id)
 }
 
-/** Dialing This device where Hermes is not installed would start the installer
- *  unseen; only a confirmed click may do that. A missing probe fails closed. */
-async function localInstalled(): Promise<boolean> {
-  const probe = window.hermesDesktop?.probeLocalBackend
-
-  return probe ? (await probe()).bootstrapNeeded !== true : false
+/** A published route names the gateway the primary socket serves. Until one is
+ *  published (boot, or a primary teardown), the primary's own gateway looks
+ *  unserved and would get a duplicate socket. */
+function primaryPublished(primary: PrimaryGatewayRoute): boolean {
+  return Boolean(primary.connectionId || primary.mode)
 }
 
-async function dial(connectionId: string): Promise<void> {
-  if (connectionId === LOCAL_CONNECTION_ID && !(await localInstalled())) {
+/** Dialing This device where Hermes is not installed would start the installer
+ *  unseen; only a confirmed click may do that. */
+async function dial(
+  connectionId: string,
+  localInstalled: () => Promise<boolean>,
+  stillWanted: () => boolean
+): Promise<void> {
+  if (connectionId === LOCAL_CONNECTION_ID && !((await localInstalled()) && stillWanted())) {
     return
   }
 
@@ -54,8 +60,67 @@ async function dial(connectionId: string): Promise<void> {
 export function startPersistentGateways(): () => void {
   const pins = new Map<string, () => void>()
 
+  // This device's install verdict. "Installed" is re-checked before every
+  // dial (an install can go away while the window lives, and dialing it then
+  // would start the installer), while "not installed" is kept until the
+  // registry or the primary route changes or LOCAL_NOT_INSTALLED_RECHECK_MS
+  // passes, so a missing install is not re-probed every tick. Concurrent dials
+  // share one probe in flight.
+  let localProbe: Promise<boolean> | null = null
+  let localProbeExpiresAt = Infinity
+  // Bumped whenever a registry or primary-route change drops the probe: a dial
+  // that awaited a dropped probe must not act on its answer.
+  let localGeneration = 0
+
+  const localInstalled = () => {
+    if (localProbe && Date.now() >= localProbeExpiresAt) {
+      localProbe = null
+    }
+
+    if (!localProbe) {
+      const probe: Promise<boolean> = localBootstrapNeeded().then(
+        needed => {
+          // A dropped probe's answer is for its own callers only.
+          if (localProbe === probe) {
+            if (needed) {
+              localProbeExpiresAt = Date.now() + LOCAL_NOT_INSTALLED_RECHECK_MS
+            } else {
+              localProbe = null
+            }
+          }
+
+          return !needed
+        },
+        (error: unknown) => {
+          if (localProbe === probe) {
+            localProbe = null
+          }
+
+          throw error
+        }
+      )
+
+      localProbe = probe
+      localProbeExpiresAt = Infinity
+    }
+
+    return localProbe
+  }
+
+  // The probe takes time: by its answer the keeper may have stopped, released
+  // this route, lost its published primary, or dropped the probe for a newer one.
+  const stillWanted = (connectionId: string, generation: number) =>
+    generation === localGeneration && pins.has(connectionId) && primaryPublished($primaryGatewayRoute.get())
+
   const reconcile = () => {
-    const wanted = new Set(persistentGatewayIds($connectionsRegistry.get(), $primaryGatewayRoute.get()))
+    const primary = $primaryGatewayRoute.get()
+
+    if (!primaryPublished(primary)) {
+      return
+    }
+
+    const wanted = new Set(persistentGatewayIds($connectionsRegistry.get(), primary))
+    const generation = localGeneration
 
     for (const [connectionId, release] of pins) {
       if (!wanted.has(connectionId)) {
@@ -64,21 +129,42 @@ export function startPersistentGateways(): () => void {
       }
     }
 
-    const live = liveSecondaryConnectionIds()
-
     for (const connectionId of wanted) {
       if (!pins.has(connectionId)) {
         pins.set(connectionId, keepRoute(connectionId, HOME_PROFILE))
       }
 
-      if (!live.has(connectionId)) {
-        void dial(connectionId).catch(() => undefined)
+      // The kept route itself: another profile's open socket on the same
+      // gateway does not carry this one.
+      if (!gatewayRouteState(connectionId, HOME_PROFILE).open) {
+        void dial(connectionId, localInstalled, () => stillWanted(connectionId, generation)).catch(() => undefined)
       }
     }
   }
 
-  const offRegistry = $connectionsRegistry.subscribe(reconcile)
-  const offPrimary = $primaryGatewayRoute.listen(reconcile)
+  const recheckLocalAndReconcile = () => {
+    localProbe = null
+    localGeneration += 1
+    reconcile()
+  }
+
+  // Every primary reconnect republishes the same route, which says nothing new
+  // about This device; only a different route re-probes it.
+  let primaryRoute = $primaryGatewayRoute.get()
+
+  const onPrimaryRoute = (route: PrimaryGatewayRoute) => {
+    const changed = route.connectionId !== primaryRoute.connectionId || route.mode !== primaryRoute.mode
+    primaryRoute = route
+
+    if (changed) {
+      recheckLocalAndReconcile()
+    } else {
+      reconcile()
+    }
+  }
+
+  const offRegistry = $connectionsRegistry.subscribe(recheckLocalAndReconcile)
+  const offPrimary = $primaryGatewayRoute.listen(onPrimaryRoute)
   const timer = setInterval(reconcile, REDIAL_INTERVAL_MS)
 
   return () => {

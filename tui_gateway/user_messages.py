@@ -30,6 +30,8 @@ _TURN_ERROR_CODE_COPY: dict[str, tuple[str, str]] = {
     "model_not_found": ("The model provider does not know this model", "Pick another model with /model."),
     "content_policy_blocked": ("The model provider refused this request (content policy)", "Rephrase and send again."),
     "provider_policy_blocked": ("The model provider refused this request (account policy)", "Switch with /model."),
+    "guardrail_blocked": ("The model provider's prompt-injection guardrail blocked the request (not your key)",
+                          "Change the guardrail to Redact or Flag in the provider's settings, or switch with /model."),
     "format_error": ("The model provider rejected the request format", "Try /retry; if it persists, switch with /model."),
     # The managed local model server (llama.cpp) is down: starting, or switched off.
     "local_runtime_unavailable": ("The local model server is not running",
@@ -121,11 +123,12 @@ _AUTH_LOCK_TIMEOUT_PREFIXES = (
 
 
 def agent_init_failed_message(exc: Any) -> str:
-    if any(prefix in str(exc) for prefix in _AUTH_LOCK_TIMEOUT_PREFIXES):
-        return (f"Hermes could not start the assistant for this session. Details: {exc}. "
+    detail = str(exc).rstrip(". ")  # resolver messages end in a sentence; no ".." before the hint
+    if any(prefix in detail for prefix in _AUTH_LOCK_TIMEOUT_PREFIXES):
+        return (f"Hermes could not start the assistant for this session. Details: {detail}. "
                 "Wait for the other process to release the lock (or exit it — check for a running "
                 "dashboard or background hermes process), then retry.")
-    return (f"Hermes could not start the assistant for this session. Details: {exc}. "
+    return (f"Hermes could not start the assistant for this session. Details: {detail}. "
             "Check the model and provider with /model, or run `hermes setup` in a terminal to reconfigure.")
 
 

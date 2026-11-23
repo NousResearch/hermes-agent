@@ -344,6 +344,21 @@ def test_a_dashboard_name_that_is_a_portable_plugins_name_is_not_registered(dash
     assert "porty" not in dash.listed()
 
 
+def test_a_plugin_json_the_loader_cannot_read_leaves_other_dashboards_listed(dash):
+    """A ``plugin.json`` too deeply nested to read names no plugin, as for the loader: the other plugin's
+    dashboard by that name stays listed and served."""
+    portable = dash.home / "plugins" / "porty-dir"
+    portable.mkdir(parents=True)
+    (portable / "plugin.json").write_text("[" * 100_000 + "]" * 100_000)
+    imported = _install(dash.home, "tab-dir", "porty", yaml_name="tab-dir")
+    _plugins(dash.home, enabled=["porty", "tab-dir"])
+    dash.start()
+
+    assert imported.exists()
+    assert dash.listed()["porty"]["source"] == "user"
+    assert dash.ping("porty").json() == {"pong": "tab-dir"}
+
+
 def test_plugin_enabled_by_its_directory_key_mounts_and_lists(dash):
     """``hermes plugins enable hermes-mobile`` turns on a plugin whose dashboard calls itself ``mobile``."""
     imported = _install(dash.home, "hermes-mobile", "mobile", yaml_name="hermes-mobile")

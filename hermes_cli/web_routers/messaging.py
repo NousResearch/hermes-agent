@@ -143,9 +143,13 @@ def _messaging_env_info(key: str) -> dict[str, Any]:
         "description": info.get("description", ""),
         "prompt": info.get("prompt", key),
         "help": info.get("help", ""),
+        "placeholder": info.get("placeholder", ""),
         "url": info.get("url"),
         "is_password": is_password,
-        "is_list": not is_password and bool(_ALLOWLIST_KEY_RE.search(key)),
+        # ``*_ALLOWED*`` stays the default chip editor. A manifest may also set
+        # ``is_list: true`` for other comma-separated ID fields (LINE mention chats).
+        "is_list": not is_password and (
+            bool(info.get("is_list")) or bool(_ALLOWLIST_KEY_RE.search(key))),
         "advanced": info.get("advanced", False),
     }
 

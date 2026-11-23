@@ -166,6 +166,9 @@ LINE_HOME_CHANNEL=Uxxxxxxxxxxxxxxxxxxxx     # 默认推送目标
 | `LINE_ALLOWED_USERS` | 三选一 | — | 逗号分隔的用户 ID（U 开头） |
 | `LINE_ALLOWED_GROUPS` | 三选一 | — | 逗号分隔的群组 ID（C 开头） |
 | `LINE_ALLOWED_ROOMS` | 三选一 | — | 逗号分隔的房间 ID（R 开头） |
+| `LINE_REQUIRE_MENTION_CHATS` | 否 | 空 | 逗号分隔的群组/房间 ID（`C…`/`R…`）。列出的聊天只有在 @ 机器人时才回复；其余已允许的群组/房间照常回复。私聊从不受此限制。已知斜杠命令（如 `/help`）以及 `LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES` 可跳过此限制。 |
+| `LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES` | 否 | 空 | 在需要 @ 的群组/房间中，这些 LINE 消息类型仍会得到回复（`image`、`video`、`audio`、`file`、`sticker`、`location`）。空表示没有任何媒体可跳过 @。 |
+| `LINE_IGNORE_GROUP_MESSAGE_TYPES` | 否 | 空 | 在群组/房间中、于 @ 判断之前静默丢弃的类型（`sticker`、`emoji`、`image`、`video`、`audio`、`file`、`location`）。`emoji` 指仅含 LINE 表情占位符的文本；文字与表情混合不会被忽略。私聊从不过滤。 |
 | `LINE_ALLOW_ALL_USERS` | 仅开发环境 | `false` | 完全跳过白名单验证 |
 | `LINE_HOME_CHANNEL` | 否 | — | 默认 cron / 通知推送目标 |
 | `LINE_SLOW_RESPONSE_THRESHOLD` | 否 | `45` | 触发 postback 按钮的等待秒数（`0` = 禁用） |

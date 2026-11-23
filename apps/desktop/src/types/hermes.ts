@@ -344,6 +344,8 @@ export interface CustomEndpointValidationResponse {
 export interface MessagingEnvVarInfo {
   advanced: boolean
   description: string
+  /** Input hint from the platform manifest (absent on older backends). */
+  placeholder?: string
   /** Comma-separated allowlist rendered one entry per ID (absent on older backends). */
   is_list?: boolean
   is_password: boolean

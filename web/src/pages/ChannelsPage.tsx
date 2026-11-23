@@ -542,7 +542,7 @@ export default function ChannelsPage() {
                     placeholder={
                       field.is_set
                         ? field.redacted_value || "•••••• (set — leave blank to keep)"
-                        : field.key
+                        : field.placeholder || field.key
                     }
                     value={draftEnv[field.key] ?? ""}
                     aria-invalid={Boolean(fieldErrors[field.key])}

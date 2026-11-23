@@ -610,6 +610,12 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         if entry_kwargs.get("trusted_inbound") and self.manifest.source != "bundled" and core_ships_platform(name):
             raise self._refuse(f"core platform '{name}' with trusted_inbound (it would waive allowlists and pairing)")
         entry_kwargs.setdefault("plugin_name", self.manifest.name)
+        # plugin.yaml ``dashboard_env_vars`` is the Channels card order when
+        # register() doesn't pass its own. Discovered LINE_* (and other) vars
+        # still append after this prefix.
+        declared = tuple(getattr(self.manifest, "dashboard_env_vars", ()) or ())
+        if declared:
+            entry_kwargs.setdefault("dashboard_env_vars", declared)
         entry = PlatformEntry(
             name=name, label=label, adapter_factory=adapter_factory, check_fn=check_fn,
             validate_config=validate_config, required_env=required_env or [],

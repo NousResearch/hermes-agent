@@ -644,6 +644,9 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 | `LINE_ALLOWED_USERS` | Comma-separated user IDs allowed to DM the bot (`U`-prefixed). |
 | `LINE_ALLOWED_GROUPS` | Comma-separated group IDs the bot will respond in (`C`-prefixed). |
 | `LINE_ALLOWED_ROOMS` | Comma-separated room IDs the bot will respond in (`R`-prefixed). |
+| `LINE_REQUIRE_MENTION_CHATS` | Comma-separated group/room IDs (`C…`/`R…`) that reply only when @mentioned. Other allowlisted chats respond normally. DMs are never gated. Default: empty. |
+| `LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES` | Comma-separated message types (`image`, `video`, …) that skip the @mention requirement. Default: empty (no bypass). |
+| `LINE_IGNORE_GROUP_MESSAGE_TYPES` | Comma-separated types dropped in groups/rooms before dispatch (`sticker`, `emoji`, …). `emoji` is emoji-only text, not mixed text. DMs are never filtered. Default: empty. |
 | `LINE_ALLOW_ALL_USERS` | Dev-only escape hatch — accepts any source. Default: `false`. |
 | `LINE_HOME_CHANNEL` | Default delivery target for cron jobs with `deliver: line`. |
 | `LINE_SLOW_RESPONSE_THRESHOLD` | Seconds before the slow-LLM Template Buttons postback fires (default: `45`). Set `0` to disable and always Push-fallback. |

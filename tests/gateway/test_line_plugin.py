@@ -575,3 +575,489 @@ class TestMediaPublicUrlGuard:
         assert not result.success
         assert "LINE_PUBLIC_URL" in (result.error or "")
 
+
+_LINE_AUTH_ENVS = (
+    "LINE_ALLOW_ALL_USERS",
+    "LINE_ALLOWED_USERS",
+    "LINE_ALLOWED_GROUPS",
+    "LINE_ALLOWED_ROOMS",
+    "LINE_REQUIRE_MENTION_CHATS",
+    "LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES",
+    "LINE_IGNORE_GROUP_MESSAGE_TYPES",
+    "GATEWAY_ALLOW_ALL_USERS",
+    "GATEWAY_ALLOWED_USERS",
+)
+
+# ---------------------------------------------------------------------------
+# Group/room @mention gate and message-type filters
+# ---------------------------------------------------------------------------
+
+def _group(chat_id="Cneed", user_id="Umember"):
+    return {"type": "group", "groupId": chat_id, "userId": user_id}
+
+
+def _room(chat_id="Rneed", user_id="Umember"):
+    return {"type": "room", "roomId": chat_id, "userId": user_id}
+
+
+def _dm(user_id="Udm"):
+    return {"type": "user", "userId": user_id}
+
+
+def _text(body, mentionees=None):
+    message = {"type": "text", "id": "m1", "text": body}
+    if mentionees is not None:
+        message["mention"] = {"mentionees": mentionees}
+    return message
+
+
+def _bot_mention(index, length, *, is_self=True, user_id="Ubot"):
+    mentionee = {"index": index, "length": length, "type": "user", "userId": user_id}
+    if is_self is not None:
+        mentionee["isSelf"] = is_self
+    return mentionee
+
+
+def _emoji(body="(laugh)", spans=None):
+    if spans is None:
+        spans = [(0, len(body))]
+    return {
+        "type": "text",
+        "id": "e1",
+        "text": body,
+        "emojis": [
+            {"index": start, "length": length, "productId": "p", "emojiId": "001"}
+            for start, length in spans
+        ],
+    }
+
+
+class TestLineGroupFilters:
+    """``LINE_REQUIRE_MENTION_CHATS``, media bypass, and group/room type ignore.
+
+    DMs are never mention-gated and never type-filtered. Ignore runs before
+    the mention gate. Postbacks stay on the slow-LLM path.
+    """
+
+    def _adapter(self, monkeypatch, **env):
+        for key in _LINE_AUTH_ENVS:
+            monkeypatch.delenv(key, raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        from gateway.config import PlatformConfig
+
+        adapter = LineAdapter(PlatformConfig(
+            enabled=True,
+            extra={"channel_access_token": "tok", "channel_secret": "sec"},
+        ))
+        adapter._bot_user_id = "Ubot"
+        adapter._bot_display_name = "Hermes"
+        adapter._download_media = AsyncMock(return_value=("/cache/line.bin", "application/octet-stream"))
+        return adapter
+
+    def _gated(self, monkeypatch, **extra):
+        env = {
+            "LINE_ALLOW_ALL_USERS": "false",
+            "LINE_ALLOWED_USERS": "Uowner,Udm",
+            "LINE_ALLOWED_GROUPS": "Cneed,Cfree",
+            "LINE_ALLOWED_ROOMS": "Rneed,Rfree",
+            "LINE_REQUIRE_MENTION_CHATS": "Cneed,Rneed",
+        }
+        env.update(extra)
+        return self._adapter(monkeypatch, **env)
+
+    @staticmethod
+    def _dispatch(adapter, source, message, webhook_id):
+        captured = {}
+
+        async def _capture(event):
+            captured["event"] = event
+
+        adapter.handle_message = _capture
+        asyncio.run(adapter._dispatch_event({
+            "type": "message",
+            "source": source,
+            "message": message,
+            "replyToken": "rt",
+            "webhookEventId": webhook_id,
+        }))
+        return captured.get("event")
+
+    def test_defaults_are_empty_and_do_not_filter(self, monkeypatch):
+        adapter = self._adapter(
+            monkeypatch, LINE_ALLOW_ALL_USERS="false", LINE_ALLOWED_GROUPS="Cfree")
+        assert adapter.require_mention_chats == set()
+        assert adapter.reply_without_mention_media_types == set()
+        assert adapter.ignore_group_message_types == set()
+        event = self._dispatch(adapter, _group("Cfree"), _text("hello"), "default-text")
+        assert event is not None and event.text == "hello"
+        sticker = self._dispatch(
+            adapter, _group("Cfree"),
+            {"type": "sticker", "id": "s1", "keywords": ["fun"]}, "default-sticker")
+        assert sticker is not None and sticker.text == "[sticker: fun]"
+
+    @pytest.mark.parametrize("source,webhook", [(_group(), "g-plain"), (_room(), "r-plain")])
+    def test_unmentioned_text_dropped_in_required_chats(self, monkeypatch, source, webhook):
+        adapter = self._gated(monkeypatch)
+        assert self._dispatch(adapter, source, _text("hello"), webhook) is None
+        adapter._download_media.assert_not_awaited()
+
+    @pytest.mark.parametrize("source,webhook", [(_group(), "g-self"), (_room(), "r-self")])
+    def test_is_self_mention_strips_span_and_dispatches(self, monkeypatch, source, webhook):
+        adapter = self._gated(monkeypatch)
+        event = self._dispatch(
+            adapter, source,
+            _text("@Hermes hello", [_bot_mention(0, 7)]), webhook)
+        assert event is not None
+        assert event.text == "hello"
+        assert event.source.chat_type == source["type"]
+
+    def test_user_id_mention_matches_when_is_self_is_absent(self, monkeypatch):
+        adapter = self._gated(monkeypatch)
+        event = self._dispatch(
+            adapter, _group(),
+            _text("@Hermes ping", [_bot_mention(0, 7, is_self=None)]), "g-uid")
+        assert event is not None and event.text == "ping"
+
+    def test_is_self_matches_even_if_cached_user_id_differs(self, monkeypatch):
+        adapter = self._gated(monkeypatch)
+        adapter._bot_user_id = "Uother"
+        event = self._dispatch(
+            adapter, _room(),
+            _text("@Hermes hi", [_bot_mention(0, 7, user_id="Ubot")]), "r-isself")
+        assert event is not None and event.text == "hi"
+
+    def test_user_id_alone_does_not_match_without_cached_bot_id(self, monkeypatch):
+        adapter = self._gated(monkeypatch)
+        adapter._bot_user_id = None
+        assert self._dispatch(
+            adapter, _group(),
+            _text("@Hermes hi", [_bot_mention(0, 7, is_self=None)]), "g-nobot") is None
+
+    def test_at_all_and_other_users_do_not_open_the_gate(self, monkeypatch):
+        adapter = self._gated(monkeypatch)
+        assert self._dispatch(
+            adapter, _group(),
+            _text("@All hello", [{"index": 0, "length": 4, "type": "all"}]), "g-all") is None
+        assert self._dispatch(
+            adapter, _room(),
+            _text("@Bob hi", [_bot_mention(0, 4, is_self=False, user_id="Usomeone")]),
+            "r-other") is None
+
+    def test_mention_span_in_the_middle_is_stripped(self, monkeypatch):
+        adapter = self._gated(monkeypatch)
+        event = self._dispatch(
+            adapter, _group("Cfree"),
+            _text("hey @Hermes there", [_bot_mention(4, 7)]), "g-mid")
+        assert event is not None and event.text == "hey there"
+
+    def test_other_users_mention_is_left_in_place(self, monkeypatch):
+        adapter = self._gated(monkeypatch)
+        event = self._dispatch(
+            adapter, _group("Cfree"),
+            _text("@Bob hi", [_bot_mention(0, 4, is_self=False, user_id="Usomeone")]),
+            "g-keep")
+        assert event is not None and event.text == "@Bob hi"
+
+    @pytest.mark.parametrize("source,webhook", [(_group("Cfree"), "g-free"), (_room("Rfree"), "r-free")])
+    def test_unlisted_allowlisted_chat_responds_without_mention(self, monkeypatch, source, webhook):
+        adapter = self._gated(monkeypatch)
+        event = self._dispatch(adapter, source, _text("hello"), webhook)
+        assert event is not None and event.text == "hello"
+
+    def test_allow_all_still_mention_gates_listed_chats_only(self, monkeypatch):
+        adapter = self._adapter(
+            monkeypatch,
+            LINE_ALLOW_ALL_USERS="true",
+            LINE_REQUIRE_MENTION_CHATS="Cneed",
+        )
+        assert self._dispatch(adapter, _group("Cneed"), _text("hello"), "all-drop") is None
+        event = self._dispatch(adapter, _group("Cfree"), _text("hello"), "all-free")
+        assert event is not None and event.text == "hello"
+        mentioned = self._dispatch(
+            adapter, _group("Cneed"),
+            _text("@Hermes hi", [_bot_mention(0, 7)]), "all-hit")
+        assert mentioned is not None and mentioned.text == "hi"
+
+    def test_help_bypasses_mention_gate_and_strips_the_tag(self, monkeypatch):
+        adapter = self._gated(monkeypatch)
+        bare = self._dispatch(adapter, _group(), _text("/help"), "g-help")
+        assert bare is not None and bare.text == "/help"
+        tagged = self._dispatch(
+            adapter, _room(),
+            _text("@Hermes /help", [_bot_mention(0, 7)]), "r-help")
+        assert tagged is not None and tagged.text == "/help"
+
+    def test_unknown_or_cli_only_slash_does_not_bypass(self, monkeypatch):
+        adapter = self._gated(monkeypatch)
+        assert self._dispatch(adapter, _group(), _text("/not-a-real-command"), "g-nope") is None
+        assert self._dispatch(adapter, _room(), _text("/clear"), "r-clear") is None
+
+    def test_dm_is_never_mention_gated(self, monkeypatch):
+        adapter = self._gated(monkeypatch, LINE_REQUIRE_MENTION_CHATS="Cneed,Rneed,Udm")
+        event = self._dispatch(adapter, _dm(), _text("hello"), "dm-text")
+        assert event is not None and event.text == "hello"
+        assert event.source.chat_type == "dm"
+
+    def test_mention_list_does_not_authorize_an_unlisted_chat(self, monkeypatch):
+        adapter = self._gated(monkeypatch, LINE_REQUIRE_MENTION_CHATS="Cneed,Cother")
+        assert self._dispatch(
+            adapter, _group("Cother"),
+            _text("@Hermes hi", [_bot_mention(0, 7)]), "g-unauth") is None
+
+    def test_require_list_splits_whitespace(self, monkeypatch):
+        adapter = self._adapter(
+            monkeypatch,
+            LINE_ALLOW_ALL_USERS="false",
+            LINE_ALLOWED_GROUPS="Cneed",
+            LINE_ALLOWED_ROOMS="Rneed",
+            LINE_REQUIRE_MENTION_CHATS=" Cneed , Rneed ",
+        )
+        assert adapter.require_mention_chats == {"Cneed", "Rneed"}
+        assert self._dispatch(adapter, _room(), _text("hello"), "r-ws") is None
+
+    def test_configured_media_bypasses_mention_and_other_types_do_not(self, monkeypatch):
+        adapter = self._gated(
+            monkeypatch, LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES="image, video")
+        assert adapter.reply_without_mention_media_types == {"image", "video"}
+        image = self._dispatch(
+            adapter, _group(), {"type": "image", "id": "img1"}, "g-image")
+        assert image is not None and image.text == "[image]"
+        assert image.media_urls == ["/cache/line.bin"]
+        video = self._dispatch(
+            adapter, _room(), {"type": "video", "id": "vid1"}, "r-video")
+        assert video is not None and video.text == "[video]"
+        assert self._dispatch(
+            adapter, _group(), {"type": "audio", "id": "aud1"}, "g-audio") is None
+        assert self._dispatch(adapter, _room(), _text("hello"), "r-text") is None
+        assert self._dispatch(
+            adapter, _group(), {"type": "sticker", "id": "st1"}, "g-sticker-block") is None
+        # audio/text/sticker never reach download; image and video do.
+        assert adapter._download_media.await_count == 2
+
+    def test_voice_alias_lets_audio_through(self, monkeypatch):
+        adapter = self._gated(monkeypatch, LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES="voice")
+        assert adapter.reply_without_mention_media_types == {"audio"}
+        event = self._dispatch(
+            adapter, _group(), {"type": "audio", "id": "aud2"}, "g-voice")
+        assert event is not None and event.text == "[audio]"
+
+    def test_text_token_does_not_bypass_mention(self, monkeypatch):
+        adapter = self._gated(
+            monkeypatch, LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES="text,image")
+        assert "text" not in adapter.reply_without_mention_media_types
+        assert "image" in adapter.reply_without_mention_media_types
+        assert self._dispatch(adapter, _group(), _text("hello"), "g-text-no") is None
+
+    @pytest.mark.parametrize("source,webhook", [(_group("Cfree"), "g-emo"), (_room("Rfree"), "r-emo")])
+    def test_sticker_and_pure_emoji_ignored_in_groups_and_rooms(self, monkeypatch, source, webhook):
+        adapter = self._gated(monkeypatch, LINE_IGNORE_GROUP_MESSAGE_TYPES="sticker,emoji")
+        assert self._dispatch(
+            adapter, source, {"type": "sticker", "id": "st", "keywords": ["fun"]}, webhook + "-st") is None
+        assert self._dispatch(adapter, source, _emoji(), webhook + "-em") is None
+        # Whitespace around a LINE emoji placeholder is still emoji-only.
+        padded = _emoji(" (laugh) ", spans=[(1, 7)])
+        assert self._dispatch(adapter, source, padded, webhook + "-pad") is None
+
+    def test_mixed_text_and_emoji_is_not_ignored(self, monkeypatch):
+        adapter = self._gated(monkeypatch, LINE_IGNORE_GROUP_MESSAGE_TYPES="sticker,emoji")
+        event = self._dispatch(
+            adapter, _group("Cfree"), _emoji("hi (laugh)", spans=[(3, 7)]), "g-mixed")
+        assert event is not None
+        assert event.text == "hi (laugh)"
+
+    def test_ignore_runs_before_mention_and_media_bypass(self, monkeypatch):
+        adapter = self._gated(
+            monkeypatch,
+            LINE_IGNORE_GROUP_MESSAGE_TYPES="image,sticker",
+            LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES="image,video",
+        )
+        assert self._dispatch(
+            adapter, _group(),
+            {"type": "sticker", "id": "st", "mention": {"mentionees": [_bot_mention(0, 1)]}},
+            "g-st-first") is None
+        assert self._dispatch(
+            adapter, _room(), {"type": "image", "id": "img"}, "r-img-first") is None
+        video = self._dispatch(
+            adapter, _group(), {"type": "video", "id": "vid"}, "g-vid-ok")
+        assert video is not None and video.text == "[video]"
+        adapter._download_media.assert_awaited_once()
+
+    def test_photo_alias_ignores_images(self, monkeypatch):
+        adapter = self._gated(monkeypatch, LINE_IGNORE_GROUP_MESSAGE_TYPES="photo")
+        assert adapter.ignore_group_message_types == {"image"}
+        assert self._dispatch(
+            adapter, _group("Cfree"), {"type": "image", "id": "img"}, "g-photo") is None
+
+    def test_text_token_does_not_ignore_chat(self, monkeypatch):
+        adapter = self._gated(monkeypatch, LINE_IGNORE_GROUP_MESSAGE_TYPES="text,sticker")
+        assert adapter.ignore_group_message_types == {"sticker"}
+        event = self._dispatch(adapter, _group("Cfree"), _text("hello"), "g-text-keep")
+        assert event is not None and event.text == "hello"
+
+    def test_dm_is_never_type_filtered(self, monkeypatch):
+        adapter = self._gated(monkeypatch, LINE_IGNORE_GROUP_MESSAGE_TYPES="sticker,emoji,image")
+        sticker = self._dispatch(
+            adapter, _dm(), {"type": "sticker", "id": "st", "keywords": ["fun"]}, "dm-st")
+        assert sticker is not None and sticker.text == "[sticker: fun]"
+        emoji = self._dispatch(adapter, _dm(), _emoji(), "dm-em")
+        assert emoji is not None and emoji.text == "(laugh)"
+        image = self._dispatch(adapter, _dm(), {"type": "image", "id": "img"}, "dm-img")
+        assert image is not None and image.text == "[image]"
+
+    def test_postback_in_mention_required_group_still_delivers(self, monkeypatch):
+        adapter = self._gated(monkeypatch, LINE_IGNORE_GROUP_MESSAGE_TYPES="sticker,emoji")
+        adapter._client = MagicMock()
+        adapter._client.reply = AsyncMock()
+        adapter._client.push = AsyncMock()
+        rid = adapter._cache.register_pending("Cneed")
+        adapter._cache.set_ready(rid, "cached answer")
+        asyncio.run(adapter._dispatch_event({
+            "type": "postback",
+            "source": _group(),
+            "replyToken": "rt",
+            "postback": {"data": json.dumps({"action": "show_response", "request_id": rid})},
+            "webhookEventId": "pb-mention",
+        }))
+        adapter._client.reply.assert_awaited_once()
+        assert adapter._client.reply.await_args.args[1][0]["text"] == "cached answer"
+        assert adapter._cache.get(rid).state is State.DELIVERED
+
+
+class TestLineFilterDashboardEnv:
+    """The three filters are Dashboard fields beside the group/room allowlists."""
+
+    def test_plugin_yaml_and_catalog_expose_the_three_vars(self):
+        from pathlib import Path
+
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        from hermes_cli.plugins import discover_plugins
+        from hermes_cli.plugins_manifest import parse_manifest_file
+        from hermes_cli.web_routers.messaging import _messaging_env_info
+        from hermes_cli.web_server_messaging import _messaging_platform_catalog
+        from gateway.platform_registry import platform_registry
+
+        manifest_path = Path(__file__).resolve().parents[2] / "plugins" / "platforms" / "line" / "plugin.yaml"
+        manifest = parse_manifest_file(manifest_path, manifest_path.parent, "bundled", "platforms")
+        assert manifest is not None
+        names = manifest.dashboard_env_vars
+        rooms = names.index("LINE_ALLOWED_ROOMS")
+        assert names[rooms - 1] == "LINE_ALLOWED_GROUPS"
+        assert names[rooms + 1:rooms + 4] == (
+            "LINE_REQUIRE_MENTION_CHATS",
+            "LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES",
+            "LINE_IGNORE_GROUP_MESSAGE_TYPES",
+        )
+
+        ignore = OPTIONAL_ENV_VARS["LINE_IGNORE_GROUP_MESSAGE_TYPES"]
+        media = OPTIONAL_ENV_VARS["LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES"]
+        mention = OPTIONAL_ENV_VARS["LINE_REQUIRE_MENTION_CHATS"]
+        assert ignore["password"] is False and ignore["placeholder"] == "sticker,emoji"
+        assert "sticker,emoji" in ignore["help"]
+        assert media["placeholder"] == "image,video"
+        assert mention["is_list"] is True and mention["placeholder"] == "Cxxxx,Rxxxx"
+        for meta in (ignore, media, mention):
+            assert meta["category"] == "messaging"
+            assert meta["description"] and meta["prompt"]
+
+        assert _messaging_env_info("LINE_IGNORE_GROUP_MESSAGE_TYPES")["placeholder"] == "sticker,emoji"
+        assert _messaging_env_info("LINE_IGNORE_GROUP_MESSAGE_TYPES")["is_list"] is False
+        assert _messaging_env_info("LINE_REQUIRE_MENTION_CHATS")["is_list"] is True
+        assert _messaging_env_info("LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES")["help"]
+
+        discover_plugins()
+        entry = platform_registry.get("line")
+        assert entry is not None
+        assert entry.dashboard_env_vars[rooms + 1:rooms + 4] == names[rooms + 1:rooms + 4]
+        card = next(item for item in _messaging_platform_catalog() if item["id"] == "line")
+        env_vars = card["env_vars"]
+        card_rooms = env_vars.index("LINE_ALLOWED_ROOMS")
+        assert env_vars[card_rooms - 1] == "LINE_ALLOWED_GROUPS"
+        assert env_vars[card_rooms + 1:card_rooms + 4] == names[rooms + 1:rooms + 4]
+        assert env_vars.count("LINE_REQUIRE_MENTION_CHATS") == 1
+        assert env_vars.count("LINE_IGNORE_GROUP_MESSAGE_TYPES") == 1
+
+
+class TestLineBotInfo:
+    def test_get_bot_info_reads_user_id_and_display_name(self, monkeypatch):
+        import aiohttp
+
+        class _Resp:
+            def __init__(self, status, payload):
+                self.status = status
+                self._payload = payload
+
+            async def json(self):
+                return self._payload
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class _Session:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def get(self, *_args, **_kwargs):
+                return _Resp(200, {"userId": "Ubot", "displayName": "Hermes", "basicId": "@hermes"})
+
+        monkeypatch.setattr(aiohttp, "ClientSession", _Session)
+        info = asyncio.run(_line._LineClient("tok").get_bot_info())
+        assert info == {"userId": "Ubot", "displayName": "Hermes"}
+
+    def test_get_bot_info_returns_empty_on_http_error(self, monkeypatch):
+        import aiohttp
+
+        class _Resp:
+            status = 401
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class _Session:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def get(self, *_args, **_kwargs):
+                return _Resp()
+
+        monkeypatch.setattr(aiohttp, "ClientSession", _Session)
+        assert asyncio.run(_line._LineClient("tok").get_bot_info()) == {}
+
+    @pytest.mark.asyncio
+    async def test_connect_caches_bot_user_id_and_display_name(self, monkeypatch):
+        from gateway.config import PlatformConfig
+
+        async def _bind(*_args, **_kwargs):
+            return MagicMock()
+
+        monkeypatch.setattr("gateway.platforms.shared_ingress.bind_listener", _bind)
+        monkeypatch.setattr(
+            "gateway.status.acquire_scoped_lock", lambda *_a, **_k: (True, None))
+        monkeypatch.setattr(
+            _line._LineClient, "get_bot_info",
+            AsyncMock(return_value={"userId": "Ubot", "displayName": "Hermes"}))
+        adapter = LineAdapter(PlatformConfig(
+            enabled=True, extra={"channel_access_token": "tok", "channel_secret": "sec"}))
+        assert await adapter.connect() is True
+        assert adapter._bot_user_id == "Ubot"
+        assert adapter._bot_display_name == "Hermes"
+        await adapter.disconnect()
+

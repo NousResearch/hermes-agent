@@ -143,7 +143,7 @@ function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
   return {
     label: localized.label || field.prompt || field.key,
     help: localized.help || field.description,
-    placeholder: localized.placeholder || field.prompt,
+    placeholder: localized.placeholder || field.placeholder || field.prompt,
     advanced: Boolean(copy.advanced || field.advanced)
   }
 }

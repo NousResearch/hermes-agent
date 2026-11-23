@@ -3750,10 +3750,10 @@ def _inject_platform_plugin_env_vars() -> frozenset[str] | None:
                 continue  # hardcoded entry wins (back-compat)
             OPTIONAL_ENV_VARS[name] = {
                 "description": meta.get("description") or f"{label} configuration",
-                "prompt": meta.get("prompt") or name,
-                "url": meta.get("url") or None,
-                "password": is_secret,
-                "category": meta.get("category") or "messaging"}
+                "prompt": meta.get("prompt") or name, "url": meta.get("url") or None,
+                "password": is_secret, "category": meta.get("category") or "messaging",
+                **{k: meta[k] for k in ("help", "placeholder") if meta.get(k)},
+                **({"is_list": True} if meta.get("is_list") is True else {})}
     return _manifest_secret_envs(bundled, _STATIC_CORE_ENV_NAMES) if bundled is not None else None
 
 

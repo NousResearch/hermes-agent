@@ -467,6 +467,9 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 | `LINE_ALLOWED_USERS` | 允许私信 bot 的逗号分隔用户 ID（`U` 前缀）。 |
 | `LINE_ALLOWED_GROUPS` | bot 将在其中响应的逗号分隔群组 ID（`C` 前缀）。 |
 | `LINE_ALLOWED_ROOMS` | bot 将在其中响应的逗号分隔房间 ID（`R` 前缀）。 |
+| `LINE_REQUIRE_MENTION_CHATS` | 逗号分隔的群组/房间 ID（`C…`/`R…`），仅在被 @ 时回复。其余已允许的聊天照常回复。私聊从不受限。默认：空。 |
+| `LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES` | 可跳过 @ 要求的消息类型（`image`、`video` 等），逗号分隔。默认：空（不跳过）。 |
+| `LINE_IGNORE_GROUP_MESSAGE_TYPES` | 在群组/房间中、分发前丢弃的类型（`sticker`、`emoji` 等）。`emoji` 指纯表情文本，不含文字与表情混合。私聊从不过滤。默认：空。 |
 | `LINE_ALLOW_ALL_USERS` | 仅用于开发的逃生舱——接受任意来源。默认：`false`。 |
 | `LINE_HOME_CHANNEL` | `deliver: line` 的 cron 任务的默认投递目标。 |
 | `LINE_SLOW_RESPONSE_THRESHOLD` | 慢速 LLM Template Buttons postback 触发前的等待秒数（默认：`45`）。设为 `0` 可禁用并始终使用 Push 回退。 |

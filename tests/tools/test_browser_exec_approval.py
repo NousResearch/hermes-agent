@@ -130,15 +130,18 @@ def test_a_helpers_file_that_cannot_be_shown_refuses_the_call(gateway_user, harn
     assert "larger than" in result["error"] and prompts == [] and harness == []
 
 
-def test_env_secrets_are_masked_in_what_is_assessed_and_shown(gateway_user, harness, workspace):
-    """The listing reaches the smart approver's model and a chat card; .env secrets never went to either."""
-    answers, prompts = gateway_user
+def test_env_secrets_never_reach_the_smart_approvers_model(gateway_user, harness, workspace, monkeypatch):
+    """The listing goes to the smart approver's model, and a workspace .env's values never went to any model."""
+    from tools import approval_smart
+
+    assessed = []
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
+    monkeypatch.setattr(approval_smart, "_smart_approve", lambda command, description: assessed.append(command) or "deny")
     secret = "sk-proj-" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6"
     (workspace / ".env").write_text(f"OPENAI_API_KEY={secret}\nPYTHONSTARTUP=/tmp/x.py\n")
-    answers.append("deny")
     _exec()
-    shown = json.dumps(prompts[0])
-    assert secret not in shown and "OPENAI_API_KEY" in shown and "PYTHONSTARTUP=/tmp/x.py" in shown
+    assert len(assessed) == 1 and harness == []
+    assert secret not in assessed[0] and "OPENAI_API_KEY" in assessed[0] and "PYTHONSTARTUP=/tmp/x.py" in assessed[0]
 
 
 def test_helpers_rewritten_while_the_prompt_waits_are_refused(manual, harness, workspace, monkeypatch):

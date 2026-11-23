@@ -55,7 +55,7 @@ describe('approvalKindFields', () => {
       approvalKindFields({
         access: 'read_write',
         kind: 'access',
-        path: ' C:\\Users\\me\\docs ',
+        path: 'C:\\Users\\me\\docs',
         risk: ' Holds tax returns '
       })
     ).toEqual({
@@ -86,7 +86,7 @@ describe('approvalKindFields', () => {
 
   it('reads a site target and its optional label', () => {
     expect(
-      approvalKindFields({ host: 'api.keenable.ai', kind: 'network', label: ' Web search (api.keenable.ai) ' }).target
+      approvalKindFields({ host: 'api.keenable.ai', kind: 'network', label: 'Web search (api.keenable.ai)' }).target
     ).toEqual({ host: 'api.keenable.ai', label: 'Web search (api.keenable.ai)' })
     expect(approvalKindFields({ host: 'example.com', kind: 'network', label: '  ' }).target).toEqual({
       host: 'example.com'
@@ -121,6 +121,37 @@ describe('approvalKindFields', () => {
       target: { path: folder.path }
     })
     expect(approvalKindFields({ kind: 'network', ...site }).target).toEqual(site)
+  })
+
+  it('keeps every space of a folder, a site and a label, and marks a space at either end', () => {
+    // Two folders that differ only in spacing must not read the same, so nothing is trimmed. A
+    // space at either end would not be seen: each is shown as "␣".
+    expect(approvalKindFields({ kind: 'access', path: ' /srv/Project  Files  ' }).target).toEqual({
+      path: '␣/srv/Project  Files␣␣'
+    })
+    expect(approvalKindFields({ host: 'files.example ', kind: 'network', label: ' Web  search' }).target).toEqual({
+      host: 'files.example␣',
+      label: '␣Web  search'
+    })
+  })
+
+  it('shows a space that is not the ordinary one as an escape, so that it cannot pass for a space', () => {
+    expect(approvalKindFields({ kind: 'access', path: '/srv/a\u00A0b/c\u3000d' }).target).toEqual({
+      path: '/srv/a\\xa0b/c\\u3000d'
+    })
+    // The mark for a space at either end stays unambiguous: a real "␣" in a name is an escape.
+    expect(approvalKindFields({ host: 'a\u2423b', kind: 'network' }).target).toEqual({ host: 'a\\u2423b' })
+  })
+
+  it('reads a folder or a site of white space only as none', () => {
+    expect(approvalNamesNothing(approvalKindFields({ kind: 'access', path: ' \t\u00A0 ' }))).toBe(true)
+    expect(approvalNamesNothing(approvalKindFields({ host: '   ', kind: 'network', label: 'Web search' }))).toBe(true)
+  })
+
+  it('trims the risk line, which is the sender’s sentence about the request', () => {
+    expect(approvalKindFields({ kind: 'access', path: '/srv', risk: '  The agent can read this folder.  ' }).risk).toBe(
+      'The agent can read this folder.'
+    )
   })
 })
 

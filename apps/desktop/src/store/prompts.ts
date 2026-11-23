@@ -137,9 +137,30 @@ function escapeHiddenChar(char: string): string {
       : `\\U${hex.padStart(8, '0')}`
 }
 
-/** One line of a card as the user reads it: trimmed, with hidden characters made visible. */
+/** The sender's sentence about a request, as the user reads it: trimmed, with hidden characters
+ *  made visible. */
 const wireText = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() ? value.trim().replace(HIDDEN_CHARS, escapeHiddenChar) : undefined
+
+// A space separator other than U+0020 is drawn like a space, and U+2423 is the mark `nameText`
+// puts where a space would not be seen: in a name both are shown as escapes.
+const LOOKALIKE_SPACES = /(?! )[\p{Zs}\u2423]/gu
+
+/** A folder, a site or a site's label as the user reads it: the name whole, so that two names
+ *  that differ only in spacing never read the same. Nothing is trimmed; a space at either end is
+ *  shown as "␣". A name of white space only is no name. */
+const nameText = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim()
+    ? value
+        .replace(HIDDEN_CHARS, escapeHiddenChar)
+        .replace(LOOKALIKE_SPACES, escapeHiddenChar)
+        .replace(/^ +| +$/g, spaces => '\u2423'.repeat(spaces.length))
+    : undefined
+
+/** `name` for a place that may draw a run of spaces as one blank (a system notification, a
+ *  toast): each space after the first of a run becomes a no-break space, which is always drawn. */
+export const withSpaceRuns = (name: string): string =>
+  name.replace(/ {2,}/g, spaces => ` ${'\u00a0'.repeat(spaces.length - 1)}`)
 
 /** The kind, target and risk an approval payload carries (live request params,
  *  `approval.pending` entries, resume snapshots). Missing or unknown kinds read
@@ -153,14 +174,14 @@ export function approvalKindFields(raw: Record<string, unknown> | null | undefin
   const fields: ApprovalKindFields = { kind: raw.kind, ...(risk ? { risk } : {}) }
 
   if (raw.kind === 'access') {
-    const path = wireText(raw.path)
+    const path = nameText(raw.path)
     const access = raw.access === 'read' || raw.access === 'read_write' ? raw.access : undefined
 
     return path ? { ...fields, target: { path, ...(access ? { access } : {}) } } : fields
   }
 
-  const host = wireText(raw.host)
-  const label = wireText(raw.label)
+  const host = nameText(raw.host)
+  const label = nameText(raw.label)
 
   return host ? { ...fields, target: { host, ...(label ? { label } : {}) } } : fields
 }

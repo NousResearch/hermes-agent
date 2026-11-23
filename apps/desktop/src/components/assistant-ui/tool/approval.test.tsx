@@ -494,6 +494,31 @@ describe('folder and site approval cards', () => {
     expect(screen.queryByText('dangerous command')).toBeNull()
   })
 
+  it.each([
+    ['a folder', () => setAccess(approvalKindFields({ access: 'read', kind: 'access', path: '/srv/Project  Files' }))],
+    ['a site', () => setSite(approvalKindFields({ host: 'example.com', kind: 'network', label: 'Web  search' }))]
+  ])('draws %s with its spaces as they are, on the card and in the Always allow dialog', async (_name, park) => {
+    // Ordinary text joins a run of spaces into one, and "/srv/Project  Files" would read as
+    // "/srv/Project Files", which is another folder.
+    park()
+    const { container } = render(<PendingApprovalStack />)
+    const name = /Project {2}Files|Web {2}search/
+
+    // The white-space values that draw every space of a text.
+    const keepsSpaces = /^(pre|pre-wrap|break-spaces)$/
+
+    const drawnAsWritten = (root: ParentNode) =>
+      Array.from(root.querySelectorAll('[data-slot="tool-approval-target"] *'))
+        .filter(element => name.test(element.textContent ?? '') && !element.children.length)
+        .map(element => keepsSpaces.test(getComputedStyle(element).whiteSpace))
+
+    expect(drawnAsWritten(container)).toEqual([true])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Always allow…' }))
+
+    expect(drawnAsWritten(await screen.findByRole('dialog'))).toEqual([true])
+  })
+
   it('names a read-only folder as read only', () => {
     setAccess({ target: { access: 'read', path: 'C:\\Users\\me\\docs' } })
     render(<PendingApprovalStack />)

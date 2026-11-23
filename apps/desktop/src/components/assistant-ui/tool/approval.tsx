@@ -254,6 +254,10 @@ interface ApprovalCardProps {
   stack: CardStackAction
 }
 
+// A folder or a site is drawn with its spaces as they are: ordinary text joins a run of spaces
+// into one, and two names that differ only in spacing would read the same.
+const NAME_STYLE = { whiteSpace: 'pre-wrap' } as const
+
 /** The folder or site a folder / site card names, plus its risk line. */
 function ApprovalTargetLines({ request }: { request: ApprovalRequest }) {
   const { t } = useI18n()
@@ -265,7 +269,9 @@ function ApprovalTargetLines({ request }: { request: ApprovalRequest }) {
     <div className="grid gap-0.5 px-2.5 py-2 text-xs leading-relaxed" data-slot="tool-approval-target">
       {access ? (
         <p className="m-0 min-w-0 [overflow-wrap:anywhere]">
-          <span className="font-mono text-(--ui-text-primary)">{access.path}</span>
+          <span className="font-mono text-(--ui-text-primary)" style={NAME_STYLE}>
+            {access.path}
+          </span>
           {access.access && (
             <span className="text-(--ui-text-secondary)">
               {' · '}
@@ -275,7 +281,9 @@ function ApprovalTargetLines({ request }: { request: ApprovalRequest }) {
         </p>
       ) : network ? (
         <p className="m-0 min-w-0 [overflow-wrap:anywhere]">
-          <span className="font-mono text-(--ui-text-primary)">{networkTargetName(network)}</span>
+          <span className="font-mono text-(--ui-text-primary)" style={NAME_STYLE}>
+            {networkTargetName(network)}
+          </span>
         </p>
       ) : (
         request.description.trim() && <p className="m-0 min-w-0 break-words">{request.description.trim()}</p>

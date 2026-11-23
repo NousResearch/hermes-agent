@@ -300,13 +300,25 @@ def test_reverse_shell_rule_ignores_an_exec_argument_of_another_command(descript
     assert matcher.search(command) is None
 
 
-def test_gated_matcher_marks_with_a_character_the_text_lacks():
+def test_gated_matcher_treats_private_use_text_as_the_stdlib_rule_does():
     matcher = next(p for p, d in DANGEROUS_PATTERNS_COMPILED if d == _NC)
     assert matcher.search("nc -e sh \ue000\ue001")
     assert not matcher.search("nc\ue000 -e sh")
     assert not matcher.search("echo nc -e \ue000")
-    # A private-use character already in the text never stands for a mark: here it follows a command-position `nc`.
+    # The text's own private-use characters never stand for a mark: here one follows a command-position `nc`.
     assert not matcher.search("nc\ue000 -e x\necho nc -e y")
+    exact = re.compile(_CMDPOS.replace(_CMD_PATH, _STDLIB_CMD_PATH) + _NC_RULE, re.IGNORECASE | re.DOTALL)
+    for mark in ("\ue000", "\ue001"):
+        for command in (f"nc{mark} -e sh", f"nc -e {mark}", f"{mark}\nnc -e sh", f"nc {mark}-e sh", f"x{mark}nc -e sh"):
+            assert bool(matcher.search(command)) == bool(exact.search(command)), command
+
+
+def test_gated_matcher_survives_a_text_holding_every_private_use_character():
+    # Every character of the private-use planes: no mark can be one the text lacks, and the verdict must still come.
+    planes = "".join(map(chr, itertools.chain(range(0xE000, 0xF900), range(0xF0000, 0xFFFFE), range(0x100000, 0x10FFFE))))
+    matcher = next(p for p, d in DANGEROUS_PATTERNS_COMPILED if d == _NC)
+    assert matcher.search(planes + "\nnc -e sh")
+    assert not matcher.search(planes + "\nnc -x sh")
 
 
 def test_reverse_shell_gate_work_stays_linear_with_many_names():

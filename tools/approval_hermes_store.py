@@ -6,7 +6,6 @@ The sensitive-path fragments (credential, SSH, shell-rc, Hermes config/env and s
 live here too: the detection tables compose them, and that module is at its size cap.
 """
 import functools
-import itertools
 
 import hermes_re as re
 
@@ -160,30 +159,31 @@ class _NextStart:
         return len(self._text) if self._start is None else self._start
 
 
-# Private-use code points that can mark gated positions in a copy of the text (EndGatedMatcher): one the text lacks.
-_MARK_RANGES = (range(0xE000, 0xF900), range(0xF0000, 0xFFFFE), range(0x100000, 0x10FFFE))
+# EndGatedMatcher marks gated positions with _MARK in a copy of the text; the text's own _MARK characters become
+# _MARK_STAND_IN there, a private-use character every rule treats as it treats _MARK (neither is a word character, a
+# blank or a shell metacharacter). One fixed mark: a text cannot exhaust the marks, and each rule holds one pattern.
+_MARK = "\ue000"
+_MARK_STAND_IN = "\ue001"
 
 
 class EndGatedMatcher:
     """``search(text)`` -> a truthy match where ``head`` matches ending at a position the gate passes: the stdlib rule's
     lookaround (or possessive run) right after ``head``, decided in Python. ``ends`` finds the candidate ends (each the
     end of a match) and ``gate(text)`` returns the test for one end. The ends that pass are marked by inserting a
-    private-use character the text lacks, and ``head`` followed by that mark is searched in the marked copy. A mark
+    private-use character (_MARK), and ``head`` followed by that mark is searched in the marked copy. A mark
     sits after a word character and before a non-word one, where ``head`` may cross only with classes that take any
     non-blank character, so a mark changes nothing else that ``head`` can match."""
 
     def __init__(self, head: str, ends: str, gate):
-        self._head, self._ends, self._gate, self._marked = head, re.compile(ends, _FLAGS), gate, {}
+        self._ends, self._gate, self._marked = re.compile(ends, _FLAGS), gate, re.compile(head + _MARK, _FLAGS)
 
     def search(self, text: str):
         passes = self._gate(text)
         cuts = [found.end() for found in self._ends.finditer(text) if passes(found.end())]
         if not cuts:
             return None
-        mark = next(char for char in map(chr, itertools.chain(*_MARK_RANGES)) if char not in text)
-        if mark not in self._marked:
-            self._marked[mark] = re.compile(self._head + mark, _FLAGS)
-        return self._marked[mark].search(mark.join(text[i:j] for i, j in zip([0, *cuts], [*cuts, len(text)])))
+        plain = text.replace(_MARK, _MARK_STAND_IN)
+        return self._marked.search(_MARK.join(plain[i:j] for i, j in zip([0, *cuts], [*cuts, len(text)])))
 
 
 # touch/mkdir naming a sensitive home target. `touch -r REF` / `--reference REF` only reads REF (its timestamps), so

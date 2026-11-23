@@ -2139,10 +2139,19 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[dict[str, Any]]:
-    """Pause a job without deleting it. Accepts a job ID or name."""
+    """Pause a job without deleting it. Accepts a job ID or name.
+
+    A job that has finished has nothing to pause. Saying so here keeps the caller from the
+    terminal-activation guard in ``update_job``, whose message is about resuming and which a
+    surface that does not expect it turned into a 500.
+    """
     job = resolve_job_ref(job_id)
     if not job:
         return None
+    if is_terminal_job(job) and not _is_recoverable_error_job(job):
+        raise ValueError(
+            f"Cannot pause '{job.get('name', job['id'])}': it has finished and has no scheduled "
+            "runs left.")
     return update_job(job["id"], {
         "enabled": False,
         "state": "paused",

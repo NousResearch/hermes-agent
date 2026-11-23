@@ -228,6 +228,17 @@ describe('the Routines page', () => {
     await waitFor(() => expect(api.resumeCronJob).toHaveBeenCalledWith(paused.id, { profile: 'default' }))
   })
 
+  it('offers neither Pause nor Resume on a routine that has finished its runs', () => {
+    const finished = { ...brief, enabled: false, id: 'job-done', name: 'One-off report', state: 'completed' } as CronJob
+    setCronJobs([brief, finished])
+    selectRoutine({ id: finished.id, profile: 'default' })
+    renderPage()
+
+    expect(screen.getByRole('button', { name: en.cron.edit })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: en.cron.pause })).toBeNull()
+    expect(screen.queryByRole('button', { name: en.cron.resume })).toBeNull()
+  })
+
   it('explains each header action in a tooltip that keyboard focus opens too', async () => {
     selectRoutine({ id: brief.id, profile: 'default' })
     renderPage()

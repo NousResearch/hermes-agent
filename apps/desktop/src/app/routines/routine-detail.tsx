@@ -118,17 +118,20 @@ function RoutineHeaderActions({ actions, job }: { actions: RoutineActions; job: 
           </Button>
         </Tip>
       )}
-      <Tip label={toggle}>
-        <Button
-          aria-label={toggle}
-          disabled={busy}
-          onClick={() => void actions.pauseResume(job)}
-          size="icon"
-          variant="secondary"
-        >
-          <Codicon name={paused ? 'play' : 'debug-pause'} />
-        </Button>
-      </Tip>
+      {/* A finished routine has no runs left to pause or resume: Run now starts it again. */}
+      {job.state !== 'completed' && (
+        <Tip label={toggle}>
+          <Button
+            aria-label={toggle}
+            disabled={busy}
+            onClick={() => void actions.pauseResume(job)}
+            size="icon"
+            variant="secondary"
+          >
+            <Codicon name={paused ? 'play' : 'debug-pause'} />
+          </Button>
+        </Tip>
+      )}
       <Tip label={c.edit}>
         <Button
           aria-label={c.edit}

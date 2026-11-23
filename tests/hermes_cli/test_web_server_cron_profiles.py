@@ -460,6 +460,31 @@ async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_pr
 
 
 @pytest.mark.asyncio
+async def test_pausing_a_finished_job_is_refused_with_its_reason(isolated_profiles):
+    from cron import jobs as cron_jobs
+
+    job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="ran its only run",
+        schedule="every 1h",
+        name="finished-job",
+    )
+
+    def finish(jobs, index, record):
+        jobs[index] = {**record, "state": "completed", "enabled": False, "next_run_at": None}
+        cron_jobs.save_jobs(jobs)
+
+    _web_server_cron._call_cron_for_profile("worker_alpha", "_with_job", job["id"], finish)
+
+    with pytest.raises(HTTPException) as exc:
+        await _rt_cron.pause_cron_job(job["id"], profile="worker_alpha")
+
+    assert exc.value.status_code == 409
+    assert "no scheduled runs left" in exc.value.detail
+
+
+@pytest.mark.asyncio
 async def test_dashboard_cron_mutations_notify_selected_profile_provider(
     isolated_profiles,
     monkeypatch,

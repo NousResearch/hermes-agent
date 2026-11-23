@@ -44,9 +44,9 @@ def zai(tmp_path, monkeypatch):
     base = f"http://127.0.0.1:{server.server_port}/v1"
     monkeypatch.setenv("GLM_BASE_URL", base)
 
-    def setup(strategy=None):
+    def setup(strategy=None, urls=None):
         rows = [PooledCredential(id=f"key-{i}", provider="zai", label=f"t-{i}", source="manual", auth_type="api_key",
-                priority=i, access_token=f"fixture-{i}", base_url=base) for i in range(3)]
+                priority=i, access_token=f"fixture-{i}", base_url=(urls or [base] * 3)[i]) for i in range(3)]
         write_credential_pool("zai", [e.to_dict() for e in rows])
         config = {"model": {"provider": "zai", "default": "glm-4.7", "base_url": base}}
         if strategy:
@@ -85,6 +85,14 @@ def test_retry_uses_the_rotated_entry_without_reloading_the_pool(zai, monkeypatc
     assert chosen and chosen[0] is not None and not isinstance(chosen[0], bool)
     assert seen[0] == "fixture-0" and seen[-1] == chosen[0].runtime_api_key  # between: the ladder's same-key backoff retry
     assert loads.count(("zai",)) == 1, loads  # only the rebuilt client's cache hint loads zai: no swap-time reload
+
+
+def test_rotation_picking_another_endpoint_falls_back_to_this_endpoints_next_row(zai):
+    base, seen, _dead, setup = zai
+    setup(urls=[base, "https://other.example/v1", base])  # rotation takes key-1 (endpoint B) next
+    runtime = {"provider": "zai", "api_key": "fixture-0", "base_url": base, "model": "glm-4.7"}
+    assert _call(runtime).choices[0].message.content == "ok"
+    assert seen[-1] == "fixture-2" and "fixture-1" not in seen  # key-1 was never issued for this endpoint
 
 
 def test_later_aux_calls_start_with_the_rotated_key(zai):

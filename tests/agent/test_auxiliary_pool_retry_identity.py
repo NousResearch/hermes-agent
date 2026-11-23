@@ -135,7 +135,7 @@ def test_swap_only_adopts_entries_not_cooled_down_for_the_runtime_model(tmp_path
     key1 = lambda: next(e for e in load_pool("zai").entries() if e.id == "key-1")
     assert swap(runtime, key1())["api_key"] == "fixture-1"  # key-1 is only benched for another model
     swap, runtime = _zai_runtime_pool(tmp_path, monkeypatch, urls, {1: {"glm-4.7": future}})
-    assert swap(runtime, key1())["api_key"] == "fixture-0"  # cooled for this model: keep the runtime key
+    assert swap(runtime, key1())["api_key"] == "fixture-2"  # cooled for this model: fall back to the next row
 
 
 def test_swap_only_when_the_benched_key_is_the_runtime_key(tmp_path, monkeypatch):

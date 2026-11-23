@@ -58,9 +58,11 @@ def test_bootstrap_repairs_before_dependency_activation(tmp_path, monkeypatch, m
     wheels = tmp_path / "wheels"
     wheels.mkdir()
     _wheel(wheels, "startup_dep", "1.0")
+    # Stand-in for google-re2: the launch guard refuses a generation without the package.
+    _wheel(wheels, "re2", "1.0")
     (core / "pyproject.toml").write_text(
         '[project]\nname="startup-proof"\nversion="1"\nrequires-python=">=3.11"\n'
-        'dependencies=["startup-dep==1.0"]\n'
+        'dependencies=["startup-dep==1.0", "re2==1.0"]\n'
         '[project.optional-dependencies]\nstartup-extra=[]\n'
         '[tool.uv]\npackage=false\nno-index=true\noffline=true\n'
         f'find-links=[{json.dumps(wheels.as_posix())}]\n', encoding="utf-8",

@@ -26,18 +26,12 @@ from hermes_cli import update_cmd, venv_sync
 
 
 @pytest.fixture
-def engine_required(monkeypatch):
-    # The switch the first release that matches through hermes_re removes: these tests describe it.
-    monkeypatch.setattr(venv_sync, "REGEX_ENGINE_REQUIRED", True)
-
-
-@pytest.fixture
-def no_engine(engine_required, monkeypatch):
+def no_engine(monkeypatch):
     monkeypatch.setitem(sys.modules, "re2", None)  # Python's spelling of "this module cannot be imported"
 
 
 @pytest.fixture
-def engine(engine_required, monkeypatch):
+def engine(monkeypatch):
     installed = types.ModuleType("re2")
     installed.__spec__ = importlib.machinery.ModuleSpec("re2", None, origin="site-packages/re2.py")
     monkeypatch.setitem(sys.modules, "re2", installed)
@@ -144,8 +138,7 @@ def _namespace_portion(monkeypatch):
     pytest.param(_stub_without_spec, id="module-without-spec"),
     pytest.param(_namespace_portion, id="bare-directory"),
 ])
-def test_an_engine_that_cannot_be_located_counts_as_missing(tmp_path, engine_required, monkeypatch, capsys,
-                                                             unusable):
+def test_an_engine_that_cannot_be_located_counts_as_missing(tmp_path, monkeypatch, capsys, unusable):
     """Never an exception out of the guard: it runs before the ``update`` exemption, and the
     import-health probe imports the CLI as ``['hermes', 'update']``."""
     unusable(monkeypatch)

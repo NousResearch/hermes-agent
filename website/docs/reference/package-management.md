@@ -30,8 +30,20 @@ For self-managed source installs, the pre-import launcher compares PM's recorded
 successful dependency stamp with the current inputs. Missing or stale completion
 state triggers a sync, then the same command restarts on the managed Python before
 loading application dependencies. Failed syncs keep the previous selection and
-retry on the next launch; no pending-update marker is required. Developer checkouts
-and packaged installations retain their existing owner.
+retry on the next launch; no pending-update marker is required. A previous
+selection without `google-re2` (the regex engine Hermes matches text with) cannot
+run this checkout, so such a launch refuses to start: it prints
+`hermes: cannot start: ...`, names `hermes pm install` (which installs the
+dependencies without matching any text) and exits 1. Its
+automatic sync ignores the usual attempt limit but keeps the 15-minute backoff,
+doubling after each further failure up to 6 hours, so the launch heals by itself
+once the cause (network access) is gone. `hermes update` still
+starts: where its launch retries the sync it repairs the install, and while the
+engine is still missing it stops before changing anything and names
+`hermes pm install` too. `hermes pm`, `hermes doctor`, `hermes gateway status`,
+`hermes gateway stop`, `hermes gateway uninstall`, `--version` and `--help`
+start with a warning instead, and past the attempt limit they do not wait for a sync.
+Developer checkouts and packaged installations retain their existing owner.
 
 Historical updaters can still execute old Python code after replacing the source
 tree. Compatibility entry points start a fresh child, wait for completion, and

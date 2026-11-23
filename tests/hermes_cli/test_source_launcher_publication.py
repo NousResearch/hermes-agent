@@ -68,12 +68,19 @@ def without_distlib(monkeypatch):
     monkeypatch.setattr(_launchers, "_store_script_maker", lambda _python: None)
 
 
+def with_engine_stand_in(site):
+    """A generation that boots models the target's dependencies: give it a stand-in google-re2."""
+    (site / "re2").mkdir()
+    (site / "re2" / "__init__.py").write_text("", encoding="utf-8")
+
+
 def select_generation(repo, name, value):
     selected = install_state_dir(repo) / 'environments' / str(name) / 'venv'
     site = site_packages(selected)
     site.mkdir(parents=True)
     (selected / 'pyvenv.cfg').write_text('home = fixture\n', encoding='utf-8')
     (site / 'selected_probe.py').write_text(f'VALUE = {value!r}\n', encoding='utf-8')
+    with_engine_stand_in(site)
     (install_state_dir(repo) / 'facts.json').write_text(
         json.dumps({'packages': {'venv': {'environment': str(selected)}}}), encoding='utf-8')
     return selected
@@ -500,6 +507,7 @@ def test_pre_pm_base_dependencies_activate_only_at_boot(tmp_path, monkeypatch):
     editable = tmp_path / "editable"
     editable.mkdir()
     (editable / "selected_probe.py").write_text("VALUE = 'base-pth'\n", encoding="utf-8")
+    with_engine_stand_in(site)
     (site / "member.pth").write_text(str(editable) + "\n", encoding="utf-8")
     command = _launchers.runtime_command(repo)
     result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30, encoding="utf-8", check=False)
@@ -668,6 +676,7 @@ def test_update_import_probe_uses_selected_dependencies(tmp_path, monkeypatch):
     site.mkdir(parents=True)
     (selected / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
     (site / "selected_probe.py").write_text("VALUE = 'selected'\n", encoding="utf-8")
+    with_engine_stand_in(site)
     (install_state_dir(repo) / "facts.json").write_text(
         json.dumps({"packages": {"venv": {"environment": str(selected)}}}), encoding="utf-8")
     (repo / "hermes_integrity_probe.py").write_text("import selected_probe\n", encoding="utf-8")

@@ -191,7 +191,9 @@ class ApprovalRequestParams(ServerRequestParams):
     ``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``.
 
     An ``access`` request without a ``path`` and a ``network`` request without a ``host`` are
-    refused: the desktop answers with an error and shows no card."""
+    refused: the desktop answers with an error and shows no card. A card that outlives its turn
+    stays on screen only while its sender lists it in ``approval.pending``: the desktop removes
+    a card that list does not name."""
 
     request_id: str
     command: str = ""

@@ -5752,7 +5752,7 @@ export interface SetupBuildAnswer {
   build: string
   label?: string | null
 }
-/** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. ``kind`` selects the card; absent means ``command``. A sandbox asks for a folder with ``access`` (``path``, and ``access`` read or read_write) and for a site with ``network`` (``host``, and an optional display ``label``). ``risk`` is one short line shown under the folder or site. On those two kinds ``once`` allows until the sandbox is switched off and ``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``. An ``access`` request without a ``path`` and a ``network`` request without a ``host`` are refused: the desktop answers with an error and shows no card. */
+/** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. ``kind`` selects the card; absent means ``command``. A sandbox asks for a folder with ``access`` (``path``, and ``access`` read or read_write) and for a site with ``network`` (``host``, and an optional display ``label``). ``risk`` is one short line shown under the folder or site. On those two kinds ``once`` allows until the sandbox is switched off and ``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``. An ``access`` request without a ``path`` and a ``network`` request without a ``host`` are refused: the desktop answers with an error and shows no card. A card that outlives its turn stays on screen only while its sender lists it in ``approval.pending``: the desktop removes a card that list does not name. */
 export interface ApprovalRequestParams {
   session_id: string
   request_id: string

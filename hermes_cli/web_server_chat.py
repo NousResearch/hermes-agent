@@ -500,6 +500,8 @@ def _resolve_chat_argv(
     the newest descendant; ``HERMES_TUI_GATEWAY_URL`` attaches to this process's
     in-memory gateway but is SKIPPED for profile-scoped chats (that gateway runs
     under the dashboard's own profile, so a scoped chat attaches to its profile's gateway);
+    a name that resolves to this process's own home is not a profile scope (the SPA
+    sends the dashboard's own profile by name);
     ``profile`` scopes the ENTIRE chat by pointing ``HERMES_HOME`` at the profile
     dir, the same propagation ``hermes -p <name>`` performs. ``workspace_cwd``
     (an already-validated host directory, ``chat_workspaces.resolve_chat_cwd``)
@@ -508,14 +510,14 @@ def _resolve_chat_argv(
     passes as the explicit ``cwd`` of ``session.create`` when attached to the
     in-memory gateway, whose own cwd is the dashboard's launch dir).
     """
-    from hermes_cli.web_server_profiles import _config_profile_scope, _resolve_profile_dir
+    from hermes_cli.web_server_profiles import _config_profile_scope, _is_other_profile, _resolve_profile_dir
     from hermes_cli.web_server_sessions import _open_session_db_for_profile, _session_latest_descendant
     from hermes_cli.main import PROJECT_ROOT
     from hermes_cli.main_tui_launch import _apply_tui_python_env, _make_tui_argv
 
     profile_dir: Optional[Path] = None
     requested = (profile or "").strip()
-    if requested and requested.lower() != "current":
+    if _is_other_profile(requested):
         profile_dir = _resolve_profile_dir(requested)
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)

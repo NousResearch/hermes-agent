@@ -623,6 +623,11 @@ class TestProfileScopedChatPty:
     def test_chat_argv_scopes_hermes_home(self, isolated_profiles, monkeypatch):
 
         monkeypatch.setattr(
+            _web_server_chat,
+            "_build_gateway_ws_url",
+            lambda: "ws://127.0.0.1:9/api/ws?token=t",
+        )
+        monkeypatch.setattr(
             "hermes_cli.main_tui_launch._make_tui_argv",
             lambda root, tui_dev=False: (["cat"], None),
             raising=False,
@@ -632,6 +637,34 @@ class TestProfileScopedChatPty:
         assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
         # Scoped chat must NOT attach to the dashboard's in-memory gateway.
         assert "HERMES_TUI_GATEWAY_URL" not in env
+
+    def test_chat_argv_serving_profile_name_attaches_to_in_memory_gateway(
+        self, isolated_profiles, monkeypatch
+    ):
+        """The SPA scopes chat by the name of the profile this dashboard serves.
+        That name is this process's own home, so the chat must attach to the
+        in-memory gateway instead of starting a second backend for its sessions.
+        """
+        from hermes_cli.web_server_profiles import serving_profile_name
+
+        monkeypatch.setattr(
+            _web_server_chat,
+            "_build_gateway_ws_url",
+            lambda: "ws://127.0.0.1:9/api/ws?token=t",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+        served = serving_profile_name()
+        assert served == "default"
+
+        _argv, _cwd, env = _web_server_chat._resolve_chat_argv(profile=served)
+
+        assert env is not None
+        assert env.get("HERMES_TUI_GATEWAY_URL") == "ws://127.0.0.1:9/api/ws?token=t"
+        assert env["HERMES_HOME"] == str(isolated_profiles["default"])
 
     def test_chat_argv_bridges_selected_profile_terminal_config(
         self, isolated_profiles, monkeypatch

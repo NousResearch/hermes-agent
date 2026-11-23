@@ -127,6 +127,7 @@ def test_the_refusal_names_the_marker_file_when_it_names_a_plugin(root):
     added = message[len(as_before):]
     assert str(entry.path) in added, message
     assert "no longer installed or no longer loads" in added, message
+    assert "on this host again" in added and "computer" not in message, message  # one word for it
 
 
 # ── what an unreadable marker folder means ─────────────────────────────────────────────────────

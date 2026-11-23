@@ -25,6 +25,12 @@ Two things this module gets right, both measured on the PR that introduced it:
   home with ``hermes config set security.protected_instruction_files true`` from a cron tick, and that
   call was refused, leaving the only automated mitigation failing open. A write that leaves the gate ON —
   the repair itself — is allowed; nobody unattended can still turn it off.
+* **``config unset`` is the same writer with a minus sign.** It needs no ``--force`` at all: one command
+  from an unattended lane removed the ``security`` section (or just the coverage leaf) and dropped
+  ``protected_instruction_extra_patterns`` — gate still ON, covering nothing (measured on a fixture home:
+  ``(True, ['RULES.md'])`` → ``(True, [])``). :func:`refuse_unattended_security_unset` judges the config
+  the removal would leave by the same coverage comparison, so the section and the coverage leaf are
+  refused and an unrelated ``security.<key>`` unset still goes through.
 
 Reading the switch from the install-level config instead would not hold: ``HERMES_HOME=<install> hermes
 config set ...`` reaches that file from an agent's own shell, so the check belongs on the writing path.
@@ -139,6 +145,32 @@ def _config_after_write(key: str, value: Any, current: Any) -> dict[str, Any] | 
     return base
 
 
+def _config_after_unset(key: str, current: Any) -> dict[str, Any] | None:
+    """*current* with the removal applied exactly as ``unset_config_value`` applies it, or None.
+
+    ``_unset_nested`` returns False for a key that is not there and leaves the mapping untouched, which
+    is also the config the writer leaves behind (it exits "not set" before writing), so that case is not
+    a failure here — the comparison simply sees no change.
+    """
+    base = copy.deepcopy(current) if isinstance(current, dict) else {}
+    try:
+        from hermes_cli.config import _unset_nested
+
+        _unset_nested(base, str(key))
+    except Exception:  # a shape the writer itself will refuse: fail closed
+        return None
+    return base
+
+
+def _keeps_gate_enabled(after: Any, current: Any) -> bool:
+    """True when *after* still reads the gate ON and covering exactly what *current* covered."""
+    files, extra = _read_switch(after)
+    if not files:
+        return False
+    _before_files, before_extra = _read_switch(current)
+    return extra == before_extra
+
+
 def _leaves_gate_enabled(key: str, value: Any, current: Any) -> bool:
     """True when the write still leaves the gate ON, covering what it covered before.
 
@@ -148,11 +180,7 @@ def _leaves_gate_enabled(key: str, value: Any, current: Any) -> bool:
     after = _config_after_write(key, value, current)
     if after is None:
         return False
-    files, extra = _read_switch(after)
-    if not files:
-        return False
-    _before_files, before_extra = _read_switch(current)
-    return extra == before_extra
+    return _keeps_gate_enabled(after, current)
 
 
 def _human_at_a_terminal() -> bool:
@@ -171,6 +199,18 @@ def _human_at_a_terminal() -> bool:
         return bool(sys.stdin.isatty())
     except (AttributeError, OSError, ValueError):  # a closed or replaced stdin is not a human
         return False
+
+
+def _refuse_unattended(key: str, *, verb: str, keeps: str, command: str) -> None:
+    """The one refusal message both writers print before exiting 1."""
+    print(
+        f"✗ Refusing to {verb} '{key}' from a session with no terminal a person is at.\n"
+        "  It decides whether the protected-agent-instruction approval gate runs at all, or what it\n"
+        "  covers, and a process that gate guards must not be the one granting the change. Nothing was\n"
+        f"  written. {keeps}\n"
+        f"  Run 'hermes {command}' in your own terminal, or edit config.yaml directly.",
+        file=sys.stderr)
+    sys.exit(1)
 
 
 def refuse_unattended_security_self_control(key: str, value: Any, current_config: Any = None) -> None:
@@ -196,11 +236,34 @@ def refuse_unattended_security_self_control(key: str, value: Any, current_config
         return
     if _leaves_gate_enabled(key, parsed, current_config):
         return
-    print(
-        f"✗ Refusing to set '{key}' from a session with no terminal a person is at.\n"
-        "  It decides whether the protected-agent-instruction approval gate runs at all, or what it\n"
-        "  covers, and a process that gate guards must not be the one granting the change. Nothing was\n"
-        "  written. A write that leaves the gate ON (the repair direction) is still allowed.\n"
-        "  Run 'hermes config set' in your own terminal, or edit config.yaml directly.",
-        file=sys.stderr)
-    sys.exit(1)
+    _refuse_unattended(
+        key,
+        verb="set",
+        keeps="A write that leaves the gate ON (the repair direction) is still allowed.",
+        command="config set")
+
+
+def refuse_unattended_security_unset(key: str, current_config: Any = None) -> None:
+    """Exit 1 when an unattended process would remove what the protected-instruction gate covers.
+
+    ``config unset`` is the other writer of the same section and it takes no ``--force``, so it is the
+    cheaper self-grant: removing ``security`` (or just ``..._extra_patterns``) leaves the gate ON —
+    the reader defaults it ON for a missing section — and covering nothing.
+
+    Judged on the config the removal would leave, by the same coverage comparison
+    :func:`refuse_unattended_security_self_control` makes: the section, the coverage leaf and anything
+    that drops the covered patterns are refused, while an unrelated ``security.<key>`` (or the enable
+    leaf, whose absence means the documented default ON) still goes through — the section is not frozen.
+
+    Called by :func:`hermes_cli.config.unset_config_value` before ``_unset_nested`` runs.
+    """
+    if _human_at_a_terminal() or not _key_may_name_switch(key):
+        return
+    after = _config_after_unset(key, current_config)
+    if after is not None and _keeps_gate_enabled(after, current_config):
+        return
+    _refuse_unattended(
+        key,
+        verb="unset",
+        keeps="Removing a key that leaves the gate as covered as it was is still allowed.",
+        command="config unset")

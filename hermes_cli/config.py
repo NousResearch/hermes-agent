@@ -3437,6 +3437,14 @@ def unset_config_value(key: str):
     if _redirect_note:
         # Mirror set_config_value's display.platforms canonicalization (#71047).
         print(_redirect_note.replace("saved as", "resolved as"))
+    # The sibling of the `set` guard above: ``unset`` is a second writer of the same section and it
+    # needs no ``--force``, so removing ``security`` (or just ``..._extra_patterns``) dropped what the
+    # gate covered while leaving it ON. Judged on the config the removal would leave, so a key that
+    # leaves the gate as covered as it was — an unrelated ``security.<key>`` — still goes through.
+    from hermes_cli.config_self_control import refuse_unattended_security_unset
+
+    refuse_unattended_security_unset(key, user_config)
+
     removed = _unset_nested(user_config, key)
     if legacy_key:
         removed = _unset_nested(user_config, legacy_key) or removed

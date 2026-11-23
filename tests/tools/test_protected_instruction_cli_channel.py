@@ -331,3 +331,48 @@ def test_a_section_replacement_that_keeps_the_coverage_is_allowed(tmp_path, monk
 
     assert _gate_after_write(tmp_path) == (True, ["RULES.md"])
 
+
+# ``config unset`` is the sibling writer of the same section and takes no ``--force`` at all: one command
+# from an unattended lane removed the section (or just the coverage leaf), and the gate stayed ON while
+# covering nothing.
+@pytest.mark.parametrize("key", ["security", "security.protected_instruction_extra_patterns"],
+                         ids=["whole_section", "coverage_leaf"])
+def test_config_unset_cannot_drop_the_gates_coverage_without_a_terminal(tmp_path, monkeypatch, capsys,
+                                                                       key):
+    """``hermes config unset security`` / ``... protected_instruction_extra_patterns`` are refused, and
+    what the gate covered survives."""
+    from hermes_cli import config as cli_config
+
+    monkeypatch.setattr(_guards, "_protected_instruction_config", _REAL_GATE_CONFIG)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    _covered_home(tmp_path)
+    assert _gate_after_write(tmp_path) == (True, ["RULES.md"])
+    before = (tmp_path / "config.yaml").read_text()
+
+    with pytest.raises(SystemExit) as refused:
+        cli_config.unset_config_value(key)
+
+    assert refused.value.code == 1
+    assert f"Refusing to unset '{key}'" in capsys.readouterr().err
+    assert (tmp_path / "config.yaml").read_text() == before
+    assert _gate_after_write(tmp_path) == (True, ["RULES.md"])
+
+
+def test_an_unrelated_security_unset_is_not_caught_by_the_guard(tmp_path, monkeypatch):
+    """The refusal covers what the gate reads, not the section: an unset that leaves the gate as covered
+    as it was still goes through without a terminal."""
+    from hermes_cli import config as cli_config
+
+    monkeypatch.setattr(_guards, "_protected_instruction_config", _REAL_GATE_CONFIG)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    _covered_home(tmp_path)
+    written = tmp_path / "config.yaml"
+    written.write_text(written.read_text() + "  unknown_key: value\n")
+
+    cli_config.unset_config_value("security.unknown_key")
+
+    assert "unknown_key" not in written.read_text()
+    assert "RULES.md" in written.read_text()
+    assert _gate_after_write(tmp_path) == (True, ["RULES.md"])

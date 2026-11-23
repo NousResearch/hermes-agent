@@ -5840,7 +5840,6 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         from plugins.platforms.telegram.telegram_context import group_trigger_text
         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
         event.text = group_trigger_text(self, msg, event.text)
-        event.mention_trigger = bool(self._message_mentions_bot(msg))
         await self._cache_replied_media(msg, event)
         return self._apply_telegram_group_observe_attribution(event)
 
@@ -6437,6 +6436,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             user_id=source.user_id, user_name=source.user_name,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=group_identity_prompt(self, message, channel_prompt), reply_expected=group_reply_expected(self, message, chat_type),
+            mention_trigger=bool(self._message_mentions_bot(message)),
             edit_revision=self._edit_revision(message, update_id), timestamp=message.date)
 
     @staticmethod

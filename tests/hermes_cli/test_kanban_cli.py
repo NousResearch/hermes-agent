@@ -29,6 +29,37 @@ def kanban_home(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _create_args(**overrides):
+    """Argparse namespace for ``hermes kanban create`` as the CLI builds it."""
+    ns = argparse.Namespace(
+        title="probe card", body="b", body_file=None, assignee="alice", created_by="probe",
+        workspace=None, branch=None, project=None, tenant=None, priority=None, parent=[],
+        triage=False, idempotency_key=None, max_runtime=None, skills=None, max_retries=None,
+        model_override=None, provider_override=None, goal_mode=False, goal_max_turns=None,
+        completion_contract=None, initial_status="running", json=False, board=None,
+    )
+    for key, value in overrides.items():
+        setattr(ns, key, value)
+    return ns
+
+
+def test_create_worktree_without_path_exits_cleanly(kanban_home, capsys):
+    """``--workspace worktree`` on a board with no default_workdir used to create the
+    card, which then failed to spawn twice and landed in gave_up. The CLI must exit 2
+    with the reason instead of a traceback, and create nothing."""
+    rc = kc._cmd_create(_create_args(workspace="worktree"))
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "needs a workspace" in captured.err
+    assert "Traceback" not in captured.err
+    with kbc.connect() as conn:
+        assert conn.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
+
+
+def test_create_scratch_without_path_still_works(kanban_home):
+    assert kc._cmd_create(_create_args(workspace="scratch")) == 0
+
+
 
 
 

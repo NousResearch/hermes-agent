@@ -65,25 +65,25 @@ holding this SKILL.md.
 
 ### 1. Identify which sources apply
 
-Read the data-source wiki entries to plan the investigation:
+Read the data-source wiki entries to plan the investigation: list them with
+`search_files` (`target="files"`, `pattern="*.md"`, `path="SKILL_DIR/references/sources/"`),
+then `read_file` the ones the case needs:
 
 ```
-ls SKILL_DIR/references/sources/
-
 # Federal financial / regulatory
-cat SKILL_DIR/references/sources/sec-edgar.md       # corporate filings
-cat SKILL_DIR/references/sources/usaspending.md     # federal contracts
-cat SKILL_DIR/references/sources/senate-ld.md       # lobbying
-cat SKILL_DIR/references/sources/ofac-sdn.md        # sanctions
-cat SKILL_DIR/references/sources/icij-offshore.md   # offshore leaks
+SKILL_DIR/references/sources/sec-edgar.md       # corporate filings
+SKILL_DIR/references/sources/usaspending.md     # federal contracts
+SKILL_DIR/references/sources/senate-ld.md       # lobbying
+SKILL_DIR/references/sources/ofac-sdn.md        # sanctions
+SKILL_DIR/references/sources/icij-offshore.md   # offshore leaks
 
 # Identity / property / litigation / archives / news
-cat SKILL_DIR/references/sources/nyc-acris.md       # NYC property records
-cat SKILL_DIR/references/sources/opencorporates.md  # global corporate registry
-cat SKILL_DIR/references/sources/courtlistener.md   # court records (federal + state)
-cat SKILL_DIR/references/sources/wayback.md         # Wayback Machine archives
-cat SKILL_DIR/references/sources/wikipedia.md       # Wikipedia + Wikidata
-cat SKILL_DIR/references/sources/gdelt.md           # global news monitoring
+SKILL_DIR/references/sources/nyc-acris.md       # NYC property records
+SKILL_DIR/references/sources/opencorporates.md  # global corporate registry
+SKILL_DIR/references/sources/courtlistener.md   # court records (federal + state)
+SKILL_DIR/references/sources/wayback.md         # Wayback Machine archives
+SKILL_DIR/references/sources/wikipedia.md       # Wikipedia + Wikidata
+SKILL_DIR/references/sources/gdelt.md           # global news monitoring
 ```
 
 Each entry follows a 9-section template: summary, access, schema, coverage,

@@ -347,12 +347,14 @@ class CLIModalMixin:
                 "selected": 0,
                 "response_queue": response_queue}
             self._slash_confirm_deadline = _time.monotonic() + timeout
+            self._sync_program_status()  # repaints via the throttled path, not _paint_now
             self._invalidate()
 
         def _teardown_modal() -> None:
             self._slash_confirm_state = None
             self._slash_confirm_deadline = 0
             self._restore_modal_input_snapshot()
+            self._sync_program_status()
             self._invalidate()
 
         def _run_on_app_loop(fn) -> bool:
@@ -1036,7 +1038,8 @@ class CLIModalMixin:
             state = self._clarify_state
             self._clarify_teardown()
             state["response_queue"].put(None)
-        elif method == "sudo" and self._sudo_state:
+        elif method in ("sudo", "vault.unlock_prompt", "vault.save_login", "vault.code") and self._sudo_state:
+            # The vault prompts reuse the sudo panel's state and queue; "" ends them as declined.
             self._sudo_state["response_queue"].put("")
         elif method == "secret" and getattr(self, "_secret_state", None):
             self._cancel_secret_capture()

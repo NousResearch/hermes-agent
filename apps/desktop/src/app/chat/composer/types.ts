@@ -1,3 +1,4 @@
+import type { ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
@@ -31,6 +32,8 @@ export interface ChatBarState {
     /** False when the catalog says the active model has no reasoning control;
      *  undefined while unknown (loading) so the pill stays put. */
     supportsReasoning?: boolean
+    supportsFast?: boolean
+    supportsUltrafast?: boolean
   }
   tools: { enabled: boolean; label: string; suggestions?: ContextSuggestion[] }
   voice: { enabled: boolean; active: boolean }
@@ -72,7 +75,8 @@ export type VoiceStatus = 'idle' | 'recording' | 'transcribing'
 
 export interface VoiceActivityState {
   elapsedSeconds: number
-  level: number
+  /** Read by the meter component only; see useMicRecorder. */
+  levelStore: ReadableAtom<number>
   /** Live STT text so far (stt.streaming); '' when none. */
   partial?: string
   status: VoiceStatus

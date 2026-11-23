@@ -1,6 +1,7 @@
 """Anthropic OAuth access token expires mid-turn: one refresh, the turn completes, the rotation persists.
 
-Real ``hermes -z`` process, native ``anthropic`` provider on the OAuth route
+Real ``hermes -z`` process (the aux-call cell: a real ``tui_gateway`` session, since
+one-shots send no title call), native ``anthropic`` provider on the OAuth route
 (``sk-ant-oat…`` pool credential), inference against the SDK-oracle loopback
 Messages endpoint (accepted base-URL override ``http://127.0.0.1:<port>/anthropic``),
 and the vendor token endpoint (hardcoded ``https://platform.claude.com``)
@@ -21,6 +22,7 @@ token and the login is lost.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import threading
 import time
@@ -112,12 +114,50 @@ def _run_turn(tmp_path, *, aux_401: bool, clock_expired: bool):
         rig.tokens.before_refresh_response = slow_token_endpoint
         threading.Thread(target=settle, daemon=True).start()
     try:
-        proc = run_hermes(rig.fh, ["-z", "Read the note file and report."], extra_env=rig.child_env, timeout=150)
+        # The title call is the race's other half, and a one-shot sends none (#151820): an
+        # interactive session (the TUI/Desktop backend) is where the two calls still overlap.
+        args = ["-z", "Read the note file and report."]
+        proc = (_tui_turn(rig, args[1]) if aux_401 else
+                run_hermes(rig.fh, args, extra_env=rig.child_env, timeout=150))
     finally:
         for ev in (aux_sent, refresh_in_flight, aux_answered, aux_settled):
             ev.set()
         rig.stop()
     return rig, proc, canary
+
+
+def _tui_turn(rig, prompt: str) -> subprocess.CompletedProcess:
+    """One turn through a real ``tui_gateway`` session; returncode 0 once ``message.complete`` arrives."""
+    from tests.e2e.core.parity._drive_rpc import RpcClient, StreamCapture
+
+    proc = subprocess.Popen([sys.executable, "-m", "tui_gateway.entry"], cwd=str(rig.fh.root),
+                            env=rig.fh.env(rig.child_env), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, bufsize=1)
+    cap = StreamCapture().start(proc)
+
+    def send(line: str) -> None:
+        assert proc.stdin is not None
+        proc.stdin.write(line + "\n")
+        proc.stdin.flush()
+
+    rc, answer = 1, ""
+    try:
+        rpc = RpcClient(send, cap.stdout_lines)
+        rpc.wait_event("gateway.ready", timeout=120)
+        sid = rpc.call("session.create", {}, timeout=120)["session_id"]
+        rpc.call("prompt.submit", {"session_id": sid, "text": prompt}, timeout=120)
+        done = rpc.wait_event("message.complete", lambda e: e.get("session_id") == sid, timeout=150)
+        rc, answer = 0, str((done.get("payload") or {}).get("text"))
+    except AssertionError as exc:
+        answer = str(exc)
+    finally:
+        if proc.stdin is not None and not proc.stdin.closed:
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    return subprocess.CompletedProcess(proc.args, rc, answer, cap.stderr)
 
 
 @pytest.mark.parametrize("case", list(CASES))

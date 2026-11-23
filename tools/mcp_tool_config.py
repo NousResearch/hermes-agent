@@ -202,19 +202,36 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     precisely so subprocesses can consume them), plus the server config's own ``env``."""
     from agent.secret_scope import get_secret
     from hermes_cli.env_loader import secret_source_names
+    from tools.environments.local_env_policy import hermes_consumed_credentials
     env = {
         key: value for key, value in os.environ.items()
         if key in _SAFE_ENV_KEYS or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE or key.startswith("XDG_")}
     # Source-tagged names are process-wide (any profile's hydration tags them) while os.environ
     # holds only the LAUNCH profile's values, so the value must come from the active profile's
     # secret scope; a profile that lacks the name gets nothing, never another profile's token.
-    for key in secret_source_names():
+    source_names = secret_source_names()
+    # Where a credential is stored must not decide who receives it: what Hermes itself consumes
+    # (under any name it reads it by) is stripped from .env too, and reaches a server only via ``env``.
+    withheld = hermes_consumed_credentials(source_names) if source_names else ()
+    for key in source_names:
+        if key in withheld:
+            continue
         value = get_secret(key)
         if value is not None:
             env[key] = value
     for key in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
         if key in os.environ:
             env[key] = os.environ[key]
+    # Pin the ACTIVE (served) profile's home so a stdio child never falls back to the
+    # platform-default home (issue #18594). Without it a child spawned by a multiplexed host
+    # or a dashboard/desktop backend serving ``--open-profile`` resolves HERMES_HOME to the
+    # LAUNCH profile's home (or the platform default) and writes to the wrong profile — and a
+    # Python child that imports hermes_constants trips the ``_warn_profile_fallback_once``
+    # guard. Resolve at call time: ``get_hermes_home()`` honours the served-profile
+    # contextvar, which does not cross the process boundary, while ``os.environ`` holds only
+    # the launch profile's home. An explicit server ``env.HERMES_HOME`` still wins below.
+    from hermes_constants import get_hermes_home
+    env["HERMES_HOME"] = str(get_hermes_home())
     if user_env:
         # An entry rendered from one whole ``${VAR}`` that is unset (or empty) counts as absent, so
         # a plugin can forward an optional var without the child seeing the literal placeholder.
@@ -629,33 +646,95 @@ def _warn_hidden_whitespace(server_name: str, config: dict) -> list[str]:
     return flagged
 
 
-def _filter_suspicious_mcp_servers(servers: dict[str, dict]) -> dict[str, dict]:
-    """Drop exfiltration-shaped MCP configs before any stdio spawn path."""
+def _malformed_cost_table(name: str, cfg: Any) -> Optional[str]:
+    """Why a server's ``tool_costs``/``spend_limit``/``cost_unit`` is unusable, else None. A budget the
+    user declared must never be silently dropped while its server keeps spending, so the server is skipped."""
+    from tools.mcp_tool_costs import config_cost_policy
     try:
-        from hermes_cli.mcp_security import validate_mcp_server_entry
-    except Exception:
-        return servers
+        config_cost_policy(name, cfg if isinstance(cfg, dict) else None)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def _suspicious_mcp_issues(name: str, cfg: Any) -> list[str]:
+    """Exfiltration/persistence-shaped findings for one entry. Run it on the RENDERED config: a
+    ``${VAR}`` expands into the command the transport actually spawns."""
+    from hermes_cli.mcp_security import validate_mcp_server_entry  # an import failure fails closed: no spawn
+    if not isinstance(cfg, dict):
+        return []
+    issues = validate_mcp_server_entry(name, cfg)
+    command = cfg.get("command")
+    template = getattr(command, "template", None)
+    if template is not None and template != command:  # name the configured template, never a resolved secret
+        quoted = f"'{command}'"
+        issues = [issue.replace(quoted, f"'{template}'") for issue in issues]
+    return issues
+
+
+def _filter_suspicious_mcp_servers(servers: dict[str, dict]) -> dict[str, dict]:
+    """Drop exfiltration-shaped MCP configs, and servers with a malformed cost table, before any stdio spawn path."""
     safe_servers = {}
     for name, cfg in servers.items():
-        issues = validate_mcp_server_entry(name, cfg) if isinstance(cfg, dict) else None
+        issues = _suspicious_mcp_issues(name, cfg)
         if issues:
             logger.warning("Skipping suspicious MCP server '%s': %s", name, "; ".join(issues))
+        elif (bad_costs := _malformed_cost_table(name, cfg)) is not None:
+            logger.error("Skipping MCP server '%s': %s (fix tool_costs/spend_limit/cost_unit in config.yaml)",
+                         name, bad_costs)
         else:
             safe_servers[name] = cfg
     return safe_servers
 
 
-def _portable_mcp_servers(safe_servers: dict[str, dict]) -> None:
-    """Merge plugin-provided (portable) MCP servers into *safe_servers*; native config wins on a clash. Never raises."""
+def _render_portable_mcp_servers(portable: dict[str, dict]) -> dict[str, dict]:
+    """Portable entries rendered like native ones (a raw ``${VAR}`` reads as a changed definition on every
+    transport rebuild and swaps the running header for the literal placeholder), so they are validated as
+    spawned. An unscoped multiplex load keeps the raw templates; connect re-renders and re-validates."""
+    from agent.secret_scope import UnscopedSecretError
+    rendered = {}
+    for name, cfg in portable.items():
+        try:
+            rendered[name] = _interpolate_env_vars(dict(cfg))
+        except UnscopedSecretError:
+            logger.debug("Portable MCP server '%s' left unrendered: no secret scope bound", name)
+            rendered[name] = dict(cfg)
+    return rendered
+
+
+def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str] = frozenset()) -> None:
+    """Merge plugin-provided (portable) MCP servers into *safe_servers*; native config wins on a clash. Never raises.
+
+    The package's declared costs are facts about its server, so a same-name native entry (the way a user widens
+    a package server's trust) keeps them unless it sets the cost key itself; ``spend_limit: 0`` turns the limit off."""
+    from tools.mcp_tool_costs import CONFIG_KEYS
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         discover_plugins()
-        portable = get_plugin_manager().get_portable_mcp_servers()
-        for name, cfg in _filter_suspicious_mcp_servers(portable).items():
-            if name in safe_servers:
-                logger.warning("Portable MCP server '%s' conflicts with native config; skipping", name)
+        portable = _render_portable_mcp_servers(get_plugin_manager().get_portable_mcp_servers())
+        # A native entry replaces the package's command, which never spawns: only its budget is merged, so
+        # only the budget is checked (a suspicious unused command must not strip the replacement's limits).
+        replaced = {n: c for n, c in portable.items() if n in safe_servers and n not in rejected}
+        for name, cfg in replaced.items():
+            if (bad_costs := _malformed_cost_table(name, cfg)) is not None:
+                logger.error("Portable MCP server '%s' declares an unusable budget (%s); the native entry runs "
+                             "without it", name, bad_costs)
+                replaced[name] = {}
+        kept = _filter_suspicious_mcp_servers({n: c for n, c in portable.items() if n not in replaced})
+        for name, cfg in {**kept, **replaced}.items():
+            if name in rejected:  # the user's own entry for this name has a malformed budget: stay off
+                logger.warning("Portable MCP server '%s' skipped: the native entry of that name was rejected", name)
+            elif name in safe_servers:
+                native = safe_servers[name]
+                carried = {k: cfg[k] for k in CONFIG_KEYS if k in cfg and k not in native}
+                if carried:
+                    safe_servers[name] = {**native, **carried}
+                    logger.warning("Portable MCP server '%s' conflicts with native config; using the native entry "
+                                   "with the package's declared %s", name, ", ".join(carried))
+                else:
+                    logger.warning("Portable MCP server '%s' conflicts with native config; skipping", name)
             else:
-                safe_servers[name] = dict(cfg)
+                safe_servers[name] = cfg
     except Exception:
         logger.debug("Failed to load portable MCP servers", exc_info=True)
 
@@ -670,6 +749,11 @@ def _load_mcp_config() -> dict[str, dict]:
         from utils import env_var_enabled as _env_enabled
         if _env_enabled("HERMES_SAFE_MODE"):
             return {}
+        try:  # native and package filters both need it, even with no native entries: fail closed, visibly
+            import hermes_cli.mcp_security
+        except ImportError as exc:
+            logger.warning("MCP server validator unavailable; no MCP servers started: %s", exc)
+            return {}
         servers = load_config().get("mcp_servers")
         try:  # ensure .env vars are available for interpolation
             from hermes_cli.env_loader import load_hermes_dotenv
@@ -677,12 +761,17 @@ def _load_mcp_config() -> dict[str, dict]:
         except Exception:
             pass
         safe_servers: dict[str, dict] = {}
-        for name, cfg in _filter_suspicious_mcp_servers(servers if isinstance(servers, dict) else {}).items():
-            interpolated = _interpolate_env_vars(cfg)
+        servers = servers if isinstance(servers, dict) else {}
+        # Validate what will be spawned: a benign-looking ``${VAR}`` can expand into a shell payload.
+        kept = _filter_suspicious_mcp_servers({name: _interpolate_env_vars(cfg) for name, cfg in servers.items()})
+        for name, interpolated in kept.items():
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)
                 safe_servers[name] = interpolated
-        _portable_mcp_servers(safe_servers)
+        # A same-name package must not revive a server whose native budget was rejected (a mistyped
+        # tighter limit would fall back to the package's looser one while the server keeps spending).
+        rejected = frozenset(n for n in servers if n not in kept and _malformed_cost_table(n, servers[n]) is not None)
+        _portable_mcp_servers(safe_servers, rejected)
         return safe_servers
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)

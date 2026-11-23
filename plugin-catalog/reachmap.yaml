@@ -1,0 +1,22 @@
+name: reachmap
+repo: https://github.com/MindSproutStudios/hermes-reachmap
+sha: f927ac96a63ecff6d7e614250d7a80b226f9a4b9
+description: "Hermes knows what it can reach before it says it can't. Scans signed-in browser sessions on DevTools ports, MCP servers, local services, CLIs and drives; freezes a compact map into each new session's prompt (cache-safe system prompt section); and catches replies that deny or hedge about access the map shows is live, with a footer for the user and a one-shot correction for the agent. Opt-in sign-in probes (off by default) tell an installed CLI apart from a signed-in one, and flag replies that plan to use a CLI whose login has lapsed. Keeps a SQLite ledger of when each capability, or a CLI login, appeared or vanished. Disclosure — loopback-only HTTP GETs to Chrome DevTools /json/version and /json/list (tab titles and URLs, never navigates or executes); runs ps, lsof (or ss) and shutil.which on a fixed CLI list (presence only); only for tools the user lists in auth_probes, runs that tool's one fixed read-only status command (e.g. gh auth status, xurl whoami, wrangler whoami; no shell, 6 s timeout, minimal child env: PATH/HOME/USER/LOGNAME/LANG/LC_*/XDG_*/TMPDIR plus only that tool's own variables such as GH_* or AWS_*, so Hermes provider keys never reach it), which contacts that tool's own service, keeping only the verdict and never the output; reads browser.cdp_url and MCP server names via load_config_readonly; the map text, including account emails visible in tab titles unless show_identities is off, is sent to the model provider as part of the prompt; writes plugin-data/reachmap/data.db (and auth.json when probes are on); never reads credential stores; no other network calls, no telemetry."
+maintainer: MindSproutStudios
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/MindSproutStudios/hermes-reachmap#readme
+version: "0.2.1"
+image: https://raw.githubusercontent.com/MindSproutStudios/hermes-reachmap/f927ac96a63ecff6d7e614250d7a80b226f9a4b9/docs/banner.png
+platforms: [macos, linux]
+title: reachmap
+capabilities:
+  provides_tools:
+  - reachmap
+  provides_hooks:
+  - on_session_start
+  - pre_llm_call
+  - transform_llm_output
+  provides_middleware: []
+  requires_env: []

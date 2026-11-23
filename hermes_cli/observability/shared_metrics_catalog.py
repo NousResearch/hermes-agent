@@ -13,9 +13,11 @@ import logging
 import re
 from pathlib import Path
 
+from hermes_cli._startup_fast import project_root_str
+
 logger = logging.getLogger(__name__)
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_REPO_ROOT = Path(project_root_str())
 
 CUSTOM = "custom"
 
@@ -131,7 +133,9 @@ def custom_provider_aliases() -> frozenset[str]:
 @functools.cache
 def bundled_platform_names() -> frozenset[str]:
     """Messaging platforms Hermes ships as ``plugins/platforms/<name>`` (the dir is the registered name)."""
-    root = _REPO_ROOT / "plugins" / "platforms"
+    from hermes_cli.plugins import get_bundled_plugins_dir
+
+    root = get_bundled_plugins_dir() / "platforms"
     try:
         return frozenset(p.name.lower() for p in root.iterdir() if (p / "plugin.yaml").is_file())
     except OSError:

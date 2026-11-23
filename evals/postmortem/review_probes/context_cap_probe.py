@@ -29,11 +29,11 @@ from run_agent import AIAgent
 import tools.delegate_tool as dt
 import agent.context_compressor as mod
 from agent.model_metadata import estimate_messages_tokens_rough
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
 from unittest.mock import patch
 print('IDENTITY',json.dumps({'tag':tag,'tree':root,'delegate':dt.__file__,'compressor':mod.__file__,'cap_present':hasattr(dt,'_apply_child_compression_cap'),'home':home}),flush=True)
-db=SessionDB(Path(home,'state.db'))
-parent=AIAgent(api_key='test-key',base_url='http://127.0.0.1:1/v1',provider='openai-compat',model='anthropic/claude-fable-5.1',enabled_toolsets=[],quiet_mode=True,skip_context_files=True,skip_memory=True,save_trajectories=False,session_db=db)
+db=open_persistence(profile_scope(home=Path(home)),eager=True)
+parent=AIAgent(api_key='test-key',base_url='http://127.0.0.1:1/v1',provider='openai-compat',model='anthropic/claude-fable-5.1',enabled_toolsets=[],quiet_mode=True,skip_context_files=True,skip_memory=True,save_trajectories=False,persistence=db)
 child=dt._build_child_agent(task_index=0,goal='Review compression cap; continue the task.',context=None,toolsets=[],model=None,max_iterations=10,task_count=1,parent_agent=parent)
 cc=child.context_compressor
 print('SPAWN',json.dumps({'parent':parent.context_compressor.threshold_tokens,'child':cc.threshold_tokens,'cap':cc.threshold_tokens_cap,'tail':cc.tail_token_budget,'enabled':child.compression_enabled}),flush=True)

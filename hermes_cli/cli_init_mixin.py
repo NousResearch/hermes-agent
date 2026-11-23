@@ -12,9 +12,9 @@ import queue
 import threading
 from datetime import datetime
 from hermes_cli.fallback_config import get_fallback_chain
-from hermes_state_ids import new_session_id
 from pathlib import Path
 from rich.console import Console
+from session_rules.session_ids import new_session_id
 from typing import Any, Dict, List, Optional
 from utils import base_url_host_matches, base_url_hostname, is_truthy_value
 
@@ -138,6 +138,7 @@ class CLIInitMixin:
         self.resume_display = display.get("resume_display", "full")  # "full" | "minimal"
         self.bell_on_complete = display.get("bell_on_complete", False)
         self.bell_on_prompt = display.get("bell_on_prompt", False)  # bell when a blocking modal opens
+        self.program_status_enabled = bool(display.get("program_status", True))
         self.show_reasoning = display.get("show_reasoning", True)
         self.reasoning_full = display.get("reasoning_full", False)
         _configure_output_history(
@@ -162,6 +163,7 @@ class CLIInitMixin:
         self.final_response_markdown = _frm if _frm in {"render", "strip", "raw"} else "strip"
 
         self._inline_diffs_enabled = display.get("inline_diffs", True)
+        self._inline_images_mode = display.get("inline_images", "auto")
 
         # Per-turn accounting: CLI-only chrome riding the tool-progress feed.
         self._turn_summary_enabled = bool(display.get("turn_summary", True))
@@ -392,6 +394,8 @@ class CLIInitMixin:
     def _init_runtime_state(self, resume):
         """Session store + all per-run mutable state (queues, overlays, pet/voice/status-bar fields)."""
         from cli import _hermes_home
+        from hermes_cli.left_core_migration import serve_notices_on_stderr
+        serve_notices_on_stderr()
         # A signature change across turns (/model, credential rotation) rebuilds the agent.
         self._active_agent_route_signature = None
         self.agent: Optional[Any] = None  # initialized on first use
@@ -434,7 +438,7 @@ class CLIInitMixin:
             # the store before relying on resume.
             self._session_db_unavailable = True
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
-            from hermes_state_user_copy import describe_storage_failure, storage_failure_details
+            from storage_user_copy import describe_storage_failure, storage_failure_details
             from agent.i18n import t
             failure = describe_storage_failure(e)
             def _present_store_warning():
@@ -459,8 +463,10 @@ class CLIInitMixin:
         launch = _gateway_launch(self)
         held = getattr(self, "_resumed", False) and getattr(self, "_active_session_lease", None) is not None
         _record_shell_hook_consent()
+        from hermes_cli.gateway_owner_restart import through_owner_restart
         with lease_handed_over(self, held):
-            sid = store.open_session(self, launch)
+            # An owner draining for a restart refuses session.create: wait for its successor.
+            sid = through_owner_restart(self, store, lambda: store.open_session(self, launch))
             self._gateway_session_open = True
             from hermes_cli import gateway_plugin_commands, tools_config
             tools_config._gateway_plugin_toolsets = lambda: gateway_plugin_commands.toolsets(self)
@@ -481,10 +487,10 @@ class CLIInitMixin:
         from hermes_cli.gateway_session_store import GatewaySessionStore
         store = getattr(self, "_session_db", None)
         if not isinstance(store, GatewaySessionStore) or not getattr(self, "_gateway_session_open", False):
-            from hermes_state_ids import new_session_id
             return new_session_id(now)
+        from hermes_cli.gateway_owner_restart import through_owner_restart
         if branch_of:
-            child = store.branch(branch_of, title)
+            child = through_owner_restart(self, store, lambda: store.branch(branch_of, title))
             # Main's with_session_yolo: a live /yolo carries onto the branch. The gateway's child starts
             # without the parent's toggle, so set it there too (/branch moves the CLI's own flag over).
             # Approvals run on the gateway, so this write is not toggle_session_yolo's best-effort persist:
@@ -496,7 +502,7 @@ class CLIInitMixin:
             return child
         # The run's other launch flags hold for every session it opens, as main's one AIAgent did across /new.
         launch = {key: value for key, value in _gateway_launch(self).items() if key not in _ROUTE_FLAGS}
-        sid = store.create(launch, record_cwd=False)
+        sid = through_owner_restart(self, store, lambda: store.create(launch, record_cwd=False))
         self.session_id = sid
         return sid
 
@@ -507,6 +513,7 @@ class CLIInitMixin:
         self._interrupt_queue = queue.Queue()
         self._agent_running = self._should_exit = False
         self._detach_on_exit = False  # Ctrl+D mid-turn: leave the gateway turn running (LC-6b)
+        self._viewer_disconnected = False  # SIGHUP/SIGTERM: drop the socket, never close the session
         self._last_turn_interrupted = False  # /goal never auto-queues on a Ctrl+C'd turn
         self._terminal_io_broken = False  # stdout EIO: freeze UI paints instead of spinning
         self._delete_session_on_exit = False  # /exit --delete

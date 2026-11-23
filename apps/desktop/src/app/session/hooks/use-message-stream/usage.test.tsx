@@ -314,6 +314,29 @@ describe('useMessageStream status-bar usage scoping', () => {
     expect($currentUsage.get()).toEqual({ calls: 3, compressions: 3, input: 1500, output: 90, total: 1590 })
   })
 
+  it('drops the plan gauge once a complete usage payload omits it, but keeps it across partial ticks', () => {
+    const gauge = { id: 'day', label: 'Today', resets_at_ms: null, used_bp: 4_200 }
+    sessionStates.set(SID, { ...createClientSessionState(), usage: { ...BASELINE, plan_gauge: gauge } })
+    $currentUsage.set({ ...BASELINE, plan_gauge: gauge })
+    mountStream()
+
+    // A partial tick never carries the gauge; it must not flicker off.
+    act(() => stream.handleEvent({ payload: { usage: { input: 900 } }, session_id: SID, type: 'session.usage' }))
+    expect($currentUsage.get().plan_gauge).toEqual(gauge)
+
+    // Both usage builders always send `calls` and send `plan_gauge` only on a window plan.
+    const { usage: complete } = GATEWAY_FRAME
+    act(() =>
+      stream.handleEvent({ payload: { text: 'done', usage: complete }, session_id: SID, type: 'message.complete' })
+    )
+    expect($currentUsage.get().plan_gauge).toBeUndefined()
+    expect(sessionStates.get(SID)?.usage?.plan_gauge).toBeUndefined()
+
+    $currentUsage.set({ ...BASELINE, plan_gauge: gauge })
+    act(() => stream.handleEvent({ payload: GATEWAY_FRAME, session_id: SID, type: 'session.usage' }))
+    expect($currentUsage.get().plan_gauge).toBeUndefined()
+  })
+
   it('ignores message.complete usage from a background session', () => {
     mountStream()
 

@@ -1,0 +1,24 @@
+name: claim-check
+title: claim-check
+repo: https://gitlab.com/cryptobandit/hermes-claim-check
+sha: 4a0e655ae24d7fdc5ec7fc4e5f1494c95bd3f567
+description: "Receipts for agent claims: checks the success claims in each final reply (\"all tests pass\", \"I created src/app.py\", \"committed and pushed\", \"installed requests\", \"ran make build successfully\", \"server is running on port 8000\") against the session's actual tool results and appends a ✅ verified / ⚠️ unsupported / ❌ contradicted footer citing the tool call. Optional nudge feeds contradictions back into the next turn; `/receipts` and the `claimcheck_report` tool show the evidence ledger. Deterministic, pure stdlib, works with any model. Disclosure — the post_tool_call hook sees every tool's name, args and result and writes a per-session JSONL ledger (tool, file path or first 500 chars of the command, exit status, last 300 chars of output; max 500 entries) under its plugin-data directory only; transform_llm_output appends a footer without holding the stream; pre_llm_call injects context only when `nudge` is enabled; no network calls, LLM calls, subprocesses, credentials, telemetry, background processes or self-updater."
+maintainer: cryptobandit
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://gitlab.com/cryptobandit/hermes-claim-check#readme
+version: "0.1.0"
+readme: true
+platforms: []
+known_issues:
+  - "Claim detection is conservative English regex: unusual phrasings are skipped, never guessed. A verdict shows only what tool results recorded this session prove."
+capabilities:
+  provides_tools:
+    - claimcheck_report
+  provides_hooks:
+    - post_tool_call
+    - transform_llm_output
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

@@ -221,7 +221,7 @@ hermes gateway install
 
 What happens under the hood:
 
-1. `schtasks /Create /SC ONLOGON /RL LIMITED /TN Hermes_Gateway` — registers a task that runs at your login with standard (non-elevated) permissions. No UAC prompt.
+1. `schtasks /Create /TN Hermes_Gateway /XML <file>` — registers a logon-triggered task whose XML principal (`InteractiveToken`, `LeastPrivilege`) runs it at your login with standard (non-elevated) permissions. Registering it asks for UAC once; the task itself never runs elevated.
 2. If schtasks is blocked by group policy, falls back to writing a small `Hermes_Gateway.vbs` launcher (run hidden via `wscript.exe`) into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`. Same effect, slightly cruder. A VBScript is used rather than a `cmd.exe` shortcut because a console allocated at logon can receive a close event that kills the gateway before it finishes starting.
    Only one of the two is ever kept: a successful task install removes any Startup-folder entry (including a legacy `Hermes_Gateway.cmd`), the fallback is skipped while a task is still registered, and `hermes update` / `hermes doctor --fix` clean up older installs that have both, since both would launch the gateway at logon.
 3. Spawns the gateway **detached via `pythonw.exe`** — not `python.exe`. `pythonw.exe` has no console attached, which immunizes it against `CTRL_C_EVENT` broadcasts from sibling processes (a real issue that used to kill the gateway when you Ctrl+C'd anything in the same process group).
@@ -246,6 +246,49 @@ Login auto-start is only ever installed on an explicit answer: `hermes gateway i
 
 Services require admin rights to install and tie the gateway's lifecycle to machine boot, not user login. The typical Hermes user wants: log in → gateway available, log out → gateway gone. Scheduled Tasks do exactly that without elevation. If you genuinely want a service, use `nssm` or `sc create` manually — but you probably don't. If you do, name it `Hermes*` or point its binary path inside the Hermes install (`venv\Scripts\hermes.exe`, the checkout, or `gateway-service\`): `hermes update` stops and restarts only services it can positively identify as Hermes-owned through the Service Control Manager, and pauses a Scheduled-Task-launched gateway by PID (Task Scheduler itself is never touched).
 
+## Moving a dashboard backend to the gateway {#moving-a-dashboard-backend-to-the-gateway}
+
+Hermes never sets up `hermes dashboard` or `hermes serve` to start by itself, so a dashboard that runs at sign-in on Windows is a Task Scheduler task or a Startup-folder entry you made. It is a second copy of Hermes beside the gateway: chats started in it run in its own process. The gateway's Webapp can serve its address instead. Automatic migration is not available on Windows: this command exits 6, changes nothing and prints the steps for the backend it found, one command per line, each valid as typed in PowerShell or Command Prompt (with `--detach` too, which starts nothing here). When it exits 3 instead, something blocks the move and it prints no steps: fix what it names and run it again.
+
+```powershell
+hermes gateway migrate --backends --apply
+```
+
+Run them one at a time, in the order printed; lines that start with `#` tell you what to do instead of being run. Every `hermes` command names the profile (`hermes -p default ...` for the default one), so a profile chosen with `hermes profile use` does not redirect it. Under a Hermes root other than the standard one, every `hermes` line also sets it (`$env:HERMES_HOME='C:\Teams\hermes'; hermes -p work ...`) and the steps start with `# these lines set HERMES_HOME for this Hermes root: run them in PowerShell, not Command Prompt`: those steps are PowerShell only. For a Task Scheduler task named `Hermes Dashboard` that runs `hermes dashboard --no-open --host 0.0.0.0 --port 9119` in the default profile, they are:
+
+```powershell
+hermes -p default webapp --build-only
+hermes -p default config set webapp.enabled true
+hermes -p default config set webapp.host 0.0.0.0
+hermes -p default config set webapp.port 9119
+schtasks /End /TN "Hermes Dashboard"
+schtasks /Change /TN "Hermes Dashboard" /DISABLE
+hermes -p default gateway status
+# then by what it prints: 'Gateway is not running' (no service installed) -> hermes -p default gateway install; 'No gateway process detected' -> hermes -p default gateway start; 'Gateway process running' or 'Running manually' -> hermes -p default gateway restart
+# the gateway takes a few seconds to serve the address: if the next line prints 'The gateway is not running', wait 5 seconds and run it again
+hermes -p default webapp --status
+```
+
+For a shortcut in the Startup folder, the two `schtasks` lines are replaced by these (Windows tries to open any file left in the Startup folder, even a renamed one, so the shortcut is moved into the Hermes home instead):
+
+```powershell
+taskkill /PID <pid> /T /F
+# this Startup-folder entry starts the same command; if it is what starts this backend at sign-in, move it out of the Startup folder (Windows tries to open any file left there, even a renamed one):
+mkdir "<home>\backend_migration"
+# (an 'already exists' error from mkdir is fine)
+move "<shortcut>.lnk" "<home>\backend_migration\<shortcut>.lnk"
+# to undo later: move "<home>\backend_migration\<shortcut>.lnk" "<shortcut>.lnk"
+```
+
+The printed steps hold the real PID, the Hermes home and the full path of the shortcut.
+
+Pick the gateway line by what `hermes gateway status` prints. Whenever it shows a gateway process running ('Gateway process running' or 'Running manually'), run `hermes -p default gateway restart`, whether or not a Scheduled Task or Startup entry is registered: `hermes gateway start` only reports a gateway that already runs, and a running gateway reads `webapp.*` only when it restarts, so it would never take the port the old backend freed. Only with no gateway process: 'Gateway is not running' (no service installed) means `install`, and 'No gateway process detected' (a task or entry, stopped) means `start`. When `hermes webapp --status` shows the gateway serving the address, open the old address in a browser (the public `https://` one when there is one) and sign in.
+
+- The sign-in stays: a username and password in `config.yaml` (`dashboard.basic_auth`) apply to the Webapp too. When the old backend got sign-in settings from its own environment, the steps name the `HERMES_DASHBOARD_*` variables to copy into the Hermes `.env` file (never their values).
+- A public address stays only if you copy it. The Webapp builds its sign-in callback on `webapp.public_url` and never reads `HERMES_DASHBOARD_PUBLIC_URL` or `dashboard.public_url`. The old backend used the first of these that is an `http://` or `https://` URL (a blank or malformed value is skipped): `HERMES_DASHBOARD_PUBLIC_URL` in the Hermes `.env` file (it overrides the environment), then `HERMES_DASHBOARD_PUBLIC_URL` in the environment the task or shortcut gave it, then `dashboard.public_url` (`hermes -p default config get dashboard.public_url`). When it had one and `webapp.public_url` is unset, the steps add a line that says to copy it: open `config.yaml` with `hermes -p default config edit` and set `webapp.public_url` under `webapp:` to that address, before the gateway line. The steps never put the address on a command line, because PowerShell expands `$` inside double quotes.
+- When a chat turn is running on the old backend, the command says how many: stopping it interrupts them, so let them finish first.
+- Afterwards the task stays disabled (or the shortcut set aside) across restarts. Started by hand later on the same address, the old `hermes dashboard` finds the port taken and its message names the gateway. See [What clients notice after the move](./features/web-dashboard.md#after-the-move).
+
 ## Data layout
 
 | Path | Contents |
@@ -263,14 +306,15 @@ Windows package removal instead of deleting that root to repair an app.
 
 ## Browser tool
 
-Browser setup depends on the selected backend. PM supplies the pinned
-`agent-browser` and Chromium packages for the built-in backend. Browser Use
-has its own managed CLI installation through `hermes tools`. A self-contained
-MSIX includes supported browser tools in its payload.
+The browser tool (`browser_exec`) is part of Hermes's Python environment.
+For local browsing, Hermes launches the pinned Chromium that PM installs
+(`hermes pm install chromium` if it is missing); set `browser.executable_path`
+to use another Chromium-family binary. Cloud browsers are selected in
+`hermes tools`. A self-contained MSIX includes the browser tools in its payload.
 
-On Windows ARM64, the pinned Chromium and `agent-browser` binaries can use
+On Windows ARM64, the pinned Chromium is the x64 build and runs under
 Windows' x64 emulation. This differs from the native ARM64 Python runtime.
-See [Browser automation](./features/browser.md) for backend selection.
+See [Browser automation](./features/browser.md) for browser sources.
 
 ## Running Hermes on Windows — practical notes
 
@@ -357,13 +401,9 @@ You set it in the current process only; close and reopen the shell, or set it at
 
 **Browser tool launches but tools time out.**
 Run `hermes doctor` and `hermes pm doctor`. Use `hermes tools` to inspect the
-selected browser backend. Do not install an unrelated Playwright revision into
-a signed app payload.
-
-**`agent-browser` reports a Node version error.**
-Run `hermes pm doctor` and inspect which Hermes launcher started the process.
-PM supplies the managed Node version. Do not delete an unrelated system Node
-installation to repair Hermes.
+selected browser provider. A slow first Chromium start can be given more time
+with `browser.command_timeout` (the launch timeout floor, in seconds). Do not
+install an unrelated Playwright revision into a signed app payload.
 
 **Chinese / Japanese / Arabic characters show as `?` in the CLI.**
 The UTF-8 stdio shim didn't activate. Check that `HERMES_DISABLE_WINDOWS_UTF8` is NOT set (`Get-ChildItem env:HERMES_DISABLE_WINDOWS_UTF8`). If it's empty and you still see `?`, the console host (very old `cmd.exe`) may not support UTF-8 at all — switch to Windows Terminal.

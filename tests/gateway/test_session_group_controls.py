@@ -9,8 +9,10 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus
 
 from gateway.session_controls import AuthorityConnection
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def test_group_management_on_ordinary_authenticated_socket(tmp_path):
@@ -72,10 +74,10 @@ def test_profile_discovery_and_group_controls_enforce_actor_scope(tmp_path, monk
     monkeypatch.setenv('HOME', str(tmp_path / 'user'))
     (home / 'config.yaml').write_text('model:\n  default: fixture-model\n  provider: custom\n')
     (home / 'profile.yaml').write_text('display_name: Fixture\nui_meta:\n  hermes-bots:\n    color: blue\n')
-    with SessionDB(home / 'state.db') as db:
-        db.create_session('private', source='cli', user_id='another')
-        db.set_session_title('private', 'Bot Chat')
-        authority = SimpleNamespace(profile_id=str(home), instance_id='owner', db=db, events={}, sessions={})
+    with open_persistence(profile_scope(home=home)) as db:
+        seed_session(db, 'private', 'cli', user_id='another', title='Bot Chat')
+        authority = SimpleNamespace(profile_id=str(home), instance_id='owner', db=db, events={}, sessions={},
+                                    persistence=storage_handle(home))
 
         async def probe():
             async def call(method, params=None, **identity):
@@ -95,14 +97,12 @@ def test_profile_discovery_and_group_controls_enforce_actor_scope(tmp_path, monk
             assert row['ui_meta']['hermes-bots']['color'] == 'blue'
             assert row['canonical_session'] is None
             assert row['last_session'] is None
-            assert db.get_session('private')['title'] == 'Bot Chat'
-            db.set_session_title('private', 'Other Bot Chat')
+            assert db.sessions.get('private').title == 'Bot Chat'
+            db.sessions.set_title('private', 'Other Bot Chat')
             from gateway.session_identity import authenticated_subject
-            db.create_session('mine', source='gui',
-                              user_id=authenticated_subject({'user_id': 'reader'}), chat_id='local-mine')
-            db.set_session_title('mine', 'Bot Chat')
-            db.set_session_hidden('mine', True)
-            db.append_message('mine', 'user', 'owned preview')
+            seed_session(db, 'mine', 'gui', user_id=authenticated_subject({'user_id': 'reader'}), chat_id='local-mine',
+                         title='Bot Chat', hidden=True)
+            seed_messages(db, 'mine', {'role': 'user', 'content': 'owned preview'})
             own = (await call('profiles.list', capabilities=['session:read']))['result']['profiles'][0]
             assert own['canonical_session']['id'] == 'mine'
             assert own['canonical_session']['preview'] == 'owned preview'
@@ -118,19 +118,19 @@ def test_groups_list_pages_the_actor_visible_rooms(tmp_path):
     before the authorization filter (which returned empty/short pages ahead of visible rooms)."""
     from gateway import hosted_rooms as rooms
     from gateway.session_group_controls import _group
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     db_path = tmp_path / 'state.db'
-    with SessionDB(db_path) as db:
+    with open_persistence(profile_scope(home=tmp_path)) as db:
         for index, name in enumerate(['f1', 'f2', 'm1', 'f3', 'm2', 'm3']):
-            rooms.create_room(db_path, room_id=name, name=name, members=[], authority_gateway_id='gw',
+            rooms.create_room(db, placement='profile', room_id=name, name=name, members=[], authority_gateway_id='gw',
                               now=1000.0 - index)  # list order = updated_at DESC = this order
 
         def authorize_room(subject, room_id):
             if not room_id.startswith('m'):
-                raise RuntimeStoreError('permission_denied')
-        service = SimpleNamespace(db_path=db_path, authorize_room=authorize_room,
+                raise AuthorityRefusal('permission_denied')
+        service = SimpleNamespace(db_path=db_path, store=db, placement='profile', authorize_room=authorize_room,
                                   runtime=SimpleNamespace(status=lambda: {'running': True}))
-        authority = SimpleNamespace(db=db, hosted_room_service=service)
+        authority = SimpleNamespace(db=db, hosted_room_service=service, persistence=storage_handle(tmp_path))
         actor = SimpleNamespace(subject='me')
         pages, params = [], {'limit': 2}
         while True:
@@ -156,13 +156,12 @@ def test_profiles_list_names_every_profile_on_disk_and_its_install(tmp_path, mon
     monkeypatch.setenv('HERMES_HOME', str(home))
     monkeypatch.setenv('HOME', str(tmp_path / 'user'))
     (home / 'config.yaml').write_text('model:\n  default: fixture-model\n')
-    with SessionDB(home / 'state.db') as db:
-        db.create_session('theirs', source='cli', user_id='another')
-        writer_db = SessionDB(home / 'profiles' / 'writer' / 'state.db')
-        writer_db.create_session('writer-chat', source='gui', user_id='another')
-        writer_db.set_session_title('writer-chat', 'Bot Chat')
-        writer_db.close()
-        authority = SimpleNamespace(profile_id=str(home), instance_id='owner', db=db, events={}, sessions={})
+    with open_persistence(profile_scope(home=home)) as db:
+        seed_session(db, 'theirs', 'cli', user_id='another')
+        with open_persistence(profile_scope(home=home / 'profiles' / 'writer')) as writer_db:
+            seed_session(writer_db, 'writer-chat', 'gui', user_id='another', title='Bot Chat')
+        authority = SimpleNamespace(profile_id=str(home), instance_id='owner', db=db, events={}, sessions={},
+                                    persistence=storage_handle(home))
 
         async def probe():
             connection = AuthorityConnection(authority, object(), {'user_id': 'reader'})
@@ -175,6 +174,40 @@ def test_profiles_list_names_every_profile_on_disk_and_its_install(tmp_path, mon
     assert rows['writer']['display_name'] == 'Writer Bot'
     # Discovery is metadata only: a profile this socket does not route to adds no session fields.
     assert 'canonical_session' not in rows['writer'] and 'last_session' not in rows['writer']
+
+
+def test_profiles_list_discovered_rows_keep_the_profiles_own_metadata(tmp_path, monkeypatch):
+    """#143215: a discovered row hardcoded ``description: ''``, sent the handle as
+    ``display_name`` and carried neither ``has_avatar`` nor ``ui_meta_revisions``, so Desktop's
+    Bots tab read every un-named profile as untouched art with a blank description and the Edit
+    profile dialog seeded that blank over the stored one. The pre-authority handler sent the
+    profile's own description and an empty override, so the regression is the row shape."""
+    home = tmp_path / 'state'
+    for name in ('helper', 'writer'):
+        (home / 'profiles' / name).mkdir(parents=True)
+        (home / 'profiles' / name / 'config.yaml').write_text('model:\n  default: m\n')
+    writer = home / 'profiles' / 'writer'
+    (writer / 'profile.yaml').write_text(
+        'description: Writes the release notes\n'
+        'display_name: Writer Bot\n'
+        'ui_meta:\n  hermes-bots:\n    title: Writer\n'
+        '_ui_meta_revisions:\n  hermes-bots: 3\n')
+    (writer / 'assets').mkdir()
+    (writer / 'assets' / 'avatar.png').write_bytes(b'\x89PNG\r\n\x1a\n')
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setenv('HOME', str(tmp_path / 'user'))
+    (home / 'config.yaml').write_text('model:\n  default: fixture-model\n')
+    rows = {row['name']: row for row in _list_profiles(home)['result']['profiles']}
+    assert rows['writer']['description'] == 'Writes the release notes'
+    assert rows['writer']['display_name'] == 'Writer Bot'
+    assert rows['writer']['has_avatar'] is True
+    assert rows['writer']['ui_meta_revisions'] == {'hermes-bots': 3}
+    # No ``display_name`` in profile.yaml means no override at all: Desktop title-cases the
+    # handle itself only while the field is empty.
+    assert rows['helper']['display_name'] == ''
+    assert rows['helper']['description'] == ''
+    assert rows['helper']['has_avatar'] is False
+    assert rows['helper']['ui_meta_revisions'] == {}
 
 
 def _roster_home(tmp_path, monkeypatch):
@@ -190,13 +223,27 @@ def _roster_home(tmp_path, monkeypatch):
 
 
 def _list_profiles(home):
-    with SessionDB(home / 'state.db') as db:
-        authority = SimpleNamespace(profile_id=str(home), instance_id='owner', db=db, events={}, sessions={})
+    with open_persistence(profile_scope(home=home)) as db:
+        authority = SimpleNamespace(profile_id=str(home), instance_id='owner', db=db, events={}, sessions={},
+                                    persistence=storage_handle(home))
 
         async def probe():
             connection = AuthorityConnection(authority, object(), {'user_id': 'reader'})
             return await connection.dispatch({'id': 'r', 'method': 'profiles.list', 'params': {}})
         return asyncio.run(probe())
+
+
+def test_profiles_list_carries_each_sibling_profiles_saved_description(tmp_path, monkeypatch):
+    """Bot Mode reads every bot's Description from this roster (Edit profile, the avatar prompt,
+    role search, Duplicate). A sibling's saved description was blanked, so it looked unsaved."""
+    home = _roster_home(tmp_path, monkeypatch)
+    (home / 'profile.yaml').write_text('description: Project Manager\n')
+    (home / 'profiles' / 'writer' / 'profile.yaml').write_text(
+        'display_name: Writer Bot\ndescription: Creative Director\n')
+    rows = {row['name']: row for row in _list_profiles(home)['result']['profiles']}
+    assert rows['default']['description'] == 'Project Manager'
+    assert rows['writer']['description'] == 'Creative Director'
+    assert rows['helper']['description'] == ''
 
 
 def test_profiles_list_survives_an_undecodable_sibling_profile_yaml(tmp_path, monkeypatch, caplog):
@@ -210,7 +257,9 @@ def test_profiles_list_survives_an_undecodable_sibling_profile_yaml(tmp_path, mo
     assert 'result' in reply, reply
     rows = {row['name']: row for row in reply['result']['profiles']}
     assert list(rows) == ['default', 'helper', 'writer']
-    assert rows['helper']['display_name'] == 'helper'
+    # An unreadable profile.yaml carries no override at all — the row does not invent one from
+    # the handle (#143215); Desktop title-cases the name when ``display_name`` is empty.
+    assert rows['helper']['display_name'] == ''
     assert rows['writer']['display_name'] == 'Writer Bot'
     assert any('helper' in record.getMessage() and 'profile.yaml' in record.getMessage()
                for record in caplog.records)

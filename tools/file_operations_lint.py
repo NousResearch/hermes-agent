@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 # Shell linters by extension (external toolchain). ``.tsx`` is deliberately absent:
 # it hits the "No linter" skip and LSP covers it when enabled.
 LINTERS = {
-    '.py': 'python -m py_compile {file} 2>&1',
     '.js': 'node --check {file} 2>&1',
     '.ts': 'npx tsc --noEmit {file} 2>&1',
     '.go': 'go vet {file} 2>&1',
@@ -32,8 +31,8 @@ _MANAGED_NODE_LINTERS = {'.js': ('node', '--check'), '.ts': ('npx', 'tsc', '--no
 
 # Per-file shell linters that flood phantom errors on real projects (single-file
 # ``tsc`` ignores tsconfig, ``go vet`` fails outside a module, ``rustfmt --check``
-# is style-only): skipped when an LSP server claims the file. py_compile /
-# node --check are file-local and correct so always run.
+# is style-only): skipped when an LSP server claims the file. node --check is
+# file-local and correct so always runs.
 _SHELL_LINTER_LSP_REDUNDANT = frozenset({'.ts', '.go', '.rs'})
 
 # Shell linters that resolve the toolchain from the checkout they run in: ``npx tsc`` runs the
@@ -243,16 +242,11 @@ class LintMixin:
         ))
 
     def _lsp_local_only(self) -> bool:
-        """True iff wired to a local backend. LSP servers run on the host and
-        can't see files inside Docker/Modal/SSH/Daytona sandboxes."""
-        env = getattr(self, "env", None)  # tests may build via __new__ without __init__
-        if env is None:
-            return False
-        try:
-            from tools.environments.local import LocalEnvironment
-        except Exception:
-            return False
-        return isinstance(env, LocalEnvironment)
+        """True iff the backend's files are the host's (``uses_host_filesystem``). LSP servers run on
+        the host and can't see files inside Docker/Modal/SSH/Daytona or a confining local sandbox."""
+        from tools.environments.base import env_uses_host_filesystem
+
+        return env_uses_host_filesystem(getattr(self, "env", None))  # tests may build via __new__
 
     def _local_workspace_untrusted(self) -> bool:
         """True iff on a local backend the linter's cwd lies outside every trusted workspace

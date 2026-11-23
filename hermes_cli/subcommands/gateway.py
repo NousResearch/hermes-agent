@@ -22,23 +22,23 @@ _INTERRUPT_HELP = (
 
 
 class _GatewayCommandParser(argparse.ArgumentParser):
-    """Ensure's parser errors share its machine-readable command boundary."""
+    """``ensure``'s and ``attach``'s parser errors share their machine-readable command boundary."""
 
-    def __init__(self, *args, ensure_json=False, **kwargs):
-        self.ensure_json = ensure_json
+    def __init__(self, *args, json_verb=None, **kwargs):
+        self.json_verb = json_verb
         super().__init__(*args, **kwargs)
 
     def parse_known_args(self, args=None, namespace=None):
         parsed, unknown = super().parse_known_args(args, namespace)
-        if self.ensure_json and unknown:
+        if self.json_verb and unknown:
             self.error("unknown arguments")
         return parsed, unknown
 
     def error(self, message):
-        if not self.ensure_json:
+        if not self.json_verb:
             return super().error(message)
         print('{"endpoint":null,"reason_code":"invalid_invocation","state":"inaccessible"}')
-        self.exit(2, "gateway ensure: invalid invocation\n")
+        self.exit(2, f"gateway {self.json_verb}: invalid invocation\n")
 
 
 def _flag(parser, *names, help, **kw):
@@ -118,9 +118,9 @@ def build_gateway_parser(
     add_accept_hooks_flag(gateway_run)
     add_accept_hooks_flag(gateway_parser)
 
-    from hermes_cli.gateway_runtime_cli import cmd_gateway_ensure
+    from hermes_cli.gateway_runtime_cli import cmd_gateway_attach, cmd_gateway_ensure
     gateway_ensure = gateway_subparsers.add_parser(
-        "ensure", ensure_json=True,
+        "ensure", json_verb="ensure",
         help="Ensure a local runtime without installing or replacing a service",
         epilog="Exit codes: 0 ready; 2 invalid invocation; 3 incompatible; "
                "4 authorization/profile mismatch; 5 deadline; 6 draining/update-paused; "
@@ -129,6 +129,46 @@ def build_gateway_parser(
     gateway_ensure.add_argument("--timeout", default="60",
                                 help="Total startup deadline in seconds (default: 60)")
     gateway_ensure.set_defaults(func=cmd_gateway_ensure)
+
+    gateway_attach = gateway_subparsers.add_parser(
+        "attach", json_verb="attach",
+        help="Attach a local client: the gateway's WebSocket URL and a single-use session ticket",
+        description="Print the WebSocket URL of the gateway serving this profile and one single-use "
+                    "session ticket for it, for a local client that dials /api/ws itself. The ticket "
+                    "is a credential: it is printed for the calling process only, never logged, and "
+                    "expires 30 seconds after it is minted.",
+        epilog="Exit codes: 0 attached; 2 invalid invocation; otherwise the exit code "
+               "`hermes gateway ensure` gives the same verdict.")
+    _flag(gateway_attach, "--json", help="Emit one JSON result (default)")
+    attach_mode = gateway_attach.add_mutually_exclusive_group()
+    _flag(attach_mode, "--start", help="Start the gateway when none serves this profile")
+    _flag(attach_mode, "--recover",
+        help="Discover first; start (or replace an older Hermes's) gateway only when it is not ready")
+    gateway_attach.add_argument("--timeout", default="60",
+                                help="Start deadline in seconds for --start/--recover (default: 60)")
+    gateway_attach.set_defaults(func=cmd_gateway_attach)
+
+    from hermes_cli.gateway_runtime_tickets import cmd_gateway_tickets
+    gateway_tickets = gateway_subparsers.add_parser(
+        "tickets",
+        help="Mint single-use HTTP and WebSocket tickets for a client that reaches the gateway over SSH",
+        description="For a client that forwards the gateway's loopback port (for example over SSH) and "
+                    "calls its HTTP API. --probe prints what this host can mint and touches no gateway. "
+                    "--serve prints a hello line with the running gateway's endpoint, then answers each "
+                    'stdin line {"id": ..., "purpose": "native-http"} with one stdout line holding a '
+                    'single-use ticket, until stdin closes. A line may add "profile": "<name>" for '
+                    'another profile the same gateway serves. Purpose "interactive" is the WebSocket\'s '
+                    "ticket for every profile that gateway serves. It never starts a gateway: use "
+                    "`hermes gateway attach --start` for that. Tickets are credentials: they are printed "
+                    "for the calling process only and never logged.",
+        epilog="Exit codes: 0 probe printed, or --serve ended at stdin EOF; 2 invalid invocation; "
+               "otherwise (--serve with no gateway to use) the exit code `hermes gateway ensure` "
+               "gives the same verdict.")
+    _flag(gateway_tickets, "--json", help="Emit JSON lines (default)")
+    tickets_mode = gateway_tickets.add_mutually_exclusive_group(required=True)
+    _flag(tickets_mode, "--probe", help="Print the protocol version and the ticket purposes; start nothing")
+    _flag(tickets_mode, "--serve", help="Answer ticket requests on stdin until it closes")
+    gateway_tickets.set_defaults(func=cmd_gateway_tickets)
 
     gateway_start = gateway_subparsers.add_parser(
         "start", help="Start the installed systemd/launchd background service")
@@ -149,6 +189,9 @@ def build_gateway_parser(
         help="Kill ALL gateway processes across all profiles before restarting")
     _flag(gateway_restart, "--force", help=_FORCE_SERVED_PROFILE_HELP)
     _flag(gateway_restart, "-y", "--yes", "--interrupt", dest="interrupt", help=_INTERRUPT_HELP.format(verb="restart"))
+    _flag(gateway_restart, "--detach", help=(
+        "Without an installed service, start the replacement in the background (as `gateway ensure` "
+        "does) instead of in this terminal; used by apps that run the restart as a short-lived client"))
     _add_compat_platform_flag(gateway_restart)
 
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
@@ -210,6 +253,32 @@ def build_gateway_parser(
     _flag(gateway_migrate, "--multiplex", dest="multiplex", help="Converge onto the one host gateway (default)")
     _flag(gateway_migrate, "--dry-run", dest="dry_run", help="Print the plan and blockers without changing anything")
     _flag(gateway_migrate, "-y", "--yes", dest="yes", help="Apply without confirmation")
+    _flag(gateway_migrate, "--backends", dest="backends",
+        help="Report serve/dashboard background services and their ownership; "
+        "changes no service (normal Hermes startup bookkeeping still runs)")
+    _flag(gateway_migrate, "--json", dest="json",
+        help="With --backends: machine-readable output (the report, the plan, a run's result, --status)")
+    _flag(gateway_migrate, "--apply", dest="apply",
+        help="With --backends: move this home from the old dashboard/serve backend to the gateway's Webapp "
+        "on the same address (with --dry-run: print the plan and blockers only)")
+    _flag(gateway_migrate, "--restore", dest="restore",
+        help="With --backends: undo a finished backend migration from its manifest")
+    _flag(gateway_migrate, "--status", dest="status",
+        help="With --backends: state of the last or ongoing backend migration")
+    gateway_migrate.add_argument("--address", dest="address", metavar="HOST:PORT",
+        help="With --backends --apply: the old backend on this address (several found: the others still block)")
+    _flag(gateway_migrate, "--keep-webapp-address", dest="keep_webapp_address",
+        help="With --backends --apply: retire the old backend but keep the Webapp on its current address")
+    _flag(gateway_migrate, "--force-interrupt", dest="force_interrupt",
+        help="With --backends --apply: proceed although a turn is running on the old backend (it is interrupted)")
+    gateway_migrate.add_argument("--expect", dest="expect", metavar="TOKEN",
+        help="With --backends --apply: change nothing (exit 8) unless the backend found now is the one whose "
+        "expect_token the --dry-run --json plan printed")
+    _flag(gateway_migrate, "--detach", dest="detach",
+        help="With --backends --apply or --restore: run outside this process group / systemd cgroup and "
+        "return at once (follow it with --status)")
+    _flag(gateway_migrate, "--detached-run", dest="detached_run", help=argparse.SUPPRESS)
+    gateway_migrate.add_argument("--detached-ack", dest="detached_ack", help=argparse.SUPPRESS)
 
     # enroll: redeem a single-use connector token for the per-gateway secret + per-tenant
     # delivery key, written to .env. See website/docs/developer-guide/relay-connector-contract.md. EXPERIMENTAL.

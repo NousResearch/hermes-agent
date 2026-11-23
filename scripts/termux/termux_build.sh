@@ -15,7 +15,7 @@
 #
 # Inputs (host mode, all required):
 #   --repo <dir>   hermes-agent checkout to build from (must contain the tag)
-#   --tag <tag>    immutable release tag (vX.Y.Z or vX.Y.Z+canary.<UTC timestamp>)
+#   --tag <tag>    immutable release tag (vX.Y.Z or canary.<UTC timestamp>-vX.Y.Z)
 #   --out <dir>    output dir (wheelhouse/ + index.json + SHA256SUMS land here)
 
 set -Eeuo pipefail
@@ -137,6 +137,7 @@ if [ "${1:-}" = "--in-container" ]; then
     log "Building the android wheel set from sdist (bionic, payload ABI)"
     "$BUILD_VENV/bin/python" -u "$HERE/build_wheels.py" \
         --resolved "$RESOLVED" --build-set "$BUILD_SET" \
+        --lock "$PAYLOAD_ROOT/.work/tree/uv.lock" \
         --wheelhouse "$WHEELHOUSE" --retag "$HERE/retag_wheel.py" \
         --platform-tag "$PLATFORM_TAG" \
         || fail "wheel building failed"

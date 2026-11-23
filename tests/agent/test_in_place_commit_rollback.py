@@ -25,19 +25,22 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages, seed_session
+
 
 @contextlib.contextmanager
 def _session_db(name):
-    """Real SessionDB on a temp file, closed before the directory is removed.
+    """A real store on a temp home, closed before the directory is removed.
 
     Windows holds the SQLite file open until the connection is closed, so
     letting TemporaryDirectory clean up first raises WinError 32 and masks the
     assertion result.
     """
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
     with tempfile.TemporaryDirectory() as tmp:
-        db = SessionDB(db_path=Path(tmp) / name)
+        db = open_persistence(profile_scope(home=Path(tmp) / name))
         try:
             yield db
         finally:
@@ -53,7 +56,7 @@ def _make_agent(session_db, session_id):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=session_db,
+            persistence=session_db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -78,29 +81,28 @@ def _make_agent(session_db, session_id):
 
 
 def _seed(db, sid, n=8):
-    db.create_session(sid, "gateway", model="test/model")
+    seed_session(db, sid, "gateway", model="test/model")
     for i in range(n):
-        db.append_message(
-            session_id=sid,
-            role="user" if i % 2 == 0 else "assistant",
-            content=f"seed msg {i}",
-        )
+        seed_messages(db, sid, {
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": f"seed msg {i}",
+        })
 
 
 def _counts(db, sid):
-    total = db._conn.execute(
-        "SELECT COUNT(*) FROM messages WHERE session_id = ?", (sid,)
-    ).fetchone()[0]
-    active = db._conn.execute(
-        "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1", (sid,)
-    ).fetchone()[0]
+    with raw_holder(db)._read_ctx() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?", (sid,)
+        ).fetchone()[0]
+        active = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1", (sid,)
+        ).fetchone()[0]
     return total, active
 
 
 class TestInPlaceCommitFailureRollback:
     def test_failed_commit_does_not_reinsert_the_transcript(self):
-        """archive_and_compact raises → live list must return to the snapshot."""
-        from hermes_state import SessionDB
+        """The store's compaction commit raises → live list must return to the snapshot."""
         from agent.context_compressor import _DB_PERSISTED_MARKER
         from agent.conversation_compression import compress_context
 
@@ -123,7 +125,7 @@ class TestInPlaceCommitFailureRollback:
             def _locked(*_a, **_kw):
                 raise RuntimeError("database is locked (concurrent drain)")
 
-            with patch.object(SessionDB, "archive_and_compact", _locked):
+            with patch.object(type(db.messages), "compact", _locked):
                 compressed, _prompt = compress_context(
                     agent, messages, approx_tokens=900_000, system_message="sys"
                 )
@@ -152,7 +154,6 @@ class TestInPlaceCommitFailureRollback:
 
     def test_successful_commit_still_compacts_in_place(self):
         """The rollback must not fire when the commit landed (#98450 guard)."""
-        from hermes_state import SessionDB
         from agent.context_compressor import _DB_PERSISTED_MARKER
         from agent.conversation_compression import compress_context
 

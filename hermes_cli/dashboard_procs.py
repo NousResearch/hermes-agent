@@ -163,7 +163,12 @@ def _pid_passwd_home(pid: int) -> str | None:
     return None
 
 
-def _hermes_home_for_pid(pid: int, *, require_launch_identity: bool = False) -> str | None:
+def _discovery_argv(pid: int) -> list[str] | None:
+    from hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
+    return _dashboard_cmdline_for_pid(pid)
+
+
+def _hermes_home_for_pid(pid: int, *, require_launch_identity: bool = False, argv_reader=_discovery_argv) -> str | None:
     """Resolve a process home for discovery, or require pinned launch identity for termination.
 
     By default, ``None`` means an unreadable environment (another user, hardened ``/proc``).
@@ -183,9 +188,8 @@ def _hermes_home_for_pid(pid: int, *, require_launch_identity: bool = False) -> 
     env = _pid_environ(pid)
     if env is None:
         return None
-    from hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
     from hermes_cli.profiles import get_active_profile, normalize_profile_name, profile_root_for_env_home
-    argv = _dashboard_cmdline_for_pid(pid)
+    argv = argv_reader(pid)
     if require_launch_identity and argv is None:
         # The dashboard argv reader has no Windows implementation; psutil does.
         import psutil
@@ -213,7 +217,8 @@ def _hermes_home_for_pid(pid: int, *, require_launch_identity: bool = False) -> 
         default_home = Path(env.get("HOME") or _pid_passwd_home(pid) or Path.home()) / ".hermes"
     root = profile_root_for_env_home(env_home, default_home)
     fixed_identity = any(env.get(k) for k in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD",
-                                               "HERMES_GATEWAY_EXTERNAL_SUPERVISOR")) or is_desktop_ssh_backend_argv(argv)
+                                               "HERMES_GATEWAY_EXTERNAL_SUPERVISOR",
+                                               "HERMES_GATEWAY_PROFILE_PIN")) or is_desktop_ssh_backend_argv(argv)
     if profile is None and not fixed_identity:
         if require_launch_identity:
             return None  # The sticky profile at launch is unknowable; never read today's value.
@@ -379,6 +384,19 @@ _WRAPPER_HEAD_COMMANDS = frozenset({
 })
 
 
+def _process_listens_on(pid: int, port: int) -> bool | None:
+    """Whether *pid* itself holds a TCP listener on *port*; None when the OS will not say."""
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        connections = psutil.Process(pid).net_connections(kind="inet")
+    except (psutil.Error, OSError):  # gone, access denied, or the OS has no per-process table
+        return None
+    return any(c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port for c in connections)
+
+
 def _caller_ancestor_pids() -> set[int]:
     """PIDs of THIS process's ancestors (self excluded), best-effort; empty on any failure.
 
@@ -495,8 +513,8 @@ def _is_detached_session_leader(pid: int, tty: str) -> bool:
     Known gap: the turn-isolation ``tui_gateway.compute_host`` and ``slash_worker`` children are
     launched the same way (``start_new_session=True``, no tty; ``compute_host`` also holds
     ``state.db``), so a wedged WAL holder of that class is spared here too. Their exit relies on
-    their own ppid watchdogs (``compute_host._parent_guard_loop``,
-    ``slash_worker._start_parent_death_watchdog``), not on this sweep. Discriminating by WAL-holder
+    ``compute_host._parent_guard_loop`` and on the gateway's owner-death supervisor
+    (``process_identity.spawn_owned``) respectively, not on this sweep. Discriminating by WAL-holder
     identity (``iter_deleted_sqlite_sidecar_holders``) was deliberately not done in this change.
     """
     if tty not in _NO_TTY:
@@ -789,8 +807,8 @@ def _detect_concurrent_hermes_instances(
     PM stages a fresh generation instead of replacing a mapped hermes.exe.
     Returning an empty list would let old callers continue into that mutation.
     """
-    from hermes_cli._old_updater import stop_for_relaunch
-    stop_for_relaunch()
+    from hermes_cli._old_updater import stop_historical_updater
+    stop_historical_updater("hermes_cli.dashboard_procs._detect_concurrent_hermes_instances")
 
 
 def _is_desktop_local_serve_cmdline(command: str) -> bool:

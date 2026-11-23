@@ -16,6 +16,11 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.authz_mixin import GatewayAuthorizationMixin
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 class _Runner(GatewayAuthorizationMixin):
@@ -24,9 +29,18 @@ class _Runner(GatewayAuthorizationMixin):
         from gateway.session import SessionStore
         self.config = GatewayConfig(multiplex_profiles=multiplex)
         self.session_store = SessionStore(tmp_path / 'sessions', self.config)
-        self._session_db = self.session_store._db
+        self._session_db = self.session_store.persistence
         self.adapters = {}
         self._draining = False
+
+    def _cached_agent_for(self, route):
+        """A chat's route holds the agent of the conversation it names (a stand-in: no turn ran), so
+        ``agent(ref) is None`` proves a conversation the chat moved past never reaches it."""
+        from gateway.run import _parse_session_key
+        platform = (_parse_session_key(route) or {}).get('platform')
+        if platform in (None, 'local'):
+            return None
+        return self.__dict__.setdefault('_lane_agents', {}).setdefault(route, SimpleNamespace(route=route))
 
 
 def _source(platform='telegram', chat_id='4242', profile=None, chat_name=None):
@@ -52,10 +66,13 @@ def _seed(tmp_path, sid, source, *, routed=True, row_origin=_ROUTE, row_source=N
     route = store._generate_session_key(source)
     if row_origin is _ROUTE:
         row_origin = json.dumps(source.to_dict())
-    runner._session_db.create_session(
-        sid, source=row_source or source.platform.value, session_key=route if row_key is _ROUTE else row_key,
+    seed_session(
+        runner._session_db, sid, row_source or source.platform.value, session_key=route if row_key is _ROUTE else row_key,
         chat_id=source.chat_id, user_id=source.user_id, chat_type=source.chat_type,
-        display_name=source.chat_name, origin_json=row_origin, transport_profile=transport_profile)
+        display_name=source.chat_name, transport_profile=transport_profile)
+    if row_origin is not None:  # the stored text as written, an undecodable one included
+        raw_holder(runner._session_db)._execute_write(
+            lambda conn: conn.execute('UPDATE sessions SET origin_json = ? WHERE id = ?', (row_origin, sid)))
     if routed:
         now = datetime.now()
         entry_source = source if entry_source is None else entry_source
@@ -63,8 +80,8 @@ def _seed(tmp_path, sid, source, *, routed=True, row_origin=_ROUTE, row_source=N
                              platform=source.platform, transport_profile=transport_profile)
         # The routing index lives in the store's routing home, which is cached per process: write where
         # the cold store will read, not where this test's HERMES_HOME happens to point.
-        store._routing_db.save_gateway_routing_entry(
-            route, json.dumps(entry.to_dict()), scope=store._routing_scope())
+        store._routing_persistence.routing.upsert_routing_entry(
+            route, json.dumps(entry.to_dict()), routing_scope=store._routing_scope())
     return route
 
 
@@ -72,13 +89,13 @@ async def _cold(tmp_path, multiplex=None, profile_name=None):
     """A fresh process: new store, new authority, nothing published."""
     from gateway.session_authorities import SessionAuthorities
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     runner = _Runner(tmp_path, multiplex)
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='cold')
     if profile_name is not None:
         runner.session_authorities = SessionAuthorities(tmp_path / 'launch', multiplexed=True)
         runner.session_authorities.add('fixture', authority, name=profile_name)
-    actor = Principal('viewer', 'fixture', frozenset({'session:read'}), 'socket')
+    actor = SessionActor('viewer', 'fixture', frozenset({'session:read'}), 'socket')
     return SimpleNamespace(authority=authority, actor=actor, store=runner.session_store)
 
 
@@ -88,9 +105,9 @@ def _ref(sid, profile_id='fixture'):
 
 
 async def _refused(tmp_path, sid, reason='not_found', **cold_args):
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     cold = await _cold(tmp_path, **cold_args)
-    with pytest.raises(RuntimeStoreError, match=reason):
+    with pytest.raises(AuthorityRefusal, match=reason):
         cold.authority.authorize(cold.actor, _ref(sid), 'session:read')
     assert sid not in cold.authority.sessions
 
@@ -109,7 +126,7 @@ async def test_a_routed_messaging_session_mounts_on_a_cold_authority(tmp_path):
     ref = warm.register(_source())
     cold = await _cold(tmp_path)
     assert ref.session_id not in cold.authority.sessions
-    assert cold.authority.db.get_session(ref.session_id)['source'] == 'telegram'
+    assert session_row(cold.authority.persistence, ref.session_id)['source'] == 'telegram'
 
     cold.authority.authorize(cold.actor, ref, 'session:read')
 
@@ -140,8 +157,9 @@ async def test_a_row_its_route_moved_past_mounts_from_its_own_origin(tmp_path):
     cold.authority.authorize(cold.actor, _ref('old'), 'session:read')
 
     live = cold.authority.sessions['old']
+    # Teknium's ruling: off the chat's route, on a key of its own (gateway/session_detached.py).
     assert (live.route, live.source.platform, live.source.chat_id, live.source.chat_name) == (
-        cold.store._generate_session_key(_source()), Platform.TELEGRAM, '4242', 'from-row')
+        'agent:main:detached:old', Platform.TELEGRAM, '4242', 'from-row')
 
 
 @pytest.mark.asyncio
@@ -176,9 +194,9 @@ async def test_an_entry_without_an_origin_falls_back_to_the_row(tmp_path):
 @pytest.mark.asyncio
 async def test_a_row_with_neither_origin_nor_chat_id_cannot_be_rebuilt(tmp_path):
     cold = await _cold(tmp_path)
-    cold.authority.db.create_session('hollow', source='telegram', session_key='agent:main:telegram:dm:x')
-    from hermes_state_runtime import RuntimeStoreError
-    with pytest.raises(RuntimeStoreError, match='not_found'):
+    seed_session(cold.authority.persistence, 'hollow', 'telegram', session_key='agent:main:telegram:dm:x')
+    from persistence.core.errors import AuthorityRefusal
+    with pytest.raises(AuthorityRefusal, match='not_found'):
         cold.authority.authorize(cold.actor, _ref('hollow'), 'session:read')
     assert 'hollow' not in cold.authority.sessions
 
@@ -207,10 +225,10 @@ async def test_an_origin_that_contradicts_the_row_is_not_trusted(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_foreign_profile_ref_is_still_refused(tmp_path):
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     _seed(tmp_path, 'lane-foreign', _source())
     cold = await _cold(tmp_path)
-    with pytest.raises(RuntimeStoreError, match='profile_mismatch'):
+    with pytest.raises(AuthorityRefusal, match='profile_mismatch'):
         cold.authority.authorize(cold.actor, _ref('lane-foreign', 'other'), 'session:read')
     assert 'lane-foreign' not in cold.authority.sessions
 
@@ -250,11 +268,11 @@ async def test_a_lane_of_another_profile_is_not_mounted_by_this_authority(tmp_pa
 
 @pytest.mark.asyncio
 async def test_a_draining_gateway_mounts_nothing(tmp_path):
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     _seed(tmp_path, 'lane-drain', _source())
     cold = await _cold(tmp_path)
     cold.authority.runner._draining = True
-    with pytest.raises(RuntimeStoreError, match='runtime_draining'):
+    with pytest.raises(AuthorityRefusal, match='runtime_draining'):
         cold.authority.authorize(cold.actor, _ref('lane-drain'), 'session:read')
     assert 'lane-drain' not in cold.authority.sessions
 
@@ -269,31 +287,27 @@ async def _superseded(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_row_its_route_moved_past_is_read_only(tmp_path):
-    """#140183 review F2: the old row's only route is the lane's CURRENT key, so a Stop, an agent
-    lookup or a turn on it reached the successor conversation. One gateway owns every session and
-    never crosses them: the historic row reads (its own transcript) and refuses every write by name."""
-    from hermes_state_runtime import RuntimeStoreError
-    from gateway.session_contract import Principal, Submission
+async def test_a_row_its_route_moved_past_stays_writable_on_its_own_key(tmp_path):
+    """#140183 review F2: the old row's only route was the lane's CURRENT key, so a Stop, an agent
+    lookup or a turn on it reached the successor conversation. Teknium's ruling reverses the
+    read-only answer: the row detaches onto a key of its own, so every write is accepted and acts on
+    it alone; the successor's agent is never resolved through it."""
+    from gateway.session_contract import SessionActor
     cold, _successor = await _superseded(tmp_path)
     cold.authority.authorize(cold.actor, _ref('old'), 'session:read')
     caps = frozenset({'session:read', 'session:submit', 'session:control', 'session:approve',
                       'session:respond'})
-    writer = Principal('viewer', 'fixture', caps, 'socket')
+    writer = SessionActor('viewer', 'fixture', caps, 'socket')
     for capability in sorted(caps - {'session:read'}):
-        with pytest.raises(RuntimeStoreError, match='session_superseded'):
-            cold.authority.authorize(writer, _ref('old'), capability)
-    # The successor's running agent sits under the shared route; the old row never resolves it.
-    route = cold.authority.sessions['old'].route
-    cold.authority.runner._running_agents = {route: object()}
+        cold.authority.authorize(writer, _ref('old'), capability)
+    # The successor's running agent sits under the lane's route; the old row never resolves it.
+    lane = cold.store._generate_session_key(_source())
+    assert cold.authority.sessions['old'].route == 'agent:main:detached:old'
+    cold.authority.runner._running_agents = {lane: object()}
     cold.authority.runner._cached_agent_for = lambda key: cold.authority.runner._running_agents.get(key)
     assert cold.authority.agent(_ref('old')) is None
     assert cold.authority._runs_own_agent(_ref('old')) is False
-    with pytest.raises(RuntimeStoreError, match='session_superseded'):
-        await cold.authority.interrupt(writer, _ref('old'), 0)
-    with pytest.raises(RuntimeStoreError, match='session_superseded'):
-        await cold.authority.submit(writer, Submission('r1', _ref('old'), {'text': 'hi'}, 'queue'))
-    assert cold.authority.db.get_session('old')['message_count'] == 0
+    await cold.authority.interrupt(writer, _ref('old'), 0)
 
 
 @pytest.mark.asyncio
@@ -311,7 +325,9 @@ async def test_closing_or_deleting_a_superseded_row_leaves_the_successor_route_a
     cold.authority.runner._evict_cached_agent = lambda key, **kw: touched.append(('evict', key))
     await close_viewer_session(cold.authority, 'old', 'tui_close')
     retire_live_sessions(cold.authority, ['old'])
-    assert touched == []
+    # Teknium's ruling: the row acts on its own detached key, never the successor's route.
+    keys = {kw.get('session_key') if kind != 'evict' else kw for kind, kw in touched}
+    assert keys == {'agent:main:detached:old'}, touched
     assert 'old' not in cold.authority.sessions
 
 
@@ -322,19 +338,20 @@ async def test_the_lane_reopening_the_row_makes_it_live_again(tmp_path):
     cold, _successor = await _superseded(tmp_path)
     cold.authority.authorize(cold.actor, _ref('old'), 'session:read')
     live = cold.authority.sessions['old']
-    cold.authority._publish_route(live.source, 'old', live.route)
-    assert cold.authority.sessions['old'] is live and live.superseded is False
+    lane = cold.store._generate_session_key(_source())
+    cold.authority._publish_route(_source(), 'old', lane)
+    assert cold.authority.sessions['old'] is live and (live.route, live.detached) == (lane, False)
 
 
 @pytest.mark.asyncio
 async def test_a_row_whose_lane_has_no_entry_mounts_live(tmp_path):
     """Nothing names another conversation: the row is what the lane's next inbound publishes."""
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     _seed(tmp_path, 'unrouted', _source(), routed=False)
     cold = await _cold(tmp_path)
-    writer = Principal('viewer', 'fixture', frozenset({'session:read', 'session:submit'}), 'socket')
+    writer = SessionActor('viewer', 'fixture', frozenset({'session:read', 'session:submit'}), 'socket')
     cold.authority.authorize(writer, _ref('unrouted'), 'session:submit')
-    assert cold.authority.sessions['unrouted'].superseded is False
+    assert cold.authority.sessions['unrouted'].detached is False
 
 
 def _compressed_lane(tmp_path):
@@ -344,15 +361,15 @@ def _compressed_lane(tmp_path):
     runner = _Runner(tmp_path)
     db = runner._session_db
     source = _source()
-    db.create_session('lane-tip', source='telegram', session_key=route, chat_id=source.chat_id,
-                      user_id=source.user_id, chat_type='dm', origin_json=json.dumps(source.to_dict()),
-                      parent_session_id='lane-root')
-    db.end_session('lane-root', 'compression')
+    seed_session(db, 'lane-tip', 'telegram', session_key=route, chat_id=source.chat_id,
+                 user_id=source.user_id, chat_type='dm', origin_json=json.dumps(source.to_dict()),
+                 parent_session_id='lane-root')
+    db.sessions.end('lane-root', 'compression')
     from gateway.session import SessionEntry
     now = datetime.now()
     entry = SessionEntry(route, 'lane-tip', now, now, origin=source, platform=source.platform)
-    runner.session_store._routing_db.save_gateway_routing_entry(
-        route, json.dumps(entry.to_dict()), scope=runner.session_store._routing_scope())
+    runner.session_store._routing_persistence.routing.upsert_routing_entry(
+        route, json.dumps(entry.to_dict()), routing_scope=runner.session_store._routing_scope())
     return route
 
 
@@ -376,7 +393,7 @@ async def test_resume_of_a_compression_child_attaches_to_its_logical_owner(tmp_p
                                          'params': {'session_id': 'lane-tip'}})
     assert resumed.get('result', {}).get('session_id') == 'lane-root', resumed
     assert 'lane-tip' not in cold.authority.sessions
-    assert cold.authority.sessions['lane-root'].superseded is False
+    assert cold.authority.sessions['lane-root'].detached is False
 
 
 @pytest.mark.asyncio
@@ -393,14 +410,13 @@ async def test_resume_by_a_messaging_segment_shares_the_lanes_next_inbound_mount
     source = _source()
     root = warm.register(source).session_id
     route = warm_runner.session_store._generate_session_key(source)
-    db = warm.db
-    db.append_message(root, 'user', 'first')
-    db.append_message(root, 'assistant', 'ok')
-    db.publish_compression_child(parent_session_id=root, child_session_id='seg-1', source='telegram',
-                                 messages=[{'role': 'user', 'content': 'summary'}],
-                                 require_compression_lease=False)
+    db = warm.persistence
+    seed_messages(db, root, {'role': 'user', 'content': 'first'}, {'role': 'assistant', 'content': 'ok'})
+    db.lineage.publish_compression_child(root, CompressionChild(session_id='seg-1', source='telegram'),
+                                         [NewMessage.from_live({'role': 'user', 'content': 'summary'})],
+                                         require_compression_lease=False)
     assert warm_runner.session_store.advance_compression_session(route, root, 'seg-1') is not None
-    db.record_gateway_session_peer('seg-1', source='telegram', user_id=source.user_id, session_key=route,
+    db.routing.record_session_peer('seg-1', source='telegram', user_id=source.user_id, session_key=route,
                                    chat_id=source.chat_id, chat_type=source.chat_type,
                                    origin_json=_json.dumps(source.to_dict()))
     cold = await _cold(tmp_path)
@@ -413,21 +429,21 @@ async def test_resume_by_a_messaging_segment_shares_the_lanes_next_inbound_mount
     mounted = sorted(sid for sid, live in cold.authority.sessions.items() if live.route == route)
     assert resumed.get('result', {}).get('session_id') == inbound == root, (resumed, inbound, mounted)
     assert mounted == [root]
-    assert cold.authority.sessions[root].superseded is False
+    assert cold.authority.sessions[root].detached is False
 
 
 @pytest.mark.asyncio
-async def test_a_live_mount_goes_read_only_when_its_lane_publishes_another_conversation(tmp_path):
+async def test_a_live_mount_detaches_when_its_lane_publishes_another_conversation(tmp_path):
     """Mounted while nothing named another conversation, then the lane's next inbound starts a fresh
-    session on the same route: from then on the old mount's route is the newer session's."""
-    from hermes_state_runtime import RuntimeStoreError
-    from gateway.session_contract import Principal
+    session on the same route: from then on the old mount runs on a key of its own."""
+    from gateway.session_contract import SessionActor
     _seed(tmp_path, 'unrouted', _source(), routed=False)
     cold = await _cold(tmp_path)
-    writer = Principal('viewer', 'fixture', frozenset({'session:read', 'session:submit'}), 'socket')
+    writer = SessionActor('viewer', 'fixture', frozenset({'session:read', 'session:submit'}), 'socket')
     cold.authority.authorize(writer, _ref('unrouted'), 'session:submit')
     fresh = cold.store.get_or_create_session(_source(), force_new=True)
     cold.authority._publish_route(_source(), fresh.session_id, fresh.session_key)
-    with pytest.raises(RuntimeStoreError, match='session_superseded'):
-        cold.authority.authorize(writer, _ref('unrouted'), 'session:submit')
+    # Teknium's ruling: it stays writable, detached onto its own key.
+    cold.authority.authorize(writer, _ref('unrouted'), 'session:submit')
+    assert cold.authority.sessions['unrouted'].route == 'agent:main:detached:unrouted'
     cold.authority.authorize(writer, _ref(fresh.session_id), 'session:submit')

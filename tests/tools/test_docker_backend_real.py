@@ -106,6 +106,40 @@ def test_cwd_persists_and_workdir_does_not(docker_task):
     assert _run("pwd", docker_task)["output"].strip() == "/workspace/proj"
 
 
+def test_cwd_removed_inside_the_container_falls_back_with_a_notice(docker_task):
+    """#62169: once the session cwd was rm -rf'd every later command exited 126 at the wrapper's cd."""
+    _run("mkdir -p /tmp/gone/sub && cd /tmp/gone/sub", docker_task)
+    _run("rm -rf /tmp/gone", docker_task)
+    recovered = _run("pwd", docker_task)
+    assert recovered["exit_code"] == 0 and recovered["output"].strip() == "/tmp", recovered
+    assert "/tmp/gone/sub no longer exists" in recovered["cwd_fallback"]
+    refused = _run("echo ran", docker_task, workdir="/tmp/typo-dir")  # a named workdir never falls back
+    assert refused["exit_code"] == 126 and "ran" not in refused["output"], refused
+
+
+def test_deleted_container_workdir_does_not_block_exec():
+    """#62169: ``docker exec`` inherits the container's creation-time ``-w``; once that directory is
+    gone the OCI runtime refused every exec (exit 127, chdir error) before the shell's fallback ran."""
+    from tools.environments import streams
+    from tools.environments.docker import DockerEnvironment
+
+    env = DockerEnvironment(image=_IMAGE, cwd="/tmp/project", task_id=f"rb-w-{uuid.uuid4().hex[:8]}",
+                            persist_across_processes=False)
+    try:
+        assert env.execute("pwd")["output"].strip() == "/tmp/project"
+        env.execute("rm -rf /tmp/project", cwd="/")
+        recovered = env.execute("pwd", allow_cwd_fallback=True)
+        assert recovered["returncode"] == 0 and recovered["output"].strip() == "/tmp", recovered
+        assert recovered["cwd_fallback"]["requested"] == "/tmp/project", recovered
+        refused = env.execute("echo ran", cwd="/tmp/project")  # a named workdir never falls back
+        assert refused["returncode"] == 126 and "ran" not in refused["output"], refused
+        probe = streams.run_in(env, ["pwd"], timeout=30)  # the stream/long-lived launch path
+        assert probe.returncode == 0 and probe.stdout.strip() == b"/", probe
+    finally:
+        env.cleanup(force_remove=True)
+        assert DockerEnvironment.wait_for_all_teardowns(timeout=60)
+
+
 def test_exported_env_persists_between_commands(docker_task):
     _run("export HERMES_RB_EXPORTED='kept value'", docker_task)
     assert _run('echo "$HERMES_RB_EXPORTED"', docker_task)["output"].strip() == "kept value"
@@ -153,3 +187,86 @@ def test_home_survives_a_container_replacement(docker_task):
     assert r["output"].strip() == "durable"
     second = _container_id(docker_task)
     assert second and second != first
+
+
+@pytest.mark.parametrize("mount", [False, True])
+def test_desktop_workspace_selection_and_recreation(
+    docker_task, tmp_path, monkeypatch, mount
+):
+    """Desktop shares CLI's original sandbox unless a host workspace is actually selected for mounting."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import terminal_tool
+    from tools.file_tools import read_file_tool
+    from tools.terminal_tool_lifecycle import cleanup_vm
+    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from tui_gateway import server
+
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(tmp_path / "sandboxes"))
+    assert (
+        _run("printf original > /workspace/identity.txt", docker_task)["exit_code"] == 0
+    )
+    original = _container_id(docker_task)
+    assert original
+    containers = []
+    for index in range(2):
+        workspace = tmp_path / f"project-{index}"
+        workspace.mkdir()
+        (workspace / "identity.txt").write_text(f"project-{index}", encoding="utf-8")
+        sid = f"{docker_task}-desktop-{index}"
+        tokens = set_session_vars(session_key=sid)
+        # The gateway freezes the selected host workspace into the turn's terminal policy.
+        terminal = {
+            name: value
+            for name, value in os.environ.items()
+            if name.startswith("TERMINAL_")
+        }
+        terminal["TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE"] = str(mount).lower()
+        terminal["TERMINAL_CWD"] = str(workspace) if mount else "/root"
+        scope_token = set_terminal_scope(terminal)
+        key = None
+        try:
+            vars(server)["_register_session_cwd"](
+                {
+                    "session_key": sid,
+                    "cwd": str(workspace),
+                    "explicit_cwd": True,
+                    "source": "desktop",
+                }
+            )
+            assert terminal_tool.resolve_task_overrides(sid)["cwd_source"] == (
+                "session" if mount else "process"
+            )
+            key = _env_key(sid)
+            expected = f"project-{index}" if mount else "original"
+            for _ in range(2):
+                result = _run("cat /workspace/identity.txt", sid)
+                assert (
+                    result["exit_code"] == 0 and result["output"].strip() == expected
+                ), result
+                read = json.loads(
+                    read_file_tool("/workspace/identity.txt", task_id=sid)
+                )
+                assert expected in read.get("content", ""), read
+                cid = _container_id(sid)
+                assert cid
+                containers.append(cid)
+                if not mount:
+                    assert key == "default"
+                _teardown(sid)
+        finally:
+            if key is not None:
+                cleanup_vm(key, force_remove=True)
+            terminal_tool.clear_task_env_overrides(sid)
+            reset_terminal_scope(scope_token)
+            clear_session_vars(tokens)
+    if mount:
+        assert original not in containers
+    else:
+        assert containers[0] == original
+    assert len(set(containers)) == len(containers)
+    # Neither Desktop workspace nor recreating its container moves/deletes CLI's files.
+    assert (
+        _run("cat /workspace/identity.txt", docker_task)["output"].strip() == "original"
+    )

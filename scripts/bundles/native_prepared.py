@@ -44,7 +44,7 @@ def _source_digest(code: Path) -> str:
     """Ignore only assembly-owned products, leaving admitted source immutable."""
     project = tomllib.loads((code / "pyproject.toml").read_text(encoding="utf-8-sig"))["project"]
     dist = re.sub(r"[-_.]+", "_", project["name"])
-    generated = {"install-stamp.json", "hermes_cli/tui_dist", "hermes_cli/web_dist",
+    generated = {"install-stamp.json", "hermes_cli/tui_dist", "hermes_cli/web_dist", "apps/desktop/dist-webapp",
                  f"{dist}-{project['version']}.dist-info"}
     files = {}
     for directory, dirs, names in os.walk(code):

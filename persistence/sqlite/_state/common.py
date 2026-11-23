@@ -234,14 +234,25 @@ def _lock_holder_provably_dead(record) -> bool:
     return current_ticks is not None and current_ticks != recorded_ticks  # different start time: PID recycled
 
 
+def _handle_names_path(handle, lock_path) -> bool:
+    """Whether *handle* still refers to the file *lock_path* names. A breaker replaces that file, so a
+    handle opened before the break sits on an inode the path no longer names."""
+    try:
+        fd_stat, path_stat = os.fstat(handle.fileno()), os.stat(lock_path)
+    except OSError:
+        return False
+    return fd_stat.st_dev == path_stat.st_dev and fd_stat.st_ino == path_stat.st_ino
+
+
 def _acquire_db_flock(lock_path, handle, timeout_seconds, poll_seconds, description):
     """Bounded POSIX flock acquire with orphaned-holder break.  Returns ``(acquired, handle)``; *handle* may
     have been re-opened and the caller closes whichever comes back.  *acquired*: True, False (a holder kept
     the lock past the deadline) or None (non-contention ``OSError``, already logged: treat as not acquired
     without the held-by-another-process warning).  ``flock`` rides the open file DESCRIPTION, which ``fork()``
-    duplicates, so a holder that forks then dies leaves the lock held forever; when the acquirer is provably
-    dead the file is unlinked and retaken on a fresh inode (the orphan's flock excludes nobody).  Every
-    acquire verifies its inode still names *lock_path*, so a racer on a dead inode retries.
+    duplicates, so a holder that forks then dies leaves the lock held forever; when the recorded holder is
+    provably dead the file is unlinked and retaken on a fresh inode (the orphan's flock excludes nobody).
+    Every acquire verifies its handle still names *lock_path*, so a racer on a dead inode retries, and a
+    second contender on the orphaned inode joins the queue for the file a first breaker already retook.
 
     A holder that forks (multiprocessing worker, daemonized helper) and then dies leaves the flock held by a
     child that will never release it — the kernel's holder-death release never triggers, and every contender
@@ -267,6 +278,17 @@ def _acquire_db_flock(lock_path, handle, timeout_seconds, poll_seconds, descript
             record = _read_lock_holder_record(handle)
             if not _lock_holder_provably_dead(record):
                 return False, handle
+            if not _handle_names_path(handle, lock_path):
+                # Another breaker already retaking the lock replaced the file. The dead record belongs to
+                # the orphaned inode this handle still sits on; unlinking by name here would remove the
+                # successor's live lock and admit this contender beside it.
+                try:
+                    handle.close()
+                    handle = open(lock_path, "a+b")
+                except OSError:
+                    return False, handle
+                deadline = time.monotonic() + _LOCK_BREAK_REACQUIRE_SECONDS
+                continue
             logger.warning("%s %s is held by an orphaned file descriptor (recorded holder pid %s is dead — a "
                            "forked child inherited the lock fd); breaking the stale lock and retaking it on a "
                            "fresh file.", description, lock_path, (record or {}).get("pid"))
@@ -281,12 +303,7 @@ def _acquire_db_flock(lock_path, handle, timeout_seconds, poll_seconds, descript
             deadline = time.monotonic() + _LOCK_BREAK_REACQUIRE_SECONDS
             continue
         # A breaker may have replaced the file while we waited; a lock on a dead inode excludes nobody.
-        try:
-            fd_stat, path_stat = os.fstat(handle.fileno()), os.stat(lock_path)
-            same_file = fd_stat.st_dev == path_stat.st_dev and fd_stat.st_ino == path_stat.st_ino
-        except OSError:
-            same_file = False
-        if same_file:
+        if _handle_names_path(handle, lock_path):
             _write_lock_holder_record(handle)
             return True, handle
         try:

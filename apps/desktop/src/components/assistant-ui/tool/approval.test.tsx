@@ -9,6 +9,7 @@ import { $gateway } from '@/store/gateway'
 import {
   $approvalRequest,
   APPROVAL_RESPOND_REQUEST_TIMEOUT_MS,
+  approvalKindFields,
   type ApprovalRequest,
   clearAllPrompts,
   sessionApprovalRequests,
@@ -460,6 +461,17 @@ describe('folder and site approval cards', () => {
 
     fireEvent.pointerMove(screen.getByRole('button', { name: /^Allow/ }), { pointerType: 'mouse' })
     expect((await screen.findByRole('tooltip')).textContent).toContain('Until the sandbox is switched off')
+  })
+
+  it('never puts the bidirectional control characters of a site name on screen as they came', () => {
+    // U+202E makes the text after it read right to left, so the name on the card would differ
+    // from the host the answer is for. A card's fields come through approvalKindFields.
+    setSite(approvalKindFields({ host: 'evil.example\u202Emoc.buhtig', kind: 'network' }))
+    const { container } = render(<PendingApprovalStack />)
+    const shown = container.querySelector('[data-slot="tool-approval-target"]')?.textContent
+
+    expect(shown).not.toMatch(/[\u202A-\u202E\u2066-\u2069]/)
+    expect(shown).toContain('evil.example\\u202emoc.buhtig')
   })
 
   it('names a read-only folder as read only', () => {

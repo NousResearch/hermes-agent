@@ -86,6 +86,36 @@ describe('approvalKindFields', () => {
       host: 'example.com'
     })
   })
+
+  it('shows hidden and bidirectional characters in a folder, a site, its label and the risk line as escapes', () => {
+    // U+202E reorders the text after it and U+200B draws nothing: the name on the card would
+    // differ from the folder or site the answer is for.
+    expect(approvalKindFields({ kind: 'access', path: 'C:\\docs\\a\u202Etxt.exe', risk: 'Safe\u200B.' })).toEqual({
+      kind: 'access',
+      risk: 'Safe\\u200b.',
+      target: { path: 'C:\\docs\\a\\u202etxt.exe' }
+    })
+    expect(
+      approvalKindFields({ host: 'evil.example\u202Emoc.buhtig', kind: 'network', label: 'Web\u2066 search\u001B[2K' })
+        .target
+    ).toEqual({ host: 'evil.example\\u202emoc.buhtig', label: 'Web\\u2066 search\\x1b[2K' })
+  })
+
+  it('leaves accented letters, CJK and an emoji in each of the four fields as they came', () => {
+    const folder = {
+      path: 'C:\\Users\\zoë\\Fotos días 📁\\日本語',
+      risk: 'L’agent peut lire ce dossier — 読み取りのみ。'
+    }
+
+    const site = { host: 'bücher.example', label: 'Recherche web 🔎 (bücher.example)' }
+
+    expect(approvalKindFields({ kind: 'access', ...folder })).toEqual({
+      kind: 'access',
+      risk: folder.risk,
+      target: { path: folder.path }
+    })
+    expect(approvalKindFields({ kind: 'network', ...site }).target).toEqual(site)
+  })
 })
 
 describe('networkTargetName', () => {

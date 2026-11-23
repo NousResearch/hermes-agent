@@ -601,6 +601,24 @@ export function currentProfileSelectionRevision(): number {
   return profileSelectionRevision
 }
 
+/**
+ * Whether the window shows `profile`, asked once every pick that is still
+ * connecting has landed or failed. A job that changes what the window shows
+ * for a profile after it waited on something (the redial once the profile's
+ * backend has moved, the reconnect once its backend is back) asks this right
+ * before each change: a stale async result never overwrites newer intent.
+ * Asked in the middle of a pick, the job's own activation would be the newer
+ * of the two and the pick would lose to it. A pick that failed leaves the
+ * window on the profile, and the job still acts for it.
+ */
+export async function foregroundShows(profile: string): Promise<boolean> {
+  while (gatewaySwitch) {
+    await gatewaySwitch.catch(() => undefined)
+  }
+
+  return normalizeProfileKey($activeGatewayProfile.get()) === normalizeProfileKey(profile)
+}
+
 // Descriptor lookups are IPC round-trips into Electron main. A wedged main
 // (the #93454 class: a ticket mint that never answers) must not latch the
 // gatewaySwitch mutex — and, through it, every later profile/source switch

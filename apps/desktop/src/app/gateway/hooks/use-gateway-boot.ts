@@ -77,6 +77,7 @@ import {
   $activeGatewayProfile,
   currentProfileSelectionRevision,
   ensureGatewayProfile,
+  foregroundShows,
   normalizeProfileKey,
   refreshActiveProfile
 } from '@/store/profile'
@@ -285,12 +286,19 @@ interface GatewayBootOptions {
  * move. That socket and whatever the window shows through it stay as they are;
  * only a socket the window dialed for the local profile itself is redialed.
  */
+// The newest move of a profile owns its redial.
+const redialTurns = new Map<string, number>()
+
 async function redialMovedProfile(
   profile: string,
   redialPrimary: (profile: string) => Promise<boolean>,
   otherGateway: boolean,
   stopped: () => boolean
 ): Promise<boolean> {
+  const turn = (redialTurns.get(profile) ?? 0) + 1
+
+  redialTurns.set(profile, turn)
+
   try {
     if (!otherGateway && profile === normalizeProfileKey(primaryGatewayProfile())) {
       // A socket the window dialed for the profile beside its primary one moved too.
@@ -304,11 +312,13 @@ async function redialMovedProfile(
     return true
   }
 
-  const shown = () => normalizeProfileKey($activeGatewayProfile.get()) === profile
-
   for (let attempt = 0; ; attempt += 1) {
     try {
-      await redialProfileGateway(profile, { shown: shown() && !(otherGateway && isActivePrimary()) })
+      // The redial moves the window only while it shows the profile, and
+      // after a pick that is still connecting has landed.
+      const shown = await foregroundShows(profile)
+
+      await redialProfileGateway(profile, { shown: shown && !(otherGateway && isActivePrimary()) })
 
       return true
     } catch (error) {
@@ -319,10 +329,11 @@ async function redialMovedProfile(
     // primary socket is still on the backend it left (this computer's own,
     // when a plugin took the profile over). Ask again, with the reconnect
     // backoff. A profile that reached a socket of its own meanwhile is left
-    // on it, and one the window no longer shows asks nothing.
+    // on it, one the window no longer shows asks nothing, and a redial that
+    // waited here stops once the profile has moved again.
     await new Promise(resolve => setTimeout(resolve, reconnectBackoffDelayMs(attempt)))
 
-    if (stopped() || !isActivePrimary()) {
+    if (stopped() || redialTurns.get(profile) !== turn || !isActivePrimary()) {
       return true
     }
   }
@@ -948,9 +959,9 @@ export function useGatewayBoot({
 
       await attemptReconnect({ profile: shown, activationEpoch: gatewayActivationEpoch() })
 
-      // A profile shown THROUGH the primary socket (the shared host backend)
-      // resolves its own route again now that the primary moved.
-      if (!cancelled && shown !== profile && isActivePrimary()) {
+      // A profile still shown THROUGH the primary socket (the shared host
+      // backend) resolves its own route again now that the primary moved.
+      if (!cancelled && shown !== profile && (await foregroundShows(shown)) && isActivePrimary()) {
         await ensureGatewayProfile(shown).catch(error => {
           console.warn(`[gateway] redial of "${shown}" after "${profile}" moved failed`, error)
         })

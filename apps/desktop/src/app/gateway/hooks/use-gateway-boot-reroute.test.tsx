@@ -729,6 +729,219 @@ describe('a plugin re-routes one profile', () => {
     expect($gatewaySwitching.get()).toBe(false)
   })
 
+  it.each([
+    { label: 'and lands is not undone by the redial', lands: true },
+    { label: 'and fails leaves the window on the profile, which the redial takes to its new backend', lands: false }
+  ])('a pick that is still connecting when the profile moves $label', async ({ lands }) => {
+    const desktop = fakeDesktop()
+    const sharedWork = { ...primaryConn, profile: 'work', sharedPrimary: true }
+    const launcherWork = { ...launcherConn, profile: 'work' }
+    let sandboxed = false
+    let answerCoderLookup = () => undefined as void
+    const coderLookup = new Promise<void>(resolve => (answerCoderLookup = resolve))
+
+    desktop.getConnection.mockImplementation(async (profile?: null | string) => {
+      const key = (profile ?? '').trim()
+
+      if (key === 'coder') {
+        await coderLookup
+
+        if (!lands) {
+          throw new Error('route lookup failed')
+        }
+
+        return coderConn
+      }
+
+      if (!key || key === 'default') {
+        return primaryConn
+      }
+
+      return sandboxed ? launcherWork : sharedWork
+    })
+    desktop.getGatewayWsUrl.mockImplementation(async (profile?: unknown) =>
+      profile === 'work' && sandboxed ? launcherWork.wsUrl : primaryConn.wsUrl
+    )
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    vi.useRealTimers()
+    await ensureGatewayProfile('work')
+
+    // The person picks `coder`. Its route is still being looked up when the plugin takes `work` over.
+    const pick = ensureGatewayProfile('coder').catch(() => undefined)
+
+    await pause(10)
+    sandboxed = true
+    act(() => connectionApplied?.({ profile: 'work' }))
+    await pause(30)
+    answerCoderLookup()
+    await pick
+
+    // After a pick that failed, the redial goes on: wait for it. After one that landed, none may come.
+    for (let i = 0; !lands && i < 300 && $connection.get()?.baseUrl !== launcherWork.baseUrl; i += 1) {
+      await pause(10)
+    }
+
+    await pause(150)
+    vi.useFakeTimers()
+
+    const launcherSockets = FakeWebSocket.instances.filter(socket => socket.url === launcherWork.wsUrl)
+
+    if (lands) {
+      expect($activeGatewayProfile.get()).toBe('coder')
+      expect($connection.get()?.baseUrl).toBe(coderConn.baseUrl)
+      // `work` was only shown through the primary socket, and the window left it: nothing is dialed for it.
+      expect(launcherSockets).toHaveLength(0)
+    } else {
+      expect($activeGatewayProfile.get()).toBe('work')
+      expect($connection.get()?.baseUrl).toBe(launcherWork.baseUrl)
+      expect(launcherSockets).toHaveLength(1)
+    }
+  })
+
+  it('a redial that waits to ask again stops once the profile has moved again', async () => {
+    const desktop = fakeDesktop()
+    const sharedWork = { ...primaryConn, profile: 'work', sharedPrimary: true }
+    const launcherWork = { ...launcherConn, profile: 'work' }
+    let sandboxed = false
+    let lookups = 0
+    let answerSecondLookup = () => undefined as void
+    const secondLookup = new Promise<void>(resolve => (answerSecondLookup = resolve))
+
+    desktop.getConnection.mockImplementation(async (profile?: null | string) => {
+      const key = (profile ?? '').trim()
+
+      if (!key || key === 'default') {
+        return primaryConn
+      }
+
+      if (!sandboxed) {
+        return sharedWork
+      }
+
+      lookups += 1
+
+      // The first move's lookup fails, the second move's is slow, any later one answers at once.
+      if (lookups === 1) {
+        throw new Error('route lookup failed')
+      }
+
+      if (lookups === 2) {
+        await secondLookup
+      }
+
+      return launcherWork
+    })
+    desktop.getGatewayWsUrl.mockImplementation(async (profile?: unknown) =>
+      profile === 'work' && sandboxed ? launcherWork.wsUrl : primaryConn.wsUrl
+    )
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    vi.useRealTimers()
+    await ensureGatewayProfile('work')
+
+    sandboxed = true
+    act(() => connectionApplied?.({ profile: 'work' }))
+    await pause(5)
+    act(() => connectionApplied?.({ profile: 'work' }))
+    // Longer than the first redial waits before it would ask again.
+    await pause(350)
+
+    const askedWhileSecondIsOut = lookups
+
+    answerSecondLookup()
+
+    for (let i = 0; i < 100 && isActivePrimary(); i += 1) {
+      await pause(10)
+    }
+
+    await pause(50)
+    vi.useFakeTimers()
+
+    expect(askedWhileSecondIsOut).toBe(2)
+    expect(FakeWebSocket.instances.filter(socket => socket.url === launcherWork.wsUrl)).toHaveLength(1)
+    expect($connection.get()?.baseUrl).toBe(launcherWork.baseUrl)
+  })
+
+  it('a pick made while the primary profile is re-dialed is not undone when the redial finishes', async () => {
+    const desktop = fakeDesktop()
+    const sharedWork = { ...primaryConn, profile: 'work', sharedPrimary: true }
+
+    const pooledWork = {
+      authMode: 'token' as const,
+      baseUrl: 'http://127.0.0.1:9130',
+      profile: 'work',
+      token: 'p',
+      wsUrl: 'ws://127.0.0.1:9130/api/ws?token=p'
+    }
+
+    let primaryLaunched = false
+    let answerPrimaryLookup = () => undefined as void
+    const primaryLookup = new Promise<void>(resolve => (answerPrimaryLookup = resolve))
+
+    desktop.getConnection.mockImplementation(async (profile?: null | string) => {
+      const key = (profile ?? '').trim()
+
+      if (key && key !== 'default') {
+        return primaryLaunched ? pooledWork : sharedWork
+      }
+
+      if (!primaryLaunched) {
+        return primaryConn
+      }
+
+      await primaryLookup
+
+      return launcherConn
+    })
+    desktop.getGatewayWsUrl.mockImplementation(async (profile?: unknown) => {
+      const own = typeof profile === 'string' && profile.trim() && profile !== 'default'
+
+      return own
+        ? (primaryLaunched ? pooledWork : sharedWork).wsUrl
+        : (primaryLaunched ? launcherConn : primaryConn).wsUrl
+    })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    vi.useRealTimers()
+    await ensureGatewayProfile('work')
+    expect(isActivePrimary()).toBe(true)
+
+    // A plugin takes `default`, the window's primary profile, over: its socket is re-dialed in place.
+    primaryLaunched = true
+    act(() => connectionApplied?.({ profile: 'default' }))
+    await pause(20)
+
+    // Meanwhile the person goes back to `default`.
+    const pick = ensureGatewayProfile('default')
+
+    await pause(20)
+    answerPrimaryLookup()
+    await pick
+
+    for (
+      let i = 0;
+      i < 200 && !FakeWebSocket.instances.some(s => s.url === launcherConn.wsUrl && s.readyState === 1);
+      i += 1
+    ) {
+      await pause(10)
+    }
+
+    await pause(150)
+    vi.useFakeTimers()
+
+    // The window stays where the person put it; the redial does not bring `work` back.
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect(isActivePrimary()).toBe(true)
+    expect(FakeWebSocket.instances.filter(socket => socket.url === pooledWork.wsUrl)).toHaveLength(0)
+  })
+
   // A window also reaches this computer's profiles through the explicit `local`
   // connection (the gateways list's "This device"). Such a socket has a scope
   // of its own, beside the profile's legacy one.

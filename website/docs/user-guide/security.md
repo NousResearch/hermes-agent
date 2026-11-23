@@ -56,7 +56,7 @@ The full set of keys:
 
 | Mode | Behavior |
 |------|----------|
-| **smart** (default) | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved for that command only. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
+| **smart** (default) | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved for that command only. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. One class never reaches the auxiliary LLM: `osascript` that can destroy work the agent did not create (closing a document with `saving no`, quitting an app, deleting files, sending keystrokes, `do shell script`), or whose script is not visible on the command line. Only the operator can consent to that, so it always prompts, and the answer covers that one command. |
 | **manual** | Always prompt the user for approval on dangerous commands. |
 | **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts, and write calls on `trust: untrusted` MCP servers run without the trust prompt. An MCP server's declared spend limit still asks (see [YOLO mode](#yolo-mode)). |
 
@@ -147,7 +147,7 @@ Some commands are so catastrophic — irreversible filesystem wipes, fork bombs,
 - Cron jobs running in headless `approve` mode
 - User explicitly clicking "allow always"
 
-The blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag. Patterns currently covered (not exhaustive; kept in sync with `tools/approval.py::UNRECOVERABLE_BLOCKLIST`):
+The blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag. Patterns currently covered (not exhaustive; kept in sync with `tools/approval_detection.py::HARDLINE_PATTERNS`):
 
 | Pattern | Why it's hardline |
 |---|---|
@@ -156,6 +156,8 @@ The blocklist is the floor below `--yolo`. It trips **before** the approval laye
 | `:(){ :\|:& };:` (bash fork bomb) | Pegs the host until reboot |
 | `mkfs.*` on a mounted root device | Formats the live system |
 | `dd if=/dev/zero of=/dev/sd*` | Zeroes a physical disk |
+| `format C:`, `Format-Volume`, `Clear-Disk`, `rd /s /q C:\`, `Remove-Item -Recurse C:\` (a literal `-Include *.tmp` filter and a plain `Clear-Disk -WhatIf` preview stay approvable) | Windows analogues: format/wipe a volume or recursively delete a drive root |
+| `Restart-Computer` / `Stop-Computer` (a plain `-WhatIf` preview stays approvable) | Windows analogue of `shutdown`/`reboot` |
 | Piping untrusted URLs to `sh` at the rootfs top level | Remote-code-execution attack vector too broad to approve |
 
 If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.
@@ -243,6 +245,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `docker -H`/`--host`/`--context`, `DOCKER_HOST=`/`DOCKER_CONTEXT=` | Docker daemon redirect — the command targets a different (often remote) daemon |
 | `docker context use` | Switches the default daemon for all future docker commands |
 | `podman --remote`/`-r`/`--url`/`--connection`/`--identity`, `CONTAINER_HOST=` | Podman remote daemon redirect |
+| `osascript` or `osacompile` whose script closes, quits, saves, deletes, moves, writes, sends keystrokes/clicks or runs `do shell script` / Terminal's `do script` (any JXA `-l JavaScript` program counts; `¬` continuations and comments are read through), or whose script comes from a file, pipe, `$VAR`/`$(...)` expansion or a carrier (`sh -c`, `eval`, `ssh`, `xargs`, ...) | AppleScript can discard the operator's unsaved work in any app. Always a manual, one-time prompt, even in `smart` mode. Detection is a command-line heuristic, not a boundary. Read-only literal scripts (`get name of first application process whose frontmost is true`, `activate`, `display notification`) are not flagged |
 
 :::info
 **Container bypass**: When running in `docker`, `modal`, `daytona`, or `vercel_sandbox` backends (or a container plugin backend such as `singularity` or `sprites`), dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
@@ -696,6 +699,8 @@ terminal:
     - ANOTHER_TOKEN
 ```
 
+The [managed scope](./managed-scope.md) can set the same list (an administrator's, or a sandbox launcher's for the variables its children need); a managed list replaces the profile's, and provider credentials are refused from either.
+
 Both lists apply to `terminal`, `execute_code` and `no_agent` cron scripts alike. A declared variable is forwarded with the value of the profile the child runs for: when one process serves several profiles (multi-profile gateway, Desktop/dashboard backend) each profile's declared value comes from its own `.env` / secret sources, never from the process environment the launch profile populated, and the launch profile's `.env` credentials are dropped from a served profile's children.
 
 ### Credential File Passthrough (OAuth tokens, etc.) {#credential-file-passthrough}
@@ -726,6 +731,8 @@ terminal:
 ```
 
 Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside the container. This list is read by `tools/credential_files.py` (`terminal.credential_files`) — it lives under the `terminal:` block but is loaded by the credential-files module, not the core terminal backend, so it isn't part of the bundled `DEFAULT_CONFIG` snapshot.
+
+The [managed scope](./managed-scope.md) can set this list too. From either source, Hermes's own credential stores (`.env`, `auth.json`, `mcp-tokens/` and the other files the agent is denied from reading) are never mounted: an entry that names one is skipped with a warning, as it is when a skill asks for it. The Google Workspace token files above are the exception a skill has as well.
 
 ### Borrowed CLI logins (Codex CLI, Claude Code) {#borrowed-cli-logins}
 
@@ -841,6 +848,8 @@ When on, web tools, the browser, vision URL fetches, gateway media downloads, cr
 
 The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of this setting.
 
+The [managed scope](./managed-scope.md) can pin this key (or the legacy `browser.allow_private_urls`). A pinned value decides this guard in either direction: `HERMES_ALLOW_PRIVATE_URLS` and the profile's own keys are read only when the managed scope pins neither. Cloud and CDP browsers also read `browser.allow_private_urls` as their own switch, so pin that key as well to hold them.
+
 #### What `allow_private_urls` covers, and what it doesn't
 
 The setting guards the fetches Hermes makes or hands to a remote browser; it does
@@ -883,6 +892,8 @@ security:
   fake_ip_ranges:
     - 198.18.0.0/15
 ```
+
+The [managed scope](./managed-scope.md) can declare the block too, for example a sandbox launcher whose proxy answers DNS this way; the rules below apply to a managed entry the same way.
 
 Empty by default, and narrower than `allow_private_urls`: only the declared blocks get the
 exemption, they should be ranges the local proxy owns (the dial still goes to the proxy, which

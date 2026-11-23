@@ -15,7 +15,7 @@ def _deliver(job, content, global_wrap):
     mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
     with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-         patch("tools.send_message_tool._send_to_platform",
+         patch("gateway.outbound.send._send_to_platform",
                new=AsyncMock(return_value={"success": True})) as send_mock, \
          patch("cron.scheduler.load_config",
                return_value={"cron": {"wrap_response": global_wrap}}):

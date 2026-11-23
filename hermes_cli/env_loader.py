@@ -30,7 +30,7 @@ _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
 _WARNED_KEYS: set[str] = set()          # credential names already given the non-ASCII warning
 _WARNED_UTF32_PATHS: set[str] = set()   # .env paths already given the UTF-32 refuse-to-mangle warning
 _SCOPED_SKIP_LOGGED: set[str] = set()   # routed profile homes whose multiplex dotenv skip was logged
-_WARNED_UNREADABLE_PATHS: set[str] = set()  # unreadable profile .env paths already given the warning
+_WARNED_UNREADABLE_PATHS: set[str] = set()  # unreadable profile .env / .op.env paths already given the warning
 
 # env-var name → source label ("bitwarden", …) for externally injected credentials; setup / `hermes
 # model` tell users WHERE a key came from when .env lacks it.
@@ -244,7 +244,10 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         cfg = _load_secrets_config(home)
     except Exception:
         return {}
-    if not cfg:
+    if not cfg:  # removed: its earlier values are no longer applied, so stop masking them
+        from agent.redact_secret_sources import publish_secret_source_values
+
+        publish_secret_source_values(home, {})
         return {}
 
     try:
@@ -267,7 +270,10 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     except Exception:
         return {}
 
-    if not report.sources:
+    if not report.sources:  # every source disabled: nothing is applied any more, so stop masking it
+        from agent.redact_secret_sources import publish_secret_source_values
+
+        publish_secret_source_values(home, {})
         return {}
     # D32, as on the process-global path: a source must never supply the config backend's own
     # deployment or plane credential, for a routed profile either (this snapshot feeds that
@@ -295,6 +301,9 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         _SECRET_SOURCES[name] = applied.source
         values[name] = value
     _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    from agent.redact_secret_sources import publish_secret_source_values
+
+    publish_secret_source_values(home, values)
     return dict(values)
 
 
@@ -432,6 +441,39 @@ def _resolve_dotenv_assignments(
             value = "".join(atom.resolve(lookup) for atom in parse_variables(value))
         resolved[name] = value
     return resolved
+
+
+def environ_before_dotenv(name: str) -> str | None:
+    """*name* as the environment this process was started with set it: ``os.environ`` with what this
+    process's dotenv passes published peeled back. None when it was not set there."""
+    with _DOTENV_LOCK:
+        return _dotenv_lookup_env(None).get(name)
+
+
+def resolve_project_dotenv(project_env: Path, home: Path, *, removed: frozenset[str] = frozenset()) -> dict[str, str]:
+    """What ``load_hermes_dotenv`` would publish from the checkout's *project_env* in a process started
+    for *home* now, read-only, with the names in *removed* gone from *home*'s ``.env``: the process's own
+    environment (this process's dotenv output peeled back), then *home*'s ``.env`` with override, then
+    *project_env* with override only when *home* has no ``.env`` (else it fills gaps), ``${VAR}`` expanded
+    by the same rules at each layer."""
+    with _DOTENV_LOCK:
+        lookup_env = _dotenv_lookup_env(None)
+    user_env = home / ".env"
+    try:
+        home_assignments = [item for item in _parse_dotenv_file(user_env) if item[0] not in removed]
+    except OSError:
+        home_assignments = []
+    for name, value in _resolve_dotenv_assignments(home_assignments, lookup_env, override=True).items():
+        if value is not None:
+            lookup_env[name] = value
+    try:
+        assignments = _parse_dotenv_file(project_env)
+    except OSError:
+        return {}
+    override = not user_env.exists()
+    return {name: value for name, value in
+            _resolve_dotenv_assignments(assignments, lookup_env, override=override).items()
+            if value is not None and (override or name not in lookup_env)}
 
 
 def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None) -> dict[str, str]:
@@ -717,13 +759,14 @@ def dotenv_unreadable(path: Path) -> bool:
         return False
 
 
-def _load_user_dotenv(path: Path, *, load_pass: int) -> bool:
-    """Load the profile ``.env``; False when it exists but cannot be read and managed scope pins
-    ``terminal.backend``. A sandbox launcher withholds the file, passes the keys it allows in as
-    environment and pins the backend. Without that pin the ``PermissionError`` propagates: the file may
-    be the only place the backend is set, and skipping it would run terminal commands on the host."""
+def _load_user_dotenv(path: Path, *, load_pass: int, override: bool = True) -> bool:
+    """Load a profile env file (``.env``, or ``.op.env`` with ``override=False``); False when it exists
+    but cannot be read and managed scope pins ``terminal.backend``. A sandbox launcher withholds the
+    file, passes the keys it allows in as environment and pins the backend. Without that pin the
+    ``PermissionError`` propagates: the file may be the only place the backend is set, and skipping it
+    would run terminal commands on the host."""
     try:
-        _load_dotenv_with_fallback(path, override=True, load_pass=load_pass)
+        _load_dotenv_with_fallback(path, override=override, load_pass=load_pass)
     except PermissionError:
         from hermes_cli import managed_scope
 
@@ -809,7 +852,7 @@ def load_hermes_dotenv(
     # the committed .env. override=False lets a systemd `EnvironmentFile=-…/.op.env` token win.
     op_env = home_path / ".op.env"
     if op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
-        _load_dotenv_with_fallback(op_env, override=False, load_pass=load_pass)
+        _load_user_dotenv(op_env, load_pass=load_pass, override=False)
 
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not user_env.exists(), load_pass=load_pass)
@@ -1053,6 +1096,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # review). A config READ failure above keeps them — fail-open, same as the fetch-failure path below.
     if not cfg:
         _revoke_secret_source_writes(home_path, keep=lambda _name, _source: False)
+        _publish_live_source_values(home_key, home_path, {})
         return
 
     # Defer the registry import until a source is enabled — bitwarden eagerly loads cryptography._rust.pyd,
@@ -1061,6 +1105,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     any_enabled = any(isinstance(v, dict) and v.get("enabled") is True for v in cfg.values())
     if not any_enabled:
         _revoke_secret_source_writes(home_path, keep=lambda _name, _source: False)
+        _publish_live_source_values(home_key, home_path, {})
         return
 
     try:
@@ -1096,6 +1141,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         return
 
     if not report.sources:  # no source enabled: keep retrying cheaply so flipping one on takes effect
+        _publish_live_source_values(home_key, home_path, {})
         return
     _refuse_protected_env_from_sources(report, backend_before, environ_before, env=staged)
     _publish_staged_env(staged, environ_before)
@@ -1127,6 +1173,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     _record_secret_source_writes(home_key, report, supplied, environ_before, staged, launch_env_captured)
     if values:
         _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    _publish_live_source_values(home_key, home_path, values)
     _SECRET_SOURCE_RESTORE_BY_HOME[home_key] = {
         n: values[n] for n, a in report.provenance.items() if a.authoritative and n in values}
 
@@ -1158,6 +1205,19 @@ def _record_released_bridge_claims(home_key: str, report, supplied: set[str], en
             claims[name] = (owner[name], marker)
     if not claims:
         _RELEASED_BRIDGE_CLAIMS_BY_HOME.pop(home_key, None)
+
+
+def _publish_live_source_values(home_key: str, home_path: Path, values: dict[str, str]) -> None:
+    """Hand the redactor every source value live in ``os.environ`` for this home. A source whose re-pull
+    FAILED keeps its earlier write (not a revocation), so its value must stay masked: publish every
+    recorded write still holding its value, not only this pass's supplied names. Revoked writes were
+    already dropped from the record, so they unregister here — an empty set included."""
+    from agent.redact_secret_sources import publish_secret_source_values
+
+    live = {name: rec[1] for name, rec in _SECRET_SOURCE_WRITES_BY_HOME.get(home_key, {}).items()
+            if os.environ.get(name) == rec[1]}
+    live.update(values)
+    publish_secret_source_values(home_path, live)
 
 
 def _published_value(name: str, staged: dict) -> str | None:

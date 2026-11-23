@@ -1,0 +1,29 @@
+name: alphagrowth
+title: AlphaGrowth
+repo: https://github.com/alphagrowth/alphagrowth-mcp
+sha: 1fb99ff5fec9e61b6dba843f9c0532b1e4d10287
+description: >-
+  Free, read-only crypto data in Hermes: project metrics and TVL history, chains, fees and revenue,
+  funding rounds and investors, DeFi yield pools, stablecoins, token unlocks and DAO treasuries,
+  through AlphaGrowth's hosted MCP server (Streamable HTTP, no account or API key), with three
+  research skills bundled. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/).
+  Disclosure — hosted-only connector with no local code: every tool call is an HTTPS request to
+  alphagrowth.io/mcp, and the returned data joins the session context, so it reaches the user's
+  model provider. No tool writes, trades or moves money (all 37 are annotated readOnlyHint).
+  AlphaGrowth logs each call (tool and arguments, client name and version, user agent, IP and
+  approximate location); arguments and location are deleted and IPs hashed after 30 days, records
+  deleted after 180 days. The tool list comes from the server at run time, so the pinned commit
+  doesn't cover it.
+maintainer: alphagrowth
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/alphagrowth/alphagrowth-mcp/blob/1fb99ff5fec9e61b6dba843f9c0532b1e4d10287/README.md
+version: "1.1.0"
+image: https://raw.githubusercontent.com/alphagrowth/alphagrowth-mcp/1fb99ff5fec9e61b6dba843f9c0532b1e4d10287/assets/catalog-card.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

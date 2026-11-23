@@ -31,6 +31,18 @@ def normalize_arch(raw: str | None) -> str:
     return _ARCH_NAMES.get((raw or "").strip().lower(), "unknown")
 
 
+def has_interface_address(host: str) -> bool:
+    """Does an interface currently own this numeric IP (not just its network or broadcast)?"""
+    import ipaddress
+    import socket
+    import psutil
+
+    wanted = ipaddress.ip_address(host)
+    return any(ipaddress.ip_address(row.address.partition("%")[0]) == wanted
+               for rows in psutil.net_if_addrs().values() for row in rows
+               if row.family in (socket.AF_INET, socket.AF_INET6))
+
+
 @functools.cache
 def os_family() -> str:
     """Return the current platform identifier."""

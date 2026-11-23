@@ -1852,6 +1852,7 @@ export const jaOverrides = {
     remoteOverride: {
       menuItem: 'リモートホストに接続…',
       badge: (host: string) => `${host} で実行中`,
+      runHere: 'このコンピューターで実行…',
       sandboxed: 'サンドボックス化',
       title: (profile: string) => `${profile} をリモートホストに接続`,
       description: 'このプロファイルのセッションは、このパソコンではなく指定したリモートの Hermes で実行されます。',

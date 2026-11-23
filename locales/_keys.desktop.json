@@ -2582,6 +2582,7 @@
     "profiles.remoteOverride.removeFailed",
     "profiles.remoteOverride.removedMessage",
     "profiles.remoteOverride.removedTitle",
+    "profiles.remoteOverride.runHere",
     "profiles.remoteOverride.sandboxed",
     "profiles.remoteOverride.savedMessage",
     "profiles.remoteOverride.savedTitle",

@@ -44,6 +44,7 @@ import { edgeMask, scrollEdges } from '@/components/ui/fade-scroll'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { $pluginRecords } from '@/contrib/plugins-store'
 import type { DesktopRegistryConnection } from '@/global'
 import { getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
@@ -62,6 +63,7 @@ import {
 } from '@/lib/reorder'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
+import { clearProfileBackend } from '@/sdk/profile-backend'
 import {
   $activeConnectionId,
   $connectionsRegistry,
@@ -521,16 +523,6 @@ export function ProfileRail() {
                   key={profile.name}
                   label={profileLabel(profile)}
                   name={profile.name}
-                  // The legacy per-profile remote override predates the
-                  // gateway registry; once the rail shows machines directly
-                  // it only confuses, so it is offered on single-gateway
-                  // setups only.
-                  // A plugin's sandbox owns its profile's backend.
-                  onConnectRemote={
-                    multipleConnections || isSandboxed(profile.name)
-                      ? undefined
-                      : () => openRemoteOverrideDialog(profile.name)
-                  }
                   onDelete={() => setPendingDelete(profile)}
                   onEditSoul={() => setPendingSoul(profile.name)}
                   onRecolor={color => setProfileColor(profile.name, color)}
@@ -1440,9 +1432,6 @@ interface ProfileSquareProps {
   onRecolor: (color: null | string) => void
   onRename: () => void
   onEditSoul: () => void
-  // Absent on multi-gateway setups: the legacy per-profile remote override
-  // is superseded by the fleet rail there.
-  onConnectRemote?: () => void
   onDelete: () => void
   // A rail pick of this profile is activating — same spinner as a rest square.
   pending: boolean
@@ -1452,6 +1441,39 @@ interface ProfileSquareProps {
   // A desktop plugin runs this profile in a sandbox on this computer: badged
   // as sandboxed, not as a remote host.
   sandboxed?: boolean
+}
+
+// The menu entry that changes where a profile runs. A profile a plugin runs
+// has none while that plugin is loaded: the plugin's own page is the way to
+// switch. While the plugin is not loaded (removed, switched off, failed to
+// load) the entry gives the profile back to this computer; the main process
+// asks before it does. Any other profile gets the remote-host dialog.
+function useProfileRouteEntry(
+  p: Translations['profiles'],
+  profile: string
+): undefined | { label: string; run: () => void } {
+  const override = useStore($profileRemoteOverrides)[normalizeProfileKey(profile)]
+  const plugins = useStore($pluginRecords)
+  const multipleConnections = useStore($hasMultipleConnections)
+  const plugin = override?.launcher?.plugin
+  const label = p.remoteOverride.runHere
+
+  if (plugin) {
+    const run = () => void clearProfileBackend({ plugin, profile }).catch((error: unknown) => notifyError(error, label))
+
+    return plugins[plugin]?.status === 'loaded' ? undefined : { label, run }
+  }
+
+  // The legacy per-profile remote override predates the gateway registry:
+  // it is offered on single-gateway setups only.
+  if (multipleConnections) {
+    return undefined
+  }
+
+  return {
+    label: override?.host ? p.remoteOverride.badge(override.host) : p.remoteOverride.menuItem,
+    run: () => openRemoteOverrideDialog(profile)
+  }
 }
 
 // Where a profile runs when not on this computer's own backend, or null.
@@ -1531,7 +1553,6 @@ function ProfileSquare({
   failed,
   label,
   name,
-  onConnectRemote,
   onDelete,
   onEditSoul,
   onRecolor,
@@ -1544,6 +1565,7 @@ function ProfileSquare({
   const { t } = useI18n()
   const p = t.profiles
   const runsWhere = profileRunsWhere(p, remoteHost, sandboxed)
+  const routeEntry = useProfileRouteEntry(p, name)
   const hue = color ?? 'var(--ui-text-quaternary)'
   const [pickerOpen, setPickerOpen] = useState(false)
   const pressTimer = useRef<null | number>(null)
@@ -1710,10 +1732,10 @@ function ProfileSquare({
             <Codicon name="package" size="0.875rem" />
             <span>{p.exportMenu}</span>
           </ContextMenuItem>
-          {onConnectRemote && (
-            <ContextMenuItem onSelect={onConnectRemote}>
+          {routeEntry && (
+            <ContextMenuItem onSelect={routeEntry.run}>
               <Codicon name="globe" size="0.875rem" />
-              <span>{remoteHost ? p.remoteOverride.badge(remoteHost) : p.remoteOverride.menuItem}</span>
+              <span>{routeEntry.label}</span>
             </ContextMenuItem>
           )}
           <ContextMenuItem

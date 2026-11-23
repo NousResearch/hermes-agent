@@ -2115,6 +2115,7 @@ export const ruOverrides = {
   },
   profiles: {
     close: 'Закрыть профили',
+    remoteOverride: { runHere: 'Запускать на этом компьютере…' },
     nameHint: 'Строчные буквы, цифры, дефисы и подчёркивания. Должно начинаться с буквы или цифры.',
     title: 'Профили',
     count: count => `${count} ${RU_PLURAL(count, 'профиль', 'профиля', 'профилей')}`,

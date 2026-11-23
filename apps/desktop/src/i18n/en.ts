@@ -2866,6 +2866,7 @@ export const en: Translations = {
     remoteOverride: {
       menuItem: 'Connect to a remote host…',
       badge: (host: string) => `Runs on ${host}`,
+      runHere: 'Run on this computer…',
       sandboxed: 'Sandboxed',
       title: (profile: string) => `Connect ${profile} to a remote host`,
       description: 'Sessions in this profile will run on the remote Hermes you point it at, instead of this computer.',

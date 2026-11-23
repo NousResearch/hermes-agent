@@ -3310,6 +3310,7 @@ export const frOverrides = {
     remoteOverride: {
       menuItem: 'Se connecter à un hôte distant…',
       badge: (host: string) => `S'exécute sur ${host}`,
+      runHere: 'Exécuter sur cet ordinateur…',
       sandboxed: 'En bac à sable',
       title: (profile: string) => `Connecter ${profile} à un hôte distant`,
       description:

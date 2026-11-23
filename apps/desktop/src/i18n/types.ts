@@ -2522,6 +2522,7 @@ export interface Translations extends NoticeTranslations {
     remoteOverride: {
       menuItem: string
       badge: (host: string) => string
+      runHere: string
       sandboxed: string
       title: (profile: string) => string
       description: string

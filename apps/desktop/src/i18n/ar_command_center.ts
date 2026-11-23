@@ -447,6 +447,7 @@ export const arCommandCenter = {
     remoteOverride: {
       menuItem: 'الاتصال بمضيف بعيد…',
       badge: (host: string) => `يعمل على ${host}`,
+      runHere: 'التشغيل على هذا الحاسوب…',
       sandboxed: 'معزول',
       title: (profile: string) => `ربط ${profile} بمضيف بعيد`,
       description: 'ستعمل جلسات هذا الملف الشخصي على خادم Hermes البعيد الذي تحدده، بدلاً من هذا الجهاز.',

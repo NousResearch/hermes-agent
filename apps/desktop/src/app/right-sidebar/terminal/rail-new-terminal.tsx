@@ -77,7 +77,7 @@ export function NewTerminalButton({ className }: { className: string }) {
   )
 
   if (!choices.length) {
-    return <li className="flex w-full justify-center">{tipped(button)}</li>
+    return <li className="flex w-full shrink-0 justify-center">{tipped(button)}</li>
   }
 
   const items = (Item: typeof ContextMenuItem | typeof DropdownMenuItem): ReactNode =>
@@ -89,7 +89,7 @@ export function NewTerminalButton({ className }: { className: string }) {
     ))
 
   return (
-    <li className="flex w-full flex-col items-center">
+    <li className="flex w-full shrink-0 flex-col items-center gap-0.5">
       <ContextMenu>
         {tipped(<ContextMenuTrigger asChild>{button}</ContextMenuTrigger>)}
         <ContextMenuContent>

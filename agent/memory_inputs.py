@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from agent.prompt_builder import STEER_DISPLAY_KIND
-from agent.skill_commands import extract_user_instruction_from_skill_message
+from session_rules.turns import extract_user_instruction_from_skill_message
 
 
 # Room-origin markers from Desktop's group-round-prompt.ts and

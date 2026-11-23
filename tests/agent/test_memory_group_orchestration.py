@@ -11,6 +11,7 @@ from agent.conversation_compression import _direct_messages_for_pre_compress_mem
 from agent.memory_manager import MemoryManager
 from agent.memory_provider import MemoryProvider
 from agent.prompt_builder import steer_user_row
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 _ROOM_PROMPT = (
@@ -31,16 +32,16 @@ def room_prompt(request, tmp_path):
         return _ROOM_PROMPT
     from gateway import hosted_room_discussion as discussion, hosted_rooms
 
-    db = tmp_path / "state.db"
+    db = storage_handle(tmp_path)
     room = hosted_rooms.create_room(
-        db, room_id="release-room", name="Launch", authority_gateway_id="gateway-test", now=1,
+        db, placement="profile", room_id="release-room", name="Launch", authority_gateway_id="gateway-test", now=1,
         members=[{"member_id": name, "profile": name, "handle": name} for name in ("builder", "reviewer")])
     hosted_rooms.append_event(
-        db, room_id=room["room_id"], event_id="user-1", kind="message.user",
+        db, placement="profile", room_id=room["room_id"], event_id="user-1", kind="message.user",
         actor={"kind": "user", "id": "local-user"}, authority_gateway_id=room["authority_gateway_id"],
         authority_epoch=room["authority_epoch"],
         payload={"text": "Is the release ready?", "thread_id": "release"}, now=2)
-    events = hosted_rooms.read_events(db, room_id=room["room_id"], since_seq=0)["events"]
+    events = hosted_rooms.read_events(db, placement="profile", room_id=room["room_id"], since_seq=0)["events"]
     decision = discussion.plan_next_task(room, events, local_profiles=("builder", "reviewer"))
     assert decision.task is not None
     return decision.task.payload["prompt"]

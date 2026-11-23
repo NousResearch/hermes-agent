@@ -1,0 +1,17 @@
+name: dial
+title: Dial
+repo: https://github.com/GENWAY-AI/hermes-plugin-dial
+sha: 1ab2cc1e3c6dfbdef9c3783a42230aaa232d62a0
+description: "Real phone numbers for AI agents: SMS, iMessage, WhatsApp, AI voice calls, and inbound events."
+maintainer: Dial
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/GENWAY-AI/hermes-plugin-dial/blob/1ab2cc1e3c6dfbdef9c3783a42230aaa232d62a0/README.md
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

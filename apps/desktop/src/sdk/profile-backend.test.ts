@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { backendTransitionFor, resetBackendTransitionsForTests } from '@/store/backend-transition'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import { $profileRemoteOverrides } from '@/store/profile-remote-override'
+import { SWITCH_HOOK_MAX_MS, SWITCH_SETTLE_MAX_MS } from '@/store/switch-transition'
 
 import { clearProfileBackend, profileBackendFeatures, setProfileBackend } from './profile-backend'
 
@@ -189,6 +190,58 @@ describe('host.clearProfileBackend', () => {
       })
     ).rejects.toThrow('the sandbox did not stop')
     expect(bridge.clearProfileBackend).not.toHaveBeenCalled()
+    expect(backendTransitionFor('work')).toBeNull()
+  })
+})
+
+// The plugin's own hook decides how long a switch takes (a first sandbox start can
+// take minutes). While it runs, the profile is still on the backend the switch is about to retire.
+describe('a switch whose plugin hook runs longer than three minutes', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it('keeps "starting" for as long as prepare runs, so the composer holds messages until the switch', async () => {
+    vi.useFakeTimers()
+    installBridge()
+
+    let started!: (address: { token: string; url: string }) => void
+    const prepare = () => new Promise<{ token: string; url: string }>(resolve => (started = resolve))
+    const switching = setProfileBackend({ plugin: 'acme', prepare, profile: 'work' })
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(backendTransitionFor('work')?.kind).toBe('starting')
+
+    // 200 s in: the plugin is still starting its backend (the first user's own limit is 300 s).
+    await vi.advanceTimersByTimeAsync(199_000)
+    expect(backendTransitionFor('work')?.kind).toBe('starting')
+
+    started({ token: 'tok', url: 'http://127.0.0.1:47972' })
+    await expect(switching).resolves.toEqual({ applied: true })
+  })
+
+  it('keeps "stopping" for as long as beforeApply runs', async () => {
+    vi.useFakeTimers()
+    installBridge()
+
+    let stopped!: () => void
+    const beforeApply = () => new Promise<void>(resolve => (stopped = resolve))
+    const switching = clearProfileBackend({ beforeApply, plugin: 'acme', profile: 'work' })
+
+    await vi.advanceTimersByTimeAsync(200_000)
+    expect(backendTransitionFor('work')?.kind).toBe('stopping')
+
+    stopped()
+    await expect(switching).resolves.toEqual({ applied: true })
+  })
+
+  it('a hook that never returns stops holding the composer when its time is up', async () => {
+    vi.useFakeTimers()
+    installBridge()
+    void setProfileBackend({ plugin: 'acme', prepare: () => new Promise(() => undefined), profile: 'work' })
+
+    await vi.advanceTimersByTimeAsync(SWITCH_HOOK_MAX_MS)
+    expect(backendTransitionFor('work')?.kind).toBe('starting')
+
+    await vi.advanceTimersByTimeAsync(SWITCH_SETTLE_MAX_MS)
     expect(backendTransitionFor('work')).toBeNull()
   })
 })

@@ -1505,6 +1505,11 @@ already connects to a remote host or runs through another plugin. It resolves
   `prepare()` for `{ url, token }`, then switches without asking again. The
   profile stays on this computer's backend until then. A Cancel never calls
   `prepare`; if it throws, nothing changes and the error propagates.
+- A hook (`prepare`, `beforeApply`) may run for up to 10 minutes. The composer
+  and the queue hold messages for as long as it runs. A hook that has not
+  returned after 10 minutes loses the hold, and messages then go to the backend
+  the profile is still on. The user's answer is kept for 5 minutes: when a hook
+  returns later than that, the app asks once more before it switches.
 - On a switch, only that profile's chats reconnect, in place, in every open
   window; each window stays on the profile it shows. A window connected to
   another gateway is left as it is, also when the profile it shows there has

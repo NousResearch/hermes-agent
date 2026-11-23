@@ -86,12 +86,12 @@ export function beginBackendTransition(
     [key]: { kind, profile: key, since: current?.since ?? Date.now(), source: options.source }
   })
 
-  if (!deadlines.has(key)) {
-    deadlines.set(
-      key,
-      setTimeout(() => clear(key, false), options.maxMs ?? BACKEND_TRANSITION_MAX_MS)
-    )
-  }
+  // Another kind or another source is a new transition, with a deadline of its own.
+  clearTimeout(deadlines.get(key))
+  deadlines.set(
+    key,
+    setTimeout(() => clear(key, false), options.maxMs ?? BACKEND_TRANSITION_MAX_MS)
+  )
 }
 
 /**

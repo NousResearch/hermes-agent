@@ -1,7 +1,6 @@
-import { beginBackendTransition } from '@/store/backend-transition'
 import { $profiles } from '@/store/profile'
 import { refreshProfileRemoteOverrides } from '@/store/profile-remote-override'
-import { endSwitchTransition } from '@/store/switch-transition'
+import { beginSwitchTransition, endSwitchTransition } from '@/store/switch-transition'
 
 // The plugin SDK's host.setProfileBackend / host.clearProfileBackend: a desktop
 // plugin runs one profile's backend on this computer (for example in a sandbox)
@@ -92,7 +91,7 @@ export async function setProfileBackend(input: SetProfileBackendInput): Promise<
     }
 
     grant = answer.grant
-    beginBackendTransition(target.profile, 'starting', { source: 'switch' })
+    beginSwitchTransition(target.profile, 'starting')
   }
 
   let applied = false
@@ -132,7 +131,7 @@ export async function clearProfileBackend(input: ClearProfileBackendInput): Prom
     }
 
     grant = answer.grant
-    beginBackendTransition(target.profile, 'stopping', { source: 'switch' })
+    beginSwitchTransition(target.profile, 'stopping')
   }
 
   let applied = false

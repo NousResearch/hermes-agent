@@ -79,4 +79,22 @@ describe('planned backend transitions', () => {
 
     expect(backendTransitionFor('work')).toEqual({ kind: 'restarting', profile: 'work', since: 1_000, source: 'launcher' })
   })
+
+  it.each([
+    { label: 'another kind', next: { kind: 'stopping', source: 'switch' } },
+    { label: 'another source', next: { kind: 'starting', source: 'launcher' } }
+  ] as const)('a transition of $label that replaces one gets a deadline of its own', async ({ next }) => {
+    vi.useFakeTimers()
+    beginBackendTransition('work', 'starting', { source: 'switch' })
+
+    // Ten seconds before the first one's deadline another begins: a stop right after a slow start.
+    await vi.advanceTimersByTimeAsync(BACKEND_TRANSITION_MAX_MS - 10_000)
+    beginBackendTransition('work', next.kind, { source: next.source })
+
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(backendTransitionFor('work')?.kind).toBe(next.kind)
+
+    await vi.advanceTimersByTimeAsync(BACKEND_TRANSITION_MAX_MS)
+    expect(backendTransitionFor('work')).toBeNull()
+  })
 })

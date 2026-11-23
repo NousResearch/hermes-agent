@@ -43,7 +43,7 @@ _FEATURES: dict[str, _FeatureSpec] = {
     "web": _FeatureSpec(
         "Web tools", True, "firecrawl", "firecrawl", ("web", "backend"),
         "Web search & extract", "Firecrawl/Exa/Parallel/Tavily/Perplexity/Keenable/Brave key or SearXNG",
-        ("PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "BRAVE_SEARCH_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"),
+        ("PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "BRAVE_SEARCH_API_KEY", "SEARXNG_URL", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"),
     ),
     "image_gen": _FeatureSpec(
         "Image generation", True, "fal", "fal-queue", ("image_gen", "provider"), "Image generation", "FAL key",

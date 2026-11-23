@@ -1563,20 +1563,27 @@ _BROWSER_EXEC_DESCRIPTION = (
 
 def _stranded_api_child_denial() -> dict | None:
     """Refusal for a background child of an api_server session whose turn ended: ``_presence`` reads the
-    missing notifier as "nobody to ask", but the session has an approval client, it just can no longer
-    reach it, so the child must not run unasked what its parent would have been asked about."""
-    if not (env_var_enabled("HERMES_EXEC_ASK") and approval_context._is_unattended_platform_approval_context()):
+    missing notifier as "nobody to ask", but the session had an approval client at dispatch, it just can
+    no longer reach it, so the child must not run unasked what its parent would have been asked about.
+    A session that never had a client (a plain chat completion, a webhook) runs unasked as before."""
+    # Webhook turns register a TurnRunner notifier too, but nobody can answer it (_presence clears it).
+    if not (env_var_enabled("HERMES_EXEC_ASK") and approval_context._get_session_platform() == "api_server"):
         return None
     if approval_context._is_single_query_approval_context() or approval_context._is_cron_approval_context():
         return None
-    from tools.approval_notify_lease import stranded_denial
-    return stranded_denial(get_current_session_key(), True, "code", "browser_exec", _BROWSER_EXEC_DESCRIPTION)
+    from tools.approval_notify_lease import current, stranded_denial
+    session_key = get_current_session_key()
+    lease = current(session_key)
+    if lease is None or not lease.had_client:
+        return None
+    return stranded_denial(session_key, True, "code", "browser_exec", _BROWSER_EXEC_DESCRIPTION)
 
 
 def check_browser_exec_guard(script: Callable[[], str]) -> dict:
     """Approve a browser_exec script before the harness runs it (#157913). ``script()`` builds the
-    text to assess and show (the code plus what the harness loads with it); it is called only when
-    someone will be asked, and may raise to refuse the call.
+    text to assess and show (the code plus what the harness loads with it); it is called only where a
+    person answers for this session (asked, or covered by a grant they gave), and may raise to refuse
+    the call.
 
     The code runs in a Python process on this host whichever browser it drives (local, CDP
     override, cloud), so this is the execute_code whole-script gate without the container fast

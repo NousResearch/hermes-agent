@@ -831,22 +831,28 @@ def _workspace_listing(task_id: Optional[str]) -> str:
 
 def _loaded_file_listing(path: Path, role: str) -> str:
     """One loaded file's listing ("" when absent). Read without blocking or following a FIFO, capped,
-    and decoded the way Python decodes source (a coding cookie included), never truncated."""
+    and decoded the way the harness reads it (Python source with its coding cookie; ``.env`` split into
+    lines like ``str.splitlines``), never truncated."""
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
     except FileNotFoundError:
         return ""
     except OSError as exc:
         raise _UnshowableWorkspaceFile(f"{path} cannot be read ({exc.strerror})") from exc
-    with os.fdopen(fd, "rb") as handle:
-        info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode):
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise _UnshowableWorkspaceFile(f"{path} is not a regular file")
-        raw = handle.read(_WORKSPACE_LISTING_MAX_BYTES + 1)
+        raw = b""
+        while len(raw) <= _WORKSPACE_LISTING_MAX_BYTES and (chunk := os.read(fd, 65536)):
+            raw += chunk
+    except OSError as exc:
+        raise _UnshowableWorkspaceFile(f"{path} cannot be read ({exc.strerror})") from exc
+    finally:
+        os.close(fd)
     if len(raw) > _WORKSPACE_LISTING_MAX_BYTES:
         raise _UnshowableWorkspaceFile(f"{path} is larger than {_WORKSPACE_LISTING_MAX_BYTES // 1024} KB")
     try:
-        text = importlib.util.decode_source(raw) if path.suffix == ".py" else raw.decode("utf-8")
+        text = importlib.util.decode_source(raw) if path.suffix == ".py" else "\n".join(raw.decode("utf-8").splitlines())
     except (SyntaxError, UnicodeDecodeError, LookupError) as exc:
         raise _UnshowableWorkspaceFile(f"{path} cannot be decoded ({exc})") from exc
     return f"\n\n# --- {path} ({role}) ---\n{text}"

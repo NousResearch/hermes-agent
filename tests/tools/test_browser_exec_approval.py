@@ -130,6 +130,22 @@ def test_a_helpers_file_that_cannot_be_shown_refuses_the_call(gateway_user, harn
     assert "larger than" in result["error"] and prompts == [] and harness == []
 
 
+def test_a_helpers_directory_refuses_the_call(gateway_user, harness, workspace):
+    _answers, prompts = gateway_user
+    (workspace / "agent_helpers.py").mkdir()
+    result = _exec()
+    assert "not a regular file" in result["error"] and prompts == [] and harness == []
+
+
+def test_the_env_listing_splits_lines_as_the_harness_does(gateway_user, harness, workspace):
+    """The harness splits .env with str.splitlines, so `\\x1c` starts a new, live line."""
+    answers, prompts = gateway_user
+    (workspace / ".env").write_text("# note\x1cPYTHONHOME=/tmp/x\n")
+    answers.append("deny")
+    _exec()
+    assert "\\nPYTHONHOME=/tmp/x" in json.dumps(prompts[0])
+
+
 @pytest.mark.platforms("posix")
 def test_an_unasked_call_never_reads_the_workspace(manual, harness, workspace, monkeypatch):
     monkeypatch.setenv("HERMES_INTERACTIVE", "1")
@@ -233,6 +249,24 @@ def test_a_background_child_of_an_api_turn_that_ended_is_refused(manual, harness
     finally:
         clear_session_vars(tokens)
     assert "no approval channel" in result["error"] and harness == [] and prompts == []
+
+
+@pytest.mark.parametrize("platform, notifier", [("api_server", False), ("webhook", True)])
+def test_a_background_child_of_a_session_nobody_answers_runs_as_before(manual, harness, monkeypatch, platform,
+                                                                       notifier):
+    """No approval client at dispatch (a plain chat completion), or one nobody can answer (a webhook
+    turn's TurnRunner notifier): nobody is stranded when the turn ends."""
+    from tools import approval_notify_lease
+
+    _api_turn(monkeypatch, notifier=notifier)
+    tokens = set_session_vars(platform=platform)
+    try:
+        lease = approval_notify_lease.acquire(SESSION)
+        A.unregister_gateway_notify(SESSION)  # the turn ends
+        result = approval_notify_lease.run(lease, _exec)
+    finally:
+        clear_session_vars(tokens)
+    assert result["success"] is True and harness == [CODE]
 
 
 def test_a_cron_run_keeps_its_browser_even_when_cron_mode_denies(manual, harness, monkeypatch):

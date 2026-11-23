@@ -370,6 +370,22 @@ def test_ensure_still_runs_for_an_unmarked_profile(root, monkeypatch):
     assert runtime.ensure_gateway_runtime(root / "profiles" / "dev", timeout=5) is observed
 
 
+def test_ensure_refuses_a_marked_profile_whose_directory_is_a_link_out_of_the_root(root, tmp_path, monkeypatch):
+    from hermes_cli import gateway_runtime as runtime
+    from hermes_cli.gateway_runtime_attach import attach_gateway
+
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", lambda *a, **k: pytest.fail("discovered"))
+    outside = tmp_path / "other-disk" / "ops"
+    outside.parent.mkdir()
+    (root / "profiles" / "ops").rename(outside)
+    _link(root / "profiles" / "ops", outside)
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin")
+    result = runtime.ensure_gateway_runtime(root / "profiles" / "ops", timeout=5)
+    assert (result.state, result.reason_code) == ("inaccessible", "profile_runs_elsewhere")
+    attached = attach_gateway(root / "profiles" / "ops", start=True, timeout=5)  # resolves before it ensures
+    assert (attached.receipt.reason_code, attached.ticket) == ("profile_runs_elsewhere", None)
+
+
 def test_gateway_ensure_command_prints_the_refusal(root, monkeypatch, capsys):
     from argparse import Namespace
     from hermes_cli.gateway_runtime_cli import cmd_gateway_ensure

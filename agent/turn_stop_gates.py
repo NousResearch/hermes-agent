@@ -92,6 +92,80 @@ def _kanban_stop_nudge(agent, messages) -> Optional[str]:
         return None
 
 
+def unhanded_kanban_task(messages) -> str:
+    """The board task a stop would leave un-handed-off; ``""`` when none applies.
+
+    Non-empty exactly where the stop guard is armed for this session — a
+    dispatcher-owned worker with ``HERMES_KANBAN_STOP_NUDGE`` not disabled — and this
+    transcript has made no terminal board call. An attended session, a cron run and a
+    delegate child get ``""`` (their stop is an answer to a human who can reply), and so
+    does a worker that already handed the card off, whose clean exit is correct.
+    """
+    try:
+        from agent.delegation_context import owned_kanban_task
+        from agent.kanban_stop import (
+            kanban_stop_nudge_enabled, session_called_kanban_terminal,
+        )
+
+        if kanban_stop_nudge_enabled() and not session_called_kanban_terminal(messages):
+            return owned_kanban_task()
+    except Exception:
+        logger.debug("kanban halt handoff check failed", exc_info=True)
+    return ""
+
+
+def guardrail_halt_stop_gate(
+    agent, *, decision: Any, halt_copy: Any, messages: list[dict[str, Any]],
+    conversation_history: Any,
+) -> bool:
+    """Guardrail-halt arm of the stop gates: deliver the shipped kanban nudge, never a second one.
+
+    ``turn_tool_round`` breaks on any guardrail halt, so that branch never reaches
+    ``apply_stop_gates``: the canned copy ("send `continue`") becomes the turn's final
+    answer, and a headless worker exits rc=0 with its card still ``running`` — which the
+    dispatcher books as ``protocol_violation``, not as the stall it is (the halt copy asks
+    for an input only a human can give). Call this from that halt branch: on a board worker
+    with nudge budget left it appends the halt explanation as an interim answer row plus the
+    same synthetic nudge the text-response gate uses, and returns True so the loop continues
+    instead of exiting.
+
+    Returns False — break exactly as before — for an attended session, a worker that already
+    handed its card off, a spent nudge budget, or a guard disabled by
+    ``HERMES_KANBAN_STOP_NUDGE=0``. The caller decides whether that stop is honest; see
+    ``unhanded_kanban_task``.
+    """
+    if not unhanded_kanban_task(messages):
+        return False
+    nudge = _kanban_stop_nudge(agent, messages)
+    if not nudge:
+        return False
+    agent._kanban_stop_nudges = getattr(agent, "_kanban_stop_nudges", 0) + 1
+    # Consumed for this round only: the guardrail controller keeps its own halt, so the
+    # next identical call blocks and re-arms the halt branch. The extra model calls stay
+    # bounded by the guard's shipped budget, not by a counter invented here.
+    agent._tool_guardrail_halt_decision = None
+    halt_msg: dict[str, Any] = {
+        "role": "assistant", "content": halt_copy, "finish_reason": "kanban_terminal_required",
+    }
+    # Only the nudge is scaffolding (#65919): the halt explanation stays durable so the
+    # next worker and the reviewer can see why the turn changed direction.
+    _append_interim_answer(
+        agent, halt_msg, messages, conversation_history, "guardrail-halt interim flush failed"
+    )
+    append_message(messages, {"role": "user", "content": nudge, "_kanban_stop_synthetic": True})
+    agent._session_messages = messages
+    logger.info(
+        "guardrail halt delivered as a kanban stop-nudge (attempt %d) task=%s code=%s",
+        agent._kanban_stop_nudges, os.environ.get("HERMES_KANBAN_TASK", ""),
+        getattr(decision, "code", ""),
+    )
+    agent._emit_diagnostic_status(
+        "⚠️ Tool guardrail halted on a board worker — continuing under the kanban "
+        "stop-nudge instead of exiting with the card still running"
+    )
+    return True
+
+
 _MAX_LSP_TURN_END_NOTES = 3
 
 

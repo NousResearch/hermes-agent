@@ -180,3 +180,110 @@ class TestSkillViewDedupRaces:
 
         again = _view("demo-dedup-skill")
         assert again.get("dedup") is True
+
+
+class TestSkillViewDedupSessionScope:
+    """The dedup cache is process-global, so its entries must be attributed to the
+    session that served them: a different session_id drops only the foreign entries
+    of the task's bucket (other sessions' buckets are left alone), session_id of
+    None/"" is a no-op, and the fork path (task_id=None) stays out of the cache."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_session_state(self):
+        from tools import skills_tool_dedup
+        skills_tool_dedup._skill_view_tracker.clear()
+        yield
+        skills_tool_dedup._skill_view_tracker.clear()
+
+    def _view(self, name, file_path=None, task="t-svd", session_id=None):
+        args = {"name": name}
+        if file_path:
+            args["file_path"] = file_path
+        return json.loads(_skill_view_with_bump(args, task_id=task, session_id=session_id))
+
+    def test_session_change_drops_cache(self, skills_home):
+        # Session A views the skill; a repeat within A dedups.
+        self._view("demo-dedup-skill", session_id="sess-A")
+        r = self._view("demo-dedup-skill", session_id="sess-A")
+        assert r.get("dedup") is True
+        # A fresh session reusing the SAME task_id must NOT inherit A's entry:
+        # it never loaded the skill into its own context, so it gets full content.
+        r2 = self._view("demo-dedup-skill", session_id="sess-B")
+        assert "Step one" in r2.get("content", "")
+        assert r2.get("dedup") is None
+
+    def test_session_id_none_is_noop(self, skills_home):
+        # Views without a session_id never drop the cache and still dedup
+        # (the fork / pre-session path keeps working).
+        self._view("demo-dedup-skill", session_id=None)
+        r = self._view("demo-dedup-skill", session_id=None)
+        assert r.get("dedup") is True
+
+    def test_none_session_does_not_drop_populated_cache(self, skills_home):
+        # A None session_id must not clobber a cache populated by a real session.
+        self._view("demo-dedup-skill", session_id="sess-A")
+        r = self._view("demo-dedup-skill", session_id=None)
+        assert r.get("dedup") is True
+
+    def test_fork_path_stays_out_of_cache(self, skills_home):
+        # task_id=None (background-review fork) is never recorded and never dedups,
+        # regardless of session_id.
+        r1 = self._view("demo-dedup-skill", task=None, session_id="sess-A")
+        assert "Step one" in r1.get("content", "")
+        r2 = self._view("demo-dedup-skill", task=None, session_id="sess-A")
+        assert "Step one" in r2.get("content", "")
+        assert r2.get("dedup") is None
+
+    def test_interleaved_A_B(self, skills_home):
+        # The review's scenario 1:1 — two live sessions in one process (gateway:
+        # task_id == session_id, so each session has its own bucket): A runs 4 turns,
+        # B interleaved, one view per turn, deterministic (no threads). B's activity
+        # must NOT wipe A's bucket — A's cross-turn dedup survives. A process-global
+        # clear-on-session-change would give 0 deduped, 8 full; per-entry attribution
+        # matches the review's "alternative" row: 6 deduped, 2 full.
+        a_results, b_results = [], []
+        for turn in range(4):
+            a = self._view("demo-dedup-skill", task="task-A", session_id="sess-A")
+            a_results.append(a.get("dedup") is True)
+            b = self._view("demo-dedup-skill", task="task-B", session_id="sess-B")
+            b_results.append(b.get("dedup") is True)
+        # A: full, dedup, dedup, dedup; B: full, dedup, dedup, dedup. 6 deduped, 2 full.
+        assert a_results == [False, True, True, True]
+        assert b_results == [False, True, True, True]
+
+    def test_shared_task_id_sessions_alternate(self, skills_home):
+        # A fresh session reusing the SAME task_id drops only the foreign entries of
+        # that bucket: A's repeat dedups; B's first view is full (A's entry is
+        # dropped); A's next view is full (B's entry is dropped); A's repeat dedups.
+        self._view("demo-dedup-skill", session_id="sess-A")
+        r = self._view("demo-dedup-skill", session_id="sess-A")
+        assert r.get("dedup") is True
+        r2 = self._view("demo-dedup-skill", session_id="sess-B")
+        assert "Step one" in r2.get("content", "")
+        assert r2.get("dedup") is None
+        r3 = self._view("demo-dedup-skill", session_id="sess-A")
+        assert "Step one" in r3.get("content", "")
+        assert r3.get("dedup") is None
+        r4 = self._view("demo-dedup-skill", session_id="sess-A")
+        assert r4.get("dedup") is True
+
+    def test_session_id_flip_flop(self, skills_home):
+        # "" is not a session id — the tool layer passes ``agent.session_id or ""``.
+        # "" -> "real-id" -> "" must not clear the cache on the "" flip.
+        r1 = self._view("demo-dedup-skill", session_id="")
+        assert "Step one" in r1.get("content", "")  # first view: full
+        r2 = self._view("demo-dedup-skill", session_id="real-id")
+        # A real session taking over the bucket: the ""-written entry is foreign to
+        # it (a fresh session must not get a stale stub) -> full content.
+        assert "Step one" in r2.get("content", "")
+        assert r2.get("dedup") is None
+        r3 = self._view("demo-dedup-skill", session_id="")
+        # The "" flip back must NOT clear the cache: the real session's entry is
+        # still there, so the unattributed view dedups against it.
+        assert r3.get("dedup") is True
+        assert r3.get("content_returned") is False
+        from tools import skills_tool_dedup
+        # The cache held state through the flip: the entry (written by "real-id")
+        # survived the "" flip.
+        (entry,) = skills_tool_dedup._skill_view_tracker["t-svd"].values()
+        assert entry[3] == "real-id"

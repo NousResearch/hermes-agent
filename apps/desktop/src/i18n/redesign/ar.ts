@@ -605,6 +605,13 @@ export const arRedesign: RedesignOverlay = {
       errorStartNewSession: 'بدء محادثة جديدة'
     },
     approval: {
+      access: {
+        alwaysDescription: 'تتم إضافة المجلد إلى بيئة العزل لهذا الوكيل. لن يسأل Hermes عنه مرة أخرى في أي محادثة.'
+      },
+      network: {
+        alwaysDescription:
+          'تتم إضافة الموقع إلى المواقع المسموح بها لهذا الوكيل. لن يسأل Hermes عنه مرة أخرى في أي محادثة.'
+      },
       gatewayDisconnected: 'الجهاز غير متصل',
       allowSession: 'السماح لهذه المحادثة',
       alwaysDescription: pattern =>
@@ -728,7 +735,7 @@ export const arRedesign: RedesignOverlay = {
     indexing: 'جار فهرسة مخرجات المحادثات الأخيرة...',
     noArtifactsTitle: 'لا يوجد شيء في مكتبتك بعد',
     failedLoad: 'فشل تحميل المكتبة',
-    colSession: 'المحادثة',
+    colSession: 'المحادثة'
   },
   artifactPreview: {
     missingTitle: 'العنصر غير متاح',

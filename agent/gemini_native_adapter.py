@@ -204,10 +204,10 @@ def probe_gemini_tier(
         return "unknown"
     base = normalize_gemini_base_url(base_url)
     payload = {"contents": [{"role": "user", "parts": [{"text": "hi"}]}], "generationConfig": {"maxOutputTokens": 1}}
-    headers = {"Content-Type": "application/json", "X-Goog-Api-Client": _api_client()}
+    headers = {"Content-Type": "application/json", "x-goog-api-key": key, "X-Goog-Api-Client": _api_client()}
     try:
         with httpx.Client(timeout=timeout) as client:
-            resp = client.post(f"{base}/models/{model}:generateContent", params={"key": key}, json=payload, headers=headers)
+            resp = client.post(f"{base}/models/{model}:generateContent", json=payload, headers=headers)
     except Exception as exc:
         logger.debug("probe_gemini_tier: network error: %s", exc)
         return "unknown"

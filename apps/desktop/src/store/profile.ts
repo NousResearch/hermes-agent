@@ -79,13 +79,23 @@ export const $profilesByConnection = atom<ReadonlyMap<string, ProfileInfo[]>>(ne
 
 // Registry descriptors carry their connection id (a slug, so it never contains
 // ':'); legacy primaries are keyed by endpoint. Null is a reconnect blip (see
-// setConnection), not a source.
+// setConnection), not a source. Every local backend is this computer, and so
+// is a plugin-run profile's backend (this host answers its profile list): one
+// source, so switching between them never blanks the rail.
 function profileListSource(connection: HermesConnection | null): null | string {
   if (!connection) {
     return null
   }
 
-  return connection.connectionId ?? `${connection.mode ?? 'local'}:${connection.baseUrl}`
+  if (connection.connectionId) {
+    return connection.connectionId
+  }
+
+  if (connection.launcher || (connection.mode ?? 'local') === 'local') {
+    return LOCAL_CONNECTION_ID
+  }
+
+  return `${connection.mode}:${connection.baseUrl}`
 }
 
 export function setActiveProfile(name: string): void {
@@ -593,6 +603,24 @@ let profileSelectionRevision = 0
 
 export function currentProfileSelectionRevision(): number {
   return profileSelectionRevision
+}
+
+/**
+ * Whether the window shows `profile`, asked once every pick that is still
+ * connecting has landed or failed. A job that changes what the window shows
+ * for a profile after it waited on something (the redial once the profile's
+ * backend has moved, the reconnect once its backend is back) asks this right
+ * before each change: a stale async result never overwrites newer intent.
+ * Asked in the middle of a pick, the job's own activation would be the newer
+ * of the two and the pick would lose to it. A pick that failed leaves the
+ * window on the profile, and the job still acts for it.
+ */
+export async function foregroundShows(profile: string): Promise<boolean> {
+  while (gatewaySwitch) {
+    await gatewaySwitch.catch(() => undefined)
+  }
+
+  return normalizeProfileKey($activeGatewayProfile.get()) === normalizeProfileKey(profile)
 }
 
 // Descriptor lookups are IPC round-trips into Electron main. A wedged main

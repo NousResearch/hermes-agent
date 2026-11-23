@@ -865,6 +865,12 @@ export const zhRedesign: RedesignOverlay = {
       errorOauthExpired: provider => `你的 ${provider} 登录已过期或被撤销。请重新登录以继续对话。`
     },
     approval: {
+      access: {
+        alwaysDescription: '该文件夹将加入此智能体的沙盒。Hermes 在任何对话中都不会再询问。'
+      },
+      network: {
+        alwaysDescription: '该网站将加入此智能体的允许网站。Hermes 在任何对话中都不会再询问。'
+      },
       gatewayDisconnected: '机器未连接',
       allowSession: '允许本对话',
       alwaysDescription: pattern =>
@@ -1015,7 +1021,7 @@ export const zhRedesign: RedesignOverlay = {
     noArtifactsTitle: '资源库中还没有内容',
     noArtifactsDesc: '当对话生成图片和文件输出时，它们会显示在这里。',
     failedLoad: '资源库加载失败',
-    colSession: '对话',
+    colSession: '对话'
   },
   artifactPreview: {
     missingTitle: '项目不可用',

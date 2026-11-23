@@ -652,6 +652,14 @@ export const jaRedesign: RedesignOverlay = {
       errorStartNewSession: '新しいチャットを開始'
     },
     approval: {
+      access: {
+        alwaysDescription:
+          'フォルダーがこのエージェントのサンドボックスに追加されます。Hermes はどのチャットでも再度尋ねません。'
+      },
+      network: {
+        alwaysDescription:
+          'サイトがこのエージェントの許可済みサイトに追加されます。Hermes はどのチャットでも再度尋ねません。'
+      },
       gatewayDisconnected: 'マシンに接続されていません',
       allowSession: 'このチャットで許可',
       alwaysDescription: pattern =>
@@ -789,7 +797,7 @@ export const jaRedesign: RedesignOverlay = {
     noArtifactsTitle: 'ライブラリにはまだ何もありません',
     noArtifactsDesc: 'チャットで生成された画像やファイルの出力がここに表示されます。',
     failedLoad: 'ライブラリの読み込みに失敗しました',
-    colSession: 'チャット',
+    colSession: 'チャット'
   },
   artifactPreview: {
     missingTitle: 'アイテムを利用できません',

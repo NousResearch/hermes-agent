@@ -225,6 +225,14 @@ export const SETTINGS_MANIFEST = {
         description: t.settings.notifications.browserPermission.states.default
       })
     },
+    phonePresence: {
+      subpage: 'alerts',
+      keywords: ['phone', 'mobile', 'push', 'active', 'away', 'idle', 'presence', 'quiet'],
+      copy: t => ({
+        label: t.settings.notifications.phonePresence.title,
+        description: t.settings.notifications.phonePresence.description
+      })
+    },
     muteSounds: {
       subpage: 'sounds',
       keywords: ['mute', 'silence', 'quiet', 'sound', 'chime', 'wake', 'haptics'],

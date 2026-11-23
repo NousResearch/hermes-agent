@@ -217,6 +217,13 @@
       ]
     },
     {
+      "source": "user-guide/features/plugins.md § Plugin code inside the gateway: which client sent the turn and who is attached",
+      "entries": [
+        "hermes_cli.plugin_session:turn_client",
+        "hermes_cli.plugin_session:session_viewers"
+      ]
+    },
+    {
       "source": "plugins/index.md § Check file paths and read YAML with Hermes's own helpers",
       "entries": [
         "agent.file_safety:get_read_block_error",

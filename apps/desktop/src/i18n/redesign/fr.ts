@@ -893,6 +893,14 @@ export const frRedesign: RedesignOverlay = {
       errorStartNewSession: 'Démarrer une nouvelle discussion'
     },
     approval: {
+      access: {
+        alwaysDescription:
+          'Le dossier est ajouté au bac à sable de cet agent. Hermes ne le redemandera dans aucun chat.'
+      },
+      network: {
+        alwaysDescription:
+          'Le site est ajouté aux sites autorisés de cet agent. Hermes ne le redemandera dans aucun chat.'
+      },
       gatewayDisconnected: "Hermes n'est pas connecté",
       timedOutSystemLine:
         'Le délai d’approbation a expiré — la commande n’a pas été exécutée. Demandez à l’agent de réessayer ou augmentez la limite dans Paramètres → Sécurité → Délai d’approbation.',
@@ -1026,7 +1034,7 @@ export const frRedesign: RedesignOverlay = {
     noArtifactsTitle: 'Rien dans votre bibliothèque pour le moment',
     noArtifactsDesc:
       'Les images générées et les sorties de fichier apparaîtront ici au fur et à mesure que les discussions les produisent.',
-    failedLoad: 'Échec du chargement de la bibliothèque',
+    failedLoad: 'Échec du chargement de la bibliothèque'
   },
   artifactPreview: {
     missingTitle: 'Élément indisponible',

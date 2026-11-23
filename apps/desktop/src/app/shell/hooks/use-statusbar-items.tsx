@@ -45,6 +45,7 @@ import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
 import { requestGatewayForActiveRoute } from '@/store/active-route-request'
 import type { ApprovalModeRequester } from '@/store/approval-mode'
+import { $backendTransitions, backendTransitionLabel, transitionProfileKey } from '@/store/backend-transition'
 import { $cloudOwnsUpdates } from '@/store/cloud-updates'
 import { copyFilePath, revealFile, shouldOfferLocalReveal } from '@/store/file-actions'
 import { $freeTierSignInOpen, $freeTierStatus, FREE_TIER_MODEL } from '@/store/free-tier'
@@ -178,6 +179,11 @@ export function useStatusbarItems({
   const primaryCwd = useStore($currentCwd)
   const primaryUsage = useStore($currentUsage)
   const gatewayRestarting = useStore($gatewayRestarting)
+  // The active profile's sandbox starting / restarting / stopping on purpose.
+  const backendTransition = useStore($backendTransitions)[transitionProfileKey(activeGatewayProfile)] ?? null
+  const transitionLabel = backendTransition ? backendTransitionLabel(backendTransition, t.sandbox) : null
+  const gatewayBusy = gatewayRestarting || Boolean(transitionLabel)
+  const gatewayBusyLabel = transitionLabel ?? copy.gatewayRestarting
   const primarySessionStartedAt = useStore($sessionStartedAt)
   const tileSessionFocusStartedAt = useStore($tileSessionFocusStartedAt)
   const primaryTurnStartedAt = useStore($turnStartedAt)
@@ -433,7 +439,8 @@ export function useStatusbarItems({
     messagingRunning: statusSnapshot?.gateway_running,
     messagingState: statusSnapshot?.gateway_state,
     platforms: statusSnapshot?.gateway_platforms,
-    restarting: gatewayRestarting
+    restarting: gatewayRestarting,
+    transition: transitionLabel
   })
 
   const inferenceReady = gatewayOpen && inferenceStatus?.ready === true && !gatewayHealth.degraded
@@ -546,11 +553,11 @@ export function useStatusbarItems({
         render: () => <ProfileSwitcher compact />
       },
       {
-        className: gatewayRestarting ? undefined : gatewayClassName,
+        className: gatewayBusy ? undefined : gatewayClassName,
         detail: gatewayHealth.detail,
         hidden: botsShowing,
-        icon: gatewayRestarting ? (
-          <GlyphSpinner ariaLabel={copy.gatewayRestarting} className="size-3" />
+        icon: gatewayBusy ? (
+          <GlyphSpinner ariaLabel={gatewayBusyLabel} className="size-3" />
         ) : inferenceReady ? (
           <Activity className="size-3" />
         ) : (
@@ -694,7 +701,8 @@ export function useStatusbarItems({
       gatewayMenuContent,
       gatewayClassName,
       gatewayHealth,
-      gatewayRestarting,
+      gatewayBusy,
+      gatewayBusyLabel,
       inferenceReady,
       inferenceStatus?.reason,
       openAgents,

@@ -868,6 +868,12 @@ export const enRedesign: RedesignOverlay = {
       errorStartNewSession: 'Start new chat'
     },
     approval: {
+      access: {
+        alwaysDescription: 'The folder is added to this agent’s sandbox. Hermes won’t ask again for it in any chat.'
+      },
+      network: {
+        alwaysDescription: 'The site is added to this agent’s allowed sites. Hermes won’t ask again for it in any chat.'
+      },
       timedOutSystemLine:
         'Approval timed out — the command was not run. Ask the agent to try again, or raise the limit in Settings → Safety → Approval timeout.',
       alwaysDescription: pattern =>
@@ -979,7 +985,7 @@ export const enRedesign: RedesignOverlay = {
     noArtifactsTitle: 'Nothing in your library yet',
     noArtifactsDesc: 'Generated images and file outputs will appear here as chats produce them.',
     failedLoad: 'Library failed to load',
-    colSession: 'Chat',
+    colSession: 'Chat'
   },
   artifactPreview: {
     missingTitle: 'Item unavailable',

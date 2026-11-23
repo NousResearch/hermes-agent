@@ -553,9 +553,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return None
 
     def _save_cached_bot_id(self, bot_user_id: str) -> None:
+        from hermes_constants import mkdir_under_hermes_home
         try:
             path = self._bot_id_cache_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
+            mkdir_under_hermes_home(path.parent)  # a dead profile home: skipped, not recreated
             path.write_text(json.dumps({"bot_user_id": bot_user_id}), encoding="utf-8")
         except OSError:
             logger.debug("[GoogleChat] Could not persist bot_user_id cache", exc_info=True)

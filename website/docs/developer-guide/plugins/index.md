@@ -1748,6 +1748,7 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | Hook | Fires when | Callback signature | Returns |
 |------|-----------|-------------------|---------|
 | [`pre_tool_call`](../../user-guide/features/hooks.md#pre_tool_call) | Before any tool executes | `tool_name: str, args: dict, task_id: str` | optional directive: `{"action": "block", "message": ...}` vetoes the call; `{"action": "approve", "message": ...}` escalates to the human-approval gate |
+| [`pre_keyless_rescue`](../../user-guide/features/hooks.md#pre_keyless_rescue) | Right before a failed web search/extract would leave for the cloud keyless ring | `kind: str, backend_name: str, error: str, query: str \| None, urls: list[str] \| None` | return any truthy value to allow the rescue; return a falsy value to veto it |
 | [`post_tool_call`](../../user-guide/features/hooks.md#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
 | [`pre_llm_call`](../../user-guide/features/hooks.md#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
 | [`post_llm_call`](../../user-guide/features/hooks.md#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str, side_question_token: str \| None, review_signals: dict` | ignored |
@@ -1768,7 +1769,19 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation or block the turn before it reaches the model, and `pre_tool_call`, which can return a block/approve directive.
+Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation or block the turn before it reaches the model, `pre_tool_call`, which can return a block/approve directive, and `pre_keyless_rescue`, which can veto a rescue before the failed web call leaves for the cloud keyless ring.
+
+`pre_keyless_rescue` is the privacy gate for one-shot web rescue: use it when a plugin needs to block cloud fallback for a sensitive backend, a local policy, or a custom allowlist. The hook receives the rescue kind plus the backend name and failure details, so a plugin can decide without changing any search or extract tool code.
+
+```python
+def register(ctx):
+    def deny_sensitive_rescue(*, kind, backend_name, error, query=None, urls=None, **kwargs):
+        if backend_name == "searxng" and kind == "search":
+            return False
+        return True
+
+    ctx.register_hook("pre_keyless_rescue", deny_sensitive_rescue)
+```
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 
@@ -1783,6 +1796,7 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | Hook | Fired by |
 |------|----------|
 | `pre_tool_call` | `hermes_cli/plugins.py` `_dispatch_pre_tool_call_hooks`, called from `agent/tool_executor.py` `_pre_tool_block`, `agent/agent_runtime_helpers.py` `_pre_tool_block_message` and `model_tools.py` `_pre_dispatch_guards` |
+| `pre_keyless_rescue` | `tools/web_tools_rescue.py` `_pre_keyless_rescue_allowed`, called from `tools/web_tools_rescue.py` `_rescue_search` and `_rescue_extract` |
 | `post_tool_call` | `model_tools.py` `_emit_post_tool_call_hook` |
 | `transform_terminal_output` | `tools/terminal_tool_result.py` `_apply_output_transform_hook` |
 | `transform_tool_result` | `model_tools.py` `_apply_transform_tool_result_hook` |

@@ -10,9 +10,6 @@ const STORAGE_KEY = "dashboardMovingModalDismissed";
 const RETIREMENT_DATE = new Date(2027, 0, 15);
 /** Agent settings in the web app (a hash route, like every page there). */
 const WEBAPP_SETTINGS_HASH = "/#/settings";
-/** The headline's face, from Google Fonts like the theme fonts; fetched only when the modal opens. */
-const HEADLINE_FONT_URL =
-  "https://fonts.googleapis.com/css2?family=Oswald:wght@300&display=swap";
 
 /**
  * Hermes Cloud's "your dashboard is moving" notice. A modal, not a banner:
@@ -40,12 +37,6 @@ export function DashboardMovingModal({
 
   useEffect(() => {
     if (!open) return;
-    if (!document.querySelector(`link[href="${HEADLINE_FONT_URL}"]`)) {
-      const link = document.createElement("link");
-      link.rel = "stylesheet";
-      link.href = HEADLINE_FONT_URL;
-      document.head.appendChild(link);
-    }
     const prevActive = document.activeElement as HTMLElement | null;
     const actions = () =>
       Array.from(
@@ -120,7 +111,7 @@ export function DashboardMovingModal({
 
         <h2
           id="dashboard-moving-title"
-          className="font-[Oswald,var(--theme-font-sans)] text-[40px] leading-[48px] font-light tracking-[-1px] sm:px-8"
+          className="font-compressed text-[40px] leading-[48px] font-light tracking-[-1px] sm:px-8"
         >
           {t.app.dashboardMovingTitle ?? "Your dashboard is moving"}
         </h2>

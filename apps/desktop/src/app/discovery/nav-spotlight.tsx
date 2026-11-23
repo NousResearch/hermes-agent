@@ -76,7 +76,15 @@ function locate(spot: NavSpot): Box | null {
   return null
 }
 
+/** The navigation a splash points into: the rail and the chat sidebar (docked, or as a sheet). */
+const NAV_REGIONS = '[data-slot="global-nav"], [data-zone-pane="sessions"]'
+
+const rect = ({ left, top, right, bottom }: Box) => `M ${left} ${top} H ${right} V ${bottom} H ${left} Z`
+
 interface NavSpotlightProps {
+  /** The rows are under the pointer or hold focus: the navigation steps back around the place, as
+   *  the rest of the splash does around the row. */
+  dim: boolean
   spot: NavSpot
   /** The row pointing at it: the connector leaves from its facing side. */
   anchor: RefObject<HTMLElement | null>
@@ -87,9 +95,10 @@ interface NavSpotlightProps {
  * folds, the window narrows, a list scrolls). A place that is not on screen gets neither: the row's
  * own text still says what it is. Decoration only: hidden from assistive tech, never hit.
  */
-export function NavSpotlight({ anchor, spot }: NavSpotlightProps) {
+export function NavSpotlight({ anchor, dim, spot }: NavSpotlightProps) {
   const ringRef = useRef<HTMLDivElement>(null)
   const pathRef = useRef<SVGPathElement>(null)
+  const veilRef = useRef<SVGPathElement>(null)
 
   useEffect(() => {
     let frame = 0
@@ -101,15 +110,26 @@ export function NavSpotlight({ anchor, spot }: NavSpotlightProps) {
       const path = pathRef.current
       const row = anchor.current
       const layer = ring?.parentElement
+      const veil = veilRef.current
       const place = row ? locate(spot) : null
 
-      if (!ring || !path || !layer) {
+      if (!ring || !path || !veil || !layer) {
         return
       }
 
       const target = place && inLayer(place, layer)
       const line = row && target ? connectorPath(inLayer(toBox(row.getBoundingClientRect()), layer), target) : null
-      const next = JSON.stringify([target, line])
+
+      // The veil covers each part of the navigation; the place is cut out of it (even-odd).
+      const regions = target
+        ? [...document.querySelectorAll(NAV_REGIONS)]
+            .map(region => toBox(region.getBoundingClientRect()))
+            .filter(box => box.right > box.left && box.bottom > box.top)
+            .map(box => rect(inLayer(box, layer)))
+        : []
+
+      const cover = regions.length && target ? [...regions, rect(target)].join(' ') : ''
+      const next = JSON.stringify([target, line, cover])
 
       if (next === painted) {
         return
@@ -118,6 +138,7 @@ export function NavSpotlight({ anchor, spot }: NavSpotlightProps) {
       painted = next
       ring.hidden = !target
       path.setAttribute('d', line ?? '')
+      veil.setAttribute('d', cover)
 
       if (target) {
         ring.style.transform = `translate(${target.left}px, ${target.top}px)`
@@ -132,8 +153,9 @@ export function NavSpotlight({ anchor, spot }: NavSpotlightProps) {
   }, [anchor, spot])
 
   return createPortal(
-    <div aria-hidden className="discovery-spotlight" data-slot="nav-spotlight">
+    <div aria-hidden className="discovery-spotlight" data-dim={dim || undefined} data-slot="nav-spotlight">
       <svg className="discovery-spotlight-line">
+        <path className="discovery-spotlight-veil" fillRule="evenodd" ref={veilRef} />
         <path ref={pathRef} />
       </svg>
       <div className="discovery-spotlight-ring" hidden ref={ringRef} />

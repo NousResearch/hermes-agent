@@ -388,4 +388,23 @@ describe('PersistentTerminal rect tracking', () => {
     // The PTY survives — only the overlay stands down.
     expect(mount.container!.querySelector('[data-testid="terminal-workspace"]')).not.toBeNull()
   })
+
+  it('unscales slot coordinates by currentCSSZoom so the fixed overlay stays aligned under browser zoom', () => {
+    installRaf()
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(472, 299, 1586, 527))
+    Object.defineProperty(HTMLElement.prototype, 'currentCSSZoom', { configurable: true, get: () => 1.1 })
+    $terminalTakeover.set(true)
+
+    try {
+      mount.render(<Harness />)
+      const overlay = mount.container!.lastElementChild as HTMLElement
+
+      expect(overlay.style.top).toBe('429px')
+      expect(overlay.style.left).toBe('271px')
+      expect(overlay.style.width).toBe('1443px')
+      expect(overlay.style.height).toBe('480px')
+    } finally {
+      delete (HTMLElement.prototype as { currentCSSZoom?: number }).currentCSSZoom
+    }
+  })
 })

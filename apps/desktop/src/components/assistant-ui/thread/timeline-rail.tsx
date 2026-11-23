@@ -1,7 +1,7 @@
 import './timeline.css'
 
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { Tip } from '@/components/ui/tooltip'
 
@@ -14,9 +14,60 @@ interface TimelineRailProps {
   onJump: (id: string) => void
 }
 
+interface TimelineTickProps {
+  busy: boolean
+  current: boolean
+  entry: TimelineEntry
+  height: number
+  index: number
+  onFocusIndex: (index: number) => void
+  onJump: (id: string) => void
+  top: number
+}
+
+/**
+ * One tick and its tooltip. memo() is the point: the active tick moves on every turn the transcript
+ * scrolls past, and without a per-tick bail-out each move re-rendered every visible tick and its
+ * four tooltip components (the rail's render was the largest app cost of a flick through a long
+ * chat). With it a move re-renders the two ticks whose `current` flipped.
+ */
+const TimelineTick = memo(function TimelineTick({
+  busy,
+  current,
+  entry,
+  height,
+  index,
+  onFocusIndex,
+  onJump,
+  top
+}: TimelineTickProps) {
+  return (
+    <Tip label={entry.preview} placement="right-rail" sideOffset={8} style={TIP_STYLE}>
+      <button
+        aria-busy={busy || undefined}
+        aria-current={current ? 'location' : undefined}
+        aria-label={entry.preview}
+        className="thread-timeline-tick"
+        data-timeline-id={entry.id}
+        data-timeline-index={index}
+        onClick={() => onJump(entry.id)}
+        onFocus={() => onFocusIndex(index)}
+        style={{ top, height }}
+        type="button"
+      >
+        <span aria-hidden data-index={index} data-slot="timeline-bar" />
+      </button>
+    </Tip>
+  )
+})
+
+const TIP_STYLE = { textAlign: 'right' } as const
+
 /** Only the visible slice owns DOM or tooltip instances. Pointer paint is local. */
 export function TimelineRail({ activeIndex, entries, loadingId, onJump }: TimelineRailProps) {
   const root = useRef<HTMLDivElement>(null)
+  // What the pointer paint reads, so its callbacks keep one identity while the active tick moves.
+  const active = useRef(activeIndex)
   const hover = useRef<number | null>(null)
   const pointerY = useRef<number | null>(null)
   const frame = useRef(0)
@@ -67,13 +118,13 @@ export function TimelineRail({ activeIndex, entries, loadingId, onJump }: Timeli
       const width =
         pointerY.current === null
           ? '0.5rem'
-          : `${Number(timelineBarWidth(Number(bar.dataset.index), activeIndex, hover.current).toFixed(4))}rem`
+          : `${Number(timelineBarWidth(Number(bar.dataset.index), active.current, hover.current).toFixed(4))}rem`
 
       if (bar.style.width !== width) {
         bar.style.width = width
       }
     }
-  }, [activeIndex])
+  }, [])
 
   const schedule = useCallback(() => {
     if (!frame.current) {
@@ -82,6 +133,7 @@ export function TimelineRail({ activeIndex, entries, loadingId, onJump }: Timeli
   }, [paint])
 
   useLayoutEffect(() => {
+    active.current = activeIndex
     paint()
 
     if (pendingFocus.current !== null) {
@@ -97,13 +149,36 @@ export function TimelineRail({ activeIndex, entries, loadingId, onJump }: Timeli
       cancelAnimationFrame(frame.current)
       frame.current = 0
     }
-  }, [paint, visibleKey])
+  }, [activeIndex, paint, visibleKey])
 
+  // Keep the active tick in view. Every tick is `pitch` tall, so its place is arithmetic: the
+  // virtualizer's own scrollToIndex re-measures the scroller for several frames after each call,
+  // and the active tick can move on every frame of a fast scroll.
   useEffect(() => {
-    if (hover.current === null && !focused.current) {
-      virtualizer.scrollToIndex(activeIndex, { align: 'auto' })
+    const scroller = root.current
+
+    if (!scroller || hover.current !== null || focused.current) {
+      return
     }
-  }, [activeIndex, virtualizer])
+
+    const top = activeIndex * pitch
+    const overflow = top + pitch - scroller.clientHeight
+
+    if (top < scroller.scrollTop) {
+      scroller.scrollTop = top
+    } else if (overflow > scroller.scrollTop) {
+      scroller.scrollTop = overflow
+    }
+  }, [activeIndex, pitch])
+
+  const focusIndex = useCallback(
+    (index: number) => {
+      focused.current = true
+      hover.current = index
+      schedule()
+    },
+    [schedule]
+  )
 
   const updatePointer = useCallback(() => {
     const scroller = root.current
@@ -159,38 +234,19 @@ export function TimelineRail({ activeIndex, entries, loadingId, onJump }: Timeli
       ref={root}
     >
       <div className="thread-timeline-track" style={{ height: virtualizer.getTotalSize() }}>
-        {items.map(item => {
-          const entry = entries[item.index]
-
-          return (
-            <Tip
-              key={entry.id}
-              label={entry.preview}
-              placement="right-rail"
-              sideOffset={8}
-              style={{ textAlign: 'right' }}
-            >
-              <button
-                aria-busy={loadingId === entry.id || undefined}
-                aria-current={item.index === activeIndex ? 'location' : undefined}
-                aria-label={entry.preview}
-                className="thread-timeline-tick"
-                data-timeline-id={entry.id}
-                data-timeline-index={item.index}
-                onClick={() => onJump(entry.id)}
-                onFocus={() => {
-                  focused.current = true
-                  hover.current = item.index
-                  schedule()
-                }}
-                style={{ top: item.start, height: pitch }}
-                type="button"
-              >
-                <span aria-hidden data-index={item.index} data-slot="timeline-bar" />
-              </button>
-            </Tip>
-          )
-        })}
+        {items.map(item => (
+          <TimelineTick
+            busy={loadingId === entries[item.index].id}
+            current={item.index === activeIndex}
+            entry={entries[item.index]}
+            height={pitch}
+            index={item.index}
+            key={entries[item.index].id}
+            onFocusIndex={focusIndex}
+            onJump={onJump}
+            top={item.start}
+          />
+        ))}
       </div>
     </div>
   )

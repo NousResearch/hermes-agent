@@ -230,7 +230,22 @@ export const SETTINGS_MANIFEST = {
     },
     completionSound: {
       subpage: 'sounds',
-      keywords: ['sound', 'chime', 'ding', 'audio', 'done', 'complete', 'mute', 'off', 'none', 'silence'],
+      keywords: [
+        'sound',
+        'chime',
+        'ding',
+        'audio',
+        'done',
+        'complete',
+        'mute',
+        'off',
+        'none',
+        'silence',
+        'volume',
+        'level',
+        'louder',
+        'quieter'
+      ],
       copy: t => ({
         label: t.settings.notifications.completionSoundTitle,
         description: t.settings.notifications.completionSoundDesc

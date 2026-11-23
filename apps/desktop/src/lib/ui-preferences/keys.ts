@@ -78,6 +78,7 @@ const SHARED_KEYS: ReadonlySet<string> = new Set([
   // Sound and media.
   'hermes.desktop.autoSpeakReplies',
   'hermes.desktop.completionSoundVariantId',
+  'hermes.desktop.completionSoundVolume',
   'hermes.desktop.hapticsMuted',
   'hermes.desktop.videoPlaybackSpeed',
   // Model picker.

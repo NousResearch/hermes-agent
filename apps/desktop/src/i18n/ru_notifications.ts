@@ -57,6 +57,7 @@ export const ruNotifications = {
   muteSoundsDesc:
     'Отключает автоматические звуки завершения, активации и размышления, виброотклик и звуки системных уведомлений. Прослушивание звуков и голосовые ответы остаются включены.',
   completionSoundTitle: 'Звук завершения',
+  completionSoundVolumeTitle: 'Громкость',
   completionSoundDesc: 'Воспроизводится, когда ход агента завершён. Выберите пресет и прослушайте здесь.',
   completionSoundPreview: 'Прослушать'
 }

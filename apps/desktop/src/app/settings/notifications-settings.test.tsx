@@ -7,6 +7,12 @@ import { getAudioContext } from '@/lib/audio-context'
 import { playCompletionSound, previewCompletionSound } from '@/lib/completion-sound'
 import { startThinkingSound, stopThinkingSound } from '@/lib/thinking-sound'
 import { playWakeSound } from '@/lib/wake-sound'
+import {
+  $completionSoundVolume,
+  DEFAULT_COMPLETION_SOUND_VOLUME,
+  setCompletionSoundVariantId,
+  setCompletionSoundVolume
+} from '@/store/completion-sound'
 import { $hapticsMuted, setHapticsMuted } from '@/store/haptics'
 
 import { NotificationsSettings } from './notifications-settings'
@@ -29,6 +35,8 @@ vi.mock('@/store/native-notifications', async () => {
 beforeEach(() => {
   vi.useFakeTimers()
   setHapticsMuted(false)
+  setCompletionSoundVariantId(1)
+  setCompletionSoundVolume(DEFAULT_COMPLETION_SOUND_VOLUME)
   vi.clearAllMocks()
 })
 
@@ -102,4 +110,37 @@ it('silences cues in this window when a peer window saves mute', () => {
   localStorage.removeItem('hermes.desktop.hapticsMuted')
   window.dispatchEvent(new StorageEvent('storage', { key: 'hermes.desktop.hapticsMuted' }))
   expect($hapticsMuted.get()).toBe(false)
+})
+
+it('offers a completion volume slider that persists, quantizes and silences at its floor', () => {
+  render(
+    <MemoryRouter>
+      <NotificationsSettings subpage="sounds" />
+    </MemoryRouter>
+  )
+  const slider = screen.getByRole('slider', { name: 'Completion Sound — Volume' }) as HTMLInputElement
+
+  expect(slider.value).toBe('0.48')
+  expect(screen.getByText('0.48×')).toBeTruthy()
+
+  fireEvent.change(slider, { target: { value: '1.35' } })
+  expect($completionSoundVolume.get()).toBe(1.35)
+  expect(localStorage.getItem('hermes.desktop.completionSoundVolume')).toBe('1.35')
+  expect(screen.getByText('1.35×')).toBeTruthy()
+
+  // Quantized where it is applied, so the readout is the gain the cue plays at.
+  fireEvent.change(slider, { target: { value: '2.4376' } })
+  expect($completionSoundVolume.get()).toBe(2.44)
+
+  // At the floor the cue never reaches the audio context — the same silence
+  // contract the mute toggle has.
+  fireEvent.change(slider, { target: { value: '0' } })
+  expect(screen.getByText('0.00×')).toBeTruthy()
+  vi.mocked(getAudioContext).mockClear()
+  playCompletionSound()
+  expect(getAudioContext).not.toHaveBeenCalled()
+
+  // "None" schedules nothing, so the slider has nothing to act on.
+  act(() => setCompletionSoundVariantId(0))
+  expect(slider.disabled).toBe(true)
 })

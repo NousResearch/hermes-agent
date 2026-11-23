@@ -6,6 +6,7 @@ import { getAudioContext } from '@/lib/audio-context'
 import { ownsAmbientCue } from '@/store/ambient'
 import {
   $completionSoundVariantId,
+  $completionSoundVolume,
   NO_COMPLETION_SOUND_VARIANT_ID,
   resolveCompletionSoundVariantId
 } from '@/store/completion-sound'
@@ -393,8 +394,11 @@ export const COMPLETION_SOUND_VARIANTS: readonly CompletionSoundVariant[] = [
 ] as const
 
 function playVariant(variantId: number) {
-  // "None": bail before any WebAudio scheduling so silence costs nothing.
-  if (variantId === NO_COMPLETION_SOUND_VARIANT_ID) {
+  // "None" and a 0.0 volume are both silence: bail before any WebAudio
+  // scheduling so silence costs nothing.
+  const volume = $completionSoundVolume.get()
+
+  if (variantId === NO_COMPLETION_SOUND_VARIANT_ID || volume <= 0) {
     return
   }
 
@@ -416,7 +420,7 @@ function playVariant(variantId: number) {
   tone.type = 'lowpass'
   tone.frequency.setValueAtTime(3800, ac.currentTime)
   tone.Q.setValueAtTime(0.32, ac.currentTime)
-  master.gain.setValueAtTime(0.48, ac.currentTime)
+  master.gain.setValueAtTime(volume, ac.currentTime)
   master.connect(tone)
 
   const dry = ac.createGain()
@@ -442,11 +446,17 @@ export function previewCompletionSound(variantId?: number) {
 }
 
 // Plays the selected completion cue on any `message.complete`. Pass a dedupeKey
-// (the session id) so only one window beeps when several are open — the mute and
-// "None" checks run first, so a silent window never claims the cue out from under
-// an audible peer.
+// (the session id) so only one window beeps when several are open — the mute,
+// volume and "None" checks run first, so a silent window never claims the cue
+// out from under an audible peer.
 export function playCompletionSound(dedupeKey?: string) {
   if ($hapticsMuted.get()) {
+    return
+  }
+
+  // A 0.0 volume is silence as much as the mute toggle is, and it claims the
+  // same way: skip the claim so an audible window can still take it.
+  if ($completionSoundVolume.get() <= 0) {
     return
   }
 
@@ -462,8 +472,10 @@ export function playCompletionSound(dedupeKey?: string) {
     return play()
   }
 
-  // A user can mute this window while the ownership request is in flight.
-  void ownsAmbientCue(`sound:${dedupeKey}`).then(owns => owns && !$hapticsMuted.get() && play())
+  // A user can mute (or zero) this window while the ownership request is in flight.
+  void ownsAmbientCue(`sound:${dedupeKey}`).then(
+    owns => owns && !$hapticsMuted.get() && $completionSoundVolume.get() > 0 && play()
+  )
 }
 
 interface AirPuffSpec {

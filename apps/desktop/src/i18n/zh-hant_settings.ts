@@ -265,6 +265,7 @@ export const zhHantSettings = {
       muteSoundsTitle: '靜音介面提示音',
       muteSoundsDesc: '關閉自動完成、喚醒詞和思考提示音、觸感回饋以及系統通知聲音。聲音預覽和語音回覆仍會播放。',
       completionSoundTitle: '完成提示音',
+      completionSoundVolumeTitle: '音量',
       completionSoundDesc: '代理回合結束時播放。可在此選擇預設並預覽。',
       completionSoundPreview: '預覽'
     },

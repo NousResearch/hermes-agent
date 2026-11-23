@@ -57,6 +57,7 @@ export const deNotifications = {
   muteSoundsDesc:
     'Schaltet automatische Abschluss-, Aktivierungs- und Denktöne, haptisches Feedback und die Töne von Systembenachrichtigungen aus. Klangvorschauen und gesprochene Antworten werden weiterhin abgespielt.',
   completionSoundTitle: 'Abschluss-Sound',
+  completionSoundVolumeTitle: 'Lautstärke',
   completionSoundDesc:
     'Wird abgespielt, wenn ein Agent-Turn endet. Wählen Sie eine Vorlage aus und hören Sie sie hier an.',
   completionSoundPreview: 'Vorschau'

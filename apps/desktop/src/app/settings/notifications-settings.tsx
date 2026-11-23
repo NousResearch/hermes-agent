@@ -3,18 +3,25 @@ import { type ReactNode, useEffect } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Slider } from '@/components/ui/slider'
 import { useI18n } from '@/i18n'
 import { COMPLETION_SOUND_VARIANTS, previewCompletionSound } from '@/lib/completion-sound'
 import { triggerHaptic } from '@/lib/haptics'
 import { hostHas } from '@/lib/host-capabilities'
-import { Bell, Play } from '@/lib/icons'
+import { Bell, Play, Volume2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
   $browserNotificationPermission,
   askBrowserNotificationPermission,
   refreshBrowserNotificationPermission
 } from '@/store/browser-notification-permission'
-import { $completionSoundVariantId, setCompletionSoundVariantId } from '@/store/completion-sound'
+import {
+  $completionSoundVariantId,
+  $completionSoundVolume,
+  NO_COMPLETION_SOUND_VARIANT_ID,
+  setCompletionSoundVariantId,
+  setCompletionSoundVolume
+} from '@/store/completion-sound'
 import { $hapticsMuted, setHapticsMuted } from '@/store/haptics'
 import {
   $nativeNotifyPrefs,
@@ -76,7 +83,10 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   const prefs = useStore($nativeNotifyPrefs)
   const muted = useStore($hapticsMuted)
   const completionSoundVariantId = useStore($completionSoundVariantId)
+  const completionSoundVolume = useStore($completionSoundVolume)
   const copy = t.settings.notifications
+  // "None" schedules nothing, so the volume has nothing to act on.
+  const sliderDisabled = completionSoundVariantId === NO_COMPLETION_SOUND_VARIANT_ID
   const showAlerts = subpage === undefined || subpage === 'alerts'
   const showSounds = subpage === undefined || subpage === 'sounds'
 
@@ -173,6 +183,28 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
                   {copy.completionSoundPreview}
                 </Button>
               </>
+            }
+            below={
+              <div className={cn('mt-2 flex items-center gap-3', sliderDisabled && 'opacity-50')}>
+                <Volume2 className="size-4 shrink-0 text-(--ui-text-tertiary)" />
+                <Slider
+                  aria-label={`${copy.completionSoundTitle} — ${copy.completionSoundVolumeTitle}`}
+                  disabled={sliderDisabled}
+                  max={3}
+                  min={0}
+                  onChange={event => {
+                    triggerHaptic('selection')
+                    // Quantize at the boundary so the gain the cue plays at is
+                    // exactly the multiplier the readout shows.
+                    setCompletionSoundVolume(Math.round(Number(event.target.value) * 100) / 100)
+                  }}
+                  step={0.01}
+                  value={completionSoundVolume}
+                />
+                <span className="w-11 text-right text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
+                  {completionSoundVolume.toFixed(2)}×
+                </span>
+              </div>
             }
             description={copy.completionSoundDesc}
             id={settingElementId(SETTING_IDS.notifications.completionSound)}

@@ -10,7 +10,6 @@ in legitimate AGENTS.md); filler between tokens is the bounded ``_FILLER``."""
 from __future__ import annotations
 
 import hermes_re as re
-import itertools
 import unicodedata
 from bisect import bisect_left
 from typing import Optional
@@ -88,15 +87,10 @@ class ExclusionMatcher:
         return next(self.finditer(text), None)
 
 
-# Private-use code points that can mark positions in a copy of a text (MarkedMatcher): the first one the text lacks.
-_MARK_RANGES = (range(0xE000, 0xF900), range(0xF0000, 0xFFFFE), range(0x100000, 0x10FFFE))
-
-
-def _absent_mark(text: str) -> str:
-    if "\ue000" not in text:
-        return "\ue000"
-    present = set(text)
-    return next(mark for mark in map(chr, itertools.chain(*_MARK_RANGES)) if mark not in present)
+# The mark MarkedMatcher inserts, and what a mark character the text already holds becomes in the searched copy:
+# both private-use, so neither is a word, space, newline or letter, nor a literal of any marked rule. The rules treat
+# the stand-in as they treat the mark character it replaces, and the copy then holds the mark only where it was put.
+_MARK, _MARK_STAND_IN = "\ue000", "\ue001"
 
 
 class MarkedMatcher:
@@ -104,27 +98,26 @@ class MarkedMatcher:
     match alone (where it starts, or where it ends), where ExclusionMatcher would cost too much: it searches again
     from the next character after every start it rejects, and that search reads on to where the rule's runs end,
     so a line of n rejected starts sharing one long run is read n times. ``cuts(text)`` lists, ascending, the
-    positions the lookahead lets through. A private-use character the text lacks is inserted at each of them, and
-    ``marked(mark)``, the rule requiring the mark where the lookahead stood (and taking it wherever else a cut can
-    fall inside a match), is searched in that copy: one pass, which keeps the original's choice of start and end.
-    Each hit is returned as the rule's own match on the text. Nothing is kept from one call to the next but the
-    marked rules, one per mark character."""
+    positions the lookahead lets through. ``_MARK`` is inserted at each of them in a copy of the text (whose own
+    ``_MARK`` characters become ``_MARK_STAND_IN``), and ``marked(mark)``, the rule requiring the mark where the
+    lookahead stood (and taking it wherever else a cut can fall inside a match), is searched in that copy: one
+    pass, which keeps the original's choice of start and end. Each hit is returned as the rule's own match on the
+    text. The marked rule is built once, with the matcher: a scan adds no pattern and keeps nothing."""
 
     def __init__(self, pattern: str, marked, cuts):
         self._pattern = re.compile(pattern, re.IGNORECASE)
-        self._marked, self._cuts, self._by_mark = marked, cuts, {}
+        self._marked = re.compile(marked(_MARK), re.IGNORECASE)
+        self._cuts = cuts
 
     def finditer(self, text: str):
         cuts = self._cuts(text)
         if not cuts:
             return
-        mark = _absent_mark(text)
-        if (rule := self._by_mark.get(mark)) is None:
-            rule = self._by_mark[mark] = re.compile(self._marked(mark), re.IGNORECASE)
-        copy = mark.join(text[i:j] for i, j in zip([0, *cuts], [*cuts, len(text)]))
+        plain = text.replace(_MARK, _MARK_STAND_IN)
+        copy = _MARK.join(plain[i:j] for i, j in zip([0, *cuts], [*cuts, len(text)]))
         marks = [cut + count for count, cut in enumerate(cuts)]  # where each mark stands in the copy
         pos = 0
-        while (m := rule.search(copy, pos)) is not None:
+        while (m := self._marked.search(copy, pos)) is not None:
             yield self._pattern.fullmatch(text, m.start() - bisect_left(marks, m.start()),
                                           m.end() - bisect_left(marks, m.end()))
             pos = m.end()

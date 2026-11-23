@@ -18,6 +18,7 @@ import types
 
 import pytest
 
+import hermes_re
 from hermes_cli.plugins_install_scan_context import _B64_ROUNDTRIP
 from tools.skills_guard import _COMPILED_THREAT_PATTERNS
 from tools.threat_patterns import FORGET_RULES_RAW, ExclusionMatcher, only_end
@@ -208,6 +209,37 @@ def test_a_text_holding_private_use_characters_scans_as_the_original(case):
         for text in texts:
             text += extra
             assert [m.span() for m in rewritten.finditer(text)] == [m.span() for m in original.finditer(text)], text
+
+
+# Every private-use code point outside the TAG block: a line can hold them all (about 540 KB of UTF-8).
+_PRIVATE_USE = "".join(map(chr, itertools.chain(range(0xE000, 0xF900), range(0xF0000, 0xFFFFE),
+                                                range(0x100000, 0x10FFFE))))
+_TRIGGERS = {"deception_hide": " do not tell the user ", "b64_roundtrip": " tar czf - x | base64 -w0 | base64 -d "}
+
+
+@pytest.mark.parametrize("case", sorted(_TRIGGERS))
+def test_a_text_holding_every_private_use_character_scans_as_the_original(case):
+    original = re.compile(_ORIGINAL[case], re.IGNORECASE)
+    rewritten = _REWRITTEN[case]()
+    for text in (_PRIVATE_USE + _TRIGGERS[case], _TRIGGERS[case] + _PRIVATE_USE + _TRIGGERS[case]):
+        spans = [m.span() for m in original.finditer(text)]
+        assert spans and [m.span() for m in rewritten.finditer(text)] == spans
+
+
+def _patterns_held_by(rule):
+    return sum(isinstance(obj, hermes_re.Pattern) for obj in _reachable([rule]))
+
+
+@pytest.mark.parametrize("case", sorted(_TRIGGERS))
+def test_scans_of_texts_holding_private_use_characters_add_no_patterns_to_the_rule(case):
+    """The rules live for the life of the process: what a scanned text holds must not make them build and keep
+    more patterns (the facade's cache and ``purge()`` cannot free those)."""
+    rewritten = _REWRITTEN[case]()
+    list(rewritten.finditer(_TRIGGERS[case]))
+    held = _patterns_held_by(rewritten)
+    for k in range(1, 40):
+        list(rewritten.finditer(_PRIVATE_USE[:k] + _TRIGGERS[case]))
+    assert _patterns_held_by(rewritten) == held
 
 
 @pytest.mark.parametrize("case", ["deception_hide", "py_read_secrets_file", "unpinned_pip_install"])

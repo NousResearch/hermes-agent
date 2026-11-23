@@ -42,7 +42,11 @@ function app(): AppAdapter {
 }
 
 /** Exercise the real updater install entry point with a local download fixture. */
-function install(oldName: string, newName: string, failure?: 'missing-download' | 'blocked-destination') {
+function install(
+  oldName: string,
+  newName: string,
+  fixture?: 'missing-download' | 'blocked-destination' | 'dotted-path'
+) {
   const old: string = path.join(dir, 'Applications', oldName)
   const downloaded: string = path.join(dir, 'pending', newName)
   fs.mkdirSync(path.dirname(old))
@@ -57,12 +61,14 @@ function install(oldName: string, newName: string, failure?: 'missing-download' 
   updater.on('error', (error: Error) => errors.push(error))
   Object.assign(updater, { downloadedUpdateHelper: { file: downloaded, downloadedFileInfo: {} } })
 
-  if (failure === 'missing-download') {
+  if (fixture === 'missing-download') {
     fs.unlinkSync(downloaded)
-  } else if (failure === 'blocked-destination') {
+  } else if (fixture === 'blocked-destination') {
     // A directory at the versioned destination blocks rename. Give GNU mv no
     // way to move into that directory either: its nested target is a directory.
     fs.mkdirSync(path.join(path.dirname(old), newName, newName), { recursive: true })
+  } else if (fixture === 'dotted-path') {
+    process.env.APPIMAGE = `${path.dirname(old)}/./${oldName}`
   }
 
   const installed: boolean = updater.install(false, true)
@@ -102,6 +108,16 @@ it('relaunches the new file when a versioned AppImage takes the new name', () =>
   expect(fs.existsSync(old)).toBe(false)
   expect(fs.readFileSync(renamed, 'utf8')).toBe('new build')
   expect(relaunch).toHaveBeenCalledWith(renamed, expect.any(Object))
+})
+
+it('installs over an APPIMAGE path spelled with ./ that already has the download name', () => {
+  const name = 'Hermes-0.99.1-linux-arm64.AppImage'
+  const { old, installed, relaunch, errors } = install(name, name, 'dotted-path')
+
+  expect(errors).toEqual([])
+  expect(installed).toBe(true)
+  expect(fs.readFileSync(old, 'utf8')).toBe('new build')
+  expect(relaunch).toHaveBeenCalledWith(process.env.APPIMAGE, expect.any(Object))
 })
 
 it('keeps the previous AppImage when the cached download disappears before install', () => {

@@ -100,9 +100,11 @@ export class RelaunchingAppImageUpdater extends electronUpdater.AppImageUpdater 
       throw new Error(`Cannot install the update: APPIMAGE (${current}) or the download (${download}) is missing.`)
     }
 
-    // Upstream's naming: a name without a version is the user's own, so the update keeps it.
-    const versioned: boolean = /\d+\.\d+\.\d+/.test(path.basename(current))
-    const destination: string = versioned ? path.join(path.dirname(current), path.basename(download)) : current
+    // Upstream's naming: a name without a version is the user's own, so the update keeps it, as it
+    // keeps one that is already the download's (verbatim, so the unlink below can't hit the new file).
+    const name: string = path.basename(current)
+    const keep: boolean = path.basename(download) === name || !/\d+\.\d+\.\d+/.test(name)
+    const destination: string = keep ? current : path.join(path.dirname(current), path.basename(download))
 
     moveIntoPlace(download, destination)
 

@@ -109,6 +109,26 @@ def test_a_default_home_whose_real_path_looks_like_a_profile_keeps_its_default_m
     assert pre.run_elsewhere_for_home(home).profile == "default"
 
 
+def test_the_refusal_names_the_marker_file_when_it_names_a_plugin(root):
+    """A marker outlives the plugin that wrote it: the plugin crashed, was disabled or removed, or
+    the root came back from a backup taken while the profile ran elsewhere. The refusal is then
+    all the owner of the profile sees, and "turn this off in the plugin" is advice he cannot
+    follow. So the refusal for a marker that names its plugin ends with one more sentence: when
+    that plugin is no longer installed or no longer loads, deleting the marker file, named by its
+    path, lets Hermes run the profile here again. The sentences before it stay as they were."""
+    entry = pre.mark_profile_run_elsewhere("ops", "plugin-that-is-gone", root=root)
+
+    message = pre.run_elsewhere("ops", root=root).message()
+
+    as_before = ("Profile 'ops' runs elsewhere: the 'plugin-that-is-gone' plugin runs its backend, so Hermes "
+                 "does not run it on this host. Use the profile from the Hermes desktop app, or turn this off "
+                 "in the 'plugin-that-is-gone' plugin to run it here.")
+    assert message.startswith(as_before + " "), message
+    added = message[len(as_before):]
+    assert str(entry.path) in added, message
+    assert "no longer installed or no longer loads" in added, message
+
+
 # ── what an unreadable marker folder means ─────────────────────────────────────────────────────
 
 

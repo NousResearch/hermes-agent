@@ -318,7 +318,10 @@ until that is fixed. The one exception is a process that is denied the folder.
 The plugin keeps the folder out of the backend it runs, so such a process
 applies none of these refusals, and that backend keeps running its own
 profile. To run the profile on this host again,
-turn it off in the plugin.
+turn it off in the plugin. If the plugin is no longer installed or no longer
+loads, the refusal names the marker file: deleting that file lets Hermes run
+the profile on this host again. Do not delete it while the plugin still runs
+the profile.
 
 ### No new per-profile gateways
 

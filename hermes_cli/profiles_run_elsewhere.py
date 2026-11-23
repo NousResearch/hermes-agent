@@ -111,7 +111,9 @@ class RunElsewhere:
                     "marker) to run it here.")
         return (f"Profile '{self.profile}' runs elsewhere: the '{self.plugin}' plugin runs its backend, "
                 "so Hermes does not run it on this host. Use the profile from the Hermes desktop app, "
-                f"or turn this off in the '{self.plugin}' plugin to run it here.")
+                f"or turn this off in the '{self.plugin}' plugin to run it here. If that plugin is no "
+                f"longer installed or no longer loads, deleting {self.path} lets Hermes run the profile "
+                "on this computer again; do not delete it while the plugin still runs the profile.")
 
     def keys_note(self) -> str:
         """One line for the commands that list keys (``hermes status``, ``hermes config``): values

@@ -34,6 +34,7 @@ import { parkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
+import { useReplyPaused } from '@/store/paused-replies'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
@@ -46,6 +47,7 @@ import { useTheme } from '@/themes'
 import { AttachmentList } from './attachments'
 import { deriveBusySubmitState } from './busy-submit-state'
 import { ComposerDockGlow, QueuedEditBanner } from './chat-bar-parts'
+import { ComposerTopSlot } from './composer-top-slot'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -88,6 +90,7 @@ import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
+import { enterLocked, pausedReplyControls } from './paused-reply'
 import { PreparedImageRecovery } from './prepared-image-recovery'
 import { renderComposerQueueSlot, useComposerQueueScopeKey } from './queue-slot'
 import { RestoredDraftNotice } from './restored-draft-notice'
@@ -99,6 +102,7 @@ import {
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { useComposerScope, useComposerSurfaceId } from './scope'
+import { SendTargetHint } from './send-target-hint'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { StatusDrawerContent, StatusDrawerToggle } from './status-stack/drawer'
@@ -128,6 +132,30 @@ function controlRowGridClass(singleColumn: boolean, stacked: boolean): string {
   return stacked
     ? 'grid-cols-[auto_1fr] gap-(--composer-row-gap) [grid-template-areas:"input_input"_"menu_controls"]'
     : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
+}
+
+/**
+ * assistant-ui requires an Input for its composer-state binding (text, IME,
+ * paste and form submit), while the visible editor is contentEditable.
+ *
+ * `asChild` avoids TextareaAutosize's synchronous scrollHeight measurement on
+ * every value change: profiling 400-char typing found >900ms spent measuring
+ * an invisible input. Keep the plain textarea hidden and out of tab order.
+ */
+function ComposerStateInput() {
+  return (
+    <ComposerPrimitive.Input asChild submitMode="ctrlEnter" tabIndex={-1} unstable_focusOnScrollToBottom={false}>
+      <textarea
+        aria-hidden
+        autoCapitalize="off"
+        autoComplete="off"
+        autoCorrect="off"
+        className="sr-only"
+        spellCheck={false}
+        tabIndex={-1}
+      />
+    </ComposerPrimitive.Input>
+  )
 }
 
 export function ChatBar({
@@ -412,6 +440,7 @@ export function ChatBar({
 
   const hasComposerPayload = hasText || attachments.length > 0
   const { cardWaiting } = useCardWaitingSubmit(sessionId ?? null, busy, hasComposerPayload)
+  const replyPaused = useReplyPaused(activeQueueSessionKey, sessionId)
 
   const { busyAction, canSteer, canSubmit } = deriveBusySubmitState({
     attachmentCount: attachments.length,
@@ -756,18 +785,17 @@ export function ChatBar({
     }
 
     // A typed link finished with a space chips like a pasted one — the space
-    // itself rides along inside the insert.
-    if (withUndoPoint(() => chipTypedUrlOnSpace(event))) {
-      event.preventDefault()
-      flushEditorToDraft(event.currentTarget)
-
-      return
-    }
-
-    // Same for a bare `@path` — a hand-typed or Tab-descended path chips into
-    // the `@file:`/`@folder:` ref it means, instead of submitting as plain text
-    // the backend never resolves.
-    if (withUndoPoint(() => chipTypedPathOnSpace(event))) {
+    // itself rides along inside the insert. Same for a bare `@path` — a
+    // hand-typed or Tab-descended path chips into the `@file:`/`@folder:` ref it
+    // means, instead of submitting as plain text the backend never resolves.
+    //
+    // Both conversions only ever run on Space, and both bail before mutating
+    // otherwise. Taking an undo snapshot for every other key (the old shape)
+    // meant cloning the draft's whole snapshot twice per keystroke for edits
+    // that immediately returned false. One snapshot now covers the pair: the
+    // URL attempt does not mutate on its false path, so the same pre-edit state
+    // is still valid when the path attempt runs.
+    if (event.key === ' ' && withUndoPoint(() => chipTypedUrlOnSpace(event) || chipTypedPathOnSpace(event))) {
       event.preventDefault()
       flushEditorToDraft(event.currentTarget)
 
@@ -1001,7 +1029,7 @@ export function ChatBar({
       const editorText = liveComposerDraft(editorRef.current, draftRef.current)
       const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
 
-      if (disabled) {
+      if (enterLocked(disabled, replyPaused)) {
         return
       }
 
@@ -1129,13 +1157,13 @@ export function ChatBar({
     <ComposerControls
       autoSpeak={autoSpeak}
       busy={busy}
-      busyAction={busyAction}
+      {...pausedReplyControls(replyPaused, busyAction, canSteer ? () => steerDraft('steer') : undefined)}
       canSubmit={canSubmit}
       cardWaiting={cardWaiting}
       compactModelPill={poppedOut || compactPill}
       conversation={{
         active: voiceConversationActive,
-        level: conversation.level,
+        levelStore: conversation.levelStore,
         muted: conversation.muted,
         onEnd: endConversation,
         onStart: startConversation,
@@ -1154,7 +1182,6 @@ export function ChatBar({
         closeTrigger()
         queueDraft()
       }}
-      onSteer={canSteer ? () => steerDraft('steer') : undefined}
       onToggleAutoSpeak={handleToggleAutoSpeak}
       state={state}
       voiceStatus={voiceStatus}
@@ -1236,32 +1263,7 @@ export function ChatBar({
         suppressContentEditableWarning
       />
       <ComposerDirectiveActions editorRef={editorRef} />
-      {/* assistant-ui requires ComposerPrimitive.Input somewhere in the tree
-        so the composer-state binding (text + IME + paste + form-submit hookup)
-        wires up. We render the real input UI ourselves above via the
-        contentEditable, so the primitive is invisible (sr-only).
-
-        IMPORTANT: don't let it render its default <TextareaAutosize>. That
-        component runs `useLayoutEffect(resizeTextarea)` on every value change
-        and reads `node.scrollHeight` against a hidden measurement textarea,
-        forcing two synchronous layouts per keystroke for an element the
-        user can't see. Profiling 400-char synthetic typing showed >900ms
-        cumulative cost in getHeight2/calculateNodeHeight alone (~2.3ms/key)
-        on top of the per-keystroke React commit.
-
-        `asChild` swaps TextareaAutosize for a Radix Slot wrapping our
-        plain <textarea>, which carries the binding but skips autosize. */}
-      <ComposerPrimitive.Input asChild submitMode="ctrlEnter" tabIndex={-1} unstable_focusOnScrollToBottom={false}>
-        <textarea
-          aria-hidden
-          autoCapitalize="off"
-          autoComplete="off"
-          autoCorrect="off"
-          className="sr-only"
-          spellCheck={false}
-          tabIndex={-1}
-        />
-      </ComposerPrimitive.Input>
+      <ComposerStateInput />
     </div>
   )
 
@@ -1305,6 +1307,7 @@ export function ChatBar({
               5px transparent grab margin — so both strips carry the same inset
               and share one left edge with it. */}
           <div className={cn(composerFloatingStrip, 'px-[5px] pb-1.5 empty:hidden')}>
+            <SendTargetHint />
             <ActionBadges sessionId={statusSessionId} />
             <PreparedImageRecovery
               occupied={hasText || attachments.length > 0 || busy || disabled}
@@ -1494,7 +1497,7 @@ export function ChatBar({
                   {/* Contribution seams: banners above, a row below, inline
                     additions beside the "+" menu and before the controls.
                     All four render nothing until something contributes. */}
-                  <ContribSlot area={COMPOSER_AREAS.top} />
+                  <ComposerTopSlot sessionId={sessionId} />
                   <RestoredDraftNotice
                     freshDraft={activeQueueSessionKey === null}
                     onUndone={clearDraft}

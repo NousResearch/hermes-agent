@@ -610,8 +610,7 @@ def _openrouter_model_supports_tools(item: Any) -> bool:
     return "tools" in params if isinstance(params, list) else True
 
 
-# Reasoning-capability cache slots, one set per catalog (OpenRouter, Nous Portal). The logic
-# lives in models_reasoning_caps and reads/writes these by name so tests can reset them here.
+# Catalog cache slots are owned by models_reasoning_caps; tests reset them on this facade.
 # ``*_cache``: model id → parsed caps for the process lifetime; ``*_failed_at``: monotonic time
 # of the last failed fetch (60s re-fetch suppression); the flags are once-per-process guards.
 _openrouter_reasoning_caps_cache: dict[str, Optional[dict[str, Any]]] | None = None
@@ -622,6 +621,7 @@ _nous_reasoning_caps_cache: dict[str, Optional[dict[str, Any]]] | None = None
 _nous_reasoning_caps_failed_at: float | None = None
 _nous_caps_disk_checked = False
 _nous_caps_warm_started = False
+_nous_caps_vision_refreshed = False
 
 
 from agent.reasoning_effort import CODEX_ASTRA_EFFORTS, clamp_effort as _clamp_effort, is_astra_model
@@ -1248,7 +1248,7 @@ def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
 
 
 def _fast_mode_route_supported(
-    model_id: Optional[str], provider: Optional[str], base_url: Optional[str]) -> bool:
+    model_id: Optional[str], provider: Optional[str], base_url: Optional[str], tier: Optional[str] = None) -> bool:
     """Only the first-party endpoint that bills for fast mode may receive its params."""
     from urllib.parse import urlparse
 
@@ -1260,7 +1260,7 @@ def _fast_mode_route_supported(
         allowed = {"xai": "api.x.ai"}
     else:
         from hermes_cli.models_fast_regions import openai_fast_region_allows
-        if openai_fast_region_allows(base_url, model_id):
+        if openai_fast_region_allows(base_url, model_id, tier):
             base_url = "https://api.openai.com"  # Eligibility only; the runtime URL stays regional.
         allowed = {"openai": "api.openai.com", "openai-api": "api.openai.com", "openai-codex": "chatgpt.com"}
     if provider and normalize_provider(provider) not in allowed:
@@ -1287,7 +1287,7 @@ def resolve_fast_mode_overrides(
         return bedrock_fast_mode_overrides(model_id, base_url, tier)
     if not model_supports_fast_mode(model_id):
         return None
-    if (provider or base_url) and not _fast_mode_route_supported(model_id, provider, base_url):
+    if (provider or base_url) and not _fast_mode_route_supported(model_id, provider, base_url, tier):
         return None
     if tier == "ultrafast":
         return {"service_tier": "ultrafast"} if model_supports_ultrafast(model_id) else None
@@ -1988,8 +1988,10 @@ def _normalized_cache_slug(provider: Optional[str]) -> str:
 
 
 def _model_requires_account_discovery(provider: Optional[str], model: str) -> bool:
-    """Astra names cannot confer API/OAuth entitlement through picker state."""
-    return _normalized_cache_slug(provider) in {"openai", "openai-api", "openai-codex"} and is_astra_model(model)
+    from hermes_cli.codex_models import codex_model_requires_account_discovery
+    slug = _normalized_cache_slug(provider)
+    return codex_model_requires_account_discovery(model) if slug == "openai-codex" else (
+        slug in {"openai", "openai-api"} and is_astra_model(model))
 
 
 def cached_provider_model_ids(
@@ -1998,10 +2000,8 @@ def cached_provider_model_ids(
     """Disk-cached :func:`provider_model_ids`: fresh cache hit, else live fetch persisting a non-empty
     result. Always returns a list.
 
-    ``non_blocking`` marks the GUI read path (``model.options``): it NEVER waits on a provider probe.
-    A same-credentials row of any age is served as-is and a daemon thread warms the next open; a
-    cold/mismatched row returns ``[]`` so the caller keeps its curated list. One degraded provider
-    (hanging or timing-out ``/v1/models``) therefore delays nothing but itself (#114215)."""
+    ``non_blocking`` never waits for a provider probe (#114215). Only fresh verified rows can
+    advertise account-gated models; stale rows may be served while a daemon refreshes them."""
     normalized = _normalized_cache_slug(provider)
     if not normalized:
         return []
@@ -2014,15 +2014,14 @@ def cached_provider_model_ids(
 
     if not force_refresh:
         tier = _disk_serve_tier(entry, fp, now, is_ollama=is_ollama, ttl_seconds=ttl_seconds)
-        if tier is not None:
+        if tier is not None and entry is not None:
             if tier == "stale":
                 _spawn_swr_refresh(normalized)
-            return _chat_catalog_rows(list(entry["models"]))
+            verified = tier == "fresh" and not entry.get("fallback")
+            return _chat_catalog_rows([m for m in entry["models"] if verified or not _model_requires_account_discovery(normalized, m)])
 
     if non_blocking and not force_refresh:
-        # Read path: never touch the network in the caller's thread. A same-credentials row past the
-        # SWR window is still served (hour-old catalog beats an empty picker) while a daemon thread
-        # warms the next open; a cold row returns [] and the caller falls back to its curated list.
+        # Serve same-credential hints past the SWR window while the daemon warms the next open.
         _spawn_swr_refresh(normalized)
         if _cache_entry_valid(entry, fp, allow_empty=is_ollama):
             return _chat_catalog_rows([

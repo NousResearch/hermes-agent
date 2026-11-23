@@ -10,6 +10,7 @@ import json
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from tests.fixtures.storage_holder import reclaim_tombstones
 
 
 _API_KEY = 'implicit-session-after-delete-key'
@@ -51,8 +52,7 @@ async def _delete(client, session_id):
 
 
 def _prune_past_horizon(owner):
-    from hermes_state_mutation_retirement import prune_retired_tombstones
-    owner.db._execute_write(lambda conn: prune_retired_tombstones(conn, older_than=0))
+    reclaim_tombstones(owner.persistence)
 
 
 def _content(payload):
@@ -85,8 +85,8 @@ async def test_a_new_conversation_with_a_deleted_opening_gets_a_new_session(api,
         assert status == 200, second
         assert same_sid == new_sid, 'the second turn of the new conversation left its session'
         assert served == ['hi', 'hi', 'next']
-        assert owner.db.get_session(deleted_sid) is None, 'the deleted session was recreated'
-        assert owner.db.get_session(new_sid) is not None
+        assert owner.persistence.sessions.get(deleted_sid) is None, 'the deleted session was recreated'
+        assert owner.persistence.sessions.get(new_sid) is not None
 
         # Deleting the replacement moves the next new conversation on again, never back.
         await _delete(client, new_sid)
@@ -105,7 +105,7 @@ async def test_an_explicit_session_id_of_a_deleted_session_is_still_refused(api,
         status, refused, _sid = await _post(client, _OPENING, session_id=deleted_sid)
         assert status != 200 and refused['error']['code'] == 'not_found', refused
     assert served == ['hi']
-    assert owner.db.get_session(deleted_sid) is None
+    assert owner.persistence.sessions.get(deleted_sid) is None
 
 
 @pytest.mark.asyncio
@@ -123,7 +123,7 @@ async def test_an_idempotency_key_retry_keeps_its_deleted_session(api, owner, se
         status, changed, _sid = await _post(client, changed_body, key='once')
         assert status == 409 and changed['error']['code'] == 'admission_conflict', changed
     assert served == ['hi']
-    assert owner.db.get_session(deleted_sid) is None
+    assert owner.persistence.sessions.get(deleted_sid) is None
 
 
 @pytest.mark.asyncio

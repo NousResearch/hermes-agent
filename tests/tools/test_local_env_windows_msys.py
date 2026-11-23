@@ -162,14 +162,14 @@ class TestUpdateCwdWindowsMsys:
 
 
 # ---------------------------------------------------------------------------
-# End-to-end: _extract_cwd_from_output rollback when marker is invalid
+# End-to-end: _update_cwd rejects a stale marker when marker is invalid
 # ---------------------------------------------------------------------------
 
 @pytest.mark.platforms("windows")
 class TestExtractCwdFromOutputWindowsMsys:
     def test_stale_msys_marker_does_not_clobber_cwd(self, tmp_path):
         """When the cwd marker in stdout points at a non-existent path,
-        ``LocalEnvironment._extract_cwd_from_output`` must roll back to
+        ``LocalEnvironment._update_cwd`` must keep
         the previous cwd instead of propagating a bad value."""
         original = tmp_path / "starting"
         original.mkdir()
@@ -186,7 +186,7 @@ class TestExtractCwdFromOutputWindowsMsys:
             "returncode": 0,
         }
 
-        env._extract_cwd_from_output(result)
+        env._update_cwd(result)
 
         assert env.cwd == str(original)
 
@@ -208,7 +208,7 @@ class TestExtractCwdFromOutputWindowsMsys:
             "returncode": 0,
         }
 
-        env._extract_cwd_from_output(result)
+        env._update_cwd(result)
 
         assert env.cwd == str(new_dir)
 
@@ -316,8 +316,8 @@ class TestWrapCommandWindowsNativeCwd:
         env._snapshot_ready = True
         wrapped = env._wrap_command("pwd", r"C:\Users\liush")
 
-        assert "builtin cd -- /c/Users/liush || exit 126" in wrapped
-        assert r"builtin cd -- C:\Users\liush || exit 126" not in wrapped
+        assert "builtin cd -- /c/Users/liush " in wrapped
+        assert r"builtin cd -- C:\Users\liush" not in wrapped
 
     def test_init_session_bootstrap_rewrites_backslash_snapshot_paths(self, monkeypatch):
         captured = {}

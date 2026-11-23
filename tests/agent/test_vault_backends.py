@@ -114,20 +114,21 @@ def test_unlock_uses_vendor_passwordenv_contract_then_fill_routes_by_prefix(fake
              patch("tools.browser_vault_tool._eval_js", return_value={"success": True, "result": json.dumps([
                  {"tag": "input", "type": "password", "name": "password", "id": "pw", "autocomplete": "current-password",
                   "visible": True}])}), \
-             patch("tools.browser_vault_tool._eval_js_secret", return_value={"success": True, "result": json.dumps(
-                 {"filled": 1})}) as secret_eval:
+             patch("tools.browser_vault_tool._eval_js_secret", side_effect=lambda task_id, expr: {
+                 "success": True, "result": json.dumps(
+                     {"landed": 1, "reverted": 0, "missing": []} if "reverted" in expr else {"filled": 1})}) as secret_eval:
             out = json.loads(browser_vault_fill("bw:abc", task_id="t"))
             out.pop("next")
             assert out == {"success": True, "filled_fields": 1, "backend": "bitwarden", "kind": "login",
-                           "origin": "https://example.com"}
+                           "origin": "https://example.com", "identifier_filled": False}
             assert prompts == [("bitwarden", "Bitwarden")]
             # Now unlocked: listing exposes metadata only, never the password.
             listed = json.loads(browser_vault_list())
             assert listed["items"][0]["handle"] == "bw:abc"
             assert listed["items"][0]["identifier"] == "jane@example.com"
             assert "plain sentence nobody would flag 7" not in json.dumps(listed)
-            # The password reached the fill script, and only there.
-            assert "plain sentence nobody would flag 7" in secret_eval.call_args.args[1]
+            # The password reached the fill script (and its read-back), never a listing.
+            assert "plain sentence nobody would flag 7" in secret_eval.call_args_list[0].args[1]
     finally:
         unlock_mod.set_unlock_prompt_callback(None)
 

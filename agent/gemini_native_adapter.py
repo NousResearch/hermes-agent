@@ -536,6 +536,12 @@ def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_conf
     return requested
 
 
+def _long_decode_cap(max_tokens: Optional[int], extra_body: dict[str, Any]) -> Optional[int]:
+    """Long-decode budget (Gemini 4, effort above high) raises the total cap; an explicit larger cap still wins."""
+    budget = extra_body.get("max_output_tokens")
+    return budget if isinstance(budget, int) and budget > int(max_tokens or 0) else max_tokens
+
+
 def _translate_response_format(response_format: Any, *, json_schema: bool = False) -> dict[str, Any]:
     """OpenAI ``response_format`` → Gemini ``generationConfig`` JSON-output keys.
 
@@ -948,6 +954,16 @@ class GeminiNativeClient:
         chunk = next(iterator, _END)
         return (True, None) if chunk is _END else (False, chunk)
 
+    @staticmethod
+    def effective_output_cap(*, max_tokens: Optional[int] = None, extra_body: Optional[dict[str, Any]] = None,
+                             **_: Any) -> int:
+        """The ``maxOutputTokens`` a ``chat.completions.create(**kwargs)`` call would really send: the
+        long-decode budget and thinking headroom can raise ``max_tokens`` (the prompt-cache warmer sends
+        a keep-alive only when the cap it asked for stands)."""
+        extra = extra_body if isinstance(extra_body, dict) else {}
+        return _effective_gemini_max_output_tokens(
+            _long_decode_cap(max_tokens, extra), extra.get("thinking_config") or extra.get("thinkingConfig"))
+
     def _create_chat_completion(
         self, *, model: str = "gemini-3.7-flash", messages: Optional[list[dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
@@ -955,10 +971,7 @@ class GeminiNativeClient:
         timeout: Any = None, **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
-        # Long-decode budget (Gemini 4, effort above high) raises the total cap; an explicit larger cap still wins.
-        budget = extra.get("max_output_tokens")
-        if isinstance(budget, int) and budget > int(max_tokens or 0):
-            max_tokens = budget
+        max_tokens = _long_decode_cap(max_tokens, extra)
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
             top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"),

@@ -10,9 +10,9 @@ import pytest
 
 from gateway import run_runtime
 from gateway.session_authority import LiveSession
-from hermes_state import SessionDB
-from hermes_state_runtime import admit_session_input, begin_runtime_epoch
 from tools.bot_live_delivery import _locked, _write
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 class _Registry:
@@ -38,11 +38,10 @@ async def test_failed_hot_serve_retires_session_and_bot_recovery_tasks(monkeypat
         session_control_server=object(),
     )
 
-    db = SessionDB(home / "state.db")
-    db.create_session("s", source="gui")
-    epoch = begin_runtime_epoch(db, instance_id="hot-serve")
-    admission = admit_session_input(
-        db,
+    db = storage_handle(home)
+    seed_session(db, "s", "gui")
+    epoch = db.runtime.begin_epoch(instance_id="hot-serve")
+    admission, _created = db.admissions.admit(
         epoch=epoch,
         principal_id="owner",
         session_id="s",
@@ -53,7 +52,7 @@ async def test_failed_hot_serve_retires_session_and_bot_recovery_tasks(monkeypat
     live = LiveSession(SimpleNamespace(platform=None, user_id='owner'), 'route')
     authority = SimpleNamespace(
         runner=runner,
-        db=db,
+        db=db, persistence=storage_handle(home),
         profile_id="default",
         sessions={"s": live},
         waiters={},
@@ -66,7 +65,7 @@ async def test_failed_hot_serve_retires_session_and_bot_recovery_tasks(monkeypat
             root / f"{'a' * 32}.json",
             {
                 "status": "canonical",
-                "admission_id": admission["admission_id"],
+                "admission_id": admission.admission_id,
                 "delivery_id": "a" * 32,
                 "profile_home": str(home),
                 "session_id": "s",
@@ -83,7 +82,7 @@ async def test_failed_hot_serve_retires_session_and_bot_recovery_tasks(monkeypat
     async def build(*args, **kwargs):
         return authority
 
-    def recover_local(_authority, schedule):
+    async def recover_local(_authority, schedule):
         assert schedule is True
 
         async def background():
@@ -111,7 +110,7 @@ async def test_failed_hot_serve_retires_session_and_bot_recovery_tasks(monkeypat
     unbound = []
     monkeypatch.setattr(run_runtime, "_build_profile_authority", build)
     monkeypatch.setattr(
-        "gateway.session_local_recovery.recover_local_sessions", recover_local)
+        "gateway.session_local_startup.recover_local_sessions_async", recover_local)
     monkeypatch.setattr(
         "gateway.platforms.webhook_ingress.recover_webhook_finalizations",
         recover_webhook,
@@ -216,7 +215,9 @@ async def test_failed_hot_serve_with_a_live_writer_parks_without_aborting_or_re_
     monkeypatch.setattr(run_runtime, "TURN_SETTLE_SECONDS", 0.05)
     monkeypatch.setattr(run_runtime, "_record_parked_profiles", lambda value: parked.update(value))
     monkeypatch.setattr("gateway.session_bot.recover_bot_deliveries", recover_bot)
-    monkeypatch.setattr("gateway.session_local_recovery.recover_local_sessions", lambda a, schedule: None)
+    async def no_local(authority, *, schedule):
+        return None
+    monkeypatch.setattr("gateway.session_local_startup.recover_local_sessions_async", no_local)
     monkeypatch.setattr("gateway.platforms.webhook_ingress.recover_webhook_finalizations", no_webhooks)
     monkeypatch.setattr("gateway.session_cron.unbind_owner", lambda authority: None)
     monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", lambda **kw: list(homes.items()))

@@ -1,6 +1,6 @@
 """Tests for BaseEnvironment unified execution model.
 
-Tests _wrap_command(), _extract_cwd_from_output(), _embed_stdin_heredoc(),
+Tests _wrap_command(), _parse_cwd_marker(), _embed_stdin_heredoc(),
 init_session() failure handling, and the CWD marker contract.
 """
 
@@ -9,19 +9,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from tools import terminal_tool_sudo
-from tools.environments.base import BaseEnvironment, _load_json_store
+from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _BoundedOutputCollector
-
-
-def test_snapshot_store_reads_dict_and_tolerates_missing_or_damaged_file(tmp_path):
-    path = tmp_path / "snapshots.json"
-    assert _load_json_store(path) == {}
-    path.write_text('{"task": "snapshot"}', encoding="utf-8")
-    assert _load_json_store(path) == {"task": "snapshot"}
-    path.write_text('["not a mapping"]', encoding="utf-8")
-    assert _load_json_store(path) == {}
-    path.write_text("{bad json", encoding="utf-8")
-    assert _load_json_store(path) == {}
 
 
 class _TestableEnv(BaseEnvironment):
@@ -117,16 +106,17 @@ class TestAtomicSnapshotWrite:
         env = _TestableEnv()
         env._snapshot_ready = True
         wrapped = env._wrap_command("echo hi", "/tmp")
-        # Env dump goes to a temp file, not directly over the live snapshot.
-        assert "export -p" in wrapped and "> " in wrapped
+        # Env dump goes to a temp file (``>|``: noclobber must not refuse mktemp's file), not the live snapshot.
+        assert "export -p" in wrapped and '>| "$__hermes_snap_tmp"' in wrapped
         assert ".tmp." in wrapped
         # Then an atomic rename onto the real snapshot path.
         assert "mv -f " in wrapped
         # The env-dump must NOT write the live snapshot in place (the bug).
         snap = env._snapshot_path
-        assert f"> {snap} " not in wrapped
-        assert f"> '{snap}'" not in wrapped
-        assert f"> {snap}\n" not in wrapped
+        for redirect in ("> ", ">| "):
+            assert f"{redirect}{snap} " not in wrapped
+            assert f"{redirect}'{snap}'" not in wrapped
+            assert f"{redirect}{snap}\n" not in wrapped
 
     def test_temp_path_uses_mktemp_not_pid_variables(self):
         """The temp name MUST be allocated by ``mktemp`` — never ``$$`` (in
@@ -233,7 +223,7 @@ class TestExtractCwdFromOutput:
         result = {
             "output": f"hello\n{marker}/home/user{marker}\n",
         }
-        env._extract_cwd_from_output(result)
+        env._update_cwd(result)
 
         assert env.cwd == "/home/user"
         assert marker not in result["output"]

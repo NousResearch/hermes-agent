@@ -37,20 +37,52 @@ def search(query, max_results=3):
         return None
 
 
+# USDA FoodData Central nutrient IDs (stable across SR Legacy and Foundation).
+# Display names collide (1008 kcal and 1062 kJ are both "Energy") and vary by
+# data type (Atwater General/Specific energy and Foundation macro IDs).
+_ENERGY_KCAL_IDS = (1008, 2047, 2048)  # Energy; Atwater General; Atwater Specific
+_PROTEIN_IDS = (1003,)
+_FAT_IDS = (1004, 1085)                # Total lipid (fat); Total fat (NLEA)
+_CARB_IDS = (1005, 1050)               # Carbohydrate, by difference; by summation
+_FIBER_IDS = (1079, 2033)              # Fiber, total dietary; AOAC 2011.25
+_SUGAR_IDS = (2000, 1063)              # Total Sugars (SR Legacy); Sugars, Total (Foundation)
+
+
+def extract_macros(food):
+    by_id_unit = {}
+    for item in food.get("foodNutrients") or []:
+        nid = item.get("nutrientId")
+        val = item.get("value")
+        unit = item.get("unitName")
+        if nid is None or val is None or not isinstance(unit, str):
+            continue
+        by_id_unit.setdefault((nid, unit.upper()), val)
+
+    def pick(ids, unit="G"):
+        for nid in ids:
+            key = (nid, unit)
+            if key in by_id_unit:
+                return by_id_unit[key]
+        return "?"
+
+    return {
+        "calories": pick(_ENERGY_KCAL_IDS, unit="KCAL"),
+        "protein": pick(_PROTEIN_IDS),
+        "fat": pick(_FAT_IDS),
+        "carbs": pick(_CARB_IDS),
+        "fiber": pick(_FIBER_IDS),
+        "sugar": pick(_SUGAR_IDS),
+    }
+
+
 def display(food):
-    nutrients = {n["nutrientName"]: n.get("value", "?") for n in food.get("foodNutrients", [])}
-    cal = nutrients.get("Energy", "?")
-    prot = nutrients.get("Protein", "?")
-    fat = nutrients.get("Total lipid (fat)", "?")
-    carb = nutrients.get("Carbohydrate, by difference", "?")
-    fib = nutrients.get("Fiber, total dietary", "?")
-    sug = nutrients.get("Sugars, total including NLEA", "?")
+    macros = extract_macros(food)
 
     print(f"  {food.get('description', 'N/A')}")
-    print(f"    Calories : {cal} kcal")
-    print(f"    Protein  : {prot}g")
-    print(f"    Fat      : {fat}g")
-    print(f"    Carbs    : {carb}g (fiber: {fib}g, sugar: {sug}g)")
+    print(f"    Calories : {macros['calories']} kcal")
+    print(f"    Protein  : {macros['protein']}g")
+    print(f"    Fat      : {macros['fat']}g")
+    print(f"    Carbs    : {macros['carbs']}g (fiber: {macros['fiber']}g, sugar: {macros['sugar']}g)")
     print(f"    FDC ID   : {food.get('fdcId', 'N/A')}")
 
 

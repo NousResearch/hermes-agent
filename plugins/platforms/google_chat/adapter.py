@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import html
 import importlib
 import json
 import logging
@@ -24,6 +25,7 @@ from pathlib import Path as _Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from agent.i18n import t
 from agent.secret_scope import is_multiplex_active
 from gateway.platforms._shared import (
     get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
@@ -64,7 +66,7 @@ class _CachedGoogleAuthRequest:
 
     def __init__(self, request: Any, ttl_seconds: int = _GOOGLE_ID_TOKEN_CERTS_TTL_SECONDS) -> None:
         self._request, self._ttl_seconds, self._lock = request, ttl_seconds, threading.Lock()
-        self._cache: Dict[Tuple[str, str], Tuple[float, Any]] = {}
+        self._cache: dict[tuple[str, str], tuple[float, Any]] = {}
 
     def __call__(self, url: str, method: str = "GET", **kwargs: Any) -> Any:
         cache_key = (method.upper(), url)
@@ -94,7 +96,7 @@ def _get_google_id_token_request() -> Any:
         return _google_id_token_request
 
 
-def _verify_google_id_token(token: str, audience: str) -> Dict[str, Any]:
+def _verify_google_id_token(token: str, audience: str) -> dict[str, Any]:
     try:
         from google.oauth2 import id_token
     except ImportError as exc:
@@ -125,9 +127,9 @@ from gateway.config import Platform, PlatformConfig
 # Register the dynamic enum member at import time so ``Platform.GOOGLE_CHAT``
 # resolves before any adapter instance exists.
 Platform("google_chat")
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, numbered_clarify_choices
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, SendResult,
+    gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
     cache_video_from_bytes_async,
 )
@@ -230,11 +232,17 @@ def _is_google_owned_host(url: str) -> bool:
 
 def _redact_sensitive(text: str) -> str:
     """Redact Pub/Sub resource paths and SA emails from user-facing error strings."""
-    if not text:
-        return text
-    for pattern, repl in _REDACTIONS:
+    for pattern, repl in _REDACTIONS if text else ():
         text = pattern.sub(repl, text)
     return text
+
+
+def _proxy_error(exc: BaseException, *targets: str) -> str | None:  # httplib2/requests read HTTPS_PROXY and may echo its secret
+    return describe_proxy_error(exc, env_proxy_for_redaction(*(targets or [f"https://{h}.googleapis.com" for h in ("chat", "oauth2", "pubsub", "www")])))
+
+
+def _exc_text(exc: BaseException, *targets: str) -> str:  # targets: the URLs the failed call fetched (default: the APIs)
+    return _proxy_error(exc, *targets) or _redact_sensitive(str(exc))
 
 
 def _mime_for_message_type(mime: str) -> MessageType:
@@ -295,7 +303,7 @@ class _ThreadCountStore:
 
     def __init__(self, path: _Path):
         self._path = path
-        self._counts: Dict[str, Dict[str, int]] = {}
+        self._counts: dict[str, dict[str, int]] = {}
 
     def load(self) -> None:
         """Load counts from disk; missing file → empty, corrupt JSON → empty + warn."""
@@ -328,6 +336,13 @@ class _ThreadCountStore:
         self._save()
         return prev
 
+    def decr(self, chat_id: str, thread_name: str) -> None:
+        """Undo one :meth:`incr` for an inbound that was not admitted; never below zero."""
+        chat_counts = self._counts.get(chat_id, {})
+        if chat_counts.get(thread_name, 0) > 0:
+            chat_counts[thread_name] -= 1
+            self._save()
+
     def _save(self) -> None:
         """Atomic write; failure is non-fatal (in-memory counts stay consistent)."""
         try:
@@ -353,19 +368,19 @@ _SA_ERROR_MESSAGES = {
 }
 
 
-def _thread_body(text: str, thread_id: Optional[str]) -> Dict[str, Any]:
+def _thread_body(text: str, thread_id: Optional[str]) -> dict[str, Any]:
     """``{"text": ...}`` plus ``thread.name`` when replying into a thread."""
-    body: Dict[str, Any] = {"text": text}
+    body: dict[str, Any] = {"text": text}
     if thread_id:
         body["thread"] = {"name": thread_id}
     return body
 
 
-def _create_kwargs(chat_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+def _create_kwargs(chat_id: str, body: dict[str, Any]) -> dict[str, Any]:
     """messages.create kwargs. With ``thread.name`` we MUST pass
     ``messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD`` — the default silently
     ignores thread.name; FALLBACK (vs OR_FAIL) still delivers when the thread is gone."""
-    kwargs: Dict[str, Any] = {"parent": chat_id, "body": body}
+    kwargs: dict[str, Any] = {"parent": chat_id, "body": body}
     if (body.get("thread") or {}).get("name"):
         kwargs["messageReplyOption"] = "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
     return kwargs
@@ -402,24 +417,24 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # User-authed Chat clients for native ``media.upload`` (bot identity is rejected
         # there) keyed by sender email; ``_user_credentials``/``_user_chat_api`` = LEGACY fallback.
         self._user_chat_api = self._user_credentials = None
-        self._user_creds_by_email: Dict[str, Any] = {}
-        self._user_chat_api_by_email: Dict[str, Any] = {}
+        self._user_creds_by_email: dict[str, Any] = {}
+        self._user_chat_api_by_email: dict[str, Any] = {}
         # chat_id → most-recent inbound sender email (drives per-user token lookup).
-        self._last_sender_by_chat: Dict[str, str] = {}
+        self._last_sender_by_chat: dict[str, str] = {}
         self._dedup = MessageDeduplicator()
         self._shutting_down = False
-        self._typing_messages: Dict[str, str] = {}
+        self._typing_messages: dict[str, str] = {}
         self._clarify_state, self._rate_limit_hits = {}, {}
         # Last inbound thread per space: DMs get a NEW thread per top-level message but users
         # see one conversation, so thread_id leaves the source (stable session key) and is cached here.
-        self._last_inbound_thread: Dict[str, str] = {}
+        self._last_inbound_thread: dict[str, str] = {}
         from hermes_constants import get_hermes_home as _get_hermes_home
         self._thread_count_store = _ThreadCountStore(_get_hermes_home() / "google_chat_thread_counts.json")
         # In-flight typing-card creates per chat_id: reserved BEFORE the API call so
         # concurrent _keep_typing calls wait instead of duplicating cards.
-        self._typing_card_inflight: Dict[str, asyncio.Event] = {}
+        self._typing_card_inflight: dict[str, asyncio.Event] = {}
         # Typing cards that lost a race with send(); patched away at end of turn.
-        self._orphan_typing_messages: Dict[str, List[str]] = {}
+        self._orphan_typing_messages: dict[str, list[str]] = {}
         # Snapshot profile-scoped settings now: Pub/Sub callbacks run on threads
         # where the ContextVar secret scope is unavailable.
         extra = self.config.extra
@@ -435,14 +450,14 @@ class GoogleChatAdapter(BasePlatformAdapter):
             extra, "http_events_service_account_email", "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL").lower()
 
     @staticmethod
-    def _int_setting(extra: Dict[str, Any], key: str, env_name: str, default: int) -> int:
+    def _int_setting(extra: dict[str, Any], key: str, env_name: str, default: int) -> int:
         try:
             return int(extra.get(key) or _get_scoped_secret(env_name, str(default)))
         except (ValueError, TypeError):
             return default
 
     @staticmethod
-    def _str_setting(extra: Dict[str, Any], key: str, env_name: str, fallback: str = "") -> str:
+    def _str_setting(extra: dict[str, Any], key: str, env_name: str, fallback: str = "") -> str:
         return (extra.get(key) or _get_scoped_secret(env_name, "") or fallback).strip()
 
     # -- configuration -------------------------------------------------------
@@ -466,7 +481,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             logger.info("[GoogleChat] No SA JSON configured; using Application Default Credentials")
         return credentials
 
-    def _validate_config(self) -> Tuple[str, Optional[str]]:
+    def _validate_config(self) -> tuple[str, Optional[str]]:
         """Return (project_id, subscription_path); the latter is None for HTTP inbound.
         Raises ValueError with a sanitized message on any config problem."""
         project_id = (self.config.extra.get("project_id") or "").strip()
@@ -548,7 +563,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
     async def _resolve_bot_user_id(self) -> Optional[str]:
         """Resolve ``users/{id}`` via members.list on the home channel, then bootstrap
         spaces. None when no space is known (self-filter falls back to ``sender.type == 'BOT'``)."""
-        candidate_spaces: List[str] = []
+        candidate_spaces: list[str] = []
         if self.config.home_channel and self.config.home_channel.chat_id:
             candidate_spaces.append(self.config.home_channel.chat_id)
         if self._bootstrap_spaces:
@@ -560,7 +575,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                     .execute(http=self._new_authed_http())
                 )
             except HttpError as exc:
-                logger.debug("[GoogleChat] members.list failed on %s: %s", space, _redact_sensitive(str(exc)))
+                logger.debug("[GoogleChat] members.list failed on %s: %s", space, _exc_text(exc))
                 continue
             for member in members.get("memberships", []):
                 if member.get("member", {}).get("type") == "BOT" and member.get("member", {}).get("name"):
@@ -570,7 +585,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # -- connection lifecycle ------------------------------------------------
     def _connect_failed(self, log_fmt: str, exc: BaseException, code: str, *, retryable: bool) -> bool:
         """Log a redacted connect-time failure, record it as fatal, return False."""
-        msg = _redact_sensitive(str(exc))
+        msg = _exc_text(exc)
         logger.error(log_fmt, msg)
         self._set_fatal_error(code=code, message=msg, retryable=retryable)
         return False
@@ -595,10 +610,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
                     "Each user runs /setup-files once in their own DM to enable native attachments."
                 )
         except Exception as exc:
-            logger.warning(
-                "[GoogleChat] User OAuth load failed (attachments will degrade to text-only fallback): %s",
-                _redact_sensitive(str(exc)),
-            )
+            logger.warning("[GoogleChat] User OAuth load failed (attachments will degrade to text-only fallback): %s",
+                           _exc_text(exc))
             self._user_credentials = self._user_chat_api = None
 
     async def _check_subscription(self, subscription_path: str, credentials: Any) -> bool:
@@ -718,7 +731,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             except Exception as exc:
                 attempt += 1
                 logger.warning("[GoogleChat] Pub/Sub stream died (attempt %d/%d): %s", attempt,
-                               self._MAX_RECONNECT_ATTEMPTS, _redact_sensitive(str(exc)))
+                               self._MAX_RECONNECT_ATTEMPTS, _exc_text(exc))
                 if attempt >= self._MAX_RECONNECT_ATTEMPTS:
                     self._set_fatal_error(
                         code="pubsub_reconnect_exhausted", message=f"Pub/Sub reconnect failed {attempt} times; giving up",
@@ -733,8 +746,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
     # -- inbound (Pub/Sub callback runs in a thread) -------------------------
     @staticmethod
-    def _extract_message_payload(envelope: Dict[str, Any],
-                                 ce_type: str = "") -> Optional[Tuple[Dict[str, Any], Dict[str, Any], str]]:
+    def _extract_message_payload(envelope: dict[str, Any],
+                                 ce_type: str = "") -> Optional[tuple[dict[str, Any], dict[str, Any], str]]:
         """Return ``(message, space, format_name)`` or None for unknown / non-MESSAGE
         envelopes. Formats: Workspace Add-ons ``{"chat": {"messagePayload": ...}}``; native
         ``{"type": "MESSAGE", "message", "space"}``; relay/flat ``{"event_type", "sender_email",
@@ -756,7 +769,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             # Honor the relay's ``sender_type`` so the BOT self-filter fires for
             # forwarded bot replies; default HUMAN for backward compatibility.
             sender_type = str(envelope.get("sender_type") or "HUMAN").strip().upper()
-            msg: Dict[str, Any] = {
+            msg: dict[str, Any] = {
                 "name": envelope.get("message_name", "") or "",
                 "sender": {
                     # No Chat resource name for relay events: a stable surrogate keeps dedup/session ids deterministic.
@@ -772,8 +785,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return msg, space, "relay_flat"
         return None
 
-    def _prepare_inbound(self, envelope: Dict[str, Any],
-                         ce_type: Optional[str] = None) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    def _prepare_inbound(self, envelope: dict[str, Any],
+                         ce_type: Optional[str] = None) -> Optional[tuple[dict[str, Any], dict[str, Any]]]:
         """Extract + self-filter + dedup an inbound envelope. Returns ``(msg_with_space,
         enriched_envelope)`` for ``_dispatch_message``, or None when the event must be
         dropped. Debug logs only on the Pub/Sub path (``ce_type`` given)."""
@@ -856,13 +869,30 @@ class GoogleChatAdapter(BasePlatformAdapter):
             with contextlib.suppress(Exception):
                 message.ack()
 
-    async def dispatch_http_event(self, envelope: Dict[str, Any]) -> Dict[str, Any]:
+    async def dispatch_http_event(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        from gateway.parked_route_refusal import ParkedRouteRefused, retryable_ingress
         prepared = self._prepare_inbound(envelope)
-        if prepared is not None:
+        if prepared is None:
+            return {}
+        # The callback answers after this dispatch, so the delivery is not acknowledged yet: a route
+        # to a parked profile is answered retryably (Google redelivers a non-2xx), not refused in chat.
+        with retryable_ingress() as scope:
             await self._dispatch_message(*prepared)
+        if scope.refused:
+            self._release_unadmitted(*prepared)
+            raise ParkedRouteRefused()
         return {}
 
-    def verify_http_event_request(self, auth_header: str) -> Tuple[bool, str]:
+    def _release_unadmitted(self, msg: dict[str, Any], envelope: dict[str, Any]) -> None:
+        """Undo what ingress recorded for a delivery that was not admitted (its dedup claim and DM
+        thread count), so the platform's redelivery is admitted and read as the first delivery."""
+        self._dedup.discard(msg.get("name") or "")
+        space_name = (envelope.get("space") or msg.get("space") or {}).get("name") or ""
+        thread_name = (msg.get("thread") or {}).get("name") or ""
+        if space_name and thread_name:
+            self._thread_count_store.decr(space_name, thread_name)
+
+    def verify_http_event_request(self, auth_header: str) -> tuple[bool, str]:
         if not self._http_events_audience or not self._http_events_service_account_email:
             return False, "google_chat_http_events_not_configured"
         token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
@@ -871,14 +901,14 @@ class GoogleChatAdapter(BasePlatformAdapter):
         try:
             claims = _verify_google_id_token(token, self._http_events_audience)
         except Exception as exc:
-            logger.warning("[GoogleChat] HTTP event bearer verification failed: %s", _redact_sensitive(str(exc)))
+            logger.warning("[GoogleChat] HTTP event bearer verification failed: %s", _exc_text(exc))
             return False, "invalid_google_bearer"
         expected = {item.strip().lower() for item in self._http_events_service_account_email.split(",") if item.strip()}
         if str(claims.get("email") or "").strip().lower() not in expected:
             return False, "unexpected_google_bearer_identity"
         return True, ""
 
-    async def _dispatch_message(self, msg: Dict[str, Any], envelope: Dict[str, Any]) -> None:
+    async def _dispatch_message(self, msg: dict[str, Any], envelope: dict[str, Any]) -> None:
         """Translate a Chat message to a MessageEvent and hand off.
         ``/setup-files`` is intercepted BEFORE the agent sees it (bot-local OAuth flow)."""
         try:
@@ -886,8 +916,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
             if event is None:
                 return
             text = (event.text or "").strip()
+            # The intercept skips the runner's allowlist, so it serves only a sender that check
+            # accepts; anyone else goes to handle_message and gets the runner's deny/pairing path.
             # The sender email (user_id_alt) is the per-user OAuth token key.
-            if text.startswith("/setup-files") and event.source is not None and await self._handle_setup_files_command(
+            if text.startswith("/setup-files") and event.source is not None and self._is_sender_authorized(
+                event.source.user_id, event.source.chat_type, event.source.chat_id,
+            ) is True and await self._handle_setup_files_command(
                 chat_id=event.source.chat_id, thread_id=event.source.thread_id, raw_text=text,
                 sender_email=event.source.user_id_alt or None,
             ):
@@ -902,7 +936,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         from .setup_files import handle_setup_files_command
         return await handle_setup_files_command(self, chat_id, thread_id, raw_text, sender_email)
 
-    async def _build_message_event(self, msg: Dict[str, Any], envelope: Dict[str, Any]) -> Optional[MessageEvent]:
+    async def _build_message_event(self, msg: dict[str, Any], envelope: dict[str, Any]) -> Optional[MessageEvent]:
         """Parse a Chat API message into a hermes MessageEvent."""
         space = envelope.get("space") or msg.get("space") or {}
         space_name = space.get("name") or ""  # "spaces/XXX"
@@ -924,25 +958,6 @@ class GoogleChatAdapter(BasePlatformAdapter):
             if command_id and not text.startswith("/"):
                 text = f"/cmd_{command_id} {text}".strip()
 
-        media_urls: List[str] = []
-        media_types: List[str] = []
-        message_type = MessageType.TEXT
-        for att in msg.get("attachment") or []:
-            try:
-                local_path, mime = await self._download_attachment(att)
-            except Exception:
-                logger.exception("[GoogleChat] attachment download failed")
-                continue
-            if not local_path:
-                continue
-            media_urls.append(local_path)
-            media_types.append(mime or "application/octet-stream")
-            # Prefer the first-seen type for MessageType if no text present.
-            if message_type == MessageType.TEXT and not text:
-                message_type = _mime_for_message_type(mime or "")
-        if slash:
-            message_type = MessageType.COMMAND
-
         # PRE-increment count (persisted) drives the main-flow-vs-side-thread heuristic.
         prev_thread_count = self._thread_count_store.incr(space_name, thread_name) if thread_name and space_name else 0
         # DMs: prev_count == 0 → Chat auto-created this thread for a top-level message: share one
@@ -960,6 +975,31 @@ class GoogleChatAdapter(BasePlatformAdapter):
             session_thread_id = thread_name
             if thread_name and space_name:
                 self._last_inbound_thread[space_name] = thread_name
+
+        media_urls: list[str] = []
+        media_types: list[str] = []
+        message_type = MessageType.TEXT
+        # The fetch spends the bot's credentials and disk on a sender-chosen file: only the gateway's explicit
+        # True permits it. The message still dispatches so the runner applies denial/pairing.
+        attachments = msg.get("attachment") or []
+        if attachments and self._is_sender_authorized(sender_email or sender_name, chat_type, space_name,
+                                                      thread_id=session_thread_id) is not True:
+            attachments = []
+        for att in attachments:
+            try:
+                local_path, mime = await self._download_attachment(att)
+            except Exception as exc:
+                logger.error("[GoogleChat] attachment download failed: %s", _exc_text(exc), exc_info=not _proxy_error(exc))
+                continue
+            if not local_path:
+                continue
+            media_urls.append(local_path)
+            media_types.append(mime or "application/octet-stream")
+            # Prefer the first-seen type for MessageType if no text present.
+            if message_type == MessageType.TEXT and not text:
+                message_type = _mime_for_message_type(mime or "")
+        if slash:
+            message_type = MessageType.COMMAND
         source = self.build_source(
             chat_id=space_name, chat_name=space.get("displayName") or space.get("name") or "", chat_type=chat_type,
             # Email is the canonical id (allowlists use emails); the ``users/{id}``
@@ -972,7 +1012,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             media_urls=media_urls, media_types=media_types,
         )
 
-    async def _download_attachment(self, attachment: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    async def _download_attachment(self, attachment: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
         """Download an inbound attachment to the local cache; return (path, mime). Bot SA
         path is ``media.download`` via ``attachmentDataRef.resourceName``; Drive-picker shares
         without one need user OAuth (skipped); ``downloadUri`` is a last resort (usually 401s)."""
@@ -1001,7 +1041,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             try:
                 data = await asyncio.to_thread(_fetch_media)
             except HttpError as exc:
-                logger.warning("[GoogleChat] media.download_media failed: %s", _redact_sensitive(str(exc)))
+                logger.warning("[GoogleChat] media.download_media failed: %s", _exc_text(exc))
         if data is None and download_uri:
             if not _is_google_owned_host(download_uri):
                 logger.warning("[GoogleChat] Rejecting attachment fetch: non-Google host")
@@ -1018,8 +1058,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning(
                     "[GoogleChat] downloadUri fetch failed (SA tokens often lack access here; this is expected for "
-                    "user-uploaded content): %s", _redact_sensitive(str(exc)),
-                )
+                    "user-uploaded content): %s", _exc_text(exc, download_uri, "https://oauth2.googleapis.com"))
                 return None, mime
         if data is None:
             return None, mime
@@ -1037,7 +1076,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         return self._rate_limit_hits[chat_id]
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
-                   metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+                   metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send a text message; ``metadata`` may carry ``thread_id``. A tracked typing card is
         patched in place (delete would leave a "Message deleted" tombstone) with the first
         chunk, further chunks are new messages; ``_keep_typing`` is paused meanwhile."""
@@ -1094,8 +1133,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         finally:
             self.resume_typing_for_chat(chat_id)
 
-    async def send_card(self, chat_id: str, card: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        body: Dict[str, Any] = {"cardsV2": [card]}
+    async def send_card(self, chat_id: str, card: dict[str, Any], metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        body: dict[str, Any] = {"cardsV2": [card]}
         thread_id = self._resolve_thread_id(None, metadata, chat_id=chat_id)
         if thread_id:
             body["thread"] = {"name": thread_id}
@@ -1104,31 +1143,38 @@ class GoogleChatAdapter(BasePlatformAdapter):
             result.raw_response = result.raw_response or {"cardsV2": body["cardsV2"]}
             return result
         except HttpError as exc:
-            return SendResult(
-                success=False, error=_redact_sensitive(str(exc)), retryable=_http_status(exc) in _RETRYABLE_HTTP_STATUSES)
-        except Exception as exc:
-            logger.debug("[GoogleChat] send_card failed", exc_info=True)
-            return SendResult(success=False, error=_redact_sensitive(str(exc)), retryable=_is_retryable_error(exc))
+            return SendResult(success=False, error=_exc_text(exc), retryable=_http_status(exc) in _RETRYABLE_HTTP_STATUSES)
+        except Exception as exc:  # the traceback repeats the text _exc_text hides
+            logger.debug("[GoogleChat] send_card failed", exc_info=not _proxy_error(exc))
+            return SendResult(success=False, error=_exc_text(exc), retryable=_is_retryable_error(exc))
 
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str, session_key: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         if not choices:
             return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
 
-        def _button(text: str, choice: str) -> Dict[str, Any]:
+        def _button(text: str, choice: str) -> dict[str, Any]:
             return {"text": text, "action": "hermes_clarify", "parameters": {"clarify_id": clarify_id, "choice": choice}}
-        buttons: List[Dict[str, Any]] = []
-        for choice in choices:
-            choice_text = str(choice).strip()
-            if choice_text:
-                buttons.append(_button(choice_text if len(choice_text) <= 80 else choice_text[:77] + "...", choice_text))
-        buttons.append(_button("Other / type answer", "__other__"))
+        clean = [s for s in (str(c).strip() for c in choices) if s]
+        # Card buttons clip long labels with no tooltip (#78115): list the full options in the
+        # text widget and label the buttons positionally when any option is that wide.
+        # The text widget renders HTML: escaped so an option reads exactly as written, and appended
+        # after the card build so its Markdown pass (``**bold**`` -> ``*bold*``) never rewrites an option.
+        numbered = numbered_clarify_choices(clean, max_label_cols=48, escape=lambda s: html.escape(s, quote=False))
+        buttons: list[dict[str, Any]] = [
+            _button(str(i) if numbered else choice_text, choice_text)
+            for i, choice_text in enumerate(clean, start=1)
+        ]
+        buttons.append(_button(t("platform.google_chat.clarify.other_button"), "__other__"))
         card = card_spec_to_cards_v2({
-            "card_id": f"clarify-{clarify_id}", "header": {"title": "Question"},
-            "sections": [{"widgets": [{"type": "text", "text": f"❓ {question}"}, {"type": "buttons", "buttons": buttons}]}],
+            "card_id": f"clarify-{clarify_id}", "header": {"title": t("platform.google_chat.clarify.header")},
+            "sections": [{"widgets": [{"type": "text", "text": t("platform.google_chat.clarify.question", question=question)},
+                                      {"type": "buttons", "buttons": buttons}]}],
         })
+        if numbered:
+            card["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"] += f"\n\n{numbered}"
         result = await self.send_card(chat_id, card, metadata=metadata)
         if result.success:
             self._clarify_state[clarify_id] = session_key
@@ -1148,10 +1194,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
         except HttpError as exc:
             if _http_status(exc) == 429:
                 self._note_rate_limit(chat_id)
-            return SendResult(success=False, error=_redact_sensitive(str(exc)))
+            return SendResult(success=False, error=_exc_text(exc))
         except Exception as exc:
-            logger.debug("[GoogleChat] edit_message failed", exc_info=True)
-            return SendResult(success=False, error=str(exc))
+            logger.debug("[GoogleChat] edit_message failed", exc_info=not _proxy_error(exc))
+            return SendResult(success=False, error=_exc_text(exc))
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a message. Prefer ``edit_message`` — deletion leaves a "Message
@@ -1165,12 +1211,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return True
         except HttpError as exc:
             if _http_status(exc) not in {403, 404}:
-                logger.debug("[GoogleChat] delete_message failed: %s", _redact_sensitive(str(exc)))
-        except Exception:
-            logger.debug("[GoogleChat] delete_message failed", exc_info=True)
+                logger.debug("[GoogleChat] delete_message failed: %s", _exc_text(exc))
+        except Exception as exc:
+            logger.debug("[GoogleChat] delete_message failed", exc_info=not _proxy_error(exc))
         return False
 
-    async def _patch_message(self, message_name: str, body: Dict[str, Any]) -> SendResult:
+    async def _patch_message(self, message_name: str, body: dict[str, Any]) -> SendResult:
         """Update a message's text (and optionally cards) in-place."""
         update_mask = ",".join(k for k in ("text", "cardsV2") if k in body) or "text"
         patch_body = {k: v for k, v in body.items() if k != "thread"}  # thread is immutable
@@ -1180,8 +1226,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         )
         return SendResult(success=True, message_id=resp.get("name", message_name))
 
-    def _chunk_text(self, text: str) -> List[str]:
-        chunks: List[str] = []
+    def _chunk_text(self, text: str) -> list[str]:
+        chunks: list[str] = []
         remaining = text
         while remaining:
             if len(remaining) <= _MAX_TEXT_LENGTH:
@@ -1203,7 +1249,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         """
         return _format_message(content)
 
-    def _resolve_thread_id(self, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+    def _resolve_thread_id(self, reply_to: Optional[str], metadata: Optional[dict[str, Any]],
                            chat_id: Optional[str] = None) -> Optional[str]:
         """Thread to reply under, or None: ``metadata['thread_id']`` → ``thread_name`` /
         ``thread_ts`` aliases → ``reply_to`` when already a ``spaces/X/threads/Y`` name →
@@ -1240,12 +1286,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 wait = min(delay + delay * _RETRY_JITTER * random.random(), _RETRY_MAX_DELAY + _RETRY_JITTER)
                 logger.warning(
                     "[GoogleChat] %s attempt %d/%d failed (%s); retrying in %.2fs",
-                    op_name, attempt, _RETRY_MAX_ATTEMPTS, _redact_sensitive(str(exc)), wait,
-                )
+                    op_name, attempt, _RETRY_MAX_ATTEMPTS, _exc_text(exc), wait)
                 await asyncio.sleep(wait)
                 delay = min(delay * 2, _RETRY_MAX_DELAY)
 
-    def _track_outbound_thread(self, chat_id: str, resp: Dict[str, Any]) -> None:
+    def _track_outbound_thread(self, chat_id: str, resp: dict[str, Any]) -> None:
         """Count the outbound destination thread so a later user "Reply in thread" on
         the bot's message resolves as a known side-thread instead of main flow."""
         resp_thread = (resp.get("thread") or {}).get("name") or ""
@@ -1255,7 +1300,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             except Exception:
                 logger.debug("[GoogleChat] outbound thread-count incr failed", exc_info=True)
 
-    async def _create_message(self, chat_id: str, body: Dict[str, Any]) -> SendResult:
+    async def _create_message(self, chat_id: str, body: dict[str, Any]) -> SendResult:
         """POST spaces/{space}/messages via REST (with retry), returning SendResult."""
         kwargs = _create_kwargs(chat_id, body)
         resp = await self._call_with_retry(
@@ -1281,7 +1326,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 await asyncio.wait_for(self._typing_card_inflight[chat_id].wait(), timeout=5.0)
             return
         thread_id = self._resolve_thread_id(reply_to=None, metadata=metadata, chat_id=chat_id)
-        body = _thread_body(getattr(self.config, "typing_status_text", None) or "Hermes is thinking…", thread_id)
+        body = _thread_body(getattr(self.config, "typing_status_text", None) or t("platform.google_chat.typing.thinking"), thread_id)
         self._typing_card_inflight[chat_id] = completed = asyncio.Event()
 
         async def _create_and_record() -> None:
@@ -1294,8 +1339,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
                         # send() or another create claimed the slot first: orphan;
                         # on_processing_complete cleans it up.
                         self._orphan_typing_messages.setdefault(chat_id, []).append(result.message_id)
-            except Exception:
-                logger.debug("[GoogleChat] send_typing background create failed", exc_info=True)
+            except Exception as exc:
+                logger.debug("[GoogleChat] send_typing background create failed", exc_info=not _proxy_error(exc))
             finally:
                 self._typing_card_inflight.pop(chat_id, None)
                 completed.set()
@@ -1313,8 +1358,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
     async def _patch_quietly(self, message_name: str, text: str, log_msg: str, *log_args: Any) -> None:
         try:
             await self._patch_message(message_name, {"text": text})
-        except Exception:
-            logger.debug(log_msg, *log_args, exc_info=True)
+        except Exception as exc:
+            logger.debug(log_msg, *log_args, exc_info=not _proxy_error(exc))
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Reap typing card(s) after the turn: pop the SENTINEL on success; on
@@ -1326,7 +1371,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         try:
             current = self._typing_messages.pop(chat_id, None)
             if current and current != _TYPING_CONSUMED_SENTINEL:
-                label = "(interrupted)" if outcome == ProcessingOutcome.CANCELLED else "(no reply)"
+                label = t("platform.google_chat.typing.interrupted" if outcome == ProcessingOutcome.CANCELLED
+                          else "platform.google_chat.typing.no_reply")
                 await self._patch_quietly(current, label, "[GoogleChat] on_processing_complete patch fallback failed")
             for orphan_id in self._orphan_typing_messages.pop(chat_id, []):
                 await self._patch_quietly(orphan_id, "·", "[GoogleChat] orphan typing-card patch failed: %s", orphan_id)
@@ -1353,7 +1399,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an inline image via URL (no upload); patches the typing card when tracked."""
         thread_id = self._resolve_thread_id(reply_to, metadata, chat_id=chat_id)
@@ -1364,10 +1410,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 return patched
             return await self._create_message(chat_id, _thread_body(text, thread_id))
         except HttpError as exc:
-            return SendResult(success=False, error=_redact_sensitive(str(exc)))
+            return SendResult(success=False, error=_exc_text(exc))
 
     async def _send_file_reply(
-        self, chat_id: str, path: str, caption: Optional[str], reply_to: Optional[str], kwargs: Dict[str, Any],
+        self, chat_id: str, path: str, caption: Optional[str], reply_to: Optional[str], kwargs: dict[str, Any],
         mime_hint: Optional[str], override_filename: Optional[str] = None,
     ) -> SendResult:
         thread_id = self._resolve_thread_id(reply_to, kwargs.get("metadata"), chat_id=chat_id)
@@ -1394,7 +1440,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
     async def send_animation(
         self, chat_id: str, animation_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Google Chat has no native animation type; fall back to send_image."""
         return await self.send_image(chat_id, animation_url, caption=caption, reply_to=reply_to, metadata=metadata)
@@ -1408,8 +1454,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         from .oauth import refresh_or_none as _refresh
         try:
             return await asyncio.to_thread(_refresh, creds, email)
-        except Exception:
-            logger.debug(log_msg, exc_info=True)
+        except Exception as exc:
+            logger.debug(log_msg, exc_info=not _proxy_error(exc))
             return None
 
     async def _load_per_user_chat_api(self, email: str) -> Optional[Any]:
@@ -1431,14 +1477,14 @@ class GoogleChatAdapter(BasePlatformAdapter):
             if creds is None:
                 return None
             api = await asyncio.to_thread(lambda: _build(creds))
-        except Exception:
-            logger.debug("[GoogleChat] per-user creds load/build failed for %s", email, exc_info=True)
+        except Exception as exc:
+            logger.debug("[GoogleChat] per-user creds load/build failed for %s", email, exc_info=not _proxy_error(exc))
             return None
         self._user_creds_by_email[email] = creds
         self._user_chat_api_by_email[email] = api
         return api
 
-    async def _acquire_user_chat_api(self, sender_email: Optional[str]) -> Tuple[Optional[Any], Optional[str]]:
+    async def _acquire_user_chat_api(self, sender_email: Optional[str]) -> tuple[Optional[Any], Optional[str]]:
         """User-authed Chat client for an outbound attachment: per-user token for
         ``sender_email`` → legacy single-user fallback → ``(None, None)`` (caller posts the
         setup notice). The identity label (email / ``"__legacy__"``) selects the slot to evict."""
@@ -1483,8 +1529,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return await self._post_attachment_fallback(chat_id, path, filename, caption, thread_id)
         try:
             await self._consume_typing_card_with_text(chat_id, caption or " ")
-        except Exception:
-            logger.debug("[GoogleChat] _send_file pre-patch typing-card failed", exc_info=True)
+        except Exception as exc:
+            logger.debug("[GoogleChat] _send_file pre-patch typing-card failed", exc_info=not _proxy_error(exc))
 
         try:
             upload_resp = await asyncio.to_thread(lambda: chat_api.media().upload(
@@ -1496,15 +1542,14 @@ class GoogleChatAdapter(BasePlatformAdapter):
             if status in {401, 403}:
                 logger.warning(
                     "[GoogleChat] media.upload auth failure for identity=%s (token revoked or scope missing) — falling "
-                    "back to text notice. Status=%s", identity, status,
-                )
+                    "back to text notice. Status=%s", identity, status)
                 self._invalidate_user_creds(identity)
                 return await self._post_attachment_fallback(chat_id, path, filename, caption, thread_id)
-            return SendResult(success=False, error=_redact_sensitive(str(exc)))
+            return SendResult(success=False, error=_exc_text(exc))
         attachment_ref = upload_resp.get("attachmentDataRef")
         if not attachment_ref:
             return SendResult(success=False, error="upload returned no attachmentDataRef")
-        body: Dict[str, Any] = {"attachment": [{"attachmentDataRef": attachment_ref}]}
+        body: dict[str, Any] = {"attachment": [{"attachmentDataRef": attachment_ref}]}
         body.update({k: v for k, v in (("text", caption), ("thread", {"name": thread_id} if thread_id else None)) if v})
         # The attachmentDataRef is bound to the uploading principal, so this create
         # also needs user auth.
@@ -1514,35 +1559,34 @@ class GoogleChatAdapter(BasePlatformAdapter):
             self._track_outbound_thread(chat_id, resp)
             return SendResult(success=True, message_id=resp.get("name"))
         except HttpError as exc:
-            return SendResult(success=False, error=_redact_sensitive(str(exc)))
+            return SendResult(success=False, error=_exc_text(exc))
 
     async def _post_attachment_fallback(self, chat_id: str, path: str, filename: str, caption: Optional[str],
                                         thread_id: Optional[str]) -> SendResult:
         """Post the ``/setup-files`` notice (plus host path) when native delivery is
         unavailable. Always returns ``success=False``."""
         notice = "\n".join([
-            f"⚠️ No he podido adjuntar **{filename}**.",
-            "Google Chat sólo permite adjuntar archivos cuando el bot tiene permiso explícito tuyo (OAuth de usuario). "
-            "Es un consentimiento único que se hace desde este chat.",
-            "**Para activarlo:** envía `/setup-files` y sigue las instrucciones.",
-            f"Mientras tanto el archivo está en el host: `{path}`",
+            t("platform.google_chat.attachment_fallback.header", filename=filename),
+            t("platform.google_chat.attachment_fallback.explain"),
+            t("platform.google_chat.attachment_fallback.activate"),
+            t("platform.google_chat.attachment_fallback.host_path", path=path),
         ])
         body = self.warning_text(f"{caption}\n{notice}" if caption else notice, caption or "")
         try:
             if body:
                 await self._create_message(chat_id, _thread_body(body, thread_id))
-        except Exception:
-            logger.debug("[GoogleChat] attachment fallback notice send failed", exc_info=True)
+        except Exception as exc:
+            logger.debug("[GoogleChat] attachment fallback notice send failed", exc_info=not _proxy_error(exc))
         return SendResult(
             success=False, error="google_chat: native attachment requires user OAuth — run /setup-files in chat")
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return {name, type, chat_id} for a space."""
         try:
             info = await asyncio.to_thread(
                 lambda: self._chat_api.spaces().get(name=chat_id).execute(http=self._new_authed_http()))
         except HttpError as exc:
-            logger.debug("[GoogleChat] get_chat_info failed: %s", _redact_sensitive(str(exc)))
+            logger.debug("[GoogleChat] get_chat_info failed: %s", _exc_text(exc))
             return {"name": chat_id, "type": "group", "chat_id": chat_id}
         space_type = (info.get("spaceType") or info.get("type") or "").upper()
         return {
@@ -1559,7 +1603,7 @@ def _validate_config(config: PlatformConfig) -> bool:
     return bool(extra.get("http_events_url") or (extra.get("project_id") and extra.get("subscription_name")))
 
 
-def _env_inbound_settings() -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def _env_inbound_settings() -> tuple[Optional[str], Optional[str], Optional[str]]:
     """(project, subscription, http_events_url) from the scoped env, with legacy fallbacks."""
     project = _get_scoped_secret("GOOGLE_CHAT_PROJECT_ID") or _get_scoped_secret("GOOGLE_CLOUD_PROJECT")
     subscription = _get_scoped_secret("GOOGLE_CHAT_SUBSCRIPTION_NAME") or _get_scoped_secret("GOOGLE_CHAT_SUBSCRIPTION")
@@ -1590,7 +1634,7 @@ _ENV_SEED_KEYS = (  # (env var, extra key, conv) for seed_extra_from_env
 )
 
 
-def _env_enablement() -> Optional[Dict[str, Any]]:
+def _env_enablement() -> Optional[dict[str, Any]]:
     """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the profile's env before the adapter exists
     (so ``gateway status`` reflects env-only config); ``None`` when the minimum inbound settings are absent."""
     if not _env_inbound_configured():
@@ -1681,14 +1725,14 @@ _STANDALONE_SA_ERRORS = {
 }
 
 
-def _standalone_error(detail: str) -> Dict[str, Any]:
+def _standalone_error(detail: str) -> dict[str, Any]:
     return send_error(f"Google Chat standalone send: {detail}")
 
 
 async def _standalone_send(
     pconfig, chat_id: str, message: str, *, thread_id: Optional[str] = None,
-    media_files: Optional[List[str]] = None, force_document: bool = False,
-) -> Dict[str, Any]:
+    media_files: Optional[list[str]] = None, force_document: bool = False,
+) -> dict[str, Any]:
     """POST one Chat message via REST without the SDK (``send_message_tool`` when the
     gateway runner is not in-process, e.g. ``hermes cron``). Needs SA credentials and a
     validated space name; ``media_files`` / ``force_document`` are signature parity only."""
@@ -1719,10 +1763,10 @@ async def _standalone_send(
     # Bound the synchronous token refresh so a hung STS endpoint can't stall cron.
     try:
         await asyncio.wait_for(asyncio.to_thread(creds.refresh, _GoogleAuthRequest()), timeout=10.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return _standalone_error("token refresh timed out")
     except Exception as e:
-        return _standalone_error(f"token refresh failed: {e}")
+        return _standalone_error(f"token refresh failed: {_exc_text(e)}")
     token = getattr(creds, "token", None)
     if not token:
         return _standalone_error("refreshed credentials have no token")
@@ -1741,14 +1785,16 @@ async def _standalone_send(
                 payload = await resp.json()
         return {"success": True, "message_id": payload.get("name")}
     except Exception as e:
-        logger.debug("Google Chat standalone send raised", exc_info=True)
-        return send_error(f"Google Chat standalone send failed: {e}")
+        logger.debug("Google Chat standalone send raised", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction("https://chat.googleapis.com", trust_env=gateway_trust_env()))))
+        return send_error(f"Google Chat standalone send failed: {shown or e}")  # the text may echo the proxy URL
 
 
 def register(ctx) -> None:
     """Plugin entry point: registers the ``google_chat`` adapter with the platform registry."""
     ctx.register_platform(
         name="google_chat",
+        dashboard_description="Connect Hermes to Google Chat via Cloud Pub/Sub.",
+        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/google_chat",
         label="Google Chat",
         adapter_factory=lambda cfg: GoogleChatAdapter(cfg),
         check_fn=_check_for_registry,

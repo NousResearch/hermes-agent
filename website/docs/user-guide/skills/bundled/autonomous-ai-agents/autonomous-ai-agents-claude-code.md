@@ -10,6 +10,8 @@ description: "Delegate coding to Claude Code CLI (features, PRs)"
 
 Delegate coding to Claude Code CLI (features, PRs).
 
+Want the full side-by-side? Read [Hermes Agent vs Claude Code](https://hermes-agent.nousresearch.com/compare/claude-code).
+
 ## Skill metadata
 
 | | |
@@ -21,7 +23,7 @@ Delegate coding to Claude Code CLI (features, PRs).
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Coding-Agent`, `Claude`, `Anthropic`, `Code-Review`, `Refactoring`, `PTY`, `Automation` |
-| Related skills | [`codex`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-codex.md), [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md), [`opencode`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-opencode.md) |
+| Related skills | [`codex`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-codex.md), [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md), [`opencode`](../../optional/autonomous-ai-agents/autonomous-ai-agents-opencode.md) |
 
 ## Reference: full SKILL.md
 
@@ -136,7 +138,7 @@ terminal(command="sleep 15 && tmux capture-pane -t claude-work -p -S -60")
 
 ### Opt-in: --dangerously-skip-permissions (isolated environments only)
 
-This disables permission prompts for the whole run — grants filesystem, shell, and network access with no prompts. Acceptable only in a throwaway worktree or isolated container.
+This disables permission prompts for the whole run — grants filesystem, shell, and network access with no prompts. Use it only when bypass was explicitly requested, and only with the whole Claude Code process inside an isolation boundary — a container, a VM, or the [sandbox runtime](https://code.claude.com/docs/en/sandbox-environments#sandbox-runtime) — run as a non-root user, where you know which files, network and credentials the session can reach. A git worktree (including `claude -w`) isolates file edits only; it is not a filesystem, network or credential sandbox. Neither is the built-in Bash sandbox (`/sandbox`) on its own: file tools, MCP servers and hooks still run on the host. Even in a container, whatever is mounted or stored there — including Claude Code's own login in `~/.claude` — stays reachable.
 ```
 ❯ 1. No, exit                    ← DEFAULT (safe choice)
   2. Yes, I accept
@@ -301,9 +303,9 @@ Automatically falls back to the specified model when the default is overloaded (
 ### Permission & Safety
 | Flag | Effect |
 |------|--------|
-| `--dangerously-skip-permissions` | Opt-in only: disables ALL permission prompts (file writes, bash, network). Throwaway worktree / isolated container only — see "Opt-in" above |
+| `--dangerously-skip-permissions` | Opt-in only: disables ALL permission prompts (file writes, bash, network). Container, VM or sandbox runtime only; a worktree is not a sandbox — see "Opt-in" above |
 | `--allow-dangerously-skip-permissions` | Enable bypass as an *option* without enabling it by default |
-| `--permission-mode <mode>` | `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions` |
+| `--permission-mode <mode>` | `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions` (`bypassPermissions` is the same bypass as `--dangerously-skip-permissions` — same rule, see "Opt-in" above) |
 | `--allowedTools <tools...>` | Whitelist specific tools (comma or space-separated) |
 | `--disallowedTools <tools...>` | Blacklist specific tools |
 | `--tools <tools...>` | Override built-in tool set (`""` = none, `"default"` = all, or tool names) |
@@ -357,7 +359,7 @@ Bash(git commit *)      # Only git commit commands
 Bash(npm run lint:*)    # Pattern matching with wildcards
 WebSearch               # Web search capability
 WebFetch                # Web page fetching
-mcp__<server>__<tool>   # Specific MCP tool
+mcp__<server>__{tool}   # Specific MCP tool
 ```
 
 ## Settings & Configuration

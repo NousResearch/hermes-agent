@@ -117,7 +117,7 @@ def test_diagnostic_entrypoint_preserves_cli_arguments_and_failure(tmp_path):
     result = subprocess.run([sys.executable, str(Path(diagnostics.__file__)), *args],
                             cwd=tmp_path, env={**os.environ, "PYTHONPATH": str(tmp_path)},
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, encoding="utf-8", timeout=60)
+                            text=True, encoding="utf-8", timeout=60, check=False)
     assert result.returncode == 16
     assert json.dumps(args) in result.stdout
     assert result.stdout.index("[dmg-detach]") < result.stdout.index("fixture native detach -force")
@@ -133,7 +133,7 @@ def test_native_busy_image_reports_the_process_holding_its_file(tmp_path):
 
     def native(command, *args, plist=True):
         argv = ["/usr/bin/hdiutil", command, *args, *(["-plist"] if plist else [])]
-        result = subprocess.run(argv, capture_output=True, timeout=60)
+        result = subprocess.run(argv, capture_output=True, timeout=60, check=False)
         output = plistlib.loads(result.stdout) if plist and result.returncode == 0 else (result.stdout + result.stderr).decode()
         return result.returncode, output
 
@@ -148,7 +148,7 @@ def test_native_busy_image_reports_the_process_holding_its_file(tmp_path):
         with held.open("w") as handle:
             handle.write("owned test handle\n")
             handle.flush()
-            code, output = observed("detach", device, plist=False)
+            code, _output = observed("detach", device, plist=False)
             assert code != 0, "native fixture must reproduce a busy detach"
             report = log.getvalue()
             assert str(os.getpid()) in report
@@ -156,4 +156,4 @@ def test_native_busy_image_reports_the_process_holding_its_file(tmp_path):
             assert "COMMAND" in report and "PID" in report
     finally:
         if device:
-            subprocess.run(["/usr/bin/hdiutil", "detach", "-force", device], capture_output=True, timeout=60)
+            subprocess.run(["/usr/bin/hdiutil", "detach", "-force", device], capture_output=True, timeout=60, check=False)

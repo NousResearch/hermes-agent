@@ -98,12 +98,8 @@ def test_manual_trigger_bypasses_stale_schedule_guard(temp_home, monkeypatch):
 
 def test_delayed_manual_trigger_is_not_counted_as_catch_up(temp_home, monkeypatch):
     """Run-now intent remains explicit even when the next scan is hours later."""
-    from cron.jobs import (
-        create_job,
-        get_catch_up_occurrence_count,
-        get_due_jobs,
-        trigger_job,
-    )
+    from cron.jobs import create_job, get_due_jobs, trigger_job
+    from cron.occurrences import get_catch_up_occurrence_count
 
     trigger_time = _SATURDAY_0700 + timedelta(seconds=30)
     monkeypatch.setattr("cron.jobs._hermes_now", lambda: trigger_time)

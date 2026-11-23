@@ -98,3 +98,49 @@ def test_invalid_requirement_refused_at_declaration_boundary(tmp_path, modern):
     with pytest.raises(ValueError):
         read_python_declaration(tmp_path)
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(("body", "installs"), [
+    ("dependencies = []\n", False),
+    ('dependencies = ["fixturedep>=1,<2"]\n', True),
+    ('dependencies = []\n[build-system]\nrequires = ["setuptools"]\nbuild-backend = "setuptools.build_meta"\n', True),
+    ('dependencies = []\n[dependency-groups]\ndev = ["fixturedep"]\n', True),
+    ('dependencies = []\n[project.optional-dependencies]\nextra = ["fixturedep"]\n', True),
+], ids=["empty", "dependencies", "buildable", "dependency-groups", "extras"])
+def test_only_a_pyproject_that_installs_something_needs_dependency_consent(tmp_path, body, installs):
+    """``dependencies = []`` puts nothing in the environment; a buildable plugin, extras and dependency
+    groups (``uv sync --all-packages`` installs a member's default groups) still do."""
+    (tmp_path / "plugin.yaml").write_text("name: probe\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "probe"\nversion = "1"\n' + body, encoding="utf-8")
+    assert read_python_declaration(tmp_path).installs_packages is installs
+
+
+def test_tooling_only_pyproject_uses_the_legacy_manifest_declaration(tmp_path):
+    """A lint config alone is not a Python package for the uv workspace."""
+    project = tmp_path / "pyproject.toml"
+    project.write_text("[tool.ruff]\ntarget-version = 'py311'\n", encoding="utf-8")
+    manifest = tmp_path / "plugin.yaml"
+    manifest.write_text(
+        "name: tooling-only\npip_dependencies: ['fixturedep>=1,<2']\n",
+        encoding="utf-8",
+    )
+
+    declaration = read_python_declaration(tmp_path)
+
+    assert declaration.pyproject is None
+    assert declaration.requirements == ("fixturedep>=1,<2",)
+    assert declaration.files == (manifest, project)
+
+
+def test_non_table_project_key_uses_the_legacy_manifest_declaration(tmp_path):
+    """Only TOML's [project] table, not a similarly named scalar, owns packaging."""
+    project = tmp_path / "pyproject.toml"
+    project.write_text('project = "tooling label"\n[tool.ruff]\ntarget-version = "py311"\n', encoding="utf-8")
+    manifest = tmp_path / "plugin.yaml"
+    manifest.write_text("name: tooling-only\npip_dependencies: ['fixturedep>=1,<2']\n", encoding="utf-8")
+
+    declaration = read_python_declaration(tmp_path)
+
+    assert declaration.pyproject is None
+    assert declaration.requirements == ("fixturedep>=1,<2",)

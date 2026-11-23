@@ -1,0 +1,116 @@
+"""Normalize local bridge batches before persistence and per-tool execution."""
+
+from copy import deepcopy
+import json
+
+from agent.message_sanitization import deterministic_call_id, uniquify_tool_call_ids
+from session_rules.turns import coalesce_tool_call_id
+from agent.transports.types import ToolCall
+from tools.connectors import is_connector_name
+from tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
+from tools.tool_search_catalog import TOOL_CALL_NAME
+from tools.tool_search_validation import normalize_tool_call_entries
+
+
+def expand_local_tool_batches(tool_calls: list, *, provider_data: dict | None = None) -> list:
+    """Give every local entry the ordinary agent execution and persistence path.
+
+    Registry-only batch dispatch loses the live agent's inline tools, guardrails,
+    and per-server concurrency policy. Split the *new* assistant turn instead,
+    before it is persisted; never rewrite an earlier conversation message.
+    Connector-only batches keep their existing dispatcher and wire shape.
+    """
+    expanded, replacements = [], {}
+    for call in tool_calls:
+        if call.function.name != TOOL_CALL_NAME:
+            expanded.append(call)
+            continue
+        try:
+            args = call.function.arguments
+            entries, error = normalize_tool_call_entries(json.loads(args) if isinstance(args, str) else args)
+        except (TypeError, ValueError, AttributeError):
+            entries, error = [], True
+        if (error or not 1 < len(entries) <= MAX_CALLS_PER_DISPATCH
+                or all(is_connector_name(entry["name"]) for entry in entries)):
+            # Leave malformed/oversized requests intact for the dispatcher's error.
+            expanded.append(call)
+            continue
+        parent_id = coalesce_tool_call_id(call)
+        output_index = getattr(call, "_codex_output_index", None)
+        children = []
+        for index, entry in enumerate(entries):
+            arguments = json.dumps({"calls": [entry]}, ensure_ascii=False)
+            if index == 0:
+                child = deepcopy(call)
+                child.function.arguments = arguments
+            else:
+                # A new entry must not inherit the parent's Responses item id or
+                # provider signature, only its response-local output position.
+                # IDs are deterministic for stable replay.
+                child = ToolCall(
+                    id=deterministic_call_id(TOOL_CALL_NAME, parent_id + arguments, index),
+                    name=TOOL_CALL_NAME, arguments=arguments,
+                    provider_data={"_codex_output_index": output_index} if type(output_index) is int else None,
+                )
+            expanded.append(child)
+            children.append(child)
+        replacements[parent_id] = children
+    uniquify_tool_call_ids(expanded)
+    if provider_data and replacements:
+        replace_native_tool_blocks(provider_data, replacements)
+    return expanded
+
+
+def replace_native_tool_blocks(provider_data: dict, replacements: dict) -> None:
+    """Native providers replay ordered blocks instead of rebuilding them from
+    tool_calls. Replace the matching tool block in place, preserving signed
+    thinking/text blocks and their order exactly."""
+    for key, replace in (("anthropic_content_blocks", _anthropic_children),
+                         ("bedrock_content_blocks", _bedrock_children)):
+        if blocks := provider_data.get(key):
+            provider_data[key] = [child for block in blocks for child in replace(block, replacements)]
+
+
+def prune_native_tool_blocks(provider_data: dict, emitted: list, kept: list) -> None:
+    """Drop the native tool blocks of calls in ``emitted`` but not in ``kept``.
+
+    A guardrail that drops a call (duplicate, delegate cap) leaves it without a
+    result, and the native sidecars replay ahead of tool_calls: Converse then
+    rejects the turn ("Expected toolResult blocks ... for the following Ids").
+    Only blocks naming a dropped call go; thinking/text blocks, signatures,
+    unattributable tool blocks and block order are kept exactly.
+    """
+    kept_ids = {coalesce_tool_call_id(tc) for tc in kept}
+    dropped = {coalesce_tool_call_id(tc) for tc in emitted} - kept_ids - {""}
+    if not dropped:
+        return
+    for key, tool_id in (("anthropic_content_blocks", _anthropic_tool_id),
+                         ("bedrock_content_blocks", _bedrock_tool_id)):
+        if blocks := provider_data.get(key):
+            provider_data[key] = [block for block in blocks if tool_id(block) not in dropped]
+
+
+def _anthropic_tool_id(block):
+    return block.get("id") if isinstance(block, dict) and block.get("type") == "tool_use" else None
+
+
+def _bedrock_tool_id(block):
+    tool = block.get("toolUse") if isinstance(block, dict) else None
+    return tool.get("toolUseId") if isinstance(tool, dict) else None
+
+
+def _anthropic_children(block, replacements):
+    children = replacements.get(block.get("id")) if block.get("type") == "tool_use" else None
+    if children is None:
+        return [block]
+    return [{**block, "id": coalesce_tool_call_id(child), "name": child.function.name,
+             "input": json.loads(child.function.arguments)} for child in children]
+
+
+def _bedrock_children(block, replacements):
+    tool = block.get("toolUse")
+    children = replacements.get(tool.get("toolUseId")) if isinstance(tool, dict) else None
+    if children is None:
+        return [block]
+    return [{**block, "toolUse": {**tool, "toolUseId": coalesce_tool_call_id(child), "name": child.function.name,
+                                 "input": json.loads(child.function.arguments)}} for child in children]

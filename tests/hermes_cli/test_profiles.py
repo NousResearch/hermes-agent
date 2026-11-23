@@ -75,6 +75,21 @@ class TestNormalizeProfileName:
         assert normalize_profile_name("Jules") == "jules"
         assert normalize_profile_name("  Librarian ") == "librarian"
 
+    def test_non_string_name_rejected(self):
+        # A numeric profile id (DB row id / falsy sentinel) must not be
+        # silently coerced into a real on-disk profile directory (#88842).
+        with pytest.raises(ValueError):
+            normalize_profile_name(0)
+        with pytest.raises(ValueError):
+            normalize_profile_name(None)
+        with pytest.raises(ValueError):
+            normalize_profile_name(42)
+
+    def test_literal_zero_string_is_a_valid_explicit_name(self):
+        # A literal "0" typed by the user is a legal profile id; only the
+        # non-string coercion created the phantom profile.
+        assert normalize_profile_name("0") == "0"
+
 
 class TestValidateProfileName:
     """Tests for validate_profile_name()."""
@@ -238,6 +253,41 @@ class TestCreateProfile:
             assert stat.S_IMODE(cloned.stat().st_mode) == 0o600
         assert not (profile_dir / "mem0.json").exists()
 
+    def test_clone_config_copies_source_plugins(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        plugin_dir = default_home / "plugins" / "example-plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text("name: example-plugin\n")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        assert (
+            profile_dir
+            / "plugins"
+            / "example-plugin"
+            / "plugin.yaml"
+        ).read_text() == "name: example-plugin\n"
+
+    def test_clone_config_keeps_plugin_provenance_and_skips_install_staging(self, profile_env):
+        """A catalog-installed memory provider keeps its install record in the clone, so the clone
+        runs (and updates) the source's exact revision; an in-flight install staging dir stays behind."""
+        plugins = profile_env / ".hermes" / "plugins"
+        (plugins / "acme-memory").mkdir(parents=True)
+        (plugins / "acme-memory" / "plugin.yaml").write_text("name: acme-memory\nkind: memory\n")
+        (plugins / "acme-memory" / "__pycache__").mkdir()
+        (plugins / ".install-abc123" / "plugin").mkdir(parents=True)
+        record = '{"acme-memory": {"pinned": true, "revision": "%s", "source": "https://example.invalid/a.git"}}' % ("a" * 40)
+        (plugins / ".install-metadata.json").write_text(record)
+        (profile_env / ".hermes" / "config.yaml").write_text("memory:\n  provider: acme-memory\n")
+
+        cloned = create_profile("coder", clone_config=True, no_alias=True) / "plugins"
+
+        assert (cloned / ".install-metadata.json").read_text() == record
+        assert (cloned / "acme-memory" / "plugin.yaml").is_file()
+        assert not (cloned / "acme-memory" / "__pycache__").exists()
+        assert not (cloned / ".install-abc123").exists()
+
     @pytest.mark.parametrize("provider", ["../outside", "a/b", "..", "hind sight"])
     def test_clone_config_ignores_unsafe_memory_provider_names(self, profile_env, provider):
         """A hand-edited ``memory.provider`` must never aim the copy outside the source profile."""
@@ -259,20 +309,18 @@ class TestCreateProfile:
     def test_clone_sync_imports_carries_manifest_but_never_links_profiles(self, profile_env):
         """--sync-imports copies import-sync.json (a pointer at EXTERNAL agent trees) and nothing
         else changes: the clone still gets its own config/skills copies, never a live link."""
-        from hermes_cli.agent_import_sync import SYNC_MANIFEST_NAME, load_sync_manifest
-
         default_home = profile_env / ".hermes"
         (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
         manifest = {"version": 1, "agents": {"claude-code": {
             "source": str(profile_env / ".claude"), "digest": "d", "overwrite": False,
             "last_import": 1, "imported_skills": ["s1"]}}}
-        (default_home / SYNC_MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
+        (default_home / "import-sync.json").write_text(json.dumps(manifest), encoding="utf-8")
 
         plain = create_profile("plain", clone_config=True, no_alias=True)
-        assert not (plain / SYNC_MANIFEST_NAME).exists()
+        assert not (plain / "import-sync.json").exists()
 
         synced = create_profile("synced", clone_config=True, sync_imports=True, no_alias=True)
-        assert load_sync_manifest(synced)["agents"] == manifest["agents"]
+        assert json.loads((synced / "import-sync.json").read_text(encoding="utf-8")) == manifest
         # Editing the source afterwards does not reach the clone: still an independent island.
         (default_home / "config.yaml").write_text("model: changed", encoding="utf-8")
         assert yaml.safe_load((synced / "config.yaml").read_text(encoding="utf-8-sig"))["model"] == "test"
@@ -350,6 +398,21 @@ class TestCreateProfile:
         assert not any((profile_dir / "cron").iterdir())
         assert yaml.safe_load((profile_dir / "config.yaml").read_text(encoding="utf-8-sig"))["model"] == "test"
 
+    def test_clone_all_does_not_carry_the_sources_backend_migration(self, profile_env):
+        """The migration record and its backups name the source home's files and units: a clone that
+        inherited them would restore or roll back the source from the clone."""
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
+        (default_home / "backend_migration.json").write_text(json.dumps({"state": "done"}), encoding="utf-8")
+        (default_home / "backend_migration").mkdir()
+        (default_home / "backend_migration" / "env.bak").write_text("KEY=value\n", encoding="utf-8")
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+        assert not (profile_dir / "backend_migration.json").exists()
+        assert not (profile_dir / "backend_migration").exists()
+        assert (profile_dir / "config.yaml").exists()
+
     def test_clone_all_does_not_inherit_the_source_screen_or_browser_process_artifacts(self, profile_env):
         """A clone keeps browser data, never the source's screen or Chromium runtime files."""
         default_home = profile_env / ".hermes"
@@ -377,31 +440,47 @@ class TestCreateProfile:
     @pytest.mark.platforms("linux")
     def test_clone_all_does_not_attach_to_the_source_profiles_live_browser(self, profile_env):
         """Copied Chromium markers must not route the clone through the source profile's CDP port."""
-        from tools.bot_desktop.browser import running_instance_cdp_port
+        import http.server
+        import threading
+        from tools.browser_launcher import running_instance
 
         default_home = profile_env / ".hermes"
         (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
         browser_profile = default_home / "bot-desktop" / "browser-profile"
         browser_profile.mkdir(parents=True)
 
-        with socket.socket() as listener:
-            listener.bind(("127.0.0.1", 0))
-            listener.listen()
-            port = listener.getsockname()[1]
+        class _Version(http.server.BaseHTTPRequestHandler):  # a live DevTools /json/version answer
+            def do_GET(self):
+                body = b'{"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/browser/source"}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Version)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            port = server.server_address[1]
             (browser_profile / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/source\n", encoding="utf-8")
             (browser_profile / "SingletonLock").symlink_to(f"host-{os.getpid()}")
-            assert running_instance_cdp_port(str(browser_profile)) == port
+            assert running_instance(str(browser_profile))[0] == port
 
             profile_dir = create_profile("coder", clone_all=True, no_alias=True)
             cloned_browser = profile_dir / "bot-desktop" / "browser-profile"
 
-            assert running_instance_cdp_port(str(cloned_browser)) is None
-            assert running_instance_cdp_port(str(browser_profile)) == port
+            assert running_instance(str(cloned_browser)) is None
+            assert running_instance(str(browser_profile))[0] == port
+        finally:
+            server.shutdown()
+            server.server_close()
 
     @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="special files need a POSIX filesystem")
     def test_clone_all_skips_special_files(self, profile_env):
         # A live source profile holds special files copytree cannot copy (e.g. a suffixless
-        # agent-browser control socket); one of them must not abort the whole clone.
+        # browser control socket); one of them must not abort the whole clone.
         default_home = profile_env / ".hermes"
         (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
         browser_dir = default_home / "home" / ".agent-browser"
@@ -450,9 +529,9 @@ class TestNoSkillsOptOut:
 class TestBackfillProfileEnvs:
     """Tests for backfill_profile_envs() — the `hermes update` pass that
     gives pre-#44792 profiles (created before .env seeding) their own
-    .env, copied from the default install so credentials don't break."""
+    .env: the placeholder header, never a copy of the default's secrets."""
 
-    def test_copies_default_env_into_envless_profiles(self, profile_env):
+    def test_seeds_placeholder_never_the_default_env(self, profile_env):
         import stat
         tmp_path = profile_env
         (tmp_path / ".hermes" / ".env").write_text("OPENROUTER_API_KEY=root-key\n", encoding="utf-8")
@@ -466,7 +545,7 @@ class TestBackfillProfileEnvs:
 
         assert sorted(backfilled) == ["old1", "old2"]
         for p in (p1, p2):
-            assert (p / ".env").read_text(encoding="utf-8-sig") == "OPENROUTER_API_KEY=root-key\n"
+            assert "root-key" not in (p / ".env").read_text(encoding="utf-8-sig")
             assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
 
 
@@ -516,29 +595,30 @@ class TestDeleteProfile:
         enters the routing index, resolves a profile whose directory is gone, and logs
         ``Profile '<name>' does not exist`` on every subsequent event.
         """
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_holder import raw_holder
         import time
 
         tmp_path = profile_env
         create_profile("gone", no_alias=True)
         create_profile("keepme", no_alias=True)
         scope = str(tmp_path / ".hermes" / "sessions")
-        db = SessionDB(tmp_path / ".hermes" / "state.db")
-        db.save_gateway_routing_entry(
+        db = open_persistence(profile_scope(home=tmp_path / ".hermes"))
+        db.routing.upsert_routing_entry(
             "agent:gone:feishu:dm:chatA",
             json.dumps({"session_key": "agent:gone:feishu:dm:chatA",
                         "origin": {"platform": "feishu", "chat_id": "chatA",
                                    "profile": "gone"}}),
-            scope=scope)
-        db.save_gateway_routing_entry(
+            routing_scope=scope)
+        db.routing.upsert_routing_entry(
             "agent:keepme:feishu:dm:chatB",
             json.dumps({"session_key": "agent:keepme:feishu:dm:chatB",
                         "origin": {"platform": "feishu", "chat_id": "chatB",
                                    "profile": "keepme"}}),
-            scope=scope)
-        db.register_backend_heartbeat(
+            routing_scope=scope)
+        db.maintenance.register_backend_heartbeat(
             backend_id="be-gone", pid=1, started_at=time.time(), profile="gone", host="h")
-        db.register_backend_heartbeat(
+        db.maintenance.register_backend_heartbeat(
             backend_id="be-keep", pid=2, started_at=time.time(), profile="keepme", host="h")
         db.close()
 
@@ -547,16 +627,17 @@ class TestDeleteProfile:
              patch("hermes_cli.profiles._live_default_multiplexer", return_value=False):
             delete_profile("gone", yes=True)
 
-        check = SessionDB(tmp_path / ".hermes" / "state.db")
+        check = open_persistence(profile_scope(home=tmp_path / ".hermes"))
         try:
-            assert set(check.load_gateway_routing_entries(scope=scope)) == {
+            assert set(check.routing.load_routing_entries(routing_scope=scope)) == {
                 "agent:keepme:feishu:dm:chatB"}
-            assert check._read_one(
-                "SELECT COUNT(*) AS n FROM gateway_heartbeats WHERE profile = ?",
-                ("gone",))["n"] == 0
-            assert check._read_one(
-                "SELECT COUNT(*) AS n FROM gateway_heartbeats WHERE profile = ?",
-                ("keepme",))["n"] == 1
+            with raw_holder(check)._read_ctx() as conn:
+                assert conn.execute(
+                    "SELECT COUNT(*) AS n FROM gateway_heartbeats WHERE profile = ?",
+                    ("gone",)).fetchone()["n"] == 0
+                assert conn.execute(
+                    "SELECT COUNT(*) AS n FROM gateway_heartbeats WHERE profile = ?",
+                    ("keepme",)).fetchone()["n"] == 1
         finally:
             check.close()
 
@@ -567,17 +648,17 @@ class TestDeleteProfile:
         would be undone by its next save. When it cannot be reached the delete is NOT a clean
         success: the identity settlement is reported as pending, with the retry named.
         """
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
         from hermes_cli.profiles import ProfileIdentitySettlementPending
 
         tmp_path = profile_env
         create_profile("gone", no_alias=True)
         scope = str(tmp_path / ".hermes" / "sessions")
-        db = SessionDB(tmp_path / ".hermes" / "state.db")
-        db.save_gateway_routing_entry(
+        db = open_persistence(profile_scope(home=tmp_path / ".hermes"))
+        db.routing.upsert_routing_entry(
             "agent:gone:feishu:dm:chatA",
             json.dumps({"session_key": "agent:gone:feishu:dm:chatA"}),
-            scope=scope)
+            routing_scope=scope)
         db.close()
 
         with patch("hermes_cli.profiles._cleanup_gateway_service"), \
@@ -594,10 +675,10 @@ class TestDeleteProfile:
         assert isinstance(ei.value, RuntimeError)  # the CLI handler catches RuntimeError
 
         assert "hermes profile purge-identity gone" in capsys.readouterr().err
-        check = SessionDB(tmp_path / ".hermes" / "state.db")
+        check = open_persistence(profile_scope(home=tmp_path / ".hermes"))
         try:
             # The CLI left the identity alone rather than racing the live owner.
-            assert set(check.load_gateway_routing_entries(scope=scope)) == {
+            assert set(check.routing.load_routing_entries(routing_scope=scope)) == {
                 "agent:gone:feishu:dm:chatA"}
         finally:
             check.close()
@@ -1108,33 +1189,6 @@ class TestRenameProfile:
         assert new_dir.is_dir()
         assert new_dir == tmp_path / ".hermes" / "profiles" / "newname"
 
-    def test_renames_root_honcho_host_without_changing_ai_peer(self, profile_env):
-        tmp_path = profile_env
-        create_profile("ssi_health", no_alias=True)
-        honcho_path = tmp_path / ".hermes" / "honcho.json"
-        honcho_path.write_text(json.dumps({
-            "hosts": {
-                "hermes.ssi_health": {
-                    "recallMode": "hybrid",
-                    "writeFrequency": "async",
-                    "sessionStrategy": "per-session",
-                    "saveMessages": True,
-                    "peerName": "user-peer",
-                    "aiPeer": "ssi_health",
-                    "workspace": "hermes",
-                    "enabled": True,
-                }
-            }
-        }), encoding="utf-8")
-
-        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
-            rename_profile("ssi_health", "heimdall")
-
-        cfg = json.loads(honcho_path.read_text(encoding="utf-8-sig"))
-        assert "hermes.ssi_health" not in cfg["hosts"]
-        assert cfg["hosts"]["hermes_heimdall"]["aiPeer"] == "ssi_health"
-        assert cfg["hosts"]["hermes_heimdall"]["peerName"] == "user-peer"
-
     def test_multiplexed_rename_unroutes_old_then_hot_serves_new(self, profile_env):
         """Under a live multiplexer the old name is tombstoned + unrouted BEFORE the directory
         moves and the new name is hot-served after, so a stale runtime mkdir of the old home is
@@ -1185,22 +1239,24 @@ class TestRenameProfile:
         """No live gateway → the CLI performs the durable rekey itself so a renamed profile's session
         keys / profile_name / routing rows follow the new name (else inbound events on the old name's
         chats resolve to a nonexistent profile and flood errors.log)."""
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_read import session_row
+        from tests.fixtures.storage_seed import seed_session
         tmp_path = profile_env
         create_profile("oldname", no_alias=True)
         old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
         # Seed a session owned by the old profile in the profile's own store + the root routing index.
-        pdb = SessionDB(old_dir / "state.db")
-        pdb.create_session(
-            "sess1", "feishu", session_key="agent:oldname:feishu:dm:chatA",
+        pdb = open_persistence(profile_scope(home=old_dir))
+        seed_session(
+            pdb, "sess1", "feishu", session_key="agent:oldname:feishu:dm:chatA",
             profile_name="oldname", chat_id="chatA", chat_type="dm")
         pdb.close()
-        root_db = SessionDB(tmp_path / ".hermes" / "state.db")
-        root_db.save_gateway_routing_entry(
+        root_db = open_persistence(profile_scope(home=tmp_path / ".hermes"))
+        root_db.routing.upsert_routing_entry(
             "agent:oldname:feishu:dm:chatA",
             json.dumps({"session_key": "agent:oldname:feishu:dm:chatA", "session_id": "sess1",
                         "origin": {"platform": "feishu", "chat_id": "chatA", "profile": "oldname"}}),
-            scope=str(tmp_path / ".hermes" / "sessions"))
+            routing_scope=str(tmp_path / ".hermes" / "sessions"))
         root_db.close()
 
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
@@ -1208,15 +1264,14 @@ class TestRenameProfile:
             rename_profile("oldname", "newname")
 
         new_dir = tmp_path / ".hermes" / "profiles" / "newname"
-        moved_db = SessionDB(new_dir / "state.db")
-        row = moved_db._read_one(
-            "SELECT session_key, profile_name FROM sessions WHERE id = ?", ("sess1",))
+        moved_db = open_persistence(profile_scope(home=new_dir))
+        row = session_row(moved_db, "sess1")
         assert row["session_key"] == "agent:newname:feishu:dm:chatA"
         assert row["profile_name"] == "newname"
         moved_db.close()
-        root_db2 = SessionDB(tmp_path / ".hermes" / "state.db")
-        routing = root_db2.load_gateway_routing_entries(
-            scope=str(tmp_path / ".hermes" / "sessions"))
+        root_db2 = open_persistence(profile_scope(home=tmp_path / ".hermes"))
+        routing = root_db2.routing.load_routing_entries(
+            routing_scope=str(tmp_path / ".hermes" / "sessions"))
         assert "agent:oldname:feishu:dm:chatA" not in routing
         assert "agent:newname:feishu:dm:chatA" in routing
         root_db2.close()
@@ -1224,7 +1279,6 @@ class TestRenameProfile:
     def test_rename_delegates_identity_migration_to_live_gateway(self, profile_env):
         """Under a live multiplexer the CLI must NOT rewrite the routing DB directly (the gateway holds
         it in memory and would clobber the write); it delegates to the control verb instead."""
-        tmp_path = profile_env
         create_profile("oldname", no_alias=True)
 
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
@@ -1232,13 +1286,13 @@ class TestRenameProfile:
              patch("hermes_cli.profiles._notify_multiplexer"), \
              patch("gateway.control_socket.migrate_gateway_profile_identity",
                    return_value={"ok": True, "rekeyed": 1, "db": {}}) as verb, \
-             patch("hermes_state_registry.acquire") as acquire:
+             patch("persistence_assembly.open_persistence") as open_store:
             rename_profile("oldname", "newname")
 
         # Delegated to the gateway; the CLI's own durable-rewrite branch never ran.
         assert verb.call_count == 1
         assert verb.call_args.args[1:] == ("oldname", "newname")
-        acquire.assert_not_called()
+        open_store.assert_not_called()
 
 
 
@@ -1247,22 +1301,24 @@ class TestRenameProfile:
         migrate-identity <old> <new>` rekeys the durable rows once no gateway holds the store, and
         is idempotent (a second run has nothing left to rekey but still succeeds)."""
         from hermes_cli.profile_cmd import cmd_profile
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_read import session_row
+        from tests.fixtures.storage_seed import seed_session
         from argparse import Namespace
         tmp_path = profile_env
         create_profile("oldname", no_alias=True)
         old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
-        pdb = SessionDB(old_dir / "state.db")
-        pdb.create_session(
-            "sess1", "feishu", session_key="agent:oldname:feishu:dm:chatA",
+        pdb = open_persistence(profile_scope(home=old_dir))
+        seed_session(
+            pdb, "sess1", "feishu", session_key="agent:oldname:feishu:dm:chatA",
             profile_name="oldname", chat_id="chatA", chat_type="dm")
         pdb.close()
-        root_db = SessionDB(tmp_path / ".hermes" / "state.db")
-        root_db.save_gateway_routing_entry(
+        root_db = open_persistence(profile_scope(home=tmp_path / ".hermes"))
+        root_db.routing.upsert_routing_entry(
             "agent:oldname:feishu:dm:chatA",
             json.dumps({"session_key": "agent:oldname:feishu:dm:chatA", "session_id": "sess1",
                         "origin": {"platform": "feishu", "chat_id": "chatA", "profile": "oldname"}}),
-            scope=str(tmp_path / ".hermes" / "sessions"))
+            routing_scope=str(tmp_path / ".hermes" / "sessions"))
         root_db.close()
 
         # Rename under a live multiplexer whose control verb answers nothing: the CLI warns and
@@ -1283,16 +1339,15 @@ class TestRenameProfile:
             cmd_profile(Namespace(profile_action="migrate-identity",
                                   old_name="oldname", new_name="newname"))
 
-        moved_db = SessionDB(tmp_path / ".hermes" / "profiles" / "newname" / "state.db")
-        row = moved_db._read_one(
-            "SELECT session_key, profile_name FROM sessions WHERE id = ?", ("sess1",))
+        moved_db = open_persistence(profile_scope(home=tmp_path / ".hermes" / "profiles" / "newname"))
+        row = session_row(moved_db, "sess1")
         assert row is not None
         assert row["session_key"] == "agent:newname:feishu:dm:chatA"
         assert row["profile_name"] == "newname"
         moved_db.close()
-        root_db2 = SessionDB(tmp_path / ".hermes" / "state.db")
-        routing = root_db2.load_gateway_routing_entries(
-            scope=str(tmp_path / ".hermes" / "sessions"))
+        root_db2 = open_persistence(profile_scope(home=tmp_path / ".hermes"))
+        routing = root_db2.routing.load_routing_entries(
+            routing_scope=str(tmp_path / ".hermes" / "sessions"))
         assert "agent:oldname:feishu:dm:chatA" not in routing
         assert "agent:newname:feishu:dm:chatA" in routing
         root_db2.close()
@@ -1608,7 +1663,6 @@ class TestEdgeCases:
 
     def test_clone_from_named_profile(self, profile_env):
         """Clone config from a named (non-default) profile."""
-        tmp_path = profile_env
         # Create source profile with config
         source_dir = create_profile("source", no_alias=True)
         (source_dir / "config.yaml").write_text("model: cloned", encoding="utf-8")

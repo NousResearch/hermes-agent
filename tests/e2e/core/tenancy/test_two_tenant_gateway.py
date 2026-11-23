@@ -68,7 +68,7 @@ class MultiplexGateway:
         assert self.proc.poll() is None, f"gateway exited rc={self.proc.returncode}: {self.tail()}"
 
     def _spawn(self) -> None:
-        log = open(self.log_path, "a", encoding="utf-8")  # noqa: SIM115 - handed to the child
+        log = open(self.log_path, "a", encoding="utf-8")
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "hermes_cli.main", "gateway", "run"], cwd=str(self.home),
             env=H.hermetic_env(self.home), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,

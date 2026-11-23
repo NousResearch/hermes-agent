@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional
 from agent.monitoring import emitter
 from agent.monitoring.events import GatewayDiagnosticEvent, GatewayHealthEvent
 from agent.monitoring.redaction import redact_bounded
+from hermes_logging import canonical_logger_name
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +25,13 @@ logger = logging.getLogger(__name__)
 class GatewayMetric:
     name: str
     value: int | float
-    attributes: Dict[str, str]
+    attributes: dict[str, str]
 
 
 @dataclass(frozen=True, slots=True)
 class GatewayHealthSnapshot:
-    metrics: List[GatewayMetric]
-    events: List[GatewayHealthEvent | GatewayDiagnosticEvent]
+    metrics: list[GatewayMetric]
+    events: list[GatewayHealthEvent | GatewayDiagnosticEvent]
 
 
 _RUNNING_PLATFORM_STATES = {"running", "connected", "ok", "ready"}
@@ -131,7 +132,7 @@ def _coerce_pid(raw: Any) -> Optional[int]:
 def _gateway_status(name: str, fallback: Callable[[], Any], /, **kwargs: Any) -> Any:
     """Prefer ``gateway.status.<name>`` (the runtime-status contract); fall back to the local approximation."""
     try:
-        import gateway.status as status
+        from gateway import status
         return getattr(status, name)(**kwargs)
     except Exception:
         return fallback()
@@ -179,7 +180,7 @@ def build_gateway_health_snapshot(
         "hermes.supervision_mode": mode if mode in _SUPERVISION_MODES else "unknown",
     }
 
-    def metric(name: str, value: int | float, **extra: str) -> GatewayMetric:
+    def metric(name: str, value: float, **extra: str) -> GatewayMetric:
         attrs = dict(base)
         for key, val in extra.items():
             if val is not None:
@@ -311,13 +312,14 @@ class GatewayDiagnosticLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            if record.levelno < logging.WARNING or not (record.name == "gateway" or record.name.startswith("gateway.")):
+            name = canonical_logger_name(record.name)
+            if record.levelno < logging.WARNING or not (name == "gateway" or name.startswith("gateway.")):
                 return
-            subsystem = subsystem_for_logger(record.name)
+            subsystem = subsystem_for_logger(name)
             error_class = classify_gateway_error(record.getMessage())
             emitter.get_emitter().emit(GatewayDiagnosticEvent(
                 name=f"gateway.log.{record.levelname.lower()}", subsystem=subsystem,
-                source_logger=source_logger_for_export(record.name), platform=platform_for_subsystem(subsystem),
+                source_logger=source_logger_for_export(name), platform=platform_for_subsystem(subsystem),
                 error_class=error_class, error_code=error_class, profile=self.profile, version=self.version,
                 severity=record.levelname.lower(),
             ))
@@ -326,6 +328,10 @@ class GatewayDiagnosticLogHandler(logging.Handler):
 
 
 __all__ = [
-    "GatewayMetric", "GatewayHealthSnapshot", "GatewayDiagnosticLogHandler",
-    "build_gateway_health_snapshot", "classify_gateway_error", "source_logger_for_export",
+    "GatewayDiagnosticLogHandler",
+    "GatewayHealthSnapshot",
+    "GatewayMetric",
+    "build_gateway_health_snapshot",
+    "classify_gateway_error",
+    "source_logger_for_export",
 ]

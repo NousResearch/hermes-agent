@@ -55,7 +55,7 @@ def test_check_requirements_true_when_configured(monkeypatch):
     # check_requirements() gate also asserts the package imports.
     websockets_present = True
     try:
-        import websockets  # noqa: F401
+        import websockets
     except ImportError:
         websockets_present = False
     assert check_requirements() is websockets_present
@@ -307,7 +307,6 @@ async def test_standalone_send_missing_websockets(monkeypatch):
         def find_spec(name, path=None, target=None):
             if name == "websockets" or name.startswith("websockets."):
                 raise ImportError("websockets blocked for test")
-            return None
 
     sys.meta_path.insert(0, _Blocker())
     try:

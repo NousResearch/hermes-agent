@@ -4,7 +4,16 @@ import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
-import { $previewTabs, $previewTarget, closeRightRail, type PreviewTarget } from '@/store/preview'
+import {
+  $browserPages,
+  $previewTabs,
+  $previewTarget,
+  closeRightRail,
+  markBrowserTabPopped,
+  noteBrowserPage,
+  openPreview,
+  type PreviewTarget
+} from '@/store/preview'
 import { $activeSessionId, $currentCwd, $messages, $selectedStoredSessionId } from '@/store/session'
 
 import { usePreviewRouting } from './use-preview-routing'
@@ -17,6 +26,10 @@ function assistantMessage(id: string, text: string): ChatMessage {
 
 function fileTarget(path: string): PreviewTarget {
   return { kind: 'file', label: path, path, previewKind: 'html', source: path, url: `file://${path}` }
+}
+
+function urlTarget(url: string): PreviewTarget {
+  return { kind: 'url', label: url, source: url, url }
 }
 
 let handleEvent: (event: GatewayEvent) => void = () => undefined
@@ -61,6 +74,7 @@ describe('preview routing', () => {
     $activeSessionId.set(RUNTIME_SESSION_ID)
     $currentCwd.set('/work')
     $messages.set([])
+    $browserPages.set({})
     closeRightRail()
     window.localStorage.clear()
 
@@ -73,6 +87,7 @@ describe('preview routing', () => {
   afterEach(() => {
     cleanup()
     $messages.set([])
+    $browserPages.set({})
     closeRightRail()
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
@@ -136,7 +151,13 @@ describe('preview routing', () => {
       try {
         await emitPreviewOpen('/tmp/from-tile.html', 'tile-runtime')
 
-        await waitFor(() => expect($previewTarget.get()?.path).toBe('/tmp/from-tile.html'))
+        // Honoured, and owned by the tile's session (#73890): it shows in
+        // that session's drawer, not in whichever one holds focus.
+        await waitFor(() =>
+          expect($previewTabs.get().map(tab => [tab.target.path, tab.sessionId])).toEqual([
+            ['/tmp/from-tile.html', 'stored-tile']
+          ])
+        )
       } finally {
         $sessionTiles.set(tiles)
       }
@@ -231,6 +252,66 @@ describe('preview routing', () => {
 
       await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
       expect($previewTarget.get()?.path).toBe('/tmp/keep.html')
+    })
+
+    it('closes a Browser tab by the page it navigated to', async () => {
+      render(<Harness />)
+      openPreview(urlTarget('https://example.com/start'))
+      const tabId = $previewTabs.get()[0].id
+
+      noteBrowserPage(tabId, {
+        title: 'Dashboard',
+        url: 'https://example.com/dashboard'
+      })
+
+      await emitPreviewClose('https://example.com/dashboard')
+
+      expect($previewTabs.get()).toHaveLength(0)
+      expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBeNull()
+    })
+
+    it('does not remove a popped Browser tab through the persisted-url fallback', async () => {
+      render(<Harness />)
+      openPreview(urlTarget('https://example.com/start'))
+      const tabId = $previewTabs.get()[0].id
+
+      noteBrowserPage(tabId, {
+        title: 'Dashboard',
+        url: 'https://example.com/dashboard'
+      })
+      markBrowserTabPopped(tabId, true)
+
+      try {
+        await emitPreviewClose('https://example.com/start')
+
+        expect($previewTabs.get().map(tab => tab.id)).toEqual([tabId])
+      } finally {
+        markBrowserTabPopped(tabId, false)
+      }
+    })
+
+    it('closes only the tile session tabs when its agent closes without a url', async () => {
+      const { $sessionTiles } = await import('@/store/session-states')
+      const tiles = $sessionTiles.get()
+
+      $selectedStoredSessionId.set('stored-main')
+      $sessionTiles.set([{ dir: 'right', runtimeId: 'tile-runtime', storedSessionId: 'stored-tile' }])
+      render(<Harness />)
+
+      try {
+        await emitPreviewOpen('/tmp/main.html')
+        await emitPreviewOpen('/tmp/from-tile.html', 'tile-runtime')
+        await waitFor(() => expect($previewTabs.get()).toHaveLength(2))
+
+        await emitPreviewClose('', 'tile-runtime')
+
+        expect($previewTabs.get().map(tab => [tab.target.path, tab.sessionId])).toEqual([
+          ['/tmp/main.html', 'stored-main']
+        ])
+        expect($previewTarget.get()?.path).toBe('/tmp/main.html')
+      } finally {
+        $sessionTiles.set(tiles)
+      }
     })
 
     it('ignores a close from a session that is not the one on screen', async () => {

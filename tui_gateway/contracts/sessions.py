@@ -9,7 +9,7 @@ from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage,
-                     Usage)
+                     UndoRollbackHint, Usage)
 from .connectors_operation import ConnectionRequestPayload
 from .registry import method
 
@@ -129,10 +129,14 @@ class SessionCreateParams(ProfileParams):
     provider: str | None = None
     reasoning_effort: str | None = None
     fast: bool | None = None  # presence is the contract: omitted inherits, true pins priority, false pins normal
+    service_tier: str | None = None
     close_on_disconnect: bool = False
     hidden: bool = False
     room_plumbing: bool = False
     follow_profile_config: bool = False
+    # #65410: stable caller-chosen key so a retried create (response lost in
+    # transit) returns the SAME session instead of a duplicate child.
+    idempotency_key: str | None = None
 
 
 class SessionCreateResult(Result):
@@ -152,6 +156,10 @@ class SessionBranchStoredParams(ProfileParams):
     cols: int | None = None
     source: str | None = None
     cwd: str | None = None
+    # #65410: the desktop's whole-session branch rides the same create plumbing and
+    # now always sends the caller's stable key (its retry path reuses it). Optional
+    # so an older client that omits it keeps the historic behaviour.
+    idempotency_key: str | None = None
 
 
 class SessionBranchStoredResult(Result):
@@ -226,7 +234,11 @@ class SessionListRow(Result):
     preview: str = ""
     started_at: float = 0
     message_count: int = 0
+    live_message_count: int | None = None
     source: str = ""
+    # Durable lineage root of a compressed conversation (REST parity, #66663); None on
+    # rows that are not projected compression tips.
+    lineage_root_id: str | None = Field(default=None, alias="_lineage_root_id")
 
 
 class SessionListResult(Result):
@@ -266,6 +278,7 @@ class SessionActiveItem(Result):
     model: str
     preview: str
     session_key: str
+    source: str | None = None
     started_at: float
     status: LiveSessionStatus
     title: str
@@ -379,6 +392,8 @@ class SessionCloseParams(SessionParams):
 
 class SessionCloseResult(Result):
     closed: bool  # False when the runtime id was already gone
+    # Plugin ``on_session_finalize`` text for the user; shown out-of-band, never a model turn.
+    messages: list[str] = Field(default_factory=list)
 
 
 method("session.close", params=SessionCloseParams, result=SessionCloseResult,
@@ -388,6 +403,9 @@ method("session.close", params=SessionCloseParams, result=SessionCloseResult,
 class SessionBranchParams(SessionParams):
     name: str | None = None
     count: int | None = None  # keep only the first N rows of the source history
+    # #65410: the desktop's mid-chat branch retry reuses the SAME key so a
+    # lost-response retry returns the SAME child instead of a duplicate.
+    idempotency_key: str | None = None
 
 
 class SessionBranchResult(Result):
@@ -406,6 +424,8 @@ method("session.branch", params=SessionBranchParams, result=SessionBranchResult,
 
 class SessionBranchWholeParams(SessionParams):
     name: str | None = None
+    # #65410: same retry contract as session.branch.
+    idempotency_key: str | None = None
 
 
 class SessionBranchWholeResult(Result):
@@ -434,6 +454,8 @@ class SessionUndoParams(SessionParams):
 
 class SessionUndoResult(Result):
     removed: int
+    # Present only when checkpoints are on and the undone turns changed files (``rollback.list``'s field).
+    undo_hint: UndoRollbackHint | None = None
 
 
 method("session.undo", params=SessionUndoParams, result=SessionUndoResult,
@@ -486,6 +508,9 @@ class SessionUsageParams(SessionParams):
 
 class SessionUsageResult(Usage):
     credits_lines: list[str] | None = None
+    credits_usage_window: bool | None = None
+    # The route is Nous inference: the /topup CTA applies (the balance shows whenever Nous is signed in).
+    nous_route: bool | None = None
 
 
 method("session.usage", params=SessionUsageParams, result=SessionUsageResult,
@@ -514,6 +539,28 @@ class ContextFileSource(Result):
     status: str
 
 
+class PromptCacheWindow(Result):
+    """``agent.prompt_cache_clock.cache_window``: until when the session's cached prompt prefix is warm.
+    ``guaranteed_until``: the whole prefix is warm before it (a documented minimum or a proven tier);
+    ``estimated_until``: certainly gone after it; between the two it may still be warm. ``coverage``
+    maps each cached tier to its deadline. ``confidence`` is ``proven`` | ``declared`` | ``assumed`` |
+    ``unknown``; times are epoch seconds."""
+
+    guaranteed_until: float | None
+    estimated_until: float | None
+    tier: str | None
+    confidence: str
+    reason: str
+    refreshed_at: float | None = None
+    coverage: dict[str, float] = {}
+    #: Keep-alives missed on this route (two real misses in a row): nothing is warmed again this session.
+    warming_off: bool = False
+    #: ``cache_ttl: auto`` on a person's chat still on 5m: it moves to 1h at its first pause over 5 minutes.
+    tier_pending: bool = False
+    #: A rule learned from this route's own usage (``no-cache`` | ``write-on-hit`` | ``short-lived``).
+    learned: str | None = None
+
+
 class SessionContextBreakdownResult(Result):
     """``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)
     plus the per-file context manifest (empty until the agent exists)."""
@@ -527,6 +574,7 @@ class SessionContextBreakdownResult(Result):
     context_source: str
     model: str
     context_files: list[ContextFileSource] = []
+    prompt_cache: PromptCacheWindow | None = None
 
 
 method("session.context_breakdown", params=SessionContextBreakdownParams, result=SessionContextBreakdownResult,
@@ -583,6 +631,9 @@ method("session.compress", params=SessionCompressParams, result=SessionCompressR
 
 class SessionInterruptParams(SessionParams):
     expected_hosted_task_id: str | None = None  # only interrupt if this hosted task is the running one
+    #: The caller pauses the turn and continues it itself (a hidden ``prompt.submit``): its ``message.complete``
+    #: says ``paused``. A plain interrupt (the user's Stop) for the same turn wins.
+    resume: bool | None = None
 
 
 class InterruptStatus(WireEnum):
@@ -702,6 +753,10 @@ method("terminal.resize", params=TerminalResizeParams, result=TerminalResizeResu
 
 class SessionEventsSinceParams(SessionParams):
     last_seen: int | None = None
+    # Accepted and ignored. Legacy seqs are per process, and the client compares the answer's
+    # ``epoch`` with the process epoch from ``gateway.ready``. Clients that still send that
+    # process epoch here must replay; any other unknown key stays refused.
+    replay_epoch: str | None = None
 
 
 class SessionEventsSinceResult(Result):
@@ -758,3 +813,4 @@ class LlmOneshotResult(Result):
 
 method("llm.oneshot", params=LlmOneshotParams, result=LlmOneshotResult,
        doc="Stateless one-shot LLM completion (titles, ideas) on the session's or the task backend.")
+

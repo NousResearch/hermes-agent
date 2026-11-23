@@ -151,11 +151,14 @@ def validate_request(value: object, *, repository: str | None = None,
             raise ChannelError("Channel package version does not match sequence")
     else:
         _match(
-            r"v[0-9]+\.[0-9]+\.[0-9]+(?:\+canary\.20[0-9]{6}T[0-9]{6}Z)?",
+            # The retired v<stable>+canary.<stamp> shape stays readable for records already published.
+            r"(?:canary\.20[0-9]{6}T[0-9]{6}Z-)?v[0-9]+\.[0-9]+\.[0-9]+(?:\+canary\.20[0-9]{6}T[0-9]{6}Z)?",
             request.get("releaseTag"),
             "release tag",
         )
-        if request.get("version") != request["releaseTag"][1:]:
+        from hermes_cli.update_channel import published_release_version
+
+        if request.get("version") != published_release_version(request["releaseTag"]):
             raise ChannelError("Release package version mismatch")
         archive_ref = request.get("archiveRef")
         if archive_ref is not None:
@@ -287,7 +290,7 @@ class ChannelReader:
 
         # Channel reads are idempotent and precede the PM download path, so an explicit update
         # uses the same bounded transient-failure policy instead of a second retry classifier.
-        from pm.network import retry_network
+        from pm.network import edge_block, retry_network
 
         def read() -> bytes:
             with self.opener(Request(url, headers={"Cache-Control": "no-cache"}), timeout=30) as response:
@@ -300,7 +303,8 @@ class ChannelReader:
         except HTTPError as exc:
             if exc.code == 404:
                 raise ChannelNotFound(f"Channel object not found: {key}") from exc
-            raise ChannelError(f"Channel read unavailable: HTTP {exc.code}") from exc
+            block = edge_block(exc)
+            raise ChannelError(f"Channel read unavailable: HTTP {exc.code}" + (f"; {block}" if block else "")) from exc
         except (OSError, URLError) as exc:
             raise ChannelError("Channel read unavailable") from exc
         if len(body) > MAX_METADATA:

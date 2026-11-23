@@ -247,7 +247,7 @@ def rewrite_relative_links(body: str, meta: dict[str, Any]) -> str:
         if url.startswith("mailto:"):
             return m.group(0)
         # Strip leading ./
-        url_clean = url[2:] if url.startswith("./") else url
+        url_clean = url.removeprefix("./")
         full = f"{base}/{url_clean}"
         return f"[{text}]({full})"
 
@@ -328,6 +328,15 @@ def sidebar_doc_id(meta: dict[str, Any]) -> str:
     return f"user-guide/skills/{meta['source_kind']}/{meta['category']}/{page_id(meta)}"
 
 
+# Marketing comparison pages that exist for a skill's product, keyed by the
+# skill's source slug. These render as a cross-link on the generated doc page.
+COMPARE_LINKS = {
+    "opencode": "OpenCode",
+    "claude-code": "Claude Code",
+    "codex": "Codex",
+}
+
+
 def render_skill_page(
     meta: dict[str, Any],
     fm: dict[str, Any],
@@ -340,7 +349,6 @@ def render_skill_page(
     if len(short_desc) > 160:
         short_desc = short_desc[:157] + "..."
 
-    title = f"{name}"
     # Heuristic nicer title from name
     display_name = name.replace("-", " ").replace("_", " ").title()
 
@@ -413,6 +421,17 @@ def render_skill_page(
         "| | |\n|---|---|\n" + info_block
     )
 
+    # Cross-link to the marketing comparison page when one exists for this
+    # skill's product. Keyed by skill slug (the source directory name).
+    compare_target = COMPARE_LINKS.get(meta["slug"])
+    compare_line = ""
+    if compare_target:
+        compare_line = (
+            f"Want the full side-by-side? Read "
+            f"[Hermes Agent vs {compare_target}]"
+            f"(https://hermes-agent.nousresearch.com/compare/{meta['slug']}).\n\n"
+        )
+
     # Frontmatter for Docusaurus
     fm_title = sanitize_yaml_string(display_name + " — " + (short_desc or name))
     if len(fm_title) > 120:
@@ -439,6 +458,7 @@ def render_skill_page(
         "\n"
         f"{mdx_escape_body(description)}\n"
         "\n"
+        f"{compare_line}"
         "## Skill metadata\n"
         "\n"
         f"{info_table}\n"
@@ -469,8 +489,8 @@ def build_catalog_md_bundled(entries: list[tuple[dict[str, Any], dict[str, Any]]
         if meta["source_kind"] != "bundled":
             continue
         by_cat[meta["category"]].append((meta, parsed))
-    for k in by_cat:
-        by_cat[k].sort(key=lambda e: e[0]["slug"])
+    for entries in by_cat.values():
+        entries.sort(key=lambda e: e[0]["slug"])
 
     lines = [
         "---",
@@ -515,8 +535,8 @@ def build_catalog_md_optional(entries: list[tuple[dict[str, Any], dict[str, Any]
         if meta["source_kind"] != "optional":
             continue
         by_cat[meta["category"]].append((meta, parsed))
-    for k in by_cat:
-        by_cat[k].sort(key=lambda e: e[0]["slug"])
+    for entries in by_cat.values():
+        entries.sort(key=lambda e: e[0]["slug"])
 
     lines = [
         "---",
@@ -701,14 +721,6 @@ def write_sidebar(entries):
     sidebar_path = REPO / "website" / "sidebars.ts"
     text = sidebar_path.read_text(encoding="utf-8")
     # Replace the existing Skills block.
-    pattern = re.compile(
-        r"        \{\n"
-        r"          type: 'category',\n"
-        r"          label: 'Skills',\n"
-        r"(?:.*?\n)*?"
-        r"        \},\n",
-        re.DOTALL,
-    )
     # Safer: match the exact current block shape.
     old_block_start = "        {\n          type: 'category',\n          label: 'Skills',\n"
     i = text.find(old_block_start)

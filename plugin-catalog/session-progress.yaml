@@ -1,0 +1,19 @@
+name: session-progress
+title: Session Progress
+repo: https://github.com/ormeilu/hermes-session-progress
+sha: 77f835481277a9ead1ea333afd5fe6070feed7d1
+description: Show a horizontal progress bar, measured pace, and estimated time remaining for the focused Hermes Desktop session.
+maintainer: ormeilu
+tier: community
+category: desktop
+requires_hermes: ">=0.23.2"
+docs_url: https://github.com/ormeilu/hermes-session-progress/tree/77f835481277a9ead1ea333afd5fe6070feed7d1
+version: "1.0.0"
+image: https://raw.githubusercontent.com/ormeilu/hermes-session-progress/77f835481277a9ead1ea333afd5fe6070feed7d1/docs/preview.png
+screenshots:
+  - https://raw.githubusercontent.com/ormeilu/hermes-session-progress/77f835481277a9ead1ea333afd5fe6070feed7d1/docs/preview.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,19 @@
+name: maven-bio
+title: Maven Bio
+repo: https://github.com/MavenBio/maven-bio-plugin
+sha: e77a5d04c238e741bf41bfdde2fc3e1d4d0bcd1f
+subdir: plugins/maven-bio
+version: "0.6.0"
+description: "Live intelligence for biopharma teams through Maven Bio's official MCP server (Streamable HTTP at https://mcp.mavenbio.com, OAuth sign-in, no keys in config): linked drug, trial, company, indication, mechanism, and target records, source documents behind an answer, deals, financings, and monitoring signals. Bundles 16 research workflow skills (competitive pipelines, asset and company profiles, indication research, market sizing, deal and financing activity, analogs, and evidence synthesis). Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only, no Python or executables. Needs a Maven Bio account. Disclosure — hosted-only connector; every tool call goes to mcp.mavenbio.com and is scoped to the signed-in Maven Bio account and organization. All tools are read-only. The tool set is served by the remote server at runtime and is not covered by the pinned sha. Sign-in runs through the separate maven-bio MCP catalog entry, since Hermes does not run OAuth for a server declared by a portable plugin."
+maintainer: Maven Bio
+tier: community
+category: tools
+docs_url: https://mavenbio.com/integrations/mcp
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

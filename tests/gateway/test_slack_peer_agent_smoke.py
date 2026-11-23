@@ -45,7 +45,7 @@ import plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter
 
 
 BOT_USER_ID = "U_TARGET_BOT"
@@ -172,3 +172,41 @@ class TestSlackPeerAgentSmoke:
         )
         smoke_adapter._fetch_thread_context.assert_awaited_once()
 
+
+
+    @pytest.mark.asyncio
+    async def test_peer_bot_known_only_via_users_info_arrives_flagged_as_bot(self, smoke_adapter):
+        """A peer agent posting as a bot *user* (no bot_id/subtype) passes the drop gates under
+        allow_bots=mentions via users.info; it must reach the gateway as a bot, or the bot loop
+        guard and SLACK_ALLOW_BOTS never see it (#143370)."""
+        smoke_adapter._get_client = lambda *_a, **_kw: smoke_adapter._app.client
+        smoke_adapter._app.client.users_info = AsyncMock(
+            return_value={"ok": True, "user": {"is_bot": True, "profile": {}}})
+
+        await smoke_adapter._handle_slack_message(_make_event(
+            text=f"<@{BOT_USER_ID}> your turn", user=PEER_USER_ID, ts=REPLY_TS))
+
+        smoke_adapter.handle_message.assert_awaited_once()
+        assert smoke_adapter.handle_message.await_args.args[0].source.is_bot is True
+
+    @pytest.mark.asyncio
+    async def test_peer_bot_early_authorization_uses_cached_users_info_verdict(self, smoke_adapter):
+        """A bot with no payload bot markers must not be rejected as an unlisted human
+        before SLACK_ALLOW_BOTS=mentions can grant it access (#143370)."""
+        smoke_adapter._get_client = lambda *_a, **_kw: smoke_adapter._app.client
+        smoke_adapter._app.client.users_info = AsyncMock(
+            return_value={"ok": True, "user": {"is_bot": True, "profile": {}}})
+        checked_bot_flags = []
+
+        def authorize_bot_only(user_id, chat_type, chat_id, *, is_bot=False, thread_id=None):
+            checked_bot_flags.append(is_bot)
+            return user_id == PEER_USER_ID and is_bot
+
+        smoke_adapter.set_authorization_check(authorize_bot_only)
+
+        await smoke_adapter._handle_slack_message(_make_event(
+            text=f"<@{BOT_USER_ID}> your turn", user=PEER_USER_ID, ts=REPLY_TS))
+
+        assert checked_bot_flags and checked_bot_flags[0] is True
+        smoke_adapter.handle_message.assert_awaited_once()
+        assert smoke_adapter.handle_message.await_args.args[0].source.is_bot is True

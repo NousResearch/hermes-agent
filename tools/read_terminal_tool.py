@@ -42,7 +42,9 @@ def read_terminal_tool(
         "read_terminal is only available in the Hermes desktop app.",
         "start_line and count must be integers.",
         "Failed to read terminal: ",
-        "No in-app terminal is open, or the read timed out.",
+        "No in-app terminal answered: nothing is open, or the bridge timed out. "
+        "If the terminal pane IS open, the desktop app may be older than this "
+        "backend — update it and retry.",
     ))
 
 

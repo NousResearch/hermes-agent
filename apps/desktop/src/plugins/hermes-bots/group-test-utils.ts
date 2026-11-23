@@ -23,6 +23,28 @@
 import type { PluginContext } from '@hermes/plugin-sdk'
 import { vi } from 'vitest'
 
+import type { DurableGroupChat } from './types'
+
+export const HELD_GROUP_ROOM: DurableGroupChat = {
+  log: [{ id: 'm1', thread: 't1', at: 1, from: { kind: 'user', name: 'You' }, text: '@alpha stop' }],
+  holdDetection: false,
+  heldMessages: { alpha: ['m1'] },
+  watermarks: { 't1::alpha': 1 },
+  sessions: { alpha: 'sid-alpha' },
+  sessionOwners: { alpha: { name: 'alpha', connectionId: 'owner' } },
+  stranded: { beta: 0 },
+  holds: { alpha: { at: 1 } },
+  externalCursors: { beta: 3 },
+  members: [{ name: 'alpha' }, { name: 'beta' }],
+  roomId: 'room-held',
+  engine: 'desktop',
+  image: 'data:image/png;base64,AA',
+  rosterOrder: 2,
+  pinned: true,
+  sectionId: 'work',
+  syncRevision: 4
+}
+
 /** One message in a scripted session transcript, in the gateway's own shape. */
 export interface ScriptedMessage {
   content: string
@@ -176,7 +198,58 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
     return stored ? sessions.get(stored) || null : null
   }
 
+  // `profiles.configure`: CAS-checked ui_meta writes, with an optional one-shot conflict.
+  const configureProfiles = (params: Record<string, unknown>) => {
+    if (options.conflictOnce && !conflicted) {
+      conflicted = true
+      const { key, value } = options.conflictOnce
+      uiMeta[key] = value
+      uiMetaRevisions[key] = (uiMetaRevisions[key] || 0) + 1
+
+      return {
+        applied: {
+          ui_meta: false,
+          ui_meta_conflicts: { [key]: { actual: uiMetaRevisions[key], expected: uiMetaRevisions[key] - 1 } },
+          ui_meta_revisions: { ...uiMetaRevisions }
+        }
+      }
+    }
+
+    const expected = params.ui_meta_expected_revisions as Record<string, number> | undefined
+    const incoming = (params.ui_meta || {}) as Record<string, unknown>
+
+    if (expected) {
+      for (const key of Object.keys(incoming)) {
+        if ((uiMetaRevisions[key] || 0) !== expected[key]) {
+          return {
+            applied: {
+              ui_meta: false,
+              ui_meta_conflicts: { [key]: { actual: uiMetaRevisions[key] || 0, expected: expected[key] } }
+            }
+          }
+        }
+      }
+    }
+
+    for (const [key, value] of Object.entries(incoming)) {
+      if (value === null) {
+        delete uiMeta[key]
+      } else {
+        uiMeta[key] = value
+      }
+
+      uiMetaRevisions[key] = (uiMetaRevisions[key] || 0) + 1
+    }
+
+    return { applied: { ui_meta: true, ui_meta_revisions: { ...uiMetaRevisions } } }
+  }
+
   const handle = async (method: string, params: Record<string, unknown>): Promise<unknown> => {
+    // A legacy Desktop room: no hosted-room driver, nonpersistent owner.
+    if (method === 'groups.capabilities') {
+      return { driver: false, persistent_process: false }
+    }
+
     if (method === 'profiles.list') {
       return {
         profiles: [{ name: 'default', ui_meta: { ...uiMeta }, ui_meta_revisions: { ...uiMetaRevisions } }]
@@ -184,48 +257,7 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
     }
 
     if (method === 'profiles.configure') {
-      if (options.conflictOnce && !conflicted) {
-        conflicted = true
-        const { key, value } = options.conflictOnce
-        uiMeta[key] = value
-        uiMetaRevisions[key] = (uiMetaRevisions[key] || 0) + 1
-
-        return {
-          applied: {
-            ui_meta: false,
-            ui_meta_conflicts: { [key]: { actual: uiMetaRevisions[key], expected: uiMetaRevisions[key] - 1 } },
-            ui_meta_revisions: { ...uiMetaRevisions }
-          }
-        }
-      }
-
-      const expected = params.ui_meta_expected_revisions as Record<string, number> | undefined
-      const incoming = (params.ui_meta || {}) as Record<string, unknown>
-
-      if (expected) {
-        for (const key of Object.keys(incoming)) {
-          if ((uiMetaRevisions[key] || 0) !== expected[key]) {
-            return {
-              applied: {
-                ui_meta: false,
-                ui_meta_conflicts: { [key]: { actual: uiMetaRevisions[key] || 0, expected: expected[key] } }
-              }
-            }
-          }
-        }
-      }
-
-      for (const [key, value] of Object.entries(incoming)) {
-        if (value === null) {
-          delete uiMeta[key]
-        } else {
-          uiMeta[key] = value
-        }
-
-        uiMetaRevisions[key] = (uiMetaRevisions[key] || 0) + 1
-      }
-
-      return { applied: { ui_meta: true, ui_meta_revisions: { ...uiMetaRevisions } } }
+      return configureProfiles(params)
     }
 
     if (method === 'session.create') {
@@ -445,8 +477,23 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
  *  the `vi.mock` factory rather than hoisted alongside it. */
 export async function pluginSdkMock(host: Record<string, unknown>) {
   const nanostores = await import('nanostores')
+  const { Textarea } = await import('@/components/ui/textarea')
+  const { cn } = await import('@/lib/utils')
+  const { randomUuid } = await import('@hermes/shared')
+  const { LruCache } = await import('@/lib/lru-cache')
+
+  // The gateway Group Chat row's right-click menu (#143571) renders the real one.
+  const { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } =
+    await import('@/components/ui/context-menu')
 
   return {
+    Textarea,
+    ContextMenu,
+    ContextMenuContent,
+    ContextMenuItem,
+    ContextMenuSeparator,
+    ContextMenuTrigger,
+    cn,
     // Real value: approval.respond forwards it as its client deadline (#60654).
     APPROVAL_RESPOND_TIMEOUT_MS: 300_000,
     atom: nanostores.atom,
@@ -457,7 +504,21 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     blobatarSvg: undefined,
     computed: nanostores.computed,
     createBudgetedLoop: undefined,
+    gatewayActivationEpoch: () => 0,
+    GlyphSpinner: () => null,
+    // The room views' shared parts (group-room-ui.tsx) wear the main composer's classes.
+    Codicon: () => null,
+    profileColor: () => '#8b5cf6',
+    GHOST_ICON_BTN: '',
+    PRIMARY_ICON_BTN: '',
+    composerInputBacking: '',
+    composerSurfaceRing: '',
+    relativeTime: (ms: number) => new Date(ms).toISOString(),
+    Tip: ({ children }: { children: unknown }) => children,
+    useGatewayActivationEpoch: () => 0,
     host,
+    LruCache,
+    randomUuid,
     CapabilitiesView: undefined,
     MessageTextContent: undefined,
     Streamdown: undefined,

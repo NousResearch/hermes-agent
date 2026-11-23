@@ -15,7 +15,7 @@ from pm.lock import Lockfile
 from pm.registry import get_package
 from pm.store import ALL_TARGETS
 from tests.pm._fixtures import make_tar
-from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
+from tests.pm._range_server import RangeHandler, dl_server, url
 
 
 @pytest.fixture
@@ -159,7 +159,7 @@ def test_resolution_reuses_successful_responses_but_refreshes_next_operation(ups
         # Manual re-pinning also needs a short-lived index scope after removing
         # the old process-wide FFmpeg indexes. Pin real bytes into a real lock.
         failures.clear()
-        monkeypatch.setattr(package, "gaps", {**package.gaps, "linux-arm64-bionic": "separate supplier"})
+        monkeypatch.setattr(type(package), "gaps", {**package.gaps, "linux-arm64-bionic": "separate supplier"})
         body = b"advertised ffmpeg artifact"
         for urls in decision.artifact_updates.values():
             RangeHandler.payloads[urlsplit(urls[0]).path] = body
@@ -209,7 +209,7 @@ def test_pinning_hashes_new_npm_url_once_and_keeps_existing_rows(upstream, tmp_p
                                per_target=dict.fromkeys(ALL_TARGETS, version))
     pinned = cli._pin_artifacts(package, decision, current)
     assert current == {"any": old, "unresolved-target": old}
-    assert pinned == {**current, **dict.fromkeys(ALL_TARGETS, {"url": artifact_url, "sha256": digest})}
+    assert pinned == {**current, **{key: {"url": artifact_url, "sha256": digest} for key in ALL_TARGETS}}
     assert Counter(path for path, _ in calls) == {artifact_path: 1}
 
     # Existing pins need no download; a separate pin invocation must not retain new hashes.

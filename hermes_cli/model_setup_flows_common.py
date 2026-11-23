@@ -98,11 +98,10 @@ def _commit_model_config(cfg: dict) -> None:
 
 
 def _persist_model(selected: str, provider: str, *, base_url: str | None = None, api_mode: str | None = None,
-                   drop_base_url: bool = False, drop_api_mode: bool = False, clear_creds: bool = True,
-                   finish=None) -> dict:
+                   drop_base_url: bool = False, drop_api_mode: bool = False, finish=None) -> dict:
     """The standard persist step: ``_save_model_choice`` → model section with ``provider``,
     ``base_url`` then ``api_mode`` (that order is the config.yaml key order) → scrub inline
-    endpoint credentials (``clear_creds``; ``drop_api_mode`` also pops ``api_mode``) →
+    endpoint credentials (``drop_api_mode`` also pops ``api_mode``) →
     *finish(cfg, model)* for extra sections → save + deactivate OAuth provider."""
     cfg, model = _begin_model_config(selected, provider)
     if base_url is not None:
@@ -111,10 +110,7 @@ def _persist_model(selected: str, provider: str, *, base_url: str | None = None,
         model["api_mode"] = api_mode
     if drop_base_url:
         model.pop("base_url", None)
-    if clear_creds:
-        clear_model_endpoint_credentials(model, clear_api_mode=drop_api_mode)
-    elif drop_api_mode:
-        model.pop("api_mode", None)
+    clear_model_endpoint_credentials(model, clear_api_mode=drop_api_mode)
     if finish is not None:
         finish(cfg, model)
     _commit_model_config(cfg)
@@ -229,21 +225,24 @@ def _oauth_gate(logged_in: bool, name: str, login_fn, *login_args, fresh_name: s
 
 
 def _models_dev_merged(provider_id: str, curated) -> list:
-    """models.dev agentic models for *provider_id* plus curated ids not yet listed
-    (case-insensitive). Empty list when models.dev has nothing / is unavailable."""
+    """Curated ids first (our agentic picks lead, and models.dev lag can't hide new ones), then
+    models.dev agentic models not yet listed (case-insensitive; models.dev's spelling wins since
+    it comes from the provider). Live-first providers keep
+    models.dev order ahead of curated, matching ``_profile_live_catalog``. Empty list when
+    models.dev has nothing / is unavailable."""
+    from hermes_cli.models_catalog_static import _LIVE_FIRST_PICKER_PROVIDERS
     mdev_models: list = []
     with contextlib.suppress(Exception):
         from agent.models_dev import list_agentic_models
         mdev_models = list_agentic_models(provider_id)
     if not mdev_models:
         return []
-    seen = {m.lower() for m in mdev_models}
-    merged = list(mdev_models)
-    for m in curated:
-        if m.lower() not in seen:
-            merged.append(m)
-            seen.add(m.lower())
-    return merged
+    primary, secondary = (mdev_models, curated) if provider_id in _LIVE_FIRST_PICKER_PROVIDERS else (curated, mdev_models)
+    canonical = {m.lower(): m for m in mdev_models}
+    merged: dict = {}
+    for m in [*primary, *secondary]:
+        merged.setdefault(m.lower(), canonical.get(m.lower(), m))
+    return list(merged.values())
 
 
 def _show_curated(model_list) -> None:

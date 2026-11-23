@@ -92,7 +92,7 @@ def test_real_text_is_left_untouched():
     messages = [
         {"role": "user", "content": "what is 2+2?"},
     ]
-    system, result = convert_messages_to_anthropic(messages)
+    _system, result = convert_messages_to_anthropic(messages)
     # Content may be a plain string or a list of blocks; collect text either way.
     texts = []
     for m in result:

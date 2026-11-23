@@ -8,7 +8,13 @@ import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { hiddenPaneProps } from '@/components/pane-shell/pane-visibility'
 import { $activeTreeGroup, $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { I18nProvider } from '@/i18n'
-import { $settledClarifyResults, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
+import {
+  $settledClarifyResults,
+  clearClarifyRequest,
+  hasClarifyRequest,
+  setClarifyRequest,
+  settleAnsweredClarify
+} from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { $profiles } from '@/store/profile'
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
@@ -171,6 +177,32 @@ describe('ClarifyTool live card stays mounted across settle', () => {
     rerender(clarifyTree(<ClarifyTool {...liveClarifyProps()} />))
 
     expect(document.querySelector('form[data-clarify-batch]')).toBeTruthy()
+  })
+
+  it('settles a confirmed card that no tool.complete will follow once the gateway reports it resolved', async () => {
+    const { request } = renderLiveClarify()
+
+    fireEvent.click(screen.getByRole('button', { name: /staging/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Confirm and continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalled()
+      expect(hasClarifyRequest('session-1')).toBe(false)
+    })
+
+    // A plugin's `ctx.ask_choice` card has no tool call: the gateway's `request.cancel`
+    // (reason `resolved`) is the last signal it gets. Without it the row kept a disabled
+    // form on "Loading question…" for good.
+    act(() => {
+      expect(settleAnsweredClarify('request-1')).toBe(true)
+    })
+
+    expect(document.querySelector('[data-clarify-settled]')).toBeTruthy()
+    expect(document.querySelector('form[data-clarify-batch]')).toBeNull()
+    expect($settledClarifyResults.get()['request-1']).toEqual({
+      outcome: 'submitted',
+      responses: [{ question: 'Which deployment target?', status: 'answered', user_response: 'staging' }]
+    })
   })
 
   it('demotes when the turn is stopped after the card was live but never answered', () => {

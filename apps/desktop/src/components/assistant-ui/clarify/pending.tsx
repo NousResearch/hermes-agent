@@ -12,6 +12,7 @@ import {
   type ClarifyQuestion,
   type ClarifyRequest,
   clearClarifyRequest,
+  rememberConfirmedClarify,
   skipClarify
 } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
@@ -190,8 +191,11 @@ export function ClarifyToolPending({
       // it lands — a reordered burst could complete the batch with a missing
       // answer. `clarify.lock` is a normal RPC; it rides the session's OWNER
       // socket (a profile / Bot Chat switch re-points ambient elsewhere).
+      const answers: Record<string, null | string> = {}
+
       for (const question of questions) {
         const answer = stagedAnswer(question)
+        answers[question.qid] = answer
 
         await requestForOwnedSession<{ remaining?: string[]; status?: string }>(
           request.sessionId,
@@ -206,6 +210,9 @@ export function ClarifyToolPending({
       }
 
       forgetServerRequest(request.requestId)
+      // The gateway's `request.cancel` (reason `resolved`) follows the last lock's reply and settles the
+      // row from these answers when no `tool.complete` will: a plugin's card has no tool call.
+      rememberConfirmedClarify(request, answers)
 
       triggerHaptic('submit')
       onAnswered()

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $notifications, clearNotifications } from '@/store/notifications'
-import { $approvalRequests, clearApprovalRequest, setApprovalRequest } from '@/store/prompts'
+import { $approvalRequests, approvalKindFields, clearApprovalRequest, setApprovalRequest } from '@/store/prompts'
 import { $routeRequest } from '@/store/recovery-requests'
 
 import { handleInputRequestEvent } from './input-requests'
@@ -116,6 +116,38 @@ describe('approval request.cancel', () => {
 
     expect(next.messages[0].parts[0].text).toContain('access to Web search (api.keenable.ai) was not granted')
     expect(next.messages[0].parts[0].text).not.toMatch(/command/i)
+  })
+
+  it('timeout of two folders or sites that differ only in spacing: the toasts do not read the same', () => {
+    // A toast joins a run of spaces into one blank.
+    const drawn = (text: string) => text.replace(/[ \t\n]+/g, ' ').trim()
+
+    const toastFor = (fields: Record<string, unknown>) => {
+      clearNotifications()
+      setApprovalRequest({
+        sessionId: 's1',
+        command: '',
+        description: '',
+        requestId: 'req-1',
+        serverRequestId: 'srv-1',
+        ...approvalKindFields(fields)
+      })
+      handleInputRequestEvent(
+        context(
+          'timeout',
+          vi.fn((_: string, updater: (s: { messages: unknown[] }) => unknown) => updater({ messages: [] }))
+        )
+      )
+
+      return drawn($notifications.get()[0]?.message ?? '')
+    }
+
+    const folder = (path: string) => toastFor({ kind: 'access', path })
+    const site = (label: string) => toastFor({ host: 'example.com', kind: 'network', label })
+
+    expect(folder('/srv/Project  Files')).not.toBe(folder('/srv/Project Files'))
+    expect(folder('/srv/data ')).not.toBe(folder('/srv/data'))
+    expect(site('Web  search')).not.toBe(site('Web search'))
   })
 
   it('withdraws a queued request without dropping the front approval', () => {

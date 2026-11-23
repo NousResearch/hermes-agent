@@ -31,7 +31,8 @@ import {
   clearVaultUnlockRequest,
   networkTarget,
   networkTargetName,
-  sessionApprovalRequests
+  sessionApprovalRequests,
+  withSpaceRuns
 } from '@/store/prompts'
 import { requestRoute } from '@/store/recovery-requests'
 import { forgetServerRequest } from '@/store/server-requests'
@@ -105,9 +106,9 @@ function approvalTimeoutNotice(approval: ApprovalRequest) {
   const network = networkTarget(approval)
 
   const notGranted = access
-    ? translateNow('assistant.approval.access.timedOut', access.path)
+    ? translateNow('assistant.approval.access.timedOut', withSpaceRuns(access.path))
     : network
-      ? translateNow('assistant.approval.network.timedOut', networkTargetName(network))
+      ? translateNow('assistant.approval.network.timedOut', withSpaceRuns(networkTargetName(network)))
       : null
 
   return {

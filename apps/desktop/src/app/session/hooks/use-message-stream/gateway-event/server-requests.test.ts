@@ -208,6 +208,43 @@ describe('approval request routing', () => {
     expect(notify).not.toHaveBeenCalled()
   })
 
+  it.each([
+    [
+      'folders',
+      'a run of spaces inside',
+      { kind: 'access', path: 'C:\\Project  Files' },
+      { kind: 'access', path: 'C:\\Project Files' }
+    ],
+    ['folders', 'a space at the end', { kind: 'access', path: 'C:\\docs ' }, { kind: 'access', path: 'C:\\docs' }],
+    [
+      'sites',
+      'a run of spaces inside',
+      { host: 'example.com', kind: 'network', label: 'Web  search' },
+      { host: 'example.com', kind: 'network', label: 'Web search' }
+    ]
+  ])('names two %s that differ only by %s differently in the notification', (what, how, first, second) => {
+    // The operating system draws the notification, and its Allow button answers the card. Where a
+    // run of spaces is drawn as one blank, the two names must still not read the same.
+    const drawn = (text: string) => text.replace(/[ \t\n]+/g, ' ').trim()
+    const id = `${what}-${how.length}`
+
+    deliver(
+      'approval',
+      { ...first, command: '', request_id: `card-${id}-1`, session_id: `session-${id}-1` },
+      'session-b'
+    )
+    deliver(
+      'approval',
+      { ...second, command: '', request_id: `card-${id}-2`, session_id: `session-${id}-2` },
+      'session-b'
+    )
+
+    const [one, two] = notify.mock.calls.map(([notice]) => drawn(String(notice.body)))
+
+    expect(notify).toHaveBeenCalledTimes(2)
+    expect(one).not.toBe(two)
+  })
+
   it('parks a site card with its label and names the site in the notification', () => {
     deliver(
       'approval',

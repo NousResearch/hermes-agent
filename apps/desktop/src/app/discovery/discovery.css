@@ -211,52 +211,17 @@
   text-align: start;
 }
 
-/* The place speaks while the pointer or focus is on the rows: its fill, its example for its line, no
-   check (18695:17294). Away from them the card rests with every row's line (18695:17833). */
-:root[data-shell='portal']
-  .discovery-welcome-places:is(:hover, :focus-within)
-  > li[data-active]
-  .discovery-welcome-place {
+/* One place speaks at a time: its fill, its example for its line, no check (18695:17294). Chats
+   speaks from the start, so the card opens showing that a row has more to say and the others are
+   there to be reached; the rest say their lines (18695:17833). */
+:root[data-shell='portal'] .discovery-welcome-places > li[data-active] .discovery-welcome-place {
   background-color: var(--portal-surface-selected);
 }
 
-/* The speaking row's fill covers the divider above it, as Figma's 65px fill does. */
-:root[data-shell='portal'] .discovery-welcome-places:is(:hover, :focus-within) > li[data-active]::before,
-:root[data-shell='portal'] .discovery-welcome-places:is(:hover, :focus-within) > li[data-active] + li::before {
+/* The speaking row's fill covers the divider above it, as Figma's fill does. */
+:root[data-shell='portal'] .discovery-welcome-places > li[data-active]::before,
+:root[data-shell='portal'] .discovery-welcome-places > li[data-active] + li::before {
   visibility: hidden;
-}
-
-:root[data-shell='portal'] .discovery-welcome-place-lines {
-  display: grid;
-}
-
-/* A row that can speak holds an example of up to two lines inside the same 65px as a resting row
-   (Capabilities / Information row 18811:5635), so a long example does not make its row the tall one. */
-:root[data-shell='portal'] .discovery-welcome-place:has([data-example]) {
-  /* token-exempt: Figma's 65px row */
-  min-block-size: 4.0625rem;
-  padding-block: 0.25rem;
-}
-
-/* The line and the example share one cell; the one not speaking keeps its room, unseen. */
-:root[data-shell='portal'] .discovery-welcome-place-line {
-  grid-area: 1 / 1;
-}
-
-:root[data-shell='portal'] .discovery-welcome-place-line[data-example],
-:root[data-shell='portal']
-  .discovery-welcome-places:is(:hover, :focus-within)
-  > li[data-active]
-  .discovery-welcome-place-lines
-  > :not([data-example]) {
-  visibility: hidden;
-}
-
-:root[data-shell='portal']
-  .discovery-welcome-places:is(:hover, :focus-within)
-  > li[data-active]
-  .discovery-welcome-place-line[data-example] {
-  visibility: visible;
 }
 
 :root[data-shell='portal'] .discovery-welcome-place:focus-visible {
@@ -281,6 +246,29 @@
   flex-direction: column;
   gap: 0.125rem;
   min-inline-size: 0;
+}
+
+/* The line and the example share one cell, so a row is as tall as the longer of the two and none
+   moves when another speaks; the one not speaking keeps its room, unseen. */
+:root[data-shell='portal'] .discovery-welcome-place-lines {
+  display: grid;
+}
+
+:root[data-shell='portal'] .discovery-welcome-place-lines > .discovery-welcome-place-line {
+  grid-area: 1 / 1;
+}
+
+:root[data-shell='portal'] .discovery-welcome-place-line[data-example],
+:root[data-shell='portal']
+  .discovery-welcome-places
+  > li[data-active]
+  .discovery-welcome-place-lines
+  > :not([data-example]) {
+  visibility: hidden;
+}
+
+:root[data-shell='portal'] .discovery-welcome-places > li[data-active] .discovery-welcome-place-line[data-example] {
+  visibility: visible;
 }
 
 /* The place's name: Nous/Body Regular at the 14px body; its line: Nous/Metadata, mono at .6. */
@@ -332,10 +320,7 @@
   color: var(--portal-text-chrome);
 }
 
-:root[data-shell='portal']
-  .discovery-welcome-places:is(:hover, :focus-within)
-  > li[data-active]
-  .discovery-welcome-seen {
+:root[data-shell='portal'] .discovery-welcome-places > li[data-active] .discovery-welcome-seen {
   visibility: hidden;
 }
 
@@ -406,25 +391,11 @@
   box-shadow: none;
 }
 
-/* While the splash is up the rail lights only the place a row is pointing at (18695:17294,
-   18695:17488): the open destination's selection stands down. */
+/* While a splash is up the open destination's selection stands down in the rail (18695:17294,
+   18695:17488): the only place marked is the one a row is pointing at, by the spotlight's ring. */
 :root[data-shell='portal'][data-discovery-splash] [data-slot='global-nav'] .portal-chrome-button[aria-current='page'] {
   background-color: var(--portal-rail-fill);
   color: var(--portal-rail-ink);
-}
-
-/* The place the welcome's rows point at, while the pointer or focus is on them (first-time-splash.tsx
-   names it on the root: a :root:has() here restyles the whole document on every DOM change). */
-:root[data-shell='portal'][data-discovery-place='chats'] [data-slot='global-nav'] .portal-chrome-button[data-nav-spot='chat'],
-:root[data-shell='portal'][data-discovery-place='agents']
-  [data-slot='global-nav']
-  .portal-chrome-button[data-nav-spot='profiles'],
-:root[data-shell='portal'][data-discovery-place='routines'] [data-slot='global-nav'] .portal-chrome-button[data-nav-spot='cron'],
-:root[data-shell='portal'][data-discovery-place='library']
-  [data-slot='global-nav']
-  .portal-chrome-button[data-nav-spot='artifacts'] {
-  background-color: var(--portal-rail-fill-selected);
-  color: var(--portal-rail-ink-selected);
 }
 
 /* ── Sign-in recovery (18732:33066, 18695:19224): the welcome card's rows, each with a status ── */
@@ -740,13 +711,6 @@
   /* The count hugs its digits, so the row's lines keep the width. */
   :root[data-shell='portal'] .discovery-welcome-place-meta {
     min-inline-size: 0;
-  }
-
-  /* Lines and examples wrap here, each to a different depth: the rows hang from their tops so every
-     name sits at the same offset, whichever of the two is the longer. */
-  :root[data-shell='portal'] .discovery-welcome-place:has([data-example]) {
-    align-items: flex-start;
-    padding-block: 0.75rem;
   }
 }
 

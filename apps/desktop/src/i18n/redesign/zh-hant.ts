@@ -816,6 +816,12 @@ export const zhHantRedesign: RedesignOverlay = {
       errorOauthExpired: provider => `你的 ${provider} 登入已過期或被撤銷。請重新登入以繼續對話。`
     },
     approval: {
+      access: {
+        alwaysDescription: '此資料夾將加入此智慧體的沙箱。Hermes 在任何對話中都不會再詢問。'
+      },
+      network: {
+        alwaysDescription: '此網站將加入此智慧體的允許網站。Hermes 在任何對話中都不會再詢問。'
+      },
       gatewayDisconnected: '機器未連線',
       allowSession: '允許本對話',
       alwaysDescription: pattern =>
@@ -958,7 +964,7 @@ export const zhHantRedesign: RedesignOverlay = {
     noArtifactsDesc: '對話產生圖片和檔案輸出時，它們會顯示在這裡。',
     failedLoad: '資源庫載入失敗',
     colSession: '對話',
-    chat: '對話',
+    chat: '對話'
   },
   artifactPreview: {
     missingTitle: '項目無法使用',

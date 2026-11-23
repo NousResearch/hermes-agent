@@ -9,13 +9,17 @@
 
 :where(:root[data-shell='portal']) .portal-page-hero {
   /* Each art sets its Figma box: --page-hero-min-width (the panel width Figma draws it on) and
-     --page-hero-ratio. A wider stage scales the box up; a narrower one crops it at the far side. */
+     --page-hero-height. The band keeps that height on every stage, and a narrower stage crops it at
+     the far side. Scaled up in proportion on a wider one it grew as tall as the page (830px on a
+     2000px window), its brightest part behind the whole content, and the page could not be read. What
+     a wider stage does instead is each art's own: a band across the top stretches sideways, an art
+     that lives in the far corner stays that size in that corner. */
   position: absolute;
   inset-block-start: 0;
   inset-inline-start: var(--page-stage-nav, 0px);
   width: max(100% - var(--page-stage-nav, 0px), var(--page-hero-min-width));
-  aspect-ratio: var(--page-hero-ratio);
-  background: var(--page-hero-art) left top / cover no-repeat;
+  height: var(--page-hero-height);
+  background: var(--page-hero-art) left top / 100% 100% no-repeat;
   mix-blend-mode: var(--page-hero-blend);
   pointer-events: none;
   /* The band reaches the panel's top far corner and takes its radius itself: a blended box is
@@ -43,7 +47,13 @@
    the fade leaves; dark 1536x804 (1.5x), light 1024x536 (its Figma source is 1024 wide). */
 :where(:root[data-shell='portal']) .portal-page-hero[data-art='tide'] {
   --page-hero-min-width: 64rem;
-  --page-hero-ratio: 1024 / 536;
+  --page-hero-height: 33.5rem;
+
+  /* Its light is in the far top corner: on a wider stage it stays this size there, clear of the
+     page's column, and its thin line across the top fades in where the box now starts mid-stage. */
+  inset-inline-start: max(var(--page-stage-nav, 0px), calc(100% - var(--page-hero-min-width)));
+  width: var(--page-hero-min-width);
+  mask-image: linear-gradient(to right, transparent, var(--portal-raw-black) 6rem);
 }
 
 :where(:root[data-shell='portal'].dark) .portal-page-hero[data-art='tide'] {
@@ -61,14 +71,18 @@
    panel's trailing corner, so its box keeps to the trailing edge. */
 :where(:root[data-shell='portal']) .portal-page-hero[data-art='stream'] {
   --page-hero-min-width: 53.75rem;
+  --page-hero-height: 20.5rem;
   --page-hero-ratio: 860 / 328;
 }
 
 :where(:root[data-shell='portal']) .portal-page-hero[data-art='veil'] {
   --page-hero-min-width: 53.75rem;
+  --page-hero-height: 30rem;
   --page-hero-ratio: 860 / 480;
 
+  /* A shape, not streaks: it keeps its own proportions in the trailing corner, where its art is. */
   inset-inline: auto 0;
+  width: var(--page-hero-min-width);
 }
 
 :where(:root[data-shell='portal'].dark) .portal-page-hero[data-art='stream'] {
@@ -92,5 +106,9 @@
 @media (max-width: 639.98px) {
   :where(:root[data-shell='portal']) .portal-page-hero:is([data-art='stream'], [data-art='veil']) {
     --page-hero-min-width: 0px;
+
+    width: 100%;
+    height: auto;
+    aspect-ratio: var(--page-hero-ratio);
   }
 }

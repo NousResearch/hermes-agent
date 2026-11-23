@@ -7,7 +7,7 @@
   "rpc": {
    "authority": 115,
    "keep-host-wide": 1,
-   "undecided": 178
+   "undecided": 179
   },
   "websocket": {
    "undecided": 10
@@ -408,6 +408,7 @@
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "clarify.lock", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "clarify.respond", "kind": "rpc", "ref": ""},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "cli.exec", "kind": "rpc", "ref": "D3"},
+  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "client.activity", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "client.capabilities", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "clipboard.paste", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "command.dispatch", "kind": "rpc", "ref": ""},

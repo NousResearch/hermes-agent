@@ -52,11 +52,12 @@ import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } 
 import { useMessagesBelow } from './use-messages-below'
 import { useStickyPromptClip } from './use-sticky-prompt-clip'
 import { useTimelineReveal } from './use-timeline-reveal'
+import { useWheelScrollHoverRest } from './use-wheel-scroll-hover-rest'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
 export type MessageGroup = { id: string; weight: number } & (
-  { index: number; kind: 'standalone' } | { indices: number[]; kind: 'turn' }
+  { index: number; kind: 'standalone' } | { ids: string[]; indices: number[]; kind: 'turn' }
 )
 
 // DOM is bounded by a render-cost budget, not a message/turn count. The
@@ -302,14 +303,16 @@ export function buildGroups(signature: string): MessageGroup[] {
     }
 
     const indices = [message.index]
+    const ids = [message.id]
     let weight = message.weight
 
     while (i + 1 < messages.length && messages[i + 1].role !== 'user') {
       weight += messages[++i].weight
       indices.push(messages[i].index)
+      ids.push(messages[i].id)
     }
 
-    groups.push({ id: message.id, indices, kind: 'turn', weight })
+    groups.push({ id: message.id, ids, indices, kind: 'turn', weight })
   }
 
   return groups
@@ -493,15 +496,29 @@ const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized
             className="composer-human-ai-pair-container relative flex min-w-0 flex-col gap-(--conversation-turn-gap)"
             data-slot="aui_turn-pair"
           >
-            <ResponseMessages components={components} indices={group.indices} />
+            <ResponseMessages components={components} ids={group.ids} />
           </div>
         ) : (
-          <ThreadPrimitive.MessageByIndex components={components} index={group.index} />
+          <ThreadPrimitive.Unstable_MessageById components={components} messageId={group.id} />
         )}
       </MessageRenderBoundary>
     </div>
   )
 })
+
+// Secondary windows hide the titlebar chrome, so the scroller runs to
+// the window's top edge and streamed text slides up under the OS
+// traffic lights. Content padding alone scrolls away with the text — a
+// fixed opaque strip (the titlebar's drag region) masks anything behind
+// it and keeps the window draggable, matching the main window's header.
+function SecondaryTitlebarStrip() {
+  return (
+    <div
+      aria-hidden="true"
+      className="absolute inset-x-0 top-0 z-10 h-(--titlebar-height) bg-background [-webkit-app-region:drag]"
+    />
+  )
+}
 
 const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   clampToComposer,
@@ -1599,7 +1616,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   }, [visibleGroups, components, rowKeySignature, structuralSignature, tailStart])
 
   useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey, sessionId: scrollSessionId })
-  useStickyPromptClip({ contentRef, scrollRef, paneVisible, rows })
+  const promptEdgeRef = useRef<HTMLDivElement>(null)
+  useStickyPromptClip({ contentRef, edgeRef: promptEdgeRef, scrollRef, paneVisible, rows })
+  useWheelScrollHoverRest({ contentRef, scrollRef, paneVisible })
 
   return (
     <div
@@ -1611,17 +1630,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         } as CSSProperties
       }
     >
-      {secondaryWindow && (
-        // Secondary windows hide the titlebar chrome, so the scroller runs to
-        // the window's top edge and streamed text slides up under the OS
-        // traffic lights. Content padding alone scrolls away with the text — a
-        // fixed opaque strip (the titlebar's drag region) masks anything behind
-        // it and keeps the window draggable, matching the main window's header.
-        <div
-          aria-hidden="true"
-          className="absolute inset-x-0 top-0 z-10 h-(--titlebar-height) bg-background [-webkit-app-region:drag]"
-        />
-      )}
+      {secondaryWindow && <SecondaryTitlebarStrip />}
       <div
         className="size-full overflow-x-hidden overflow-y-auto overscroll-contain"
         data-following={isAtBottom ? 'true' : 'false'}
@@ -1665,6 +1674,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           )}
         </div>
       </div>
+      <div aria-hidden="true" className="hidden" data-slot="aui_sticky-prompt-edge" ref={promptEdgeRef} />
     </div>
   )
 }

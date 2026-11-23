@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { useI18n } from '@/i18n'
+import { X } from '@/lib/icons'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { applyAppearance, THEME_MODES } from '@/store/appearance-apply'
 import { freeTierSetupFailure } from '@/store/free-tier'
@@ -16,9 +17,11 @@ import {
 import { captureOnboardingScope, requestOnboardingGateway } from '@/store/onboarding-scope'
 import { normalizeProfileKey } from '@/store/profile'
 import {
+  $guideOfferDismissed,
   $guideRecovery,
   $guideScope,
   $guideStep,
+  dismissGuideOffer,
   finishOnboarding,
   reconcileOnboarding,
   resumeOnboarding,
@@ -36,6 +39,7 @@ export function SetupGuideOffer() {
   const { t } = useI18n()
   const recovery = useStore($guideRecovery)
   const guideScope = useStore($guideScope)
+  const dismissed = useStore($guideOfferDismissed)
   const scope = recovery?.scope ?? guideScope
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -43,6 +47,7 @@ export function SetupGuideOffer() {
   const retry = async () => {
     setBusy(true)
     setError(null)
+
     try {
       await (recovery ? recovery.retry() : resumeOnboarding())
     } catch (err) {
@@ -52,12 +57,27 @@ export function SetupGuideOffer() {
     }
   }
 
+  if (dismissed) {
+    return null
+  }
+
   return (
     <section
       aria-label={t.firstRun.guide.title}
       className="fixed bottom-4 end-4 z-(--z-onboarding) grid max-w-sm gap-3 rounded-xl bg-popover p-4 text-popover-foreground shadow-nous"
     >
-      <h2 className="font-medium">{t.firstRun.guide.title}</h2>
+      <div className="flex items-start justify-between gap-3">
+        <h2 className="font-medium">{t.firstRun.guide.title}</h2>
+        <Button
+          aria-label={t.common.close}
+          className="-me-1.5 -mt-1"
+          onClick={dismissGuideOffer}
+          size="icon-xs"
+          variant="ghost"
+        >
+          <X />
+        </Button>
+      </div>
       {scope && (
         <p className="text-xs text-muted-foreground">
           {[scope.connectionId, scope.profile].filter(Boolean).join(' / ')}
@@ -187,6 +207,7 @@ export function SetupGuide({ ctx }: { ctx: OnboardingContext }) {
       if (!current.ready) {
         await request('free_tier.provision')
       }
+
       await check()
     })
 
@@ -197,6 +218,7 @@ export function SetupGuide({ ctx }: { ctx: OnboardingContext }) {
       if (!$setupGuideOnboarding.get()) {
         return
       }
+
       setRuntime(current)
 
       if (!current.ready || current.source !== 'runtime_check') {

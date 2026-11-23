@@ -2,6 +2,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { ruApproval } from './ru_approval'
 import { ruBoot } from './ru_boot'
 import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
@@ -177,6 +178,14 @@ export const ruOverrides = {
       approvalTitleNamed: session => `Требуется одобрение — ${session}`,
       approveAction: 'Одобрить',
       rejectAction: 'Отклонить',
+      accessTitle: 'Нужен доступ к папке',
+      accessTitleNamed: session => `Нужен доступ к папке — ${session}`,
+      accessReadBody: folder => `Только чтение: ${folder}`,
+      accessReadWriteBody: folder => `Чтение и запись: ${folder}`,
+      networkTitle: 'Нужен доступ к сайту',
+      networkTitleNamed: session => `Нужен доступ к сайту — ${session}`,
+      allowAction: 'Разрешить',
+      denyAction: 'Запретить',
       inputTitle: 'Требуется ввод',
       inputTitleNamed: session => `Требуется ввод — ${session}`,
       inputBody: 'Hermes ожидает ваш ответ.',
@@ -2147,6 +2156,7 @@ export const ruOverrides = {
   },
   profiles: {
     close: 'Закрыть профили',
+    remoteOverride: { runHere: 'Запускать на этом компьютере…' },
     nameHint: 'Строчные буквы, цифры, дефисы и подчёркивания. Должно начинаться с буквы или цифры.',
     title: 'Профили',
     count: count => `${count} ${RU_PLURAL(count, 'профиль', 'профиля', 'профилей')}`,
@@ -3667,21 +3677,7 @@ export const ruOverrides = {
       sendEdited: 'Отправить изменённое сообщение',
       attachingFile: 'Прикрепление…'
     },
-    approval: {
-      gatewayDisconnected: 'Шлюз Hermes не подключён',
-      sendFailed: 'Не удалось отправить ответ на подтверждение',
-      run: 'Выполнить',
-      command: 'Команда',
-      moreOptions: 'Больше опций подтверждения',
-      allowSession: 'Разрешить в этом сеансе',
-      alwaysAllowMenu: 'Всегда разрешать…',
-      jumpToApproval: 'Нужно подтверждение',
-      reject: 'Отклонить',
-      alwaysTitle: 'Всегда разрешать эту команду?',
-      alwaysDescription: pattern =>
-        `Это добавит паттерн «${pattern}» в ваш постоянный список разрешений (~/.hermes/config.yaml). Hermes больше не будет спрашивать о подобных командах — ни в этом сеансе, ни в будущем.`,
-      alwaysAllow: 'Всегда разрешать'
-    },
+    approval: ruApproval,
     clarify: ruClarify,
     themePicker: ruThemePicker,
     catalogInstall: {

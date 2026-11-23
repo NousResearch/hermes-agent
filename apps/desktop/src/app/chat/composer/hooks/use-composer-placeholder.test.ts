@@ -3,8 +3,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { firstTimeCopy } from '@/app/discovery/first-time-copy'
 import { en } from '@/i18n/en'
+import { beginBackendTransition, resetBackendTransitionsForTests } from '@/store/backend-transition'
 import { NEW_SESSION_DRAFT_KEY } from '@/store/composer'
 import { $guidanceLedger } from '@/store/guidance-ledger'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $shellChoice } from '@/store/shell-variant'
 
 import { useComposerPlaceholder } from './use-composer-placeholder'
@@ -31,6 +33,8 @@ function renderPlaceholder(initialProps: Props = { scope: fresh, sessionId: null
 afterEach(() => {
   $shellChoice.set(null)
   $guidanceLedger.set({})
+  resetBackendTransitionsForTests()
+  $activeGatewayProfile.set('default')
 })
 
 it('re-rolls to a follow-up as soon as the landing routes to an existing chat, before its runtime binds', () => {
@@ -124,4 +128,42 @@ describe('a newcomer’s new chat in the redesign', () => {
 
     expect(starters).toContain(result.current.placeholder)
   })
+})
+
+type PlaceholderOptions = Parameters<typeof useComposerPlaceholder>[0]
+
+const stored = (options: Partial<PlaceholderOptions>): PlaceholderOptions => ({
+  disabled: false,
+  ideasBelow: false,
+  reconnecting: false,
+  scope: 's1',
+  sessionId: 's1',
+  ...options
+})
+
+it("names the profile's sandbox restart instead of 'Reconnecting to Hermes…' while the socket is down", () => {
+  $activeGatewayProfile.set('work')
+  beginBackendTransition('work', 'restarting', { source: 'launcher' })
+
+  const { result, rerender } = renderHook(props => useComposerPlaceholder(props), {
+    initialProps: stored({ disabled: true, reconnecting: true })
+  })
+
+  expect(result.current.placeholder).toBe('Restarting sandbox…')
+
+  rerender(stored({ disabled: true, profile: 'default', reconnecting: true }))
+  expect(result.current.placeholder).toBe('Reconnecting to Hermes…')
+})
+
+it("names the profile's sandbox start while the connection is still open", () => {
+  beginBackendTransition('work', 'starting', { source: 'switch' })
+
+  const { result, rerender } = renderHook(props => useComposerPlaceholder(props), {
+    initialProps: stored({ profile: 'work' })
+  })
+
+  expect(result.current.placeholder).toBe('Starting sandbox…')
+
+  rerender(stored({ profile: 'default' }))
+  expect(result.current.placeholder).not.toBe('Starting sandbox…')
 })

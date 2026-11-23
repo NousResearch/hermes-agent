@@ -4,7 +4,6 @@ import { useLocation } from 'react-router'
 
 import { $hiddenStripTabs, $hiddenTreePanes, setTreePaneHidden } from '@/components/pane-shell/tree/store'
 import { setPaneRouteCollapsed } from '@/components/pane-shell/tree/store-route-collapse'
-import { $firstTimeSplashHoldsSidebar } from '@/store/first-time-splash'
 import { $focusedSessionIsTile } from '@/store/session-focus'
 import { usePortalShell } from '@/store/shell-variant'
 import { $signInFailed } from '@/store/visitor-access'
@@ -29,12 +28,11 @@ function NavigationWithChatSidebar(props: Props) {
   const focusedChat = useStore($focusedSessionIsTile)
   const hiddenTabs = useStore($hiddenStripTabs)
   const hiddenPanes = useStore($hiddenTreePanes)
-  // Only a docked sidebar: below wide it is a sheet the band's menu opens, which the splash leaves be.
-  const firstTimeHolds = useStore($firstTimeSplashHoldsSidebar)
-  // The sign-in recovery screen has the stage to itself too (18732:33066).
+  // The sign-in recovery screen has the stage to itself (18732:33066). Only a docked sidebar: below
+  // wide it is a sheet the band's menu opens, which the screen leaves be.
   const recovering = useStore($signInFailed)
   const wide = useStore($widthClass) === 'wide'
-  const splashHoldsSidebar = (firstTimeHolds || recovering) && wide
+  const recoveryHoldsSidebar = recovering && wide
   const titlebarHeight = useTitlebarHeight()
   const view = appViewForPath(pathname)
   // Chats show the sidebar; workspace pages take the whole stage. A route overlay covers whichever
@@ -52,14 +50,14 @@ function NavigationWithChatSidebar(props: Props) {
 
   // Route visibility is transient: it collapses the sidebar without unmounting it (so returning to
   // a chat is a flip, not a rebuild) and never touches the user's own hide preference.
-  // The chat's tool panel follows the same layout: a page's right side is its own. The first-time
-  // splash and the sign-in recovery take the sidebar the same way while up (the welcome splash gives it
-  // back for its Chats row).
+  // The chat's tool panel follows the same layout: a page's right side is its own. The sign-in
+  // recovery takes the sidebar the same way while up. The splashes do not: they point at the
+  // navigation where it sits, and a sidebar that came and went under a row's hover moved the page.
   useLayoutEffect(() => {
     const offChat = covering ? coveredPageLayout : pageLayout
-    setPaneRouteCollapsed('sessions', offChat || splashHoldsSidebar)
+    setPaneRouteCollapsed('sessions', offChat || recoveryHoldsSidebar)
     setChatToolsOffRoute(offChat)
-  }, [covering, coveredPageLayout, pageLayout, splashHoldsSidebar])
+  }, [covering, coveredPageLayout, pageLayout, recoveryHoldsSidebar])
   useLayoutEffect(() => {
     setTreePaneHidden('sessions', userHidden)
   }, [userHidden, hiddenPanes])

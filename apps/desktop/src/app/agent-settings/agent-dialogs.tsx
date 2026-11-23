@@ -72,7 +72,7 @@ interface AgentDialogProps extends AgentDialogsOptions {
   onClose: () => void
 }
 
-function AgentDialog({ target, onClose, onRenamed }: AgentDialogProps) {
+export function AgentDialog({ target, onClose, onRenamed }: AgentDialogProps) {
   const { t } = useI18n()
   const c = useOverviewActionsCopy()
   const navigate = useNavigate()

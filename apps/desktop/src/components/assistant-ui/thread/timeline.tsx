@@ -242,6 +242,9 @@ const ActiveThreadTimeline: FC = () => {
     [cancelJump, indexedEntries, indexComplete, indexFailed, loadMore, railEntries]
   )
 
+  // One identity across renders, so a tick that did not change does not re-render (timeline-rail).
+  const jumpTo = useCallback((id: string) => void jump(id), [jump])
+
   useEffect(() => {
     const viewport = ownViewport(root.current)
 
@@ -357,7 +360,7 @@ const ActiveThreadTimeline: FC = () => {
         activeIndex={activeIndex}
         entries={railEntries}
         loadingId={loadingId}
-        onJump={id => void jump(id)}
+        onJump={jumpTo}
       />
     </div>
   )

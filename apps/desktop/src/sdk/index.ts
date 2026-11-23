@@ -111,6 +111,7 @@ import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { profileBackendHost } from './profile-backend'
 import { dropLeftoverProfilePrefs, warmProfile } from './profile-local'
 import {
   type PluginProfileRequestOptions,
@@ -748,6 +749,9 @@ export const host = {
       setActiveProfile('default')
     }
   },
+
+  // Route a profile to a backend this plugin runs on this computer (e.g. a sandbox), and back. See profile-backend.ts.
+  ...profileBackendHost,
 
   // ── Multi-source agents (the Bot Mode door) ───────────────────────────────
 
@@ -1773,7 +1777,6 @@ export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@
 export type { GatewayEventListener } from '@/contrib/events'
 
 // -- contracts ----------------------------------------------------------------
-
 /** Mount-scoped contribution: while the rendering component is mounted, its
  *  children render in the target area's slot; unmount disposes it. Use for
  *  page-owned chrome (a page's titlebar control leaves with the page) —
@@ -1863,7 +1866,6 @@ export { catalogProviderMatches } from '@/lib/model-options'
  *  hand-picked color still sits with the generated ones; reach for them
  *  instead of literal hex, which can't follow the theme. */
 export { PROFILE_SWATCHES, profileColor, profileColorSoft } from '@/lib/profile-color'
-
 /** The shared client itself, for invalidation OUTSIDE React (e.g. a
  *  `ctx.socket` frame invalidating a query). Inside components keep using
  *  `useQueryClient`. */

@@ -311,7 +311,7 @@ export const deRedesign: RedesignOverlay = {
       webappHostTitle: 'Hermes-Rechner',
       envOverrideTitle: 'Diese Verbindung wurde durch den Start von Hermes festgelegt.',
       cloudSignedInDesc:
-        'Sie sind angemeldet. Wählen Sie unten einen Agenten; die Session wird automatisch aktualisiert.',
+        'Sie sind angemeldet. Wählen Sie unten einen Agenten; die Session wird automatisch aktualisiert.'
     },
     profileScope: {
       editsProfile: profile => `Änderungen auf dieser Seite gelten für den Agenten „${profile}“.`
@@ -848,6 +848,14 @@ export const deRedesign: RedesignOverlay = {
       errorStartNewSession: 'Neuen Chat starten'
     },
     approval: {
+      access: {
+        alwaysDescription:
+          'Der Ordner wird der Sandbox dieses Agenten hinzugefügt. Hermes fragt in keinem Chat mehr danach.'
+      },
+      network: {
+        alwaysDescription:
+          'Die Website wird den erlaubten Websites dieses Agenten hinzugefügt. Hermes fragt in keinem Chat mehr danach.'
+      },
       gatewayDisconnected: 'Hermes ist nicht verbunden',
       timedOutSystemLine:
         'Die Freigabe ist abgelaufen — der Befehl wurde nicht ausgeführt. Bitten Sie den Agenten, es erneut zu versuchen, oder erhöhen Sie das Limit unter Einstellungen → Sicherheit → Freigabe-Timeout.',
@@ -994,7 +1002,7 @@ export const deRedesign: RedesignOverlay = {
     indexing: 'Ausgaben aus den letzten Chats werden indiziert',
     noArtifactsTitle: 'Noch nichts in Ihrer Bibliothek',
     noArtifactsDesc: 'Generierte Bilder und Datei-Ausgaben erscheinen hier, sobald Chats sie erstellen.',
-    failedLoad: 'Bibliothek konnte nicht geladen werden',
+    failedLoad: 'Bibliothek konnte nicht geladen werden'
   },
   artifactPreview: {
     missingTitle: 'Eintrag nicht verfügbar',

@@ -26,7 +26,6 @@ import { $hudMode } from '@/store/hud'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { useReplyPaused } from '@/store/paused-replies'
 import { sessionBlockingPrompt } from '@/store/prompts'
-import { $gatewayState } from '@/store/session'
 import { $setupGuideOnboarding } from '@/store/shell-policy'
 import { usePortalShell } from '@/store/shell-variant'
 import { useForcedTextDirection } from '@/store/text-direction'
@@ -45,7 +44,6 @@ import {
   implicitSlashAcceptIndex,
   liveComposerDraft,
   type QueueEditState,
-  shouldDisableComposerInput,
   slashArgStage
 } from './composer-utils'
 import { ContextMenu } from './context-menu'
@@ -58,6 +56,7 @@ import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useCardWaitingSubmit } from './hooks/use-card-waiting-submit'
 import { useComposerBusyInput } from './hooks/use-composer-busy-input'
+import { controlsDisabled, useComposerConnection } from './hooks/use-composer-connection'
 import { useComposerDraft } from './hooks/use-composer-draft'
 import { useComposerDrop } from './hooks/use-composer-drop'
 import { useComposerEscCancel } from './hooks/use-composer-esc-cancel'
@@ -151,7 +150,7 @@ function ComposerStateInput() {
 export function ChatBar({
   busy,
   cwd,
-  disabled,
+  disabled: gatewayDisabled,
   focusKey,
   freshDraftKey,
   gateway,
@@ -290,9 +289,7 @@ export function ChatBar({
   const emoji = useEmojiCompletions()
 
   const { t } = useI18n()
-  const gatewayState = useStore($gatewayState)
-  const reconnecting = gatewayState !== 'open'
-  const inputDisabled = shouldDisableComposerInput(disabled, gatewayState)
+  const { backendTransition, disabled, inputDisabled, reconnecting } = useComposerConnection(gatewayDisabled, profile)
 
   // The draft engine — detached source of truth (DOM + draftRef + edge
   // selectors); typing never re-renders the chrome. ChatBar owns `queueEditRef`
@@ -362,6 +359,7 @@ export function ChatBar({
   } = useComposerQueue({
     activeQueueSessionKey,
     attachments,
+    backendSwitching: backendTransition !== null,
     busy,
     clearDraft,
     draftRef,
@@ -419,6 +417,7 @@ export function ChatBar({
   const { placeholder, sessionCreated } = useComposerPlaceholder({
     disabled,
     ideasBelow: Boolean(landing),
+    profile,
     reconnecting,
     scope: activeQueueSessionKey,
     sessionId
@@ -431,6 +430,7 @@ export function ChatBar({
     activeQueueSessionKey,
     activeQueueSessionKeyRef,
     attachments,
+    backendTransition,
     busy,
     clearDraft,
     disabled,
@@ -1126,7 +1126,7 @@ export function ChatBar({
         onToggleMute: conversation.toggleMute,
         status: conversation.status
       }}
-      disabled={disabled}
+      disabled={controlsDisabled(disabled, backendTransition)}
       foldVoice={foldVoice}
       hasComposerPayload={hasComposerPayload}
       hideModelPill={guidedChat}

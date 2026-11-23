@@ -21,6 +21,8 @@ export const DialogPortalContainerContext = React.createContext<HTMLElement | nu
 
 export type BrowserPortalLayer = 'menu' | 'select' | 'tooltip'
 
+const hosts = new Map<BrowserPortalLayer, HTMLElement>()
+
 // On the browser-hosted Webapp, UI scale lives as CSS `zoom` on `<html>`.
 // Floating UI skips `getScale()` when a `position: fixed` popper's
 // `offsetParent` is `window` (direct child of `document.body`), double-scaling
@@ -40,15 +42,23 @@ export function getBrowserPortalContainer(layer: BrowserPortalLayer): HTMLElemen
     return undefined
   }
 
-  const existing = document.querySelector<HTMLElement>(`body > [data-browser-portal-host="${layer}"]`)
+  // Every tooltip, menu and select content asks on each render, and a long transcript renders
+  // hundreds of tips: a document-wide selector walked the whole DOM to reach hosts that sit last in
+  // <body> (1.5s of a 4s scroll through a long chat). Remember the host; look it up only when the
+  // remembered one is gone (a test or a hot reload replaced <body>'s children).
+  const remembered = hosts.get(layer)
 
-  if (existing) {
-    return existing
+  if (remembered?.parentElement === body) {
+    return remembered
   }
 
-  const host = document.createElement('div')
+  const host =
+    [...body.children].find(
+      (child): child is HTMLElement => child instanceof HTMLElement && child.dataset.browserPortalHost === layer
+    ) ?? body.appendChild(document.createElement('div'))
+
   host.dataset.browserPortalHost = layer
-  body.appendChild(host)
+  hosts.set(layer, host)
 
   return host
 }

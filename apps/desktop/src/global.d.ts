@@ -8,6 +8,7 @@ import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
 import type { KeepAwakeMode } from '../electron/power-save'
+import type { PresenceSnapshot } from '../electron/presence'
 import type { UpdateHoldWire } from '../electron/update-hold-types'
 import type { UpdateRunReport } from '../electron/updater/update-metrics'
 import type { WindowSizeMode } from '../electron/window-size-types'
@@ -226,6 +227,12 @@ declare global {
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
+      // Plugin SDK host.setProfileBackend / clearProfileBackend. Main confirms
+      // natively; `confirm*` asks first and returns a one-time grant.
+      setProfileBackend?: (payload: DesktopProfileBackendInput) => Promise<{ applied: boolean }>
+      confirmSetProfileBackend?: (payload: DesktopProfileBackendTarget) => Promise<DesktopProfileBackendConfirm>
+      clearProfileBackend?: (payload: DesktopProfileBackendTarget & { grant?: string }) => Promise<{ applied: boolean }>
+      confirmClearProfileBackend?: (payload: DesktopProfileBackendTarget) => Promise<DesktopProfileBackendConfirm>
       // Opt-in OS-keychain encryption for stored gateway secrets (default
       // off). `get` never touches the OS keychain; `set` re-encodes stored
       // secrets and can throw when the keychain is unusable.
@@ -299,6 +306,9 @@ declare global {
       }
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
+      /** Whether main can show an OS notification at all (`hermes:notify` answers false when not). Missing
+       *  on an older preload and in a browser. */
+      notifySupported?: () => Promise<boolean>
       /** Launch -> ready ms for the first caller per app launch, null afterwards. Absent on older shells. */
       claimStartupLatency?: () => Promise<null | number>
       requestMicrophoneAccess: () => Promise<boolean>
@@ -735,10 +745,16 @@ declare global {
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
       // Soft gateway-mode apply: primary backend was torn down without a window
       // reload. Wipe session lists (skeletons) and re-dial.
-      onConnectionApplied?: (callback: () => void) => () => void
+      // `detail.profile`: only that profile's route moved (a plugin's setProfileBackend).
+      onConnectionApplied?: (callback: (detail?: { profile?: string }) => void) => () => void
       onPowerResume?: (callback: () => void) => () => void
       getOnBattery?: () => Promise<boolean>
       onBatteryChanged?: (callback: (onBattery: boolean) => void) => () => void
+      /** Main's OS idle clock (`electron/presence.ts`); missing on an older preload. */
+      presence?: {
+        get: () => Promise<PresenceSnapshot>
+        onChange: (callback: (snapshot: PresenceSnapshot) => void) => () => void
+      }
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
       /** Resolve This device without starting an install. Missing on an older preload. */
@@ -1162,6 +1178,9 @@ export interface HermesConnection {
   // secondaries carry it directly; legacy primary remotes preserve it from
   // their selected stored route before dialing.
   connectionId?: string
+  // A desktop plugin runs this profile's backend on this computer
+  // (host.setProfileBackend). It lists this host's profiles, not its own.
+  launcher?: { plugin: string }
   // True only when getConnectionFor explicitly resolved a v2 registry route.
   // An inferred connectionId identifies the visible source but its v1 profile
   // name may still be a client-side routing alias rather than a backend profile.
@@ -1246,6 +1265,29 @@ export interface DesktopConnectionConfig {
   sshKeyPath: string
   sshRemoteHermesPath: string
   sshRemoteProfile: string
+  // Per-profile scope only: the plugin that runs this profile's backend, or null.
+  launcher?: null | { plugin: string }
+}
+
+export interface DesktopProfileBackendTarget {
+  /** The plugin that runs the profile's backend; the confirm names it. */
+  plugin: string
+  profile: string
+  /** The plugin's own one-line reason, shown in the confirm as its words. */
+  purpose?: string
+}
+
+export interface DesktopProfileBackendConfirm {
+  confirmed: boolean
+  /** One-time: stands for this answer in the set or clear that follows. */
+  grant?: string
+}
+
+export interface DesktopProfileBackendInput extends DesktopProfileBackendTarget {
+  grant?: string
+  token: string
+  /** A loopback base URL (http://127.0.0.1:<port>). */
+  url: string
 }
 
 export interface DesktopConnectionConfigInput {

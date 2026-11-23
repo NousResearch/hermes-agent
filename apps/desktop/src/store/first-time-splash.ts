@@ -9,10 +9,9 @@
  * - Shown: the first time a newcomer's verdict settles and the ledger has no mark for it.
  * - Seen: any close (a nav click, Escape, its own buttons, or sign up) marks it `seen` for good.
  *   Leaving the page while it is up is not a close: the next visit shows it again.
- * - While it is up the chat sidebar stands down, so the splash has the stage to itself; the place a
- *   row last pointed at is lit, and Chats brings the chat sidebar back while it is that place
- *   (`$firstTimeSplashHoldsSidebar`). Each place a row has pointed at is seen for the rest of the
- *   showing.
+ * - The navigation stays as it is while the splash is up, as it does under the rename splash: the
+ *   place a row last pointed at is ringed where it sits. Each place a row has pointed at is seen for
+ *   the rest of the showing.
  */
 
 import { atom, computed } from 'nanostores'
@@ -35,17 +34,12 @@ export type FirstTimeSplashRow = FirstTimeSplashPlace | 'theme'
 /** Why the splash is on screen: it showed itself, or the tray reopened it. Null while closed. */
 export const $firstTimeSplash = atom<null | 'reopened' | 'shown'>(null)
 
-/** The place a row last pointed at (hover, focus or tap) in this showing; null until one has. */
+/** The place speaking in this showing: Chats when it opens, then the row last reached (hover, focus
+ *  or tap). Null while the splash is closed. */
 export const $firstTimeSplashPlace = atom<FirstTimeSplashPlace | null>(null)
 
 /** Every place a row has pointed at in this showing: their rows carry the seen check. */
 export const $firstTimeSplashSeen = atom<ReadonlySet<FirstTimeSplashPlace>>(new Set())
-
-/** The chat sidebar stands down while the splash is up, except while Chats is the place lit. */
-export const $firstTimeSplashHoldsSidebar = computed(
-  [$firstTimeSplash, $firstTimeSplashPlace],
-  (open, place) => open !== null && place !== 'chats'
-)
 
 /** Someone whose first settled look at their machine found nothing: a new install. */
 export const $newcomer = computed($guidanceLedger, ledger => ledger.renameSplash === 'not_applicable')
@@ -66,6 +60,8 @@ function resetShowing(): void {
 
 function open(reason: 'reopened' | 'shown'): void {
   resetShowing()
+  // Chats speaks from the start: the card opens with one row already saying its example.
+  $firstTimeSplashPlace.set(FIRST_TIME_PLACES[0])
   $firstTimeSplash.set(reason)
   recordIaAction(reason === 'shown' ? 'ia.splash.first_time_shown' : 'ia.splash.first_time_reopened', 'state')
 }

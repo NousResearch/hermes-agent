@@ -23,6 +23,23 @@ const NAV_SPOT_CANDIDATES: Record<NavSpot, readonly string[]> = {
 
 const toBox = ({ left, top, right, bottom }: DOMRect): Box => ({ left, top, right, bottom })
 
+/**
+ * A measured box in the spotlight layer's own pixels. They are the viewport's only at 100%: the web
+ * app's UI scale is a zoom on the page, under which a measured box is in screen pixels and the
+ * layer's lengths are not, so a box used as measured landed short of its place by the scale.
+ */
+function inLayer(box: Box, layer: HTMLElement): Box {
+  const origin = layer.getBoundingClientRect()
+  const scale = layer.offsetWidth ? origin.width / layer.offsetWidth : 1
+
+  return {
+    left: (box.left - origin.left) / scale,
+    top: (box.top - origin.top) / scale,
+    right: (box.right - origin.left) / scale,
+    bottom: (box.bottom - origin.top) / scale
+  }
+}
+
 /** The viewport and every ancestor that clips its overflow. */
 function clipsOf(element: Element): Box[] {
   const clips: Box[] = [{ left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }]
@@ -83,13 +100,15 @@ export function NavSpotlight({ anchor, spot }: NavSpotlightProps) {
       const ring = ringRef.current
       const path = pathRef.current
       const row = anchor.current
-      const target = row ? locate(spot) : null
+      const layer = ring?.parentElement
+      const place = row ? locate(spot) : null
 
-      if (!ring || !path) {
+      if (!ring || !path || !layer) {
         return
       }
 
-      const line = row && target ? connectorPath(toBox(row.getBoundingClientRect()), target) : null
+      const target = place && inLayer(place, layer)
+      const line = row && target ? connectorPath(inLayer(toBox(row.getBoundingClientRect()), layer), target) : null
       const next = JSON.stringify([target, line])
 
       if (next === painted) {

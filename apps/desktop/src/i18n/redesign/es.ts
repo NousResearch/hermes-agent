@@ -842,6 +842,14 @@ export const esRedesign: RedesignOverlay = {
       }
     },
     approval: {
+      access: {
+        alwaysDescription:
+          'La carpeta se añade al sandbox de este agente. Hermes no volverá a preguntar por ella en ningún chat.'
+      },
+      network: {
+        alwaysDescription:
+          'El sitio se añade a los sitios permitidos de este agente. Hermes no volverá a preguntar por él en ningún chat.'
+      },
       timedOutSystemLine:
         'Se agotó el tiempo de aprobación: el comando no se ejecutó. Pide al agente que lo intente de nuevo o sube el límite en Configuración → Seguridad → Tiempo de aprobación.',
       allowSession: 'Permitir en este chat',
@@ -963,7 +971,7 @@ export const esRedesign: RedesignOverlay = {
     noArtifactsTitle: 'Aún no hay nada en tu biblioteca',
     noArtifactsDesc: 'Las imágenes generadas y las salidas de archivo aparecerán aquí cuando los chats las produzcan.',
     failedLoad: 'No se pudo cargar la biblioteca',
-    colSession: 'Chat',
+    colSession: 'Chat'
   },
   artifactPreview: {
     missingTitle: 'Elemento no disponible',

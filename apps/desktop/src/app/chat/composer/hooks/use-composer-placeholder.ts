@@ -3,8 +3,10 @@ import { useEffect, useRef, useState } from 'react'
 
 import { useFirstTimeCopy } from '@/app/discovery/first-time-copy'
 import { useI18n } from '@/i18n'
+import { $backendTransitions, backendTransitionLabel, transitionProfileKey } from '@/store/backend-transition'
 import { isFreshDraftScope } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
+import { $activeGatewayProfile } from '@/store/profile'
 import { usePortalShell } from '@/store/shell-variant'
 import { $landingMoment, $starterIdeas } from '@/store/starter-ideas'
 
@@ -14,6 +16,8 @@ interface UseComposerPlaceholderOptions {
   disabled: boolean
   /** The redesign's empty-chat landing lays a newcomer's starter ideas under this composer. */
   ideasBelow: boolean
+  /** The composer's profile; the active gateway profile when absent. */
+  profile?: null | string
   reconnecting: boolean
   /** The composer's durable draft scope: a stored session key, or a fresh draft's. */
   scope: null | string | undefined
@@ -67,6 +71,7 @@ function movedConversation(prev: Identity, next: Identity, created: null | strin
 export function useComposerPlaceholder({
   disabled,
   ideasBelow,
+  profile,
   reconnecting,
   scope,
   sessionId
@@ -76,6 +81,8 @@ export function useComposerPlaceholder({
 } {
   const { t } = useI18n()
   const redesign = usePortalShell()
+  const activeProfile = useStore($activeGatewayProfile)
+  const transition = useStore($backendTransitions)[transitionProfileKey(profile || activeProfile)] ?? null
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
   const identity = redesign ? scope : sessionId
@@ -124,11 +131,20 @@ export function useComposerPlaceholder({
     )
   }, [followUpPlaceholders, newSessionPlaceholders, identity, redesign])
 
-  const placeholder = disabled
-    ? reconnecting
-      ? t.composer.placeholderReconnecting
-      : t.composer.placeholderStarting
-    : (newcomerPlaceholder ?? restingPlaceholder)
+  // When the transport is disabled it's because the gateway isn't open.
+  // Distinguish a cold start ("Starting Hermes...") from a dropped connection
+  // we're trying to restore. During reconnect, keep the textbox editable so a
+  // flaky network doesn't block drafting; only submit/backend actions stay
+  // disabled until the gateway is open again. A plugin-run profile's planned
+  // start, restart or stop names itself instead, also while the connection is
+  // still open (a start: this computer's backend serves the profile meanwhile).
+  const placeholder = transition
+    ? backendTransitionLabel(transition, t.sandbox)
+    : disabled
+      ? reconnecting
+        ? t.composer.placeholderReconnecting
+        : t.composer.placeholderStarting
+      : (newcomerPlaceholder ?? restingPlaceholder)
 
   return { placeholder, sessionCreated: created => (createdScopeRef.current = created) }
 }

@@ -21,6 +21,15 @@ interface NewAgentButtonProps {
   row?: boolean
 }
 
+/** A new agent's home: the given owner's machine and profile, else the window's own. */
+export const newAgentTarget = (owner?: AgentSettingsOwner) => ({
+  kind: 'create' as const,
+  owner: {
+    connectionId: agentMachine(owner?.connectionId ?? $apiRequestScope.get().connectionId ?? $activeConnectionId.get()),
+    profile: owner?.profile ?? $activeGatewayProfile.get()
+  }
+})
+
 export function NewAgentButton({ owner, row = false }: NewAgentButtonProps) {
   const { t } = useI18n()
   const { open: openDialog, dialogs } = useAgentDialogs()
@@ -28,16 +37,7 @@ export function NewAgentButton({ owner, row = false }: NewAgentButtonProps) {
   const request = useStore($newAgentRequest)
   const shortcut = bindingsFor('agents.new', useStore($bindings))[0]
 
-  const open = () =>
-    openDialog({
-      kind: 'create',
-      owner: {
-        connectionId: agentMachine(
-          owner?.connectionId ?? $apiRequestScope.get().connectionId ?? $activeConnectionId.get()
-        ),
-        profile: owner?.profile ?? $activeGatewayProfile.get()
-      }
-    })
+  const open = () => openDialog(newAgentTarget(owner))
 
   useEffect(() => hostNewAgentRequests(host), [host])
 

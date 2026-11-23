@@ -251,8 +251,9 @@ def _norm_line(line: str) -> str:
 def _payload_ops(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """The operation dicts of a batch payload, or the single op a flat payload describes.
 
-    An op without its own ``name`` inherits the payload's, which is how the batch applier resolves
-    it; carrying that here keeps the guard's targets identical to the writer's.
+    An op without its own ``name`` falls back to the payload's. New records no longer need that
+    fallback — ``_skill_manage_batch`` bakes the call-level name into every nameless op before it
+    stages — but records staged before that fix still carry nameless ops, so the fallback stays.
     """
     if payload.get("action") == "batch" and isinstance(payload.get("operations"), list):
         ops = [op for op in payload["operations"] if isinstance(op, dict)]

@@ -229,6 +229,12 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
         return tool_error("operations must be a non-empty array.", success=False)
     if len(operations) > _BATCH_MAX_OPS:
         return tool_error(f"operations is capped at {_BATCH_MAX_OPS} ops per call.", success=False)
+    if default_name:
+        # The call-level name is the per-op fallback, so bake it in before anything is staged:
+        # otherwise the record's own operations carry no name and replay of the approved write
+        # fails with "operations[0] needs a 'name'", losing a write the user never saw fail.
+        operations = [op if (not isinstance(op, dict) or op.get("name"))
+                      else {**op, "name": default_name} for op in operations]
     if any(isinstance(op, dict) and op.get("action") == "delete" for op in operations):
         if len(operations) != 1:
             return tool_error("delete must be the SOLE op in its call — it doesn't "

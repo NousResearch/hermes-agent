@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import codecs
 import os
-import re
 import threading
 from collections import OrderedDict
 from contextvars import ContextVar, Token
@@ -295,29 +294,6 @@ def get_secret_str(name: str, default: str = "") -> str:
     return default if val is None else val
 
 
-def _strip_inline_comment(value: str) -> str:
-    """Strip a dotenv-style inline comment (python-dotenv semantics): quoted values
-    scan to the matching close quote (backslash-aware for double quotes) and drop a
-    trailing ``# ...``, else stay untouched; unquoted values truncate only at a
-    ``#`` PRECEDED BY WHITESPACE (``foo#bar`` survives, ``value # c`` → ``value``)."""
-    value = value.strip()
-    if not value:
-        return value
-    quote = value[0]
-    if quote in ("'", '"'):
-        i = 1
-        while i < len(value):
-            ch = value[i]
-            if quote == '"' and ch == "\\":
-                i += 2  # skip the escaped character
-                continue
-            if ch == quote:
-                return value[: i + 1] if value[i + 1:].lstrip().startswith("#") else value
-            i += 1
-        return value  # unterminated quote: leave as-is
-    return re.split(r"\s+#", value, maxsplit=1)[0].strip()
-
-
 def _parse_env_value(raw_value: str) -> str:
     """Parse the small .env value subset Hermes writes itself (bare, 'single', or "double" with
     ``\\"`` / ``\\\\`` escapes)."""
@@ -373,28 +349,21 @@ def _decode_env_bytes(raw: bytes) -> str:
 
 
 def _parse_env_text(text: str) -> dict[str, str]:
-    """Tokenize already-read ``.env`` text. See :func:`load_env_file`."""
-    secrets: dict[str, str] = {}
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export "):].lstrip()
-        key, sep, value = line.partition("=")
-        key = key.strip()
-        if sep and key:
-            secrets[key] = _parse_env_value(_strip_inline_comment(value))
-    return secrets
+    """Tokenize already-read ``.env`` text with the loader's own tokenizer. See :func:`load_env_file`."""
+    from hermes_cli.env_loader import parse_dotenv_text
+
+    return {name: value for name, value in parse_dotenv_text(text) if value is not None}
 
 
 def load_env_file(env_path: Path) -> dict[str, str]:
     """THE ``.env`` tokenizer: every reader (profile scope, ``hermes_cli.config.load_env``, the dashboard
     scrub, skill secret capture, managed .env, setup prompts) parses through here so no two boundaries
-    disagree on which keys/values a file defines. Dict only — never touches ``os.environ``. ``export``
-    prefix, ``#`` comments, quote escapes reversed; a BOM is stripped so it doesn't prefix the first key.
-    Invalid UTF-8 decodes as latin-1, exactly like ``env_loader._load_dotenv_with_fallback`` installs it
-    into ``os.environ``. Absent/unreadable → ``{}``.
+    disagree on which keys/values a file defines. Dict only — never touches ``os.environ``. The text is
+    tokenized by ``env_loader.parse_dotenv_text``, the parser ``load_hermes_dotenv`` publishes through:
+    ``export`` prefix, ``#`` comments and quoted or multi-line values read the same in both. ``${VAR}``
+    templates stay literal here; ``build_profile_secret_scope`` resolves them. A BOM is stripped so it
+    doesn't prefix the first key. Invalid UTF-8 decodes as latin-1, exactly like
+    ``env_loader._load_dotenv_with_fallback`` installs it into ``os.environ``. Absent/unreadable → ``{}``.
 
     Memoised per path on the file's exact bytes (see the cache comment above). Always
     returns a fresh dict: callers mutate what they get back (``build_profile_secret_scope`` layers

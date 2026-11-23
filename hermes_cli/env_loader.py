@@ -396,6 +396,17 @@ def _sanitize_loaded_credentials() -> None:
         )
 
 
+def parse_dotenv_text(text: str) -> list[tuple[str, str | None]]:
+    """``(name, raw value)`` assignments of one dotenv document, uninterpolated, in file order: the
+    tokenizer behind ``os.environ`` and behind ``agent.secret_scope.load_env_file``, so both read a
+    file alike, a quoted multi-line value included."""
+    # Imported here, not at module level: gateway tests stub ``sys.modules["dotenv"]`` with a bare module
+    # exposing only ``load_dotenv``, and ``gateway.run`` imports this module at import time.
+    from dotenv.main import DotEnv
+
+    return list(DotEnv(dotenv_path=None, stream=io.StringIO(text), interpolate=False).parse())
+
+
 def _parse_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
     """``(name, raw value)`` assignments of one dotenv file, uninterpolated, in file order."""
     raw = path.read_bytes()
@@ -406,11 +417,7 @@ def _parse_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
     except UnicodeDecodeError:
         raw = raw.removeprefix(codecs.BOM_UTF8)
         text = raw.decode("latin-1")
-    # Imported here, not at module level: gateway tests stub ``sys.modules["dotenv"]`` with a bare module
-    # exposing only ``load_dotenv``, and ``gateway.run`` imports this module at import time.
-    from dotenv.main import DotEnv
-
-    return list(DotEnv(dotenv_path=None, stream=io.StringIO(text), interpolate=False).parse())
+    return parse_dotenv_text(text)
 
 
 def _dotenv_lookup_env(load_pass: int | None) -> dict[str, str]:

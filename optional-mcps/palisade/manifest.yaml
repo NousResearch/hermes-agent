@@ -1,0 +1,57 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: palisade
+description: >-
+  Email authentication for your domains: audit SPF, DKIM, DMARC, MTA-STS
+  and BIMI, read DMARC reports, and get the exact DNS records to publish.
+source: https://www.palisade.email/mcp
+
+# Official vendor-hosted remote MCP (Streamable HTTP, URL-only: Hermes never
+# spawns a local process for this entry). Palisade does not offer Dynamic
+# Client Registration. Every client signs in through Palisade's public
+# connector client (PKCE, no secret), the same one Claude Code, Codex and
+# Cursor use, and picks an organization on the sign-in page. The client id is
+# public, so nothing is prompted at install. The authorization server matches
+# the loopback redirect exactly: http://localhost:8765/callback is registered
+# (verified live against https://accounts.palisade.email/authorize; other
+# ports are refused with unauthorized_client). Hermes's MCP client and
+# mcp_oauth_manager handle discovery, PKCE, token exchange and refresh.
+transport:
+  type: http
+  url: https://api.palisade.email/mcp
+
+auth:
+  type: oauth
+  oauth:
+    client_id: ryKtuiPypMeYMoL1Cmhxtz6BYrEYQbLV
+    redirect_host: localhost
+    redirect_port: 8765
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - palisade
+    - dmarc
+    - dkim
+    - spf record
+    - mta-sts
+    - bimi
+  hosts:
+    - palisade.email
+
+post_install: |
+  Run `hermes mcp login palisade` (or click Authorize in the dashboard /
+  Desktop), sign in to Palisade and pick an organization, then restart (or
+  `/reload-mcp`) the session so tools load. The callback arrives at
+  http://localhost:8765/callback, so approve in a browser on the same
+  machine as Hermes, and free port 8765 if something else holds it.
+
+  Every tool is annotated: reads carry readOnlyHint, and no tool writes a
+  record at your DNS provider. Add `trust: untrusted` under
+  mcp_servers.palisade in config.yaml to approve each write.
+
+  To audit a domain without an account, add
+  https://api.palisade.email/mcp/public as a separate server with no auth.
+  It serves audit_domain and validate_spf_include.

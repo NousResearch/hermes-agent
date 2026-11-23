@@ -56,7 +56,7 @@ export function StartVoiceButton({
             <DropdownMenuTrigger asChild>
               <Button
                 aria-label={t.composer.voiceEngine}
-                className={cn(GHOST_ICON_BTN, 'w-5 rounded-l-none p-0')}
+                className={cn(GHOST_ICON_BTN, 'w-(--composer-voice-menu-size) rounded-l-none p-0')}
                 disabled={disabled}
                 size="icon"
                 type="button"

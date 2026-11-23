@@ -19,11 +19,12 @@ class MissingReceipt(ValueError):
 
 def validate_identity(tag: str, commit: str, name: str) -> None:
     # Stable attempts stage and fetch under their attempt ref, so the receipt
-    # identity admits rc.N-vX.Y.Z beside plain (and canary) vX.Y.Z tags.
+    # identity admits rc.N-vX.Y.Z beside plain vX.Y.Z and canary.<stamp>-vX.Y.Z tags.
+    from hermes_cli.update_channel import release_version
     from scripts.releases.versioning import parse_attempt_ref
 
     if (not isinstance(tag, str)
-            or not ((tag.startswith("v") and is_release_version(tag[1:])) or parse_attempt_ref(tag))
+            or not (is_release_version(release_version(tag) or "") or parse_attempt_ref(tag))
             or not re.fullmatch(r"[a-f0-9]{40}", commit or "")
             or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name or "")):
         raise ValueError("Invalid release handoff identity")
@@ -225,9 +226,11 @@ def read_commit_receipt(commit: str, name: str, *, public_base: str | None = Non
 
 
 def fetch(tag: str, commit: str, names: list[str], root: Path,
-          includes: list[str] | None = None, *, public_base: str | None = None) -> list[dict]:
+          includes: list[str] | None = None, *, public_base: str | None = None,
+          require_files: bool = True) -> list[dict]:
     receipts = [read_receipt(tag, commit, name, public_base=public_base) for name in names]
-    return _fetch_receipts(receipts, root, includes, public_base=public_base)
+    return _fetch_receipts(receipts, root, includes, public_base=public_base,
+                           require_files=require_files)
 
 
 def fetch_commit_build(commit: str, names: list[str], root: Path,
@@ -238,7 +241,8 @@ def fetch_commit_build(commit: str, names: list[str], root: Path,
 
 
 def _fetch_receipts(receipts: list[dict], root: Path,
-                    includes: list[str] | None = None, *, public_base: str | None = None) -> list[dict]:
+                    includes: list[str] | None = None, *, public_base: str | None = None,
+                    require_files: bool = True) -> list[dict]:
     """Download exact receipt-bound bytes before writing local receipt copies."""
     root = root.resolve()
     selected = {}
@@ -255,7 +259,7 @@ def _fetch_receipts(receipts: list[dict], root: Path,
             if not target.resolve().is_relative_to(root):
                 raise ValueError("Release artifact path escapes its download root")
             selected[row["path"].casefold()] = item
-    if not selected:
+    if not selected and require_files:
         raise ValueError("No files selected from release handoff")
     root.mkdir(parents=True, exist_ok=True)
     credentials = r2.credentials() if public_base is None else None

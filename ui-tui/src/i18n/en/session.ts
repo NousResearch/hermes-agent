@@ -31,10 +31,16 @@ export const sessionEn = {
     },
     // Shared by the rpc wrapper (useMainApp) and the lifecycle paths; `error: ` prefix stays literal.
     common: {
-      invalidResponse: (method: string) => `invalid response: ${method}`
+      invalidResponse: (method: string) => `invalid response: ${method}`,
+      // useSubmission.interpolate: a `{!cmd}` that could not run refuses the whole submit.
+      interpolationFailed: (message: string) => `not sent: {!…} could not run (${message}) — input retained`
     },
     lifecycle: {
       newLiveSessionStarted: 'new live session started',
+      // {0}=session title (or id prefix)
+      backgroundFinished: (name: string) => `background session "${name}" finished its turn · Ctrl+X to switch`,
+      // {0}=session title (or id prefix)
+      backgroundWaiting: (name: string) => `background session "${name}" is waiting for your answer · Ctrl+X to switch`,
       sessionTitleSet: (title: string) => `session title set: ${title}`,
       titleQueuedSuffix: ' (queued while session initializes)',
       failedToSetTitle: (message: string) => `failed to set session title: ${message}`,

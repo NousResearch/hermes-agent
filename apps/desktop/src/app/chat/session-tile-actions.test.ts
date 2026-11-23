@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { renderHook } from '@testing-library/react'
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -159,6 +160,27 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     expect($sessionTiles.get()[0]?.runtimeId).toBe(RECOVERED_SESSION_ID)
   })
 
+  it.each(['interrupt', 'steer'] as const)('rejects tile %s RPC failure without converting it to a queue signal', async mode => {
+    requestGatewayMock.mockRejectedValue(new Error('correction unsupported'))
+    const { result } = renderTileActions()
+    await act(async () => {
+      await expect(result.current.steerPrompt('keep correction', mode)).rejects.toThrow('correction unsupported')
+    })
+    expect(requestGatewayMock).toHaveBeenCalledExactlyOnceWith(mode === 'steer' ? 'session.steer' : 'session.redirect', { session_id: RUNTIME_SESSION_ID, text: 'keep correction' })
+  })
+
+  // #141644: a correction the owner refused before any agent saw it hands the words back (false)
+  // so the composer re-queues them, instead of throwing a "prompt failed" that drops them.
+  it('hands back a tile correction the owner refused undelivered', async () => {
+    requestGatewayMock.mockRejectedValue(
+      new JsonRpcGatewayError('execution_not_ready', { code: 4001, data: { reason: 'execution_not_ready' } })
+    )
+    const { result } = renderTileActions()
+    const ok = await act(async () => result.current.steerPrompt('keep correction'))
+    expect(ok).toBe(false)
+    expect(requestGatewayMock).toHaveBeenCalledTimes(1)
+  })
+
   it('resumes the stored session and retries once when session.redirect (steer) reports "session not found"', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     let redirectAttempts = 0
@@ -207,7 +229,7 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
           throw new Error('session not found')
         }
 
-        return {}
+        return { admission_id: params?.submission_id, status: 'started' }
       }
 
       if (method === 'session.resume') {

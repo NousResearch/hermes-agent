@@ -6,6 +6,7 @@ import socket
 from pathlib import Path
 
 from hermes_cli.foreign_sessions import _SOURCE_DB_NAMES, _SOURCE_LABELS, _SOURCES, _parser, _walk
+from persistence.housekeeping.maintenance import ForeignOrigin, ForeignTurn
 
 MAX_LOG_BYTES = 32 * 1024 * 1024
 
@@ -76,10 +77,9 @@ def foreign_origin(candidate, parsed):
             "foreign_session_id": parsed["session_id"]}
 
 
-def preview_foreign_session(handle, db):
+def preview_foreign_session(handle, db, *, persistence=None):
     candidate, parsed = resolve_foreign_session(handle)
-    origin = foreign_origin(candidate, parsed)
-    existing = db.find_foreign_import(origin)
+    existing = persistence.maintenance.find_foreign_import(ForeignOrigin(**foreign_origin(candidate, parsed)))
     # A bounded preview avoids mounting thousands of messages in the renderer.
     messages = [{**turn, "content": turn["content"][:8000]} for turn in parsed["turns"][-40:]]
     return {"messages": messages, "total": len(parsed["turns"]),
@@ -87,10 +87,11 @@ def preview_foreign_session(handle, db):
             "already_imported": existing, "cwd": parsed["cwd"]}
 
 
-def import_browser_session(handle, db, profile):
+def import_browser_session(handle, db, profile, *, persistence=None):
     candidate, parsed = resolve_foreign_session(handle)
-    origin = foreign_origin(candidate, parsed)
     cwd = parsed["cwd"]
-    return db.import_foreign_history(origin, parsed["turns"],
-                                     title=_display_title(parsed, candidate[2]),
-                                     cwd=cwd if cwd and Path(cwd).is_dir() else None, profile=profile)
+    result = persistence.maintenance.import_foreign_history(
+        ForeignOrigin(**foreign_origin(candidate, parsed)),
+        [ForeignTurn(turn["role"], turn["content"]) for turn in parsed["turns"]],
+        title=_display_title(parsed, candidate[2]), cwd=cwd if cwd and Path(cwd).is_dir() else None, profile=profile)
+    return {"session_id": result.session_id, "already_imported": result.already_imported}

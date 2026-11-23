@@ -9,6 +9,8 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import Future
+from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from cron.scheduler import _teardown_cron_agent, run_job
@@ -23,16 +25,33 @@ _RUNTIME = {
 }
 
 
-class HangingSessionDB:
+@contextmanager
+def _owner_execution(db, job, execution_id=None):
+    from gateway import session_cron
+    from persistence_assembly import profile_scope
+    owner = SimpleNamespace(persistence=MagicMock(scope=profile_scope(home=db.db_path.parent),
+                                                  sessions=db.sessions))
+    token = session_cron._execution.set((owner, "cleanup-session", job["id"], execution_id))
+    try:
+        yield
+    finally:
+        session_cron._execution.reset(token)
+        owner.persistence.close.assert_not_called()
+
+
+class HangingStore:
+    """A storage interface handle whose lineage read hangs."""
+
     def __init__(self, release: threading.Event):
         self.release = release
         self.entered = threading.Event()
+        self.sessions = self.lineage = self
 
-    def get_compression_tip(self, _session_id):
+    def tip(self, _session_id):
         self.entered.set()
         self.release.wait()
 
-    def end_session(self, *_args, **_kwargs):
+    def end(self, *_args, **_kwargs):
         return None
 
     def close(self):
@@ -51,15 +70,17 @@ class HangingAgent:
 
 def test_run_job_bounds_sessiondb_finalization(tmp_path):
     release = threading.Event()
-    fake_db = HangingSessionDB(release)
+    fake_db = HangingStore(release)
+    fake_db.db_path = tmp_path / "state.db"
     job = {"id": "cleanup-sessiondb-hang", "name": "test", "prompt": "hello"}
 
     try:
-        with patch("cron.scheduler._hermes_home", tmp_path), \
+        with _owner_execution(fake_db, job), \
+             patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("persistence_assembly.open_persistence", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls, \
              patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02):
@@ -80,6 +101,32 @@ def test_run_job_bounds_sessiondb_finalization(tmp_path):
         release.set()
 
 
+def test_monitor_suppressed_tick_ends_owner_session_row(tmp_path):
+    """Gateway-owned admissions commit the run's session row BEFORE run_job's gates run.
+
+    A no-change monitor tick must end that pre-committed row (cron_suppressed); the old
+    early return skipped finalization entirely, leaving one never-active, never-ended
+    ``local-*`` row per suppressed tick (hundreds per day on a 5m monitor job).
+    """
+    fake_db = MagicMock()
+    fake_db.db_path = tmp_path / "state.db"
+    job = {"id": "vm-monitor", "name": "worker VM monitor", "prompt": "check",
+           "monitor_script": "echo same"}
+    outcome = SimpleNamespace(ok=True, changed=False, first_run=False, context_block=None, error=None)
+
+    with _owner_execution(fake_db, job), \
+         patch("cron.scheduler._hermes_home", tmp_path), \
+         patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+         patch("persistence_assembly.open_persistence", return_value=fake_db), \
+         patch("cron.monitor.check_monitor", return_value=outcome):
+        success, _output, final_response, error = run_job(job)
+
+    assert success is True
+    assert error is None
+    assert final_response == "[SILENT]"
+    fake_db.sessions.end.assert_called_once_with("cleanup-session", "cron_suppressed")
+
+
 def test_agent_teardown_is_bounded():
     release = threading.Event()
     agent = HangingAgent(release)
@@ -96,7 +143,7 @@ def test_agent_teardown_is_bounded():
 
 
 def test_detached_worker_teardown_waits_for_future():
-    """A timed-out worker keeps its agent and SessionDB until its Future completes."""
+    """A timed-out worker keeps its agent and store until its Future completes."""
     future = Future()
     fake_db = MagicMock()
     agent = MagicMock()
@@ -122,7 +169,8 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
     import cron.scheduler as sched
 
     release = threading.Event()
-    fake_db = HangingSessionDB(release)
+    fake_db = HangingStore(release)
+    fake_db.db_path = tmp_path / "state.db"
     job = {
         "id": "cleanup-guard-hang",
         "name": "cleanup-guard-hang",
@@ -132,21 +180,30 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
         "next_run_at": "2020-01-01T00:00:00",
         "deliver": "local",
     }
+    from cron import jobs
+
+    def admitted(fired, **kwargs):
+        with _owner_execution(fake_db, fired, kwargs.get("execution_id")):
+            return run_job(fired, **kwargs)
+
     sched._parallel_pools.clear()
     sched._parallel_pool_max_workers.clear()
     sched._running_job_ids.clear()
 
     try:
-        with patch("cron.scheduler._hermes_home", tmp_path), \
+        with jobs.use_cron_store(tmp_path), \
+             patch("cron.scheduler_authority.run_canonical_job", side_effect=admitted), \
+             patch("cron.scheduler_authority.reconcile_pending"), \
+             patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("persistence_assembly.open_persistence", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls, \
              patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02), \
              patch.object(sched, "get_due_jobs", return_value=[job]), \
-             patch.object(sched, "advance_next_runs"), \
+             patch.object(sched, "claim_job_for_fire", return_value=True), \
              patch.object(sched, "save_job_output", return_value="/tmp/out"), \
              patch.object(sched, "mark_job_run"), \
              patch.object(sched, "_deliver_result", return_value=None):
@@ -155,8 +212,11 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
             mock_agent_cls.return_value = mock_agent
 
             assert sched.tick(verbose=False) == 1
+            assert fake_db.entered.is_set()
+            assert mock_agent.run_conversation.call_count == 1
             assert "cleanup-guard-hang" not in sched.get_running_job_ids()
             assert sched.tick(verbose=False) == 1
+            assert mock_agent.run_conversation.call_count == 2
     finally:
         release.set()
         sched._running_job_ids.discard(sched._inflight_key("cleanup-guard-hang"))

@@ -1,27 +1,35 @@
 {
   "name": "@hermes/root-tests",
   "private": true,
+  "engines": {
+    "npm": "npm is refused here: run pnpm install --frozen-lockfile at the repository root"
+  },
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run test && npm run lint",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run lint",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "fix": "npm run lint:fix"
+    "fix": "pnpm run lint:fix"
   },
   "devDependencies": {
     "@types/js-yaml": "4.0.9",
+    "@types/node": "22.20.5",
     "@types/plist": "3.0.5",
+    "esbuild": "0.28.2",
     "get-windows": "9.3.0",
+    "js-yaml": "4.3.2",
     "jsdom": "29.1.1",
     "node-pty": "1.1.0",
     "plist": "3.1.1",
+    "semver": "7.7.4",
     "typescript": "6.0.3",
-    "vitest": "4.1.11"
+    "vite": "8.3.4",
+    "vitest": "4.1.12"
   },
   "dependencies": {
-    "@playwright/test": "1.62.1",
-    "zod": "4.4.3"
+    "@playwright/test": "1.64.0",
+    "zod": "4.6.7"
   }
 }

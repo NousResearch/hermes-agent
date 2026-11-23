@@ -59,7 +59,7 @@ behavior-affecting hooks:
 
 | Hook | Return behavior |
 | --- | --- |
-| `pre_llm_call` | May return a string or `{"context": "..."}` to inject ephemeral context into the current user message. |
+| `pre_llm_call` | May return a string or `{"context": "..."}` to inject ephemeral context into the current user message, or `{"action": "block", "message": "..."}` to end the turn before any inference request (the message becomes the reply and the prompt is stored as a withheld placeholder; see [Event Hooks](../user-guide/features/hooks.md)). A callback that raises or times out is skipped, so it never blocks. |
 | `pre_tool_call` | May return `{"action": "block", "message": "..."}` to block a tool before execution, or `{"action": "modify", "args": {...}}` to transform the tool's input arguments. |
 | `transform_tool_result` | May return a replacement tool result string after `post_tool_call`. |
 | `transform_llm_output` | May return a replacement final assistant text string. |
@@ -99,6 +99,7 @@ Session hooks describe conversation boundaries and resets:
 | `on_session_end` | A `run_conversation` call ends, including interrupted or incomplete turns. |
 | `on_session_finalize` | CLI or gateway tears down an active session identity. |
 | `on_session_reset` | CLI or gateway moves from an old session identity to a new one. |
+| `on_session_delete` | A session delete or deliberate archive committed (`reason` says which). |
 
 Common fields include `session_id`, `completed`, `interrupted`, `reason`,
 `old_session_id`, and `new_session_id` where available.

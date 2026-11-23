@@ -45,6 +45,17 @@ class CompressResult:
     def removed(self) -> int:
         return len(self.before_messages) - len(self.after_messages)
 
+    @property
+    def committed(self) -> bool:
+        """The chat got smaller: ``compressed`` and not a no-op, an aborted summary or a refused one."""
+        return self.status == "compressed" and summary_committed(self.summary)
+
+
+def summary_committed(summary: Optional[dict[str, Any]]) -> bool:
+    """A ``summarize_manual_compression`` payload for a compaction that replaced history (``compress_now``
+    reports ``compressed`` for an unchanged history too; its summary flags tell)."""
+    return bool(summary) and not (summary.get("noop") or summary.get("aborted") or summary.get("refused_would_grow"))
+
 
 def parse_compress_args(raw_args: str) -> CompressRequest:
     """One parser for every surface: flags anywhere, then the boundary-aware / focus positional forms."""
@@ -69,7 +80,7 @@ def estimate_request_tokens(agent: Any, messages: Sequence[dict[str, Any]]) -> i
 def compress_now(
     agent: Any, history: Sequence[dict[str, Any]], request: CompressRequest, *,
     system_message: Any = None, task_id: str = "default", skip_without_window: bool = False,
-    snapshot_is_current: Optional[Callable[[], bool]] = None,
+    snapshot_is_current: Optional[Callable[[], bool]] = None, trigger: Optional[str] = None,
 ) -> CompressResult:
     """Run one manual compression of ``history`` on ``agent`` and return the outcome; the caller installs
     ``after_messages`` (and re-anchors session ids) — history is never mutated here.
@@ -78,7 +89,9 @@ def compress_now(
     summarizer runs; the normal timeout/fallback pipeline remains in charge of the attempt.
     ``preview=True`` performs no compression and leaves ``agent`` untouched. A held compression lock
     yields ``lock_skipped`` with the agent's signal cleared and the deferred context-engine notification
-    discarded; otherwise the caller must call ``finalize_context_engine_compression_notification(agent,
+    discarded; ``trigger`` (an automatic owner, e.g. cache-expiry compaction) runs the same sequence
+    WITHOUT ``force``, so the failure cooldown and breakers apply, a ready prepared summary is reused
+    (``compression.prepare_ahead``) and telemetry names that trigger; otherwise the caller must call ``finalize_context_engine_compression_notification(agent,
     committed=True)`` once its own history transaction commits (``committed=False`` on failure).
     ``system_message=None`` makes ``_compress_context`` rebuild the prompt; passing the cached prompt
     duplicated the identity block (#15281). ``skip_without_window`` (gateway) answers ``nothing_to_do``
@@ -127,8 +140,9 @@ def compress_now(
         tail_rows.append(row)
     try:
         compressed, _ = agent._compress_context(
-            head, system_message, approx_tokens=before_tokens, focus_topic=request.focus_topic, force=True,
-            defer_context_engine_notification=True, **({"task_id": task_id} if task_id != "default" else {}),
+            head, system_message, approx_tokens=before_tokens, focus_topic=request.focus_topic, force=trigger is None,
+            defer_context_engine_notification=True, **({"trigger": trigger} if trigger else {}),
+            **({"task_id": task_id} if task_id != "default" else {}),
             **({"snapshot_is_current": snapshot_is_current} if snapshot_is_current is not None else {}),
             **({"verbatim_tail": tail_rows} if tail_rows else {}))
     except Exception:
@@ -146,7 +160,12 @@ def compress_now(
     if tail and not all(row.get(_DB_PERSISTED_MARKER) is True for row in tail_rows):
         compressed = rejoin_compressed_head_and_tail(compressed, tail)
     after_tokens = estimate_request_tokens(agent, compressed)
-    summary = summarize_manual_compression(before, compressed, before_tokens, after_tokens, compression_state=compressor)
+    # A gateway-backed agent compresses on its owner, whose compressor holds the abort/refusal/reason
+    # flags: the owner's report is the result. Type-pinned (dict) for the MagicMock reason above.
+    summary = getattr(agent, "compression_summary", None)
+    if not isinstance(summary, dict):
+        summary = summarize_manual_compression(before, compressed, before_tokens, after_tokens,
+                                               compression_state=compressor)
     return CompressResult("compressed", before, list(compressed), before_tokens, after_tokens, request, summary=summary)
 
 

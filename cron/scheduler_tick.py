@@ -30,7 +30,8 @@ def _log_tick_yield_once(reason: str) -> None:
     _last_yield_log = {"reason": reason, "at": now}
 
 
-def tick(verbose=True, adapters=None, loop=None, sync=True, *, can_dispatch=None):
+def tick(verbose=True, adapters=None, loop=None, sync=True, *, can_dispatch=None,
+         headless: bool = False):
     from hermes_cli.backend_retirement import retirement
 
     # Hold admission through the entire scan/advance/submit handoff. A predicate alone races
@@ -38,7 +39,8 @@ def tick(verbose=True, adapters=None, loop=None, sync=True, *, can_dispatch=None
     with retirement.work() as admitted:
         if not admitted:
             return 0
-        return _tick_admitted(verbose, adapters, loop, sync, can_dispatch=can_dispatch)
+        return _tick_admitted(verbose, adapters, loop, sync, can_dispatch=can_dispatch,
+                              headless=headless)
 
 
 def _acquire_tick_lock_or_degrade(_sched):
@@ -70,11 +72,31 @@ def _advance_or_drop_recurring(_sched, due_jobs: list) -> list:
         return [j for j in due_jobs if not is_recurring(j)]
 
 
+def _pre_dispatch_housekeeping(_sched, headless: bool) -> None:
+    """Admission reconcile, legacy upgrade drain and dead-owner reap, run under the tick lock
+    before due jobs are read."""
+    from cron.scheduler_authority import reconcile_pending
+    if headless:
+        reconcile_pending(allow_connect=False)
+    else:
+        reconcile_pending()
+    # Upgrade drain for the retired CLI lane's records: never let it stop due jobs below.
+    try:
+        from cron.bot_chat_legacy import drain_legacy_pending
+        drain_legacy_pending()
+    except Exception as _legacy_exc:
+        _sched.logger.warning("Legacy Bot Chat pending drain failed: %s", _legacy_exc, exc_info=True)
+    _sched._maybe_reap_dead_owners()
+
+
 def _tick_admitted(
-    verbose: bool = True, adapters=None, loop=None, sync: bool = True, *, can_dispatch=None):
+    verbose: bool = True, adapters=None, loop=None, sync: bool = True, *, can_dispatch=None,
+    headless: bool = False):
     """Check and run all due jobs. File-locked so only one tick runs at a time (gateway ticker vs
     standalone daemon / manual tick). ``can_dispatch``: optional gate; false leaves due jobs for the
-    next allowed tick. Returns the number of jobs executed (0 if another tick holds the lock)."""
+    next allowed tick. ``headless``: the tick runs outside any gateway (system crontab, ``hermes
+    cron tick``) and must refuse agent jobs rather than spawn one. Returns the number of jobs
+    executed (0 if another tick holds the lock)."""
     from cron import scheduler as _sched
 
     # Stale-code yield gate — BEFORE the lock race. A process whose checkout was updated under it
@@ -100,12 +122,7 @@ def _tick_admitted(
             _sched.logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0
 
-        from cron.bot_chat_delivery import drain, drain_in_background
-        if sync:
-            drain()
-        else:
-            drain_in_background()
-        _sched._maybe_reap_dead_owners()
+        _pre_dispatch_housekeeping(_sched, headless)
         # Periodic worktree GC (6h, threaded) — the only sweep gateway-only boxes get.
         try:
             _sched._maybe_run_worktree_maintenance()
@@ -114,6 +131,9 @@ def _tick_admitted(
 
         due_jobs = _sched.get_due_jobs()
         _sched._sweep_stale_inflight_for_tick(due_jobs)
+        if headless:
+            from cron.scheduler_gateway_gate import refuse_agent_jobs_without_gateway
+            due_jobs = refuse_agent_jobs_without_gateway(due_jobs)
 
         if not due_jobs:
             # Idle tick: skip config load + pool setup, but still reap crashed jobs' MCP orphans.

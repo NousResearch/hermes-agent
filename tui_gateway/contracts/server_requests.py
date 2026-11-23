@@ -7,6 +7,8 @@ the transport and declared on the shared base) and the ``result`` the client ans
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from tools.tour_presets import TourPreset
@@ -47,9 +49,11 @@ class ClarifyRequestParams(ServerRequestParams):
 
 class ClarifyResult(Result):
     """``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response
-    without ``answers`` is cancel-all."""
+    without ``answers`` is cancel-all. ``outcome`` (optional): how the viewer's own panel ended, as
+    main's classic CLI reports it (``timed_out`` keeps the answers locked before its deadline)."""
 
     answers: dict[str, str | None] | None = None
+    outcome: Literal["submitted", "timed_out", "cancelled"] | None = None
 
 
 server_request("clarify", params=ClarifyRequestParams, result=ClarifyResult,
@@ -262,6 +266,14 @@ server_request("window.read", params=EmptyRequestParams, result=ValueResult,
                doc="Enumerate the native window below the app (JSON text answer).")
 
 
+class PreviewVaultOperation(Params):
+    """Internal vault transport, never arguments exposed to the model."""
+
+    operation: Literal["open", "evaluate", "close"]
+    target: str | None = None
+    expression: str | None = None
+
+
 class PreviewActRequestParams(ServerRequestParams):
     """``tools/drive_preview_tool.py`` and ``tools/annotate_preview_tool.py`` field sets."""
 
@@ -276,6 +288,7 @@ class PreviewActRequestParams(ServerRequestParams):
     amount: int | None = None
     max: int | None = None
     allow_shortcut: bool | None = None
+    vault: PreviewVaultOperation | None = None
 
 
 server_request("preview.act", params=PreviewActRequestParams, result=ValueResult,

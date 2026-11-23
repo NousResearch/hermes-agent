@@ -7,7 +7,7 @@ import { $artifactRegistry, upsertArtifact } from '@/store/artifacts'
 import { $cronJobs } from '@/store/cron'
 import { bindDesktopMetrics, resetDesktopMetricsForTests } from '@/store/desktop-metrics'
 import { $developerViewOfferOpen } from '@/store/developer-view-offer'
-import { $firstTimeSplash, $firstTimeSplashHoldsSidebar } from '@/store/first-time-splash'
+import { $firstTimeSplash } from '@/store/first-time-splash'
 import { $guidanceLedger } from '@/store/guidance-ledger'
 import { holdPrompt, takeHeldPrompt } from '@/store/held-prompt'
 import { $interfaceMode, setInterfaceMode } from '@/store/interface-mode'
@@ -126,7 +126,6 @@ describe('the first-time splash in the shell', () => {
     expect(routineRow().dataset.active).toBeUndefined()
     expect(firstTime()?.dataset.place).toBeUndefined()
     expect(window.document.querySelectorAll('[data-slot="seen-check"]')).toHaveLength(0)
-    expect($firstTimeSplashHoldsSidebar.get()).toBe(true)
 
     // The active row is the one whose example shows (discovery.css swaps it for the line).
     fireEvent.focus(routines)
@@ -143,43 +142,26 @@ describe('the first-time splash in the shell', () => {
     expect(window.document.querySelectorAll('[data-slot="seen-check"]')).toHaveLength(2)
   })
 
-  it('names the lit place on the root only while the pointer or focus is on the rows, for the rail', () => {
+  it('points at the place only while the pointer or focus is on the rows', () => {
     renderShell()
     settle([])
-    const root = window.document.documentElement
     const routines = screen.getByRole('button', { name: name => name.endsWith(`: ${copy.splash.lines.routines.line}`) })
+    const spotlight = () => window.document.querySelector('[data-slot="nav-spotlight"]')
 
-    expect(root.hasAttribute('data-discovery-splash')).toBe(true)
-    expect(root.hasAttribute('data-discovery-place')).toBe(false)
+    expect(spotlight()).toBeNull()
 
     fireEvent.focus(routines)
-    expect(root.dataset.discoveryPlace).toBe('routines')
-    // Focus leaves the rows: the place stays picked in the splash, the rail stops pointing.
+    expect(spotlight()).not.toBeNull()
+    // Focus leaves the rows: the place stays picked in the splash, nothing points at the navigation.
     fireEvent.blur(routines, { relatedTarget: window.document.body })
     expect(firstTime()?.dataset.place).toBe('routines')
-    expect(root.hasAttribute('data-discovery-place')).toBe(false)
+    expect(spotlight()).toBeNull()
 
     fireEvent.pointerEnter(routines.closest('ul')!)
-    expect(root.dataset.discoveryPlace).toBe('routines')
+    expect(spotlight()).not.toBeNull()
 
     fireEvent.keyDown(window, { key: 'Escape' })
-    expect(root.hasAttribute('data-discovery-place')).toBe(false)
-    expect(root.hasAttribute('data-discovery-splash')).toBe(false)
-  })
-
-  it('hands the chat sidebar back while Chats is the place lit, and takes it again after', () => {
-    renderShell()
-    settle([])
-    const chats = screen.getByRole('button', { name: name => name.endsWith(`: ${copy.splash.lines.chats.line}`) })
-    const library = screen.getByRole('button', { name: name => name.endsWith(`: ${copy.splash.lines.library.line}`) })
-
-    fireEvent.pointerEnter(chats, { pointerType: 'mouse' })
-    expect($firstTimeSplashHoldsSidebar.get()).toBe(false)
-    fireEvent.pointerEnter(library, { pointerType: 'mouse' })
-    expect($firstTimeSplashHoldsSidebar.get()).toBe(true)
-
-    fireEvent.keyDown(window, { key: 'Escape' })
-    expect($firstTimeSplashHoldsSidebar.get()).toBe(false)
+    expect(spotlight()).toBeNull()
   })
 
   it('moves to Make it yours and back, with focus on each step', async () => {

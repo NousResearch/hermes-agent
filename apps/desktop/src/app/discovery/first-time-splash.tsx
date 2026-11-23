@@ -4,7 +4,6 @@ import { type RefObject, useCallback, useEffect, useId, useRef, useState } from 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { FileText } from '@/lib/icons'
-import { useRootAttribute } from '@/lib/root-attribute'
 import {
   $firstTimeSplashPlace,
   $firstTimeSplashSeen,
@@ -20,6 +19,7 @@ import { requestComposerFocus } from '../chat/composer/focus'
 
 import { useFirstTimeCopy } from './first-time-copy'
 import { MakeItYours } from './make-it-yours'
+import { NavSpotlight } from './nav-spotlight'
 import { useRenamedNames } from './renamed-names'
 import { useSplashFrame } from './splash-surface'
 
@@ -68,9 +68,9 @@ interface PlacesProps extends StepProps {
 
 /**
  * Step 1 (Figma 18695:17147): what each place in the nav is for, one row each in one card. The row a
- * pointer, focus or tap last reached is the place: it lights in the rail and Chats brings the chat
- * sidebar back, and while the pointer or focus is still on the rows it says its example in place of
- * its line (18695:17294). Every row reached carries the seen check for the rest of the showing
+ * pointer, focus or tap last reached is the place, and while the pointer or focus is still on the
+ * rows it says its example in place of its line (18695:17294) and its place is ringed in the
+ * navigation where it sits, with a line from the row, as the rename splash does. Every row reached carries the seen check for the rest of the showing
  * (18695:17833). Each row's name stays its place and line for assistive tech; the example and
  * the check are its description.
  */
@@ -80,11 +80,16 @@ function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
   const place = useStore($firstTimeSplashPlace)
   const seen = useStore($firstTimeSplashSeen)
   const id = useId()
-  // The rows under the pointer or holding focus: the rail lights the place only then (discovery.css).
+  // The rows under the pointer or holding focus: the place is pointed at only then.
   const [pointerOver, setPointerOver] = useState(false)
   const [focusWithin, setFocusWithin] = useState(false)
+  const pointing = pointerOver || focusWithin
+  const activeRowRef = useRef<HTMLButtonElement | null>(null)
 
-  useRootAttribute('data-discovery-place', pointerOver || focusWithin ? place : null)
+  // The active row's button, for the spotlight's connector.
+  const bindActiveRow = useCallback((node: HTMLButtonElement | null) => {
+    activeRowRef.current = node
+  }, [])
 
   return (
     <>
@@ -123,6 +128,7 @@ function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
                     note()
                   }
                 }}
+                ref={active ? bindActiveRow : undefined}
                 type="button"
               >
                 <PlaceGlyph place={row} />
@@ -161,6 +167,7 @@ function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
           {copy.style.action}
         </Button>
       </div>
+      {pointing && place && <NavSpotlight anchor={activeRowRef} key={place} spot={place} />}
     </>
   )
 }

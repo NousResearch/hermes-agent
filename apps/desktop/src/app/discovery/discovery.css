@@ -406,25 +406,11 @@
   box-shadow: none;
 }
 
-/* While the splash is up the rail lights only the place a row is pointing at (18695:17294,
-   18695:17488): the open destination's selection stands down. */
+/* While a splash is up the open destination's selection stands down in the rail (18695:17294,
+   18695:17488): the only place marked is the one a row is pointing at, by the spotlight's ring. */
 :root[data-shell='portal'][data-discovery-splash] [data-slot='global-nav'] .portal-chrome-button[aria-current='page'] {
   background-color: var(--portal-rail-fill);
   color: var(--portal-rail-ink);
-}
-
-/* The place the welcome's rows point at, while the pointer or focus is on them (first-time-splash.tsx
-   names it on the root: a :root:has() here restyles the whole document on every DOM change). */
-:root[data-shell='portal'][data-discovery-place='chats'] [data-slot='global-nav'] .portal-chrome-button[data-nav-spot='chat'],
-:root[data-shell='portal'][data-discovery-place='agents']
-  [data-slot='global-nav']
-  .portal-chrome-button[data-nav-spot='profiles'],
-:root[data-shell='portal'][data-discovery-place='routines'] [data-slot='global-nav'] .portal-chrome-button[data-nav-spot='cron'],
-:root[data-shell='portal'][data-discovery-place='library']
-  [data-slot='global-nav']
-  .portal-chrome-button[data-nav-spot='artifacts'] {
-  background-color: var(--portal-rail-fill-selected);
-  color: var(--portal-rail-ink-selected);
 }
 
 /* ── Sign-in recovery (18732:33066, 18695:19224): the welcome card's rows, each with a status ── */

@@ -1200,9 +1200,11 @@ child of the stage, after any page sidebar panel and before the header; the stag
 containing block (`position: relative`: the agent page's `.agent-management`, Settings'
 `[data-slot='overlay-main']`, which takes `relative` only while it shows a band). The box sits at the
 stage's top from `--page-stage-nav` (0 where the page has none) at Figma's own geometry per art
-(`--page-hero-min-width`, the panel width Figma draws it on, and `--page-hero-ratio`); a wider stage
-scales it up and a narrower one crops it at the far side (`veil` keeps to the trailing edge, where
-its art is). Its following siblings become `position: relative` so they paint over it. The page frame
+(`--page-hero-min-width`, the panel width Figma draws it on, and `--page-hero-height`). The band keeps
+that height on every stage (scaled in proportion it covered the whole page on a wide window) and a
+narrower stage crops it at the far side. On a wider one `stream`, a band across the top, stretches
+sideways; `tide` and `veil`, whose light is in the far top corner, stay Figma's size in that corner,
+clear of the page's column (`tide` fades its top line in over 6rem where its box starts). Its following siblings become `position: relative` so they paint over it. The page frame
 placeholder carries it too (`PageFrame.hero`), so it does not pop in when the page's code lands.
 
 Each art is two baked images in `src/assets/` (`page-hero-<art>-dark.avif`, `-light.avif`) with
@@ -1328,15 +1330,16 @@ other view of the dialog is classic's.
 
 The **first-time splash** ("Welcome to Hermes", Figma "Prod - Desktop" › Onboarding 18695:17147) is
 the second splash, for a new install (the verdict the rename splash records as `not_applicable`). It
-is not a card on the stage but the stage itself (its veil over the art, edge to edge), and while it is
-up the chat sidebar stands down (`$firstTimeSplashHoldsSidebar` feeds the same route collapse that
-hides it beside a page), so the stage is the splash's alone. Step 1 is a 640 column: eyebrow, display
+is not a card on the stage but the stage itself (its veil over the art, edge to edge). The navigation
+stays as it is while the splash is up, as under the rename splash: a sidebar that came and went with
+a row's hover moved the whole page. Step 1 is a 640 column: eyebrow, display
 title, one line, then Chats, Agents, Routines and Library as rows in one card (`--portal-welcome-card`).
-The row a pointer, focus or tap last reached is the place: Chats brings the real chat sidebar back
-(Agents, Routines and Library have their panels on their own pages, which the splash does not open).
-While the pointer or focus is on the rows, that row says its example in place of its line, its place
-is lit in the rail (the rail's own selected fill; the open destination's selection stands down while
-the splash is up) and everything else fades to `--portal-backdrop-opacity`. Every row reached carries
+The row a pointer, focus or tap last reached is the place. While the pointer or focus is on the rows,
+that row says its example in place of its line, its place is ringed where it sits in the navigation
+with a dashed line from the row (`nav-spotlight.tsx`, the rename splash's; the open destination's
+selection stands down in the rail while a splash is up) and everything else fades to
+`--portal-backdrop-opacity`. The ring and line are placed in the spotlight layer's own pixels, so
+they hold at any UI scale. Every row reached carries
 the seen check (the band's chrome tile) for the rest of the showing. "Make it yours" leads to step 2: the accent's eight swatches and Light / Dark in
 one card, "Make it beautiful" (the artworks the mode draws, as cards that run the stage's width and fade
 off both sides), and the way in: Sign up and Look around where sign up is required, one button

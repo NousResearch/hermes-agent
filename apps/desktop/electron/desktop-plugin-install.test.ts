@@ -213,6 +213,41 @@ describe('probePluginRepo', () => {
 
     expect(result).toMatchObject({ ok: true, agent: true, agentName: 'nested-agent' })
   })
+
+  it('reads a catalog pick at its pin when the plugin folder lives only on another branch', async () => {
+    // A catalog pin on a side branch: the default branch never had the folder, the install checks out the pin.
+    const repo = mkdtemp('hermes-plugin-pinned-')
+    roots.push(repo)
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' }).toString().trim()
+    const ident = ['-c', 'user.email=fixture@example.com', '-c', 'user.name=Fixture']
+    git('init', '-q', '-b', 'main')
+    git('config', 'uploadpack.allowFilter', 'true')
+    fs.writeFileSync(path.join(repo, 'README.md'), 'no plugin here\n')
+    git('add', '.')
+    git(...ident, 'commit', '-qm', 'main')
+    git('checkout', '-q', '-b', 'hermes')
+    const plugin = path.join(repo, '.hermes-plugin')
+    fs.mkdirSync(plugin)
+    fs.writeFileSync(path.join(plugin, 'plugin.yaml'), 'name: pinned-agent\n')
+    fs.writeFileSync(path.join(plugin, '__init__.py'), 'def register(ctx): pass\n')
+    git('add', '.')
+    git(...ident, 'commit', '-qm', 'plugin')
+    const pin = git('rev-parse', 'HEAD')
+    git('checkout', '-q', 'main')
+    const identifier = `${pathToFileURL(repo).href}#.hermes-plugin`
+
+    expect(await probePluginRepo('git', identifier)).toMatchObject({
+      ok: false,
+      error: "Plugin subdirectory '.hermes-plugin' does not exist in the repository."
+    })
+    expect(await probePluginRepo('git', identifier, { ref: pin.toUpperCase() })).toMatchObject({
+      ok: true,
+      agent: true,
+      agentName: 'pinned-agent',
+      sha: pin
+    })
+    expect(await probePluginRepo('git', identifier, { ref: 'main' })).toMatchObject({ ok: false })
+  }, 30_000)
 })
 
 describe('installDesktopPluginFromGit', () => {
@@ -260,12 +295,16 @@ describe('installDesktopPluginFromGit', () => {
     fs.writeFileSync(path.join(repo, 'desktop', 'panel.js'), 'moved\n')
     git('-c', 'user.email=fixture@example.com', '-c', 'user.name=Fixture', 'commit', '-qam', 'moved')
 
-    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, false, probe.sha)
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, { sha: probe.sha })
 
     expect(result).toMatchObject({ ok: true })
     expect(fs.readFileSync(path.join(appRoot, result.pluginName!, 'panel.js'), 'utf8')).toBe('reviewed\n')
 
-    const refused = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, true, 'f'.repeat(40))
+    const refused = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, {
+      force: true,
+      sha: 'f'.repeat(40)
+    })
+
     expect(refused).toMatchObject({ ok: false, sourceMoved: true })
     expect(refused.error).toContain('the source may have changed since you reviewed it')
     expect(fs.readFileSync(path.join(appRoot, result.pluginName!, 'panel.js'), 'utf8')).toBe('reviewed\n')
@@ -283,7 +322,7 @@ describe('installDesktopPluginFromGit', () => {
     const appRoot = mkdtemp('hermes-plugin-root-')
     roots.push(appRoot)
 
-    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, false, tagObject)
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, { sha: tagObject })
 
     expect(result).toMatchObject({ ok: true })
     expect(fs.readFileSync(path.join(appRoot, result.pluginName!, 'panel.js'), 'utf8')).toBe('reviewed\n')
@@ -332,7 +371,7 @@ describe('installDesktopPluginFromGit', () => {
     git('add', '-A')
     git('-c', 'user.email=f@example.com', '-c', 'user.name=F', 'commit', '-qm', 'link')
 
-    const refused = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, true)
+    const refused = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, { force: true })
 
     expect(refused.ok).toBe(false)
     expect(refused.error).toContain('symbolic link')
@@ -345,7 +384,7 @@ describe('installDesktopPluginFromGit', () => {
     fs.writeFileSync(path.join(repo, 'desktop', 'panel.js'), 'replaced\n')
     git('add', '-A')
     git('-c', 'user.email=f@example.com', '-c', 'user.name=F', 'commit', '-qm', 'plain')
-    expect(await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, true)).toMatchObject({
+    expect(await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, { force: true })).toMatchObject({
       ok: true
     })
     expect(fs.readdirSync(appRoot)).toEqual([installed.pluginName])
@@ -382,7 +421,7 @@ describe('installDesktopPluginFromGit', () => {
       fs.mkdirSync(appRoot)
       fs.writeFileSync(path.join(home, 'config.yaml'), 'keep\n')
 
-      const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, true)
+      const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, { force: true })
 
       expect(fs.readFileSync(path.join(home, 'config.yaml'), 'utf8')).toBe('keep\n')
       expect(result.ok).toBe(false)

@@ -1,0 +1,17 @@
+name: pstack-hermes
+title: pstack for Hermes
+repo: https://github.com/khaeransori/pstack-hermes
+sha: a977cb559d72e02528241a5507879a1fe46b5e69
+description: "pstack (cursor/plugins, MIT, Lauren Tan) for Hermes: the full upstream skill set (poteto-mode and its 22 playbooks, correct, interrogate, arena, swarm, blast-radius, unslop, 24 principles; 58 skills) with a Cursor-to-Hermes tool adapter bundled in each skill. Portable Agent Plugins v1 package (skills/ only, no code of its own runs on install). Disclosure — derived from cursor/plugins pstack (MIT), text kept byte for byte apart from one adapter line per file; in a run, the skills delegate many parallel delegate_task sub-agents (arena, swarm, interrogate), run shell, git and gh commands through the terminal tool, and with the user's go-ahead push branches, open and merge pull requests and schedule Hermes cron jobs to watch them; statechart and poteto-mode's helper scripts install their own Bun/Node dependencies, and statechart fetches Java and TLA+ tools via mise (checksum-pinned) on first use; setup-pstack writes ~/.hermes/pstack-models.md and can change delegation model routes via hermes config set when asked."
+maintainer: khaeransori
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.15.46-hermes.2"
+docs_url: https://github.com/khaeransori/pstack-hermes
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

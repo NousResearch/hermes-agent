@@ -17,6 +17,9 @@ Run as ``python webapp_fallback_peer.py '<spec json>'`` with an isolated ``HERME
 - ``update_fails``: before the gateway starts, ``hermes update``'s Webapp step runs for this home and its
   build fails; once the gateway serves, ``hermes webapp``'s build succeeds;
 - ``probe_host``: a Host header to send (a public hostname), or null;
+- ``probe_bind_host``: also ask ``/api/status`` at the Webapp's own (non-loopback) ``webapp.host`` address;
+- ``report_listening``: addresses to report, once the gateway started, whether anything accepts a
+  connection on the Webapp's port there;
 - ``credential``: the stored browser credential this gateway finds: ``"folder-is-a-file"`` (a plain
   file where the ``webapp/`` folder goes), ``"token-is-a-folder"`` (a folder where
   ``webapp/session-token`` goes), ``"not-utf8"`` (the token saved as UTF-16), or null for a
@@ -172,6 +175,14 @@ async def _native_session_list(runner, origin) -> bool:
         return "result" in await rpc(ws, "session.list")
 
 
+def _accepts(address, port) -> bool:
+    try:
+        socket.create_connection((address, port), timeout=5).close()
+    except OSError:
+        return False
+    return True
+
+
 def _mounted_state(home):
     web = sys.modules.get("hermes_cli.web_server")
     if web is None:
@@ -282,6 +293,7 @@ async def probe(spec):
     api = runner.session_api
     origin = api.api_origin
     report.update(api_origin=origin, status=ask("webapp-status"), launch=ask("webapp-launch"))
+    report["listening"] = {address: _accepts(address, port) for address in spec.get("report_listening", ())}
     try:
         async with httpx.AsyncClient(base_url=origin, timeout=20) as client:
             loopback = await client.get("/api/status")  # mounts the dashboard on the private listener
@@ -292,6 +304,14 @@ async def probe(spec):
                 foreign = await client.get("/api/status", headers={"Host": spec["probe_host"]})
                 report["probe_host_status_code"] = foreign.status_code
                 report["redirect_uri_for_probe_host"] = _redirect_uri(spec["probe_host"])
+            if spec.get("probe_bind_host"):
+                bound = spec["webapp"]["host"]
+                own = f"http://[{bound}]:{port}" if ":" in bound else f"http://{bound}:{port}"
+                async with httpx.AsyncClient(base_url=own, timeout=20) as direct:
+                    at_address = await direct.get("/api/status")
+                    report["bind_host_status_code"] = at_address.status_code
+                    report["bind_host_sessions_code"] = (await direct.get("/api/sessions")).status_code
+                report["loopback_sessions_code"] = (await client.get("/api/sessions")).status_code
             report["state"] = _mounted_state(home)
             report["native_session_list"] = await _native_session_list(runner, origin)
             if not spec.get("built", True):

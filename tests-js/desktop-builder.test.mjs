@@ -131,7 +131,7 @@ test('desktop compiler consumes explicit immutable inputs, replaces variants, an
   put(input.stamp, JSON.stringify({ schemaVersion: 1, payload: 'bundled', updateMechanism: 'microsoft-store', commit: 'b'.repeat(40), tag: null }))
   // Ambient variant/tag must not override explicit stamp inputs or cached CJS identity.
   execFileSync(process.execPath, [join(repo, 'scripts/build/desktop.mjs'), ...Object.entries(input).flatMap(([key, value]) => [`--${key === 'nativeDeps' ? 'native-deps' : key}`, value])], {
-    cwd: tmpdir(), env: { ...process.env, PATH: '', HERMES_DESKTOP_VARIANT: 'light', HERMES_PAYLOAD_TAG: 'v1.0.0+canary.20260911T000000Z' }, stdio: 'pipe',
+    cwd: tmpdir(), env: { ...process.env, PATH: '', HERMES_DESKTOP_VARIANT: 'light', HERMES_PAYLOAD_TAG: 'canary.20260911T000000Z-v1.0.0' }, stdio: 'pipe',
   })
   expect(run().identity.store).toBe(true)
   expect(run().identity.light).toBe(false)
@@ -141,6 +141,36 @@ test('desktop compiler consumes explicit immutable inputs, replaces variants, an
   await expect(buildDesktop(input)).rejects.toThrow()
   expect(files(input.out)).toEqual(built)
   expect(files(input.source).some(([name]) => name.includes('.vite') || name.endsWith('tsbuildinfo'))).toBe(false)
+}, 60000)
+
+// validateNativeTree checks get-windows only for darwin; run that branch on every host by giving the
+// fixture's host node-pty bindings a Mach-O header.
+function asDarwin(input) {
+  const pty = join(input.nativeDeps, 'node-pty')
+  for (const name of readdirSync(pty, { recursive: true }).filter(name => String(name).endsWith('.node'))) {
+    writeFileSync(join(pty, name), Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0, 0, 0, 0]))
+  }
+  return { ...input, platform: 'darwin' }
+}
+
+test('desktop compiler ships a native tree without get-windows, as stage-native-deps degrades it', async () => {
+  // An interrupted install can leave get-windows absent (#90829), as pnpm's name-based skip of
+  // the optional declaration did (#149861); staging then leaves it out and the app ships
+  // without read_window_below instead of failing the build.
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const input = asDarwin(fixture())
+  rmSync(join(input.nativeDeps, 'get-windows'), { recursive: true, force: true })
+  await buildDesktop(input)
+  expect(existsSync(join(input.out, 'electron-main.mjs'))).toBe(true)
+  expect(existsSync(join(input.out, 'node_modules/get-windows'))).toBe(false)
+}, 60000)
+
+test('desktop compiler refuses a staged get-windows without its macOS helper', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const input = asDarwin(fixture())
+  rmSync(join(input.nativeDeps, 'get-windows'), { recursive: true, force: true })
+  put(join(input.nativeDeps, 'get-windows/package.json'), '{"name":"get-windows"}')
+  await expect(buildDesktop(input)).rejects.toThrow(/missing its macOS helper/)
 }, 60000)
 
 test('desktop output cannot overlap a source directory symlinked outside the checkout', async () => {

@@ -1,0 +1,34 @@
+name: shopmate
+repo: https://github.com/DaveTech2/Shopmate
+sha: 0e86f3fdf75a3036f7cd40bd374d050fabde040a
+title: Shopmate
+description: "Personal shopper agent: finds products with live Google Shopping prices and photos (SerpAPI, or a labelled demo catalog without a key), quotes delivery to the customer's location with doorstep or pickup-stop options, and on an explicit yes takes payment by Paystack (NGN, GHS, KES, ZAR, USD, XOF, EGP, RWF) or crypto via NOWPayments, verifying amount+currency with the provider before marking the order paid. Supports conversation-scoped order lookup (cross-conversation email/phone lookup is an operator setting, off by default), saved-card charges via Paystack charge_authorization (cards are bound to the conversation that paid and identified by a local opaque card_id; a pre_tool_call hook sends saved-card checkout with confirm=true to a Hermes approval), request_refund (Paystack Refund API + manual crypto payouts; optional NGN bank transfers only when the allow_transfers plugin setting is on, which moves the operator's Paystack balance and is off by default; confirm=true on all refund methods also goes through the same Hermes approval, and bank_transfer requires account_name), webhook signature verification (HMAC x-paystack-signature helper for operators), and contact_support with optional SUPPORT_EMAIL/SUPPORT_WHATSAPP — no BVN/phone identity lookups. 17 tools plus the shopmate:shopping skill. Disclosure — payments plugin: on checkout it creates Paystack payment links / charge_authorization charges and NOWPayments crypto invoices on the operator's own merchant keys (no money moves until the customer pays, or a saved-card charge or refund confirm is approved in Hermes); request_refund can call Paystack Refund / Transfers (transfers gated by the allow_transfers plugin setting) or leave a manual crypto payout pending; the reusable Paystack authorization code is stored in orders.sqlite and is never returned as card_id; network calls to serpapi.com, api.paystack.co, api.nowpayments.io, open.er-api.com, nominatim.openstreetmap.org, ipapi.co (auto-locate is on by default and sends the host's public IP when a conversation has no saved location) and maps.app.goo.gl (expanding shared Maps short links); carts, saved locations, saved card authorizations (last4/brand/bank and conversation binding only), support tickets and orders (customer name, email, phone and address) are stored in the plugin data directory; API keys are optional and read through Hermes's secret scope."
+maintainer: DaveTech2
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/DaveTech2/Shopmate#readme
+version: "0.5.1"
+capabilities:
+  provides_tools:
+    - shop_categories
+    - shop_search
+    - set_location
+    - pickup_stops
+    - shop_product
+    - cart_add
+    - cart_update
+    - cart_remove
+    - cart_view
+    - cart_clear
+    - delivery_quote
+    - payment_options
+    - checkout
+    - order_status
+    - request_refund
+    - saved_cards
+    - contact_support
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

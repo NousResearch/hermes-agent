@@ -19,12 +19,13 @@ cannot drift apart.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import logging
 import os
 import sys
 from types import ModuleType
-from typing import Any, Dict, FrozenSet, List, Mapping, Optional
+from typing import Any, Dict, FrozenSet, Iterator, List, Mapping, Optional
 
 logger = logging.getLogger("hermes_cli.plugins")
 
@@ -46,6 +47,7 @@ HOST_UNSUPPORTED_CTX_METHODS: dict[str, str] = {
     "register_approval_transport": "approval transports hold the live approval request/response channel",
     "post_message": "the returned handle is bound to the gateway's event loop and live adapter",
     "apost_message": "the returned handle is bound to the gateway's event loop and live adapter",
+    "fork_session": "the returned handle tracks a fork thread of the live session agent in the Hermes process",
 }
 
 # Registered in-process only; skipped (with a warning, the plugin still loads) inside the host
@@ -166,3 +168,32 @@ def user_plugin_host() -> Any:
         return None
     from hermes_cli.plugins import get_plugin_manager
     return get_plugin_manager()._plugin_host()
+
+
+@contextlib.contextmanager
+def transient_plugin_host() -> Iterator[Any]:
+    """A throwaway plugin manager for a one-shot load in the active profile (a profile lifecycle
+    hook), or ``None`` when ``plugins.isolation`` is not ``host``. Its own scope key and host
+    process keep it apart from the profile's shared manager, so the teardown on exit (dispose its
+    registrations, stop its host) cannot touch a concurrent user of that profile's shared host."""
+    if isolation_mode() != ISOLATION_HOST:
+        yield None
+        return
+    import uuid
+
+    from hermes_cli.plugins import PluginManager
+    manager = PluginManager()
+    # One scope per manager, so two overlapping hook loads never share registry slots; home_path stays
+    # the profile's home.
+    manager.scope_key = f"{manager.scope_key}#transient-{uuid.uuid4().hex}"
+    try:
+        yield manager
+    finally:
+        try:
+            manager.unload()
+        finally:
+            # Any host this manager made, alive or not: one whose channel closed can still have a running
+            # process, and shutdown() waits for or kills it.
+            host = getattr(manager, "_plugin_host_instance", None)
+            if host is not None:
+                host.shutdown()

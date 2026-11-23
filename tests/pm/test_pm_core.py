@@ -5,6 +5,7 @@ stores."""
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import stat
@@ -654,6 +655,23 @@ def test_python_package_url_carries_release_tag():
         pass
 
 
+def test_git_package_url_omits_first_build_revision():
+    from pm.registry import get_package
+
+    git = get_package("git")
+    # The first build of a tag ships as PortableGit-<tag> (no ".1" — a
+    # "PortableGit-2.56.0.1-..." URL 404s); later builds keep the revision.
+    assert git.fetch_url("2.56.0+1", "win32-x64").endswith(
+        "/v2.56.0.windows.1/PortableGit-2.56.0-64-bit.7z.exe"
+    )
+    assert git.fetch_url("2.55.0+5", "win32-x64").endswith(
+        "/v2.55.0.windows.5/PortableGit-2.55.0.5-64-bit.7z.exe"
+    )
+    assert git.fetch_url("2.56.0+1", "win32-arm64").endswith(
+        "/v2.56.0.windows.1/PortableGit-2.56.0-arm64.7z.exe"
+    )
+
+
 @pytest.mark.platforms("macos")
 def test_python_package_stably_signs_macos_runtime(tmp_path):
     import shutil
@@ -799,6 +817,49 @@ def test_python_stage_drops_unloadable_x64_vc_runtime_on_arm64(monkeypatch, tmp_
 
     assert not (staged / "vcruntime140_1.dll").exists()
     assert (staged / "vcruntime140.dll").is_file()
+
+
+def _stage_arm64_python_with_held_x64_helper(monkeypatch, tmp_path, times: float) -> tuple[Path, list[str]]:
+    """The x64 helper is deleted moments after the payload is extracted and hoisted, while a Windows
+    scanner can still hold it: the delete is refused for a moment ([WinError 32], EACCES)."""
+    from pm import filesystem
+    from pm.registry import get_package
+
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "python.exe").write_bytes(b"launcher")
+    (staged / "vcruntime140_1.dll").write_bytes(b"x64")
+    (staged / "vcruntime140.dll").write_bytes(b"arm64")
+
+    monkeypatch.setattr(filesystem, "_HELD_RETRY_DELAYS", (0,) * len(filesystem._HELD_RETRY_DELAYS))
+    refusals: list[str] = []
+    real_unlink = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if os.path.basename(os.fspath(path)) == "vcruntime140_1.dll" and len(refusals) < times:
+            refusals.append(os.fspath(path))
+            raise PermissionError(errno.EACCES, "The process cannot access the file because it is being used "
+                                  "by another process", os.fspath(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
+    get_package("python").stage(None, staged, "3.14.7", "win32-arm64")
+    return staged, refusals
+
+
+def test_python_stage_waits_out_a_scanner_hold_on_the_x64_vc_runtime_on_arm64(monkeypatch, tmp_path):
+    staged, refusals = _stage_arm64_python_with_held_x64_helper(monkeypatch, tmp_path, times=2)
+
+    assert len(refusals) == 2
+    assert not (staged / "vcruntime140_1.dll").exists()
+    assert (staged / "vcruntime140.dll").is_file()
+    assert (staged / "python3.exe").read_bytes() == b"launcher"
+
+
+def test_python_stage_fails_when_the_x64_vc_runtime_hold_never_clears(monkeypatch, tmp_path):
+    with pytest.raises(PermissionError):
+        _stage_arm64_python_with_held_x64_helper(monkeypatch, tmp_path, times=float("inf"))
 
 
 def test_python_stage_keeps_vc_runtimes_on_other_targets(monkeypatch, tmp_path):

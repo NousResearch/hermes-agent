@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { constants as osConstants } from 'node:os'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 
 import { prepareElectronRuntime } from './electron-runtime.mjs'
+import { JOB_SIGNALS, lockCheckout } from './node-deps-lock.mjs'
 import { lockImporters } from './pnpm-lock.mjs'
 
 // pnpm 12 is a native executable (pnpm.exe on Windows, never a .cmd shim), so it
@@ -33,6 +35,19 @@ function pnpmVersion(pnpm, { source, env }) {
   } catch {
     return execFileSync(pnpm, ['--version'], { cwd: source, env, encoding: 'utf8' }).trim()
   }
+}
+
+// PM's pnpm pin: the pnpm this checkout's lockfile is written and installed with.
+function pinnedPnpm(source) {
+  const path = join(source, 'pm/lock.json')
+  let version
+  try {
+    version = JSON.parse(readFileSync(path, 'utf8')).packages?.pnpm?.version
+  } catch (error) {
+    throw new Error(`cannot read the pnpm pin from ${path}: ${error.message}`)
+  }
+  if (typeof version !== 'string') throw new Error(`${path} pins no pnpm (packages.pnpm.version)`)
+  return version
 }
 
 // Every package directory pnpm linked: each locked direct dependency of an installed
@@ -76,24 +91,132 @@ function completedInstallMatches({ source, receipt, installedLock, key, nativeKe
     && linkedPackageDirs(source, installedLock).every(dir => existsSync(join(dir, 'package.json')))
 }
 
+// The reuse check reads the trees: an error from a run that lost its lock meanwhile (the new owner
+// moved them aside) is the lost lock, not a missing file.
+function reusable(lock, paths) {
+  try {
+    return completedInstallMatches(paths)
+  } catch (error) {
+    lock.check()
+    throw error
+  }
+}
+
 // pnpm's frozen install is incremental: it trusts its record of what is installed,
 // so it neither restores a gutted package nor reruns dependency builds for a changed
 // toolchain or configuration. Every install starts from empty trees, as npm ci did;
 // the store keeps that local. This also removes an npm-made tree, which pnpm would
 // move aside and leave behind.
-function removeInstalledTrees(source, projects) {
-  for (const project of projects) {
-    rmSync(join(source, project, 'node_modules'), { recursive: true, force: true, maxRetries: 3 })
+// The previous trees are moved aside, not deleted, until the install succeeds: the
+// first pnpm install runs on an empty store, so an unreachable registry would
+// otherwise leave no node_modules at all (#150031). Both generations are on disk
+// while pnpm runs. `pnpm fetch` would download every workspace (it takes no filter).
+// .cache/node-deps-previous holds trees.json (written first: the projects whose trees
+// move, and those with none, whose partial trees a restore removes), each
+// <project>/node_modules, and `complete` once every tree has moved.
+function previousTrees(source, check) {
+  const cache = join(source, '.cache')
+  const aside = join(cache, 'node-deps-previous')
+  const record = join(aside, 'trees.json')
+  const complete = join(aside, 'complete')
+  // pnpm writes this last, and only when an install succeeds.
+  const finished = join(source, 'node_modules/.pnpm-workspace-state-v1.json')
+  // Renamed away first: a delete killed halfway must never leave a partial set
+  // under the name restore reads.
+  // Every step that changes the trees first checks that this run still holds the lock.
+  const discard = () => {
+    check()
+    if (existsSync(aside)) renameSync(aside, join(cache, `node-deps-discard-${process.pid}-${Date.now()}`))
+    for (const name of existsSync(cache) ? readdirSync(cache) : []) {
+      if (!name.startsWith('node-deps-discard-')) continue
+      check()
+      rmSync(join(cache, name), { recursive: true, force: true, maxRetries: 3 })
+    }
+  }
+  const tree = project => join(source, project, 'node_modules')
+  // `complete` goes first, so a restore killed halfway is resumed, never mistaken
+  // for a set a finished install replaced. Each step can run again.
+  const restore = () => {
+    check()
+    rmSync(complete, { force: true })
+    const { moved = [], absent = [] } = existsSync(record) ? JSON.parse(readFileSync(record, 'utf8')) : {}
+    for (const project of absent) {
+      check()
+      rmSync(tree(project), { recursive: true, force: true, maxRetries: 3 })
+    }
+    for (const project of moved) {
+      const kept = join(aside, project, 'node_modules')
+      // Gone: already put back. A workspace the checkout no longer has (a pull
+      // dropped it) is discarded with the set.
+      if (!existsSync(kept) || !existsSync(join(source, project, 'package.json'))) continue
+      check()
+      rmSync(tree(project), { recursive: true, force: true, maxRetries: 3 })
+      check()
+      renameSync(kept, tree(project))
+    }
+    discard()
+  }
+  // A set left aside means a run was killed. Once every tree had moved, a pnpm
+  // install that finished since (that run's, or a manual one) is newer than the set
+  // and stays; otherwise the move or a restore was cut short and is completed.
+  const recover = () => (existsSync(complete) && existsSync(finished) ? discard() : restore())
+  const moveAside = projects => {
+    const moved = projects.filter(project => existsSync(tree(project)))
+    check()
+    mkdirSync(aside, { recursive: true })
+    // Renamed into place: a run killed (or out of space) mid-write must never leave a record
+    // that every later run fails to parse.
+    writeFileSync(`${record}.tmp`, JSON.stringify({ moved, absent: projects.filter(project => !moved.includes(project)) }))
+    renameSync(`${record}.tmp`, record)
+    try {
+      for (const project of moved) {
+        check()
+        mkdirSync(join(aside, project), { recursive: true })
+        moveTree(tree(project), join(aside, project, 'node_modules'))
+      }
+      check()
+      writeFileSync(complete, '')
+    } catch (error) {
+      if (error.code !== 'ENODEPSLOCK') restore()
+      throw error
+    }
+  }
+  return { recover, restore, discard, moveAside }
+}
+
+// A node_modules that is a mount point (a container volume) cannot be renamed (EBUSY),
+// nor one whose .cache is another filesystem (EXDEV): it is emptied in place, as before
+// #150031, and only that tree cannot come back. On Windows EBUSY is an open file; deleting
+// around it would gut the tree, so the move fails and the set is restored.
+function moveTree(from, to) {
+  try {
+    renameSync(from, to)
+  } catch (error) {
+    if (error.code !== 'EXDEV' && !(error.code === 'EBUSY' && process.platform !== 'win32')) throw error
+    console.warn(`node-deps: cannot move ${from} aside (${error.code}); deleting it, so a failed install cannot restore it`)
+    for (const entry of readdirSync(from)) rmSync(join(from, entry), { recursive: true, force: true, maxRetries: 3 })
   }
 }
 
-/** Install the full requested workspace union in one strict, locked operation.
- *  ``electron: false`` leaves Desktop's Electron binary unprepared, for builds that never run it. */
-export function prepareNodeDependencies({ source, workspaces, env = process.env, reuse = false, install = true, nativeToolchain, electron = true }) {
-  source = resolve(source)
-  if (!Array.isArray(workspaces) || workspaces.length === 0) {
-    throw new Error('Select at least one workspace; implicit all-workspace installation is not allowed')
-  }
+// pnpm's record of the trees it just wrote (node_modules/.pnpm/lock.yaml) must be the source
+// lockfile's for the selected projects and every other project it installed: no other run's.
+// An optional dependency this host skips is left out of the record, never changed.
+function installedLockMatches(lockText, installedLock, selected) {
+  if (!existsSync(installedLock)) return false
+  const wanted = lockImporters(lockText)
+  const installed = lockImporters(readFileSync(installedLock, 'utf8'))
+  const same = (a = {}, b = {}) => JSON.stringify(a) === JSON.stringify(b)
+  return ['.', ...selected].every(project => project in installed)
+    && Object.entries(installed).every(([project, fields]) => project in wanted
+      && same(fields.dependencies, wanted[project].dependencies)
+      && same(fields.devDependencies, wanted[project].devDependencies)
+      && Object.entries(fields.optionalDependencies ?? {})
+        .every(([name, entry]) => same(entry, wanted[project].optionalDependencies?.[name])))
+}
+
+// What this run installs and the key its receipt carries, read once the run holds the lock: an
+// update that changed them while this run waited is installed, not judged against older files.
+function dependencyInputs({ source, workspaces, env, nativeToolchain, electron }) {
   const lockText = readFileSync(join(source, 'pnpm-lock.yaml'), 'utf8')
   const projects = Object.keys(lockImporters(lockText)).sort()
   const selected = [...new Set(workspaces.map(workspace => {
@@ -107,57 +230,109 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
     && Boolean(JSON.parse(readFileSync(join(source, 'apps/desktop/package.json'), 'utf8')).devDependencies?.electron)
   const pnpm = pnpmCommand({ env })
   const version = pnpmVersion(pnpm, { source, env })
-  // pnpm-workspace.yaml sets pmOnFail: ignore (so the lock stays one YAML document),
-  // which also stops pnpm from enforcing the root devEngines pin: enforce it here.
-  const pinned = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8')).devEngines?.packageManager
-  if (pinned?.name === 'pnpm' && pinned.version !== version) {
-    throw new Error(`pnpm ${pinned.version} is required (root package.json devEngines), found ${version} at ${pnpm}`)
+  // pnpm never checks its own version here (pmOnFail: ignore keeps the lock one YAML
+  // document): PM's pin is the one this checkout's lockfile was written with.
+  const pinned = pinnedPnpm(source)
+  if (pinned !== version) {
+    throw new Error(`pnpm ${pinned} is required (pm/lock.json), found ${version} at ${pnpm}`)
   }
   // The root project is always installed with a filtered install. The release-age
   // policy is enforced where the lockfile is written (CI), not re-fetched per user.
   const args = ['install', '--frozen-lockfile', '--trust-lockfile', '--prod=false',
     ...selected.flatMap(workspace => ['--filter', `{./${workspace}}...`]),
   ]
-  // This receipt certifies dependency preparation, never compiled product freshness.
-  // Keep it inside the cached tree so removing node_modules also removes the receipt.
-  const receipt = join(source, 'node_modules/.hermes-node-deps')
-  // Ordinary product builders consume the baseline receipt; preparation also
-  // binds lifecycle outputs to its compiler/SDK identity.
-  const nativeReceipt = `${receipt}.native-toolchain`
-  const nativeKey = nativeToolchain === undefined ? undefined : JSON.stringify(nativeToolchain)
-  // pnpm's copy of the lockfile it last installed.
-  const installedLock = join(source, 'node_modules/.pnpm/lock.yaml')
   const inputs = createHash('sha256').update(JSON.stringify({
     node: process.versions.node, pnpm: version, platform: process.platform, arch: process.arch, args,
     // Windows Python uppercases inherited keys. Cache, store and state locations
-    // change where pnpm keeps data, not what it installs.
+    // change where pnpm keeps data, and the retry policy how it downloads, not what it installs.
     config: Object.entries(env).filter(([key]) => /^p?npm_config_/i.test(key)
-      && !/^p?npm_config_(cache|cache_dir|store_dir|state_dir|offline|prefer_offline)$/i.test(key))
+      && !/^p?npm_config_(cache|cache_dir|store_dir|state_dir|offline|prefer_offline|fetch_retries|fetch_retry_\w+)$/i.test(key))
       .map(([key, value]) => [key.toLowerCase(), value]).sort(),
   }))
   const files = ['pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', ...projects.map(path => join(path, 'package.json'))].sort()
   for (const file of files) {
     inputs.update(file).update('\0').update(existsSync(join(source, file)) ? readFileSync(join(source, file)) : '<missing>').update('\0')
   }
-  const key = inputs.digest('hex')
-  if (reuse && completedInstallMatches({ source, receipt, installedLock, key, nativeKey })) {
-    if (prepareElectron) prepareElectronRuntime({ source, install, env })
-    console.log(`node-deps: reusing completed install (${selected.join(', ')})`)
-    return { source, workspaces: selected }
+  const nativeKey = nativeToolchain === undefined ? undefined : JSON.stringify(nativeToolchain)
+  return { lockText, projects, selected, prepareElectron, pnpm, args, key: inputs.digest('hex'), nativeKey }
+}
+
+/** Install the full requested workspace union in one strict, locked operation.
+ *  ``electron: false`` leaves Desktop's Electron binary unprepared, for builds that never run it. */
+export function prepareNodeDependencies({ source, workspaces, env = process.env, reuse = false, install = true, nativeToolchain, electron = true }) {
+  source = resolve(source)
+  if (!Array.isArray(workspaces) || workspaces.length === 0) {
+    throw new Error('Select at least one workspace; implicit all-workspace installation is not allowed')
   }
-  if (!install) throw new Error('Workspace dependencies are stale or missing and lazy installs are disabled; run an explicit build/update')
-  // pnpm can fail during validation before touching node_modules. Invalidate first.
-  rmSync(receipt, { force: true })
-  rmSync(nativeReceipt, { force: true })
-  removeInstalledTrees(source, projects)
-  console.log(`node-deps: installing workspace dependencies with pnpm (${selected.join(', ')})...`)
-  execFileSync(pnpm, args, { cwd: source, env, stdio: 'inherit' })
-  if (prepareElectron) prepareElectronRuntime({ source, install, env })
-  if (reuse) {
-    const completed = `${key}\n${createHash('sha256').update(readFileSync(installedLock)).digest('hex')}\n`
-    writeFileSync(receipt, completed)
-    if (nativeKey !== undefined) writeFileSync(nativeReceipt, `${completed}${nativeKey}\n`)
+  // This receipt certifies dependency preparation, never compiled product freshness.
+  // Keep it inside the cached tree so removing node_modules also removes the receipt.
+  const receipt = join(source, 'node_modules/.hermes-node-deps')
+  // Ordinary product builders consume the baseline receipt; preparation also
+  // binds lifecycle outputs to its compiler/SDK identity.
+  const nativeReceipt = `${receipt}.native-toolchain`
+  // pnpm's copy of the lockfile it last installed.
+  const installedLock = join(source, 'node_modules/.pnpm/lock.yaml')
+  const lock = lockCheckout(source)
+  let selected
+  try {
+    const inputs = dependencyInputs({ source, workspaces, env, nativeToolchain, electron })
+    const { lockText, projects, prepareElectron, pnpm, args, key, nativeKey } = inputs
+    selected = inputs.selected
+    const previous = previousTrees(source, lock.check)
+    previous.recover()
+    if (reuse && reusable(lock, { source, receipt, installedLock, key, nativeKey })) {
+      lock.check()
+      if (prepareElectron) prepareElectronRuntime({ source, install, env, run: lock.run })
+      console.log(`node-deps: reusing completed install (${selected.join(', ')})`)
+      lock.release()
+      return { source, workspaces: selected }
+    }
+    if (!install) throw new Error('Workspace dependencies are stale or missing and lazy installs are disabled; run an explicit build/update')
+    // The receipts live inside the trees, so they leave and return with them.
+    previous.moveAside(projects)
+    try {
+      console.log(`node-deps: installing workspace dependencies with pnpm (${selected.join(', ')})...`)
+      lock.check()
+      lock.run(pnpm, args, { cwd: source, env })
+      if (!installedLockMatches(lockText, installedLock, selected)) {
+        throw new Error(`pnpm did not record the locked install of ${selected.join(', ')} in ${installedLock}`)
+      }
+      lock.check()
+      if (prepareElectron) prepareElectronRuntime({ source, install, env, run: lock.run })
+    } catch (error) {
+      // A run that lost the lock leaves the trees, and the set aside, to the run that holds it.
+      if (error.code === 'ENODEPSLOCK') throw error
+      previous.restore()
+      console.error('node-deps: install failed; restored the previously installed dependencies')
+      throw error
+    }
+    if (reuse) {
+      const completed = `${key}\n${createHash('sha256').update(readFileSync(installedLock)).digest('hex')}\n`
+      lock.check()
+      writeFileSync(receipt, completed)
+      if (nativeKey !== undefined) {
+        lock.check()
+        writeFileSync(nativeReceipt, `${completed}${nativeKey}\n`)
+      }
+    }
+    // The install succeeded: a set that cannot be deleted now (an antivirus or indexer handle on
+    // Windows) is discarded by the next run's recovery instead of failing this one.
+    try {
+      previous.discard()
+    } catch (error) {
+      if (error.code === 'ENODEPSLOCK') throw error
+      console.warn(`node-deps: could not delete the previous dependencies yet (${error.code ?? error.message}); the next run removes them`)
+    }
+  } catch (error) {
+    // A release that fails too (a leaked guard) must not hide why the run failed.
+    try {
+      lock.release()
+    } catch (release) {
+      console.warn(`node-deps: could not release the checkout lock (${release.message})`)
+    }
+    throw error
   }
+  lock.release()
   return { source, workspaces: selected }
 }
 
@@ -175,5 +350,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     'native-toolchain': { type: 'string' },
   } })
   if (!values.source) throw new Error('--source is required')
-  prepareNodeDependencies({ source: values.source, workspaces: values.workspace, reuse: values.reuse, install: !values['no-install'], nativeToolchain: values['native-toolchain'] })
+  try {
+    prepareNodeDependencies({ source: values.source, workspaces: values.workspace, reuse: values.reuse, install: !values['no-install'], nativeToolchain: values['native-toolchain'] })
+  } catch (error) {
+    // A child ended by a job signal this run outlived (the relay's 128 + n): exit as that signal
+    // would have, 130 for Ctrl-C, now that the trees are back.
+    const interrupted = JOB_SIGNALS.map(name => 128 + osConstants.signals[name]).includes(error.status)
+    if (!interrupted) throw error
+    console.error(`node-deps: ${error.message} (exit ${error.status})`)
+    process.exit(error.status)
+  }
 }

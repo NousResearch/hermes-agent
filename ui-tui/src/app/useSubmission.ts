@@ -1,17 +1,18 @@
+import type { ShellExecResponse } from '@hermes/shared/gateway-types'
+import { hasInterpolation, INTERPOLATION_RE } from '@hermes/shared/interpolation'
 import { looksLikeSlashCommand, parseSlashCommand } from '@hermes/shared/slash'
+import { completionToApplyOnSubmit } from '@hermes/shared/slash-input'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import { expandTokens, imageAttachments } from '../domain/attachments.js'
-import { completionToApplyOnSubmit } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { ShellExecResponse } from '../gatewayTypes.js'
 import { queueItem, type QueueItem } from '../hooks/useQueue.js'
 import { t } from '../i18n/runtime.js'
 import { asRpcResult } from '../lib/rpc.js'
-import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
 
+import { cancelPendingRewind, sendPendingRewind } from './backtrackStore.js'
 import { reportSlashCommand } from './createSlashHandler.js'
 import type { BusyInputMode, ComposerActions, ComposerRefs, ComposerState, ComposerToken, SlashHandler } from './interfaces.js'
 import { stagePastes } from './pasteStore.js'
@@ -342,15 +343,29 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return
       }
 
+      // An armed backtrack edit: a plain message rewinds to before the picked prompt and sends;
+      // a slash or shell command disarms it (nothing cut) and runs as usual.
       // History stores resolved content, not `[[…]]` labels: tokens are cleared
       // on submit, so recall must be self-contained. Image tokens resolve to
       // nothing — a detached image can't be re-attached by recalling the text.
       // Idempotent on token-free text, so re-submitting a recalled entry is
       // stable.
-      const destination = captureDestination()
       const submissionTokens = [...composerRefs.tokensRef.current]
       const submission = prepareSubmission(full, submissionTokens)
       const toHistory = submission.text
+
+      // Expanded here, before clearIn() empties the tokens the async rewind would expand against;
+      // the tokens ride along so a rewind that cuts nothing restores the draft whole.
+      if (sendPendingRewind({ ...submission, tokens: submissionTokens }, getUiState().sid)) {
+        // The sent row shows each chip and expands it from these bodies, as an ordinary submit's does.
+        stagePastes(full, submission.text, submissionTokens)
+        composerActions.pushHistory(toHistory)
+        composerActions.clearIn()
+
+        return
+      }
+
+      const destination = captureDestination()
 
       // The composer is the only copy of a draft until the pending-input
       // journal holds it, so it is cleared after that first durable write and
@@ -534,6 +549,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       }
 
       if (!value.trim() && !composerState.inputBuf.length) {
+        cancelPendingRewind(sys)
         const live = getUiState()
         const now = Date.now()
         const doubleTap = now - lastEmptyAt.current < DOUBLE_ENTER_MS

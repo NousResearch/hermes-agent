@@ -7,7 +7,7 @@ Run via ``python -m gateway.run`` or ``python cli.py --gateway``."""
 try:
     import hermes_bootstrap
 except ModuleNotFoundError as exc:  # a partial ``hermes update`` can leave the bootstrap unregistered
-    if exc.name != "hermes_bootstrap":
+    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import asyncio
@@ -34,13 +34,14 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from agent.conversation_compression import (
     COMPACTION_DONE_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_STATUS, COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
-    COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING, COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
+from gateway.run_status_filter import EMPTY_LADDER_STATUS_PATTERN, _status_template_to_regex, hidden_outside_dm, is_terminal_failure_status
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
-from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields, is_compaction_scaffolding, scaffolding_replay_fields
+from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields, is_compaction_scaffolding, replay_metadata_fields
 from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance, AwakeIdleMeter
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get, config_exists
@@ -99,11 +100,11 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|context\s+reduced\s+to\s+[\d,]+\s+tokens\s+\(was\s+[\d,]+\),\s+retrying"
     r"|session\s+compressed\s+\d+\s+times"
     r"|rate\s+limited\.\s+waiting\s+\d"
-    r"|retrying\s+in\s+\d"
+    rf"|retrying(?:\s+\(\d+/\d+\))?\s+in\s+\d|{EMPTY_LADDER_STATUS_PATTERN}"  # + counted '(1/3) in 6s'
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
-    rf"|{re.escape(COMPACTION_DONE_STATUS)}"
+    rf"|{re.escape(COMPACTION_DONE_STATUS)}|{re.escape(COMPRESSION_REFUSED_WOULD_GROW_WARNING)}"
     r")",
     re.IGNORECASE | re.DOTALL)
 
@@ -112,12 +113,6 @@ _HYGIENE_COOLDOWN_LADDER_MULTIPLIERS = (1, 3, 9)
 _HYGIENE_COOLDOWN_MAX_SECONDS = 3600.0
 # Flat retry-after when hygiene is ABANDONED by turn-hold expiry (not a failure: outside the streak ladder).
 _HYGIENE_TURNHOLD_RETRY_SECONDS = 60.0
-
-
-def _gateway_session_db_inner(gateway):
-    """The raw SessionDB behind ``gateway._session_db`` (unwrapping the async facade), or None."""
-    session_db = getattr(gateway, "_session_db", None)
-    return getattr(session_db, "_db", session_db)
 
 
 def _hygiene_cooldown_for_failure(gateway, session_key: str, base_cooldown_seconds: float) -> float:
@@ -139,10 +134,10 @@ def _hygiene_cooldown_for_failure(gateway, session_key: str, base_cooldown_secon
         state = gateway._session_state(session_key).persistent
     except Exception as exc:
         logger.debug("hygiene failure streak update failed: %s", exc)
-    increment = getattr(_gateway_session_db_inner(gateway), "increment_hygiene_failure_streak", None)
-    if callable(increment):
+    store = getattr(gateway, "persistence", None)
+    if store is not None:
         try:
-            streak = max(1, int(increment(session_key)))
+            streak = max(1, int(store.coordination.increment_hygiene_failure_streak(session_key=session_key)))
             if state is not None:
                 state.hygiene_failure_streak = streak
         except Exception as exc:
@@ -168,10 +163,10 @@ def _reset_hygiene_failure_streak(gateway, session_key: str) -> None:
             state.persistent.hygiene_failure_streak = 0
     except Exception as exc:
         logger.debug("hygiene failure streak reset failed: %s", exc)
-    reset = getattr(_gateway_session_db_inner(gateway), "reset_hygiene_failure_streak", None)
-    if callable(reset):
+    store = getattr(gateway, "persistence", None)
+    if store is not None:
         try:
-            reset(session_key)
+            store.coordination.reset_hygiene_failure_streak(session_key=session_key)
         except Exception as exc:
             logger.debug("hygiene failure streak persistent reset failed: %s", exc)
 
@@ -303,25 +298,16 @@ def _record_hygiene_cooldown(
 
     ``error`` must be forwarded: the recorder writes compression_failure_error UNCONDITIONALLY (NULL clobber).
 
-    Uses the same ``compression_failure_cooldown_until`` column and ``record_compression_failure_cooldown``
-    method that the in-conversation compression path (``agent/context_compressor.py``) already uses, so the
-    cooldown survives gateway restarts (#74136).
+    Records the same compression-failure cooldown the in-conversation compression path
+    (``agent/context_compressor.py``) records, so the cooldown survives gateway restarts (#74136).
     """
-    recorder = getattr(_gateway_session_db_inner(gateway), "record_compression_failure_cooldown", None)
-    if recorder is None:
+    store = getattr(gateway, "persistence", None)
+    if store is None:
         return
     try:
-        recorder(session_id, time.time() + cooldown_seconds, error)
+        store.messages.record_compression_cooldown(session_id, time.time() + cooldown_seconds, error)
     except Exception as exc:
         logger.debug("session hygiene cooldown persist failed: %s", exc)
-
-
-def _status_template_to_regex(template: str) -> str:
-    """Compile a compression status template constant into a regex source.
-
-    Literal text is escaped verbatim (wording drift can't diverge from the matcher); ``{field}`` -> numeric."""
-    parts = re.split(r"\{[^{}]*\}", template)
-    return r"[\d,]+".join(re.escape(part) for part in parts)
 
 
 # ROUTINE compression progress statuses, derived from the SAME template constants the emit sites format.
@@ -427,7 +413,7 @@ def _ensure_windows_gateway_venv_imports() -> None:
     if sys.platform != "win32":
         return
 
-    project_root = Path(__file__).resolve().parent.parent
+    project_root = Path(project_root_str())
     from pm.environments import committed_venv, venv_python_version
 
     # A PM install's store Python was already activated onto the committed generation by
@@ -569,10 +555,10 @@ def _gateway_loop_exception_handler(
 
 def _redact_gateway_user_facing_secrets(text: str) -> str:
     """Secret redaction before text can leave the gateway for a chat platform: the shared egress scrub
-    (``force=True`` holds even when ``security.redact_secrets`` is off; fails closed). See #23810."""
-    from agent.redact import redact_for_egress
+    (``force=True`` holds even when ``security.redact_secrets`` is off; fails closed; #23810, #68911)."""
+    from agent.redact_phone_policy import redact_for_chat_egress
 
-    return redact_for_egress(text)
+    return redact_for_chat_egress(text)
 
 
 def _redact_approval_command(cmd: str | None) -> str:
@@ -593,10 +579,10 @@ def _format_exec_approval_fallback(
     allow_session: bool = True, smart_denied: bool = False) -> str:
     """Render the text fallback from approval capabilities, not platform names. Same words as
     the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
-    steps a surface without buttons needs."""
+    steps a surface without buttons needs. The command is never cut: ``/approve`` must only ever
+    answer a command the user could read in full (#62359)."""
     from gateway.platforms.base_exec_approval import (
         approval_timeout_seconds, ea_header_text, ea_reason_label_text, format_approval_deadline_line)
-    cmd_preview = BasePlatformAdapter._truncate_preview(command, BasePlatformAdapter._EA_CMD_BUDGET)  # as on a card
     heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
                else f"⚠️ **{ea_header_text()}**")
 
@@ -607,7 +593,7 @@ def _format_exec_approval_fallback(
             choices.append(t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
     choices.append(t("gateway.exec_approval.text_choice_deny", prefix=command_prefix))
     return (
-        t("gateway.exec_approval.text_body", heading=heading, command=cmd_preview,
+        t("gateway.exec_approval.text_body", heading=heading, command=command,  # whole: send() splits it
           reason_label=ea_reason_label_text(), reason=description)
         + t("gateway.exec_approval.text_choice_joiner").join(choices[:-1])
         + t("gateway.exec_approval.text_choice_last", choice=choices[-1])
@@ -663,8 +649,8 @@ def _gateway_provider_error_reply(text: str) -> str:
 # Provider/API failure envelope preambles (not ordinary assistant prose), anchored at line start.
 _PROVIDER_ERROR_MARKERS = (
     r"api\s+(?:call\s+)?failed", r"provider\s+authentication\s+failed", r"non-retryable\s+error",
-    r"rate\s+limited\s+after\s+\d+\s+retries", r"error\s+code\s*:", r"http\s*\d{3}\b",
-    r"incorrect\s+api\s+key", r"invalid\s+api\s+key")
+    r"rate\s+limited\s+after\s+\d+\s+(?:retries|attempts?)\b", r"error\s+code\s*:", r"http\s*\d{3}\b",
+    r"incorrect\s+api\s+key", r"invalid\s+api\s+key", r"unexpected\s+status\s+\d{3}\s+(?:[A-Za-z][\w' -]{0,40}|<unknown status code>):")
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"^\s*(\W*\s*)?("
     + "|".join(_PROVIDER_ERROR_MARKERS + _CONNECTION_ERROR_MARKERS[:8] + (r"all\s+connection\s+attempts\s+failed",))
@@ -721,15 +707,18 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
-def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
+def _prepare_gateway_status_message(platform: Any, event_type: str, message: str, chat_type: Any = "dm") -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
-    Local/CLI keep the raw diagnostic stream; messaging surfaces drop transient aux/compression noise."""
+    Local/CLI keep the raw diagnostic stream; messaging surfaces drop transient aux/compression noise, and
+    non-DM chats drop DM-only warnings (gateway/run_status_filter.py)."""
     text = str(message or "").strip()
     if not text:
         return None
     if _gateway_surface_passes_raw_text(platform):
         return text
+    if hidden_outside_dm(chat_type, str(message or "")) or is_terminal_failure_status(message):
+        return None
 
     text = _redact_gateway_user_facing_secrets(text)
     # Opt-in `compression.progress_notices` lets ROUTINE (template-derived) progress through; other noise stays.
@@ -738,7 +727,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     ):
         return None
     if _looks_like_gateway_provider_error(text):
-        return _gateway_provider_error_reply(text)
+        return None
     return text
 
 
@@ -1153,7 +1142,7 @@ def _build_replay_entry(
             entry[_rkey] = _rval
     if preserve_timestamp and msg.get("timestamp"):
         entry["timestamp"] = msg["timestamp"]
-    entry.update(scaffolding_replay_fields(msg))  # a proactive prune re-persists this view: keep the flags
+    entry.update(replay_metadata_fields(msg))  # a proactive prune re-persists this view: keep flags and stamp
     # Replay rebuilds the SAME conversation: every role keeps its uid and merge witness, so a context engine sees the
     # uids the store holds. Tool-call uid maps stay on rows that still carry their calls (those pass through whole).
     copy_identity_fields({key: msg[key] for key in (MESSAGE_UID, ABSORBED_MESSAGE_UIDS) if key in msg}, entry)
@@ -1334,7 +1323,7 @@ def _select_cached_agent_history(
     retention.
     """
     if isinstance(live_history, list) and len(live_history) > len(persisted_history):
-        from agent.session_persistence import _is_ephemeral_scaffolding
+        from session_rules.turns import _is_ephemeral_scaffolding
 
         has_unpersisted_row = any(
             isinstance(message, dict) and not message.get("_db_persisted")
@@ -1562,8 +1551,6 @@ def _planned_restart_notification_pending() -> bool:
 # Gateway marker so a lazily imported cli.py load_cli_config() doesn't clobber TERMINAL_CWD.
 os.environ["_HERMES_GATEWAY"] = "1"
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from hermes_constants import get_hermes_home, get_hermes_home_override, get_process_hermes_home
 # The PROCESS's own home, never an import-time ContextVar: a multiplexed backend (``hermes serve``)
 # first imports this module lazily from a session's agent build, under that session's routed profile
@@ -1572,9 +1559,10 @@ from hermes_constants import get_hermes_home, get_hermes_home_override, get_proc
 _hermes_home = get_process_hermes_home()
 
 # Load ~/.hermes/.env first: user-managed env files must override stale shell exports on restart.
-from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.env_loader import bridge_config_scalars, load_hermes_dotenv
+from hermes_cli._startup_fast import project_root_str
 _env_path = _hermes_home / '.env'
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
+load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(project_root_str()) / '.env')
 
 
 def _reload_runtime_env_preserving_config_authority() -> None:
@@ -1584,8 +1572,7 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     every profile; it still honors the max_turns bridge."""
     from agent.secret_scope import is_multiplex_active
     if not is_multiplex_active():
-        load_hermes_dotenv(
-            hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
+        load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(project_root_str()) / '.env')
     _bridge_max_turns_from_config(_hermes_home)
 
 
@@ -1751,12 +1738,12 @@ async def _reclaim_stale(runner: object) -> None:
     """Fail handoffs left in ``running`` by a gateway that died mid-dispatch (once per store at startup).
     ``running`` is only set for one in-process dispatch, so a leftover row belongs to a dead process and
     blocks ``request_handoff`` for that session forever. Defensive: a raising reclaim aborts startup."""
-    reclaim = getattr(getattr(runner, "_session_db", None), "reclaim_stale_running_handoffs", None)
-    if not callable(reclaim):
+    store = getattr(runner, "persistence", None)
+    if store is None:
         return
     try:
-        ids = await reclaim(
-            "gateway stopped mid-handoff; state reclaimed at startup. Re-run /handoff to try again.")
+        ids = await store.aio.coordination.reclaim_stale_running_handoffs(
+            error="gateway stopped mid-handoff; state reclaimed at startup. Re-run /handoff to try again.")
     except Exception:
         logger.debug("Stale-handoff reclaim raised", exc_info=True)
         return
@@ -1799,32 +1786,17 @@ def _profile_runtime_scope(
     ``set_hermes_home_override`` is a contextvar (reaches the agent worker via ``copy_context()``);
     ``set_secret_scope`` makes the profile ``.env`` the credential source without mutating
     ``os.environ``, so subprocesses never inherit cross-profile secrets."""
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    from agent.secret_scope import set_secret_scope, reset_secret_scope
+    from agent.runtime_scope import bind_state, scope_for_profile
 
-    home_token = secret_token = None
+    # One bind: the runtime scope first, then home override, secrets (hydrated under that home
+    # unless the caller prepared them off-loop) and the profile's COMPLETE terminal policy, never
+    # ambient TERMINAL_* a prior turn set (first-writer-wins backend leak; #68559).
+    tokens = bind_state(scope_for_profile(profile_home), secrets=prepared_secret_scope,
+                        hydrate_secrets=hydrate_secrets, terminal_policy=prepared_terminal_scope)
     try:
-        home_token = set_hermes_home_override(str(profile_home))
-        if prepared_secret_scope is not None:
-            secrets = prepared_secret_scope
-        elif hydrate_secrets:
-            secrets = _load_profile_secret_scope(Path(profile_home))
-        else:
-            from tui_gateway.launch_profile_policy import owner_secret_scope  # caller already hydrated off-loop
-            secrets = owner_secret_scope(Path(profile_home))
-        secret_token = set_secret_scope(secrets, profile_home=str(profile_home))
-        # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
-        # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may have
-        # pinned (first-writer-wins backend leak; #68559).
-        from tools.terminal_scope import install_and_reset_profile_terminal_scope
-
-        with install_and_reset_profile_terminal_scope(Path(profile_home), prepared=prepared_terminal_scope):
-            yield
+        yield
     finally:
-        if secret_token is not None:
-            reset_secret_scope(secret_token)
-        if home_token is not None:
-            reset_hermes_home_override(home_token)
+        tokens.reset()
 
 
 @_asynccontextmanager
@@ -1957,7 +1929,7 @@ _AGENT_ENV_BRIDGE = {
     "gateway_startup_restore_drain_timeout": "HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT",
     "gateway_startup_warmup_timeout": "HERMES_STARTUP_WARMUP_TIMEOUT"}
 # config-authoritative knobs for the session-search index (env stays the cross-process carrier).
-_SESSIONS_ENV_BRIDGE = {"cjk_fts": "HERMES_CJK_FTS", "search_slow_ms": "HERMES_SEARCH_SLOW_MS"}
+_SESSIONS_ENV_BRIDGE = {"search_slow_ms": "HERMES_SEARCH_SLOW_MS"}
 _DISPLAY_ENV_BRIDGE = {
     "busy_input_mode": "HERMES_GATEWAY_BUSY_INPUT_MODE",
     "busy_text_mode": "HERMES_GATEWAY_BUSY_TEXT_MODE",
@@ -2063,9 +2035,7 @@ def _bridge_auxiliary_config_to_env(_auxiliary_cfg: dict) -> None:
 
 def _bridge_config_to_env(_cfg: dict) -> None:
     """Export config.yaml settings to the env vars os.getenv() consumers read."""
-    for _key, _val in _cfg.items():  # top-level scalars: fallback only, never override .env
-        if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
-            os.environ[_key] = str(_val)
+    bridge_config_scalars(_cfg, os.environ)  # top-level scalars: fallback only, never override .env
     _terminal_cfg = _cfg.get("terminal", {})
     if _terminal_cfg and isinstance(_terminal_cfg, dict):
         _bridge_terminal_config_to_env(_terminal_cfg)
@@ -2177,7 +2147,7 @@ from gateway.session import (
 # send (via DeliveryRouter) and the media send agree.
 from gateway.delivery import DeliveryRouter
 from gateway.turn_lease import SessionTurnLeaseRegistry
-from gateway.session_state import SessionState, legacy_dict_property, legacy_lease_token_property
+from gateway.session_state import SessionState, legacy_dict_property
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
@@ -2263,8 +2233,8 @@ _AGENT_PENDING_SENTINEL = object()
 # ``SessionState.conversation`` (cleared via ``ConversationState.clear()``); this list remains for
 # plain-dict stores not yet folded in (``_pending_model_notes``, popped per-key by
 # _clear_conversation_scope) and the public test contract. NOT listed (different lifecycles): turn-scoped
-# _running_agents*/_active_session_leases/_busy_ack_ts/_turn_lease_tokens (_release_running_agent_state +
-# dispatch finally); _session_run_generation (monotonic; clearing breaks stale-run detection);
+# _running_agents/turn.started_ts/turn.busy_ack_ts/turn.lease/turn.lease_tokens (_release_running_agent_state +
+# dispatch finally); persistent.run_generation (monotonic; clearing breaks stale-run detection);
 # _agent_cache (_evict_cached_agent); approval/slash-confirm (_clear_session_boundary_security_state).
 # The state itself now lives in ``SessionState.conversation`` (see gateway/session_state.py) and boundaries
 # clear it structurally via ``ConversationState.clear()`` — adding a field to ConversationState means every
@@ -2273,20 +2243,12 @@ _AGENT_PENDING_SENTINEL = object()
 # eviction path (_evict_cached_agent) with resource cleanup; boundaries call it explicitly.
 _CONVERSATION_SCOPED_STATE: tuple = (
     "_session_model_overrides",
-    "_pending_one_turn_model_restores",
-    "_session_reasoning_overrides",
-    "_session_service_tier_overrides",
     "_pending_model_notes",
-    "_last_resolved_model",
-    "_queued_events",
     # Stall-watchdog "already notified" latch; cleared on /new so a fresh conversation can warn again.
     # See #72016.
     "_session_stall_notified",
     # Transcript-lag streak counter (#114266); a fresh conversation starts with no lag history.
-    "_transcript_lag_streaks",
-    # Sidecar notes staged but never consumed (turn aborted before run_sync) must not leak into a
-    # future conversation's first user message — session keys are source-derived and REUSED.
-    "_pending_turn_sidecar_notes")
+    "_transcript_lag_streaks")
 
 
 def _resolve_runtime_agent_kwargs() -> dict:
@@ -2309,10 +2271,10 @@ def _resolve_runtime_agent_kwargs() -> dict:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
     if fallback_entry is not None:
-        # The entry's model is the one this agent must send (#112600). Carry the fallback notice so the
-        # gateway can surface a user-visible provider switch (#74349); the caller must pop
-        # ``_fallback_notice`` before forwarding kwargs to AIAgent.
+        # The entry's model is what this agent sends (#112600); the caller pops the notice (#74349).
+        from agent.primary_auth_fallback import RUNTIME_KEY  # and the primary's failed login (#147212)
         return {**_runtime_agent_kwargs(runtime), "model": fallback_entry["model"],
+                RUNTIME_KEY: runtime.get(RUNTIME_KEY),
                 "_fallback_notice": pre_agent_fallback_notice(
                     _primary_provider, _primary_model,
                     runtime.get("provider") or fallback_entry.get("provider") or "unknown",
@@ -2392,12 +2354,12 @@ def _resolve_gateway_model_context(
 
     def _read_runtime() -> None:
         nonlocal provider, base_url, api_key
-        if route and route.get("base_url"):
-            # A session route with its own endpoint (a /model switch) replaces the default runtime
-            # read; a route without one (persisted / SessionDB / plain config) still resolves the
-            # default runtime credentials so a custom endpoint and its context_length pin survive.
+        if route and (route.get("base_url") or route.get("_runtime_resolved")):
+            # A session route with its own endpoint (a /model switch), or provider-specific runtime
+            # already resolved by the caller, replaces the default runtime read. A persisted route
+            # without either still resolves default credentials so a custom endpoint and its pin survive.
             provider = route.get("provider") or provider
-            base_url = route["base_url"]
+            base_url = route.get("base_url") or ""
             api_key = route.get("api_key")
             return
         runtime = _resolve_runtime_agent_kwargs()
@@ -2500,11 +2462,11 @@ def _event_media_is_audio(event, index: int) -> bool:
 
 
 def _event_media_is_stt_input(event, index: int) -> bool:
-    """True when an audio attachment should enter the automatic STT pipeline."""
-    message_type = getattr(event, "message_type", None)
-    if message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
+    """Audio entering auto-STT; a VOICE message's photo/PDF never does (unknown/octet-stream MIME follows VOICE)."""
+    mtype, mime = getattr(event, "message_type", None), _event_media_type_at(event, index).lower()
+    if mtype in {MessageType.AUDIO, MessageType.DOCUMENT}:
         return False
-    return message_type == MessageType.VOICE or _event_media_type_at(event, index).startswith("audio/")
+    return mime.startswith("audio/") or (mtype == MessageType.VOICE and mime in {"", "application/octet-stream"})
 
 
 def _event_media_is_video(event, index: int) -> bool:
@@ -2651,9 +2613,8 @@ def _reap_gateway_turn_processes(
     return killed
 
 
-_TURN_STACK_DUMP_FRAME_MARKERS = (
-    "run_conversation", "run_sync", "_run_sync_with_timeout_lifecycle",
-    "finalize_turn", "end_turn", "run_in_session")
+_TURN_STACK_DUMP_FRAME_MARKERS = ("run_conversation", "run_sync", "_run_sync_with_timeout_lifecycle", "finalize_turn",
+    "end_turn", "run_in_session", "_hmwa_resolve_session", "_hmwa_prepare_turn", "_handle_message_with_agent")
 
 
 def _dump_wedged_turn_stacks(task_id: str) -> None:
@@ -2833,7 +2794,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
 
         # Check optional skills (shipped with repo but not installed)
         from hermes_constants import get_optional_skills_dir
-        repo_root = Path(__file__).resolve().parent.parent
+        repo_root = Path(project_root_str())
         optional_dir = get_optional_skills_dir(repo_root / "optional-skills")
         if optional_dir.exists():
             for skill_md in optional_dir.rglob("SKILL.md"):
@@ -2940,9 +2901,6 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     return None
 
 
-_PROFILE_ID_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-
-
 def _parse_session_key(session_key: str) -> dict | None:
     """Parse a session key (``agent:{ns}:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
 
@@ -2953,11 +2911,13 @@ def _parse_session_key(session_key: str) -> dict | None:
     is omitted. Named profiles are reported as ``profile``; ``main`` keys keep their historical
     shape exactly (no ``profile`` key) so equality assertions on parsed dicts stay stable.
     """
+    from hermes_constants import PROFILE_ID_RE
+
     parts = session_key.split(":")
     if (
         len(parts) >= 5
         and parts[0] == "agent"
-        and (parts[1] in ("main", "main~") or _PROFILE_ID_KEY_RE.match(parts[1]))
+        and (parts[1] in ("main", "main~") or PROFILE_ID_RE.match(parts[1]))
     ):
         result = {"platform": parts[2], "chat_type": parts[3], "chat_id": parts[4]}
         if parts[1] != "main":
@@ -3043,6 +3003,7 @@ def _format_gateway_process_notification(evt: dict) -> str | None:
 def _drain_gateway_watch_events(completion_queue) -> list[dict]:
     """Drain gateway-owned watch events without spinning on requeued events.
     Foreign events requeued inside ``while not queue.empty()`` never terminate: detach, then requeue."""
+    from tools.environments.sandbox_scope import event_visible
     watch_events: list[dict] = []
     requeue: list[dict] = []
     while not completion_queue.empty():
@@ -3051,12 +3012,11 @@ def _drain_gateway_watch_events(completion_queue) -> list[dict]:
         except Exception:
             break
         evt_type = evt.get("type", "completion")
-        if evt_type in {
-            "watch_match", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released",
-            "heartbeat"}:
+        if not event_visible(evt) or evt_type == "async_delegation":
+            requeue.append(evt)  # hosted: only its own scope may deliver it; async_delegation: its own watcher does
+        elif evt_type in {"watch_match", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released",
+                          "heartbeat"}:
             watch_events.append(evt)
-        elif evt_type == "async_delegation":
-            requeue.append(evt)
         # else: process completion events are handled by the watcher task
     for evt in requeue:
         completion_queue.put(evt)
@@ -3366,25 +3326,8 @@ class GatewayRunner(
 
     # Legacy per-session dict attrs as LIVE views over ``self._sessions``; new code: _session_state(key)
     _running_agents = legacy_dict_property("_running_agents")
-    _running_agents_ts = legacy_dict_property("_running_agents_ts")
-    _active_session_leases = legacy_dict_property("_active_session_leases")
-    _busy_ack_ts = legacy_dict_property("_busy_ack_ts")
-    _turn_lease_tokens = legacy_lease_token_property()
-    _session_run_generation = legacy_dict_property("_session_run_generation")
     _session_model_overrides = legacy_dict_property("_session_model_overrides")
-    _pending_one_turn_model_restores = legacy_dict_property("_pending_one_turn_model_restores")
-    _session_reasoning_overrides = legacy_dict_property("_session_reasoning_overrides")
-    _session_service_tier_overrides = legacy_dict_property("_session_service_tier_overrides")
-    _last_resolved_model = legacy_dict_property("_last_resolved_model")
-    _queued_events = legacy_dict_property("_queued_events")
-    _pending_turn_sidecar_notes = legacy_dict_property("_pending_turn_sidecar_notes")
     _pending_messages = legacy_dict_property("_pending_messages")
-    _pending_native_image_paths_by_session = legacy_dict_property(
-        "_pending_native_image_paths_by_session")
-    _session_ephemeral_pin = legacy_dict_property("_session_ephemeral_pin")
-    _session_vc_last = legacy_dict_property("_session_vc_last")
-    _pending_approvals = legacy_dict_property("_pending_approvals")
-    _update_prompt_pending = legacy_dict_property("_update_prompt_pending")
 
     def _sessions_map(self) -> dict[str, SessionState]:
         """Per-session state map; lazily created so bare ``object.__new__`` test runners work."""
@@ -3469,26 +3412,24 @@ class GatewayRunner(
         self._init_registries_and_clocks()
 
     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
-        """AsyncSessionDB for the active profile scope, resolved per access (not in ``__init__``) since
-        ``SessionDB()`` reads the context-local HERMES_HOME; one handle cached per path. Construction
+        """Storage interface handle for the active profile scope, resolved per access (not in ``__init__``)
+        since the scope follows the context-local HERMES_HOME; one handle cached per profile. Construction
         failure enters bounded backoff; ``raise_on_error=True`` (priming) propagates it.
 
-        Same per-path cache as ``SessionStore._open_session_db_for_active_scope`` (#88532): ``SessionDB()``
-        resolves ``_default_db_path()`` at call time through the context-local HERMES_HOME override
-        installed by ``_profile_runtime_scope``, so resolving per access — instead of once in ``__init__`` —
-        is what lets /resume, /title, /history and session search on a multiplexed gateway read the *serving
-        profile's* store rather than the root one.
-        One ``AsyncSessionDB`` is cached per resolved path, so the wrapper identity is stable per profile
-        (callers compare and stash it) and two profiles never share a handle. A construction failure enters
-        bounded backoff; one caller retries after the deadline while concurrent callers continue to see the
-        unavailable fallback. ``raise_on_error=True`` (construction-time priming) propagates the failure
-        after recording that recoverable state so ``__init__`` can record ``_session_db_init_error`` for the
-        #88235 broadcast.
+        Same per-profile cache as ``SessionStore._open_persistence_for_active_scope`` (#88532): the scope
+        resolves at call time through the context-local HERMES_HOME override installed by
+        ``_profile_runtime_scope``, so resolving per access — instead of once in ``__init__`` — is what lets
+        /resume, /title, /history and session search on a multiplexed gateway read the *serving profile's*
+        store rather than the root one.
+        One handle is cached per profile scope, so its identity is stable per profile (callers compare and
+        stash it) and two profiles never share a handle. A construction failure enters bounded backoff; one
+        caller retries after the deadline while concurrent callers continue to see the unavailable fallback.
+        ``raise_on_error=True`` (construction-time priming) propagates the failure after recording that
+        recoverable state so ``__init__`` can record ``_session_db_init_error`` for the #88235 broadcast.
         """
-        from hermes_state import AsyncSessionDB, _default_db_path
-        from hermes_state_registry import acquire
         from gateway.session_db_recovery import RecoverableHandleCache
-        path = Path(_default_db_path())
+        from persistence_assembly import open_persistence, profile_scope
+        scope = profile_scope()
         cache = getattr(self, "_session_db_handle_cache", None)
         if cache is None:
             # Test runners built with object.__new__ skip __init__.
@@ -3497,39 +3438,31 @@ class GatewayRunner(
             self._session_db_handle_cache = cache
 
         def _open():
-            # Borrow the SessionStore's handle (same path) so state.db doesn't get two writers/pools.
-            # The store owns/sweeps it at shutdown; this cache holds only the async wrapper (close_all).
-            # Both caches resolve the SAME ``_default_db_path()``, so the process was holding two writer
-            # connections and two read pools against one state.db — the fd budget doubled for nothing, and
-            # doubled again per profile on a multiplexed gateway (#98573). A borrowed wrapper goes stale only
-            # when the registry tears its generation down (profile unserve/delete); both caches then drop
-            # the dead handle and reopen through the registry. While the store's own open is failing there
-            # is nothing to borrow, so nothing is cached here either.
+            # The session store's handle for the scope, so both read one store (the store closes it); while
+            # the store's own handle cannot open, nothing is opened here either. A runner without a store
+            # opens its own (one writer per path, #98573).
             store = getattr(self, "session_store", None)
-            borrowed = getattr(store, "_db", None) if store is not None else None
-            if borrowed is not None:
-                wrapper = AsyncSessionDB(borrowed)
-                # close_all_session_db_handles() must not close what the store owns (its sweep runs first).
-                wrapper.__dict__["_hermes_borrowed_handle"] = True
-                return wrapper
             if store is not None:
-                # Store handle unavailable: opening our own would resurrect the duplicate borrowed away.
-                raise RuntimeError("SessionStore SQLite handle unavailable")
+                if (persistence := store._scoped_persistence()) is None:
+                    raise RuntimeError("SessionStore SQLite handle unavailable")
+                return persistence
             try:
-                return AsyncSessionDB(acquire())
+                handle = open_persistence(scope, eager=True)
             except Exception as exc:
                 logger.warning("SQLite session store not available: %s", exc)
                 raise
+            self.__dict__.setdefault("_session_db_owned", []).append(handle)
+            return handle
 
         def _recovered() -> None:
             self._session_db_init_error = None
             logger.info("SQLite session store recovered")
 
-        return cache.get(path, _open, raise_on_error=raise_on_error, on_recovered=_recovered)
+        return cache.get(scope.profile_dir, _open, raise_on_error=raise_on_error, on_recovered=_recovered)
 
     @property
     def _session_db(self) -> Any:
-        """The AsyncSessionDB for the active profile scope, or a pinned override (assigning
+        """The storage interface handle for the active profile scope, or a pinned override (assigning
         ``runner._session_db`` pins it for every later read — tests install fakes/None this way)."""
         if self._session_db_pinned is not _SESSION_DB_UNPINNED:
             return self._session_db_pinned
@@ -3540,26 +3473,22 @@ class GatewayRunner(
         self._session_db_pinned = value
 
     def close_all_session_db_handles(self) -> None:
-        """Close every per-profile AsyncSessionDB this runner opened.
+        """Close every per-profile storage interface handle this runner opened.
 
-        Drained under the lock, closed outside it; a pinned handle is the pinner's to close. Wrappers
+        Drained under the lock, closed outside it; a pinned handle is the pinner's to close. Handles
         BORROWED from ``session_store`` are skipped: the store's sweep (runs first) closes them.
 
         See #98573.
         """
-        def _close(db) -> None:
-            if getattr(db, "__dict__", {}).get("_hermes_borrowed_handle"):
+        owned = self.__dict__.get("_session_db_owned", [])
+
+        def _close(handle) -> None:
+            if not any(handle is mine for mine in owned):
                 return
-            inner = getattr(db, "_db", db)
-            if inner is None or not hasattr(inner, "close"):
-                return
-            # Shared instances no-op on close() (the registry owns the lifecycle). Release the refcount
-            # instead (#90837).
-            from hermes_state_registry import release_or_close
             try:
-                release_or_close(inner)
+                handle.close()
             except Exception as exc:
-                logger.debug("SessionDB close error during handle sweep: %s", exc)
+                logger.debug("Storage handle close error during handle sweep: %s", exc)
 
         self._session_db_handle_cache.close_all(_close)
 
@@ -3650,10 +3579,10 @@ class GatewayRunner(
                     _profile = get_active_profile_name() or "default"
                 except Exception:
                     _profile = None
-        return build_session_key(
-            source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
-            profile=_profile)
+        from gateway.session_dm_threads import dm_thread_key_source, telegram_extra_for
+        return build_session_key(dm_thread_key_source(source, telegram_extra_for(source, config), self._sync_session_db),
+            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False), profile=_profile)
 
     # Telegram General topic in forum-enabled private chats: clients omit message_thread_id or send "1"; both = root.
     _TELEGRAM_GENERAL_TOPIC_IDS = frozenset({"", "1"})
@@ -3977,6 +3906,7 @@ class GatewayRunner(
             user_id=str(source.user_id) if source.user_id else "",
             user_id_alt=str(source.user_id_alt) if source.user_id_alt else "",
             user_name=str(source.user_name) if source.user_name else "",
+            actor_id=context.actor_user_id, actor_name=context.actor_user_name, turn_event=context.turn_event,  # None: route user
             scope_id=str(getattr(source, "scope_id", "") or ""),
             parent_chat_id=str(getattr(source, "parent_chat_id", "") or ""),
             session_key=context.session_key,
@@ -3985,8 +3915,7 @@ class GatewayRunner(
             session_id=context.session_id or "",
             message_id=str(source.message_id) if source.message_id else "",
             profile=getattr(source, "profile", "") or "",
-            async_delivery=_async_delivery,
-            cron_session="", session_history_delivery=_history_delivery)
+            async_delivery=_async_delivery, cron_session="", session_history_delivery=_history_delivery)
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""
@@ -4195,40 +4124,9 @@ class GatewayRunner(
         return None
 
     def _resolve_profile_home_for_source(self, source: SessionSource) -> Path:
-        """Resolve which profile's HERMES_HOME serves this source: the pinned identity's runtime
-        home, else ``source.profile``, then ``_profile_name_for_source`` (sources bypassing
-        ``build_source``), then the active profile."""
-        from gateway.profile_routing import ProfileRouteRejected
-        from gateway.session_identity import identity_of
-        from hermes_cli.profiles import get_active_profile_name, get_profile_dir, profile_exists
-        from hermes_constants import get_hermes_home
-        identity = identity_of(source)
-        if identity is not None:
-            return identity.runtime_home
-        explicit_profile = None  # explicitly requested (source or routing) vs. default fallback
-        try:
-            name = (source.profile or "").strip() or self._profile_name_for_source(source)
-            explicit_profile = name or None
-            if not name:
-                name = get_active_profile_name() or "default"
-            profile_dir = get_profile_dir(name)
-            if explicit_profile and not profile_exists(name):
-                logger.warning(
-                    "Profile %r does not exist for source %s/%s (guild_id=%s), "
-                    "falling back to global HERMES_HOME",
-                    explicit_profile, source.platform.value, source.chat_id,
-                    getattr(source, "guild_id", None))
-                return get_hermes_home()
-            return profile_dir
-        except ProfileRouteRejected:
-            raise
-        except Exception:
-            logger.warning(
-                "Failed to resolve profile directory for source %s/%s (guild_id=%s), "
-                "falling back to global HERMES_HOME: %s",
-                source.platform.value, source.chat_id, getattr(source, "guild_id", None),
-                explicit_profile or "(no profile)", exc_info=True)
-            return get_hermes_home()
+        """Profile HERMES_HOME serving *source*; see ``gateway.run_profile_home``."""
+        from gateway.run_profile_home import resolve_profile_home_for_source
+        return resolve_profile_home_for_source(self, source)
 
     @dataclasses.dataclass
     class _RunAgentDisplay:
@@ -4348,10 +4246,10 @@ def _housekeeping_misfire_catch_up(cron_provider, adapters, loop) -> None:
         logger.info("Misfire catch-up: fired %d overdue job(s)", caught_up)
 
 
-def _housekeeping_curator() -> None:
-    """maybe_run_curator() is gated by config.interval_hours (7 days default); this is the poll."""
-    from agent.curator import maybe_run_curator
-    maybe_run_curator(idle_for_seconds=float("inf"), on_summary=lambda msg: logger.info("curator: %s", msg))
+def _housekeeping_curator(idle_fence=None) -> None:
+    """The idle poll: the curator (gated by curator.interval_hours), then plugin idle tasks (their own intervals)."""
+    from hermes_cli.plugins_idle_tasks import run_idle_jobs
+    run_idle_jobs(idle_for_seconds=float("inf"), on_summary=lambda msg: logger.info("curator: %s", msg), fence=idle_fence)
 
 
 def _housekeeping_plugin_update_check() -> None:
@@ -4392,51 +4290,55 @@ def _profile_sessions_dir(launch: Optional[tuple[Path, Path]]) -> Path:
 
 def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = None) -> None:
     """Stale-session auto-archive plus auto-prune/VACUUM for ONE profile's state.db; both are gated
-    by sessions.min_interval_hours (VACUUM additionally by its own throttles). Opens its own
-    SessionDB — SQLite connections are thread-bound.
+    by sessions.min_interval_hours (VACUUM additionally by its own throttles). Opens its own handle
+    on the profile's store and closes it when done.
 
-    Profile-scoped by its caller: ``acquire()``, ``get_hermes_home()`` and ``load_config()`` all
+    Profile-scoped by its caller: ``profile_scope()``, ``get_hermes_home()`` and ``load_config()`` all
     resolve through the active scope, so an unscoped run swept only the LAUNCH profile's store with
     the LAUNCH profile's retention settings and a multiplexed secondary was never archived, pruned
     or vacuumed by anyone — the dashboard/serve trigger defers to the gateway for every profile a
     gateway owns (``web_server_sessions``). *launch* carries the launch home's configured transcript
     dir (:func:`_launch_sessions_dir`) so its override still governs its own profile."""
     from hermes_cli.config import load_config as _load_full_config
-    from hermes_state_registry import acquire, release_or_close
     _sess_cfg = (_load_full_config().get("sessions") or {})
     if not (_sess_cfg.get("auto_archive", False) or _sess_cfg.get("auto_prune", False)):
         return
-    _adb = acquire()
+    from gateway.session_ingress_media import native_inputs_root
+    from persistence_assembly import open_persistence, open_store_admin, profile_scope
+    from session_retention import run_auto_archive, run_auto_prune_and_vacuum
+    scope = profile_scope()
+    store = open_persistence(scope, eager=True)
     try:
         if _sess_cfg.get("auto_archive", False):
-            _adb.maybe_auto_archive(
-                idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
+            run_auto_archive(
+                store, idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
                 min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)))
         if _sess_cfg.get("auto_prune", False):
-            _adb.maybe_auto_prune_and_vacuum(
+            run_auto_prune_and_vacuum(
+                store, open_store_admin(scope, read_only=False), store_home=scope.profile_dir,
+                media_root=str(native_inputs_root()),
                 retention_days=int(_sess_cfg.get("retention_days", 90)),
                 min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
                 min_vacuum_interval_days=int(_sess_cfg.get("min_vacuum_interval_days", 30)),
                 vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
                 sessions_dir=_profile_sessions_dir(launch))
     finally:
-        release_or_close(_adb)
+        store.close()
 
 
 def _housekeeping_deferred_fts_retry() -> None:
-    """A SessionDB opened while another process held the rebuild lock fails closed onto the LIKE fallback
-    and the gateway stays up for days. Non-blocking, rate-limited inside SessionDB; no-op when not stale."""
-    # Retry here, on the existing tick, against the shared instances this process already holds:
-    # non-blocking admission, no new thread, rate-limited inside SessionDB. No-op when nothing is stale (one
-    # attribute read per instance). See #100108.
-    from hermes_state_registry import borrow_live_shared_session_dbs
-    with borrow_live_shared_session_dbs() as _session_dbs:
-        for _sdb in _session_dbs:
-            _retry = getattr(_sdb, "retry_deferred_fts_recovery", None)
-            if callable(_retry) and _retry():
+    """A store opened while another process held the rebuild lock fails closed onto the LIKE fallback
+    and the gateway stays up for days. Non-blocking, rate-limited inside the store; no-op when not stale."""
+    # Retry here, on the existing tick, against the stores this process already holds open:
+    # non-blocking admission, no new thread, rate-limited inside the store. No-op when nothing is stale (one
+    # attribute read per store). See #100108.
+    from persistence_assembly import live_stores, store_location
+    with live_stores() as stores:
+        for store in stores:
+            if store.search.retry_deferred_search_recovery():
                 logger.info(
                     "Deferred state.db FTS rebuild completed in-process for %s; full-text search restored.",
-                    getattr(_sdb, "db_path", "state.db"))
+                    store_location(store.scope))
 
 
 def _housekeeping_memory_trim() -> None:
@@ -4449,7 +4351,7 @@ def _housekeeping_checkpoint_prune() -> None:
     """Checkpoint store retention + size cap on a live timer; ``auto_prune_from_config`` gates on
     ``checkpoints.auto_prune`` and the 24h ``.last_prune`` marker. Off the startup path because its
     ``git gc`` can block for tens of seconds on a large store."""
-    from tools.checkpoint_maintenance import auto_prune_from_config
+    from agent.checkpoints.maintenance import auto_prune_from_config
     auto_prune_from_config()
 
 
@@ -4472,9 +4374,9 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
             owned = (getattr(runner, "_profile_bot_platforms", None) or {}).get(profile_name)
             if (profile_name is not None and adapters
                     and not sched_preflight.has_credential_platform(profile_adapters, owned)):
-                routes = sched_preflight._primary_profile_routes_for_current_home()
-                if routes:
-                    profile_adapters = sched_preflight.SharedRouteAdapters(adapters, routes)
+                shared = sched_preflight.shared_route_adapters_for_current_home(adapters)
+                if shared:
+                    profile_adapters = shared
             cron_scheduler.drain_delivery_queue(profile_adapters, loop)
 
 
@@ -4488,6 +4390,7 @@ def _start_gateway_housekeeping(
     from gateway.run_delivery_queue_watch import DRAIN_LABEL, DeliveryQueueWatch, wait_for_next_tick
     from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
     from gateway.run_housekeeping_disk import housekeeping_media_caches, maybe_post_auto_prune_prompt
+    from hermes_cli.plugins_idle_tasks import IdleTaskFence
     chores: list[tuple[int, str, Any]] = [
         # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
         # ``hermes gateway status`` / ``/api/status`` warn when it ages past 2x ``interval`` with the
@@ -4511,9 +4414,8 @@ def _start_gateway_housekeeping(
         # already ended (#111010). Runs every tick so the outage is bounded by one housekeeping interval.
         chores.append((1, "Cron ticker supervisor", cron_thread.restart_if_dead))
     chores += [
-        # Per served profile: each profile has its own skills tree, curator state, Nous login
-        # and state.db.
-        (60, "Curator tick", profile_scoped_chore(runner, _housekeeping_curator)),
+        # Per served profile: each has its own skills tree, curator state, Nous login and state.db.
+        (60, "Curator tick", profile_scoped_chore(runner, lambda: _housekeeping_curator(idle_fence))),
         (60, "state.db maintenance tick", profile_scoped_chore(
             runner,
             # Default-bound now, i.e. OUTSIDE any profile scope: this is the launch home's override.
@@ -4540,14 +4442,14 @@ def _start_gateway_housekeeping(
             served_homes, lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner))
 
     logger.info("Gateway housekeeping started (interval=%ds)", interval)
-    tick_count = 0
+    tick_count, idle_fence = 0, IdleTaskFence(stop_event)
     while not stop_event.is_set():
         tick_count += 1
         for every, label, fn in chores:
             if tick_count % every == 0:
                 _housekeeping_chore(label, fn)
         wait_for_next_tick(stop_event, interval, queue_watch, _housekeeping_chore)
-    logger.info("Gateway housekeeping stopped")
+    logger.info("Gateway housekeeping stopped (idle-task runs settled: %s)", idle_fence.close())
 
 
 def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):

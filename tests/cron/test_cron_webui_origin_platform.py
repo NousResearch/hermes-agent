@@ -50,7 +50,7 @@ def _bind_session(monkeypatch, platform, chat_id="chat-abc"):
 def test_webui_session_stamps_no_origin(monkeypatch, caplog):
     """HERMES_SESSION_PLATFORM=webui -> _origin_from_env returns None, with a debug reason."""
     from gateway.session_context import async_delivery_supported
-    from tools.cronjob_job_args import _origin_from_env
+    from cron.job_args import _origin_from_env
 
     _bind_session(monkeypatch, "webui", "e9e6831c44b3")
     # This is exactly why the old guard missed it: WebUI supports async delivery.
@@ -66,7 +66,7 @@ def test_webui_session_stamps_no_origin(monkeypatch, caplog):
 
 def test_arbitrary_unknown_platform_is_dropped(monkeypatch):
     """The guard is registry-based, not a hardcoded 'webui' denylist."""
-    from tools.cronjob_job_args import _origin_from_env
+    from cron.job_args import _origin_from_env
 
     _bind_session(monkeypatch, "totally_fake_platform_xyz")
     assert _origin_from_env("every 10m") is None
@@ -75,7 +75,7 @@ def test_arbitrary_unknown_platform_is_dropped(monkeypatch):
 @pytest.mark.parametrize("platform", ["telegram", "qqbot"])
 def test_deliverable_enum_platform_keeps_origin(monkeypatch, platform):
     """Reverse control: static Platform members are still stamped (no regression)."""
-    from tools.cronjob_job_args import _origin_from_env
+    from cron.job_args import _origin_from_env
 
     _bind_session(monkeypatch, platform, "chat-123")
     origin = _origin_from_env("every 10m")
@@ -87,7 +87,7 @@ def test_deliverable_enum_platform_keeps_origin(monkeypatch, platform):
 def test_registered_plugin_platform_keeps_origin(monkeypatch):
     """A bundled plugin resolved dynamically by Platform._missing_ is still stamped."""
     from gateway.config import Platform
-    from tools.cronjob_job_args import _origin_from_env
+    from cron.job_args import _origin_from_env
 
     assert Platform("irc").value == "irc"  # dynamic member, not a static enum member
     _bind_session(monkeypatch, "irc", "irc-channel")

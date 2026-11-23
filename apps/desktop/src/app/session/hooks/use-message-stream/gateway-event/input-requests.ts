@@ -21,12 +21,16 @@ import {
   $vaultCodeRequests,
   $vaultSaveLoginRequests,
   $vaultUnlockRequests,
+  accessTarget,
+  type ApprovalRequest,
   clearApprovalRequest,
   clearSecretRequest,
   clearSudoRequest,
   clearVaultCodeRequest,
   clearVaultSaveLoginRequest,
   clearVaultUnlockRequest,
+  networkTarget,
+  networkTargetName,
   sessionApprovalRequests
 } from '@/store/prompts'
 import { requestRoute } from '@/store/recovery-requests'
@@ -92,6 +96,30 @@ function handlePromptSettledEvent(ctx: GatewayEventContext): boolean {
 // A display card has no targets to name.
 const connectionRequestNoticeBody = (request: ConnectionRequest): string =>
   request.targets.map(target => target.name).join(', ') || translateNow('connectors.title')
+
+/** What a withdrawn approval leaves in the chat on timeout: the line, and the toast's button.
+ *  A folder or site card says what was not granted. Its sender owns the wait, so its toast has
+ *  no button to the approval timeout setting. */
+function approvalTimeoutNotice(approval: ApprovalRequest) {
+  const access = accessTarget(approval)
+  const network = networkTarget(approval)
+
+  const notGranted = access
+    ? translateNow('assistant.approval.access.timedOut', access.path)
+    : network
+      ? translateNow('assistant.approval.network.timedOut', networkTargetName(network))
+      : null
+
+  return {
+    action: notGranted
+      ? undefined
+      : {
+          label: translateNow('assistant.approval.openSafetySettings'),
+          onClick: () => requestRoute(SAFETY_SETTINGS_ROUTE)
+        },
+    line: notGranted ?? translateNow('assistant.approval.timedOutSystemLine')
+  }
+}
 
 /** The blocking-input family arrives as server→client REQUESTS (see
  *  `server-requests.ts`); the one EVENT in the family is `request.cancel`, the
@@ -212,7 +240,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     // see; the tool row then shows a model-facing "BLOCKED" result. Say what
     // happened in human terms and point at the setting that controls the wait.
     if (payload?.reason === 'timeout' && sessionId) {
-      const line = translateNow('assistant.approval.timedOutSystemLine')
+      const { action, line } = approvalTimeoutNotice(approval)
 
       deps.flushQueuedDeltas(sessionId)
       deps.updateSessionState(sessionId, state => ({
@@ -225,10 +253,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
       notify({
         kind: 'warning',
         message: line,
-        action: {
-          label: translateNow('assistant.approval.openSafetySettings'),
-          onClick: () => requestRoute(SAFETY_SETTINGS_ROUTE)
-        }
+        action
       })
     }
   } else {

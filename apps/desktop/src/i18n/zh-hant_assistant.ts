@@ -313,11 +313,13 @@ export const zhHantAssistant = {
         title: '資料夾存取',
         readOnly: '唯讀',
         readWrite: '讀寫',
+        timedOut: folder => `要求已逾時 — 未授予資料夾 ${folder} 的存取權。請讓 Hermes 重試。`,
         alwaysTitle: '一律允許此資料夾？',
         alwaysDescription: '此資料夾將加入此設定檔的沙箱。Hermes 在任何對話中都不會再詢問。'
       },
       network: {
         title: '網站存取',
+        timedOut: site => `要求已逾時 — 未授予 ${site} 的存取權。請讓 Hermes 重試。`,
         alwaysTitle: '一律允許此網站？',
         alwaysDescription: '此網站將加入此設定檔的允許網站。Hermes 在任何對話中都不會再詢問。'
       }

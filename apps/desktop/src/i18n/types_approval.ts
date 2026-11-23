@@ -24,11 +24,13 @@ export interface ApprovalCopy {
     title: string
     readOnly: string
     readWrite: string
+    timedOut: (folder: string) => string
     alwaysTitle: string
     alwaysDescription: string
   }
   network: {
     title: string
+    timedOut: (site: string) => string
     alwaysTitle: string
     alwaysDescription: string
   }

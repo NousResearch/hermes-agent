@@ -16,7 +16,9 @@ import { registry } from '@/contrib/registry'
 import { writeJson } from '@/lib/storage'
 
 import { $backendThemes } from './backend-sync'
+import { isOneDark, oneDarkTheme } from './one-dark'
 import { BUILTIN_THEMES } from './presets'
+import { retintTheme } from './retint'
 import { type DesktopTheme, isValidTheme } from './types'
 
 const USER_THEMES_KEY = 'hermes-desktop-user-themes-v1'
@@ -150,10 +152,25 @@ export function contributedThemes(): DesktopTheme[] {
 export function resolveTheme(name: string): DesktopTheme | undefined {
   return (
     BUILTIN_THEMES[name] ??
-    $userThemes.get()[name] ??
-    $backendThemes.get()[name] ??
+    resolvedUserTheme($userThemes.get()[name]) ??
+    resolvedBackendTheme($backendThemes.get()[name]) ??
     contributedThemes().find(theme => theme.name === name)
   )
+}
+
+function resolvedBackendTheme(theme: DesktopTheme | undefined): DesktopTheme | undefined {
+  return theme?.name === 'one-dark' && !isOneDark(theme) ? oneDarkTheme(theme) : theme
+}
+
+function resolvedUserTheme(theme: DesktopTheme | undefined): DesktopTheme | undefined {
+  // A real installed base wins, including its accent policy. Only rehydrate the
+  // exact generated naming contract; never treat an arbitrary prefix as ours.
+  if (!theme || $userThemes.get()['one-dark'] || theme.accentOf !== 'one-dark' || isOneDark(theme)) {
+    return theme
+  }
+  const match = /^one-dark-accent-([0-9a-f]{6})$/.exec(theme.name)
+
+  return match ? retintTheme(oneDarkTheme(theme), `#${match[1]}`) : theme
 }
 
 /** Built-ins first (stable order), then contributed, then backend skins, then user installs. */
@@ -165,7 +182,9 @@ export function listAllThemes(): DesktopTheme[] {
   return [
     ...Object.values(BUILTIN_THEMES),
     ...contributedThemes().filter(theme => !shadows(theme)),
-    ...Object.values(backend).filter(theme => !user[theme.name]),
-    ...Object.values(user)
+    ...Object.values(backend)
+      .filter(theme => !user[theme.name])
+      .map(theme => resolvedBackendTheme(theme)!),
+    ...Object.values(user).map(theme => resolvedUserTheme(theme)!)
   ]
 }

@@ -53,6 +53,8 @@ interface SessionAttemptOptions {
   isReplayingHistory: () => boolean
   /** The attempt adopted a live session: seed size, shell name and selection. */
   onStarted: (session: HermesTerminalSession) => void
+  /** Re-arm leading blank-line stripping for each fresh shell attempt. */
+  resetBootGap?: () => void
   /** Cwd for the next shell; read at each start so a retry follows a `cd`. */
   resolveCwd: () => string
   /** Runs once start metadata says whether the server replays history itself. */
@@ -85,6 +87,7 @@ export function createSessionAttemptController(
     isDisposed,
     isReplayingHistory,
     onStarted,
+    resetBootGap,
     resolveCwd,
     restoreHistory,
     sessionIdRef,
@@ -96,14 +99,17 @@ export function createSessionAttemptController(
 ): SessionAttemptController {
   let persistent = Boolean($terminals.get().find(tab => tab.id === id)?.persistent)
   let resumeOnly = persistent
+  let clearOnRetry = false
   let replayWrites = 0
   let retrySession: (() => void) | null = null
   let cleanupAttempt: (() => void) | null = null
 
   const startSession = () => {
     cleanupAttempt?.()
+    resetBootGap?.()
     let current = true
     let attemptSessionId: string | null = null
+    let hadReplay = false
 
     const releaseSession = (sid: string) =>
       persistent && terminalApi.detach ? terminalApi.detach(sid) : terminalApi.dispose(sid)
@@ -202,11 +208,14 @@ export function createSessionAttemptController(
             }
 
             if (options?.replay) {
+              if (data.trim().length > 0) {
+                hadReplay = true
+              }
               ++replayWrites
               term.write(data, () => {
                 --replayWrites
               })
-            } else if (persistent) {
+            } else if (persistent && hadReplay) {
               term.write(data)
             } else {
               writeOutput(data)
@@ -221,9 +230,15 @@ export function createSessionAttemptController(
 
             if (persistent && exit.signal) {
               resumeOnly = exit.signal !== 'expired'
-              armRetry(
-                `\r\n${TERMINAL_EXIT_MESSAGES[exit.signal] || 'Terminal disconnected. Press Enter to reconnect.'}`
-              )
+              if (exit.signal === 'expired') {
+                clearOnRetry = true
+                term.write('\u001bc')
+                armRetry(TERMINAL_EXIT_MESSAGES.expired)
+              } else {
+                armRetry(
+                  `\r\n${TERMINAL_EXIT_MESSAGES[exit.signal] || 'Terminal disconnected. Press Enter to reconnect.'}`
+                )
+              }
 
               return
             }
@@ -296,6 +311,8 @@ export function createSessionAttemptController(
           removeExitedTerminal(id)
         } else if (signal === 'expired') {
           resumeOnly = false
+          clearOnRetry = true
+          term.write('\u001bc')
           armRetry(TERMINAL_EXIT_MESSAGES.expired)
         } else if (hostHas('retryTerminalSpawn') || runsOverSsh(gateway)) {
           // A browser host or an SSH gateway can come back (host offline,
@@ -320,6 +337,10 @@ export function createSessionAttemptController(
     if (!sessionId && retrySession && data === '\r') {
       const retry = retrySession
       retrySession = null
+      if (clearOnRetry) {
+        clearOnRetry = false
+        term.write('\u001bc')
+      }
       setStatus('starting')
       retry()
 

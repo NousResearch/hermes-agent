@@ -131,9 +131,17 @@ export function terminalSelectionAnchor(host: HTMLDivElement): CSSProperties | n
   }
 
   const hostRect = host.getBoundingClientRect()
+  const cssZoom =
+    (host as HTMLElement & { currentCSSZoom?: number }).currentCSSZoom ||
+    (typeof document !== 'undefined' ? Number.parseFloat(document.documentElement.style.zoom) : 1) ||
+    1
+  const zoom = Number.isFinite(cssZoom) && cssZoom > 0 ? cssZoom : 1
   const buttonWidth = 128
-  const left = Math.min(Math.max(rect.left - hostRect.left, 8), Math.max(8, host.clientWidth - buttonWidth - 8))
-  const top = Math.min(Math.max(rect.bottom - hostRect.top + 4, 8), Math.max(8, host.clientHeight - 34))
+  const left = Math.min(
+    Math.max((rect.left - hostRect.left) / zoom, 8),
+    Math.max(8, host.clientWidth - buttonWidth - 8)
+  )
+  const top = Math.min(Math.max((rect.bottom - hostRect.top) / zoom + 4, 8), Math.max(8, host.clientHeight - 34))
 
   return { left, top }
 }

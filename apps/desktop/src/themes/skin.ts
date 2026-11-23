@@ -19,6 +19,7 @@ import { ensureContrast, mix } from '@hermes/shared/color'
 import type { HermesSkin, SkinColors } from '@hermes/shared/skin'
 
 import { luminance, normalizeHex, readableInk } from './color'
+import { oneDarkTheme } from './one-dark'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 
 // The accent labels the sidebar in small uppercase text, so it must clear WCAG AA
@@ -106,7 +107,7 @@ export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
     userBubbleBorder: border
   }
 
-  return {
+  const theme: DesktopTheme = {
     name,
     label: titleCase(name),
     description: 'Hermes skin',
@@ -118,4 +119,6 @@ export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
     // tag — users put CSS in their skin YAML instead of hacking app.asar.
     customCSS: skin.customCSS?.trim() || undefined
   }
+
+  return name === 'one-dark' ? oneDarkTheme(theme) : theme
 }

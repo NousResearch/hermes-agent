@@ -127,10 +127,21 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
 
       markRightPanePerf('terminal-measure', reason)
       const r = slot.getBoundingClientRect()
-      // floor top/left + ceil right/bottom: overlay always covers the slot's
-      // full pixel footprint, so half-pixel rects can't leak page bg through.
-      const top = Math.floor(r.top)
-      const left = Math.floor(r.left)
+      // getBoundingClientRect() returns viewport-scaled pixels, while a
+      // position:fixed overlay inside a CSS-zoomed <html> (browser-zoom.ts)
+      // multiplies top/left/width/height by that zoom factor a second time.
+      // Divide by the active CSS zoom so the overlay matches the slot without
+      // shifting down (top gap) or overflowing right over TerminalRail.
+      const cssZoom =
+        (slot as HTMLElement & { currentCSSZoom?: number }).currentCSSZoom ||
+        Number.parseFloat(document.documentElement.style.zoom) ||
+        1
+      const zoom = Number.isFinite(cssZoom) && cssZoom > 0 ? cssZoom : 1
+      // floor top/left + floor right (width) + ceil bottom (height): overlay
+      // aligns flush with the slot without encroaching 1px onto TerminalRail's
+      // left border under fractional zoom.
+      const top = Math.floor(r.top / zoom)
+      const left = Math.floor(r.left / zoom)
 
       // Inactive keep-alive panes deliberately retain the same rect as the
       // foreground pane, so visibility must be sampled independently.
@@ -138,8 +149,8 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
         hidden: isElementInHiddenPane(slot),
         top,
         left,
-        width: Math.ceil(r.right) - left,
-        height: Math.ceil(r.bottom) - top
+        width: Math.max(0, Math.floor(r.right / zoom) - left),
+        height: Math.ceil(r.bottom / zoom) - top
       }
 
       if (!sameRect(prev, next)) {

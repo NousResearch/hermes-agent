@@ -1,0 +1,121 @@
+/* One Dark Pro renderer-only surfaces. */
+
+/* The sidebar/content seam must read as one continuous thread next to the
+   zone rails' --ui-stroke-* lines, so the base translucency is replaced by
+   the Atom border color. html:root outranks the :root.dark redefinition
+   later in styles.css without relying on import order. */
+html:root[data-hermes-palette='one-dark'] {
+  --sidebar-edge-border: #181a1f;
+}
+
+/* Explicit theme colors, not a global change to the glass/input defaults.
+   The marker is runtime provenance, not a user theme's name or slug prefix. */
+:root[data-hermes-palette='one-dark']
+  :is(
+    .desktop-input-chrome,
+    [data-slot='search-field'],
+    [data-slot='command-input-wrapper'],
+    [data-slot='composer-surface'],
+    .ui-prompt-input__container
+  ) {
+  background: #1d1f23;
+}
+
+/* Empty searches normally fade their entire wrapper, including the fill. */
+:root[data-hermes-palette='one-dark'] [data-slot='search-field'] {
+  opacity: 1;
+}
+
+:root[data-hermes-palette='one-dark']
+  :is(
+    [data-slot='popover-content'],
+    [data-slot='dropdown-menu-content'],
+    [data-slot='dropdown-menu-sub-content'],
+    [data-slot='context-menu-content'],
+    [data-slot='context-menu-sub-content'],
+    [data-slot='select-content']
+  ) {
+  background: #21252b;
+}
+
+/* The composer defines this locally for scroll/hover states. A root-only
+   override would lose there and leave its backing/docked surfaces translucent. */
+:root[data-hermes-palette='one-dark'],
+:root[data-hermes-palette='one-dark'] [data-slot='composer-root'],
+:root[data-hermes-palette='one-dark'] [data-slot='composer-root'][data-thread-scrolled-up],
+:root[data-hermes-palette='one-dark']
+  [data-slot='composer-dock']:is(:hover, :focus-within)
+  [data-slot='composer-root'][data-thread-scrolled-up] {
+  --composer-fill: #1d1f23;
+}
+
+:root[data-hermes-palette='one-dark'] .desktop-input-chrome:not([aria-invalid='true']) {
+  border-color: #181a1f;
+}
+
+:root[data-hermes-palette='one-dark'] .desktop-input-chrome[aria-invalid='true'] {
+  border-color: #e06c75;
+}
+
+/* Input's own selection utilities otherwise beat the document selection. */
+:root[data-hermes-palette='one-dark'] ::selection {
+  background: rgba(97, 175, 239, 0.4);
+  color: #e6e6e6;
+}
+
+/* Code-block copy control: icon reads as normal text, hover hands the
+   highlight to the Atom blue, and the button stays a quiet surface. */
+:root[data-hermes-palette='one-dark'] [data-slot='code-card'] > button {
+  color: #abb2bf;
+  background: transparent;
+}
+
+:root[data-hermes-palette='one-dark'] [data-slot='code-card'] > button:hover,
+:root[data-hermes-palette='one-dark'] [data-slot='code-card'] > button:focus-visible {
+  color: #e06c75;
+  background: #3e4451;
+}
+
+/* One Dark Pro formatted answer typography: red headings, orange strong,
+   blue links, neutral #abb2bf list markers, purple checkboxes. */
+:root[data-hermes-palette='one-dark'] .prose {
+  --tw-prose-bullets: #abb2bf;
+  --tw-prose-counters: #abb2bf;
+}
+:root[data-hermes-palette='one-dark'] .aui-md.prose :is(h1,h2,h3,h4,h5,h6) {
+  color: #e06c75;
+}
+:root[data-hermes-palette='one-dark'] .aui-md.prose :is(strong,b) {
+  color: #d19a66;
+}
+:root[data-hermes-palette='one-dark'] .aui-md.prose a {
+  color: #61afef;
+}
+:root[data-hermes-palette='one-dark'] .aui-md.prose :is(ul,ol) > li::marker {
+  color: #abb2bf;
+}
+:root[data-hermes-palette='one-dark'] .aui-md.prose input[type='checkbox'] {
+  accent-color: #c678dd;
+}
+
+/* HyperX Sun on the live "Thinking" label: white → yellow → red, one letter
+   per loop. The component sets --d/--delay per letter; this file only owns
+   the wave itself. */
+@keyframes od-sun {
+  0%,100% { color:#e63b2e; text-shadow:0 0 2px #e63b2e66 }
+  30%     { color:#ff8c1a; text-shadow:0 0 4px #ff8c1a88 }
+  55%     { color:#ffd23f; text-shadow:0 0 6px #ffd23faa }
+  75%     { color:#fff7e0; text-shadow:0 0 8px #fff7e0cc }
+}
+
+:root[data-hermes-palette='one-dark'] .od-sun > span {
+  animation: od-sun var(--d) ease-in-out var(--delay) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-hermes-palette='one-dark'] .od-sun > span {
+    animation: none;
+    color: #ffd23f;
+    text-shadow: none;
+  }
+}

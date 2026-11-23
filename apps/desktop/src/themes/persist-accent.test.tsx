@@ -4,8 +4,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { $activeGatewayProfile } from '@/store/profile'
 
 import { $accentOverride, setAccentOverride } from './accent-override'
+import { __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 import { skinPref, ThemeProvider, useTheme } from './context'
-import { persistAccent } from './persist-accent'
+import { ownAccent, persistAccent } from './persist-accent'
 import { nousTheme } from './presets'
 import type { DesktopTheme } from './types'
 import { $userThemes, installUserTheme, resolveTheme } from './user-themes'
@@ -30,6 +31,48 @@ afterEach(() => {
 })
 
 describe('persistAccent', () => {
+  it('previews, saves, reloads and resets the One Dark highlight without changing its neutral primary', () => {
+    __resetBackendSkinSync()
+    ingestBackendSkin({ name: 'one-dark', colors: { ui_accent: '#c678dd' } }, { apply: false })
+    skinPref.assign('default', 'one-dark')
+    const view = render(
+      <ThemeProvider>
+        <ThemeProbe />
+      </ThemeProvider>
+    )
+    expect(ownAccent()).toBe('#e06c75')
+    act(() => setAccentOverride('#2ea043'))
+    const preview = theme.theme.colors
+    expect(preview.primary).toBe('#404754')
+    expect(preview.midground).not.toBe('#c678dd')
+    act(() => persistAccent('#2ea043'))
+    expect(theme.theme.colors).toEqual(preview)
+    expect(theme.themeName).toBe('one-dark-accent-2ea043')
+    const root = document.documentElement.style
+    expect(root.getPropertyValue('--theme-midground')).toBe(preview.midground)
+    expect(root.getPropertyValue('--theme-accent-soft')).toBe(preview.accent)
+    expect(root.getPropertyValue('--theme-primary')).toBe('#404754')
+    expect(root.getPropertyValue('--dt-input')).toBe('#181a1f')
+    expect(root.getPropertyValue('--ui-success')).toBe('#98c379')
+    expect(root.getPropertyValue('--ui-warning')).toBe('#d19a66')
+    const stored = JSON.parse(window.localStorage.getItem('hermes-desktop-user-themes-v1')!)
+    expect(stored[theme.themeName].accentOf).toBe('one-dark')
+    expect(stored[theme.themeName].colors.primary).toBe('#404754')
+    view.unmount()
+    render(
+      <ThemeProvider>
+        <ThemeProbe />
+      </ThemeProvider>
+    )
+    expect(theme.theme.colors).toEqual(preview)
+    act(() => persistAccent('#e06c75'))
+    expect(theme.themeName).toBe('one-dark')
+    expect(theme.theme.colors.accent).toBe('#e06c75')
+    act(() => persistAccent('#e0218a'))
+    act(() => persistAccent(null))
+    expect(theme.themeName).toBe('one-dark')
+  })
+
   it('saves an accent as the profile theme and returns to Nous on null', () => {
     render(
       <ThemeProvider>

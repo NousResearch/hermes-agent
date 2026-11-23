@@ -388,4 +388,32 @@ describe('PersistentTerminal rect tracking', () => {
     // The PTY survives — only the overlay stands down.
     expect(mount.container!.querySelector('[data-testid="terminal-workspace"]')).not.toBeNull()
   })
+
+  it.each([0.9, 1, 1.1, 1.25, 1.5])(
+    'unscales slot coordinates by currentCSSZoom (%s) and keeps right edge clear of TerminalRail',
+    zoom => {
+      installRaf()
+      const slotRect = rect(472, 299, 1586, 527)
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(slotRect)
+      Object.defineProperty(HTMLElement.prototype, 'currentCSSZoom', { configurable: true, get: () => zoom })
+      $terminalTakeover.set(true)
+
+      try {
+        mount.render(<Harness />)
+        const overlay = mount.container!.lastElementChild as HTMLElement
+        const expectedTop = Math.floor(slotRect.top / zoom)
+        const expectedLeft = Math.floor(slotRect.left / zoom)
+        const expectedWidth = Math.max(0, Math.floor(slotRect.right / zoom) - expectedLeft)
+        const expectedHeight = Math.ceil(slotRect.bottom / zoom) - expectedTop
+
+        expect(overlay.style.top).toBe(`${expectedTop}px`)
+        expect(overlay.style.left).toBe(`${expectedLeft}px`)
+        expect(overlay.style.width).toBe(`${expectedWidth}px`)
+        expect(overlay.style.height).toBe(`${expectedHeight}px`)
+        expect((expectedLeft + expectedWidth) * zoom).toBeLessThanOrEqual(slotRect.right + 1e-6)
+      } finally {
+        delete (HTMLElement.prototype as { currentCSSZoom?: number }).currentCSSZoom
+      }
+    }
+  )
 })

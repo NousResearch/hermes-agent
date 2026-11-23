@@ -446,10 +446,11 @@ const AccessApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, s
               {copy.alwaysAllowMenu}
             </Button>
           )}
+          {/* No Enter shortcut here: this card can outlive its turn, and an Enter meant for something else must
+              not allow a folder or a site. Enter on the focused button still presses it. */}
           <Tip label={copy.allowHint}>
-            <Button data-approval-run="" disabled={busy} onClick={() => void respond('once')} size="sm">
+            <Button disabled={busy} onClick={() => void respond('once')} size="sm">
               {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : copy.allow}
-              <span className="opacity-60">↵</span>
             </Button>
           </Tip>
         </div>

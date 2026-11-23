@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render as renderUi, screen, waitFor } from '@t
 import type { ReactNode } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { RICH_INPUT_SLOT } from '@/app/chat/composer/rich-editor'
 import type { HermesGateway } from '@/hermes'
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
 import { $gateway } from '@/store/gateway'
@@ -626,6 +627,108 @@ describe('folder and site approval cards', () => {
     })
 
     await waitFor(() => expect(respond).toHaveBeenCalledWith({ choice: 'deny' }))
+  })
+
+  describe('the Enter key', () => {
+    /** One Enter keydown that starts on `target`, as the app's key handler sees it. */
+    function pressEnterOn(target: Element) {
+      const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter' })
+      const listener = (keydown: Event) => handleApprovalKey(keydown as KeyboardEvent)
+
+      target.addEventListener('keydown', listener)
+      act(() => {
+        fireEvent(target, event)
+      })
+      target.removeEventListener('keydown', listener)
+      releaseApprovalKey()
+
+      return event
+    }
+
+    const settle = () => act(() => new Promise<void>(resolve => setTimeout(resolve, 300)))
+
+    it.each([
+      ['a folder card', setAccess],
+      ['a site card', setSite]
+    ])('sends no answer for %s when Enter starts in an empty composer or on the page', async (_name, park) => {
+      // The card can outlive its turn: an Enter meant for something else must not allow anything.
+      mockGateway()
+      const respond = liveApproval()
+      park()
+
+      const { container } = render(
+        <>
+          <PendingApprovalStack />
+          <div data-slot={RICH_INPUT_SLOT} data-testid="composer" />
+        </>
+      )
+
+      pressEnterOn(screen.getByTestId('composer'))
+      pressEnterOn(container)
+      await settle()
+
+      expect(respond).not.toHaveBeenCalled()
+      expect(sessionApprovalRequests('sess-1').get()).toHaveLength(1)
+    })
+
+    it('answers neither a folder card in front nor a command card behind it', async () => {
+      mockGateway()
+      const folder = liveApproval()
+      const command = liveApproval('srq-command')
+      setAccess()
+      setApprovalRequest({
+        command: 'rm -rf build',
+        description: 'd',
+        requestId: 'cmd',
+        serverRequestId: 'srq-command',
+        sessionId: 'sess-1'
+      })
+      const { container } = render(<PendingApprovalStack />)
+
+      pressEnterOn(container)
+      await settle()
+
+      expect(folder).not.toHaveBeenCalled()
+      expect(command).not.toHaveBeenCalled()
+      expect(sessionApprovalRequests('sess-1').get()).toHaveLength(2)
+    })
+
+    it('still allows when Enter is pressed on the focused Allow button', async () => {
+      mockGateway()
+      const respond = liveApproval()
+      setSite()
+      render(<PendingApprovalStack />)
+      const allow = screen.getByRole('button', { name: /^Allow/ })
+
+      allow.focus()
+
+      // A browser presses the focused button on Enter unless a handler took the key.
+      if (!pressEnterOn(allow).defaultPrevented) {
+        fireEvent.click(allow)
+      }
+
+      await waitFor(() => expect(respond).toHaveBeenCalledWith({ choice: 'once' }))
+      expect(respond).toHaveBeenCalledTimes(1)
+    })
+
+    it('still denies with Escape and then Enter in the reason form', async () => {
+      mockGateway()
+      const respond = liveApproval()
+      setAccess()
+      render(<PendingApprovalStack />)
+
+      act(() => {
+        handleApprovalKey(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }))
+      })
+      releaseApprovalKey()
+
+      // A browser submits the form on Enter in its text field unless a handler took the key.
+      if (!pressEnterOn(reasonField()).defaultPrevented) {
+        fireEvent.submit(reasonField().closest('form')!)
+      }
+
+      await waitFor(() => expect(respond).toHaveBeenCalledWith({ choice: 'deny' }))
+    })
   })
 
   it('carries the reason on the approval.respond fallback of a restored card', async () => {

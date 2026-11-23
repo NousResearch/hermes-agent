@@ -91,3 +91,11 @@ class TestApiKeyProviderPoolAttachment:
         resolved = rp.resolve_runtime_provider(requested="zai")
         assert resolved["api_key"] == "env-zai-key"
         assert resolved["credential_pool"] is None
+
+    def test_providers_entry_url_never_gets_the_builtin_pool(self, monkeypatch):
+        pool = self._pool_with([SimpleNamespace(runtime_api_key="entry-key")])
+        monkeypatch.setattr(rp, "_owned_url_credential", lambda *_a: (True, "entry-key"))
+        resolved = self._resolve_zai(monkeypatch, pool)
+        assert resolved["source"] == "config:providers"
+        assert resolved["api_key"] == "entry-key"
+        assert resolved["credential_pool"] is None  # rotating would send another account's keys to that URL

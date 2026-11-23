@@ -108,3 +108,28 @@ def test_worker_memory_limit_invalid_config_falls_back_to_auto_bound(monkeypatch
     _write_config(f"terminal:\n  worker_memory_max_mb: {value}\n")
 
     assert prm._worker_memory_max_bytes() == prm._WORKER_MEMORY_MAX_CAP_BYTES
+
+
+def test_worker_memory_limit_warnings_never_echo_config_contents(monkeypatch, caplog):
+    """An invalid value or an unreadable config is reported without its contents."""
+    import logging
+
+    from tools.process_registry import ProcessRegistry
+
+    secret = "synthetic_secret_mem_7c41ab"
+    _host(monkeypatch, ram_gib=128)
+    _write_config(f"terminal:\n  worker_memory_max_mb: sk-{secret}\n")
+    with caplog.at_level(logging.WARNING, logger="tools.process_registry"):
+        assert prm._worker_memory_max_bytes() == prm._WORKER_MEMORY_MAX_CAP_BYTES
+
+    def _unreadable(*_args, **_kwargs):
+        raise ValueError(f"while parsing config.yaml line: api_key: {secret}")
+
+    monkeypatch.setattr(ProcessRegistry, "_config_value", staticmethod(_unreadable))
+    with caplog.at_level(logging.WARNING, logger="tools.process_registry"):
+        assert prm._worker_memory_max_bytes() == prm._WORKER_MEMORY_MAX_CAP_BYTES
+
+    text = "\n".join(logging.Formatter().format(r) for r in caplog.records)
+    assert "Ignoring invalid terminal.worker_memory_max_mb" in text
+    assert "Could not read terminal.worker_memory_max_mb" in text
+    assert secret not in text

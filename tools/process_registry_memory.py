@@ -33,16 +33,17 @@ def _configured_worker_memory_max_bytes() -> Optional[int]:
     try:
         value = ProcessRegistry._config_value("terminal", "worker_memory_max_mb")
     except Exception:  # unreadable config must never block a spawn; fall back to auto
-        logger.warning("Could not read terminal.worker_memory_max_mb; using auto", exc_info=True)
+        # No exception text: a config parse error can quote config.yaml lines, which may hold keys.
+        logger.warning("Could not read terminal.worker_memory_max_mb; using auto")
         return None
     if value is None or (isinstance(value, str) and value.strip().lower() == "auto"):
         return None
     parsed = _parse_worker_memory_mb(value)
     if parsed is None:
-        logger.warning(
-            "Ignoring invalid terminal.worker_memory_max_mb=%r; "
+        logger.warning(  # the value is not echoed: a mis-pasted secret must not reach the log
+            "Ignoring invalid terminal.worker_memory_max_mb (%s value); "
             "expected 'auto' or a whole number of MiB >= %d",
-            value, _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024))
+            type(value).__name__, _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024))
     return parsed
 
 
@@ -86,10 +87,10 @@ def _worker_memory_max_bytes() -> int:
         if parsed >= _MIN_WORKER_MEMORY_MAX_BYTES:
             override_bound = parsed
         else:
-            logger.warning(
-                "Ignoring invalid TERMINAL_LOCAL_MEMORY_MAX_MB=%r; "
+            logger.warning(  # value not echoed, as for terminal.worker_memory_max_mb above
+                "Ignoring invalid TERMINAL_LOCAL_MEMORY_MAX_MB; "
                 "expected an integer representing at least %d MiB",
-                override, _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024))
+                _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024))
     candidates: list[int] = []
     cgroup_bound = _enclosing_cgroup_memory_max_bytes()
     if cgroup_bound is not None:

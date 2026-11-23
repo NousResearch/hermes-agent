@@ -572,7 +572,7 @@ export function useTerminalSession({
   // from wiped atlas pages. Also covers the first open: status flips to 'open'
   // once the shell attaches.
   useEffect(() => {
-    if (!active || status !== 'open') {
+    if (!active) {
       return
     }
 
@@ -581,7 +581,10 @@ export function useTerminalSession({
 
       fitRef.current?.()
       redrawAllTerminals()
-      term?.focus()
+
+      if (status === 'open' || status === 'closed') {
+        term?.focus()
+      }
     })
 
     return () => cancelAnimationFrame(frame)

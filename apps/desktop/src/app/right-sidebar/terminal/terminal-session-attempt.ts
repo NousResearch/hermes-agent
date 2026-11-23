@@ -104,6 +104,7 @@ export function createSessionAttemptController(
     cleanupAttempt?.()
     let current = true
     let attemptSessionId: string | null = null
+    let hadReplay = false
 
     const releaseSession = (sid: string) =>
       persistent && terminalApi.detach ? terminalApi.detach(sid) : terminalApi.dispose(sid)
@@ -202,11 +203,12 @@ export function createSessionAttemptController(
             }
 
             if (options?.replay) {
+              hadReplay = true
               ++replayWrites
               term.write(data, () => {
                 --replayWrites
               })
-            } else if (persistent) {
+            } else if (persistent && hadReplay) {
               term.write(data)
             } else {
               writeOutput(data)
@@ -221,9 +223,14 @@ export function createSessionAttemptController(
 
             if (persistent && exit.signal) {
               resumeOnly = exit.signal !== 'expired'
-              armRetry(
-                `\r\n${TERMINAL_EXIT_MESSAGES[exit.signal] || 'Terminal disconnected. Press Enter to reconnect.'}`
-              )
+              if (exit.signal === 'expired') {
+                term.write('\u001bc')
+                armRetry(TERMINAL_EXIT_MESSAGES.expired)
+              } else {
+                armRetry(
+                  `\r\n${TERMINAL_EXIT_MESSAGES[exit.signal] || 'Terminal disconnected. Press Enter to reconnect.'}`
+                )
+              }
 
               return
             }
@@ -296,6 +303,7 @@ export function createSessionAttemptController(
           removeExitedTerminal(id)
         } else if (signal === 'expired') {
           resumeOnly = false
+          term.write('\u001bc')
           armRetry(TERMINAL_EXIT_MESSAGES.expired)
         } else if (hostHas('retryTerminalSpawn') || runsOverSsh(gateway)) {
           // A browser host or an SSH gateway can come back (host offline,
@@ -320,6 +328,9 @@ export function createSessionAttemptController(
     if (!sessionId && retrySession && data === '\r') {
       const retry = retrySession
       retrySession = null
+      if (!resumeOnly) {
+        term.write('\u001bc')
+      }
       setStatus('starting')
       retry()
 

@@ -3,6 +3,8 @@
 import importlib.util
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -109,10 +111,44 @@ def test_local_stdlib_import_shadows_the_module_facade_alias(tmp_path):
     assert code == 1 and out.startswith("REJECTED"), out
 
 
-@pytest.mark.platforms("linux", "macos")
+_STALLS = r"(?:(?:(?:(?:.*)*)*)*)*z"  # valid RE2; stdlib backtracks for minutes on a few dozen characters
+
+
 def test_stalling_reference_is_reported_unchecked_within_the_deadline(tmp_path):
-    code, out = _gate(tmp_path, "import hermes_re as re\nre.search(r'(?:(?:(?:(?:.*)*)*)*)*z', 'x')\n")
+    code, out = _gate(tmp_path, f"import hermes_re as re\nre.search(r'{_STALLS}', 'x')\nre.findall(rb'a*?', b'aa')\n")
+    assert code == 1, out
+    rows = out.splitlines()
+    assert rows[0].startswith("UNCHECKED") and "did not finish search() on the generated strings within 2s" in rows[0]
+    assert rows[1].startswith("DIFFERS") and "mod.py:3" in rows[1], out  # the run goes on after a stall
+
+
+def test_the_deadline_holds_off_the_main_thread(tmp_path, capsys):
+    """No signal is involved: an embedding caller (or a Windows host, which has no SIGALRM) gets the same verdict."""
+    path = tmp_path / "mod.py"
+    path.write_text(f"import hermes_re as re\nre.search(r'{_STALLS}', 'x')\n", encoding="utf-8")
+    with ThreadPoolExecutor(1) as pool:
+        code = pool.submit(_load().main, [str(path)]).result(timeout=120)
+    out = capsys.readouterr().out
     assert code == 1 and out.startswith("UNCHECKED"), out
+
+
+def test_the_comparison_worker_is_replaced_after_a_stall():
+    gate = _load()
+    with gate.Comparer(deadline=0.5) as comparer:
+        with pytest.raises(gate.Unchecked, match=r"did not finish search\(\) on the generated strings within 0.5s"):
+            comparer.differs(_STALLS, 0, "search", "<>")
+        assert comparer.differs(rb"a*?", 0, "findall", b"<>") is not None
+        assert comparer.differs("a+", 0, "sub", "x\u00e9", 1) is None
+
+
+def test_a_worker_dying_mid_comparison_is_unchecked_not_clean():
+    gate = _load()
+    with gate.Comparer(deadline=60) as comparer:
+        assert comparer.differs("a+", 0, "search", "<>") is None
+        threading.Timer(0.5, comparer._proc.kill).start()
+        with pytest.raises(gate.Unchecked, match="the comparison process exited"):
+            comparer.differs(_STALLS, 0, "search", "<>")
+        assert comparer.differs(rb"a*?", 0, "findall", b"<>") is not None
 
 
 def test_pre_swap_checks_stdlib_importers(tmp_path):

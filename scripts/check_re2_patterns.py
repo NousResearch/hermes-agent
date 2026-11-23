@@ -28,18 +28,20 @@ module-level `import hermes_re as re` is stdlib code there and is not checked wi
 Without --pre-swap only files that import `hermes_re` are checked (the state after their swap). With --pre-swap,
 files that still say `import re` are checked as if already swapped: run this BEFORE swapping a file.
 Reads files as text; imports `hermes_re`, which needs the google-re2 package (exit 2 with a message otherwise), and
-the code-health AST helpers. The deadline uses SIGALRM, so it applies on POSIX hosts (CI, Linux and macOS commits).
+the code-health AST helpers. The comparisons run in one child process (`--compare-worker`) that is killed and
+restarted when one overruns DEADLINE, so the deadline holds on every OS (no signals) and from any thread.
 This script is a development tool under scripts/ and uses stdlib `re` as the reference engine.
 """
 import ast
 import importlib
 import json
+import queue
 import random
 import re as stdlib_re
 from re import _parser  # stdlib's own parse tree: what a pattern names once comments are gone
-import signal
 import subprocess
 import sys
+import threading
 import zlib
 from pathlib import Path
 
@@ -68,14 +70,16 @@ UNKNOWN_FLAG_BITS = (256, 2, 8, 16, 64)  # ASCII, IGNORECASE, MULTILINE, DOTALL,
 EXTRA = " \n\t-_.,:;/|@=\"'()aZ09\u00e9\u00df\u0436\u65e5\u017f\u0130"
 SAMPLES = 160
 DEADLINE = 2.0
+WORKER = "--compare-worker"
+READY = "ready"
+START_TIMEOUT = 120  # interpreter start plus the hermes_re import; not part of a comparison's DEADLINE
 
 
-class _Deadline(BaseException):
-    """Raised by SIGALRM inside a stdlib match; a BaseException so `run()` does not record it as a result."""
+class Unchecked(Exception):
+    """The comparison gave no answer: stdlib overran the deadline, or the worker process died."""
 
 
-def load_facade():
-    """(hermes_re, canonical_tree, python_comments) from the tree this script checks."""
+def _import_facade():
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     try:
@@ -85,6 +89,12 @@ def load_facade():
         print(f"check_re2_patterns: hermes_re / google-re2 is not importable in {sys.executable} ({exc}); run it in the "
               "repository environment (source ./activate, or: just check --only re2-patterns)")
         sys.exit(2)
+    return hermes_re
+
+
+def load_facade():
+    """(hermes_re, canonical_tree, python_comments) from the tree this script checks."""
+    hermes_re = _import_facade()
     rules = importlib.import_module("scripts.code_health.py_rules")
     measure = importlib.import_module("scripts.code_health.measure")
     return hermes_re, rules.canonical_tree, measure._python_comments
@@ -156,41 +166,95 @@ def run(call, compiled, text):
         return "raises " + type(exc).__name__
 
 
-def _compare(call, old, new, texts):
-    for text in texts:
-        if run(call, old, text) != run(call, new, text):
-            return text
-    return None
-
-
-def _on_deadline(signum, frame):
-    raise _Deadline
-
-
-def _within_deadline(work):
-    """``work()``, or raise _Deadline after DEADLINE seconds where SIGALRM exists (stdlib matching checks signals)."""
-    alarm = getattr(signal, "SIGALRM", None)
-    if alarm is None:
-        return work()
-    previous = signal.signal(alarm, _on_deadline)
-    signal.setitimer(signal.ITIMER_REAL, DEADLINE)
-    try:
-        return work()
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(alarm, previous)
-
-
-def differs(facade, pattern, flags, fn, repl, limit=0):
-    """The first generated subject on which the call's result differs, else None; raises _Deadline when stdlib stalls."""
+def first_difference(facade, pattern, flags, fn, repl, limit=0):
+    """The first generated subject on which the call's result differs, else None (in the worker: no deadline)."""
     try:
         old = stdlib_re.compile(pattern, flags)
     except (stdlib_re.error, ValueError, RecursionError):
         return None
     new = facade.compile(pattern, flags)
     call = operation(fn, repl, limit)
-    texts = subjects(pattern)
-    return _within_deadline(lambda: _compare(call, old, new, texts))
+    for text in subjects(pattern):
+        if run(call, old, text) != run(call, new, text):
+            return text
+    return None
+
+
+def serve():
+    """The worker: one `ascii()` request tuple per stdin line, one `ascii()` answer per stdout line."""
+    facade = _import_facade()
+    print(READY, flush=True)
+    for line in sys.stdin:
+        print(ascii(first_difference(facade, *ast.literal_eval(line))), flush=True)
+    return 0
+
+
+def _pump(stream, lines):
+    for line in stream:
+        lines.put(line)
+    lines.put(None)
+
+
+class Comparer:
+    """One worker process for every comparison of a run; killed and restarted when one overruns ``deadline``.
+
+    A child process instead of a signal: Windows has no SIGALRM, and a signal deadline needs the main thread."""
+
+    def __init__(self, deadline=DEADLINE):
+        self.deadline = deadline
+        self._proc = None
+        self._lines = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def close(self):
+        """Stop the worker; its exit code, or None when none was running."""
+        proc, self._proc = self._proc, None
+        if proc is None:
+            return None
+        proc.stdin.close()
+        proc.kill()
+        return proc.wait(timeout=60)
+
+    def _answer(self, timeout):
+        try:
+            line = self._lines.get(timeout=timeout)
+        except queue.Empty:
+            self.close()
+            return None
+        if line is None:
+            code = self.close()
+            raise Unchecked(f"the comparison process exited with code {code}")
+        return line.strip()
+
+    def _start(self):
+        self._proc = subprocess.Popen(  # every read goes through the queue timeout in _answer()
+            [sys.executable, str(Path(__file__).resolve()), WORKER],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="ascii", cwd=ROOT,
+        )
+        self._lines = queue.Queue()
+        threading.Thread(target=_pump, args=(self._proc.stdout, self._lines), daemon=True).start()
+        if self._answer(START_TIMEOUT) != READY:
+            raise Unchecked(f"the comparison process did not start within {START_TIMEOUT}s")
+
+    def differs(self, pattern, flags, fn, repl, limit=0):
+        """The first generated subject on which the call's result differs, else None; raises Unchecked when stdlib
+        does not finish within the deadline (the worker is then killed) or the worker dies."""
+        if self._proc is None or self._proc.poll() is not None:
+            self._start()
+        try:
+            self._proc.stdin.write(ascii((pattern, flags, fn, repl, limit)) + "\n")
+            self._proc.stdin.flush()
+        except OSError:  # the worker died between two calls
+            raise Unchecked(f"the comparison process exited with code {self.close()}") from None
+        answer = self._answer(self.deadline)
+        if answer is None:
+            raise Unchecked(f"stdlib re did not finish {fn}() on the generated strings within {self.deadline:g}s")
+        return ast.literal_eval(answer)
 
 
 def _surrogate_code(value) -> bool:
@@ -295,7 +359,7 @@ def classify_unknown_flags(facade, pattern):
     return "DYNAMIC", "not checked (flags not a literal)"
 
 
-def classify(facade, node, fn, pattern):
+def classify(facade, comparer, node, fn, pattern):
     """(kind, detail) for one call with a literal pattern, or None when it is clean."""
     flags = flag_value(argument(node, "flags", FUNCS[fn]))
     if flags is None:
@@ -315,9 +379,9 @@ def classify(facade, node, fn, pattern):
     repl = repl_node.value if fn in ("sub", "subn") and isinstance(repl_node, ast.Constant) \
         and isinstance(repl_node.value, type(pattern)) else marker
     try:
-        example = differs(facade, pattern, flags, fn, repl, limit)
-    except _Deadline:
-        return "UNCHECKED", f"stdlib re did not finish {fn}() on the generated strings within {DEADLINE:g}s"
+        example = comparer.differs(pattern, flags, fn, repl, limit)
+    except Unchecked as exc:
+        return "UNCHECKED", str(exc)
     if example is not None:
         return "DIFFERS", f"{fn}() differs from stdlib on {example!r}"[:110]
     return None
@@ -347,7 +411,7 @@ def called_function(node, wanted):
 
 
 def check_file(tools, path, pre_swap):
-    facade, canonical_tree, python_comments = tools
+    facade, canonical_tree, python_comments, comparer = tools
     text = Path(path).read_text(encoding="utf-8-sig")
     tree = ast.parse(text)
     wanted = {"hermes_re"} | ({"re"} if pre_swap else set())
@@ -363,7 +427,7 @@ def check_file(tools, path, pre_swap):
         if not isinstance(arg, ast.Constant) or not isinstance(arg.value, (str, bytes)):
             rows.append(("DYNAMIC", node.lineno, "", "not checked (pattern not a literal)"))
             continue
-        found = classify(facade, node, fn, arg.value)
+        found = classify(facade, comparer, node, fn, arg.value)
         waived = any(WAIVER in comments.get(line, "") for line in (node.lineno, node.end_lineno or node.lineno))
         if found and not waived:
             rows.append((found[0], node.lineno, repr(arg.value)[:60], found[1]))
@@ -389,11 +453,18 @@ def expand(paths):
 
 
 def main(argv):
+    if argv == [WORKER]:
+        return serve()
+    with Comparer() as comparer:
+        return check(argv, comparer)
+
+
+def check(argv, comparer):
     pre_swap = "--pre-swap" in argv
     verbose = "--verbose" in argv
     out = argv[argv.index("--json") + 1] if "--json" in argv else None
     paths = [a for a in argv if not a.startswith("--") and a != out]
-    tools = load_facade()
+    tools = (*load_facade(), comparer)
     files = list(expand(paths)) if paths else [str(ROOT / f) for f in tracked_files()]
     report, bad, dynamic, checked = {}, 0, 0, 0
     for path in files:

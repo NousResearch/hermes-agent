@@ -211,8 +211,9 @@
   text-align: start;
 }
 
-/* The place speaks while the pointer or focus is on the rows: its fill, its example for its line, no
-   check (18695:17294). Away from them the card rests with every row's line (18695:17833). */
+/* The place speaks while the pointer or focus is on the rows: its fill, no check (18695:17294). Every
+   row says its line and its example at rest, as the rename splash's rows say theirs: an example that
+   only showed under the pointer was missed, and swapping it in made the rows different heights. */
 :root[data-shell='portal']
   .discovery-welcome-places:is(:hover, :focus-within)
   > li[data-active]
@@ -224,39 +225,6 @@
 :root[data-shell='portal'] .discovery-welcome-places:is(:hover, :focus-within) > li[data-active]::before,
 :root[data-shell='portal'] .discovery-welcome-places:is(:hover, :focus-within) > li[data-active] + li::before {
   visibility: hidden;
-}
-
-:root[data-shell='portal'] .discovery-welcome-place-lines {
-  display: grid;
-}
-
-/* A row that can speak holds an example of up to two lines inside the same 65px as a resting row
-   (Capabilities / Information row 18811:5635), so a long example does not make its row the tall one. */
-:root[data-shell='portal'] .discovery-welcome-place:has([data-example]) {
-  /* token-exempt: Figma's 65px row */
-  min-block-size: 4.0625rem;
-  padding-block: 0.25rem;
-}
-
-/* The line and the example share one cell; the one not speaking keeps its room, unseen. */
-:root[data-shell='portal'] .discovery-welcome-place-line {
-  grid-area: 1 / 1;
-}
-
-:root[data-shell='portal'] .discovery-welcome-place-line[data-example],
-:root[data-shell='portal']
-  .discovery-welcome-places:is(:hover, :focus-within)
-  > li[data-active]
-  .discovery-welcome-place-lines
-  > :not([data-example]) {
-  visibility: hidden;
-}
-
-:root[data-shell='portal']
-  .discovery-welcome-places:is(:hover, :focus-within)
-  > li[data-active]
-  .discovery-welcome-place-line[data-example] {
-  visibility: visible;
 }
 
 :root[data-shell='portal'] .discovery-welcome-place:focus-visible {
@@ -281,6 +249,13 @@
   flex-direction: column;
   gap: 0.125rem;
   min-inline-size: 0;
+}
+
+/* A place's line and, under it, its example. */
+:root[data-shell='portal'] .discovery-welcome-place-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
 }
 
 /* The place's name: Nous/Body Regular at the 14px body; its line: Nous/Metadata, mono at .6. */
@@ -726,13 +701,6 @@
   /* The count hugs its digits, so the row's lines keep the width. */
   :root[data-shell='portal'] .discovery-welcome-place-meta {
     min-inline-size: 0;
-  }
-
-  /* Lines and examples wrap here, each to a different depth: the rows hang from their tops so every
-     name sits at the same offset, whichever of the two is the longer. */
-  :root[data-shell='portal'] .discovery-welcome-place:has([data-example]) {
-    align-items: flex-start;
-    padding-block: 0.75rem;
   }
 }
 

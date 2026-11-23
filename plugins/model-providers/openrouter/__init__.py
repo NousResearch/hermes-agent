@@ -7,6 +7,7 @@ from agent.portal_tags import get_affinity_scope, get_conversation_context
 from agent.prompt_cache_scope import GROK_AGGREGATOR_MODEL_PREFIXES, is_fork_cache_scope
 from agent.reasoning_effort import codex_supported_efforts
 from agent.transports.codex import _cache_scope_from_session_id
+from hermes_constants import openrouter_openai_tier_alias
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -44,17 +45,26 @@ def _sticky_key(session_id: str | None) -> str | None:
     return _cache_scope_from_session_id(get_affinity_scope() or get_conversation_context() or session_id)
 
 
-# OpenAI speed tiers. Nous Portal serves them as distinct slugs (``-fast``/``-flex``); OpenRouter
-# serves them as ENDPOINTS of the base model (tags ``openai/fast``, ``openai/flex``) and silently
-# routes an unknown suffix to the standard tier at standard price. So the picker carries the Nous
-# slugs for both providers, and here the wire model becomes the base slug with ``provider.only``
-# pinned to that tier's endpoints; the base slug is pinned to the standard endpoints so default
-# routing never lands on flex/fast.
-_SPEED_TIER_ENDPOINTS = {"": ("openai", "azure", "azure/us"), "-fast": ("openai/fast",), "-flex": ("openai/flex",)}
-_SPEED_TIERED_BASES = ("openai/gpt-6-astra", "openai/gpt-6-astra-pro")
-OPENROUTER_ENDPOINT_PINS: dict[str, tuple[str, tuple[str, ...]]] = {
-    base + suffix: (base, tags) for base in _SPEED_TIERED_BASES for suffix, tags in _SPEED_TIER_ENDPOINTS.items()
+# Base models with explicit standard-endpoint pins. Keep these so adding a new
+# tier alias never changes the default (non-tier) provider pool for an existing
+# model — OpenRouter may list extra standard endpoints (e.g. Bedrock) that the
+# curated pin deliberately excludes.
+_STANDARD_ENDPOINT_PINS: dict[str, tuple[str, ...]] = {
+    "openai/gpt-6-astra": ("openai", "azure", "azure/us"),
+    "openai/gpt-6-astra-pro": ("openai", "azure", "azure/us"),
 }
+_TIER_ENDPOINT_TAGS: dict[str, str] = {"fast": "openai/fast", "flex": "openai/flex"}
+
+
+def _endpoint_pin(model: str | None) -> tuple[str, tuple[str, ...]] | None:
+    """Return ``(wire_model, endpoint_tags)`` for a tier alias or pinned base."""
+    alias = openrouter_openai_tier_alias(model)
+    if alias:
+        base, tier = alias
+        return base, (_TIER_ENDPOINT_TAGS[tier],)
+    if model in _STANDARD_ENDPOINT_PINS:
+        return model, _STANDARD_ENDPOINT_PINS[model]
+    return None
 
 
 class OpenRouterProfile(ProviderProfile):
@@ -78,11 +88,13 @@ class OpenRouterProfile(ProviderProfile):
         disabled = cfg.get("enabled") is False or effort == "none"
         if not effort and not disabled:
             return cfg
+        alias = openrouter_openai_tier_alias(model)
+        lookup_model = alias[0] if alias else model
         try:
             from hermes_cli.models import clamp_reasoning_effort_to_supported
             from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
 
-            caps = openrouter_model_reasoning_capabilities(model)
+            caps = openrouter_model_reasoning_capabilities(lookup_model)
             if not caps or not caps.get("supports_reasoning"):
                 return cfg
             # A reasoning-mandatory route 400s on a disable ("Reasoning is
@@ -91,7 +103,7 @@ class OpenRouterProfile(ProviderProfile):
             # OpenRouter's catalog lists ``none`` for openai/gpt-6.1-sol, but upstream 400s on it
             # (live 2026-09-29), so the OpenAI ladder in agent.reasoning_effort wins over the catalog.
             if disabled:
-                no_disable = (model or "").startswith("openai/") and "none" not in codex_supported_efforts(model)
+                no_disable = (lookup_model or "").startswith("openai/") and "none" not in codex_supported_efforts(lookup_model)
                 return None if caps.get("mandatory") or no_disable else cfg
             clamped = clamp_reasoning_effort_to_supported(
                 effort, caps.get("supported_efforts")
@@ -131,7 +143,7 @@ class OpenRouterProfile(ProviderProfile):
         if sticky_key:
             body["session_id"] = sticky_key
         prefs = context.get("provider_preferences")
-        pin = OPENROUTER_ENDPOINT_PINS.get(context.get("model") or "")
+        pin = _endpoint_pin(context.get("model"))
         # The tier pin owns ``only`` (ignore/sort/... still apply) — except on the BASE slug, where the pin
         # merely keeps default routing off flex/fast and an explicit user ``only`` is the stronger intent.
         if pin and not (pin[0] == context.get("model") and (prefs or {}).get("only")):
@@ -157,7 +169,7 @@ class OpenRouterProfile(ProviderProfile):
         rewrite speed-tier slugs to their OpenRouter base model."""
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
-        pin = OPENROUTER_ENDPOINT_PINS.get(model or "")
+        pin = _endpoint_pin(model)
         if pin and pin[0] != model:
             top_level["model"] = pin[0]
         if supports_reasoning:

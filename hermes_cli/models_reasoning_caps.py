@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from hermes_constants import openrouter_openai_tier_alias
 
 logger = logging.getLogger("hermes_cli.models")
 
@@ -302,8 +303,14 @@ def openrouter_model_reasoning_capabilities(
     model_id: Optional[str], *, timeout: float = 6.0, allow_fetch: bool = False,
 ) -> Optional[dict[str, Any]]:
     """Live-catalog reasoning capabilities for an OpenRouter model (tri-state, see module doc).
-    CACHE-ONLY by default — safe on per-request hot paths (never blocks on HTTP)."""
-    return _model_caps(_OPENROUTER_CAPS, model_id, timeout=timeout, allow_fetch=allow_fetch)
+    CACHE-ONLY by default — safe on per-request hot paths (never blocks on HTTP).
+
+    OpenAI tier aliases (``-fast``/``-flex``) are not catalog entries; look up the
+    base model's capabilities so Astra/Terra aliases inherit reasoning metadata.
+    """
+    alias = openrouter_openai_tier_alias(model_id)
+    lookup_id = alias[0] if alias else model_id
+    return _model_caps(_OPENROUTER_CAPS, lookup_id, timeout=timeout, allow_fetch=allow_fetch)
 
 
 def nous_model_reasoning_capabilities(

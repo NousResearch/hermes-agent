@@ -1473,6 +1473,44 @@ def openrouter_variant_base(model_id: str) -> str | None:
     return None
 
 
+# OpenAI's Fast/Flex OpenRouter endpoints are tier aliases of the base model:
+# /models lists only the base id, while the alias selects a tier endpoint via
+# provider.only. Keep the parsing rule here so the profile, catalog and metadata
+# layers agree without importing each other.
+OPENROUTER_OPENAI_TIER_SUFFIXES: frozenset[str] = frozenset({"-fast", "-flex"})
+
+
+def openrouter_openai_tier_alias(model_id: str | None) -> tuple[str, str] | None:
+    """Return ``(base_model, tier)`` for explicit OpenAI ``-fast``/``-flex`` aliases.
+
+    Only ``openai/*`` is interpreted: other vendors use different endpoint tags
+    and some ship real model ids ending in ``-fast``. Malformed (``openai/-flex``),
+    chained (``...-fast-flex``) and routing-variant (``...:floor``) ids are left
+    untouched so they cannot silently rewrite into another synthetic id.
+
+    >>> openrouter_openai_tier_alias("openai/gpt-6.1-terra-flex")
+    ('openai/gpt-6.1-terra', 'flex')
+    >>> openrouter_openai_tier_alias("anthropic/claude-opus-5-fast") is None
+    True
+    >>> openrouter_openai_tier_alias("openai/-flex") is None
+    True
+    """
+    model = model_id or ""
+    if ":" in model or "/" not in model:
+        return None
+    vendor, _, name = model.partition("/")
+    if vendor != "openai" or "/" in name:
+        return None
+    for suffix in OPENROUTER_OPENAI_TIER_SUFFIXES:
+        if not name.endswith(suffix) or len(name) <= len(suffix):
+            continue
+        base_name = name[: -len(suffix)]
+        if not base_name or any(base_name.endswith(s) for s in OPENROUTER_OPENAI_TIER_SUFFIXES):
+            return None
+        return f"{vendor}/{base_name}", suffix.removeprefix("-")
+    return None
+
+
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 
 

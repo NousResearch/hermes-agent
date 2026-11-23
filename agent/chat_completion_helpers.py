@@ -2769,14 +2769,6 @@ class _StreamingCall(StreamingWaitMonitor):
         self._fire_first_delta()
         self.agent._fire_reasoning_delta(text)
 
-    def _registered_tool_name(self, wire_name: str) -> str:
-        """Anthropic OAuth routes send every tool as ``mcp__<name>``. Map a streamed wire name back to the
-        registered one, as ``normalize_response`` does, so the display and warnings show the real tool."""
-        from agent.transports.anthropic import _MCP_PREFIX, _unprefix_oauth_tool_name
-        if getattr(self.agent, "_is_anthropic_oauth", False) is True and wire_name.startswith(_MCP_PREFIX):
-            return _unprefix_oauth_tool_name(wire_name)
-        return wire_name
-
     def _emit_tool_started(self, name: str) -> None:
         self._fire_first_delta()
         self.agent._fire_tool_gen_started(name)
@@ -3324,8 +3316,7 @@ class _StreamingCall(StreamingWaitMonitor):
         without closing the shared client mid-flight."""
         has_tool_use = False
         # No message_stop -> EmptyStreamError; saw_stream_event only picks the message.
-        saw_stream_event = False
-        saw_message_stop = False
+        saw_stream_event = saw_message_stop = False
         self.last_chunk_time["t"] = time.time()
         _diag = self._new_diag()
         self._writer_token = self._attempt_stream_response = None
@@ -3337,6 +3328,8 @@ class _StreamingCall(StreamingWaitMonitor):
 
         from agent import relay_llm
         from agent.anthropic_adapter import normalize_stream_usage, sanitize_anthropic_kwargs
+        from agent.transports.anthropic import registered_tool_name
+        is_oauth = getattr(self.agent, "_is_anthropic_oauth", False) is True
         accumulator = relay_llm.AnthropicStreamAccumulator()
 
         def _open_anthropic_stream(next_api_kwargs: dict[str, Any]):
@@ -3377,10 +3370,8 @@ class _StreamingCall(StreamingWaitMonitor):
                     if block and getattr(block, "type", None) == "tool_use":
                         has_tool_use = True
                         if getattr(block, "name", None):
-                            tool_name = self._registered_tool_name(block.name)
+                            tool_name = registered_tool_name(block.name, strip_tool_prefix=is_oauth)
                             self._emit_tool_started(tool_name)
-                            # Same as the chat_completions wire: a stream that dies inside the
-                            # tool args is retried (no tool has run yet) instead of stubbed.
                             self.result["partial_tool_names"].append(tool_name)
                 elif event_type == "content_block_delta":
                     delta = getattr(event, "delta", None)

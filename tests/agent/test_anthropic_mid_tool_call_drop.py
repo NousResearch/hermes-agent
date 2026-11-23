@@ -13,6 +13,7 @@ both empty-stream guards and executed the tool with empty input, no retry.
 The fix raises EmptyStreamError for a tool_use-bearing message with no
 stop_reason, riding the same bounded stream-retry the eventless case uses.
 """
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -69,6 +70,31 @@ def _tool_use_start_event(name="write_file"):
 
 
 class TestAnthropicMidToolCallStreamDrop:
+    @pytest.mark.parametrize(("is_oauth", "wire_name", "expected"), [
+        (True, "mcp__write_file", "write_file"),
+        (True, "mcp__chat_history_lookup", "session_search"),
+        (False, "mcp__write_file", "mcp__write_file"),
+        (False, "write_file", "write_file"),
+    ])
+    def test_stream_tool_name_matches_registered_name(self, is_oauth, wire_name, expected):
+        """Both the tool-started callback and a dropped-stream warning use the dispatch name."""
+        def events():
+            yield SimpleNamespace(type="content_block_delta", delta=SimpleNamespace(type="text_delta", text="Writing."))
+            yield _tool_use_start_event(wire_name)
+            raise ConnectionError("connection dropped")
+
+        agent = _make_anthropic_agent()
+        agent._is_anthropic_oauth = is_oauth
+        started = []
+        agent.tool_gen_callback = started.append
+        agent.stream_delta_callback = lambda _text: None
+        agent._anthropic_client.messages.stream.side_effect = lambda **kwargs: nullcontext(events())
+
+        response = agent._interruptible_streaming_api_call({"model": agent.model})
+
+        assert set(started) == {expected}
+        assert f"({expected})" in "".join(getattr(block, "text", "") for block in response.content)
+
     def test_tool_use_without_stop_reason_raises_empty_stream(self):
         """The #80498-sibling shape: tool_use block present, stop_reason None."""
         from agent.chat_completion_helpers import EmptyStreamError

@@ -961,11 +961,12 @@ class TestSkillsEndpoint:
         with patch(
             "tools.skills_tool.find_all_skills",
             return_value=list(fake_skills),
-        ):
+        ) as mock_find:
             app = _create_app(adapter)
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/v1/skills")
                 assert resp.status == 200
+                mock_find.assert_called_once_with(skip_disabled=False)
                 data = await resp.json()
                 assert data["object"] == "list"
                 names = sorted(s["name"] for s in data["data"])

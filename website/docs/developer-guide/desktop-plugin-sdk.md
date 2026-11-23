@@ -1529,10 +1529,15 @@ already connects to a remote host or runs through another plugin. It resolves
   `GET /api/plugins/<plugin>/status` on the profile's route. Answer
   `{ "state": "starting" | "restarting" | "stopping" }` for a planned
   transition and `"running"` once the backend is back: the status bar and
-  composer then show "Restarting sandbox…" instead of offline, and requests wait
-  for the backend instead of failing. Any other answer is a failure. With no
-  planned transition, a request whose connection went silent (a heartbeat
-  timeout) is not sent again: its caller gets the error.
+  composer then show "Restarting sandbox…" instead of offline. A request the
+  restart or the switch cut off waits for the backend and is sent again only
+  when a second run cannot repeat work: it was never written to the socket, it
+  is a read the app repeats (`session.resume`, `session.history`), or it
+  carries a `submission_id` or `input_id`. Any other request fails with the
+  connection's error, as it does without a plugin, and nothing sends it again.
+  Any other answer is a failure. With no planned transition, a request whose
+  connection went silent (a heartbeat timeout) is not sent again: its caller
+  gets the error.
 - The composer keeps a message away from a backend that is about to go away.
   During a switch (`"starting"`, `"stopping"`) the message stays in the composer
   until the profile is on its new backend. During a switch the composer also

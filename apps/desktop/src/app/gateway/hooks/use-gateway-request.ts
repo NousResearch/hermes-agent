@@ -188,11 +188,12 @@ export function useGatewayRequest() {
         }
 
         // A plugin-run profile whose sandbox is restarting (or switching) on
-        // purpose: wait for its backend to come back, then send this request
-        // on the new socket, instead of failing it ("WebSocket heartbeat
-        // acknowledgement timed out", "Restore failed"). An unplanned drop, or a
+        // purpose: a request that is safe to send twice waits for its backend
+        // to come back and is sent on the new socket, instead of failing
+        // ("WebSocket heartbeat acknowledgement timed out", "Restore failed").
+        // Any other request gets its error here. An unplanned drop, or a
         // transition that does not end as planned, takes the path below.
-        if (!(await sentAgainAfterReconnect(error, profile))) {
+        if (!(await sentAgainAfterReconnect(error, profile, method, params))) {
           throw error
         }
 
@@ -257,20 +258,55 @@ function errorCode(value: unknown): string | null {
 const HEARTBEAT_TIMEOUT_RE = /heartbeat acknowledgement timed out/i
 
 /**
+ * The requests sent again after a planned transition although the backend may
+ * already have answered them: each only reads, or attaches a stored chat again
+ * with the same result. A method that is not listed is not sent again.
+ */
+export const READS_SENT_AGAIN: ReadonlySet<string> = new Set(['session.history', 'session.resume'])
+
+const NEVER_SENT_RE = /not connected/i
+
+const hasKey = (value: unknown) => typeof value === 'string' && value !== ''
+
+/**
+ * Whether a request the transport cut can be sent a second time without
+ * running anything twice: the socket was down before it was written, it is
+ * one of the listed reads, or it carries a key by which the backend
+ * recognises a request it has already taken.
+ */
+function safeToSendAgain(message: string, method: string, params: Record<string, unknown>): boolean {
+  return (
+    NEVER_SENT_RE.test(message) ||
+    READS_SENT_AGAIN.has(method) ||
+    hasKey(params.submission_id) ||
+    hasKey(params.input_id)
+  )
+}
+
+/**
  * Whether a request the transport failed is sent again once the connection is
  * back. During a planned transition of the profile's backend (a plugin
- * restarting or switching it): yes, when the transition ends as planned; the
- * backend that held the request is gone. Otherwise a closed or refused
- * connection is retried as before, and a heartbeat timeout is not: the socket
- * went silent, so the backend may be alive and may have run the request (a
- * turn, a paid generation), and the caller gets the error to decide.
+ * restarting or switching it): only a request that is safe to send twice, and
+ * only when the transition ends as planned. The backend that held any other
+ * request may have run it (a paid generation, a background task), so its
+ * caller gets the error. Otherwise a closed or refused connection is retried
+ * as before, and a heartbeat timeout is not: the socket went silent, so the
+ * backend may be alive and may have run the request, and the caller gets the
+ * error to decide.
  */
-async function sentAgainAfterReconnect(error: unknown, profile: string): Promise<boolean> {
+async function sentAgainAfterReconnect(
+  error: unknown,
+  profile: string,
+  method: string,
+  params: Record<string, unknown>
+): Promise<boolean> {
+  const message = error instanceof Error ? error.message : String(error)
+
   if (backendTransitionFor(profile) || (await probeLauncherTransition(profile))) {
-    return waitForBackendTransitionEnd(profile, BACKEND_TRANSITION_MAX_MS)
+    return safeToSendAgain(message, method, params) && waitForBackendTransitionEnd(profile, BACKEND_TRANSITION_MAX_MS)
   }
 
-  return !HEARTBEAT_TIMEOUT_RE.test(error instanceof Error ? error.message : String(error))
+  return !HEARTBEAT_TIMEOUT_RE.test(message)
 }
 
 function isGatewayTransportError(error: unknown): boolean {

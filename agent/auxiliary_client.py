@@ -4900,11 +4900,19 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         if not custom_base:
             logger.warning("resolve_provider_client: explicit custom endpoint requested but base_url is empty")
             return None, None
-    elif main_runtime:
-        # Reuse main_runtime's concrete base_url + api_key for a named custom provider;
-        # re-resolving from bare "custom" loses the name and lands on the wrong provider.
+    else:
+        # Reuse the live main runtime's concrete base_url + api_key. A caller that passes a bare
+        # ``custom`` with no explicit endpoint means "the endpoint this session is actually
+        # using": a config ``providers.<name>`` entry collapses to the anonymous ``custom``
+        # bucket at runtime, so re-resolving from the name alone finds no endpoint credentials.
+        # The old fallthrough then inferred a provider from the MODEL NAME and left the box for
+        # the vendor's public API (a local ``deepseek-v4.1-flash`` was sent to
+        # api.deepseek.com and 400'd with "supported API model names are deepseek-flash,
+        # deepseek-v4-pro"). ``_normalize_main_runtime(None)`` reads the context-local runtime,
+        # so concurrent gateway sessions cannot borrow each other's endpoint.
         # Re-resolution loses the provider name and falls back to OpenRouter or a wrong API-key provider —
         # the main agent already solved this, we just need to reuse its answer. (#45472)
+        main_runtime = main_runtime or _normalize_main_runtime(None)
         _main_base = str(main_runtime.get("base_url") or "").strip().rstrip("/")
         _main_key = _normalize_api_key(main_runtime.get("api_key"))
         if _main_base and _main_key:

@@ -59,8 +59,8 @@ html:root[data-hermes-palette='one-dark'] {
 
 /* Input's own selection utilities otherwise beat the document selection. */
 :root[data-hermes-palette='one-dark'] ::selection {
-  background: #2c313a;
-  color: #abb2bf;
+  background: rgba(97, 175, 239, 0.4);
+  color: #e6e6e6;
 }
 
 /* Code-block copy control: icon reads as normal text, hover hands the

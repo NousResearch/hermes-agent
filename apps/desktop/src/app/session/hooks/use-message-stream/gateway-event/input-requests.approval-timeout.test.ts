@@ -67,6 +67,57 @@ describe('approval request.cancel', () => {
     expect($routeRequest.get()?.path).toBe('/settings?tab=config:safety')
   })
 
+  it('timeout of a folder card: the line says access to the folder was not granted', () => {
+    setApprovalRequest({
+      sessionId: 's1',
+      command: '',
+      description: 'Allow read access to C:\\ref',
+      kind: 'access',
+      requestId: 'req-1',
+      serverRequestId: 'srv-1',
+      target: { access: 'read', path: 'C:\\ref' }
+    })
+
+    const updateSessionState = vi.fn((_: string, updater: (s: { messages: unknown[] }) => unknown) =>
+      updater({ messages: [] })
+    )
+
+    expect(handleInputRequestEvent(context('timeout', updateSessionState))).toBe(true)
+
+    const next = updateSessionState.mock.results[0]?.value as { messages: { parts: { text: string }[] }[] }
+    const line = next.messages[0].parts[0].text
+
+    expect(line).toContain('access to the folder C:\\ref was not granted')
+    expect(line).not.toMatch(/command|Settings/i)
+
+    // The card's sender owns the wait, so the toast does not offer the approval timeout setting.
+    expect($notifications.get()[0]?.message).toBe(line)
+    expect($notifications.get()[0]?.action).toBeUndefined()
+  })
+
+  it('timeout of a site card: the line names the site as the card did', () => {
+    setApprovalRequest({
+      sessionId: 's1',
+      command: '',
+      description: 'Allow the sandbox to reach Web search (api.keenable.ai)',
+      kind: 'network',
+      requestId: 'req-1',
+      serverRequestId: 'srv-1',
+      target: { host: 'api.keenable.ai', label: 'Web search (api.keenable.ai)' }
+    })
+
+    const updateSessionState = vi.fn((_: string, updater: (s: { messages: unknown[] }) => unknown) =>
+      updater({ messages: [] })
+    )
+
+    expect(handleInputRequestEvent(context('timeout', updateSessionState))).toBe(true)
+
+    const next = updateSessionState.mock.results[0]?.value as { messages: { parts: { text: string }[] }[] }
+
+    expect(next.messages[0].parts[0].text).toContain('access to Web search (api.keenable.ai) was not granted')
+    expect(next.messages[0].parts[0].text).not.toMatch(/command/i)
+  })
+
   it('withdraws a queued request without dropping the front approval', () => {
     setApprovalRequest({
       sessionId: 's1',

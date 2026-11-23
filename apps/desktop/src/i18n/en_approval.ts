@@ -29,11 +29,14 @@ export const enApproval: ApprovalCopy = {
     title: 'Folder access',
     readOnly: 'Read only',
     readWrite: 'Read and write',
+    timedOut: folder =>
+      `The request timed out — access to the folder ${folder} was not granted. Ask Hermes to try again.`,
     alwaysTitle: 'Always allow this folder?',
     alwaysDescription: 'The folder is added to this profile’s sandbox. Hermes won’t ask again for it in any chat.'
   },
   network: {
     title: 'Website access',
+    timedOut: site => `The request timed out — access to ${site} was not granted. Ask Hermes to try again.`,
     alwaysTitle: 'Always allow this site?',
     alwaysDescription: 'The site is added to this profile’s allowed sites. Hermes won’t ask again for it in any chat.'
   }

@@ -28,12 +28,16 @@ export const esApproval: Partial<ApprovalCopy> = {
     title: 'Acceso a carpeta',
     readOnly: 'Solo lectura',
     readWrite: 'Lectura y escritura',
+    timedOut: folder =>
+      `Se agotó el tiempo de la solicitud: no se concedió el acceso a la carpeta ${folder}. Pide a Hermes que lo intente de nuevo.`,
     alwaysTitle: '¿Permitir siempre esta carpeta?',
     alwaysDescription:
       'La carpeta se añade al sandbox de este perfil. Hermes no volverá a preguntar por ella en ningún chat.'
   },
   network: {
     title: 'Acceso a sitio web',
+    timedOut: site =>
+      `Se agotó el tiempo de la solicitud: no se concedió el acceso a ${site}. Pide a Hermes que lo intente de nuevo.`,
     alwaysTitle: '¿Permitir siempre este sitio?',
     alwaysDescription:
       'El sitio se añade a los sitios permitidos de este perfil. Hermes no volverá a preguntar por él en ningún chat.'

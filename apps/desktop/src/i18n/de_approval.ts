@@ -27,12 +27,16 @@ export const deApproval: Partial<ApprovalCopy> = {
     title: 'Ordnerzugriff',
     readOnly: 'Nur lesen',
     readWrite: 'Lesen und schreiben',
+    timedOut: folder =>
+      `Die Anfrage ist abgelaufen — der Zugriff auf den Ordner ${folder} wurde nicht gewährt. Bitten Sie Hermes, es erneut zu versuchen.`,
     alwaysTitle: 'Diesen Ordner immer erlauben?',
     alwaysDescription:
       'Der Ordner wird der Sandbox dieses Profils hinzugefügt. Hermes fragt in keinem Chat mehr danach.'
   },
   network: {
     title: 'Website-Zugriff',
+    timedOut: site =>
+      `Die Anfrage ist abgelaufen — der Zugriff auf ${site} wurde nicht gewährt. Bitten Sie Hermes, es erneut zu versuchen.`,
     alwaysTitle: 'Diese Website immer erlauben?',
     alwaysDescription:
       'Die Website wird den erlaubten Websites dieses Profils hinzugefügt. Hermes fragt in keinem Chat mehr danach.'

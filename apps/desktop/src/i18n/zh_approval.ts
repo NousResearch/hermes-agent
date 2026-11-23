@@ -23,11 +23,13 @@ export const zhApproval: Partial<ApprovalCopy> = {
     title: '文件夹访问',
     readOnly: '只读',
     readWrite: '读写',
+    timedOut: folder => `请求已超时 — 未授予对文件夹 ${folder} 的访问权限。请让 Hermes 重试。`,
     alwaysTitle: '始终允许此文件夹？',
     alwaysDescription: '该文件夹将加入此档案的沙盒。Hermes 在任何对话中都不会再询问。'
   },
   network: {
     title: '网站访问',
+    timedOut: site => `请求已超时 — 未授予对 ${site} 的访问权限。请让 Hermes 重试。`,
     alwaysTitle: '始终允许此网站？',
     alwaysDescription: '该网站将加入此档案的允许网站。Hermes 在任何对话中都不会再询问。'
   }

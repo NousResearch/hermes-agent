@@ -23,12 +23,16 @@ export const jaApproval: Partial<ApprovalCopy> = {
     title: 'フォルダーアクセス',
     readOnly: '読み取り専用',
     readWrite: '読み取り/書き込み',
+    timedOut: folder =>
+      `リクエストがタイムアウトしました — フォルダー ${folder} へのアクセスは許可されませんでした。Hermes にもう一度試すよう依頼してください。`,
     alwaysTitle: 'このフォルダーを常に許可しますか？',
     alwaysDescription:
       'フォルダーがこのプロファイルのサンドボックスに追加されます。Hermes はどのチャットでも再度尋ねません。'
   },
   network: {
     title: 'サイトへのアクセス',
+    timedOut: site =>
+      `リクエストがタイムアウトしました — ${site} へのアクセスは許可されませんでした。Hermes にもう一度試すよう依頼してください。`,
     alwaysTitle: 'このサイトを常に許可しますか？',
     alwaysDescription:
       'サイトがこのプロファイルの許可済みサイトに追加されます。Hermes はどのチャットでも再度尋ねません。'

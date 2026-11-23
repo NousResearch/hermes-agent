@@ -27,11 +27,15 @@ export const frApproval: Partial<ApprovalCopy> = {
     title: 'Accès au dossier',
     readOnly: 'Lecture seule',
     readWrite: 'Lecture et écriture',
+    timedOut: folder =>
+      `Le délai de la demande a expiré — l'accès au dossier ${folder} n'a pas été accordé. Demandez à Hermes de réessayer.`,
     alwaysTitle: 'Toujours autoriser ce dossier ?',
     alwaysDescription: 'Le dossier est ajouté au bac à sable de ce profil. Hermes ne le redemandera dans aucun chat.'
   },
   network: {
     title: 'Accès au site',
+    timedOut: site =>
+      `Le délai de la demande a expiré — l'accès à ${site} n'a pas été accordé. Demandez à Hermes de réessayer.`,
     alwaysTitle: 'Toujours autoriser ce site ?',
     alwaysDescription: 'Le site est ajouté aux sites autorisés de ce profil. Hermes ne le redemandera dans aucun chat.'
   }

@@ -20,6 +20,7 @@ from typing import Literal, cast
 
 from hermes_cli.steward import UPDATE_MECHANISMS
 from hermes_cli.update_channel import STABLE_TAG_RE
+from hermes_cli._startup_fast import project_root_str
 
 
 @dataclass(frozen=True)
@@ -72,7 +73,7 @@ def _run_git(repo_dir: Path, *args: str) -> str | None:
 
 def _resolve_repo_dir() -> Path | None:
     """Use the executing checkout before a profile's optional clone."""
-    repo_dir = Path(__file__).parent.parent.resolve()
+    repo_dir = Path(project_root_str())
     if (repo_dir / ".git").exists():
         return repo_dir
     # The PROCESS home: this is the running code's identity and is cached

@@ -3,8 +3,9 @@ and the bot-claim holds every secondary takes while it is not connected (boot, t
 import logging
 import asyncio
 import threading
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -281,9 +282,13 @@ class TestSecondaryAdapterUnavailableRecovery:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("owned_elsewhere", [False, True])
-    async def test_healed_platform_passes_the_startup_ownership_check(self, monkeypatch, owned_elsewhere):
-        """A platform queued without an adapter never met the startup duplicate-credential check, so the
-        attempt that finally builds it runs that check before connect() and records the bot's owner."""
+    @pytest.mark.parametrize("with_predecessor", [False, True])
+    async def test_healed_platform_passes_the_startup_ownership_check(
+        self, monkeypatch, owned_elsewhere, with_predecessor
+    ):
+        """A platform queued without an adapter never met the startup duplicate-credential check, and a rebuilt one
+        (queued with its failed predecessor) may claim a bot another profile took meanwhile, so every attempt runs
+        that check before connect(), records the bot's owner, and a refusal parks it as duplicate_credential."""
         runner = _secondary_recovery_runner()
         healed = _PluginPlatformRecoveryAdapter()
         healed.token = "shared-bot-token"
@@ -294,14 +299,17 @@ class TestSecondaryAdapterUnavailableRecovery:
             runner._profile_adapters["owner"] = {Platform("irc"): owner}
         connect = AsyncMock(return_value=True)
         monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
+        writes = _record_status_writes(monkeypatch, runner)
+        predecessor = _PluginPlatformRecoveryAdapter() if with_predecessor else None
 
-        adapter, success = await runner._secondary_reconnect_attempt("reviewer", Platform("irc"))
+        adapter, success = await runner._secondary_reconnect_attempt("reviewer", Platform("irc"), predecessor)
 
         owned = (getattr(runner, "_profile_bot_platforms", None) or {}).get("reviewer", set())
         if owned_elsewhere:
             assert (adapter, success) == (None, None)
             connect.assert_not_awaited()
             assert owned == set()
+            assert ("reviewer:irc", "duplicate_credential") in [(key, kw.get("error_code")) for key, kw in writes]
         else:
             assert (adapter, success) == (healed, True)
             assert owned == {Platform("irc")}
@@ -551,7 +559,7 @@ class TestSecondaryAdapterUnavailableRecovery:
         monkeypatch.setattr(runner, "_bounded_adapter_teardown", bounded_teardown)
         monkeypatch.setattr(runner, "_run_secondary_profile_reconnect", reconnect_until_cancelled)
         monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", reserve_connect)
-        monkeypatch.setattr("hermes_state_registry.close_all_under", lambda directory: 0)
+        monkeypatch.setattr("persistence_assembly.close_stores_under", lambda directory: 0)
         home = tmp_path / "a"
         process_ownership.reserve([home])
         runner._served_profile_homes, runner._served_profile_signatures = {"a": home}, {}
@@ -603,6 +611,99 @@ class TestSecondaryAdapterUnavailableRecovery:
         # no reconnect queued for the retired profile; a still-served one gets its fatal platform back
         assert set(leftover) == ({Platform("irc")} if resume == "unserve_cancelled" else set())
         assert runner._held_claim_owners() == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("claimant", ["other_profile", "same_profile"])
+    async def test_unserve_keeps_a_fatal_teardowns_hold_from_other_profiles(self, monkeypatch, tmp_path, claimant):
+        """Unserved while a fatal teardown is still disconnecting, the profile keeps that teardown's hold: another
+        profile with the same token is refused until the teardown ends, then connects. A re-serve of the same
+        profile still rebuilds and connects meanwhile, and the late teardown spares its hold."""
+        async with _unserved_during_fatal_teardown(monkeypatch, tmp_path) as t:
+            runner = t.runner
+            assert not t.teardown.done()
+            if claimant == "other_profile":
+                assert await runner._secondary_reconnect_attempt("b", Platform("irc")) == (None, None)
+                assert await runner._start_one_profile_adapters("b", Path("/profiles/b"), {}) == 0
+                assert t.connects == t.initial == []
+                assert ("b:irc", "duplicate_credential") in [(key, kw.get("error_code")) for key, kw in t.writes]
+                t.torn_down.set()
+                await t.teardown
+                assert runner._held_claim_owners() == {}
+                assert await runner._start_one_profile_adapters("b", Path("/profiles/b"), {}) == 1
+            else:
+                runner._profile_adapters["a"] = {}
+                assert await runner._start_one_profile_adapters("a", Path("/profiles/a"), {}) == 1
+                assert not t.teardown.done()
+                t.torn_down.set()
+                await t.teardown
+                assert runner._profile_adapters["a"][Platform("irc")] is t.initial[-1]
+                assert runner._held_claim_owners() == {}
+            assert len(t.initial) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_reserve_with_a_new_token_keeps_the_old_teardowns_hold(self, monkeypatch, tmp_path):
+        """Re-served with a NEW token while its unserved fatal teardown still disconnects, profile a connects the
+        new bot and the old token stays held for that teardown: profile b is refused it until the teardown ends,
+        then connects."""
+        async with _unserved_during_fatal_teardown(monkeypatch, tmp_path, new_tokens=["new-bot-token"]) as t:
+            runner = t.runner
+            runner._profile_adapters["a"] = {}
+            assert await runner._start_one_profile_adapters("a", Path("/profiles/a"), {}) == 1
+            assert [adapter.token for adapter in t.initial] == ["new-bot-token"]
+            assert await runner._secondary_reconnect_attempt("b", Platform("irc")) == (None, None)
+            assert await runner._start_one_profile_adapters("b", Path("/profiles/b"), {}) == 0
+            assert t.connects == [] and len(t.initial) == 1
+            assert ("b:irc", "duplicate_credential") in [(key, kw.get("error_code")) for key, kw in t.writes]
+            t.torn_down.set()
+            await t.teardown
+            assert runner._held_claim_owners() == {}
+            assert await runner._start_one_profile_adapters("b", Path("/profiles/b"), {}) == 1
+            assert [adapter.token for adapter in t.initial] == ["new-bot-token", "shared-bot-token"]
+            assert runner._profile_adapters["a"][Platform("irc")] is t.initial[0]
+
+    @pytest.mark.asyncio
+    async def test_an_unserve_cancelled_mid_teardown_keeps_only_the_fatal_teardowns_hold(self, monkeypatch, tmp_path):
+        """Cancelled inside the teardown of an adapter it popped, unserve drops that adapter's hold (nothing else
+        would release it) and keeps only the still-running fatal teardown's, which that teardown releases."""
+        from gateway.runtime_ownership import process_ownership
+
+        runner, create = _shared_token_runner(monkeypatch)
+        torn_down, tearing = asyncio.Event(), asyncio.Event()
+
+        async def slow_disconnect(adapter, platform):
+            if adapter is failed:
+                await torn_down.wait()
+
+        async def stuck_teardown(adapter, platform, profile=None):
+            tearing.set()
+            await asyncio.Event().wait()  # the unserve is cancelled here
+
+        monkeypatch.setattr(runner, "_safe_adapter_disconnect", slow_disconnect)
+        monkeypatch.setattr(runner, "_bounded_adapter_teardown", stuck_teardown)
+        monkeypatch.setattr("persistence_assembly.close_stores_under", lambda directory: 0)
+        home = tmp_path / "a"
+        process_ownership.reserve([home])
+        runner._served_profile_homes, runner._served_profile_signatures = {"a": home}, {}
+        runner._agent_cache, runner._evict_cached_agent = {}, lambda key: None
+        runner.config._runtime_profile_homes = (("a", str(home)),)
+        runner._adapter_disconnect_timeout_secs = lambda: 5
+        failed, live = create(Platform("irc"), None), create(Platform("irc"), None)
+        runner._profile_adapters = {"a": {Platform("irc"): failed, Platform("slack"): live}}
+        teardown = asyncio.ensure_future(runner._handle_profile_adapter_fatal_error("a", Platform("irc"), failed))
+        try:
+            await async_wait_until(lambda: Platform("irc") not in runner._profile_adapters["a"])
+            unserve = asyncio.ensure_future(runner._unserve_profile("a", home))
+            await asyncio.wait_for(tearing.wait(), 5)
+            unserve.cancel()
+            await asyncio.gather(unserve, return_exceptions=True)
+            assert runner._held_claim_owners() == {runner._adapter_claims(Platform("irc"), failed)[0]: "a"}
+            torn_down.set()
+            await teardown
+            assert runner._held_claim_owners() == {}
+        finally:
+            torn_down.set()
+            await teardown
+            process_ownership.release(home)
 
     @pytest.mark.asyncio
     async def test_a_retiring_profile_is_queued_no_reconnect(self, monkeypatch):
@@ -674,6 +775,56 @@ class TestSecondaryAdapterUnavailableRecovery:
         await asyncio.wait_for(bridge, 5)
         await asyncio.sleep(0)  # the bridge's done callback releases its hold
         assert not runner._profile_failed_platforms.get("a") and runner._held_claim_owners() == {}
+
+
+@asynccontextmanager
+async def _unserved_during_fatal_teardown(monkeypatch, tmp_path, *, new_tokens=()):
+    """Profile ``a`` serves irc on the shared bot token; its fatal teardown pops the adapter and is held
+    mid-disconnect, then ``a`` is unserved. Yields the runner, the connect and status recorders, the teardown
+    task and the event that lets its disconnect finish. *new_tokens* are handed to the next adapters built.
+    On exit the teardown is finished and the home's reservation released."""
+    from gateway.runtime_ownership import process_ownership
+
+    runner, create = _shared_token_runner(monkeypatch)
+    t = SimpleNamespace(runner=runner, connects=_record_connects(monkeypatch, runner),
+                        initial=_record_connects(monkeypatch, runner, initial=True),
+                        writes=_record_status_writes(monkeypatch, runner), torn_down=asyncio.Event())
+    tokens = list(new_tokens)
+
+    def create_next(platform, config):
+        adapter = create(platform, config)
+        adapter.token = tokens.pop(0) if tokens else adapter.token
+        return adapter
+
+    async def slow_disconnect(adapter, platform):
+        if adapter is failed:
+            await t.torn_down.wait()
+
+    async def bounded_teardown(adapter, platform, profile=None):
+        return None
+
+    monkeypatch.setattr(runner, "_safe_adapter_disconnect", slow_disconnect)
+    monkeypatch.setattr(runner, "_bounded_adapter_teardown", bounded_teardown)
+    monkeypatch.setattr("persistence_assembly.close_stores_under", lambda directory: 0)
+    home = tmp_path / "a"
+    process_ownership.reserve([home])
+    runner._served_profile_homes, runner._served_profile_signatures = {"a": home}, {}
+    runner._agent_cache, runner._evict_cached_agent = {}, lambda key: None
+    runner.config._runtime_profile_homes = (("a", str(home)),)
+    runner._adapter_disconnect_timeout_secs = lambda: 5
+    failed = create(Platform("irc"), None)
+    runner._profile_adapters = {"a": {Platform("irc"): failed}}
+    if tokens:
+        monkeypatch.setattr(runner, "_create_adapter", create_next)
+    t.teardown = asyncio.ensure_future(runner._handle_profile_adapter_fatal_error("a", Platform("irc"), failed))
+    try:
+        await async_wait_until(lambda: not runner._profile_adapters["a"])  # popped; disconnect pending
+        await runner._unserve_profile("a", home)
+        yield t
+    finally:
+        t.torn_down.set()
+        await t.teardown
+        process_ownership.release(home)
 
 
 def _shared_token_runner(monkeypatch):

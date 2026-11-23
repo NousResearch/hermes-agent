@@ -39,6 +39,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
         "anthropic/claude-fable-5.2", "anthropic/claude-fable-5.1", "anthropic/claude-fable-5", "anthropic/claude-opus-5.5",
         "anthropic/claude-opus-5", "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8", "anthropic/claude-opus-4.8-fast",
         "anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-5", "anthropic/claude-haiku-5.5", "anthropic/claude-haiku-4.5",
+        "openai/gpt-6.2-astra", "openai/gpt-6.2-astra-pro", "openai/gpt-6.2-sol", "openai/gpt-6.2-sol-pro",
         "openai/gpt-6-astra", "openai/gpt-6-astra-fast", "openai/gpt-6-astra-flex", "openai/gpt-6-astra-pro",
         "openai/gpt-6-astra-pro-fast", "openai/gpt-6-astra-pro-flex",
         "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro", "openai/gpt-6.1-terra", "openai/gpt-6-sol", "openai/gpt-6-sol-pro",
@@ -226,6 +227,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = _CuratedCatalog({
     # Used by /model counts and provider_model_ids fallback when /v1/models is unavailable.
     "openai": list(_OPENAI_CHAT_MODELS),
     "openai-api": [
+        "gpt-6.2-sol", "gpt-6.2-astra",
         "gpt-6.1-sol", "gpt-6.1-sol-pro", "gpt-6-sol", "gpt-6-sol-pro", "gpt-6-luna", "gpt-6-luna-pro",
         "gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-5.6-terra", "gpt-5.6-terra-pro", "gpt-5.6-luna",
         "gpt-5.6-luna-pro", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",
@@ -234,9 +236,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = _CuratedCatalog({
     "openai-codex": _codex_curated_models(),
     "xai-oauth": _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK)),
     "gemini": [
-        # Argon second: [0] is the silent default when no model is configured, and a flagship never is.
-        "gemini-3.8-flash", "gemini-4-argon", "gemini-3.7-flash",
-        "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3.6-flash", "gemini-3.1-flash-lite-preview",
+        # Gemini 4 after it: [0] is the silent default when no model is configured, and a flagship never is.
+        "gemini-3.8-flash", "gemini-4-neon", "gemini-4-hydrogen", "gemini-4-carbon", "gemini-4-argon",
+        "gemini-3.7-flash", "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3.6-flash",
+        "gemini-3.1-flash-lite-preview",
     ],
     "zai": [
         "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "glm-5v-turbo", "glm-5-turbo",
@@ -344,7 +347,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = _CuratedCatalog({
     # only shows the configured model. IDs carry the "google/" publisher prefix Vertex expects
     # (see hermes_cli/model_setup_flows.py); validated live against a GCP project (global region).
     "vertex": [
-        "google/gemini-3.8-flash", "google/gemini-4-argon", "google/gemini-3.7-flash",  # [0] = silent default
+        "google/gemini-3.8-flash",  # [0] = silent default; Gemini 4 after it, in the direct gemini list's order
+        "google/gemini-4-neon", "google/gemini-4-hydrogen", "google/gemini-4-carbon", "google/gemini-4-argon",
+        "google/gemini-3.7-flash",
         "google/gemini-3.1-pro-preview", "google/gemini-3-pro-preview", "google/gemini-3.6-flash",
         "google/gemini-3.5-flash", "google/gemini-3.5-flash-lite", "google/gemini-3-flash-preview",
         "google/gemini-3.1-flash-lite-preview", "google/gemini-3.1-flash-lite",
@@ -699,10 +704,10 @@ _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "openc
 # positives are harmless. Codex-series models are excluded — the Codex Responses API doesn't
 # expose service_tier.
 _OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = ("gpt-", "o1", "o3", "o4")
-# OpenAI Ultrafast (service_tier="ultrafast", 6x Standard): GPT-6 Astra and GPT-6.1 Sol
-# (developers.openai.com/api/docs/guides/ultrafast-mode, 2026-10-08).
+# OpenAI Ultrafast (service_tier="ultrafast"): GPT-6 Astra, GPT-6.1 Sol and GPT-6.2 Astra/Sol.
+# Rates, including GPT-6.2's launch discount, live in agent.usage_pricing.
 # Exact wire slugs, matched after stripping the vendor prefix and the Hermes-side ``-900k`` alias.
-_OPENAI_ULTRAFAST_MODELS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6.1-sol"})
+_OPENAI_ULTRAFAST_MODELS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6.1-sol", "gpt-6.2-astra", "gpt-6.2-sol"})
 
 
 # Providers where models.dev is authoritative: the curated list is an offline fallback plus custom

@@ -33,6 +33,14 @@ def _template_regex(template: str) -> re.Pattern[str]:
     return re.compile("".join(fields.get(part) or re.escape(part) for part in parts))
 
 
+# The empty-response ladder's buffered lines (agent/turn_empty_response.py), flushed when the turn ends
+# empty: its final reply explains that, and "switching to fallback..." would otherwise be the chat's last
+# status even though the switch failed. Chat surfaces drop them like the retry counter.
+EMPTY_LADDER_STATUS_PATTERN = (
+    r"model\s+returning\s+empty\s+responses\s+[—-]+\s+switching\s+to\s+fallback"
+    r"|repeatedly\s+returning\s+empty\s+content\s+[—-]+\s+skipping\s+further\s+retries"
+)
+
 _DM_ONLY_STATUS_RES = (_template_regex(CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE),)
 
 
@@ -40,6 +48,11 @@ def status_chat_type(source: Any) -> Any:
     """The chat type DM-only statuses are filtered on: a session every participant shares is never a DM,
     even one its adapter keys ``dm`` (a Slack group DM: ``shared_session`` on a ``dm`` source)."""
     return "group" if getattr(source, "shared_session", False) else getattr(source, "chat_type", None)
+
+
+def is_terminal_failure_status(message: Any) -> bool:
+    from gateway.warning_notifications import TerminalFailureText
+    return isinstance(message, TerminalFailureText)
 
 
 def hidden_outside_dm(chat_type: Any, message: str) -> bool:

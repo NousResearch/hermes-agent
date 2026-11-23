@@ -1,0 +1,18 @@
+name: sql-dryrun
+repo: https://github.com/aoyamari/hermes-sql-dryrun
+sha: "666d11f0f73e1bdfef188598df19f0ffb83832ee"
+subdir: ""
+description: "Shows how many rows a DELETE/UPDATE/DROP/TRUNCATE will touch before it runs, and sends it to Hermes' approval prompt when it is too many. Built-in approval matches command shape only, so UPDATE with no WHERE, DELETE ... WHERE 1=1, a WHERE that matches every row, and DELETE FROM t; SELECT ... WHERE ... all run unprompted; sql-dryrun flags them with the real count (\"228,789 of 250,000 rows\"). Covers sqlite3, psql and mysql/mariadb (inline -c/-e, heredoc, piped), execute_code, and tools passing SQL in a sql/query/statement argument. Settings: row_threshold (default 100), mode approve|block, count timeout. Adds a sql_impact tool for dry-running a statement and a /sql-dryrun command. Tested on SQLite, Postgres and MariaDB. MIT licensed. Disclosure — reads the arguments of terminal, execute_code and tools with a sql/query/statement argument. For a destructive statement whose database it can reach, it runs read-only SELECT COUNT(*) queries: SQLite in-process (mode=ro, trusted_schema=OFF); Postgres/MySQL only via a bare psql/mysql/mariadb resolved with shutil.which() and never from inside the working tree, with a minimal env (PATH/HOME/LANG/LC_*/TZ plus PG* except PGOPTIONS, or MYSQL_PWD/HOST/TCP_PORT/UNIX_PORT) and allowlisted connection flags only (options= in a conninfo/URI, any other flag including --defaults-file, or a password prompt skips the count; mysql always runs with --no-defaults). A statement containing ';' or a backslash is never sent to a database and goes to approval uncounted. Because the WHERE runs before approval, it is only counted when it is a plain predicate (comparisons, AND/OR, IN/EXISTS subqueries, an allowlist of pure built-in functions); any other function call, INTO, FOR UPDATE, '$' or a comment marker skips the count. Postgres runs BEGIN READ ONLY and verifies SHOW transaction_read_only before counting; MySQL runs inside START TRANSACTION READ ONLY ... ROLLBACK; both with a timeout and no password prompt. Counts only run when terminal.backend is local; on docker/ssh/modal/daytona statements are flagged by shape only. No network calls of its own, no files written, no data changed, no credentials stored; the flagged SQL appears in the approval message."
+maintainer: Aoyama
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/aoyamari/hermes-sql-dryrun
+version: "0.1.3"
+capabilities:
+  provides_tools:
+    - sql_impact
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

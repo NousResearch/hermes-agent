@@ -209,7 +209,6 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> Gatew
 
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._shutdown_event = asyncio.Event()
     runner._exit_reason = None
     runner._exit_code = None
@@ -223,7 +222,6 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> Gatew
     runner._restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     runner._stop_task = None
     runner._busy_input_mode = "interrupt"
-    runner._running_agents_ts = {}
     runner._pending_model_notes = {}
     runner._voice_mode = {}
     runner._session_db = None

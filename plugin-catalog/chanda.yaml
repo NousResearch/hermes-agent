@@ -1,0 +1,17 @@
+name: chanda
+repo: https://github.com/felipemarts/chanda
+sha: cb702d8a4aaa6ca64be56bb6b6f33dec56096428
+subdir: adapters/hermes/chanda_hermes
+version: "0.1.0"
+description: Chanda memory provider — local long-term memory over MCP, built without an LLM on the write path. Hybrid keyword + vector search, facts with validity periods (superseded, never overwritten), an origin and trust zone on every record, and cascade forgetting that verifies the content is gone. Pre-context on the first turn, plus chanda_search, chanda_get and chanda_timeline. Disclosure — starts a local `chanda serve` child process over stdio for the session (one SQLite file on disk); sends the first user message, the tool queries and the session's user/assistant turns to that local process; no network unless the user sets llm.endpoint in chanda.yaml (then sleep consolidation and agentic search call that endpoint); the chanda binary is installed separately (pinned `go install ...@v0.1.0`, checked by the Go checksum database, or a GitHub release download); no telemetry.
+maintainer: felipemarts
+tier: community
+category: memory
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/felipemarts/chanda/tree/cb702d8a4aaa6ca64be56bb6b6f33dec56096428/adapters/hermes#readme
+readme: false
+capabilities:
+  provides_tools: []
+  provides_hooks: [on_session_end]
+  provides_middleware: []
+  requires_env: []

@@ -391,7 +391,9 @@ run while the host is off.
 Noninteractive setup and imports do not install a missing service, even when the imported
 config says `install`. Existing installed services remain authoritative and can be started
 regardless of the saved preference. To opt in explicitly later, run `hermes gateway install`;
-the choice is recorded only after successful installation. To be asked again during setup,
+the choice is recorded only after successful installation. The installers' step after setup,
+`hermes gateway install --if-missing`, is not a second opt-in: it installs nothing after a
+recorded decline and asks the same question when setup never did. To be asked again during setup,
 reset the choice with `hermes config set gateway.service_install_choice null`.
 
 Setup orchestration lives in `hermes_cli/gateway_setup_service.py`. Its
@@ -410,7 +412,12 @@ existing reservation or starting owner is waited for, not replaced. When absence
 is established, an existing service takes precedence; an unmanaged process is
 requested only when no service is found. This command never installs or rewrites
 service definitions, enables linger, elevates privileges, or clears update fences.
-Ambiguous or inaccessible ownership fails closed.
+One exception: on Windows it re-renders the gateway launcher scripts (the `.vbs` the
+Scheduled Task and the Startup entry run, and the `.cmd` beside it) when they are
+the installer's own for the home whose gateway serves the profile (the multiplexer
+root for a served profile) and the interpreter they name no longer exists, as after
+a Microsoft Store update. The task and the Startup entry themselves
+are left unchanged. Ambiguous or inaccessible ownership fails closed.
 
 Before requesting a service start, `ensure` checks its canonical profile directory
 and execution account, not just its unit/task name. Linux uses the manager's
@@ -618,6 +625,23 @@ owner's `instance_id`, and expires after 30 seconds. `attach` prints it to stdou
 process only; it never logs it. Run `attach` again for each new connection and each reconnect.
 A client that speaks the control socket itself gets the same verdict and ticket without the spawn:
 see [Local control socket](#local-control-socket-public-client-contract).
+A client that reaches the host over SSH also needs HTTP tickets, and a WebSocket ticket that is
+not bound to one profile (`hermes gateway tickets`): see
+[Gateway over SSH: client contract](./gateway-ssh-clients.md).
+
+Every `attach` reply from a parsed invocation, success or refusal, also carries
+`"start_context": {"windows_service_session": <bool>}`. It is `true` when the caller runs elevated
+in Windows session 0, which is what an administrator's OpenSSH login gets, and `false` everywhere
+else, including off Windows. A gateway such a login spawns itself inherits both, so the user's own
+desktop apps are refused with `gateway_other_session` until it exits. A registered Scheduled Task is
+the exception: `--start` runs it, and it starts the gateway in the signed-in user's session at normal
+integrity. `attach --start` still starts the gateway and exits as before, and prints a one-line
+warning on stderr first. A remote client that
+sees `true` should run `attach` without `--start` (a gateway the user's own session started
+serves both), and when none is running ask the user to start Hermes from a normal
+(non-administrator) window on that machine's desktop. Do not suggest `hermes gateway install`
+there: approved through the administrator prompt it can start the gateway elevated, which normal
+windows are refused by as well (`gateway_elevated`).
 
 With no owner to attach, the JSON adds `message` and has no `url` or `ticket`. `message` is
 the verdict Ink shows: `gateway <state>: <reason_code>` (`not ready` when there is no code),
@@ -929,7 +953,7 @@ DM the bot can run it. Operators of shared gateways must set it.
 
 The handler returns its ack at once and drains `anon_auth.run_sign_in` on a **private single-worker
 executor** (`_login_executor`), never the shared 10-thread gateway pool — the token poll can last
-the code's full expiry, and a live worker in the shared pool makes shutdown skip the SessionDB
+the code's full expiry, and a live worker in the shared pool makes shutdown skip the session store's
 close/checkpoint. One attempt per process, stamped with the identity that started it: the same
 identity's second `/login` cancels the first (the loser ends with the cancelled copy pushed into its
 own chat); a different identity is refused. `task.cancel()` cannot interrupt a blocking poll inside

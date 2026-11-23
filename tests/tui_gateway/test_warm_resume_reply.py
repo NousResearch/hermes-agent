@@ -7,7 +7,8 @@ from contextlib import closing
 import pytest
 import pytest_asyncio
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 from tests.tui_gateway.test_resume_lock_contention import _SignallingLock
 from tests.tui_gateway.test_ws_concurrent_reads import Socket, rpc
 from tests.waiting import async_wait_until
@@ -23,8 +24,10 @@ async def chats(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_ensure_skin_watcher", lambda: None)
     monkeypatch.setattr(server, "_ensure_lease_watcher", lambda: None)
     monkeypatch.setattr(server, "resolve_skin", dict)
-    with closing(SessionDB(db_path=tmp_path / "state.db")) as db:
-        monkeypatch.setattr(server, "_db", db)
+    db = open_persistence(profile_scope(home=tmp_path))
+    monkeypatch.setattr(server, "_db", db)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    with closing(db):
         for name in ("a", "b"):
             cwd = tmp_path / name
             cwd.mkdir()
@@ -77,7 +80,7 @@ async def test_full_draft_waits_for_its_own_history_but_not_other_chats(chats):
 async def test_warm_reply_after_metadata_read(chats, monkeypatch, close):
     sock, db = chats
     for key in ("chat-a", "chat-b"):
-        db.create_session(key, source="desktop")
+        seed_session(db, key, "desktop")
     a = server._sessions["a"]
     started, release = threading.Event(), threading.Event()
     original = server._fallback_session_info

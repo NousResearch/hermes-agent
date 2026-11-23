@@ -122,18 +122,9 @@ def test_failed_sync_after_the_move_then_the_next_update_recovers(root, armed):
                     "(S2d adds it inert; the first hermes_re swap, S6a PR 1, arms it)")
     if not X.refs().base:
         pytest.skip("no release tag reachable (shallow checkout)")
-    with FakeLLMServer(default_text=REPLY) as srv:
-        inst = X.stage("n1", root / "n1")
-        inst.env.pop("HERMES_DISABLE_LAZY_INSTALLS", None)
-        inst.port = X.free_port()
-        X.write_config(inst.hermes_home, srv.base_url, port=inst.port)
-        X.start_host(inst)
-        leaked: list[str] = []
-        try:
-            _cell(inst, armed)
-        finally:
-            leaked = inst.close()
-        assert not leaked, f"processes outlived the sandbox: {leaked}"
+    with FakeLLMServer(default_text=REPLY) as srv, \
+            X.cell("n1", root, srv.base_url, drop_env=("HERMES_DISABLE_LAZY_INSTALLS",)) as inst:
+        _cell(inst, armed)
 
 
 def _log_offsets(inst: X.Install) -> dict:

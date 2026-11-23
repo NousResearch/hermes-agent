@@ -50,17 +50,8 @@ def _start_work_gateway(inst: X.Install, port: int) -> None:
 def test_update_from_old_release_folds_profile_gateways_without_manual_steps(root):
     if not X.refs().base:
         pytest.skip("no release tag reachable (shallow checkout)")
-    with FakeLLMServer(default_text=REPLY) as srv:
-        inst = X.stage("n1", root / "n1")
-        inst.port = X.free_port()
-        X.write_config(inst.hermes_home, srv.base_url, port=inst.port)
-        X.start_host(inst)
-        leaked: list[str] = []
-        try:
-            _fold_cell(inst, srv.base_url)
-        finally:
-            leaked = inst.close()
-        assert not leaked, f"processes outlived the sandbox: {leaked}"
+    with FakeLLMServer(default_text=REPLY) as srv, X.cell("n1", root, srv.base_url) as inst:
+        _fold_cell(inst, srv.base_url)
 
 
 def _fold_cell(inst: X.Install, provider_url: str) -> None:

@@ -1248,6 +1248,8 @@ DEFAULT_CONFIG = {
     # built-in lossy summarization; or a plugin name (e.g. "lcm") installed in
     # plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
+        "external_files": [],
+        "ignore_hermes_md": False,
         "engine": "compressor",
         # Return freed glibc pages at agent/TUI cleanup boundaries (no-op elsewhere).
         "memory_trim": {

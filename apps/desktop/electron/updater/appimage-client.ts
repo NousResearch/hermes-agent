@@ -15,7 +15,10 @@ import { collectRelaunchArgs } from '../updater-process'
 
 import { AppImageStrategy } from './appimage'
 import { channelPublicBase } from './channel-protocol'
+import { ExternalStrategy } from './external'
 import type { MacClientDeps } from './mac-client'
+
+import type { UpdaterStrategy } from './index'
 
 export interface RelaunchHost {
   argv: string[]
@@ -145,8 +148,15 @@ export function createAppImageStrategy(
   updater: InstanceType<typeof electronUpdater.AppImageUpdater> = new RelaunchingAppImageUpdater(
     relaunchUpdatedAppImage
   )
-): AppImageStrategy {
+): UpdaterStrategy {
   const feed = feedContract.linuxFeed(deps.channel, arch)
+  const override: string | null = deps.feedBaseUrl ? `${channelPublicBase(deps.feedBaseUrl)}/${feed.directory}/` : null
+  const feedUrl: string | null = override ?? bakedFeedUrl(process.resourcesPath)
+
+  // A build made without the feed URL (local, or a fork without the R2 vars) has no app-update.yml to check.
+  if (!feedUrl) {
+    return new ExternalStrategy()
+  }
 
   updater.autoDownload = false
   updater.autoInstallOnAppQuit = false
@@ -157,11 +167,9 @@ export function createAppImageStrategy(
   updater.allowDowngrade = false
   updater.on('error', error => deps.log(`AppImage updater: ${error.message}`))
 
-  const override: string | null = deps.feedBaseUrl ? `${channelPublicBase(deps.feedBaseUrl)}/${feed.directory}/` : null
-
   if (override) {
     updater.setFeedURL({ provider: 'generic', url: override, channel: feed.channel })
   }
 
-  return new AppImageStrategy({ ...deps, updater, appImage, feedUrl: override ?? bakedFeedUrl(process.resourcesPath) })
+  return new AppImageStrategy({ ...deps, updater, appImage, feedUrl })
 }

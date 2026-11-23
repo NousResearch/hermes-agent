@@ -30,11 +30,31 @@ vi.mock('electron-updater', () => ({
 
 import { createAppImageStrategy, type RelaunchHost, relaunchUpdatedAppImage } from './appimage-client'
 
+let resources: string | undefined
+
 afterEach((): void => {
   vi.clearAllMocks()
+
+  if (resources) {
+    fs.rmSync(resources, { recursive: true, force: true })
+    resources = undefined
+  }
+
+  Reflect.deleteProperty(process, 'resourcesPath')
 })
 
 const IMAGE = '/home/u/Applications/Hermes-0.99.0-linux-arm64.AppImage'
+
+/** The packaged build's resources: electron-builder writes app-update.yml only when the build had a feed. */
+function packagedResources(feedUrl: string | null): void {
+  resources = fs.mkdtempSync(path.join(os.tmpdir(), 'appimage-resources-'))
+
+  if (feedUrl) {
+    fs.writeFileSync(path.join(resources, 'app-update.yml'), `provider: generic\nurl: ${feedUrl}\nchannel: stable\n`)
+  }
+
+  Object.defineProperty(process, 'resourcesPath', { value: resources, configurable: true })
+}
 
 function deps(feedBaseUrl = '', channel: 'stable' | 'canary' = 'stable'): Parameters<typeof createAppImageStrategy>[0] {
   return {
@@ -51,7 +71,9 @@ function deps(feedBaseUrl = '', channel: 'stable' | 'canary' = 'stable'): Parame
 
 describe('AppImage client wiring', () => {
   it('uses the baked app-update.yml by default and forbids implicit installs or downgrades', async () => {
+    packagedResources('https://updates.example/releases/linux/stable/')
     const strategy = createAppImageStrategy(deps(), IMAGE, 'arm64')
+    expect(strategy.mechanism).toBe('electron-updater')
     expect(client.setFeedURL).not.toHaveBeenCalled()
     await expect(strategy.check()).rejects.toThrow('not active')
     expect(client.autoDownload).toBe(false)
@@ -60,6 +82,14 @@ describe('AppImage client wiring', () => {
     expect(client.allowDowngrade).toBe(false)
     expect(client.channel).toBe('stable')
     expect(client.allowPrerelease).toBe(false)
+  })
+
+  it('leaves a build made without a feed to be updated by hand', async () => {
+    packagedResources(null)
+    const strategy = createAppImageStrategy(deps(), IMAGE, 'arm64')
+    expect(strategy.mechanism).toBe('external')
+    await expect(strategy.check()).resolves.toMatchObject({ supported: false, mechanism: 'external' })
+    expect(client.on).not.toHaveBeenCalled()
   })
 
   it.each(['stable', 'canary'] as const)('overrides the %s feed with the directory the release publishes', channel => {

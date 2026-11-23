@@ -481,6 +481,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     setDefaultProjectDir: dir => ipcRenderer.invoke('hermes:setting:defaultProjectDir:set', dir),
     pickDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:pick')
   },
+  durableSend: {
+    begin: intent => ipcRenderer.invoke('hermes:durable-send:begin', intent),
+    append: (id, fileId, offset, bytes) => ipcRenderer.invoke('hermes:durable-send:append', id, fileId, offset, bytes),
+    commit: id => ipcRenderer.invoke('hermes:durable-send:commit', id),
+    list: () => ipcRenderer.invoke('hermes:durable-send:list'),
+    cancel: id => ipcRenderer.invoke('hermes:durable-send:cancel', id)
+  },
   preparedSubmissions: {
     read: () => ipcRenderer.invoke('hermes:prepared-submissions:read'),
     update: (key, entry) => ipcRenderer.invoke('hermes:prepared-submissions:update', key, entry),

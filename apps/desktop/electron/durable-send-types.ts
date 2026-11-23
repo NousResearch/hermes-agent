@@ -1,0 +1,51 @@
+// Native outbox contract. No filesystem paths, credentials or ambient UI destination.
+export interface DurableSendOwner {
+  connectionId: string
+  gatewayId: string
+  profile: string
+  principalId: string
+}
+
+export type DurableSendTarget =
+  | { sessionId: string }
+  | { draftId: string; createRequestId: string; params: Record<string, string | number | boolean> }
+
+export interface DurableSendFile {
+  id: string
+  name: string
+  mediaType: string
+  size: number
+  sha256: string
+}
+
+export interface DurableSendIntent {
+  id: string
+  owner: DurableSendOwner
+  target: DurableSendTarget
+  text: string
+  files: DurableSendFile[]
+}
+
+export type DurableSendState = 'staging' | 'queued' | 'sending' | 'waiting' | 'blocked' | 'confirmed' | 'cancelled'
+
+export interface DurableSendRecord {
+  version: 1
+  intent: DurableSendIntent
+  state: DurableSendState
+  createdAt: number
+  attempts: number
+  retryAt: number
+  sessionId?: string
+  uploads: Record<string, { reference: string; sha256: string; size: number }>
+  submitStarted: boolean
+  admissionId?: string
+  problem?: 'connection' | 'capability' | 'integrity' | 'uncertain' | 'refused'
+}
+
+export interface DurableSendApi {
+  begin: (intent: DurableSendIntent) => Promise<DurableSendRecord>
+  append: (id: string, fileId: string, offset: number, bytes: Uint8Array) => Promise<number>
+  commit: (id: string) => Promise<DurableSendRecord>
+  list: () => Promise<DurableSendRecord[]>
+  cancel: (id: string) => Promise<DurableSendRecord>
+}

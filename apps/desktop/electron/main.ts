@@ -248,6 +248,7 @@ import {
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { preReadyDockLaunchSteps } from './dock-launch-order'
+import { registerDurableSendIpc } from './durable-send-ipc'
 import { embedHostOrigin } from './embed-host'
 import { installEmbedReferer } from './embed-referer'
 import { createAmbientClaimArbiter } from './event-dedupe'
@@ -13845,6 +13846,12 @@ ipcMain.on('hermes:wake-indicator:set', (_event, state) => {
 // The settings UI drives the same clamped zoom scale as the Ctrl/Cmd
 // shortcuts and the View menu. Reads and writes target the asking window.
 registerPreparedSubmissions()
+registerDurableSendIpc({
+  ipc: ipcMain,
+  userData: () => app.getPath('userData'),
+  rendererUrl: () => DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(),
+  getOwner: sender => BrowserWindow.fromWebContents(sender)
+})
 
 ipcMain.handle('hermes:zoom:get', event => {
   const window = BrowserWindow.fromWebContents(event.sender)

@@ -1543,6 +1543,8 @@ _CATALOG_FAMILY_ID_RE = re.compile(r"(?:^|[./])(?:anthropic|openai|xai)\.([a-z0-
 # instead of a clean ValidationException.
 _BEDROCK_PROBE_TIERS = (1_300_000, 2_200_000)
 _WORDS_PER_TOKEN = 0.9  # conservative: ensures the padded prompt clears the tier
+# OpenAI, xAI and Kimi models on Bedrock reject maxTokens below 16 before the length check runs.
+_BEDROCK_PROBE_MAX_TOKENS = 16
 
 
 def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
@@ -1560,7 +1562,7 @@ def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
         oversized = "data " * int(tier_tokens / _WORDS_PER_TOKEN)
         try:
             client.converse(modelId=model_id, messages=[{"role": "user", "content": [{"text": oversized}]}],
-                            inferenceConfig={"maxTokens": 8})
+                            inferenceConfig={"maxTokens": _BEDROCK_PROBE_MAX_TOKENS})
             logger.debug("Bedrock context probe for %s accepted ~%s-token prompt; "
                          "window is at least that", model_id, f"{tier_tokens:,}")
             return tier_tokens

@@ -1229,9 +1229,9 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
         r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',
         r'>\s*(\d{4,})\s*(?:max|limit|token)',  # "250000 tokens > 200000 maximum"
         r'(\d{4,})\s*(?:max(?:imum)?)\b',  # "200000 maximum"
-        # Gemini: "input token count is 32825 but model only supports up to
-        # 32768" — anchor on the phrase so the input count isn't captured.
-        r'supports?\s+(?:only\s+)?up\s+to\s+(\d{4,})',
+        # Anchored on the phrase so the larger input count before it isn't captured.
+        r'supports?\s+(?:only\s+)?up\s+to\s+(\d{4,})',  # Gemini: "input token count is 32825 but model only supports up to 32768"
+        r'tokens\s*\(\s*\d+\s*\)\s*exceeds?\s+model\s+maximum\s*\(\s*(\d{4,})\s*\)',  # Bedrock Kimi/xAI: "prompt tokens (1444530) exceed model maximum (1048576)"
     )
     for match in filter(None, (re.search(pattern, error_lower) for pattern in patterns)):
         limit = int(match.group(1))

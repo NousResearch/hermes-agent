@@ -1,0 +1,16 @@
+[package]
+name = "hermes-library"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+hermes-engine = { path = "../engine" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+fs2 = "0.4"
+rusqlite = { version = "0.37", features = ["bundled", "limits"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+base64 = "0.22"
+ring = "0.17"

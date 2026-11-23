@@ -1,0 +1,159 @@
+{
+  "source": "NousResearch/hermes-agent v0.23.3 caafe5389ae585ef77387a962aee05b1bcf17029 tools/threat_patterns.py",
+  "patterns": [
+    {
+      "pattern": "ignore\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}(previous|all|above|prior)\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}instructions",
+      "id": "prompt_injection"
+    },
+    {
+      "pattern": "system\\s{1,64}prompt\\s{1,64}override",
+      "id": "sys_prompt_override"
+    },
+    {
+      "pattern": "disregard\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}(your|all|any)\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}(instructions|rules|guidelines)",
+      "id": "disregard_rules"
+    },
+    {
+      "pattern": "(?:(?:(?<![^\\W_])(?<![’'])(?!(?:(?:do|does|did|ca|could|would|should|wo|must|need|is|are|was|were|ai|has|have|had)n[’']?t|cannot|not|never)[ \\t])(?:[^\\W_]|[’']){1,64}|(?=[ \\t])(?<=(?:[^\\W_]|[’']){64}))[ \\t]{1,64}|(?:^|[^\\w’' \\t]|_|(?<!\\w)[’'])[ \\t]{0,64})forget\\s{1,64}(?:about\\s{1,64})?(your|all|any|previous|prior|above|earlier)\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,3}(instructions|rules|guidelines)(?![^\\W_])",
+      "id": "forget_rules"
+    },
+    {
+      "pattern": "act\\s{1,64}as\\s{1,64}(if|though)\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}you\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}(have\\s{1,64}no|don\\'t\\s{1,64}have)\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}(restrictions|limits|rules)",
+      "id": "bypass_restrictions"
+    },
+    {
+      "pattern": "<!--[^>]{0,512}(?:ignore|override|system|secret|hidden)[^>]{0,512}-->",
+      "id": "html_comment_injection"
+    },
+    {
+      "pattern": "<\\s{0,64}div\\s{1,64}style\\s{0,64}=\\s{0,64}[\"\\'][^>]{0,2048}display\\s{0,64}:\\s{0,64}none",
+      "id": "hidden_div"
+    },
+    {
+      "pattern": "translate\\s{1,64}[^\\n]{0,512}\\s{1,64}into\\s{1,64}\\w{1,64}(?:[\\s-]{1,64}\\w{1,64}){0,2}\\s{1,64}and\\s{1,64}(execute|run|eval)\\b",
+      "id": "translate_execute"
+    },
+    {
+      "pattern": "do\\s{1,64}not\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}tell\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}the\\s{1,64}user",
+      "id": "deception_hide"
+    },
+    {
+      "pattern": "you\\s{1,64}are\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}now\\s{1,64}(?:a|an|the)\\s{1,64}",
+      "id": "role_hijack"
+    },
+    {
+      "pattern": "pretend\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}(you\\s{1,64}are|to\\s{1,64}be)\\s{1,64}",
+      "id": "role_pretend"
+    },
+    {
+      "pattern": "output\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}(system|initial)\\s{1,64}prompt",
+      "id": "leak_system_prompt"
+    },
+    {
+      "pattern": "(respond|answer|reply)\\s{1,64}without\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}(restrictions|limitations|filters|safety)",
+      "id": "remove_filters"
+    },
+    {
+      "pattern": "you\\s{1,64}have\\s{1,64}been\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}(updated|upgraded|patched)\\s{1,64}to",
+      "id": "fake_update"
+    },
+    {
+      "pattern": "\\bname\\s{1,64}yourself\\s{1,64}\\w{1,64}",
+      "id": "identity_override"
+    },
+    {
+      "pattern": "register\\s{1,64}(as\\s{1,64})?a?\\s{0,64}node",
+      "id": "c2_node_registration"
+    },
+    {
+      "pattern": "(heartbeat|beacon|check[\\s\\-]?in)\\s{1,64}(to|with)\\s{1,64}",
+      "id": "c2_heartbeat"
+    },
+    {
+      "pattern": "pull\\s{1,64}(down\\s{1,64})?(?:new\\s{1,64})?task(?:ing|s)?\\b",
+      "id": "c2_task_pull"
+    },
+    {
+      "pattern": "connect\\s{1,64}to\\s{1,64}the\\s{1,64}network\\b",
+      "id": "c2_network_connect"
+    },
+    {
+      "pattern": "you\\s{1,64}must\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,3}(register|connect|report|beacon)\\b",
+      "id": "forced_action"
+    },
+    {
+      "pattern": "only\\s{1,64}use\\s{1,64}one[\\s\\-]?liners?\\b",
+      "id": "anti_forensic_oneliner"
+    },
+    {
+      "pattern": "never\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}(?:create|write)\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}(?:script|file)\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}disk",
+      "id": "anti_forensic_disk"
+    },
+    {
+      "pattern": "unset\\s{1,64}\\w{0,256}(?:CLAUDE|CODEX|HERMES|AGENT|OPENAI|ANTHROPIC)\\w{0,64}",
+      "id": "env_var_unset_agent"
+    },
+    {
+      "pattern": "\\b(?:cobalt\\s{0,64}strike|sliver|havoc|mythic|metasploit|brainworm)\\b",
+      "id": "known_c2_framework"
+    },
+    {
+      "pattern": "\\bc2\\s{1,64}(?:server|channel|infrastructure|beacon)\\b",
+      "id": "c2_explicit"
+    },
+    {
+      "pattern": "\\bcommand\\s{1,64}and\\s{1,64}control\\b",
+      "id": "c2_explicit_long"
+    },
+    {
+      "pattern": "curl\\s{1,64}[^\\n]{0,2048}\\$\\{?\\w{0,256}(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\\b",
+      "id": "exfil_curl"
+    },
+    {
+      "pattern": "wget\\s{1,64}[^\\n]{0,2048}\\$\\{?\\w{0,256}(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\\b",
+      "id": "exfil_wget"
+    },
+    {
+      "pattern": "cat\\s{1,64}[^\\n]{0,2048}(\\.env|credentials|\\.netrc|\\.pgpass|\\.npmrc|\\.pypirc)",
+      "id": "read_secrets"
+    },
+    {
+      "pattern": "(send|post|upload|transmit)\\s{1,64}[^\\n]{0,2048}\\s{1,64}(to|at)\\s{1,64}https?://",
+      "id": "send_to_url"
+    },
+    {
+      "pattern": "(include|output|print|share)\\s{1,64}(?:\\w{1,64}\\s{1,64}){0,8}(conversation|chat\\s{1,64}history|previous\\s{1,64}messages|full\\s{1,64}context|entire\\s{1,64}context)",
+      "id": "context_exfil"
+    },
+    {
+      "pattern": "authorized_keys",
+      "id": "ssh_backdoor"
+    },
+    {
+      "pattern": "(?:\\b(?:echo|cat|cp|mv|dd|tee|install|printf|rsync|scp|ln|append|add|write|sed|chmod|chown|truncate|rm|touch|curl|wget|git)\\b|\\bopen\\s{0,64}\\(|>>?)[^\\n]{0,512}(?:\\$HOME/\\.ssh|~/\\.ssh)",
+      "id": "ssh_access"
+    },
+    {
+      "pattern": "\\$HOME/\\.hermes/\\.env|\\~/\\.hermes/\\.env",
+      "id": "hermes_env"
+    },
+    {
+      "pattern": "(update|modify|edit|write|change|append|add\\s{1,64}to)\\s{1,64}[^\\n]{0,2048}(?:AGENTS\\.md|CLAUDE\\.md|\\.cursorrules|\\.clinerules)",
+      "id": "agent_config_mod"
+    },
+    {
+      "pattern": "(update|modify|edit|write|change|append|add\\s{1,64}to)\\s{1,64}[^\\n]{0,2048}\\.hermes/(config\\.yaml|SOUL\\.md)",
+      "id": "hermes_config_mod"
+    },
+    {
+      "pattern": "(?:api[_-]?key|token|secret|password)\\s{0,64}[=:]\\s{0,64}[\"\\'](?!(?-i:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)[\"\\'])[A-Za-z0-9+/=_-]{20}",
+      "id": "hardcoded_secret"
+    }
+  ],
+  "negated_forget": "(?<![\\w*’'])([*_]*(?:(?:do|does|did|ca|could|would|should|wo|must|need|is|are|was|were|ai|has|have|had)n[’']?t|cannot|not|never)[*_]*+[ \\t]*(?:\\r?\\n[ \\t]*)?(?:ever[ \\t]+)?[*_]*)forget(?![^\\W_])",
+  "emoji_tag_sequences": [
+    "gbeng",
+    "gbsct",
+    "gbwls"
+  ]
+}

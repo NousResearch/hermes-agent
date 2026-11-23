@@ -1,0 +1,75 @@
+[package]
+name = "hermes-desktop"
+version.workspace = true
+edition.workspace = true
+
+[features]
+ui-test = []
+
+[dependencies]
+global-hotkey = "0.7"
+anyhow.workspace = true
+hermes-engine = { path = "../engine" }
+hermes-library = { path = "../library" }
+hermes-gateway = { path = "../gateway" }
+iced = { version = "0.14", default-features = false, features = ["advanced", "wgpu", "tiny-skia", "tokio", "basic-shaping", "x11", "wayland", "markdown", "image-without-codecs", "svg", "canvas"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+async-channel.workspace = true
+tokio-util.workspace = true
+tokio.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+cap-std = "3"
+tempfile = "3"
+axum = "0.8"
+portable-pty = "0.9"
+vt100 = "0.16"
+regex = "1"
+url = "2"
+percent-encoding = "2"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+fs2 = "0.4"
+uuid = { version = "1", features = ["v4"] }
+zeroize = "1"
+wry = { version = "0.57.3", default-features = false, features = ["os-webview"] }
+raw-window-handle = "0.6"
+
+[dev-dependencies]
+iced_core = "0.14"
+iced_runtime = "0.14"
+tempfile = "3"
+axum = "0.8"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.9"
+objc2modern = { package = "objc2", version = "0.6" }
+blockmodern = { package = "block2", version = "0.6" }
+foundation3 = { package = "objc2-foundation", version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSLocale", "NSBundle", "NSError"] }
+objc2-speech = { version = "0.3.2", default-features = false, features = ["std", "SFSpeechRecognizer", "SFSpeechRecognitionRequest", "SFSpeechRecognitionResult", "SFSpeechRecognitionTask", "SFTranscription", "block2", "objc2-avf-audio"] }
+objc2-avf-audio = { version = "0.3.2", default-features = false, features = ["std", "AVAudioApplication", "AVAudioBuffer", "AVAudioEngine", "AVAudioFormat", "AVAudioIONode", "AVAudioNode", "AVAudioTime", "AVAudioTypes", "AVSpeechSynthesis", "block2"] }
+dispatch = "0.2"
+objc2-foundation = { version = "0.2", features = ["NSString", "NSURL","NSBundle"] }
+objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSScreen", "NSSavePanel", "NSWindow"] }
+
+[target.'cfg(target_os = "macos")'.dependencies.objc2-user-notifications]
+version="0.2.2"
+features=["UNNotificationRequest","UNNotificationContent","UNNotificationTrigger","UNNotificationSound","UNUserNotificationCenter","block2"]
+
+[target.'cfg(target_os = "macos")'.dependencies.block2]
+version="0.5"
+
+[target.'cfg(target_os = "macos")'.dependencies.objc2]
+version="0.5"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winrt-notification = "0.5"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_System_Registry", "Win32_Security", "Win32_Graphics_Dwm", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version="5", default-features=false, features=["tokio"] }
+secret-service = { version = "=5.2.0", default-features = false, features = ["rt-tokio-crypto-rust"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }

@@ -1,0 +1,27 @@
+Collapse Bold
+
+Original font metadata:
+Copyright © 2023 by Keussel, Blaze Type. All rights reserved.
+Designer: Keussel
+Manufacturer: http://blazetype.eu
+License description: Check blazetype.eu for licencing details.
+License URL: https://blazetype.eu/eula
+
+The original Collapse-Bold.woff2 was obtained from the exact npm package
+@nous-research/ui version 0.19.1 used by the official Hermes Desktop source.
+Package URL: https://registry.npmjs.org/@nous-research/ui/-/ui-0.19.1.tgz
+Pinned package integrity from the upstream pnpm-lock.yaml:
+sha512-GIPNJQrOyFesjRZSjR/wqXdSJHzX5OW7a5ioTzI6CGeFG/l8gpajNZaY82R5n14wncQD+GyswY0rPrTxAamNcQ==
+
+Collapse-Bold.ttf is a development-time WOFF2 decompression into the font's
+original OpenType/CFF sfnt representation. Typeface glyphs and font metadata
+are unchanged. No font conversion or Python is used by the application.
+
+../hermes-agent-wordmark.svg outlines the official HERMES AGENT string from
+this font, using its original kerning and the official .wordmark CSS's
+0.08em letter-spacing, which computes at the 14px parent to 1.12px before
+the nested fit-text child grows. It includes no replacement letterforms.
+
+The @nous-research/ui package manifest declares MIT for the package. That
+declaration is recorded as provenance; it does not replace the font's
+embedded copyright and license information above.

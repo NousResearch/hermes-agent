@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Hermes
+Exec=hermes-desktop
+Icon=com.nousresearch.hermes.rust-development
+Terminal=false
+Categories=Office;Utility;
+StartupWMClass=com.nousresearch.hermes.rust-development

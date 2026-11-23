@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.nousresearch.hermes.rust-development</string>
+<key>CFBundleName</key><string>Hermes</string>
+<key>CFBundleDisplayName</key><string>Hermes</string>
+<key>CFBundleExecutable</key><string>hermes-desktop</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleIconFile</key><string>Hermes</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSMicrophoneUsageDescription</key><string>Hermes uses your microphone only when you choose Dictate, to add speech to your message draft.</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>Hermes transcribes your speech on this Mac when you choose Dictate. Recordings are not sent to a model provider.</string>
+<key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+</dict></plist>

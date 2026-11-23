@@ -1,0 +1,13 @@
+Visual Studio Code Codicons
+Copyright (c) Microsoft Corporation.
+
+Original unmodified codicon.ttf from @vscode/codicons version 0.0.45, the
+exact version pinned by the official Hermes Desktop source.
+Package URL: https://registry.npmjs.org/@vscode/codicons/-/codicons-0.0.45.tgz
+Source: https://github.com/microsoft/vscode-codicons
+Pinned package integrity from the upstream pnpm-lock.yaml:
+sha512-1KAZ7XCMagp5Gdrlr4bbbcAqgcIL623iO1wW6rfcSVGAVUQvR0WP7bQx1SbJ11gmV3fdQTSEFIJQ/5C+HuVasw==
+
+The icon font is distributed under Creative Commons Attribution 4.0
+International. The complete upstream text is in codicon-LICENSE.txt.
+The package code license is preserved in codicon-LICENSE-CODE.txt.

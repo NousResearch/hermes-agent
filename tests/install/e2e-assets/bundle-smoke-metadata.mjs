@@ -4,7 +4,7 @@ import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
-import { OUT_OF_STORE_PUBLISHER, channelBuildRequest, releaseVersion } from '../../../scripts/msix-shared.mjs'
+import { COMMIT_TAG_RE, OUT_OF_STORE_PUBLISHER, channelBuildRequest, releaseVersion } from '../../../scripts/msix-shared.mjs'
 import { codesignTeam, channelStampAssertions } from './mac-bundled-manifest.cjs'
 
 const identityModule = fileURLToPath(new URL('../../../apps/desktop/product-identity.cjs', import.meta.url))
@@ -30,7 +30,7 @@ export function bundleIdentity(commit, tag = '', channelRequest = null) {
   const identity = JSON.parse(execFileSync(process.execPath, ['-e',
     'console.log(JSON.stringify(require(process.argv[1])))', identityModule], {
     encoding: 'utf8', env: { ...process.env, HERMES_DESKTOP_VARIANT: 'bundled',
-      HERMES_PAYLOAD_TAG: tag, HERMES_BUILD_COMMIT: tag ? '' : commit, _HERMES_CHANNEL_REQUEST_JSON: '' },
+      HERMES_PAYLOAD_TAG: tag, HERMES_BUILD_COMMIT: !tag || COMMIT_TAG_RE.test(tag) ? commit : '', _HERMES_CHANNEL_REQUEST_JSON: '' },
   }))
   return { appId: identity.appId, msixIdentity: identity.msixAppIdWithOrg,
     applicationId: identity.appNamePascal, publisher: OUT_OF_STORE_PUBLISHER }
@@ -41,10 +41,12 @@ export function bundleIdentity(commit, tag = '', channelRequest = null) {
  * channelRequest?: import('../../../apps/desktop/electron/install-stamp.js').ChannelBuildRequest | null}} options */
 export function verifyBundleStamp(stamp, { commit, tag = '', platform, channelRequest = null }) {
   if (!['darwin', 'win32'].includes(platform)) throw new Error('Unsupported native platform')
+  if (tag && !releaseVersion(tag)) throw new Error('Invalid release tag')
   const request = channelRequest === null ? null : admitChannelRequest(channelRequest, commit, tag)
+  const commitBuild = !request && (!tag || COMMIT_TAG_RE.test(tag))
   const expected = { commit, tag: request?.receiverCandidate ? request.releaseTag : tag || null, payload: 'bundled', distribution: 'desktop-app', dirty: false,
-    updateMechanism: tag || request ? { darwin: 'electron-updater', win32: 'app-installer' }[platform] : 'external' }
-  if (!tag && !request) Object.assign(expected, { source: 'commit-build', branch: null })
+    updateMechanism: commitBuild ? 'external' : { darwin: 'electron-updater', win32: 'app-installer' }[platform] }
+  if (commitBuild) Object.assign(expected, { source: 'commit-build', branch: null })
   for (const [key, value] of Object.entries(expected)) {
     if (stamp?.[key] !== value) throw new Error(`stamp.${key}: ${JSON.stringify(stamp?.[key])} != ${JSON.stringify(value)}`)
   }

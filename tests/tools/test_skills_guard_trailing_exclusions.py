@@ -9,6 +9,7 @@ and no new false positives), which also covers a dropped candidate followed by a
 import itertools
 import random
 import re
+import time
 
 import pytest
 
@@ -149,3 +150,46 @@ def test_a_dropped_candidate_does_not_hide_a_later_start_inside_it():
     matcher = ExclusionMatcher(r'\d\d', only_end, lambda text, m, end: digit.match(text, end) is not None)
     for text in ("123", "1234", "12 345", "a123b", "12"):
         assert [m.span() for m in matcher.finditer(text)] == [m.span() for m in original.finditer(text)], text
+
+
+# A line on which one start has a candidate end per repeat, every one dropped by an exclusion that the original
+# evaluated as a lookahead over the rest of the line: evaluated again at each end, that is quadratic in the line
+# (about a minute for these lines), and skill files are scanned whole lines with no length limit.
+_MANY_EXCLUDED_ENDS = {
+    "deception_hide": lambda: "do not tell " + "the user " * 100_000 + "check",
+    "unpinned_pip_install": lambda: "pip install" + " " * 400_000 + "x==1",
+    "py_read_secrets_file": lambda: "open('.env'" + " " * 200_000 + ") # mode='w'" + " x" * 200_000,
+    "py_read_secrets_file_literal": lambda: "open('" + "a" * 200_000 + ".env'" + " " * 200_000 + ", 'w')",
+}
+
+
+@pytest.mark.parametrize("case", sorted(_MANY_EXCLUDED_ENDS))
+def test_an_exclusion_is_not_rescanned_at_every_candidate_end(case):
+    line = _MANY_EXCLUDED_ENDS[case]()
+    rewritten = _REWRITTEN[case]()
+    started = time.perf_counter()
+    assert rewritten.search(line) is None
+    assert time.perf_counter() - started < 5.0
+
+
+@pytest.mark.parametrize("case", ["deception_hide", "py_read_secrets_file", "unpinned_pip_install"])
+def test_an_exclusion_earlier_on_the_line_does_not_count(case):
+    """These exclusions read the rest of the line after each end, and are answered from one pass over the line:
+    a guidance word, `mode=` keyword or `==` before the end (on the same line or the one above) must not count."""
+    original = re.compile(_ORIGINAL[case], re.IGNORECASE)
+    rewritten = _REWRITTEN[case]()
+    lines = random.Random(20261123).sample(_corpus(case), 4000)
+    for prefix in ("check mode='w' x==1 ", "check mode='w' x==1\n"):
+        for line in lines:
+            text = prefix + line
+            assert [m.span() for m in rewritten.finditer(text)] == [m.span() for m in original.finditer(text)], text
+
+
+@pytest.mark.parametrize("case", sorted(_ORIGINAL))
+def test_a_second_scan_of_the_same_text_finds_the_same_matches(case):
+    """Facts the exclusions keep about a text (shared by its candidate ends and starts) serve a later scan of the
+    same string as well."""
+    rewritten = _REWRITTEN[case]()
+    for text in random.Random(20261123).sample(_corpus(case), 2000):
+        first = [m.span() for m in rewritten.finditer(text)]
+        assert [m.span() for m in rewritten.finditer(text)] == first, text

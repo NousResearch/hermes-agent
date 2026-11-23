@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hermes_re as re
 import unicodedata
+from bisect import bisect_left
 from typing import Optional
 
 # Hard cap on scanned text: scanners are advisory, so bound worst-case runtime.
@@ -51,7 +52,9 @@ class ExclusionMatcher:
     order and ``excluded(text, match, end)`` evaluates the lookaheads for one end (a lookahead at a fixed point of
     the match, such as its start, is evaluated there). A start with no such end is no match, and the search goes
     on one character later; a match resumes the search at its end, as in stdlib. Offers ``search`` and
-    ``finditer``, all the scanners call on a rule, and yields real match objects."""
+    ``finditer``, all the scanners call on a rule, and yields real match objects. A start can have as many ends
+    as its line has characters, so an ``excluded`` that reads past its end does that reading once per text
+    (``LineTail``, ``TextMemo``), not once per end: that would make one line quadratic to scan."""
 
     def __init__(self, pattern: str, ends, excluded):
         self._pattern = re.compile(pattern, re.IGNORECASE)
@@ -75,6 +78,55 @@ class ExclusionMatcher:
 def only_end(text: str, m) -> tuple:
     """``ends`` of an ExclusionMatcher rule whose match has one end per start."""
     return (m.end(),)
+
+
+class TextMemo:
+    """Facts an ``excluded`` check keeps about the text it is asked about, so work shared by the candidate ends of
+    one text is done once instead of once per end. Calling it returns the dict for ``text``; it holds the latest
+    text only (by identity: strings are immutable), and a call with another text starts a new dict. The pair is
+    replaced in one assignment, so scans of different texts in other threads cost a recomputation, never a wrong
+    fact."""
+
+    def __init__(self):
+        self._latest: tuple = ("", {})
+
+    def __call__(self, text: str) -> dict:
+        latest = self._latest
+        if latest[0] is not text:
+            latest = self._latest = (text, {})
+        return latest[1]
+
+
+class LineTail:
+    """``tail(text, pos)``: whether a hit starts in ``text[pos:<end of pos's line>]``, for an exclusion that the
+    original evaluated at every candidate end as a lookahead over the rest of the line (``(?!.*==)``): asked at n
+    ends, that rescans the line n times. ``last_in_line(text, start, end)`` gives the start of the last hit in the
+    line ``text[start:end]`` (-1 for none), and whether a position holds a hit must not depend on where the scan
+    started; each line is then searched once per text, and every end costs a bisection."""
+
+    def __init__(self, last_in_line):
+        self._last_in_line = last_in_line
+        self._memo = TextMemo()
+
+    def __call__(self, text: str, pos: int) -> bool:
+        facts = self._memo(text)
+        if not facts:
+            facts["breaks"] = _line_breaks(text)
+        breaks = facts["breaks"]
+        line = bisect_left(breaks, pos)
+        if (last := facts.get(line)) is None:
+            start = breaks[line - 1] + 1 if line else 0
+            last = facts[line] = self._last_in_line(text, start, breaks[line] if line < len(breaks) else len(text))
+        return last >= pos
+
+
+def _line_breaks(text: str) -> list:
+    """Indexes of the newlines in ``text``."""
+    breaks, i = [], text.find("\n")
+    while i >= 0:
+        breaks.append(i)
+        i = text.find("\n", i + 1)
+    return breaks
 
 
 # The original's `(?!{_NEGATOR}[ \t])` at the start of the first branch. A match that starts on a negator came from

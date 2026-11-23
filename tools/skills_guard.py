@@ -21,7 +21,7 @@ from typing import List, Tuple
 
 from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
 from tools.threat_patterns import (
-    FORGET_RULES_EXCLUSION, FORGET_RULES_RAW_RE, ExclusionMatcher, mask_negated_forget, only_end)
+    FORGET_RULES_EXCLUSION, FORGET_RULES_RAW_RE, ExclusionMatcher, LineTail, TextMemo, mask_negated_forget, only_end)
 
 
 SCANNER_VERSION = "skills-guard-v17"
@@ -711,11 +711,6 @@ def _word_char_at(text: str, i: int) -> bool:
     return 0 <= i < len(text) and _WORD_CHAR.match(text, i) is not None
 
 
-def _line_end(text: str, start: int) -> int:
-    end = text.find('\n', start)
-    return len(text) if end < 0 else end
-
-
 def _never(text: str, m, end: int) -> bool:
     return False
 
@@ -771,17 +766,33 @@ def _open_ends(text: str, m) -> tuple:
     return tuple(ends)
 
 
+_open_facts = TextMemo()
+
+
 def _reads_no_credential_or_writes(text: str, m, end: int) -> bool:
-    return not _names_credential_file(text, m) or _opens_for_write(text, m, end)
-
-
-def _opens_for_write(text: str, m, end: int) -> bool:
-    if m.group()[:1] in 'pP':  # `Path(...).read_*()` has no mode argument and no exclusion
-        return False
-    if _WRITE_MODE_ARG.match(text, end):
+    """Each end of one start shares its literal, and every end but the greedy one lies in the whitespace before
+    the closing parenthesis (or before the match end, with none), where `_WRITE_MODE_ARG`'s leading `\\s*` gives
+    the answer of the run's end: both are read once per start, the `mode=` keyword once per line."""
+    facts = _open_facts(text)
+    if (names := facts.get(m.start())) is None:
+        names = facts[m.start()] = _names_credential_file(text, m)
+    if not names:
         return True
-    return any(not _word_char_at(text, mode.start() - 1) and _WRITE_MODE_KWARG.match(text, mode.start())
-               for mode in _MODE_WORD.finditer(text, end, _line_end(text, end)))
+    if text[m.start()] in 'pP':  # `Path(...).read_*()` has no mode argument and no exclusion
+        return False
+    run_end = m.end() if end == m.end() or text[m.end() - 1] != ')' else m.end() - 1
+    if (arg := facts.get((m.start(), run_end))) is None:
+        arg = facts[m.start(), run_end] = _WRITE_MODE_ARG.match(text, run_end) is not None
+    return arg or _write_mode_kwarg_after(text, end)
+
+
+def _last_write_mode_kwarg(text: str, start: int, end: int) -> int:
+    return max((mode.start() for mode in _MODE_WORD.finditer(text, start, end)
+                if not _word_char_at(text, mode.start() - 1) and _WRITE_MODE_KWARG.match(text, mode.start())),
+               default=-1)
+
+
+_write_mode_kwarg_after = LineTail(_last_write_mode_kwarg)
 
 
 # deception_hide: the stdlib original ended in `(?!\s+to\s+["\'“‘])` (a quoted phrase the agent should not say)
@@ -794,11 +805,17 @@ _the_user_ends = _every_end(re.compile(r'the\s+user', re.IGNORECASE))
 
 
 def _is_ux_guidance(text: str, m, end: int) -> bool:
-    if _QUOTED_PHRASE.match(text, end):
-        return True
-    # A guidance word cannot start inside another (each is all word characters), so non-overlapping hits suffice.
-    return any(not _word_char_at(text, word.start() - 1) and not _word_char_at(text, word.end())
-               for word in _UX_GUIDANCE_WORD.finditer(text, end, _line_end(text, end)))
+    return _QUOTED_PHRASE.match(text, end) is not None or _ux_guidance_after(text, end)
+
+
+def _last_ux_guidance_word(text: str, start: int, end: int) -> int:
+    # A guidance word cannot start inside another (each is all word characters, and one must follow a non-word
+    # character), so the non-overlapping hits from the line start hold every word a later position could find.
+    return max((word.start() for word in _UX_GUIDANCE_WORD.finditer(text, start, end)
+                if not _word_char_at(text, word.start() - 1) and not _word_char_at(text, word.end())), default=-1)
+
+
+_ux_guidance_after = LineTail(_last_ux_guidance_word)
 
 
 # exec_string: the stdlib original ended in `(?!(?-i:PRAGMA|...|REPLACE)\b)`: an upper-case SQL statement.
@@ -826,7 +843,8 @@ def _is_environ_get(text: str, m, end: int) -> bool:
 # unpinned_pip_install: the stdlib original ended in `(?!-r\s)(?!.*==)`, tried at every end of its greedy `\s+`.
 _PIP_INSTALL = re.compile(r'pip\s+install', re.IGNORECASE)
 _REQUIREMENTS_FLAG = re.compile(r'-r\s', re.IGNORECASE)
-_PIN_ON_LINE = re.compile(r'.*==')
+# `.*==` at an end: a `==` (overlapping ones included: `rfind`) starts between the end and the line end.
+_pin_after = LineTail(lambda text, start, end: text.rfind('==', start, end))
 
 
 def _pip_install_ends(text: str, m) -> range:
@@ -834,7 +852,7 @@ def _pip_install_ends(text: str, m) -> range:
 
 
 def _is_pinned_or_requirements(text: str, m, end: int) -> bool:
-    return _REQUIREMENTS_FLAG.match(text, end) is not None or _PIN_ON_LINE.match(text, end) is not None
+    return _REQUIREMENTS_FLAG.match(text, end) is not None or _pin_after(text, end)
 
 
 # destructive_root_rm: the stdlib original was `rm\s+-rf\s+((?:<operand>\s+)+?)?/(?(1)(?!/(?:\s|$)))` followed by
@@ -849,24 +867,56 @@ _RM_ROOT_ESCAPE = re.compile(_RM_SAFE_ROOTS + r'/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$
 def _rm_root_ends(text: str, m):
     """The ends the original reaches, in its order. Its lazy group takes one operand, then two, ... (each operand
     is one whitespace-separated token, so it has one end), and finally none; at each count the slash must follow.
-    After a later operand a bare `//` token is not the root; a slash not opening a safe root ends the match there;
-    one that does needs the `..` escape. A count can give one end, so the conditions are applied here."""
+    Each start of `rm -rf` on a line walks the operands that follow it, so the walk is shared through
+    `_next_rm_root` (one pass per text, not one per start)."""
     first = pos = _RM_HEAD.match(text, m.start()).end()
-    slashes = []
-    while (operand := _RM_OPERAND.match(text, pos)) is not None:
+    while (found := _next_rm_root(text, pos)) is not None:
+        pos, end = found
+        yield end
+    if (end := _rm_root_end(text, first, after_operand=False)) is not None:
+        yield end
+
+
+def _rm_root_end(text: str, slash: int, *, after_operand: bool):
+    """The end the original reaches through the slash expected at ``slash``, or None. After an operand a bare `//`
+    token is not the root; a slash not opening a safe root ends the match there; one that does needs the `..`
+    escape."""
+    if text[slash:slash + 1] != '/':
+        return None
+    if after_operand and text[slash + 1:slash + 2] == '/' and (
+            slash + 2 == len(text) or _SPACE_CHAR.match(text, slash + 2)):
+        return None
+    safe = _RM_SAFE_ROOT.match(text, slash + 1)
+    if safe is None or _word_char_at(text, safe.end()):
+        return slash + 1
+    escape = _RM_ROOT_ESCAPE.match(text, slash + 1)
+    return None if escape is None else escape.end()
+
+
+_rm_operand_walks = TextMemo()
+
+
+def _next_rm_root(text: str, pos: int):
+    """``(operand end, match end)`` for the first operand end after ``pos`` (one operand or more) through which the
+    original reaches an end, or None. Every position walked is remembered with the answer, so later starts that
+    reach it stop there."""
+    known = _rm_operand_walks(text)
+    walked = []
+    while pos not in known:
+        operand = _RM_OPERAND.match(text, pos)
+        if operand is None:
+            found = None
+            break
+        walked.append(pos)
         pos = operand.end()
-        slashes.append(pos)
-    for slash in (*slashes, first):
-        if text[slash:slash + 1] != '/':
-            continue
-        if slash != first and text[slash + 1:slash + 2] == '/' and (
-                slash + 2 == len(text) or _SPACE_CHAR.match(text, slash + 2)):
-            continue
-        safe = _RM_SAFE_ROOT.match(text, slash + 1)
-        if safe is None or _word_char_at(text, safe.end()):
-            yield slash + 1
-        elif (escape := _RM_ROOT_ESCAPE.match(text, slash + 1)) is not None:
-            yield escape.end()
+        if (end := _rm_root_end(text, pos, after_operand=True)) is not None:
+            found = (pos, end)
+            break
+    else:
+        found = known[pos]
+    for walked_pos in walked:
+        known[walked_pos] = found
+    return found
 
 
 # pattern id -> (ends, excluded) of the rule's ExclusionMatcher.

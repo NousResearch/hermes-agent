@@ -1,0 +1,24 @@
+name: yandex-alice
+repo: https://github.com/IvanovPetrE/hermes-yandex-alice
+sha: 031b4944e0d2b1b414c30c3b77ce301d33351243
+subdir: yandex-alice
+title: "Yandex Alice"
+description: "Yandex Alice as a Hermes gateway platform: a private Yandex Dialogs skill becomes a voice conversation with Hermes (not one-shot commands). The session stays open, follow-ups continue the same gateway session with its history, slow answers are held up to 3.5 s and then offered to wait, ask later or send to Telegram; long replies are spoken in parts, \"repeat\" reads the last reply from the Hermes session history, and details plus approval cards go to Telegram. Conversation state survives a gateway restart. Disclosure — listens on 127.0.0.1 only (platforms.yandex_alice.extra.port) for webhooks forwarded by your own HTTPS reverse proxy; the secret URL path (ALICE_PATH_SECRET) acts as a bearer secret, skill and owner user IDs are checked from the request body and Yandex request signatures are not verified; reads the profile's TELEGRAM_BOT_TOKEN and sends details, out-of-turn messages and approval cards to the Telegram Bot API through Hermes's Telegram sender (optional base URL, proxy and fallback IPs from the platform extra); reads the gateway config.yaml for profile_routes and, read-only, the target profile's session store; keeps conversation state, including the text of replies not yet picked up (up to 24 h), and the Telegram delivery queue in SQLite in the plugin's data folder; runs a 60 s background tick while the gateway runs; the pre_tool_call hook only rewrites cronjob_manage delivery targets that point back to the voice session to telegram:<ALICE_TELEGRAM_CHAT>; approvals are never granted by the plugin (it only denies when no card can be delivered or approvals are not configured) and cannot be given by voice; no shell commands, subprocesses, telemetry or self-update. Independent implementation, not a fork of alice-voice; some negative HTTP test scenarios were inspired by its tests (THIRD_PARTY_NOTICES.md)."
+maintainer: IvanovPetrE
+tier: community
+category: platform
+requires_hermes: ">=0.23.3"
+docs_url: https://github.com/IvanovPetrE/hermes-yandex-alice/blob/031b4944e0d2b1b414c30c3b77ce301d33351243/yandex-alice/README.md
+version: "0.1.0"
+readme: true
+platforms: [linux]
+known_issues:
+  - "Needs a private skill in Yandex Dialogs, an HTTPS reverse proxy you control and one owner account; the voice phrases and intents are Russian."
+  - "The webhook URL contains a bearer secret. Yandex request signatures are not verified; body skill/user IDs are not cryptographic authentication."
+  - "In-process only: platform adapters run on the gateway's event loop, and the Telegram handler factory receives the native Application; not supported by plugins.isolation: host."
+  - "Tested with the gateway compatibility suite on Hermes v0.23.3 (Linux); voice turns over 4.5 s rely on the hold-and-offer flow, not on Alice waiting."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: [ALICE_PATH_SECRET, ALICE_SKILL_ID]

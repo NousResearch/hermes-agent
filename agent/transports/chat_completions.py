@@ -296,8 +296,15 @@ def _sanitize_gemini_tool_content(content: Any) -> Any:
     return content
 
 
-def _sanitize_gemini_tool_message(msg: Any, model: Any) -> dict | None:
-    if not isinstance(msg, dict) or msg.get("role") != "tool" or not _model_consumes_thought_signature(model):
+def _sanitize_gemini_tool_message(msg: Any) -> dict | None:
+    """Re-encode deep tool-result JSON on an already route-gated Gemini pass.
+
+    The caller (``convert_messages``) has consumed the full (model, base_url, provider)
+    route triple, so no model-only re-gate here: alias model ids without "gemini" in
+    the name (vertex routes) would silently skip the flattening. Pass the sanitized
+    copy so stripped wire keys stay stripped when the content is rewritten.
+    """
+    if not isinstance(msg, dict) or msg.get("role") != "tool":
         return None
     content = _sanitize_gemini_tool_content(msg.get("content"))
     return None if content == msg.get("content") else {**msg, "content": content}
@@ -595,7 +602,7 @@ class ChatCompletionsTransport(ProviderTransport):
                            for m in messages]
         if _model_consumes_thought_signature(kwargs.get("model"), kwargs.get("base_url"), provider):
             sanitized_pairs = [
-                (m, _sanitize_gemini_tool_message(m, kwargs.get("model")) or s)
+                (m, _sanitize_gemini_tool_message(s or m))
                 for m, s in sanitized_pairs
             ]
         if all(s is None for _, s in sanitized_pairs):

@@ -1883,7 +1883,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         transcoded_path: Optional[str] = None
         ext = Path(audio_path).suffix.lower()
         if ext not in _FEISHU_OPUS_UPLOAD_EXTENSIONS:
-            from gateway.platforms.base import transcode_to_ogg_opus
+            from gateway.platforms.voice_transcode import transcode_to_ogg_opus
             transcoded_path = await asyncio.to_thread(transcode_to_ogg_opus, audio_path)
             if transcoded_path:
                 audio_path = transcoded_path

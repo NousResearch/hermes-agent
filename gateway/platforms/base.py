@@ -58,40 +58,6 @@ _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 
 
-def transcode_to_ogg_opus(path: str, *, bitrate: str = "32k", timeout: int = 60,
-                          output_path: str | None = None) -> str | None:
-    """Best-effort ffmpeg transcode to Ogg/Opus (voip-tuned) for native voice bubbles: the written
-    ``.ogg`` path (a NEW temp file unless ``output_path`` is given; caller cleans up), or None when
-    ffmpeg is missing/fails. ``output_path`` may equal ``path`` (in-place container repair) — the
-    encode goes through a sidecar so a failed run never truncates the source. Blocking (to_thread)."""
-    import shutil as _shutil
-    ffmpeg = _shutil.which("ffmpeg")
-    if not ffmpeg:
-        return None
-    if output_path is None:
-        fd, ogg_path = tempfile.mkstemp(prefix="voice_transcode_", suffix=".ogg")
-        os.close(fd)
-    else:
-        ogg_path = output_path
-    in_place = os.path.abspath(str(path)) == os.path.abspath(ogg_path)
-    work_path = ogg_path + ".tmp.ogg" if in_place else ogg_path
-    try:
-        result = subprocess.run(
-            [ffmpeg, "-v", "error", "-y", "-i", str(path),
-             "-acodec", "libopus", "-ac", "1", "-b:a", bitrate, "-vbr", "on",
-             "-application", "voip", "-compression_level", "10", "-f", "ogg", work_path],
-            capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL, check=False)
-        if result.returncode == 0 and os.path.getsize(work_path) > 0:
-            if in_place:
-                os.replace(work_path, ogg_path)
-            return ogg_path
-        logger.warning("ffmpeg Ogg/Opus transcode of %s failed (returncode=%s): %s", path, result.returncode,
-                       (result.stderr or b"").decode("utf-8", errors="replace")[:500])
-    except Exception:
-        logger.warning("voice transcode to Ogg/Opus failed for %s", path, exc_info=True)
-    with contextlib.suppress(OSError):
-        os.unlink(work_path)
-    return None
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
 # History dedup is best-effort: stay well below the Discord heartbeat watchdog and fail open.
 _HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS = 5.0
@@ -210,18 +176,16 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
 
 
 def build_auto_tts_output_path(platform) -> str:
-    """Unique temp output path for gateway auto-TTS: ``.ogg`` for ``OPUS_VOICE_PLATFORMS``
-    (the tool's ``_repair_ogg_container`` then guarantees real Opus bytes), else ``.mp3``.
+    """Unique temp output path for gateway auto-TTS, with the extension the platform's native voice
+    bubbles need (``tools.tts_tool.VOICE_CONTAINER_BY_PLATFORM`` — the single source of truth), else
+    ``.mp3``. For Opus platforms the tool's ``_repair_ogg_container`` then guarantees real Opus bytes
+    even from MP3-only backends like Edge TTS.
     Platform-awareness lives HERE because ``_clear_session_env`` wipes the TTS tool's
     ``HERMES_SESSION_PLATFORM`` contextvar before the post-handler auto-TTS block runs.
-
-    Platforms whose native voice bubbles require Ogg/Opus (``tools.tts_tool.OPUS_VOICE_PLATFORMS`` — the
-    single source of truth) get an explicit ``.ogg`` path; the tool's central container repair
-    (``_repair_ogg_container``) then guarantees real Ogg/Opus bytes for every provider, including MP3-only
-    backends like Edge TTS. Everything else keeps the MP3 default. See #36685, #57049.
+    See #36685, #57049.
     """
-    from tools.tts_tool import OPUS_VOICE_PLATFORMS
-    ext = "ogg" if _platform_name(platform) in OPUS_VOICE_PLATFORMS else "mp3"
+    from tools.tts_tool import VOICE_CONTAINER_BY_PLATFORM
+    ext = VOICE_CONTAINER_BY_PLATFORM.get(_platform_name(platform), "mp3")
     audio_path = os.path.join(
         tempfile.gettempdir(), "hermes_voice", f"tts_reply_{uuid.uuid4().hex[:12]}.{ext}")
     os.makedirs(os.path.dirname(audio_path), exist_ok=True)

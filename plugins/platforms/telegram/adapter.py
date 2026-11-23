@@ -4808,7 +4808,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             # sendVoice only accepts Ogg/Opus: an explicit voice-bubble request (is_voice) transcodes via
             # ffmpeg; otherwise route by extension (.mp3/.m4a → sendAudio, others → document).
             if kwargs.get("is_voice") and os.path.splitext(audio_path)[1].lower() not in (".ogg", ".opus"):
-                from gateway.platforms.base import transcode_to_ogg_opus
+                from gateway.platforms.voice_transcode import transcode_to_ogg_opus
                 _transcoded_voice_path = await asyncio.to_thread(transcode_to_ogg_opus, audio_path)
                 if _transcoded_voice_path:
                     audio_path = _transcoded_voice_path

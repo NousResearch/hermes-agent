@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 
 def test_failed_in_place_repair_keeps_the_source(monkeypatch, tmp_path):
-    from gateway.platforms.base import transcode_to_ogg_opus
+    from gateway.platforms.voice_transcode import transcode_to_ogg_opus
 
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ffmpeg")
     monkeypatch.setattr("gateway.platforms.base.subprocess.run",

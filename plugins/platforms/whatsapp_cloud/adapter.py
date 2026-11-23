@@ -43,7 +43,8 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import config_connected_extra
 from gateway.platforms._shared import secrets_match
 from agent.i18n import t
-from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
+from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult
+from gateway.platforms.voice_transcode import transcode_to_ogg_opus
 from gateway.platforms.base_exec_approval import ea_header_text
 from gateway.platforms.helpers import bounded_put, caption_is_command
 from gateway.platforms.event import MessageEvent, MessageType

@@ -72,8 +72,9 @@ except ImportError:
 
 from gateway.approval_actor import approval_refusal, picker_refusal, refusal_text
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.voice_transcode import transcode_to_ogg_opus
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, transcode_to_ogg_opus,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, safe_proxy_url_for_log, ssrf_redirect_guard, describe_proxy_error,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome

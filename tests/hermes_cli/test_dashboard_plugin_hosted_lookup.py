@@ -114,3 +114,20 @@ def test_an_updated_plugin_is_forwarded_to_its_new_backend_file(daemon, scans, m
     assert len(scans) == 1
     assert ping() == {"api": "renamed_api.py"}
     assert len(scans) == 1
+
+
+def test_an_update_that_changes_only_plugin_yaml_is_read_on_the_next_request(daemon, scans):
+    """The stamp covers plugin.yaml too: an update that renames the plugin to a name listed in
+    ``plugins.disabled`` turns it off on the next request, with one rescan."""
+    plugin = _install(daemon.launch)
+    _plugins(daemon.launch, enabled=["dash-dir"], disabled=["dash-tool"], isolation="host")
+    assert daemon.client.get(PING, headers=daemon.owner).json() == {"hosted": True}
+    forwarded = len(daemon.hosted)
+
+    (plugin / "plugin.yaml").write_text("name: dash-tool\nversion: 1.0.0\n")
+    scans.clear()
+    response = daemon.client.get(PING, headers=daemon.owner)
+
+    assert response.status_code == 404
+    assert len(daemon.hosted) == forwarded
+    assert len(scans) == 1

@@ -32,7 +32,7 @@ pub(super) struct State {
 
 /// The hotkey arrives while another app is in front: bring Hermes forward so
 /// the capture window takes keyboard focus.
-fn activate_app() {
+pub(super) fn activate_app() {
     #[cfg(target_os = "macos")]
     if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
         #[allow(deprecated)]

@@ -1496,7 +1496,16 @@ impl Hermes {
             }
             Message::Hud(action) => { let window = self.webview.window; if matches!(action, hud::Action::Toggle) && !self.hud.on { self.screen = Screen::Chat; } let busy = self.running || self.approval.is_some(); return self.hud.update(window, busy, action, Message::Hud); }
             // Only the app window hosts the preview webview; the HUD band never does.
-            Message::WindowId(id) => { if self.webview.window.is_none() && id.is_some() { self.webview.window = id; } return self.sync_webview(); }
+            Message::WindowId(id) => {
+                // The first window: come forward like any launched app (Electron does), so the window
+                // opens on the Space the user is looking at instead of behind a full-screen app.
+                if self.webview.window.is_none() && let Some(main) = id {
+                    self.webview.window = id;
+                    quick_entry::activate_app();
+                    return Task::batch([iced::window::gain_focus(main), self.sync_webview()]);
+                }
+                return self.sync_webview();
+            }
             Message::WindowClose(id) if self.overlays.pet == Some(id) => return self.update(Message::Overlay(overlays::Action::TogglePet)),
             Message::WindowClose(id) if self.overlays.wake == Some(id) => return Task::none(),
             Message::WindowClose(id) if self.quick_entry.window == Some(id) => return self.update(Message::QuickEntry(quick_entry::Action::Dismiss)),

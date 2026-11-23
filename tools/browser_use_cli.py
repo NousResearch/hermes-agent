@@ -780,19 +780,13 @@ def _no_code_error(code: str) -> Optional[str]:
     return None
 
 
-def _launch_refusal(code: str, verdict, cmd: Optional[list[str]], session: str,
-                    task_id: Optional[str]) -> Optional[str]:
+def _launch_refusal(code: str, session: str, task_id: Optional[str]) -> Optional[str]:
     """The tool error that stops this call before anything launches, or None.
 
     The user's approval comes last, so a call that would fail anyway never asks. The harness runs
     the code, and the workspace's ``agent_helpers.py`` it auto-imports, as Python on this host
     whatever browser it drives, so both are approved like an execute_code script (#157913)."""
     from tools.registry import tool_error
-    if verdict.blocked:
-        return tool_error(verdict.blocked)
-    if not cmd:
-        return tool_error("browser-harness is missing from Hermes's Python environment. "
-                          "Run `hermes update` to re-sync it.")
     if session and not _SESSION_RE.match(session):
         return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                           "dashes, or underscores (e.g. 'r7k2').")
@@ -832,8 +826,13 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     # The verdict is carried into the route, never re-derived: the predicate resolves DNS, so a second
     # evaluation could relax the floor and still pick the cloud for a rebinding host.
     verdict = _code_url_verdict(code)
+    if verdict.blocked:
+        return tool_error(verdict.blocked)
     cmd = _find_cli()
-    if refusal := _launch_refusal(code, verdict, cmd, session, task_id):
+    if not cmd:
+        return tool_error("browser-harness is missing from Hermes's Python environment. "
+                          "Run `hermes update` to re-sync it.")
+    if refusal := _launch_refusal(code, session, task_id):
         return refusal
     # One endpoint per call: any private URL sends the whole call to the local sidecar. A call with no URL
     # literal stays on the route the previous call took.

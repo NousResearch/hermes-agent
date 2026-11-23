@@ -234,6 +234,19 @@ curl -s "http://localhost:8888/search?q=test&format=json" | python3 -c \
 
 You should see something like `10 results`. If you get a `403 Forbidden`, JSON format is still disabled — recheck step 4.
 
+If you get `429 Too Many Requests` (Hermes reports `SearXNG returned HTTP 429`), the instance's **limiter** is on. The container above ships with it off; it is on when `settings.yml` has `limiter: true` (SearXNG's own install script sets it) or `public_instance: true` under `server:`, or the container gets `SEARXNG_LIMITER=true`. The limiter is SearXNG's bot detection: it refuses requests that don't look like a browser, and it caps `format=json` requests at 4 per hour per IP even when they do. Nothing on the Hermes side can lift that; let Hermes through in SearXNG's configuration, with one of:
+
+- **Add the Hermes host to the pass list** (recommended when other people can reach the instance). Create `limiter.toml` next to `settings.yml` (`~/searxng/searxng/limiter.toml` in the setup above), then restart SearXNG:
+
+  ```toml
+  [botdetection.ip_lists]
+  pass_ip = ['127.0.0.1']   # the address SearXNG sees Hermes connect from
+  ```
+
+  Listed addresses skip every limiter check (no header filtering, no rate limit). List only the address Hermes arrives from: with SearXNG in Docker that is usually the Docker network's gateway (such as `172.17.0.1`), not `127.0.0.1`. If other clients reach SearXNG through the same address (Docker Desktop and rootless Docker route every published-port connection through the gateway), exempting it exempts them too: publish the port on `127.0.0.1:8888:8080` or keep the limiter for them. If a reverse proxy sits in front of SearXNG, every visitor can arrive from the proxy's address, and exempting that address opens the instance to everyone: first add the proxy to `trusted_proxies` under `[botdetection]` in the same file, so SearXNG sees each client's real address.
+
+- **Turn the limiter off**: set `limiter: false` under `server:` in `settings.yml`, make sure `public_instance` is not `true` there (it turns the limiter back on), and restart. This removes bot detection and rate limiting for every client, so do it only on an instance nobody else can reach (localhost, your LAN, or a VPN).
+
 **7. Configure Hermes:**
 
 ```bash
@@ -262,7 +275,7 @@ SEARXNG_URL=https://searx.example.com
 ```
 
 :::caution Public instances
-Public instances have rate limits, variable uptime, and may disable JSON format at any time. For production use, self-hosting is strongly recommended.
+Public instances have rate limits, variable uptime, and may disable JSON format at any time. One that runs the limiter answers API clients like Hermes with `HTTP 429`, and only its operator can change that. For production use, self-hosting is strongly recommended.
 :::
 
 ---

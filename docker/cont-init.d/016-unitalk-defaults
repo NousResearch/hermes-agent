@@ -1,0 +1,12 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Unitalk distribution defaults for homes created before the default existed.
+# Runs after 01-hermes-setup (volume chown, first-boot seeding, schema
+# migration) and before s6-rc starts the services, so the agent boots with
+# them. Idempotent; never overrides a setting the home already chose.
+if [ "$(id -u)" = 0 ]; then
+    s6-setuidgid hermes /opt/hermes/.venv/bin/python /opt/hermes/scripts/unitalk_apply_defaults.py
+else
+    /opt/hermes/.venv/bin/python /opt/hermes/scripts/unitalk_apply_defaults.py
+fi
+exit 0

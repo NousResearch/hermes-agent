@@ -136,3 +136,5 @@ def test_template_seed_exposes_unitalk_settings_to_cli_and_gateway(tmp_path, mon
         assert config["gateway"]["allow_all_users"] is True
         assert config["webapp"]["host"] == "0.0.0.0"
         assert config["webapp"]["port"] == 9121
+        assert config["image_gen"]["provider"] == "openai"
+        assert config["image_gen"]["openai"]["key_env"] == "UNITALK_API_KEY"

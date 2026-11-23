@@ -1,6 +1,13 @@
 use std::{env, path::PathBuf, process::Command};
 
 fn main() {
+    // Windows: embed a Common Controls v6 manifest dependency in every
+    // linked binary, unit-test harness included. Without it, imports that resolve into
+    // comctl32 v6 fail at load with STATUS_DLL_INIT_FAILED (0xc0000142).
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") && env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'");
+    }
     println!("cargo:rerun-if-env-changed=HERMES_DESKTOP_VERSION");
     println!("cargo:rerun-if-env-changed=HERMES_DESKTOP_SOURCE_REVISION");
     for key in ["HERMES_DESKTOP_VERSION", "HERMES_DESKTOP_SOURCE_REVISION"] {

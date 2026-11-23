@@ -11,6 +11,7 @@ import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { CROSS_GATEWAY_GROUP_LOCALES } from './cross-gateway-locales'
 import { GROUP_SURFACE_RU } from './group-surface-ru'
 import { type BotsMessages } from './i18n-messages'
+import { TEAMMATE_WAIT_LOCALES } from './teammate-wait-locales'
 
 /** One (1, 21), few (2–4, 22–24) or many (0, 5–20, 25…) form of a noun after a count. */
 function russianNoun(count: number, one: string, few: string, many: string): string {
@@ -38,6 +39,7 @@ function everyWeekday(day: string): string {
 export const BOTS_RU: BotsMessages = {
   canonical: CANONICAL_GROUP_LOCALES.ru,
   crossGateway: CROSS_GATEWAY_GROUP_LOCALES.ru,
+  waiting: TEAMMATE_WAIT_LOCALES.ru,
   editor: {
     fullConfigHint: 'Для полной настройки нужен более новый шлюз (перезапустите его после обновления Hermes).',
     liveCapabilities: 'Возможности (применяются сразу — навыки, инструменты, MCP)',
@@ -162,11 +164,6 @@ export const BOTS_RU: BotsMessages = {
   },
   group: GROUP_SURFACE_RU.group,
   tools: {
-    installHint: name => `Установить «${name}» и добавить в список выше`,
-    installed: name => `Навык «${name}» установлен`,
-    installFailed: name => `Не удалось установить «${name}»`,
-    searchHint: 'Поиск в сообществе и известных источниках — может занять около 10 секунд…',
-    resizeHint: 'Потяните за угол, чтобы изменить размер.',
     addServerFailed: 'Не удалось добавить сервер',
     noTarget: 'Нет целевого профиля',
     setKeyFailed: key => `Не удалось задать ${key}`,
@@ -182,9 +179,7 @@ export const BOTS_RU: BotsMessages = {
     setupFailed: 'Настройка не удалась',
     signIn: 'Войти…',
     setUp: 'Настроить…',
-    skillsHub: 'Хаб навыков Hermes',
     filterSkills: 'Фильтр навыков…',
-    searchHub: 'Поиск в хабе (сообщество и известные источники)…',
     noMcpServers: 'Нет MCP-серверов: ни настроенных, ни в каталоге.'
   },
   screen: {

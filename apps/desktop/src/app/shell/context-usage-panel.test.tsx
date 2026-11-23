@@ -118,6 +118,25 @@ describe('ContextUsagePanel', () => {
       expect(screen.getByTestId('context-panel-compressions').textContent).toBe(`Compressions: ${compressions}`)
     }
   })
+
+  it('shows cache hit rate and throughput only when reported by the backend', () => {
+    const { container, rerender } = render(<ContextUsagePanel breakdown={breakdown} loading={false} usage={usage} />)
+
+    expect(container.querySelector('[data-slot="context-usage-telemetry"]')).toBeNull()
+
+    rerender(
+      <ContextUsagePanel breakdown={breakdown} loading={false} usage={{ ...usage, avg_tps: 41.6, cache_hit_pct: 87 }} />
+    )
+
+    expect(screen.getByTestId('context-panel-cache-hit').textContent).toContain('87%')
+    expect(screen.getByTestId('context-panel-tps').textContent).toContain('42 t/s')
+
+    // Partial telemetry renders only the reported metric without fabricating the other.
+    rerender(<ContextUsagePanel breakdown={breakdown} loading={false} usage={{ ...usage, cache_hit_pct: 64 }} />)
+
+    expect(screen.getByTestId('context-panel-cache-hit').textContent).toContain('64%')
+    expect(screen.queryByTestId('context-panel-tps')).toBeNull()
+  })
 })
 
 describe('ContextMeterDetail', () => {

@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
 import { Loader2 } from '@/lib/icons'
+import { cacheHitLabel, tokensPerSecondLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
 import type { ContextBreakdown, ContextUsageCategory, UsageStats } from '@/types/hermes'
 
@@ -30,6 +31,9 @@ export function ContextUsagePanel({ breakdown, compact, loading, usage }: Contex
   const contextMax = usage.context_max ?? 0
   const contextUsed = usage.context_used ?? 0
   const contextPercent = Math.max(0, Math.min(100, Math.round(usage.context_percent ?? 0)))
+  const cacheHit = cacheHitLabel(usage)
+  const tokensPerSecond = tokensPerSecondLabel(usage)
+  const showTelemetry = Boolean(cacheHit || tokensPerSecond)
 
   const categories = useMemo(
     () =>
@@ -91,6 +95,35 @@ export function ContextUsagePanel({ breakdown, compact, loading, usage }: Contex
       {loading && !categories.length && <p className="text-[0.6875rem] text-muted-foreground">{copy.loading}</p>}
 
       {!loading && !categories.length && <p className="text-[0.6875rem] text-muted-foreground">{copy.empty}</p>}
+
+      {showTelemetry && (
+        <div
+          className="flex flex-col gap-1 border-t border-(--ui-stroke-tertiary) pt-2 text-[0.6875rem]"
+          data-slot="context-usage-telemetry"
+        >
+          {cacheHit && (
+            <div
+              className="flex items-center justify-between gap-2"
+              data-testid="context-panel-cache-hit"
+              title={t.shell.statusbar.cacheHitRateTitle}
+            >
+              <span className="text-muted-foreground">{t.shell.statusbar.toggleCacheHitRate}</span>
+              <span className="tabular-nums text-foreground">{cacheHit}</span>
+            </div>
+          )}
+
+          {tokensPerSecond && (
+            <div
+              className="flex items-center justify-between gap-2"
+              data-testid="context-panel-tps"
+              title={t.shell.statusbar.tokensPerSecondTitle}
+            >
+              <span className="text-muted-foreground">{t.shell.statusbar.toggleTokensPerSecond}</span>
+              <span className="tabular-nums text-foreground">{tokensPerSecond}</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {compact && <CompactConversationRow compact={compact} />}
     </div>

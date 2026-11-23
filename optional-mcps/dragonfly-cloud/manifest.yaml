@@ -1,0 +1,45 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: dragonfly-cloud
+description: >-
+  Inspect, debug, and manage Dragonfly Cloud datastores, backups, and networks.
+source: https://www.dragonflydb.io/mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 with PKCE (S256). The authorization
+# server identifies clients with Client ID Metadata Documents and advertises
+# `client_id_metadata_document_supported: true`; it does not offer Dynamic
+# Client Registration. Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh.
+transport:
+  type: http
+  url: https://api.dragonflydb.cloud/v1/mcp
+
+auth:
+  type: oauth
+  # No `provider:` — native MCP OAuth, not a third-party provider.
+
+# Tool selection at install time: `default_enabled` is left unset so the
+# install-time checklist starts with everything pre-checked. Tools the signed-in
+# user is not allowed to use are not advertised, and consent is read-only
+# (mcp:read) unless the user also grants mcp:write.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - dragonfly
+    - dragonfly cloud
+    - dragonflydb
+  hosts:
+    - dragonflydb.io
+    - dragonflydb.cloud
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to Dragonfly Cloud
+  (or run `hermes mcp login dragonfly-cloud`). Choose read-only or read and
+  write access, then restart the session so tools load.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure dragonfly-cloud

@@ -19,7 +19,8 @@ const DAY = 24 * 60 * MINUTE
 const NOON = Date.UTC(2026, 8, 27, 12)
 const calls: [string, Record<string, unknown>][] = []
 const flush = () => vi.runAllTimersAsync()
-const histograms = () => calls.filter(([method]) => method === 'shared_metrics.desktop_long_frames').map(([, params]) => params)
+const histograms = () =>
+  calls.filter(([method]) => method === 'shared_metrics.desktop_long_frames').map(([, params]) => params)
 let visibility: DocumentVisibilityState
 
 beforeEach(() => {
@@ -31,11 +32,13 @@ beforeEach(() => {
   calls.length = 0
   visibility = 'visible'
   vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility)
-  bindDesktopMetrics(vi.fn(async (method: string, params?: Record<string, unknown>) => {
-    calls.push([method, params ?? {}])
+  bindDesktopMetrics(
+    vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push([method, params ?? {}])
 
-    return { recorded: true } as never
-  }))
+      return { recorded: true } as never
+    })
+  )
 })
 
 afterEach(() => {
@@ -91,11 +94,14 @@ describe('visible time ownership', () => {
     vi.setSystemTime(NOON + 9 * MINUTE)
 
     if (transition === 'profile change') {
-      bindDesktopMetrics(vi.fn(async (method: string, params?: Record<string, unknown>) => {
-        calls.push([method, params ?? {}])
+      bindDesktopMetrics(
+        vi.fn(async (method: string, params?: Record<string, unknown>) => {
+          calls.push([method, params ?? {}])
 
-        return { recorded: true } as never
-      }), 'connection|other-profile')
+          return { recorded: true } as never
+        }),
+        'connection|other-profile'
+      )
       vi.setSystemTime(NOON + 16 * MINUTE)
     }
 
@@ -154,25 +160,30 @@ describe('visible time ownership', () => {
     let withdrawing = false
     let withdrawn = false
 
-    bindDesktopMetrics(vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push([method, params ?? {}])
+    bindDesktopMetrics(
+      vi.fn(async (method: string, params?: Record<string, unknown>) => {
+        calls.push([method, params ?? {}])
 
-      if (withdrawn) {
-        afterWithdrawal.push([method, params ?? {}])
-      }
-
-      if (!withdrawing && (method === 'shared_metrics.desktop_daily' || method === 'shared_metrics.desktop_long_frames')) {
-        withdrawing = true
-        await setMetricsGate(captureDesktopMetricsGate, 'off')
-        withdrawn = true
-
-        if (reEnable) {
-          await setMetricsGate(captureDesktopMetricsGate, 'on')
+        if (withdrawn) {
+          afterWithdrawal.push([method, params ?? {}])
         }
-      }
 
-      return { recorded: true } as never
-    }))
+        if (
+          !withdrawing &&
+          (method === 'shared_metrics.desktop_daily' || method === 'shared_metrics.desktop_long_frames')
+        ) {
+          withdrawing = true
+          await setMetricsGate(captureDesktopMetricsGate, 'off')
+          withdrawn = true
+
+          if (reEnable) {
+            await setMetricsGate(captureDesktopMetricsGate, 'on')
+          }
+        }
+
+        return { recorded: true } as never
+      })
+    )
     await setMetricsGate(captureDesktopMetricsGate, 'on')
     trackDesktopVisibleTime(11 * MINUTE)
     recordAction('composer.send', 'click')
@@ -194,18 +205,27 @@ describe('visible time ownership', () => {
       vi.setSystemTime(NOON + 2 * DAY)
       tickDesktopMetrics()
       await flush()
-      expect(afterWithdrawal).toEqual([['shared_metrics.desktop_long_frames', {
-        day: '2026-09-28', visible_ms: MINUTE, frames: [{ bucket: '50ms_to_100ms', count: 1 }]
-      }]])
+      expect(afterWithdrawal).toEqual([
+        [
+          'shared_metrics.desktop_long_frames',
+          {
+            day: '2026-09-28',
+            visible_ms: MINUTE,
+            frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+          }
+        ]
+      ])
     }
   })
 
   it('migrates a persisted pre-journal histogram without losing or replaying its counts', async () => {
     await setMetricsGate(captureDesktopMetricsGate, 'on')
 
-    const key = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)!).find(candidate =>
-      candidate.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`) &&
-      !candidate.slice(DESKTOP_METRICS_STATE_KEY.length + 1).includes(':'))!
+    const key = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)!).find(
+      candidate =>
+        candidate.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`) &&
+        !candidate.slice(DESKTOP_METRICS_STATE_KEY.length + 1).includes(':')
+    )!
 
     const legacy = JSON.parse(localStorage.getItem(key)!)
 
@@ -217,9 +237,13 @@ describe('visible time ownership', () => {
     await flush()
     tickDesktopMetrics()
     await flush()
-    expect(histograms()).toEqual([{
-      day: '2026-09-27', visible_ms: 3 * MINUTE, frames: [{ bucket: '100ms_to_250ms', count: 7 }]
-    }])
+    expect(histograms()).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: 3 * MINUTE,
+        frames: [{ bucket: '100ms_to_250ms', count: 7 }]
+      }
+    ])
   })
 
   it('waits for durable legacy adoption before freezing frames while daily activity stays pending', async () => {
@@ -235,9 +259,11 @@ describe('visible time ownership', () => {
     recordLongFrames([70])
     await flush()
 
-    const key = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)!).find(candidate =>
-      candidate.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`) &&
-      !candidate.slice(DESKTOP_METRICS_STATE_KEY.length + 1).includes(':'))!
+    const key = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)!).find(
+      candidate =>
+        candidate.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`) &&
+        !candidate.slice(DESKTOP_METRICS_STATE_KEY.length + 1).includes(':')
+    )!
 
     const legacy = JSON.parse(localStorage.getItem(key)!)
 
@@ -266,10 +292,16 @@ describe('visible time ownership', () => {
     await flush()
     tickDesktopMetrics()
     await flush()
-    expect(histograms()).toEqual([{
-      day: '2026-09-27', visible_ms: 3 * MINUTE,
-      frames: [{ bucket: '50ms_to_100ms', count: 1 }, { bucket: '100ms_to_250ms', count: 7 }]
-    }])
+    expect(histograms()).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: 3 * MINUTE,
+        frames: [
+          { bucket: '50ms_to_100ms', count: 1 },
+          { bucket: '100ms_to_250ms', count: 7 }
+        ]
+      }
+    ])
     expect(JSON.parse(localStorage.getItem(key)!).pending).toHaveLength(1)
     acceptDaily = true
     tickDesktopMetrics()
@@ -302,9 +334,11 @@ describe('visible time ownership', () => {
     recordLongFrames([70])
     await flush()
 
-    const key = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)!).find(candidate =>
-      candidate.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`) &&
-      !candidate.slice(DESKTOP_METRICS_STATE_KEY.length + 1).includes(':'))!
+    const key = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)!).find(
+      candidate =>
+        candidate.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`) &&
+        !candidate.slice(DESKTOP_METRICS_STATE_KEY.length + 1).includes(':')
+    )!
 
     const legacy = JSON.parse(localStorage.getItem(key)!)
 
@@ -333,8 +367,12 @@ describe('visible time ownership', () => {
     tickDesktopMetrics()
     await flush()
     expect(histograms().at(-1)).toEqual({
-      day: '2026-09-28', visible_ms: 3 * MINUTE,
-      frames: [{ bucket: '50ms_to_100ms', count: 1 }, { bucket: '100ms_to_250ms', count: 7 }]
+      day: '2026-09-28',
+      visible_ms: 3 * MINUTE,
+      frames: [
+        { bucket: '50ms_to_100ms', count: 1 },
+        { bucket: '100ms_to_250ms', count: 7 }
+      ]
     })
   })
 
@@ -374,11 +412,16 @@ describe('visible time ownership', () => {
       tickDesktopMetrics()
       peer.tickDesktopMetrics()
       await flush()
-      expect([...accepted.values()]).toEqual([{
-        day: '2026-09-27',
-        visible_ms: 6 * MINUTE,
-        frames: [{ bucket: '50ms_to_100ms', count: 2 }, { bucket: '100ms_to_250ms', count: 1 }]
-      }])
+      expect([...accepted.values()]).toEqual([
+        {
+          day: '2026-09-27',
+          visible_ms: 6 * MINUTE,
+          frames: [
+            { bucket: '50ms_to_100ms', count: 2 },
+            { bucket: '100ms_to_250ms', count: 1 }
+          ]
+        }
+      ])
     } finally {
       peer.resetDesktopMetricsForTests()
     }
@@ -387,9 +430,11 @@ describe('visible time ownership', () => {
   it('retains the legacy payload when its renderer dies before queued adoption can acquire ownership', async () => {
     await setMetricsGate(captureDesktopMetricsGate, 'on')
 
-    const key = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)!).find(candidate =>
-      candidate.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`) &&
-      !candidate.slice(DESKTOP_METRICS_STATE_KEY.length + 1).includes(':'))!
+    const key = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)!).find(
+      candidate =>
+        candidate.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`) &&
+        !candidate.slice(DESKTOP_METRICS_STATE_KEY.length + 1).includes(':')
+    )!
 
     const legacy = JSON.parse(localStorage.getItem(key)!)
 
@@ -419,141 +464,161 @@ describe('visible time ownership', () => {
       await flush()
       replacement.tickDesktopMetrics()
       await flush()
-      expect(histograms()).toEqual([{
-        day: '2026-09-27', visible_ms: 3 * MINUTE, frames: [{ bucket: '100ms_to_250ms', count: 7 }]
-      }])
+      expect(histograms()).toEqual([
+        {
+          day: '2026-09-27',
+          visible_ms: 3 * MINUTE,
+          frames: [{ bucket: '100ms_to_250ms', count: 7 }]
+        }
+      ])
     } finally {
       replacement.resetDesktopMetricsForTests()
     }
   })
 
-  it.each([false, true])('requires a fresh positive consent read after peer GC (withdrawn meanwhile: %s)', async withdrawn => {
-    await setMetricsGate(captureDesktopMetricsGate, 'on')
-    trackDesktopVisibleTime(11 * MINUTE)
-    recordLongFrames([6000])
-    vi.setSystemTime(NOON + 9 * DAY)
-    vi.resetModules()
-    // A second renderer performs retention cleanup while the first is frozen.
-    const peer = await import('./desktop-metrics')
+  it.each([false, true])(
+    'requires a fresh positive consent read after peer GC (withdrawn meanwhile: %s)',
+    async withdrawn => {
+      await setMetricsGate(captureDesktopMetricsGate, 'on')
+      trackDesktopVisibleTime(11 * MINUTE)
+      recordLongFrames([6000])
+      vi.setSystemTime(NOON + 9 * DAY)
+      vi.resetModules()
+      // A second renderer performs retention cleanup while the first is frozen.
+      const peer = await import('./desktop-metrics')
 
-    try {
-      peer.bindDesktopMetrics(async (method, params = {}) => {
+      try {
+        peer.bindDesktopMetrics(async (method, params = {}) => {
+          calls.push([method, params])
+
+          return { recorded: true } as never
+        })
+        await setMetricsGate(peer.captureDesktopMetricsGate, 'on')
+        await flush()
+
+        if (withdrawn) {
+          await setMetricsGate(peer.captureDesktopMetricsGate, 'off')
+          await setMetricsGate(peer.captureDesktopMetricsGate, 'on')
+        }
+
+        recordLongFrames([6000]) // A stale collector cannot treat missing ownership as renewed consent.
+        // useDesktopMetrics' focus refresh reads backend consent, then calls this same-on setter.
+        await setMetricsGate(captureDesktopMetricsGate, 'on')
+        vi.setSystemTime(NOON + 9 * DAY + MINUTE)
+        recordLongFrames([70])
+        vi.setSystemTime(NOON + 10 * DAY)
+        tickDesktopMetrics()
+        await flush()
+        expect(histograms()).toEqual([
+          {
+            day: new Date(NOON + 9 * DAY).toISOString().slice(0, 10),
+            visible_ms: MINUTE,
+            frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+          }
+        ])
+      } finally {
+        peer.resetDesktopMetricsForTests()
+      }
+    }
+  )
+
+  it.each(['before purge', 'while purge waits'])(
+    'rejects an old off result when a peer replaces its cohort %s',
+    async timing => {
+      const request = async (method: string, params: Record<string, unknown> = {}) => {
         calls.push([method, params])
 
         return { recorded: true } as never
-      })
-      await setMetricsGate(peer.captureDesktopMetricsGate, 'on')
-      await flush()
-
-      if (withdrawn) {
-        await setMetricsGate(peer.captureDesktopMetricsGate, 'off')
-        await setMetricsGate(peer.captureDesktopMetricsGate, 'on')
       }
 
-      recordLongFrames([6000]) // A stale collector cannot treat missing ownership as renewed consent.
-      // useDesktopMetrics' focus refresh reads backend consent, then calls this same-on setter.
+      bindDesktopMetrics(request, 'local|shared')
       await setMetricsGate(captureDesktopMetricsGate, 'on')
-      vi.setSystemTime(NOON + 9 * DAY + MINUTE)
-      recordLongFrames([70])
-      vi.setSystemTime(NOON + 10 * DAY)
-      tickDesktopMetrics()
-      await flush()
-      expect(histograms()).toEqual([{
-        day: new Date(NOON + 9 * DAY).toISOString().slice(0, 10),
-        visible_ms: MINUTE,
-        frames: [{ bucket: '50ms_to_100ms', count: 1 }]
-      }])
-    } finally {
-      peer.resetDesktopMetricsForTests()
-    }
-  })
+      trackDesktopVisibleTime(11 * MINUTE)
+      recordLongFrames([6000])
+      recordAction('composer.send', 'click')
+      const delayedOff = await captureDesktopMetricsGate()
 
-  it.each(['before purge', 'while purge waits'])('rejects an old off result when a peer replaces its cohort %s', async timing => {
-    const request = async (method: string, params: Record<string, unknown> = {}) => {
-      calls.push([method, params])
+      vi.resetModules()
+      const peer = await import('./desktop-metrics')
 
-      return { recorded: true } as never
-    }
+      try {
+        peer.bindDesktopMetrics(request, 'local|shared')
+        let withdrawn: Promise<boolean>
 
-    bindDesktopMetrics(request, 'local|shared')
-    await setMetricsGate(captureDesktopMetricsGate, 'on')
-    trackDesktopVisibleTime(11 * MINUTE)
-    recordLongFrames([6000])
-    recordAction('composer.send', 'click')
-    const delayedOff = await captureDesktopMetricsGate()
+        if (timing === 'before purge') {
+          await setMetricsGate(peer.captureDesktopMetricsGate, 'off')
+          await setMetricsGate(peer.captureDesktopMetricsGate, 'on')
+          withdrawn = delayedOff('off')
+        } else {
+          const held = Promise.withResolvers<void>()
+          const acquired = Promise.withResolvers<void>()
 
-    vi.resetModules()
-    const peer = await import('./desktop-metrics')
+          const ownership = navigator.locks.request('hermes-desktop-metrics-coordination', () => {
+            acquired.resolve()
 
-    try {
-      peer.bindDesktopMetrics(request, 'local|shared')
-      let withdrawn: Promise<boolean>
+            return held.promise
+          })
 
-      if (timing === 'before purge') {
-        await setMetricsGate(peer.captureDesktopMetricsGate, 'off')
-        await setMetricsGate(peer.captureDesktopMetricsGate, 'on')
-        withdrawn = delayedOff('off')
-      } else {
-        const held = Promise.withResolvers<void>()
-        const acquired = Promise.withResolvers<void>()
+          await acquired.promise
+          withdrawn = delayedOff('off')
+          const renewed = setMetricsGate(peer.captureDesktopMetricsGate, 'on')
 
-        const ownership = navigator.locks.request('hermes-desktop-metrics-coordination', () => {
-          acquired.resolve()
+          held.resolve()
+          await ownership
+          await renewed
+        }
 
-          return held.promise
-        })
-
-        await acquired.promise
-        withdrawn = delayedOff('off')
-        const renewed = setMetricsGate(peer.captureDesktopMetricsGate, 'on')
-
-        held.resolve()
-        await ownership
-        await renewed
+        await expect(withdrawn).resolves.toBe(false)
+        peer.trackDesktopVisibleTime(11 * MINUTE)
+        peer.recordLongFrames([70])
+        peer.recordAction('session.new', 'shortcut')
+        vi.setSystemTime(NOON + MINUTE)
+        peer.tickDesktopMetrics()
+        vi.setSystemTime(NOON + DAY)
+        peer.tickDesktopMetrics()
+        tickDesktopMetrics()
+        await flush()
+        expect(histograms()).toEqual([
+          {
+            day: '2026-09-27',
+            visible_ms: MINUTE,
+            frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+          }
+        ])
+        expect(
+          calls.filter(([method]) => method === 'shared_metrics.desktop_daily').map(([, params]) => params.actions)
+        ).toEqual([[{ action: 'session.new', count: 1, via: 'shortcut' }]])
+      } finally {
+        peer.resetDesktopMetricsForTests()
       }
-
-      await expect(withdrawn).resolves.toBe(false)
-      peer.trackDesktopVisibleTime(11 * MINUTE)
-      peer.recordLongFrames([70])
-      peer.recordAction('session.new', 'shortcut')
-      vi.setSystemTime(NOON + MINUTE)
-      peer.tickDesktopMetrics()
-      vi.setSystemTime(NOON + DAY)
-      peer.tickDesktopMetrics()
-      tickDesktopMetrics()
-      await flush()
-      expect(histograms()).toEqual([{
-        day: '2026-09-27', visible_ms: MINUTE, frames: [{ bucket: '50ms_to_100ms', count: 1 }]
-      }])
-      expect(calls.filter(([method]) => method === 'shared_metrics.desktop_daily').map(([, params]) => params.actions)).toEqual([
-        [{ action: 'session.new', count: 1, via: 'shortcut' }]
-      ])
-    } finally {
-      peer.resetDesktopMetricsForTests()
     }
-  })
+  )
 
   it('settles a descheduled ordinary writer before rename and old-name recreation', async () => {
     const accepted = new Map<string, Record<string, unknown>>()
 
-    const requester = (owner: string) => async (method: string, params: Record<string, unknown> = {}) => {
-      const key = `${owner}|${params.day}`
+    const requester =
+      (owner: string) =>
+      async (method: string, params: Record<string, unknown> = {}) => {
+        const key = `${owner}|${params.day}`
 
-      if (method === 'shared_metrics.desktop_daily' && !accepted.has(key)) {
-        accepted.set(key, structuredClone(params))
+        if (method === 'shared_metrics.desktop_daily' && !accepted.has(key)) {
+          accepted.set(key, structuredClone(params))
+        }
+
+        return { recorded: true } as never
       }
-
-      return { recorded: true } as never
-    }
 
     bindDesktopMetrics(requester('old-alpha'), '|alpha')
     await setMetricsGate(captureDesktopMetricsGate, 'on')
     recordAction('composer.send', 'click')
     await flush()
 
-    const key = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)!).find(candidate =>
-      candidate.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`) &&
-      !candidate.slice(DESKTOP_METRICS_STATE_KEY.length + 1).includes(':'))!
+    const key = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)!).find(
+      candidate =>
+        candidate.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`) &&
+        !candidate.slice(DESKTOP_METRICS_STATE_KEY.length + 1).includes(':')
+    )!
 
     vi.resetModules()
     const peer = await import('./desktop-metrics')
@@ -592,9 +657,7 @@ describe('visible time ownership', () => {
       expect(accepted.get('new-alpha|2026-09-27')?.actions).toEqual([
         { action: 'session.new', count: 1, via: 'shortcut' }
       ])
-      expect(accepted.get('beta|2026-09-27')?.actions).toEqual([
-        { action: 'composer.send', count: 2, via: 'click' }
-      ])
+      expect(accepted.get('beta|2026-09-27')?.actions).toEqual([{ action: 'composer.send', count: 2, via: 'click' }])
       expect(accepted.has('old-alpha|2026-09-27')).toBe(false)
     } finally {
       peer.resetDesktopMetricsForTests()
@@ -629,9 +692,13 @@ describe('visible time ownership', () => {
       vi.setSystemTime(now)
       tickDesktopMetrics()
       await flush()
-      expect(histograms()).toEqual([{
-        day: '2026-09-27', visible_ms: MINUTE, frames: [{ bucket: '50ms_to_100ms', count: 1 }]
-      }])
+      expect(histograms()).toEqual([
+        {
+          day: '2026-09-27',
+          visible_ms: MINUTE,
+          frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+        }
+      ])
     } finally {
       coordination.close()
     }

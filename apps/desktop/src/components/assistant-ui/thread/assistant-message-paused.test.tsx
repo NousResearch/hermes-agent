@@ -35,7 +35,13 @@ const stoppedReply = {
   content: [{ type: 'text', text: 'Reading the plan.' }],
   status: { type: 'complete', reason: 'stop' },
   createdAt,
-  metadata: { unstable_state: null, unstable_annotations: [], unstable_data: [], steps: [], custom: { interrupted: true } }
+  metadata: {
+    unstable_state: null,
+    unstable_annotations: [],
+    unstable_data: [],
+    steps: [],
+    custom: { interrupted: true }
+  }
 } as unknown as ThreadMessage
 
 // The continuation's first bubble, sealed at its first tool call (message.interim) while the turn runs on.
@@ -93,7 +99,7 @@ describe('the mark of a reply paused for an automatic continuation', () => {
     expect(screen.queryByText(en.assistant.thread.responseStopped)).toBeNull()
   })
 
-  it('leaves another chat\'s stopped reply alone', async () => {
+  it("leaves another chat's stopped reply alone", async () => {
     $selectedStoredSessionId.set(CHAT)
     markReplyPaused('some-other-chat')
 

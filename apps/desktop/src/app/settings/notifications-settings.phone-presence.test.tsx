@@ -24,7 +24,14 @@ interface RowOptions {
 
 async function renderRow({ clientActivity = true, connectionState = 'open', systemIdleSeconds }: RowOptions) {
   if (systemIdleSeconds !== undefined) {
-    const snapshot = { system: true, idleSeconds: systemIdleSeconds, locked: false, suspended: false, seq: 1, sampledAt: Date.now() }
+    const snapshot = {
+      system: true,
+      idleSeconds: systemIdleSeconds,
+      locked: false,
+      suspended: false,
+      seq: 1,
+      sampledAt: Date.now()
+    }
     window.hermesDesktop = { presence: { get: async () => snapshot, onChange: () => () => undefined } } as never
   }
 

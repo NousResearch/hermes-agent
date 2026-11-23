@@ -1,7 +1,11 @@
 import { cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { backendTransitionFor, beginBackendTransition, resetBackendTransitionsForTests } from '@/store/backend-transition'
+import {
+  backendTransitionFor,
+  beginBackendTransition,
+  resetBackendTransitionsForTests
+} from '@/store/backend-transition'
 import { registerGatewayReconnect } from '@/store/gateway-reconnect'
 import { LAUNCHER_POLL_MS, stopLauncherWatchesForTests } from '@/store/launcher-transition'
 import { $activeGatewayProfile, ensureGatewayProfile } from '@/store/profile'

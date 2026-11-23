@@ -50,7 +50,10 @@ export function readRunElsewhereMarker(
   hermesRoot: string,
   profile: null | string | undefined
 ): null | RunElsewhereMarker {
-  const id = String(profile ?? '').trim().toLowerCase() || 'default'
+  const id =
+    String(profile ?? '')
+      .trim()
+      .toLowerCase() || 'default'
 
   if (id !== 'default' && !PROFILE_ID_RE.test(id)) {
     return null

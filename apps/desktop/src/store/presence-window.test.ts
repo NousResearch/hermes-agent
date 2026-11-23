@@ -106,7 +106,8 @@ function notifyingHost() {
   return supported
 }
 
-const reports = (socket: Sock) => socket.sent.filter(frame => frame.method === 'client.activity').map(frame => frame.params!)
+const reports = (socket: Sock) =>
+  socket.sent.filter(frame => frame.method === 'client.activity').map(frame => frame.params!)
 
 let stop: (() => void) | null = null
 
@@ -153,10 +154,9 @@ describe('the report goes where a submit for the session in view goes', () => {
     stop = startPresenceReporter()
     document.dispatchEvent(new Event('keydown'))
     await settle()
-    await captureSubmissionDestination('stored-1', (method, params) => ambient.gateway.request(method, params)).requestGateway(
-      'prompt.submit',
-      { session_id: 'rt-1', text: 'hi' }
-    )
+    await captureSubmissionDestination('stored-1', (method, params) =>
+      ambient.gateway.request(method, params)
+    ).requestGateway('prompt.submit', { session_id: 'rt-1', text: 'hi' })
     await settle()
 
     expect(reports(owner.socket)).toEqual([expect.objectContaining({ sessions: ['rt-1'] })])
@@ -357,7 +357,11 @@ describe('can_alert by notification uses the check that sends the notification',
     document.documentElement.dataset.hermesDesktopHost = 'browser'
     vi.stubGlobal('isSecureContext', true)
     const permission = { value: 'granted' }
-    vi.stubGlobal('Notification', { get permission() { return permission.value } })
+    vi.stubGlobal('Notification', {
+      get permission() {
+        return permission.value
+      }
+    })
     $browserNotificationPermission.set('granted')
     vi.spyOn(document, 'hasFocus').mockReturnValue(false)
     const { gateway, socket } = await openGateway()

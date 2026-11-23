@@ -65,7 +65,11 @@ export interface AttachPresenceSourceOptions {
 }
 
 /** Send one IPC event to every live window. */
-export function sendToEveryWindow(windows: Iterable<{ webContents?: PresenceWebContents }>, channel: string, payload: unknown) {
+export function sendToEveryWindow(
+  windows: Iterable<{ webContents?: PresenceWebContents }>,
+  channel: string,
+  payload: unknown
+) {
   for (const { webContents } of windows) {
     if (webContents && !webContents.isDestroyed()) {
       webContents.send(channel, payload)
@@ -203,7 +207,10 @@ export function attachPresenceSource({
       lockedAt = now()
     })
   )
-  monitor.on('unlock-screen', flag(() => (locked = false)))
+  monitor.on(
+    'unlock-screen',
+    flag(() => (locked = false))
+  )
   monitor.on(
     'suspend',
     flag(() => {
@@ -211,6 +218,9 @@ export function attachPresenceSource({
       suspendedAt = now()
     })
   )
-  monitor.on('resume', flag(() => (suspended = false)))
+  monitor.on(
+    'resume',
+    flag(() => (suspended = false))
+  )
   ipc.handle('hermes:presence:get', sample)
 }

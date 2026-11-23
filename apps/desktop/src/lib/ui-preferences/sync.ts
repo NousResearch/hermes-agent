@@ -3,7 +3,14 @@ import { markProvisionalPreference, onPersistenceEvent, previousValueOf, provisi
 
 import { isSharedPreferenceKey } from './keys'
 import { rebaseWrite } from './merge'
-import { adoptOrphanedOutboxes, outboxTakenOver, readOutbox, saveOutbox, siblingPendingKeys, watchOutbox } from './outbox'
+import {
+  adoptOrphanedOutboxes,
+  outboxTakenOver,
+  readOutbox,
+  saveOutbox,
+  siblingPendingKeys,
+  watchOutbox
+} from './outbox'
 
 export type { UiPreferencesSnapshot, UiPreferencesWrite }
 

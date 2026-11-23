@@ -5,7 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { type BrowserNotifyPayload, showBrowserNotification } from '@/lib/browser-notifications'
 
-import { dispatchNativeNotification, setNativeNotifyEnabled, setNativeNotifyKind, turnDoneNotificationWouldFire } from './native-notifications'
+import {
+  dispatchNativeNotification,
+  setNativeNotifyEnabled,
+  setNativeNotifyKind,
+  turnDoneNotificationWouldFire
+} from './native-notifications'
 import { __resetNativeNotifyBaselineForTests, markNativeNotifyBaseline } from './notify-baseline'
 import { setActiveSessionId } from './session'
 
@@ -60,7 +65,10 @@ describe('turnDoneNotificationWouldFire', () => {
     'Desktop: enabled %s, turnDone %s, quiet %s, focused %s, hidden %s, active %s agrees with dispatch',
     async (enabled, turnDone, quiet, focused, hidden, active) => {
       const supported = Promise.resolve(true)
-      desktopWindow.hermesDesktop = { notify: vi.fn(async () => true), notifySupported: () => supported } as unknown as Window['hermesDesktop']
+      desktopWindow.hermesDesktop = {
+        notify: vi.fn(async () => true),
+        notifySupported: () => supported
+      } as unknown as Window['hermesDesktop']
       const sessionId = `session-${(counter += 1)}`
       setNativeNotifyEnabled(enabled)
       setNativeNotifyKind('turnDone', turnDone)
@@ -88,7 +96,10 @@ describe('turnDoneNotificationWouldFire', () => {
     let answer = (_supported: boolean) => undefined as void
     const reply = new Promise<boolean>(resolve => (answer = resolve))
     const notifySupported = vi.fn(() => reply)
-    desktopWindow.hermesDesktop = { notify: vi.fn(async () => true), notifySupported } as unknown as Window['hermesDesktop']
+    desktopWindow.hermesDesktop = {
+      notify: vi.fn(async () => true),
+      notifySupported
+    } as unknown as Window['hermesDesktop']
     const sessionId = `session-${(counter += 1)}`
     setActiveSessionId(sessionId)
     setWindow({ focused: false, hidden: true })
@@ -113,18 +124,23 @@ describe('turnDoneNotificationWouldFire', () => {
     expect(turnDoneNotificationWouldFire(sessionId)).toBe(false)
   })
 
-  it.each(['granted', 'denied', 'default'] as const)('Webapp: live permission %s agrees with what the browser shows', permission => {
-    document.documentElement.dataset.hermesDesktopHost = 'browser'
-    desktopWindow.hermesDesktop = { notify: async (payload: BrowserNotifyPayload) => showBrowserNotification(payload) } as unknown as Window['hermesDesktop']
-    FakeNotification.permission = permission
-    const sessionId = `session-${(counter += 1)}`
-    setActiveSessionId(sessionId)
-    setWindow({ focused: false, hidden: true })
+  it.each(['granted', 'denied', 'default'] as const)(
+    'Webapp: live permission %s agrees with what the browser shows',
+    permission => {
+      document.documentElement.dataset.hermesDesktopHost = 'browser'
+      desktopWindow.hermesDesktop = {
+        notify: async (payload: BrowserNotifyPayload) => showBrowserNotification(payload)
+      } as unknown as Window['hermesDesktop']
+      FakeNotification.permission = permission
+      const sessionId = `session-${(counter += 1)}`
+      setActiveSessionId(sessionId)
+      setWindow({ focused: false, hidden: true })
 
-    const predicted = turnDoneNotificationWouldFire(sessionId)
-    dispatchNativeNotification({ kind: 'turnDone', sessionId, title: 'done' })
+      const predicted = turnDoneNotificationWouldFire(sessionId)
+      dispatchNativeNotification({ kind: 'turnDone', sessionId, title: 'done' })
 
-    expect(predicted).toBe(permission === 'granted')
-    expect(shown.length > 0).toBe(predicted)
-  })
+      expect(predicted).toBe(permission === 'granted')
+      expect(shown.length > 0).toBe(predicted)
+    }
+  )
 })

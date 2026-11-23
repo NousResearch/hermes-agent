@@ -14,7 +14,7 @@ function fakeChannel(): PresenceChannel & { calls: Record<string, unknown>[] } {
     calls,
     clientActivity: true,
     connectionState: 'open',
-    request: async <T,>(method: string, params: Record<string, unknown>) => {
+    request: async <T>(method: string, params: Record<string, unknown>) => {
       if (method === 'client.activity') {
         calls.push(params)
       }
@@ -151,7 +151,10 @@ describe('can_alert is withdrawn when it stops being true', () => {
     h.reporter.refresh()
     await h.settle(120_000)
 
-    expect(h.a.calls).toEqual([expect.objectContaining({ can_alert: true, sessions: ['A'] }), expect.objectContaining({ sessions: [] })])
+    expect(h.a.calls).toEqual([
+      expect.objectContaining({ can_alert: true, sessions: ['A'] }),
+      expect.objectContaining({ sessions: [] })
+    ])
   })
 
   it('system tier, visible to hidden directly: can_alert false with the real idle time, never true again', async () => {

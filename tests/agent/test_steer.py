@@ -734,43 +734,10 @@ class TestSteerSurvivesRedirectRebuild:
         {"role": "assistant", "content": "previous final answer"},
     ]
 
-    def _quiet(self, agent, monkeypatch):
+    def _fail_first_call(self, agent, monkeypatch, *, steer_during_call=False, interrupt_in_routing=False):
+        """Run one turn whose only API call fails with a 401 (a terminal early exit)."""
+        from copy import deepcopy
         from unittest.mock import MagicMock
-        for method in ("_flush_messages_to_session_db", "_persist_session", "_save_trajectory", "_cleanup_task_resources"):
-            monkeypatch.setattr(agent, method, MagicMock())
-
-    def _count_steer(self, rows):
-        return sum(str(m.get("content")).count(self.STEER_TEXT) for m in rows if isinstance(m, dict))
-
-    def test_steer_drained_before_a_failed_first_call_is_in_that_request(self, monkeypatch):
-        """The pre-API drain delivers the steer in the first request (after this turn's ask, not
-        beside the older tool row), so a terminal error leaves nothing to hand back."""
-        from copy import deepcopy
-
-        class _Rejected(Exception):
-            status_code = 401
-
-        agent = self._loop_agent()
-        history = deepcopy(self._PRIOR_TOOL_HISTORY)
-        requests = []
-
-        def model_call(api_kwargs):
-            requests.append(deepcopy(api_kwargs["messages"]))
-            raise _Rejected("HTTP 401: rejected")
-
-        agent._interruptible_api_call = model_call
-        self._quiet(agent, monkeypatch)
-        assert agent.steer(self.STEER_TEXT) is True
-        result = agent.run_conversation("new question", conversation_history=history)
-
-        assert result["failed"] is True and result.get("pending_steer") is None
-        assert requests[0][1:len(history) + 1] == history
-        assert self._count_steer(requests[0][len(history) + 1:]) == 1
-        assert agent._drain_pending_steer() is None
-
-    def _fail_with_steer_during_call(self, agent, monkeypatch, *, interrupt_in_routing=False):
-        """Run one turn whose only API call accepts a steer mid-request, then fails with a 401."""
-        from copy import deepcopy
 
         from agent import turn_api_error
 
@@ -778,7 +745,8 @@ class TestSteerSurvivesRedirectRebuild:
             status_code = 401
 
         def model_call(api_kwargs):
-            assert agent.steer(self.STEER_TEXT) is True
+            if steer_during_call:
+                assert agent.steer(self.STEER_TEXT) is True
             raise _Rejected("HTTP 401: rejected")
 
         if interrupt_in_routing:
@@ -790,14 +758,24 @@ class TestSteerSurvivesRedirectRebuild:
 
             monkeypatch.setattr(turn_api_error, "route_classified_error", route_after_message)
         agent._interruptible_api_call = model_call
-        self._quiet(agent, monkeypatch)
+        for method in ("_flush_messages_to_session_db", "_persist_session", "_save_trajectory", "_cleanup_task_resources"):
+            monkeypatch.setattr(agent, method, MagicMock())
         return agent.run_conversation("new question", conversation_history=deepcopy(self._PRIOR_TOOL_HISTORY))
 
-    def test_a_steer_accepted_during_a_failed_call_stays_buffered(self, monkeypatch):
-        """Main keeps a steer that arrives during a failing request buffered on the agent; a host that
-        ignores or replaces the result (kanban recovery, ACP, a muted CLI turn) must not lose it."""
+    def test_steer_requeued_before_a_failed_first_call_stays_buffered(self, monkeypatch):
+        """The pre-API drain requeues a steer when this turn has no tool result yet. If the first call
+        then fails terminally, the steer stays buffered on the agent (as base keeps a steer accepted
+        during a failing call) instead of being handed back as pending_steer, which hosts that ignore
+        or replace the result would lose. The next turn on the same agent delivers it."""
         agent = self._loop_agent()
-        result = self._fail_with_steer_during_call(agent, monkeypatch)
+        assert agent.steer(self.STEER_TEXT) is True
+        result = self._fail_first_call(agent, monkeypatch)
+        assert result["failed"] is True and result.get("pending_steer") is None
+        assert agent._drain_pending_steer() == self.STEER_TEXT
+
+    def test_a_steer_accepted_during_a_failed_call_stays_buffered(self, monkeypatch):
+        agent = self._loop_agent()
+        result = self._fail_first_call(agent, monkeypatch, steer_during_call=True)
         assert result["failed"] is True and result.get("pending_steer") is None
         assert agent._drain_pending_steer() == self.STEER_TEXT
 
@@ -805,31 +783,10 @@ class TestSteerSurvivesRedirectRebuild:
         """Only a user's Stop may drop a steer: an incoming-message interrupt published after the error
         handler's check leaves it buffered."""
         agent = self._loop_agent()
-        result = self._fail_with_steer_during_call(agent, monkeypatch, interrupt_in_routing=True)
+        result = self._fail_first_call(agent, monkeypatch, steer_during_call=True, interrupt_in_routing=True)
         assert result.get("pending_steer") is None
         agent.clear_interrupt()
         assert agent._drain_pending_steer() == self.STEER_TEXT
-
-    def test_a_recovery_turn_on_the_same_agent_gets_the_steer_exactly_once(self, monkeypatch):
-        """Kanban-style recovery: the failed result is replaced by a retry on the same agent, which must
-        deliver the steer accepted during the failed call exactly once, and hand nothing back."""
-        from copy import deepcopy
-
-        from tests.agent.test_run_agent import _mock_response
-
-        agent = self._loop_agent()
-        first = self._fail_with_steer_during_call(agent, monkeypatch)
-        requests = []
-
-        def model_call(api_kwargs):
-            requests.append(deepcopy(api_kwargs["messages"]))
-            return _mock_response(content="recovered", finish_reason="stop")
-
-        agent._interruptible_api_call = model_call
-        second = agent.run_conversation("retry nudge", conversation_history=list(first.get("messages") or []))
-        assert second.get("pending_steer") is None
-        assert len(requests) == 1 and self._count_steer(requests[0]) == 1
-        assert agent._drain_pending_steer() is None
 
     @pytest.mark.parametrize(
         ("previous_turn_used_tool", "current_turn_uses_tool"),
@@ -856,6 +813,7 @@ class TestSteerSurvivesRedirectRebuild:
                 {"role": "tool", "tool_call_id": "prior_call", "content": "previous result"},
             ])
         history.append({"role": "assistant", "content": "previous final answer"})
+        first_request_tail = deepcopy(history) + [{"role": "user", "content": "new question"}]
         requests = []
 
         def model_call(api_kwargs):
@@ -876,21 +834,18 @@ class TestSteerSurvivesRedirectRebuild:
         result = agent.run_conversation("new question", conversation_history=history)
 
         assert result["completed"] is True
-        # Rows up to the previous turn's final answer are unchanged; the steer rides in this turn's
-        # first request, after the new question, exactly once, and nothing is handed back.
-        assert requests[0][1:len(history) + 1] == history
-        assert self._count_steer(requests[0][:len(history) + 1]) == 0
-        tail = requests[0][len(history) + 1:]
-        assert "new question" in str(tail[0].get("content"))
-        assert self._count_steer(tail) == 1
-        assert result.get("pending_steer") is None
-        assert agent._drain_pending_steer() is None
+        assert requests[0][1:] == first_request_tail
         if current_turn_uses_tool:
             first, second = requests
             assert second[:len(first)] == first
-            assert self._count_steer(second) == 1
+            tool_call, tool_result, steer = second[len(first):]
+            assert tool_call["tool_calls"][0]["id"] == "current_call"
+            assert tool_result["role"] == "tool" and tool_result["tool_call_id"] == "current_call"
+            assert steer == {"role": "user", "content": format_steer_marker(self.STEER_TEXT).lstrip()}
+            assert result.get("pending_steer") is None
         else:
             assert len(requests) == 1
+            assert result["pending_steer"] == self.STEER_TEXT
 
 
     def test_pre_api_drain_reanchors_a_stale_turn_index(self):

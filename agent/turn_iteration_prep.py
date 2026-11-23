@@ -288,29 +288,15 @@ def _previous_tool_round(messages: Any) -> list:
 def _inject_steer_after_newest_tool_result(
     agent: Any, messages: Any, steer_text: str, current_turn_user_idx: int | None,
 ) -> None:
-    """Deliver a steer drained before an API call in THAT request, inside the current turn.
-
-    After this turn's newest tool result when it has one; otherwise right after this turn's user
-    row (and any steers already placed there), so a text-only turn still sees it. Never beside an
-    older turn's tool row: those rows are cached, and persisting a steer there would reorder it on
-    replay. Only with no current-turn anchor does it go back to the buffer, as on a history with no
-    tool row. Keeping the steer in the request (not handing it back as ``pending_steer``) means a
-    host that ignores or replaces the turn result cannot lose it."""
-    from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
-
-    if current_turn_user_idx is not None and 0 <= current_turn_user_idx < len(messages):
+    """Insert a standalone steer after this turn's newest tool result, or requeue it."""
+    if current_turn_user_idx is not None and current_turn_user_idx >= 0:
         for idx in range(len(messages) - 1, current_turn_user_idx, -1):
             row = messages[idx]
             if isinstance(row, dict) and row.get("role") == "tool":
+                from agent.prompt_builder import steer_user_row
                 messages.insert(idx + 1, steer_user_row(steer_text))
                 logger.debug("Pre-API-call steer drain: appended user row after tool msg at index %d", idx)
                 return
-        at = current_turn_user_idx + 1
-        while at < len(messages) and isinstance(messages[at], dict) and messages[at].get("display_kind") == STEER_DISPLAY_KIND:
-            at += 1
-        messages.insert(at, steer_user_row(steer_text))
-        logger.debug("Pre-API-call steer drain: no tool result this turn; user row at index %d", at)
-        return
     from agent.agent_runtime_helpers import _requeue_pending_steer
     _requeue_pending_steer(agent, steer_text)
 

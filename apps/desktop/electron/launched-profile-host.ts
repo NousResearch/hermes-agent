@@ -145,16 +145,65 @@ export function createLaunchedProfileHost<Backend>(deps: LaunchedProfileHostDeps
       })
     },
 
-    /** Refuse a local start of a profile core marks as run elsewhere. */
-    assertMayRunLocally: (profile: null | string | undefined) => assertProfileMayRunLocally(deps.hermesHome, profile),
+    /**
+     * The host's own answer when it has one for the request (`answer`); every
+     * other request goes on to `forward`. A launched profile's listing never
+     * reaches `forward`, whose route for that profile is the plugin's backend.
+     */
+    async answerOr<Result>(
+      request: { method?: unknown; path?: string; profile?: unknown; timeoutMs?: unknown },
+      pinned: PinnedConnection<Backend> | undefined,
+      forward: () => Promise<Result> | Result
+    ) {
+      const answered = await this.answer(request, pinned)
 
-    /** The same refusal for a profile the local primary would serve by scope. */
-    assertScopeMayRunLocally(profile: string, route: ProfileRouteOptions) {
+      return answered === undefined ? forward() : answered
+    },
+
+    /**
+     * Start (or attach to) `profile`'s backend on this computer through
+     * `start`. A profile core marks as run elsewhere is refused first: `start`
+     * is never called, and the rejection names the profile and the plugin.
+     */
+    async startLocally<Args extends unknown[], Result>(
+      profile: null | string | undefined,
+      start: (...args: Args) => Promise<Result> | Result,
+      ...args: Args
+    ): Promise<Result> {
+      assertProfileMayRunLocally(deps.hermesHome, profile)
+
+      return start(...args)
+    },
+
+    /**
+     * The same for a profile the local primary would serve by scope: `join`
+     * joins the primary's backend. The primary's own profile, and a profile a
+     * remote serves, are not this computer's shared backend to refuse.
+     */
+    async serveByScope<Result>(
+      profile: string,
+      route: ProfileRouteOptions,
+      join: () => Promise<Result> | Result
+    ): Promise<Result> {
       const servedElsewhere = route.profileRemoteOverride || route.globalRemote || route.primaryRemoteActive
 
       if (profile !== deps.primaryProfile() && !servedElsewhere) {
         assertProfileMayRunLocally(deps.hermesHome, profile)
       }
+
+      return join()
+    },
+
+    /**
+     * The route options of `resolveProfileBackendRoute`, completed with whether
+     * a plugin runs the primary profile. Such a primary serves only its own
+     * home, so every other local profile gets a backend of its own.
+     */
+    routeOptions(
+      config: Record<string, any>,
+      options: Omit<ProfileRouteOptions, 'primaryLaunched'>
+    ): ProfileRouteOptions {
+      return { ...options, primaryLaunched: profileIsLaunched(config, deps.primaryProfile()) }
     },
 
     ensureHostBackend,

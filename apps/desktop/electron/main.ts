@@ -166,7 +166,6 @@ import {
   pathForRegistryBackendRequest,
   pathWithGlobalRemoteProfile,
   profileHasRemoteConnection,
-  profileIsLaunched,
   profileLauncher,
   profileRemoteOverride,
   type ProfileRouteOptions,
@@ -10014,7 +10013,7 @@ function profileRouteOptions(
   const urlOverride = profileRemoteOverride(config, profile)
   const key = connectionScopeKey(profile) || primaryProfileKey()
 
-  return {
+  return launchedProfiles.routeOptions(config, {
     // A desktop profile can be only a client-side routing alias. Keep backend
     // endpoint filters in the target's namespace (e.g. mara → default for a
     // managed SSH, gris → main-gris for a URL-remote/cloud per-profile host).
@@ -10026,15 +10025,13 @@ function profileRouteOptions(
     // per-profile override, env, or global). Unknown sub-profiles on that
     // gateway must route THROUGH it, not spawn local backends (#88296).
     primaryRemoteActive: primaryBackendIsRemote(),
-    // A plugin's launcher runs the primary: it serves only its own profile's home.
-    primaryLaunched: profileIsLaunched(config, primaryProfileKey()),
     // A stored per-profile entry (local or remote) — pins this profile to
     // its own backend; absent entries inherit the primary's remote.
     ownEntry: Boolean((config.profiles || {})[key]),
     isolatedBackend: ISOLATED_BACKEND,
     requestMethod: request?.method,
     requestPath: request?.path
-  }
+  })
 }
 
 // Resolve a backend connection for the given profile, per the routing table in
@@ -10102,13 +10099,13 @@ async function ensureBackend(
   const route = resolveProfileBackendRoute(key, routeOpts)
 
   if (route.backend === 'primary') {
-    launchedProfiles.assertScopeMayRunLocally(key, routeOpts)
-
-    const joined = await joinPrimaryBoot(request, route, {
-      primaryKey: primaryProfileKey,
-      resolveRoute: next => resolveProfileBackendRoute(next, profileRouteOptions(next, opts.request)),
-      start: boot => startHermes(boot.key, boot.inheritsPrimary)
-    })
+    const joined = await launchedProfiles.serveByScope(key, routeOpts, () =>
+      joinPrimaryBoot(request, route, {
+        primaryKey: primaryProfileKey,
+        resolveRoute: next => resolveProfileBackendRoute(next, profileRouteOptions(next, opts.request)),
+        start: boot => startHermes(boot.key, boot.inheritsPrimary)
+      })
+    )
 
     setWslBridgeProfileState(joined.key, joined.connection.mode !== 'remote')
 
@@ -11004,9 +11001,8 @@ async function dialPoolBackend(profile, entry, opts: { forceLocal?: boolean; poo
   assertLocalProfileCanStart(profile, profileDeletionGate, key =>
     directoryExists(path.join(HERMES_HOME, 'profiles', key))
   )
-  launchedProfiles.assertMayRunLocally(profile)
 
-  const connection = await ensureLocalGateway(async () => {
+  const connection = await launchedProfiles.startLocally(profile, ensureLocalGateway, async () => {
     const backend = await ensureRuntime(
       await resolveHermesBackend(['--profile', profile, 'gateway', 'ensure', '--json']),
       () => assertPoolEntryStillOwned(poolKey, entry)
@@ -11434,12 +11430,12 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
       connectRemote,
       ensureLocalRuntime: backend =>
         ensureRuntime(backend, () => backendConnectionState.assertCurrentAttempt(connectionAttempt)),
-      prepareLocalBackend: async () => {
-        launchedProfiles.assertMayRunLocally(activeProfile || primaryProfile)
-        await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
+      prepareLocalBackend: () =>
+        launchedProfiles.startLocally(activeProfile || primaryProfile, async () => {
+          await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
 
-        return resolveHermesBackend(backendArgs, advanceBootProgress)
-      },
+          return resolveHermesBackend(backendArgs, advanceBootProgress)
+        }),
       resolveRemote: () => {
         // Classify immediately before each throwing resolve. This callback runs
         // both for an already-saved remote and after first-run remote Apply.
@@ -15574,20 +15570,20 @@ async function handleHermesApiRequest(request) {
 
   // A launched profile's listing is this computer's to answer, also when the
   // request is pinned to "This device"; a pinned remote gateway answers its own.
-  const launchedAnswer = await launchedProfiles.answer(
+  return launchedProfiles.answerOr(
     request,
     registryConnectionId
       ? {
           dial: () => ensureRegistryBackend(registryConnectionId, null),
           kind: () => registryConnectionKind(registryConnectionId)
         }
-      : undefined
+      : undefined,
+    () => forwardHermesApiRequest(request, registryConnectionId)
   )
+}
 
-  if (launchedAnswer !== undefined) {
-    return launchedAnswer
-  }
-
+// Every request the launched-profile host does not answer itself.
+async function forwardHermesApiRequest(request, registryConnectionId) {
   if (registryConnectionId) {
     if (isAllProfilesSessionListRequest(request?.method, request?.path)) {
       const aggregate = await interceptSessionRequestForRemote(request, registryConnectionId)

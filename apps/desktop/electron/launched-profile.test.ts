@@ -391,15 +391,80 @@ describe('the host for a launched profile', () => {
     expect(dial).not.toHaveBeenCalled()
   })
 
-  it("refuses a marked profile the host backend would serve by scope, unless a remote serves it", () => {
+  it('never reaches the local start for a profile core marks as run elsewhere', async () => {
     const { home, host } = hostFor({ profiles: {} }, 'default')
+    const start = vi.fn(async (how: string) => `started by ${how}`)
+
+    await expect(host.startLocally('notes', start, 'gateway ensure')).resolves.toBe('started by gateway ensure')
+
+    write(path.join(home, PROFILES_RUN_ELSEWHERE_DIR, 'notes.json'), '{"plugin": "openshell"}')
+    start.mockClear()
+
+    await expect(host.startLocally('notes', start, 'gateway ensure')).rejects.toThrow(
+      /"notes" runs through the openshell plugin/
+    )
+    expect(start).not.toHaveBeenCalled()
+
+    // Another profile of this computer still starts.
+    await expect(host.startLocally('work', start, 'gateway ensure')).resolves.toBe('started by gateway ensure')
+  })
+
+  it('never joins the shared host backend for a marked profile, unless a remote serves it', async () => {
+    const { home, host } = hostFor({ profiles: {} }, 'default')
+    const join = vi.fn(async () => 'joined')
 
     write(path.join(home, PROFILES_RUN_ELSEWHERE_DIR, 'notes.json'), '{"plugin": "openshell"}')
 
-    expect(() => host.assertScopeMayRunLocally('notes', {})).toThrow(/"notes" runs through the openshell plugin/)
-    expect(() => host.assertScopeMayRunLocally('notes', { globalRemote: true })).not.toThrow()
-    expect(() => host.assertScopeMayRunLocally('default', {})).not.toThrow()
+    await expect(host.serveByScope('notes', {}, join)).rejects.toThrow(/"notes" runs through the openshell plugin/)
+    expect(join).not.toHaveBeenCalled()
+
+    // A remote serves the profile, or it is the primary's own: not this computer's shared backend to refuse.
+    await expect(host.serveByScope('notes', { globalRemote: true }, join)).resolves.toBe('joined')
+    await expect(host.serveByScope('default', {}, join)).resolves.toBe('joined')
+    expect(join).toHaveBeenCalledTimes(2)
     expect(host.homeIsSandboxed('notes')).toBe(true)
     expect(host.homeIsSandboxed('work')).toBe(false)
+  })
+
+  it("answers a launched profile's listing itself and forwards every other request", async () => {
+    const { fetchJson, host } = hostFor(launchedConfig(), 'default')
+    const forward = vi.fn(async () => 'forwarded')
+
+    expect(await host.answerOr({ path: '/api/profiles', profile: 'work' }, undefined, forward)).toEqual({
+      backend: 'primary-backend',
+      requestPath: '/api/profiles'
+    })
+    expect(await host.answerOr({ path: '/api/profiles/active', profile: 'work' }, undefined, forward)).toEqual({
+      active: 'default',
+      current: 'work'
+    })
+    // The listing never went on to the profile's own route, which is the plugin's backend.
+    expect(forward).not.toHaveBeenCalled()
+    expect(fetchJson.mock.calls.map(([backend]) => backend)).toEqual(['primary-backend'])
+
+    // Not a listing call, or not a launched profile: the normal route answers.
+    expect(await host.answerOr({ path: '/api/sessions', profile: 'work' }, undefined, forward)).toBe('forwarded')
+    expect(await host.answerOr({ path: '/api/profiles', profile: 'notes' }, undefined, forward)).toBe('forwarded')
+    expect(forward).toHaveBeenCalledTimes(2)
+  })
+
+  it('gives another local profile a backend of its own while a plugin runs the primary profile', () => {
+    const launchedPrimary = { profiles: { default: launchedConfig().profiles.work } }
+    const request = { primaryProfile: 'default', requestMethod: 'GET', requestPath: '/api/config' }
+
+    // The primary's backend is the plugin's and serves only its own home: `notes` must not be sent there.
+    expect(
+      resolveProfileBackendRoute(
+        'notes',
+        hostFor(launchedPrimary, 'default').host.routeOptions(launchedPrimary, request)
+      )
+    ).toMatchObject({ backend: 'pool' })
+
+    // No plugin runs the primary: the one host backend serves `notes` by scope, as before.
+    const plain = { profiles: {} }
+
+    expect(
+      resolveProfileBackendRoute('notes', hostFor(plain, 'default').host.routeOptions(plain, request))
+    ).toMatchObject({ backend: 'primary', descriptorProfile: 'notes' })
   })
 })

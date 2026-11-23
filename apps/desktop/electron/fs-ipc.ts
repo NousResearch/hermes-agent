@@ -28,7 +28,7 @@ import { registerPluginFilesIpc } from './plugin-files-ipc'
 export interface FsIpcDeps {
   hermesHome: string
   /** A profile a plugin's launcher runs: its home never feeds the plugin root. */
-  isLaunchedProfile?: (profile: string) => boolean
+  isLaunchedProfile: (profile: string) => boolean
   readActiveDesktopProfile: () => null | string
   expandUserPath: (value: string) => string
   resolveRequestedPathForIpc: (value: string, options: { purpose: string }) => string
@@ -38,7 +38,7 @@ export interface FsIpcDeps {
 
 export function registerFsIpc({
   hermesHome,
-  isLaunchedProfile = () => false,
+  isLaunchedProfile,
   readActiveDesktopProfile,
   expandUserPath,
   resolveRequestedPathForIpc,

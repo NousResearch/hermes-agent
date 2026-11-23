@@ -4,10 +4,12 @@ import pytest
 
 
 @pytest.mark.parametrize("provider", ["minimax", "minimax-cn", "minimax-oauth"])
-def test_catalog_lists_m31_flash_first(provider):
+def test_catalog_default_is_only_m31_flash(provider):
+    from hermes_cli.models import get_default_model_for_provider
     from hermes_cli.models_catalog_static import _PROVIDER_MODELS
 
-    assert _PROVIDER_MODELS[provider][:2] == ["MiniMax-M3.1-Flash", "MiniMax-M3"]
+    assert _PROVIDER_MODELS[provider] == ["MiniMax-M3.1-Flash"]
+    assert get_default_model_for_provider(provider) == "MiniMax-M3.1-Flash"
 
 
 def test_context_length_is_1m():

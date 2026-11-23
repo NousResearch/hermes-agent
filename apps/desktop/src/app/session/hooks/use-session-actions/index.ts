@@ -35,7 +35,14 @@ import { purgeInFlightTurnJournals, recoverInFlightTurnJournal } from '@/lib/inf
 import { latestSessionTodoSnapshot } from '@/lib/todos'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
-import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
+import {
+  announceGoneSessionDraft,
+  announceNewSessionDraftKey,
+  freshDraftScope,
+  migrateSessionDraft,
+  requestComposerDraftSync,
+  takeSessionDraft
+} from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import { resetSessionBackground } from '@/store/composer-status'
 import { $connectionRequests } from '@/store/connection-request'
@@ -287,6 +294,15 @@ function normalizeNewChatWorkspaceTarget(target: NewChatWorkspaceTarget): NewCha
   return typeof target === 'string' ? target.trim() || null : target
 }
 
+/** True when the fresh-chat draft holds no text and no attachments. Flushes the live editor first: the
+ *  composer stashes on a debounce, so a word typed a moment ago still counts. */
+function freshDraftIsEmpty(): boolean {
+  requestComposerDraftSync('flush', 'main')
+  const draft = takeSessionDraft(freshDraftScope())
+
+  return !draft.text.trim() && draft.attachments.length === 0
+}
+
 export function useSessionActions({
   activeSessionId,
   activeSessionIdRef,
@@ -516,7 +532,11 @@ export function useSessionActions({
         ? normalizeNewChatWorkspaceTarget(draftOptions.workspaceTarget)
         : undefined
 
-      if (draftOptions.rotateFreshDraftKey !== false) {
+      // Rotating gives each new-chat lifecycle its own draft bucket (#66662). But a key that still holds
+      // an unsent message has no row, tab or sidebar entry pointing at it, so rotating away from it
+      // orphans the text (open a new chat, type, visit another session, click New chat: blank). Keep
+      // the key while it holds content; rotate once it is empty (sent or cleared), as before.
+      if (draftOptions.rotateFreshDraftKey !== false && freshDraftIsEmpty()) {
         rotateFreshDraftKey()
       }
 

@@ -169,8 +169,8 @@ class TestStrikesPersistFromEveryVerdictSite:
         assert db.lineage.compression_ineffective_count("s1") == 0
         assert cc._structural_no_op_backoff_until > 0.0
 
-    def test_persist_failure_is_swallowed_and_memory_still_advances(self, tmp_path):
-        """A DB write failure must not break the in-memory guard."""
+    def test_persist_failure_is_swallowed_and_memory_still_advances(self, tmp_path, caplog):
+        """A failed write stays visible at INFO without breaking the in-memory guard."""
         db = _db(tmp_path)
         seed_session(db, "s1", "cli")
         cc = _compressor(db, "s1")
@@ -179,12 +179,14 @@ class TestStrikesPersistFromEveryVerdictSite:
             db.lineage,
             "set_compression_ineffective_count",
             side_effect=Exception("disk full"),
-        ):
+        ), caplog.at_level("INFO", logger="agent.context_compressor"):
             cc._verify_compaction_cleared_threshold = True
             cc.update_from_response({"prompt_tokens": cc.threshold_tokens + 1})
 
         assert cc._ineffective_compression_count == 1
         assert db.lineage.compression_ineffective_count("s1") == 0
+        assert "compression ineffective count persist failed" in caplog.text
+        assert "disk full" in caplog.text
 
 
 class TestCompressionBoundaryCarry:

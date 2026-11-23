@@ -95,3 +95,8 @@ def test_dashboard_runtime_parse_refuses_the_decoy_and_reads_a_real_backend():
     assert _parse_dashboard_runtime(BACKENDS[0]) == ("serve", "127.0.0.1", 0)
     # launchd ProgramArguments arrive ``shlex.join``ed: a quoted path with spaces is still the entry.
     assert _parse_dashboard_runtime("'/Users/a b/venv/bin/hermes' dashboard --port 9200") == ("dashboard", "127.0.0.1", 9200)
+    # Inline-bootstrap launcher (-c "sys.argv = [...]") correctly extracts host and port.
+    inline = ("/usr/bin/python3 -I -c \"import sys, runpy; sys.path.insert(0, '/root'); "
+              "sys.argv = ['main.py', 'serve', '--host', '0.0.0.0', '--port', '9119']; "
+              "sys._hermes_relaunched = True; runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)\"")
+    assert _parse_dashboard_runtime(inline) == ("serve", "0.0.0.0", 9119)

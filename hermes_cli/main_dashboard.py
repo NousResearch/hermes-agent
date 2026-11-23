@@ -55,19 +55,55 @@ def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
     if mode not in ("dashboard", "serve"):
         return None
 
+    try:
+        tokens = shlex.split(command, posix=False)
+    except Exception:
+        tokens = command.split()
+    from gateway.status_inline_source import command_line_runs_inline_source, inline_bootstrap_argv
+    normalized = [t.strip("\"'").replace("\\", "/") for t in tokens]
+    if command_line_runs_inline_source(normalized):
+        unwrapped = inline_bootstrap_argv(normalized)
+        if unwrapped:
+            tokens = unwrapped
+
     port = 9119
     host = "127.0.0.1"
+    port_found = False
+    host_found = False
 
-    port_match = re.search(r"(?:^|\s)--port(?:=|\s+)(\d+)", command)
-    if port_match:
-        try:
-            port = int(port_match.group(1))
-        except ValueError:
-            return None
+    for i, tok in enumerate(tokens):
+        raw = tok.strip("\"'")
+        if raw == "--port" and i + 1 < len(tokens):
+            try:
+                port = int(tokens[i + 1].strip("\"'"))
+                port_found = True
+            except ValueError:
+                return None
+        elif raw.startswith("--port="):
+            try:
+                port = int(raw.split("=", 1)[1].strip("\"'"))
+                port_found = True
+            except ValueError:
+                return None
+        elif raw == "--host" and i + 1 < len(tokens):
+            host = tokens[i + 1].strip("\"'") or "127.0.0.1"
+            host_found = True
+        elif raw.startswith("--host="):
+            host = raw.split("=", 1)[1].strip("\"'") or "127.0.0.1"
+            host_found = True
 
-    host_match = re.search(r"(?:^|\s)--host(?:=|\s+)(\"[^\"]+\"|'[^']+'|\S+)", command)
-    if host_match:
-        host = host_match.group(1).strip("\"'") or "127.0.0.1"
+    if not port_found:
+        port_match = re.search(r"(?:^|\s)--port(?:=|\s+)(\d+)", command)
+        if port_match:
+            try:
+                port = int(port_match.group(1))
+            except ValueError:
+                return None
+
+    if not host_found:
+        host_match = re.search(r"(?:^|\s)--host(?:=|\s+)(\"[^\"]+\"|'[^']+'|\S+)", command)
+        if host_match:
+            host = host_match.group(1).strip("\"'") or "127.0.0.1"
 
     return mode, host, port
 

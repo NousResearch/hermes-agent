@@ -353,7 +353,9 @@ function formatPollText(poll) {
 function eventTime(value) {
   if (value === undefined || value === null || value === '') return '';
   const seconds = Number(typeof value?.toNumber === 'function' ? value.toNumber() : value);
-  return Number.isFinite(seconds) && seconds > 0 ? new Date(seconds * 1000).toISOString() : '';
+  const date = new Date(seconds * 1000);
+  // Out-of-range times make toISOString() throw, so drop them.
+  return seconds > 0 && !Number.isNaN(date.getTime()) ? date.toISOString() : '';
 }
 
 function eventPlace(location) {

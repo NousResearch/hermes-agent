@@ -664,6 +664,13 @@ import {
   });
   assert.equal(cancelled.body, '[Event: Picnic (cancelled)]');
 
+  // out-of-range times are dropped instead of throwing
+  const farFuture = await extractBridgeEvent({
+    ...base,
+    msg: { key: { ...key, id: 'event-3' }, pushName: 'Tester', messageTimestamp: 123, message: { eventMessage: { name: 'Later', startTime: '1e13' } } },
+  });
+  assert.equal(farFuture.body, '[Event: Later]');
+
   const reply = await extractBridgeEvent({
     ...base,
     msg: {

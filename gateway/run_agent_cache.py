@@ -12,6 +12,7 @@ from contextlib import nullcontext, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from agent.command_token_source import CommandTokenSource
 from agent.interrupt_compat import _accepts_keyword
 from gateway.config import Platform
 from gateway.session import SessionSource, build_session_context_prompt
@@ -120,11 +121,15 @@ class GatewayAgentCacheMixin:
         import hashlib, json as _j
         # Fingerprint the FULL credential, not a short prefix: OAuth/JWT-style tokens often share a
         # common prefix (e.g. "eyJhbGci"), so a prefix would give false cache hits across auth switches.
-        _api_key = str(runtime.get("api_key", "") or "")
+        credential = runtime.get("api_key") or ""
+        # A key_cmd source is rebuilt on each turn. Key by its configuration without minting a token.
+        command_source = isinstance(credential, CommandTokenSource)
+        key_material = credential.cache_identity if command_source else str(credential)
+        fingerprint = hashlib.sha256(key_material.encode()).hexdigest() if key_material else ""
         blob = _j.dumps(
             [
                 model,
-                hashlib.sha256(_api_key.encode()).hexdigest() if _api_key else "",
+                ["key_cmd", fingerprint] if command_source else fingerprint,
                 runtime.get("base_url", ""), runtime.get("provider", ""),
                 runtime.get("requested_provider", ""), runtime.get("api_mode", ""),
                 sorted((runtime.get("capabilities") or {}).items()),

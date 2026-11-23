@@ -13,6 +13,7 @@ from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from agent.command_token_source import CommandTokenSource
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
 from gateway.config import Platform
@@ -222,6 +223,12 @@ class GatewaySessionAgentMixin:
             with cache_lock:
                 cache.pop(ctx.session_key, None)
         if found.reused and agent is not None:
+            # The primary may be restored *after* lookup. Its retained source, not the active
+            # fallback's key, must see a helper rotation before the next primary request.
+            if isinstance(turn_route["runtime"].get("api_key"), CommandTokenSource):
+                source = agent._primary_runtime["api_key"]
+                if isinstance(source, CommandTokenSource):
+                    source.invalidate()
             self._runner._apply_fallback_chain_to_agent(agent, None if locked else runner._refresh_fallback_model())
         if found.evicted is not None:
             self._release_evicted_agent(found.evicted)

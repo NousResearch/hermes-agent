@@ -30,7 +30,7 @@ from tools.approval_pipe_launchers import (
 from tools.approval_grep_spans import _grep_safe_detection_variant, _quoted_grep_pattern_spans  # re-exported
 from tools.approval_hermes_store import (
     _HERMES_HOME_ROOT, _HERMES_STORE_FILE, _HERMES_STORE_PATH, _HERMES_STORE_ROOT, _HERMES_STORE_ROOT_WORD,
-    SqliteStoreWriteMatcher,
+    HomeCreateTargetMatcher, SqliteStoreWriteMatcher, _NextStart,
     _COMMAND_TAIL, _CREDENTIAL_FILES, _HERMES_CONFIG_PATH, _HERMES_ENV_PATH, _HOME_PREFIX, _HOME_SENSITIVE_CREATE_FILE,
     _HOME_SENSITIVE_CREATE_TARGET, _LN_FILE_TAIL, _LN_TAIL, _PROJECT_ENV_PATH, _PROJECT_SENSITIVE_WRITE_TARGET,
     _SECRET_FILE_NAMED, _SECRET_KEY_FILE, _SECRET_PATH_FILE, _SECRET_VAR, _SENSITIVE_WRITE_DIR, _SENSITIVE_WRITE_FILE,
@@ -229,6 +229,8 @@ _SHELL_CARRIER_NAMES = frozenset({"eval", "sh", "bash", "zsh", "ksh", "dash", "s
 _WMIC_SHADOW_DELETE_DESCRIPTION = "delete volume shadow copies (wmic)"
 _DOWNLOAD_THEN_RUN_DESCRIPTION = "execute a just-downloaded file"
 _SQLITE3_STORE_WRITE_DESCRIPTION = "modify Hermes session store via sqlite3"
+_HOME_CREATE_DESCRIPTION = "create a file in a sensitive credential/SSH/shell-rc path"
+_LAUNCHCTL_STOP_DESCRIPTION = "stop/restart hermes launchd service (kills running agents)"
 class _PipeRemoteToShellMatcher:
     """Linear stand-in for the pipe-to-shell regex: find the first curl/wget, then try a sink only at
     each later `|` / `>(` (a leading `.*` rescanned the tail from every fetch word: quadratic).
@@ -280,6 +282,49 @@ _SQL_WHERE_RE = re.compile(r'\bWHERE\b', _RE_FLAGS)
 # Where a DELETE's own statement text ends (see the "SQL DELETE without WHERE" entry): a newline, a statement or
 # shell separator, a redirection, a comment start, a quote, or a dollar-quote opener ($tag$; bare $VAR is not one).
 _SQL_STATEMENT_END_RE = re.compile(r'[\n;&|#<>\'"`]|--|/\*|\$[A-Za-z_0-9\x80-\U0010ffff]*\$')
+
+
+# `rm <operands> -r`: the operand run (and its first word) stops at a bare `--`; launchctl stop + a hermes name.
+_RM_END_OF_OPTIONS = r'--(?:\s|$)'
+_RM_TRAILING_FLAG = r'(?:-[a-z]*r[a-z]*\b|--recursive\b)'
+_LAUNCHCTL_STOP = r'\blaunchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b'
+_HERMES_NAME = r'\b(?:hermes|ai\.hermes)\b'
+_RM_WORD_RE = re.compile(r'\brm\s', _RE_FLAGS)
+_RM_BLANKS_RE = re.compile(r'\s*')
+_RM_END_OF_OPTIONS_RE = re.compile(_RM_END_OF_OPTIONS, _RE_FLAGS)
+# Where the operand run ends: a bare `--` (its blank may still precede the flag) or a newline, quote or separator.
+_RM_OPERANDS_END_RE = re.compile(r'\s' + _RM_END_OF_OPTIONS + r'|[\n"\';|&]', _RE_FLAGS)
+_RM_BLANK_FLAG_RE = re.compile(r'\s' + _RM_TRAILING_FLAG, _RE_FLAGS)
+
+
+class _RmFlagAfterOperandsMatcher:
+    """`rm <operands> -r` (see the "recursive delete (flags after operands)" entry): a blank plus recursive flag from
+    the last blank before the first argument up to the end of the operand run, unless that argument is `--`. The
+    operand run starts at the first argument: the blanks before it may hold a newline, the run may not."""
+
+    def search(self, text: str):
+        end = _NextStart(lambda t, p: (m.start() if (m := _RM_OPERANDS_END_RE.search(t, p)) else None), text)
+        flag = _NextStart(lambda t, p: (m.start() if (m := _RM_BLANK_FLAG_RE.search(t, p)) else None), text)
+        for rm in _RM_WORD_RE.finditer(text):
+            first = _RM_BLANKS_RE.match(text, rm.end()).end()
+            at = max(rm.end(), first - 1)
+            if not _RM_END_OF_OPTIONS_RE.match(text, first) and flag.at(at) < len(text) and flag.at(at) <= end.at(first):
+                return rm
+        return None
+
+
+class _AllOfMatcher:
+    """Every pattern occurs somewhere in the text: the stdlib rule held one whole-text lookahead per pattern."""
+
+    def __init__(self, *patterns: str):
+        self._patterns = [re.compile(pattern, _RE_FLAGS) for pattern in patterns]
+
+    def search(self, text: str):
+        match = None
+        for pattern in self._patterns:
+            if (match := pattern.search(text)) is None:
+                return None
+        return match
 
 
 class _SqlDeleteWithoutWhereMatcher:
@@ -462,20 +507,6 @@ _GIT_PUSH_ARG_START = r'''\s["']?'''
 _DEV_TCP_REDIRECT_DESCRIPTION = "reverse shell via /dev/tcp or /dev/udp redirect"
 # PowerShell verbs/aliases that write a registry key when given a provider path.
 _REG_WRITE_VERB = r'(?:sp|si|ni|set-item|new-item|md|mkdir)'
-_SHELL_WORD_CHAR = r'[^\s;&|]'
-
-
-def _word_other_than(literal: str) -> str:
-    """A possibly empty run of shell-word characters that is not exactly *literal* (letters only)."""
-    longer = _word_other_than(literal[1:]) if literal[1:] else _SHELL_WORD_CHAR + '+'
-    return rf'(?:[^\s;&|{literal[0]}]{_SHELL_WORD_CHAR}*|{literal[0]}{longer})?'
-
-
-# The last shell word before a touch/mkdir operand when it is not `-r` / `--reference`. RE2 has no lookbehind to
-# veto the flag after the fact, so the word is spelled out: it leaves the flag's spelling at some character,
-# stops short of it, or runs past it.
-_NOT_REFERENCE_FLAG = (rf'(?:[^\s;&|-]{_SHELL_WORD_CHAR}*|-(?:[^\s;&|r-]{_SHELL_WORD_CHAR}*|r{_SHELL_WORD_CHAR}+|-'
-                       + _word_other_than('reference') + r')?)?')
 
 DANGEROUS_PATTERNS = [
     # A drive letter is a root too (`rm X:/f`; `X:\f` arrives as `X:/f` via the Windows-path variant).
@@ -486,8 +517,8 @@ DANGEROUS_PATTERNS = [
     # cannot cross a command separator (so `rm foo | grep -r` is not attributed to rm), a quote,
     # or a bare ` -- ` end-of-options (after which `-rf` is a literal filename). The flag token
     # must follow whitespace so the `r` in long options like `--registry` does not count.
-    (r'\brm\s+(?:(?:[^\s"\';|&-][^\s"\';|&]*|-(?:[^\s"\';|&-][^\s"\';|&]*|-[^\s"\';|&]+)?)?[^\S\n])*'
-     r'(?:[^\s"\';|&-][^\s"\';|&]*|-(?:[^\s"\';|&-][^\s"\';|&]*|-[^\s"\';|&]+)?)?\s' r'(?:-[a-z]*r[a-z]*\b|--recursive\b)',
+    # Not compiled: DANGEROUS_PATTERNS_COMPILED swaps in _RmFlagAfterOperandsMatcher (the lookaheads as searches).
+    (r'\brm\s+(?!' + _RM_END_OF_OPTIONS + r')(?:(?!\s' + _RM_END_OF_OPTIONS + r')[^\n"\';|&])*\s' + _RM_TRAILING_FLAG,
      # GNU rm permutes options, so a recursive flag group may legally FOLLOW the operands: `rm build/ -rf`,
      # `rm build/ -r -f`, and `rm build/ --recursive --force` are all equivalent to the flags-first
      # spellings the two patterns above catch — without this rule they run with no approval prompt at all.
@@ -735,11 +766,9 @@ DANGEROUS_PATTERNS = [
     # independent conditions on the whole input, NOT a sequential match: a for-loop building the label from a list
     # defined EARLIER (`for item in 'ai.hermes...'; do launchctl bootout "$label"`) never has "hermes" after the
     # verb, and that slipped past and restarted 4 gateways with zero approval. Erring broad is correct for an
-    # approval gate: an extra prompt is cheap. RE2 has no lookahead, so both orders are spelled out; the two
-    # words cannot overlap, and the `\W` between them is the word boundary each one needs on that side.
-    (r'\blaunchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b\W(?:[\s\S]*\W)?(?:hermes|ai\.hermes)\b'
-     r'|\b(?:hermes|ai\.hermes)\b\W(?:[\s\S]*\W)?launchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b',
-     "stop/restart hermes launchd service (kills running agents)"),
+    # approval gate: an extra prompt is cheap. Not compiled: DANGEROUS_PATTERNS_COMPILED runs each lookahead as its
+    # own search (_AllOfMatcher; RE2 has no lookahead).
+    (rf'\A(?=[\s\S]*{_LAUNCHCTL_STOP})(?=[\s\S]*{_HERMES_NAME})', _LAUNCHCTL_STOP_DESCRIPTION),
     (rf'\b(cp|mv|install)(?:\W.*)?\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
     (rf'\b(cp|mv|install)(?:\W.*)?\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
     # cp/mv/install OVERWRITING a credential/SSH/shell-rc/Hermes file (key implant, login-time
@@ -759,9 +788,9 @@ DANGEROUS_PATTERNS = [
     # (`mkdir -p ~/.ssh && touch ~/.ssh/x`, `ln -sf evil ~/.bashrc`), pairing the write_file deny (#85321).
     # Command-position anchored so `ls -ln ~/.ssh` / `grep touch ~/.bashrc` stay out; any touch/mkdir operand
     # counts, but for ln only the destination (last operand) does, so linking OUT of these paths stays safe.
-    # `touch -r REF` / `--reference REF` only reads REF (its timestamps), so that operand is not a create target:
-    # the word before the operand is any other word, or the flag itself right after a bare `--` (then a file name).
-    (rf'{_CMDPOS}(?:touch|mkdir)\s(?:(?:[^\n;&|]*[^\S\n])?(?:{_NOT_REFERENCE_FLAG}|--[^\S\n](?:-r|--reference))\s)?["\']?{_HOME_SENSITIVE_CREATE_TARGET}', "create a file in a sensitive credential/SSH/shell-rc path"),
+    # `touch -r REF` / `--reference REF` only reads REF (its timestamps), so that operand is not a create target.
+    # Not compiled: DANGEROUS_PATTERNS_COMPILED swaps in HomeCreateTargetMatcher (it reads the lookbehinds).
+    (rf'{_CMDPOS}(?:touch|mkdir)\s(?:[^\n;&|]*\s)?(?:(?<!\s-r\s)(?<!\s--reference\s)|(?<=\s--\s-r\s)|(?<=\s--\s--reference\s))["\']?{_HOME_SENSITIVE_CREATE_TARGET}', _HOME_CREATE_DESCRIPTION),
     (rf'{_CMDPOS}ln\s[^\n;&|]*\s["\']?(?:{_SSH_SENSITIVE_PATH}[^\s"\'<>;&|)`]*["\']?{_LN_TAIL}|{_HOME_SENSITIVE_CREATE_FILE}{_LN_FILE_TAIL})', "link a file into a sensitive credential/SSH/shell-rc path"),
     # Hermes home / session-store floor (#109367): delete, wipe, move, or overwrite of the home or a
     # protected store. cp/install/rsync only as the destination, so `cp ~/.hermes/state.db /tmp/bak` stays clean.
@@ -876,6 +905,9 @@ _CUSTOM_MATCHERS = {
     _DEV_TCP_REDIRECT_DESCRIPTION: _DevSocketRedirectMatcher,
     "SQL DELETE without WHERE": _SqlDeleteWithoutWhereMatcher,
     _SQLITE3_STORE_WRITE_DESCRIPTION: lambda: SqliteStoreWriteMatcher(_CMDPOS),
+    _HOME_CREATE_DESCRIPTION: lambda: HomeCreateTargetMatcher(_CMDPOS),
+    "recursive delete (flags after operands)": _RmFlagAfterOperandsMatcher,
+    _LAUNCHCTL_STOP_DESCRIPTION: lambda: _AllOfMatcher(_LAUNCHCTL_STOP, _HERMES_NAME),
     _DOWNLOAD_THEN_RUN_DESCRIPTION: lambda: DownloadThenRunMatcher(_SHELL_NAMES_RE),
 }
 # Rules whose `{_GIT}` option run RE2 cannot compile: GitCommandMatcher walks the run, the rest of the rule stays a regex.

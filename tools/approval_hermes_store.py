@@ -146,6 +146,49 @@ class _NextStart:
         return len(self._text) if self._start is None else self._start
 
 
+# touch/mkdir naming a sensitive home target. `touch -r REF` / `--reference REF` only reads REF (its timestamps), so
+# the stdlib rule vetoed the operand right after that flag with lookbehinds, unless a bare `--` came first (the flag
+# word is then a file name). RE2 has no lookbehind: HomeCreateTargetMatcher reads the words before each operand.
+_CREATE_TARGET_RE = re.compile(r'["\']?' + _HOME_SENSITIVE_CREATE_TARGET, _FLAGS)
+_REFERENCE_FLAG_RE = re.compile(r'\s(?:-r|--reference)\s', _FLAGS)
+_END_OF_OPTIONS_RE = re.compile(r'\s--', _FLAGS)
+_BLANK_RE = re.compile(r'\s')
+_SEGMENT_END_RE = re.compile(r'[\n;&|]')
+
+
+def _is_create_operand(text: str, at: int) -> bool:
+    if _CREATE_TARGET_RE.match(text, at) is None:
+        return False
+    for width in (4, 13):  # `\s-r\s`, `\s--reference\s` ending at *at*
+        flag = at - width
+        if flag >= 0 and _REFERENCE_FLAG_RE.fullmatch(text, flag, at):
+            return flag >= 3 and _END_OF_OPTIONS_RE.fullmatch(text, flag - 3, flag) is not None
+    return True
+
+
+class HomeCreateTargetMatcher:
+    """``search(text)`` -> the touch/mkdir command with a sensitive home target among its operands: right after the
+    command word or after any blank before its segment ends (a newline blank included), not a reference operand."""
+
+    def __init__(self, command_prefix: str):
+        self._command_re = re.compile(command_prefix + r'(?:touch|mkdir)\s', _FLAGS)
+
+    def search(self, text: str):
+        pos, checked = 0, (0, 0)
+        while (command := self._command_re.search(text, pos)) is not None:
+            start = command.end()
+            if _is_create_operand(text, start):
+                return command
+            if not checked[0] <= start < checked[1]:  # a later command in a checked segment has no new operand
+                end = _SEGMENT_END_RE.search(text, start)
+                stop = len(text) if end is None else end.start() + (end.group() == '\n')
+                if any(_is_create_operand(text, blank.end()) for blank in _BLANK_RE.finditer(text, start, stop)):
+                    return command
+                checked = (start, stop)
+            pos = command.start() + 1
+        return None
+
+
 class SqliteStoreWriteMatcher:
     """``search(text)`` -> the `sqlite3` command whose line names a store and a write after the command word."""
 

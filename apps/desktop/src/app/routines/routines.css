@@ -534,10 +534,14 @@
   line-height: 1.4;
 }
 
+/* The footer's box as toasts read it (lib/toast-floor.ts): one element under all three footers. */
+.routines-sheet-floor {
+  flex-shrink: 0;
+}
+
 /* The footer starts on the sheet's own opaque fill, so scrolled fields never show through it. */
 .routines-sheet-footer {
   display: grid;
-  flex-shrink: 0;
   gap: 0.75rem;
   padding: 1rem 2.5rem calc(1rem + var(--portal-safe-bottom));
   border-top: 1px solid var(--portal-stroke-hairline);

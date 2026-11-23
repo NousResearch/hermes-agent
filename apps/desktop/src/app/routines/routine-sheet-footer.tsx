@@ -5,6 +5,7 @@ import { Codicon } from '@/components/ui/codicon'
 import type { CronJob } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { firstRunText, nextFirstRun } from '@/lib/routine-first-run'
+import { useToastFloor } from '@/lib/toast-floor'
 import { $composerDraft, setComposerDraft } from '@/store/composer'
 
 import { startSimplifiedAgentSession } from '../chat/sidebar/simplified-new-session-model'
@@ -30,11 +31,20 @@ interface RoutineSheetFooterProps {
  *  New: when it first runs, then Cancel, Create in chat, Create routine. Edit: Delete routine, Cancel,
  *  Save & update routine; Delete swaps the row for its confirmation (rev 1407:9605). */
 export function RoutineSheetFooter(props: RoutineSheetFooterProps) {
-  if (props.confirmingDelete) {
-    return <DeleteConfirmation onCancel={() => props.onConfirmDelete(false)} onDelete={props.onDelete} />
-  }
+  // Toasts rise from this corner: they rest above whichever footer is showing, never over its buttons.
+  const floor = useToastFloor<HTMLDivElement>()
 
-  return props.job ? <EditFooter {...props} /> : <CreateFooter {...props} />
+  return (
+    <div className="routines-sheet-floor" ref={floor}>
+      {props.confirmingDelete ? (
+        <DeleteConfirmation onCancel={() => props.onConfirmDelete(false)} onDelete={props.onDelete} />
+      ) : props.job ? (
+        <EditFooter {...props} />
+      ) : (
+        <CreateFooter {...props} />
+      )}
+    </div>
+  )
 }
 
 function CreateFooter({ draft, saving, source }: RoutineSheetFooterProps) {

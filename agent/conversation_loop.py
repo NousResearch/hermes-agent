@@ -1629,7 +1629,13 @@ def _hand_back_leftover_steer(agent, result):
     if result.get("failure_reason") == "content_policy_blocked" or result.get("compression_exhausted"):
         return result
     if leftover := agent._drain_leftover_steer():
-        result["pending_steer"] = leftover
+        if getattr(agent, "_interrupt_requested", False):
+            # A Stop published between the check above and this drain: put the steer back, so the
+            # stop's own clear (hard or soft) decides whether it survives, exactly as before the drain.
+            from agent.interrupt_control import requeue_drained_steer
+            requeue_drained_steer(agent, leftover)
+        else:
+            result["pending_steer"] = leftover
     return result
 
 

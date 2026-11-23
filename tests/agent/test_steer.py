@@ -778,6 +778,27 @@ class TestSteerSurvivesRedirectRebuild:
         agent._interrupt_requested = False
         assert agent._drain_pending_steer() == self.STEER_TEXT  # left for the stop or the settlement to decide
 
+    def test_a_stop_published_during_the_drain_puts_the_steer_back(self, monkeypatch):
+        """The Stop lands after the helper's first check but before its drain returns: the steer goes
+        back to the buffer instead of out as pending_steer."""
+        from agent.conversation_loop import _hand_back_leftover_steer
+
+        agent = self._loop_agent()
+        assert agent.steer(self.STEER_TEXT) is True
+        agent._interrupt_requested = False
+        real_drain = agent._drain_leftover_steer
+
+        def drain_then_stop():
+            text = real_drain()
+            agent._interrupt_requested = True
+            return text
+
+        monkeypatch.setattr(agent, "_drain_leftover_steer", drain_then_stop)
+        out = _hand_back_leftover_steer(agent, {"failed": True})
+        assert out.get("pending_steer") is None
+        agent._interrupt_requested = False
+        assert agent._drain_pending_steer() == self.STEER_TEXT
+
     def test_early_exit_hands_back_on_an_ordinary_failure(self):
         from agent.conversation_loop import _hand_back_leftover_steer
 

@@ -23,8 +23,9 @@ import { recordIaAction } from './ia-metrics'
 
 export type FirstTimeSplashClose = 'close' | 'escape' | 'nav' | 'signup'
 
-/** The places the splash explains, in its order (Figma 18695:17147). */
-export const FIRST_TIME_PLACES = ['chats', 'agents', 'routines', 'library'] as const
+/** The places the splash explains, in the rail's own order, so a row and its place read top to
+ *  bottom alike (Figma 18695:17147 draws Routines before Library; the rail does not). */
+export const FIRST_TIME_PLACES = ['chats', 'agents', 'library', 'routines'] as const
 
 export type FirstTimeSplashPlace = (typeof FIRST_TIME_PLACES)[number]
 

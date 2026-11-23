@@ -211,9 +211,8 @@
   text-align: start;
 }
 
-/* One place speaks at a time: its fill, its example for its line, no check (18695:17294). Chats
-   speaks from the start, so the card opens showing that a row has more to say and the others are
-   there to be reached; the rest say their lines (18695:17833). */
+/* One place is pointed at at a time: its fill, no check (18695:17294). Chats is from the start, so
+   the card opens showing that the rows point somewhere and the others are there to be reached. */
 :root[data-shell='portal'] .discovery-welcome-places > li[data-active] .discovery-welcome-place {
   background-color: var(--portal-surface-selected);
 }
@@ -248,27 +247,12 @@
   min-inline-size: 0;
 }
 
-/* The line and the example share one cell, so a row is as tall as the longer of the two and none
-   moves when another speaks; the one not speaking keeps its room, unseen. */
+/* A place's line and, under it, its example. Both always show: an example swapped in for the line
+   under the pointer changed the text as it was being read, and could not be reached without one. */
 :root[data-shell='portal'] .discovery-welcome-place-lines {
-  display: grid;
-}
-
-:root[data-shell='portal'] .discovery-welcome-place-lines > .discovery-welcome-place-line {
-  grid-area: 1 / 1;
-}
-
-:root[data-shell='portal'] .discovery-welcome-place-line[data-example],
-:root[data-shell='portal']
-  .discovery-welcome-places
-  > li[data-active]
-  .discovery-welcome-place-lines
-  > :not([data-example]) {
-  visibility: hidden;
-}
-
-:root[data-shell='portal'] .discovery-welcome-places > li[data-active] .discovery-welcome-place-line[data-example] {
-  visibility: visible;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
 }
 
 /* The place's name: Nous/Body Regular at the 14px body; its line: Nous/Metadata, mono at .6. */

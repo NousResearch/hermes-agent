@@ -137,11 +137,25 @@ async function listDirs(dir: string, followLinks = false): Promise<string[]> {
   }
 }
 
-/** Every hermes home the app knows about locally: the default plus each profile. */
-export async function localHomes(hermesHome: string): Promise<string[]> {
-  const profiles = await listDirs(path.join(hermesHome, 'profiles'))
+/** True for a profile whose backend a plugin's launcher runs (a sandbox). Its
+ *  home is writable from inside the sandbox, so nothing in it may become code
+ *  in this app's renderer. */
+export type LaunchedProfilePredicate = (profile: string) => boolean
 
-  return [hermesHome, ...profiles.map(name => path.join(hermesHome, 'profiles', name))]
+const NOT_LAUNCHED: LaunchedProfilePredicate = () => false
+
+/** Every hermes home the app knows about locally: the default plus each
+ *  profile, minus the homes of launched profiles. */
+export async function localHomes(
+  hermesHome: string,
+  isLaunched: LaunchedProfilePredicate = NOT_LAUNCHED
+): Promise<string[]> {
+  const profiles = (await listDirs(path.join(hermesHome, 'profiles'))).filter(name => !isLaunched(name.toLowerCase()))
+
+  return [
+    ...(isLaunched('default') ? [] : [hermesHome]),
+    ...profiles.map(name => path.join(hermesHome, 'profiles', name))
+  ]
 }
 
 /** Move every `profiles/<name>/desktop-plugins/<id>` folder into the app-level
@@ -149,14 +163,27 @@ export async function localHomes(hermesHome: string): Promise<string[]> {
  *  id, so a duplicate is the same plugin installed twice); the profile copy is
  *  left in place for the user to delete rather than destroyed. Emptied profile
  *  roots are removed so the migration is a no-op on the next launch. */
-export function migrateProfileScopedDesktopPlugins(hermesHome: string, appRoot: string): Promise<string[]> {
-  return withDesktopPluginsRoot(appRoot, () => migrateProfileScoped(hermesHome, appRoot))
+export function migrateProfileScopedDesktopPlugins(
+  hermesHome: string,
+  appRoot: string,
+  isLaunched: LaunchedProfilePredicate = NOT_LAUNCHED
+): Promise<string[]> {
+  return withDesktopPluginsRoot(appRoot, () => migrateProfileScoped(hermesHome, appRoot, isLaunched))
 }
 
-async function migrateProfileScoped(hermesHome: string, appRoot: string): Promise<string[]> {
+async function migrateProfileScoped(
+  hermesHome: string,
+  appRoot: string,
+  isLaunched: LaunchedProfilePredicate
+): Promise<string[]> {
   const moved: string[] = []
 
   for (const profile of await listDirs(path.join(hermesHome, 'profiles'))) {
+    // A sandbox can write its own profile folder; never lift code out of it.
+    if (isLaunched(profile.toLowerCase())) {
+      continue
+    }
+
     const scopedRoot = path.join(hermesHome, 'profiles', profile, DESKTOP_PLUGINS_DIR)
 
     for (const entry of await listDirs(scopedRoot)) {
@@ -544,9 +571,15 @@ async function sourceGone(name: string, entry: string): Promise<boolean> {
 /** Walk every local home's `plugins/` root and materialize each package's
  *  desktop half. First home wins for a name that appears in several profiles
  *  (the default home is first). Also drops root copies whose source package
- *  is gone — an uninstalled agent package must not leave a ghost pane. */
-export async function reconcileUnifiedDesktopHalves(hermesHome: string, appRoot: string): Promise<string[]> {
-  return (await reconcileDesktopHalvesReport(hermesHome, appRoot)).published
+ *  is gone — an uninstalled agent package must not leave a ghost pane.
+ *  Launched profiles' homes are skipped: a sandbox could otherwise write a
+ *  `plugin.js` there and have it copied into this app's renderer. */
+export async function reconcileUnifiedDesktopHalves(
+  hermesHome: string,
+  appRoot: string,
+  isLaunched: LaunchedProfilePredicate = NOT_LAUNCHED
+): Promise<string[]> {
+  return (await reconcileDesktopHalvesReport(hermesHome, appRoot, isLaunched)).published
 }
 
 /** A package whose desktop half this pass did not publish, and why (the plain-tree check, an unreadable folder). */
@@ -563,16 +596,24 @@ export interface DesktopReconcileReport {
 
 /** `reconcileUnifiedDesktopHalves`, also naming each package it refused, so an install that just put one
  *  down can report its desktop half as failed instead of done. */
-export function reconcileDesktopHalvesReport(hermesHome: string, appRoot: string): Promise<DesktopReconcileReport> {
-  return withDesktopPluginsRoot(appRoot, () => reconcilePass(hermesHome, appRoot))
+export function reconcileDesktopHalvesReport(
+  hermesHome: string,
+  appRoot: string,
+  isLaunched: LaunchedProfilePredicate = NOT_LAUNCHED
+): Promise<DesktopReconcileReport> {
+  return withDesktopPluginsRoot(appRoot, () => reconcilePass(hermesHome, appRoot, isLaunched))
 }
 
-async function reconcilePass(hermesHome: string, appRoot: string): Promise<DesktopReconcileReport> {
+async function reconcilePass(
+  hermesHome: string,
+  appRoot: string,
+  isLaunched: LaunchedProfilePredicate
+): Promise<DesktopReconcileReport> {
   const touched: string[] = []
   const refused: RefusedDesktopHalf[] = []
   const seen = new Set<string>()
 
-  for (const home of await localHomes(hermesHome)) {
+  for (const home of await localHomes(hermesHome, isLaunched)) {
     const pluginsRoot = path.join(home, 'plugins')
 
     for (const name of await listDirs(pluginsRoot, true)) {

@@ -226,6 +226,12 @@ declare global {
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
+      // Plugin SDK host.setProfileBackend / clearProfileBackend. Main confirms
+      // natively; `confirm*` asks first and returns a one-time grant.
+      setProfileBackend?: (payload: DesktopProfileBackendInput) => Promise<{ applied: boolean }>
+      confirmSetProfileBackend?: (payload: DesktopProfileBackendTarget) => Promise<DesktopProfileBackendConfirm>
+      clearProfileBackend?: (payload: DesktopProfileBackendTarget & { grant?: string }) => Promise<{ applied: boolean }>
+      confirmClearProfileBackend?: (payload: DesktopProfileBackendTarget) => Promise<DesktopProfileBackendConfirm>
       // Opt-in OS-keychain encryption for stored gateway secrets (default
       // off). `get` never touches the OS keychain; `set` re-encodes stored
       // secrets and can throw when the keychain is unusable.
@@ -733,7 +739,8 @@ declare global {
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
       // Soft gateway-mode apply: primary backend was torn down without a window
       // reload. Wipe session lists (skeletons) and re-dial.
-      onConnectionApplied?: (callback: () => void) => () => void
+      // `detail.profile`: only that profile's route moved (a plugin's setProfileBackend).
+      onConnectionApplied?: (callback: (detail?: { profile?: string }) => void) => () => void
       onPowerResume?: (callback: () => void) => () => void
       getOnBattery?: () => Promise<boolean>
       onBatteryChanged?: (callback: (onBattery: boolean) => void) => () => void
@@ -1160,6 +1167,9 @@ export interface HermesConnection {
   // secondaries carry it directly; legacy primary remotes preserve it from
   // their selected stored route before dialing.
   connectionId?: string
+  // A desktop plugin runs this profile's backend on this computer
+  // (host.setProfileBackend). It lists this host's profiles, not its own.
+  launcher?: { plugin: string }
   // True only when getConnectionFor explicitly resolved a v2 registry route.
   // An inferred connectionId identifies the visible source but its v1 profile
   // name may still be a client-side routing alias rather than a backend profile.
@@ -1244,6 +1254,29 @@ export interface DesktopConnectionConfig {
   sshKeyPath: string
   sshRemoteHermesPath: string
   sshRemoteProfile: string
+  // Per-profile scope only: the plugin that runs this profile's backend, or null.
+  launcher?: null | { plugin: string }
+}
+
+export interface DesktopProfileBackendTarget {
+  /** The plugin that runs the profile's backend; the confirm names it. */
+  plugin: string
+  profile: string
+  /** The plugin's own one-line reason, shown in the confirm as its words. */
+  purpose?: string
+}
+
+export interface DesktopProfileBackendConfirm {
+  confirmed: boolean
+  /** One-time: stands for this answer in the set or clear that follows. */
+  grant?: string
+}
+
+export interface DesktopProfileBackendInput extends DesktopProfileBackendTarget {
+  grant?: string
+  token: string
+  /** A loopback base URL (http://127.0.0.1:<port>). */
+  url: string
 }
 
 export interface DesktopConnectionConfigInput {

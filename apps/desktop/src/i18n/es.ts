@@ -3302,6 +3302,8 @@ export const esOverrides = {
     remoteOverride: {
       menuItem: 'Conectar a un host remoto…',
       badge: (host: string) => `Se ejecuta en ${host}`,
+      runHere: 'Ejecutar en este equipo…',
+      sandboxed: 'En sandbox',
       title: (profile: string) => `Conectar ${profile} a un host remoto`,
       description:
         'Las sesiones de este perfil se ejecutarán en el Hermes remoto que indiques, en lugar de en este equipo.',

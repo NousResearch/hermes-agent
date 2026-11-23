@@ -33,6 +33,7 @@ import type { PluginPreviewAccessTranslations } from './types_plugin_preview_acc
 import type { PluginUpdateAllTranslations, PluginUpdateTranslations } from './types_plugin_update'
 import type { SidebarProjectsTranslations } from './types_projects'
 import type { RightSidebarTranslations } from './types_right_sidebar'
+import type { SandboxCopy } from './types_sandbox'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
 import type { ThemePickerCopy } from './types_theme_picker'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
@@ -96,6 +97,8 @@ interface ModeOptionCopy {
 export interface Translations extends NoticeTranslations {
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: SharedMetricsTranslations
+  /** A profile a plugin runs in a sandbox: its planned start, restart and stop. */
+  sandbox: SandboxCopy
   appTour: AppTourTranslations
   firstRun: FirstRunCopy
   externalOpenFailed: ExternalOpenFailedCopy
@@ -2528,6 +2531,8 @@ export interface Translations extends NoticeTranslations {
     remoteOverride: {
       menuItem: string
       badge: (host: string) => string
+      runHere: string
+      sandboxed: string
       title: (profile: string) => string
       description: string
       urlLabel: string

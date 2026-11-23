@@ -104,17 +104,25 @@ def _env_tokens(environment: str) -> dict[str, str]:
 _GATEWAY_UNIT_ENV = frozenset({"HOME", "USER", "LOGNAME", "PATH", "VIRTUAL_ENV", "HERMES_HOME", "HERMES_SUPERVISED_CHILD"})
 
 
-def _carried_assignments(line: str) -> Optional[str]:
-    """``Environment=`` *line* with the assignments the gateway service sets itself dropped, re-quoted for
-    systemd; None when nothing is left. A line that cannot be split is kept as it is (systemd read it)."""
-    try:
-        tokens = shlex.split(line[len("Environment="):], posix=True)
-    except ValueError:
-        return line
-    kept = [t for t in tokens if "=" in t and t.split("=", 1)[0] not in _GATEWAY_UNIT_ENV]
-    if not kept:
-        return None
-    return "Environment=" + " ".join('"' + t.replace("\\", "\\\\").replace('"', '\\"') + '"' for t in kept)
+def _systemd_words(environment: str) -> list[str]:
+    """The words of a ``systemctl show -p Environment`` value exactly as printed: systemd prints each
+    assignment bare or double-quoted with C escapes, the syntax ``Environment=`` reads back, so a word is
+    carried without being unescaped (whitespace inside quotes or after a backslash does not split)."""
+    words, word, quoted, escaped = [], "", False, False
+    for ch in environment:
+        if escaped:
+            word, escaped = word + ch, False
+        elif ch == "\\":
+            word, escaped = word + ch, True
+        elif ch == '"':
+            word, quoted = word + ch, not quoted
+        elif ch.isspace() and not quoted:
+            if word:
+                words.append(word)
+            word = ""
+        else:
+            word += ch
+    return [*words, word] if word else words
 
 
 _HOME_KEYS = ("HERMES_HOME", "HOME", "HERMES_DATA_DIR_SUFFIX")  # the variables that decide a unit's home
@@ -722,21 +730,25 @@ class SystemHost:
         return found
 
     def legacy_environment_lines(self, unit: str) -> list[str]:
-        """The ``Environment=`` / ``EnvironmentFile=`` lines of user unit *unit* and its drop-ins (``systemctl cat``,
-        in the order systemd applies them), without the assignments the gateway service writes itself. Values
-        stay in memory and in the 0600 drop-in they are copied to."""
-        res = _systemctl("user", ["cat", unit, "--no-pager"])
+        """The environment user unit *unit* sets itself, as systemd resolved it (``systemctl show``: every
+        drop-in, continued lines and ``Environment=`` resets applied), for the gateway service: one
+        ``Environment=`` line of its assignments without the ones the gateway unit sets itself, then one
+        ``EnvironmentFile=`` line per file in order (``-`` kept for an optional one). Values stay in memory
+        and in the 0600 drop-in they are copied to."""
+        res = _systemctl("user", ["show", unit, "--no-pager", "--property=Environment",
+                                  "--property=EnvironmentFiles"])
         self._require(res, f"read {unit}")
-        lines, section = [], ""
-        for raw in (res.stdout or "").splitlines():
-            line = raw.strip()
-            if line.startswith("[") and line.endswith("]"):
-                section = line
-            elif section == "[Service]" and line.startswith("EnvironmentFile="):
-                lines.append(line)
-            elif section == "[Service]" and line.startswith("Environment=") and (kept := _carried_assignments(line)):
-                lines.append(kept)
-        return lines
+        words: list[str] = []
+        files: list[tuple[str, bool]] = []
+        for line in (res.stdout or "").splitlines():
+            key, _, value = line.partition("=")
+            if key == "Environment":
+                words += [w for w in _systemd_words(value) if w.lstrip('"').split("=", 1)[0] not in _GATEWAY_UNIT_ENV]
+            elif key == "EnvironmentFiles":
+                files += [(path, flag == "yes") for path, flag in _ENV_FILE_ENTRY.findall(value)]
+        # show prints values already expanded, so a literal % is doubled back for Environment=.
+        lines = ["Environment=" + " ".join(w.replace("%", "%%") for w in words)] if words else []
+        return lines + [f"EnvironmentFile={'-' if optional else ''}{path}" for path, optional in files]
 
     def gateway_env_dropin_path(self, name: str) -> str:
         from hermes_cli import gateway as gw

@@ -162,6 +162,27 @@ describe('attachment payloads in the durable room record', () => {
     expect(older.images?.[0].name).toBe('older.png')
     expect(persisted).toBe(newerData.length)
   })
+
+  it('reports a failed room-map write once instead of swallowing it', async () => {
+    const { chat, gateway } = await loadRoom()
+    const shared = await import('./shared')
+    const notify = gateway.host.notify as ReturnType<typeof vi.fn>
+
+    shared.setPluginCtx({
+      storage: {
+        get: async () => null,
+        set: async () => {
+          throw new Error('QuotaExceededError')
+        }
+      }
+    } as never)
+
+    await chat.persistGroupChatRooms({})
+    await chat.persistGroupChatRooms({})
+
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(notify).toHaveBeenCalledWith({ kind: 'error', message: expect.stringContaining('storage is full') })
+  })
 })
 
 describe('room naming', () => {

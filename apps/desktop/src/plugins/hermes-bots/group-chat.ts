@@ -16,6 +16,7 @@ import { durableGroupChatRoom } from './group-chat-record'
 import type { GroupEngine } from './group-engine'
 import { gatewayGroupEngine, gatewayGroupIdentityConflicts, stickyGroupEngine } from './group-engine'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
+import { botsText } from './i18n'
 import { displayName } from './labels'
 import { botRosterMeta } from './routing'
 import { getPluginCtx } from './shared'
@@ -941,12 +942,27 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
   return durable
 }
 
+/** Set once a room-map write fails, so a full origin reports itself instead of
+ *  silently dropping every later room write. */
+let groupChatPersistFailureNotified = false
+
 export function persistGroupChatRooms(all: Record<string, GroupChat> = $groupChats.get()) {
+  const failed = () => {
+    if (groupChatPersistFailureNotified) {
+      return
+    }
+
+    groupChatPersistFailureNotified = true
+    host.notify({ kind: 'error', message: botsText().group.storageFull })
+  }
+
   try {
-    return Promise.resolve(getPluginCtx()?.storage?.set?.('group-chats', durableGroupChatRooms(all))).catch(
-      () => undefined
-    )
+    return Promise.resolve(getPluginCtx()?.storage?.set?.('group-chats', durableGroupChatRooms(all)))
+      .catch(failed)
+      .then(() => undefined)
   } catch {
+    failed()
+
     return Promise.resolve()
   }
 }

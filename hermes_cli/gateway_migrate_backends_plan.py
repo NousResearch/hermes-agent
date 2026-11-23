@@ -894,9 +894,15 @@ def build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False) 
 
 
 def _owner_problem(host) -> Optional[str]:
-    """Why this profile's move is not planned here: another home's gateway serves it, or which gateway
-    serves it is not known. None for a home whose own gateway would serve the Webapp."""
+    """Why this profile's move is not planned here: a plugin runs the profile elsewhere, another home's
+    gateway serves it, or which gateway serves it is not known. None for a home whose own gateway would
+    serve the Webapp."""
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
     from hermes_constants import profile_name_for_home
+    if (elsewhere := run_elsewhere_refusal(host.home)) is not None:
+        # The gateway a move starts would refuse this profile, and the backend found for its home may be
+        # the one the plugin runs: no step is planned against it, by this command or by hand.
+        return f"{elsewhere} Nothing changed."
     kind, owner = host.gateway_owner()
     name = profile_name_for_home(str(host.home))
     if kind == "other":

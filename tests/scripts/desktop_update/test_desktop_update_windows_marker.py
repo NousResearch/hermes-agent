@@ -76,6 +76,9 @@ def _protected_pid(exclude: set[int] | frozenset[int] = frozenset()) -> int:
          'Get-CimInstance Win32_Process | ForEach-Object { '
          '$p = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; '
          '$st = $false; if ($p) { try { $st = $null -ne $p.StartTime } catch {} }; '
+         # A process that exits during the scan also reads as a hidden StartTime. On a busy elevated runner
+         # those are the only such rows, and they outrank the real candidates, so drop a row whose pid is gone.
+         'if (-not $st -and -not (Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue)) { return }; '
          '$ct = if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().Ticks } else { 0 }; '
          '\'{0} {1} {2} {3}\' -f $_.ProcessId, $ct, [int]$st, $_.Name }'],
         capture_output=True, text=True, timeout=120, check=True,

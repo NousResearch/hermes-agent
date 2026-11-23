@@ -185,6 +185,29 @@ describe('approval request routing', () => {
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ body: 'C:\\ref' }))
   })
 
+  it.each([
+    ['a folder request that names no folder', { kind: 'access' }],
+    ['a folder request that names a site', { host: 'example.com', kind: 'access' }],
+    ['a site request that names no site', { kind: 'network' }]
+  ])('refuses %s: the sender gets an error, no card is parked and nothing is notified', (_name, fields) => {
+    const { fail, respond } = deliver(
+      'approval',
+      {
+        choices: ['once', 'always', 'deny'],
+        command: '',
+        request_id: 'sandbox-card-5',
+        session_id: 'session-n',
+        ...fields
+      },
+      'session-b'
+    )
+
+    expect(fail).toHaveBeenCalledWith(-32602, expect.stringMatching(/path.*host/))
+    expect(respond).not.toHaveBeenCalled()
+    expect(sessionApprovalRequests('session-n').get()).toEqual([])
+    expect(notify).not.toHaveBeenCalled()
+  })
+
   it('parks a site card with its label and names the site in the notification', () => {
     deliver(
       'approval',

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from tools.tour_presets import TourPreset
 
@@ -188,7 +188,10 @@ class ApprovalRequestParams(ServerRequestParams):
     ``access`` (``path``, and ``access`` read or read_write) and for a site with ``network``
     (``host``, and an optional display ``label``). ``risk`` is one short line shown under the
     folder or site. On those two kinds ``once`` allows until the sandbox is switched off and
-    ``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``."""
+    ``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``.
+
+    An ``access`` request without a ``path`` and a ``network`` request without a ``host`` are
+    refused: the desktop answers with an error and shows no card."""
 
     request_id: str
     command: str = ""
@@ -208,6 +211,14 @@ class ApprovalRequestParams(ServerRequestParams):
     # The approval queue entry carries tool-specific context the card may render; the closed set
     # of keys is owned by tools/approval.py, so it stays open here.
     model_config = Params.model_config | {"extra": "allow"}
+
+    @model_validator(mode="after")
+    def _names_its_folder_or_site(self) -> ApprovalRequestParams:
+        if self.kind == ApprovalKind.access and not (self.path or "").strip():
+            raise ValueError("an access request needs a path")
+        if self.kind == ApprovalKind.network and not (self.host or "").strip():
+            raise ValueError("a network request needs a host")
+        return self
 
 
 class ApprovalResult(Result):

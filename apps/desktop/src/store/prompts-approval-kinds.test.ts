@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   approvalKindFields,
+  approvalNamesNothing,
   clearAllPrompts,
   networkTargetName,
   replayPendingApproval,
@@ -71,7 +72,12 @@ describe('approvalKindFields', () => {
     })
   })
 
-  it('keeps the kind when the target is missing, so the card still shows its own copy', () => {
+  // The kind stays without a target so that the request is refused as a folder or site request.
+  // Read as a command it would become a command card with nothing to run.
+  it('keeps the kind when the target is missing, so the request is refused and never read as a command', () => {
+    expect(approvalNamesNothing({ kind: 'network' })).toBe(true)
+    expect(approvalNamesNothing({ kind: 'network', target: { host: 'example.com' } })).toBe(false)
+    expect(approvalNamesNothing({})).toBe(false)
     expect(approvalKindFields({ kind: 'network', risk: 'Unknown host' })).toEqual({
       kind: 'network',
       risk: 'Unknown host'
@@ -165,6 +171,25 @@ describe('turn-end prompt clear', () => {
 })
 
 describe('approval.pending replay', () => {
+  it('parks nothing for a pending entry that names no folder, and does not acknowledge it', async () => {
+    const calls: string[] = []
+
+    const gateway = {
+      request: async (method: string) => {
+        calls.push(method)
+
+        return method === 'approval.pending'
+          ? { approvals: [{ kind: 'access', request_id: 'sandbox-card-1' }] }
+          : { acknowledged: true }
+      }
+    }
+
+    await replayPendingApproval(gateway, 's1')
+
+    expect(sessionApprovalRequests('s1').get()).toEqual([])
+    expect(calls).toEqual(['approval.pending'])
+  })
+
   it('carries kind, target and risk from the pending list', async () => {
     const gateway = {
       request: async (method: string) =>

@@ -474,6 +474,25 @@ describe('folder and site approval cards', () => {
     expect(shown).toContain('evil.example\\u202emoc.buhtig')
   })
 
+  it('offers no Allow on a folder card whose request names no folder', () => {
+    // A card that names nothing to allow must not be answerable with a grant: such a request
+    // is refused and never parked.
+    setAccess({ risk: undefined, target: undefined })
+    render(<PendingApprovalStack />)
+
+    expect(sessionApprovalRequests('sess-1').get()).toEqual([])
+    expect(screen.queryByRole('button', { name: /^Allow/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Always allow…' })).toBeNull()
+  })
+
+  it('never shows "dangerous command" on a folder card', () => {
+    // "dangerous command" is the handler's stand-in description for a command that has none.
+    setAccess({ description: 'dangerous command', risk: undefined, target: undefined })
+    render(<PendingApprovalStack />)
+
+    expect(screen.queryByText('dangerous command')).toBeNull()
+  })
+
   it('names a read-only folder as read only', () => {
     setAccess({ target: { access: 'read', path: 'C:\\Users\\me\\docs' } })
     render(<PendingApprovalStack />)

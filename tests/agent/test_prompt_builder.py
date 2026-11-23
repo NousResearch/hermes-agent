@@ -455,10 +455,10 @@ class TestBuildContextFilesPrompt:
         import agent.runtime_cwd as rt
 
         monkeypatch.setattr(rt, "_PACKAGE_ROOT", tmp_path.resolve())
-        (tmp_path / "AGENTS.md").write_text("Never give up on the right solution.")
+        (tmp_path / "AGENTS.md").write_text("Install-tree project rules.")
         monkeypatch.chdir(tmp_path)
         result = build_context_files_prompt(cwd=None, skip_soul=True)
-        assert "Never give up" not in result
+        assert "Install-tree project rules" not in result
         assert result == ""
 
     @pytest.mark.platforms("linux", "macos")

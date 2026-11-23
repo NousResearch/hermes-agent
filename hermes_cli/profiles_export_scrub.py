@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+import stat
 from pathlib import Path
 
 # The machine's saved-gateways list and its OAuth sign-ins (``hermes_cli.gateway_connections``), with
@@ -79,5 +80,17 @@ def scrub_export_secrets(staged: Path) -> None:
         if redacted == text:
             continue
         if is_link:
-            path.unlink()
-        path.write_text(redacted, encoding="utf-8")
+            original_mode = stat.S_IMODE(path.parent.stat().st_mode)
+            try:
+                path.parent.chmod(original_mode | stat.S_IWUSR)
+                path.unlink()
+                path.write_text(redacted, encoding="utf-8")
+            finally:
+                path.parent.chmod(original_mode)
+        else:
+            original_mode = stat.S_IMODE(path.stat().st_mode)
+            try:
+                path.chmod(original_mode | stat.S_IWUSR)
+                path.write_text(redacted, encoding="utf-8")
+            finally:
+                path.chmod(original_mode)

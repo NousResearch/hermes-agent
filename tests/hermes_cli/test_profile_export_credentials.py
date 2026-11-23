@@ -9,6 +9,7 @@ force-redacted in the staged archive (same pass as sessions --redact).
 The live profile on disk must stay untouched.
 """
 
+import stat
 import tarfile
 from pathlib import Path
 
@@ -215,6 +216,38 @@ class TestCredentialExclusion:
 
 class TestExportSecretScrub:
 
+    @pytest.mark.platforms("posix")
+    def test_named_profile_export_redacts_read_only_plugin_file(self, profile_env):
+        """Regression for #159274: export redacts a read-only plugin without changing its modes."""
+        profile_dir = profile_env / ".hermes" / "profiles" / "locked"
+        plugin_dir = profile_dir / "plugins" / "demo"
+        plugin_dir.mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text("model: gpt-4\n")
+        secret_file = plugin_dir / "settings.txt"
+        secret_file.write_text(f"api_key: {_LEAKED_KEY}\n")
+
+        source_dir_mode = stat.S_IMODE(plugin_dir.stat().st_mode) & ~0o222
+        source_file_mode = stat.S_IMODE(secret_file.stat().st_mode) & ~0o222
+        plugin_dir.chmod(source_dir_mode)
+        secret_file.chmod(source_file_mode)
+
+        try:
+            result = export_profile("locked", str(profile_env / "locked.tar.gz"))
+
+            with tarfile.open(result, "r:gz") as tf:
+                file_member = tf.getmember("locked/plugins/demo/settings.txt")
+                dir_member = tf.getmember("locked/plugins/demo")
+                archived = tf.extractfile(file_member).read().decode("utf-8")
+
+            assert _LEAKED_KEY not in archived
+            assert stat.S_IMODE(file_member.mode) == source_file_mode
+            assert stat.S_IMODE(dir_member.mode) == source_dir_mode
+            assert stat.S_IMODE(plugin_dir.stat().st_mode) == source_dir_mode
+            assert stat.S_IMODE(secret_file.stat().st_mode) == source_file_mode
+        finally:
+            plugin_dir.chmod(source_dir_mode | stat.S_IWUSR)
+            secret_file.chmod(source_file_mode | stat.S_IWUSR)
+
     def test_named_profile_export_redacts_secrets_in_text(self, tmp_path, monkeypatch):
         """Leaked keys in skills / SOUL / memories must not leave the archive."""
         profiles_root = tmp_path / "profiles"
@@ -277,18 +310,25 @@ class TestExportSecretScrub:
         skill_dir.mkdir(parents=True)
         link = skill_dir / "SKILL.md"
         link.symlink_to(outside)
+        skill_dir_mode = stat.S_IMODE(skill_dir.stat().st_mode) & ~0o222
+        skill_dir.chmod(skill_dir_mode)
 
         (profile_dir / "config.yaml").write_text("model: gpt-4\n")
         _patch_named_profile(monkeypatch, profiles_root, profile_dir)
 
-        result = export_profile("linkme", str(tmp_path / "linkme.tar.gz"))
+        try:
+            result = export_profile("linkme", str(tmp_path / "linkme.tar.gz"))
+        finally:
+            skill_dir.chmod(skill_dir_mode | stat.S_IWUSR)
 
         with tarfile.open(result, "r:gz") as tf:
             skill_members = [n for n in tf.getnames() if n.endswith("SKILL.md")]
             assert skill_members
             archived = tf.extractfile(skill_members[0]).read().decode("utf-8")
+            parent_member = tf.getmember("linkme/skills/linked")
 
         assert _LEAKED_KEY not in archived
+        assert stat.S_IMODE(parent_member.mode) == skill_dir_mode
         assert _LEAKED_KEY in outside.read_text()
         assert link.is_symlink()
 

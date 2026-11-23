@@ -767,9 +767,18 @@ class AuthorityConnection:
             # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
             display['display_messages'] = display_projection(
                 [row for row in history if not model_only(row)], self.authority.profile_id)
+        running = snapshot.handle.execution_state == 'running'
+        transcript = await _resume_transcript(self.authority, ref, snapshot, history, omit)
+        if running and (todo := transcript['todo_state']) is not None:
+            # A plan the running turn did not write is one an earlier turn left unfinished: its end already
+            # took it off the client's live panel, so this attach must not pin it back (#158324). Only a
+            # local viewer turn's writes are tracked; for any other turn the client keeps its old rule.
+            owned = live.event_stream.from_running_turn(snapshot.handle.execution_generation, todo['revision'])
+            if owned is not None:
+                transcript['todo_state'] = {**todo, 'from_running_turn': owned}
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
-                **await _resume_transcript(self.authority, ref, snapshot, history, omit), **display,
-                'running': snapshot.handle.execution_state == 'running',
+                **transcript, **display,
+                'running': running,
                 'authority_epoch': snapshot.handle.authority_epoch,
                 'replay_epoch': snapshot.replay_epoch, 'last_sequence': snapshot.last_sequence,
                 'subscription_id': snapshot.subscription_id, 'revision': snapshot.handle.revision,

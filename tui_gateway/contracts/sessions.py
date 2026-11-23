@@ -52,6 +52,8 @@ class TodoState(Result):
 
     todos: list[dict[str, JsonValue]]
     revision: int
+    # While a turn runs: whether that turn wrote this list (False: an earlier turn left it unfinished).
+    from_running_turn: bool | None = None
 
 
 class AutoContinue(Result):

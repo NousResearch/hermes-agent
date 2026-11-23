@@ -6,12 +6,13 @@ import pytest
 
 from gateway.config import Platform
 from gateway.run_turn_runner import TurnRunner
+from gateway.session_events import SessionEvents
 
 
 def _runner(row):
     store = SimpleNamespace(sessions=SimpleNamespace(get=lambda sid: row))
-    authority = SimpleNamespace(sessions={"owner": object()}, persistence=store, runner=None, profile_id="p",
-                                logical_owner=lambda sid: sid)
+    authority = SimpleNamespace(sessions={"owner": SimpleNamespace(event_stream=SessionEvents())}, persistence=store,
+                                runner=None, profile_id="p", logical_owner=lambda sid: sid)
     ctx = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL, chat_id="owner"), session_id="owner")
     return authority, lambda: TurnRunner(SimpleNamespace(session_authority=authority), ctx)
 

@@ -46812,6 +46812,18 @@
           "revision": {
             "title": "Revision",
             "type": "integer"
+          },
+          "from_running_turn": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "From Running Turn"
           }
         },
         "required": [

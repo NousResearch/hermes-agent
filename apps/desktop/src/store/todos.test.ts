@@ -149,6 +149,20 @@ describe('revisioned snapshots', () => {
     expect($todosBySession.get().s1?.[0]?.id).toBe('active')
   })
 
+  it('keeps an unfinished list from an earlier turn dropped while a later turn runs', () => {
+    // #158324: the previous turn ended on this list and its turn-end clear
+    // dropped it; a reload during the next turn must not pin it back.
+    const left = [todo('a', 'completed'), todo('b', 'in_progress')]
+
+    restoreSessionTodosFromSnapshot('s1', { from_running_turn: false, revision: 3, todos: left }, true)
+    expect($todosBySession.get().s1).toBeUndefined()
+    expect($retainedTodosBySession.get().s1).toEqual(left)
+
+    // Once the running turn writes the list, it is that turn's live plan.
+    restoreSessionTodosFromSnapshot('s1', { from_running_turn: true, revision: 4, todos: left }, true)
+    expect($todosBySession.get().s1).toEqual(left)
+  })
+
   it('keeps an idle snapshot available for review without reviving live work', () => {
     const saved = [todo('a', 'completed'), todo('b', 'in_progress')]
     restoreSessionTodosFromSnapshot('s1', { revision: 7, todos: saved }, false)

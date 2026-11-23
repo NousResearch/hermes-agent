@@ -399,9 +399,12 @@ def _start_inflight_turn(
     display_metadata: dict | None = None,
 ) -> None:
     now = time.time()
+    # A list at or below this revision is one an earlier turn left: its end already dropped it on the client,
+    # so a resume during this turn must not pin it back (#158324).
+    todo_state = _session_todo_state(session)
     turn = {
         "assistant": "", "started_at": now, "streaming": True, "updated_at": now,
-        "user": _inflight_text(text),
+        "user": _inflight_text(text), "todo_revision": todo_state["revision"] if todo_state else 0,
     }
     if display_kind:
         turn["display_kind"] = display_kind

@@ -1,6 +1,7 @@
 """Todo snapshots bypass optional tool-progress display settings."""
 
 import json
+import threading
 
 from persistence_assembly import open_persistence, profile_scope
 from tests.fixtures.storage_seed import seed_messages, seed_session
@@ -107,6 +108,35 @@ def test_deferred_desktop_resume_exposes_todo_older_than_display_tail(tmp_path, 
         if sid:
             server._sessions.pop(sid, None)
         db.close()
+
+
+def test_resumed_snapshot_says_whether_the_running_turn_wrote_it(monkeypatch):
+    """#158324: a list the previous turn ended unfinished is not the running turn's own. Resume answers say
+    whether the running turn wrote the list, so the client keeps such a list dropped and still pins one it wrote."""
+    sid = "todo-turn-start"
+    left = {"todos": [{"id": "a", "content": "Plan", "status": "completed"},
+                      {"id": "b", "content": "Ship", "status": "in_progress"}], "revision": 3}
+    session = {"agent": None, "edit_snapshots": {}, "tool_started_at": {}, "tool_progress_mode": "off",
+               "todo_state": dict(left), "history_lock": threading.Lock()}
+    monkeypatch.setitem(server._sessions, sid, session)
+    monkeypatch.setattr(server, "_tool_progress_enabled", lambda _sid: False)
+    monkeypatch.setattr(server, "_tool_lifecycle_required_for_ui", lambda _name: False)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+
+    assert server._attach_todo_state({}, session)["todo_state"] == left
+
+    session["running"] = True
+    server._start_inflight_turn(session, "carry on")
+    assert server._attach_todo_state({}, session)["todo_state"] == {**left, "from_running_turn": False}
+
+    # Reading the list publishes it unchanged, at the same revision: the live panel now shows it.
+    server._on_tool_complete(sid, "call-0", "todo", {}, json.dumps(left))
+    assert server._attach_todo_state({}, session)["todo_state"] == {**left, "from_running_turn": True}
+
+    written = {"todos": [{"id": "b", "content": "Ship", "status": "completed"}], "revision": 4}
+    server._on_tool_complete(sid, "call-1", "todo", {}, json.dumps(written))
+    assert server._attach_todo_state({}, session)["todo_state"] == {**written, "from_running_turn": True}
+    assert session["todo_state"] == written
 
 
 def test_todo_completion_always_emits_snapshot_and_compat_event(monkeypatch):

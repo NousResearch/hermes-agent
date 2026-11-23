@@ -1616,10 +1616,20 @@ def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
 
 def _hand_back_leftover_steer(agent, result):
     """A loop exit that skips ``finalize_turn`` (a terminal API error, a preflight refusal) would leave a
-    steer the pre-API drain requeued buffered on the agent; hand it back as the finalizer does."""
-    if isinstance(result, dict) and not result.get("pending_steer"):
-        if leftover := agent._drain_leftover_steer():
-            result["pending_steer"] = leftover
+    steer the pre-API drain requeued buffered on the agent; hand it back as the finalizer does.
+
+    Not after a Stop that landed once the error handler had checked for one: a stop drops the steer
+    (``clear_interrupt(hard_cancel=True)``), so a host must not run it as the next turn. Not on a
+    failure the gateway settles before the session takes more input (a content-policy refusal's
+    rewind, a compression-exhausted reset): a follow-up there would run first."""
+    if not isinstance(result, dict) or result.get("pending_steer"):
+        return result
+    if getattr(agent, "_interrupt_requested", False):
+        return result
+    if result.get("failure_reason") == "content_policy_blocked" or result.get("compression_exhausted"):
+        return result
+    if leftover := agent._drain_leftover_steer():
+        result["pending_steer"] = leftover
     return result
 
 

@@ -758,6 +758,35 @@ class TestSteerSurvivesRedirectRebuild:
         assert agent._drain_pending_steer() is None
 
     @pytest.mark.parametrize(
+        ("result", "interrupted"),
+        [
+            ({"failed": True}, True),
+            ({"failed": True, "failure_reason": "content_policy_blocked"}, False),
+            ({"failed": True, "compression_exhausted": True}, False),
+        ],
+    )
+    def test_early_exit_keeps_the_steer_when_a_stop_or_gateway_settlement_comes_first(self, result, interrupted):
+        """A Stop that landed after the error handler's check drops the steer; a refusal's rewind or an
+        exhausted-session reset runs before any follow-up. None of them gets the steer as pending_steer."""
+        from agent.conversation_loop import _hand_back_leftover_steer
+
+        agent = self._loop_agent()
+        assert agent.steer(self.STEER_TEXT) is True
+        agent._interrupt_requested = interrupted
+        out = _hand_back_leftover_steer(agent, dict(result))
+        assert out.get("pending_steer") is None
+        agent._interrupt_requested = False
+        assert agent._drain_pending_steer() == self.STEER_TEXT  # left for the stop or the settlement to decide
+
+    def test_early_exit_hands_back_on_an_ordinary_failure(self):
+        from agent.conversation_loop import _hand_back_leftover_steer
+
+        agent = self._loop_agent()
+        assert agent.steer(self.STEER_TEXT) is True
+        out = _hand_back_leftover_steer(agent, {"failed": True})
+        assert out["pending_steer"] == self.STEER_TEXT
+
+    @pytest.mark.parametrize(
         ("previous_turn_used_tool", "current_turn_uses_tool"),
         [(True, True), (True, False), (False, False)],
         ids=["next-tool-delivery", "leftover-with-old-tool", "leftover-without-old-tool"],

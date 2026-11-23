@@ -40,7 +40,9 @@ _NO_MATCH = object()
 def register_token_route(path: str, *, scope: Optional[str] = None) -> None:
     """Mark ``path`` (exact match) as token-authable. Idempotent; does NOT make the route public.
     With ``scope`` set, a verified principal must also carry it in ``TokenPrincipal.scopes`` or
-    the request gets 403 — one stacked service credential cannot open every token route."""
+    the request gets 403 — one stacked service credential cannot open every token route.
+    Without ``scope`` the route admits a verified principal from ANY registered token provider,
+    so a route meant for one credential should always pass its own scope."""
     with _lock:
         _token_routes[path] = (scope, None)
 

@@ -63,18 +63,27 @@ def _release_resume(sid: str, spec: dict[str, Any]) -> None:
 
 @contextlib.contextmanager
 def _transcript_store(parent_agent: Any) -> Iterator[Any]:
-    """A handle on the db FILE the parent's children write to (``_open_child_session_db``), or None. Never the
+    """A handle on the store the parent's children write to (``_open_child_session_db``), or None. Never the
     parent's own object: a gateway parent holds an async wrapper whose methods are coroutines."""
-    db_path = getattr(getattr(parent_agent, "_session_db", None), "db_path", None)
-    if not isinstance(db_path, (str, Path)):
+    from persistence_assembly import Persistence, open_persistence, profile_scope
+    parent_db = getattr(parent_agent, "_session_db", None)
+    db_path = getattr(parent_db, "db_path", None)
+    if isinstance(parent_db, Persistence):
+        scope = parent_db.scope
+    elif isinstance(db_path, (str, Path)):
+        scope = profile_scope(home=Path(db_path).parent)
+    else:
         yield None
         return
-    from hermes_state_registry import acquire, release_or_close
-    db = acquire(db_path)
-    try:
-        yield db
-    finally:
-        release_or_close(db)
+    with open_persistence(scope) as store:
+        yield store
+
+
+def _conversation(store: Any, session_id: str) -> list[dict[str, Any]]:
+    """The child's saved transcript as the conversation its next turn replays (a user;user wedge healed)."""
+    from persistence.conversation.messages import ConversationRequest
+    return [m.as_openai_message() for m in store.messages.read_conversation(
+        session_id, ConversationRequest(repair_alternation=True))]
 
 
 def _refusal(parent_agent: Any) -> Optional[str]:
@@ -168,7 +177,7 @@ def _start(
             return None, "Not continued: this session cannot receive a detached result."
     with _transcript_store(parent_agent) as db:
         session_id = _segment_tip(db, sid, spec["session_id"])
-        history = db.get_messages_as_conversation(session_id, repair_alternation=True) if db is not None else []
+        history = _conversation(db, session_id) if db is not None else []
         if not history:
             return None, f"Subagent '{sid}' has no saved transcript to continue from. Spawn a new task instead."
         err = _oneshot_spawn_budget(parent_agent, 1)
@@ -189,7 +198,7 @@ def _start(
         )
         if err:
             return None, err
-        db.reopen_session(session_id)  # its close() ended it; the continued child's close() ends it again
+        db.sessions.reopen(session_id)  # its close() ended it; the continued child's close() ends it again
         children[0][2]._delegate_continue_history = history
         children[0][2]._delegate_run_origin = run_origin  # a parent's own continue ends automatic resumes of it
         from tools.delegate_tool_resumable import hold_claim, last_workspace

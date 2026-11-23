@@ -23,7 +23,6 @@ _FORBIDDEN_HEADERS = {
     "authorization", "connection", "content-length", "content-type", "cookie", "host", "origin",
     "referer", "te", "trailer", "transfer-encoding", "upgrade", "x-hermes-session-token",
 }
-_PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 class ConnectionStoreError(ValueError):
@@ -209,6 +208,8 @@ def _explicit_port(raw: Any) -> Optional[int]:
 
 
 def normalize_ssh_config(entry: Any) -> Optional[dict]:
+    from hermes_constants import PROFILE_ID_RE
+
     if not isinstance(entry, dict) or entry.get("mode") != "ssh":
         return None
     host = re.sub(r"^ssh\s+", "", js_str(entry.get("host")).strip(), flags=re.IGNORECASE).strip()
@@ -230,7 +231,7 @@ def normalize_ssh_config(entry: Any) -> Optional[dict]:
         if value:
             out[field] = value
     remote_profile = js_str(entry.get("remoteProfile")).strip()
-    if _PROFILE_RE.match(remote_profile) and remote_profile not in _RESERVED_REMOTE_PROFILES:
+    if PROFILE_ID_RE.match(remote_profile) and remote_profile not in _RESERVED_REMOTE_PROFILES:
         out["remoteProfile"] = remote_profile
     return out
 

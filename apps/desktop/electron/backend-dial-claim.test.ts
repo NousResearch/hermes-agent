@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { BackendDialClaims } from './backend-dial-claim'
+import { BackendDialClaims, DIAL_ROUTE_REPLACED } from './backend-dial-claim'
 import { backendScopeKey, parseBackendScopeKey } from './connection-registry'
 import { resolveDesktopConnectionRequest } from './desktop-profile'
 
@@ -98,6 +98,113 @@ describe('BackendDialClaims (#90812)', () => {
     ).rejects.toThrow('spawn refused')
 
     expect(claims.inFlight('default')).toBe(false)
+  })
+})
+
+describe('BackendDialClaims.forget', () => {
+  it('the next caller dials again, and the callers of the forgotten dial are told to ask again', async () => {
+    const claims = new BackendDialClaims()
+    const old = claims.run('work', () => new Promise<string>(() => undefined))
+    const joined = claims.run('work', async () => 'never dialed')
+
+    claims.forget('work')
+    expect(claims.inFlight('work')).toBe(false)
+
+    // No three-minute wait on an address nothing serves any more.
+    await expect(old).rejects.toThrow(DIAL_ROUTE_REPLACED)
+    await expect(joined).rejects.toThrow(DIAL_ROUTE_REPLACED)
+
+    const fresh = vi.fn(async () => 'new route')
+
+    await expect(claims.run('work', fresh)).resolves.toBe('new route')
+    expect(fresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('a forgotten dial that settles later does not release the dial that replaced it', async () => {
+    const claims = new BackendDialClaims()
+    let failOld: (error: Error) => void = () => undefined
+
+    const old = claims.run(
+      'work',
+      () =>
+        new Promise<string>((_resolve, reject) => {
+          failOld = reject
+        })
+    )
+
+    claims.forget('work')
+
+    // Dialed in the same tick, before the forgotten claim's own release has run.
+    const replacement = claims.run('work', () => new Promise<string>(() => undefined))
+
+    await expect(old).rejects.toThrow(DIAL_ROUTE_REPLACED)
+    // The old wait runs out long after: nobody is told, and the newer dial keeps its claim.
+    failOld(new Error('old route gone'))
+    await Promise.resolve()
+
+    const third = vi.fn(async () => 'third')
+
+    expect(claims.inFlight('work')).toBe(true)
+    expect(claims.run('work', third)).toBe(replacement)
+    expect(third).not.toHaveBeenCalled()
+  })
+
+  it('a dial nobody forgot answers as before, and forgetting a key with no dial in flight does nothing', async () => {
+    const claims = new BackendDialClaims()
+
+    expect(() => claims.forget('work')).not.toThrow()
+    expect(claims.inFlight('work')).toBe(false)
+
+    const answered = claims.run('work', async () => 'this computer')
+
+    await expect(answered).resolves.toBe('this computer')
+    expect(claims.inFlight('work')).toBe(false)
+    expect(() => claims.forget('work')).not.toThrow()
+  })
+
+  it('a dial nobody forgot gives up its claim the moment it settles, so the next caller dials again', async () => {
+    const claims = new BackendDialClaims()
+    let settle: (value: string) => void = () => undefined
+
+    const first = claims.run(
+      'work',
+      () =>
+        new Promise<string>(resolve => {
+          settle = resolve
+        })
+    )
+
+    settle('first')
+    // One microtask after the dial settled: its claim lasts only while the dial itself is unsettled.
+    await Promise.resolve()
+    expect(claims.inFlight('work')).toBe(false)
+
+    const again = vi.fn(async () => 'second')
+
+    await expect(claims.run('work', again)).resolves.toBe('second')
+    expect(again).toHaveBeenCalledTimes(1)
+    await expect(first).resolves.toBe('first')
+  })
+
+  it('a forgotten or failed dial whose caller walked away is not an unhandled rejection', async () => {
+    const unhandled = vi.fn()
+
+    process.on('unhandledRejection', unhandled)
+
+    try {
+      const claims = new BackendDialClaims()
+
+      void claims.run('work', () => new Promise<string>(() => undefined))
+      claims.forget('work')
+      void claims.run('default', () => Promise.reject(new Error('dial failed')))
+      // Node reports an unhandled rejection once the microtasks have drained.
+      await new Promise(resolve => setTimeout(resolve, 0))
+      await new Promise(resolve => setImmediate(resolve))
+
+      expect(unhandled).not.toHaveBeenCalled()
+    } finally {
+      process.off('unhandledRejection', unhandled)
+    }
   })
 })
 

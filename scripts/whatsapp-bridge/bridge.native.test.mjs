@@ -633,6 +633,10 @@ import {
     key: { id: 'outbound-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: true },
     message: { extendedTextMessage: { text: 'Deploy finished.' } },
   });
+  messageStore.remember({
+    key: { id: 'other-chat-1', remoteJid: '15559998888@s.whatsapp.net', fromMe: true },
+    message: { extendedTextMessage: { text: 'Private note.' } },
+  });
   const reactTo = (id) => extractBridgeEvent({
     msg: {
       key: { id: `reaction-${id}`, remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
@@ -656,7 +660,12 @@ import {
   assert.equal(unknown.quotedMessageId, null);
   assert.equal(unknown.quotedText, '');
   assert.equal(unknown.hasQuotedMessage, false);
-  console.log('  ✓ reaction: target text resolves from the message store');
+
+  // a target from another chat must not leak into this one
+  const foreign = await reactTo('other-chat-1');
+  assert.equal(foreign.quotedText, '');
+  assert.equal(foreign.hasQuotedMessage, false);
+  console.log('  ✓ reaction: target text resolves from the message store, same chat only');
 }
 
 console.log('\n✅ All WhatsApp native bridge helper tests passed.');

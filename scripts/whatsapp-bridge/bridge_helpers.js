@@ -536,8 +536,11 @@ export async function extractBridgeEvent({
       participant: normalizeWhatsAppId(messageContent.reactionMessage.key?.participant || ''),
     };
     // Reactions only carry the target id, so look up its text in the store.
+    // The store is keyed by id alone, so only use a target from this chat.
     const targetId = nativeMetadata.reaction.messageId;
-    const targetText = textFromQuotedMessage(messageStore?.get(targetId)?.message);
+    const target = messageStore?.get(targetId);
+    const sameChat = normalizeWhatsAppId(target?.key?.remoteJid || '') === normalizeWhatsAppId(chatId);
+    const targetText = sameChat ? textFromQuotedMessage(target.message) : '';
     if (targetText) {
       quotedMessageId = targetId;
       quotedText = targetText;

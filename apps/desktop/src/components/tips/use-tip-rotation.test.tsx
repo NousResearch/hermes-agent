@@ -46,6 +46,8 @@ beforeEach(() => {
   vi.spyOn(Math, 'random').mockReturnValue(0)
   vi.spyOn(globalThis.document, 'hasFocus').mockReturnValue(true)
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 160, 32))
+  // jsdom has no hit testing: nothing covers the pill, so the pill is what a point on it hits.
+  window.document.elementFromPoint = () => window.document.querySelector('[data-tour="model-pill"]')
   $connection.set({ mode: 'local' } as never)
   $localModelsEnabled.set(true)
   $tipsEnabled.set(true)

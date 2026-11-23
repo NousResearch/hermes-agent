@@ -17,7 +17,7 @@ import importlib
 import logging
 import os
 import threading
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from utils import env_var_enabled, is_truthy_value
 from agent.i18n import t
@@ -1561,8 +1561,22 @@ _BROWSER_EXEC_DESCRIPTION = (
 )
 
 
-def check_browser_exec_guard(code: str) -> dict:
-    """Approve a browser_exec script before the harness runs it (#157913).
+def _stranded_api_child_denial() -> dict | None:
+    """Refusal for a background child of an api_server session whose turn ended: ``_presence`` reads the
+    missing notifier as "nobody to ask", but the session has an approval client, it just can no longer
+    reach it, so the child must not run unasked what its parent would have been asked about."""
+    if not (env_var_enabled("HERMES_EXEC_ASK") and approval_context._is_unattended_platform_approval_context()):
+        return None
+    if approval_context._is_single_query_approval_context() or approval_context._is_cron_approval_context():
+        return None
+    from tools.approval_notify_lease import stranded_denial
+    return stranded_denial(get_current_session_key(), True, "code", "browser_exec", _BROWSER_EXEC_DESCRIPTION)
+
+
+def check_browser_exec_guard(script: Callable[[], str]) -> dict:
+    """Approve a browser_exec script before the harness runs it (#157913). ``script()`` builds the
+    text to assess and show (the code plus what the harness loads with it); it is called only when
+    someone will be asked, and may raise to refuse the call.
 
     The code runs in a Python process on this host whichever browser it drives (local, CDP
     override, cloud), so this is the execute_code whole-script gate without the container fast
@@ -1578,10 +1592,12 @@ def check_browser_exec_guard(code: str) -> dict:
     # client, webhooks). Same rule as execute_code: an interactive CLI or a local viewer's own turn is not
     # asked per script.
     approval_callback, is_cli, is_gateway, is_ask = _presence()
+    if (denied := _stranded_api_child_denial()) is not None:
+        return denied
     if (not is_gateway and not is_ask) or _is_local_viewer_turn():
         return _approved()
     return _whole_script_decision(
-        _BROWSER_EXEC_GATE, "browser_exec", _BROWSER_EXEC_DESCRIPTION, code, approval_mode == "smart",
+        _BROWSER_EXEC_GATE, "browser_exec", _BROWSER_EXEC_DESCRIPTION, script(), approval_mode == "smart",
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask)
 
 

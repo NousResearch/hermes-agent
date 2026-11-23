@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -784,14 +785,19 @@ def _launch_refusal(code: str, session: str, task_id: Optional[str]) -> Optional
     """The tool error that stops this call before anything launches, or None.
 
     The user's approval comes last, so a call that would fail anyway never asks. The harness runs
-    the code, and the workspace's ``agent_helpers.py`` it auto-imports, as Python on this host
-    whatever browser it drives, so both are approved like an execute_code script (#157913)."""
+    the code, and what it loads from the workspace first, as Python on this host whatever browser
+    it drives, so all of it is approved like an execute_code script (#157913).
+    """
     from tools.registry import tool_error
     if session and not _SESSION_RE.match(session):
         return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                           "dashes, or underscores (e.g. 'r7k2').")
     from tools.approval import check_browser_exec_guard
-    guard = check_browser_exec_guard(code + _workspace_helpers_listing(task_id))
+    try:
+        guard = check_browser_exec_guard(lambda: code + _workspace_listing(task_id))
+    except _UnshowableWorkspaceFile as exc:
+        return tool_error(f"browser_exec was not run: {exc}, so the approval could not show everything "
+                          "this call would run. Remove or fix that file and retry.")
     if not guard.get("approved", False):
         return tool_error(guard.get("message") or "browser_exec blocked by approval guard.",
                           **({"user_summary": guard["user_summary"]} if guard.get("user_summary") else {}))
@@ -802,15 +808,48 @@ def _launch_refusal(code: str, session: str, task_id: Optional[str]) -> Optional
     return None
 
 
-def _workspace_helpers_listing(task_id: Optional[str]) -> str:
-    """The workspace's ``agent_helpers.py`` as it will run with this call, for the approval to show."""
+class _UnshowableWorkspaceFile(Exception):
+    """A workspace file the harness would load cannot be shown in full for approval."""
+
+
+# What the harness loads from its workspace before the code: agent_helpers.py is imported into the
+# helpers namespace, .env is loaded into its environment. Shown in full or the call is refused.
+_WORKSPACE_LOADED_FILES = (("agent_helpers.py", "imported before the code"),
+                           (".env", "loaded into the harness environment"))
+_WORKSPACE_LISTING_MAX_BYTES = 256 * 1024
+
+
+def _workspace_listing(task_id: Optional[str]) -> str:
+    """The workspace files the harness loads, as it will read them, for the approval to show."""
     workspace = _workspace_dir(task_id)
-    helpers = Path(workspace) / "agent_helpers.py" if workspace else None
+    if not workspace:
+        raise _UnshowableWorkspaceFile("no browser workspace could be prepared, so the harness would load "
+                                       "the files of its default workspace")
+    return "".join(_loaded_file_listing(Path(workspace).expanduser() / name, role)
+                   for name, role in _WORKSPACE_LOADED_FILES)
+
+
+def _loaded_file_listing(path: Path, role: str) -> str:
+    """One loaded file's listing ("" when absent). Read without blocking or following a FIFO, capped,
+    and decoded the way Python decodes source (a coding cookie included), never truncated."""
     try:
-        text = helpers.read_text(encoding="utf-8", errors="replace") if helpers else ""
-    except OSError:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
         return ""
-    return f"\n\n# --- auto-imported first: {helpers} ---\n{text}" if text else ""
+    except OSError as exc:
+        raise _UnshowableWorkspaceFile(f"{path} cannot be read ({exc.strerror})") from exc
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise _UnshowableWorkspaceFile(f"{path} is not a regular file")
+        raw = handle.read(_WORKSPACE_LISTING_MAX_BYTES + 1)
+    if len(raw) > _WORKSPACE_LISTING_MAX_BYTES:
+        raise _UnshowableWorkspaceFile(f"{path} is larger than {_WORKSPACE_LISTING_MAX_BYTES // 1024} KB")
+    try:
+        text = importlib.util.decode_source(raw) if path.suffix == ".py" else raw.decode("utf-8")
+    except (SyntaxError, UnicodeDecodeError, LookupError) as exc:
+        raise _UnshowableWorkspaceFile(f"{path} cannot be decoded ({exc})") from exc
+    return f"\n\n# --- {path} ({role}) ---\n{text}"
 
 
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,

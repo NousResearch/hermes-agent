@@ -1,11 +1,14 @@
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
+import { browserNotificationsAllowed } from '@/lib/browser-notifications'
 import { type HermesOpenTarget, resolveHermesOpenPath } from '@/lib/hermes-open-target'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { persistString, storedString } from '@/lib/storage'
 
 import { recordFeatureToggle } from './desktop-metrics'
 import { $gateway } from './gateway'
+import { $hapticsMuted } from './haptics'
 import { withinNativeNotifyBaseline } from './notify-baseline'
 import {
   answerApproval,
@@ -192,6 +195,8 @@ export interface NativeNotificationAction {
 export interface NativeNotificationInput {
   kind: NativeNotificationKind
   title: string
+  /** Named-title template (session name appended) overriding the kind's default. */
+  namedTitleKey?: string
   body?: string
   sessionId?: null | string
   /**
@@ -219,21 +224,72 @@ export interface NativeNotificationInput {
   notifyId?: string
 }
 
+/** Every guard dispatch applies before its throttle: the preference and kind, the post-connect quiet
+ *  interval and the focus/active-session condition. Reads only, so it can be asked ahead of time. */
+function nativeNotificationPasses({ global, kind, sessionId }: Pick<NativeNotificationInput, 'global' | 'kind' | 'sessionId'>) {
+  const prefs = $nativeNotifyPrefs.get()
+
+  return prefs.enabled && prefs.kinds[kind] && !withinNativeNotifyBaseline() && shouldFire(kind, sessionId, global)
+}
+
+// Main's answer to whether it can show an OS notification, asked once per window (bridge); false
+// until it arrives.
+const hostNotifySupport = new WeakMap<NonNullable<Window['hermesDesktop']>, { known: Promise<void>; supported: boolean }>()
+
+/** Ask main, once per window, whether it can show OS notifications. Resolves when the answer is in
+ *  (never rejects); undefined where there is nothing to ask (no bridge, or a browser, which checks
+ *  its permission live). */
+export function readHostNotifySupport(): Promise<void> | undefined {
+  const bridge = window.hermesDesktop
+
+  if (!bridge?.notify || isBrowserHostedDesktop()) {
+    return undefined
+  }
+
+  let entry = hostNotifySupport.get(bridge)
+
+  if (!entry) {
+    const created = { known: Promise.resolve(), supported: false }
+    created.known = (bridge.notifySupported?.() ?? Promise.resolve(false)).then(
+      supported => void (created.supported = supported === true),
+      () => undefined
+    )
+    hostNotifySupport.set(bridge, (entry = created))
+  }
+
+  return entry.known
+}
+
+/** Whether the host could show a notification handed to it now. Not known yet counts as no. */
+function hostCanNotify(): boolean {
+  const bridge = window.hermesDesktop
+
+  if (!bridge?.notify) {
+    return false
+  }
+
+  if (isBrowserHostedDesktop()) {
+    return browserNotificationsAllowed()
+  }
+
+  void readHostNotifySupport()
+
+  return hostNotifySupport.get(bridge)?.supported === true
+}
+
+/** Whether this client's turn-done notification for `sessionId` passes every guard dispatch applies
+ *  before handing it to the host, and the host could show it: in a browser the live permission the
+ *  browser bridge checks, on Desktop main's OS notification support. The dispatch throttle is not
+ *  predicted (asking must not spend it), nor whether the OS then displays it. */
+export function turnDoneNotificationWouldFire(sessionId: string): boolean {
+  return nativeNotificationPasses({ kind: 'turnDone', sessionId }) && hostCanNotify()
+}
+
 /** Returns true when the notification passed every guard and was handed to the
  *  OS bridge — callers registering per-notification state (plugin handlers)
  *  must only do so on true, or suppressed/throttled notifications leak it. */
 export function dispatchNativeNotification(input: NativeNotificationInput): boolean {
-  const prefs = $nativeNotifyPrefs.get()
-
-  if (!prefs.enabled || !prefs.kinds[input.kind]) {
-    return false
-  }
-
-  if (withinNativeNotifyBaseline()) {
-    return false
-  }
-
-  if (!shouldFire(input.kind, input.sessionId, input.global)) {
+  if (!nativeNotificationPasses(input)) {
     return false
   }
 
@@ -241,7 +297,7 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
     return false
   }
 
-  const namedKey = input.sessionId ? NAMED_TITLE_KEYS[input.kind] : undefined
+  const namedKey = input.sessionId ? (input.namedTitleKey ?? NAMED_TITLE_KEYS[input.kind]) : undefined
   const title = namedKey && input.sessionId ? withSessionLabel(namedKey, input.sessionId) : input.title
 
   void window.hermesDesktop?.notify({
@@ -253,7 +309,8 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
     kind: input.kind,
     notifyId: input.notifyId,
     sessionId: input.sessionId ?? undefined,
-    silent: input.silent,
+    // The app-sounds mute also silences OS notification sounds.
+    silent: $hapticsMuted.get() || input.silent,
     tag: input.tag,
     title
   })
@@ -361,7 +418,8 @@ export function dispatchPluginNativeNotification(pluginId: string, input: Plugin
     icon: input.icon,
     kind: 'plugin',
     notifyId,
-    silent: input.silent,
+    // The app-sounds mute also silences OS notification sounds.
+    silent: $hapticsMuted.get() || input.silent,
     tag: pluginId,
     title: input.title
   })

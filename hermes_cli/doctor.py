@@ -51,8 +51,11 @@ from hermes_cli.doctor_tools import (
 )
 from hermes_cli.doctor_state import (
     _check_checkpoint_store,
+    _check_cron_store,
     _check_directory_structure,
     _check_memory_provider,
+    _check_plugins_disabled_by_update,
+    _check_plugins_in_both_lists,
     _check_profiles,
     _check_skills_hub,
     _check_state_db,
@@ -117,12 +120,15 @@ DOCTOR_CHECKS = (
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
     ('Session Reset (timers removed Sep 7, 2026)', _check_retired_session_reset),
     ('Auth Providers', _check_auth_providers),
-    ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_checkpoint_store),
+    ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_cron_store),
+    (None, _check_checkpoint_store),
     (None, _check_gateway_supervision), (None, _check_command_installation),
     ('External Tools', _check_git_and_rg), (None, _check_terminal_backend), (None, _check_node_and_browser),
     (None, _check_npm_audit), ('API Connectivity', _check_api_connectivity),
     ('Tool Availability', _check_tool_availability), ('Skills Hub', _check_skills_hub),
-    ('Memory Provider', _check_memory_provider), ('NeMo Relay Plugins', _check_relay_plugins),
+    ('Memory Provider', _check_memory_provider), (None, _check_plugins_disabled_by_update),
+    (None, _check_plugins_in_both_lists),
+    ('NeMo Relay Plugins', _check_relay_plugins),
     (None, _check_profiles),
 )
 
@@ -159,7 +165,7 @@ def _print_summary(should_fix: bool, total: Finding) -> None:
         print(color(f"  Found {len(remaining)} issue(s) to address:", Colors.YELLOW, Colors.BOLD))
         print()
         print(numbered)
-        if not should_fix:
+        if not should_fix and total.issues:
             print(color("  Tip: run 'hermes doctor --fix' to auto-fix what's possible.", Colors.DIM))
     else:
         print(color("─" * 60, Colors.GREEN))
@@ -180,13 +186,15 @@ def run_doctor(args):
                  "└─────────────────────────────────────────────────────────┘"):
         print(color(line, Colors.CYAN))
     total = Finding()
-    for title, check in DOCTOR_CHECKS:
-        if title:
-            _section(title)
-        total.merge(check(should_fix))
-    # Opt-in live probes run AFTER all static checks (`--live`: real network calls; bounded + read-only).
-    with warn_on_error(""):
-        from hermes_cli.doctor_live import maybe_run_live_checks
-        maybe_run_live_checks(args, total.manual_issues)
+    from hermes_cli.left_core_migration import installs_held
+    with installs_held():  # a diagnostic: provider checks resolve through the runtime, which would install
+        for title, check in DOCTOR_CHECKS:
+            if title:
+                _section(title)
+            total.merge(check(should_fix))
+        # Opt-in live probes run AFTER all static checks (`--live`: real network calls; bounded + read-only).
+        with warn_on_error(""):
+            from hermes_cli.doctor_live import maybe_run_live_checks
+            maybe_run_live_checks(args, total.manual_issues)
     _print_summary(should_fix, total)
     return int(bool(total.issues or total.manual_issues))

@@ -18,7 +18,8 @@ from typing import Any, NoReturn
 _result: int | None = None
 
 # The historical updater entrypoints. `_historical_context` reads capture data
-# from these frames; `tools.lazy_deps.install_specs` hands off only inside them.
+# from these frames; every retired shim hands off only inside them
+# (`stop_historical_updater`).
 # Keep in sync with scripts/audit-old-updater-imports.py UPDATE_ENTRYPOINTS: the
 # audit list is wider on purpose (helpers run *under* these frames and are found
 # by the frame walk).
@@ -30,8 +31,21 @@ _HISTORICAL_UPDATE_FRAMES = (
 
 def _is_historical_update_frame(frame: Any) -> bool:
     modules, names = _HISTORICAL_UPDATE_FRAMES
-    return (frame.f_globals.get("__name__") in modules
-            and frame.f_code.co_name in names)
+    if frame.f_code.co_name not in names:
+        return False
+    module = frame.f_globals.get("__name__")
+    if module in modules:
+        return True
+    # `python -m hermes_cli.main update` runs the updater as `__main__`; releases from before
+    # update_cmd.py was split out keep cmd_update/_cmd_update_impl there. Recognize them by the
+    # file the code was compiled from: this checkout's own hermes_cli/main.py.
+    if module != "__main__":
+        return False
+    try:
+        source = Path(frame.f_code.co_filename).resolve()
+    except (OSError, ValueError):
+        return False
+    return source == Path(__file__).resolve().with_name("main.py")
 
 
 def in_historical_update() -> bool:
@@ -112,11 +126,16 @@ def _run_child(request: dict) -> tuple[int, dict]:
     root = Path(__file__).resolve().parents[1]
     home = os.environ.get("HERMES_HOME")
     constants = sys.modules.get("hermes_constants")
+    # The running process may hold any historical hermes_constants: older ones keep the override in
+    # a module ContextVar, newer ones behind get_hermes_home_override() (the runtime scope state).
     override = vars(constants).get("_HERMES_HOME_OVERRIDE") if constants else None
     if override is not None:
         value = override.get()
-        if isinstance(value, (str, Path)) and value:
-            home = str(value)
+    else:
+        read_override = getattr(constants, "get_hermes_home_override", None) if constants else None
+        value = read_override() if callable(read_override) else None
+    if isinstance(value, (str, Path)) and value:
+        home = str(value)
     request.update(root=str(root), home=home, argv=list(sys.argv))
     env = {key: value for key, value in os.environ.items()
            if not key.startswith(("PYTHON", "UV_")) and key != "VIRTUAL_ENV"}
@@ -125,19 +144,64 @@ def _run_child(request: dict) -> tuple[int, dict]:
     env.setdefault("HERMES_UPDATE_HANDOFF_PID", str(os.getpid()))
     # Everything the user saw so far came from the OLD updater; say so before the
     # new one (package manager) takes over, so logs show where the switch happened.
-    print("→ Handing off to the new updater (package manager) for the rest of this update...", flush=True)
+    # ASCII only, like every line printed before the child starts: a Windows pipe encodes this
+    # process's stdout in the ANSI code page, and a non-cp1252 character raised here, before the
+    # takeover ever ran (review S1).
+    print("-> Handing off to the new updater (package manager) for the rest of this update...", flush=True)
     with tempfile.TemporaryDirectory(prefix="hermes-update-takeover-") as directory:
         context = Path(directory) / "request.json"
         result = Path(directory) / "result.json"
         context.write_text(json.dumps(request), encoding="utf-8")
-        child = subprocess.run(
+        code = _run_in_custody(
             [sys.executable, "-I", "-S", "-B", "-X", "utf8", str(root / "hermes_cli/_update_takeover.py"),
-             str(context), str(result)], cwd=root, env=env,
+             str(context), str(result)], root, cwd=root, env=env,
         )
         completed = json.loads(result.read_text(encoding="utf-8-sig")) if result.is_file() else {}
         if not isinstance(completed, dict):
             raise ValueError("invalid update takeover acknowledgement")
-        return child.returncode if child.returncode >= 0 else 1, completed
+        return code if code >= 0 else 1, completed
+
+
+def _run_in_custody(argv: list, root: Path, **kwargs) -> int:
+    """Run the takeover (it syncs and builds the checkout) in this updater's checkout custody,
+    from the update_lock module ALREADY loaded here (nothing new is imported). Windows: created
+    suspended, bound to this updater's kill-on-close job, then resumed; a refused bind still runs
+    (the update committed) and the takeover joins the lock holding its own lease. Releases
+    without these helpers hold no checkout lock, and the takeover acquires it itself."""
+    lock = sys.modules.get("hermes_cli.update_lock")
+    bind, resume = (getattr(lock, name, None) for name in ("bind_child_to_update_tree", "resume_suspended_child"))
+    if os.name != "nt" or bind is None or resume is None or getattr(lock, "_HELD", None) is None:
+        # Unbounded for the same reason as the Windows wait below (review L7): the takeover is
+        # the rest of a committed update (sync + build), and it holds the checkout lock fd, so the
+        # checkout stays locked for as long as it runs, even past this updater's death.
+        # health: allow HX006 -- unbounded by design: the update's own supervised child
+        return subprocess.run(argv, **kwargs, **_checkout_custody(root)).returncode  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
+    proc = subprocess.Popen(argv, creationflags=lock.CREATE_SUSPENDED, **kwargs)
+    try:
+        refusal = bind(proc)
+        if refusal is not None:
+            print(f"  ! The update's job would not take the takeover ({refusal}); it runs outside the job, "
+                  "holding its own checkout lease.", flush=True)
+        resume(proc)
+        # The takeover is the rest of a committed update (sync + build): a bound would abandon it
+        # mid-write. It dies with this updater (kill-on-close job, or the except path below).
+        # health: allow HX006 -- unbounded by design: the update's own supervised child
+        return proc.wait()
+    except BaseException:
+        proc.kill()
+        raise
+
+
+def _checkout_custody(root: Path) -> dict:
+    """The takeover child keeps the checkout lock this (old) updater holds: its fd, read from the
+    update_lock module ALREADY loaded in this process (nothing new is imported here). Releases
+    without a checkout lock hold none, and the takeover acquires it itself."""
+    held = getattr(sys.modules.get("hermes_cli.update_lock"), "checkout_lock_fds", None)
+    try:
+        fds = tuple(held(root)) if held is not None and os.name == "posix" else ()
+    except Exception:  # health: allow BLE001 -- any older release's checkout_lock_fds; no fds = takeover locks itself
+        fds = ()
+    return {"pass_fds": fds} if fds else {}
 
 
 def stop_for_relaunch(*, incomplete: bool = False) -> NoReturn:
@@ -148,7 +212,11 @@ def stop_for_relaunch(*, incomplete: bool = False) -> NoReturn:
     """
     if incomplete:
         # A newly retired completion hook has no complete captured worklist.
-        # It must not start another update or invent a successful receipt.
+        # It must not start another update or invent a successful receipt. It names its stop on
+        # the receipt the loaded update_receipt keeps open (an older one lacks the call: no-op).
+        record = getattr(sys.modules.get("hermes_cli.update_receipt"), "record_stop_reason", None)
+        if record is not None:
+            record("old_version_handoff")
         print(
             "You're updating from an older version of Hermes Agent. "
             "To complete this update, run `hermes update` again.",
@@ -174,6 +242,25 @@ def stop_for_relaunch(*, incomplete: bool = False) -> NoReturn:
         _result = 1
         print(f"Update takeover failed: {exc}", file=sys.stderr, flush=True)
     raise SystemExit(_result)
+
+
+class RetiredUpdaterHook(RuntimeError):
+    """A retired updater hook was called by code that is not a historical updater."""
+
+
+def stop_historical_updater(hook: str, error: type[Exception] = RetiredUpdaterHook) -> NoReturn:
+    """The one gate every retired shim goes through before ``stop_for_relaunch()``.
+
+    A historical updater (its entrypoint frame is on the stack, or it already
+    handed off and is unwinding through finally/atexit) still hands off to the
+    takeover child. Any other caller is live current code (a serve, dashboard,
+    gateway, plugin): starting a whole update finish from it restarts the
+    gateway and backend it runs in, which then reaches the shim again (#122656).
+    It gets a catchable ``error`` instead.
+    """
+    if _result is not None or in_historical_update():
+        stop_for_relaunch()
+    raise error(f"{hook} is a retired updater hook; it does nothing outside a running update.")
 
 
 def relaunch_stopped_serves(token: dict) -> None:

@@ -1,0 +1,18 @@
+name: optiq-cloud-provider
+repo: https://github.com/optiq-bot/optiq-hermes-plugin
+sha: 53e1a352d1e945223173cefac0ef261cf3dfd6fb
+title: "OptiQ Cloud"
+description: "OptiQ Cloud serves DeepSeek, GLM, MiniMax, MiMo and Qwen models in full precision over an OpenAI-compatible API, prepaid per token, $2 free to start. Live model list from the public /api/v1/models. Disclosure: model provider; prompts, tool schemas and OPTIQ_CLOUD_API_KEY go to cloud.mlx-optiq.com (or to OPTIQ_CLOUD_BASE_URL when the user sets it)."
+maintainer: optiq-bot
+tier: community
+category: models
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/optiq-bot/optiq-hermes-plugin#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - OPTIQ_CLOUD_API_KEY

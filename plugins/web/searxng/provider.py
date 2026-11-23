@@ -21,7 +21,7 @@ class SearXNGWebSearchProvider(BaseWebSearchProvider):
     DISPLAY_NAME = "SearXNG"
     KEY_ENV = "SEARXNG_URL"
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         base_url = provider_env("SEARXNG_URL").rstrip("/")
         if not base_url:
             return search_fail("SEARXNG_URL is not set")
@@ -38,7 +38,7 @@ class SearXNGWebSearchProvider(BaseWebSearchProvider):
         logger.info("SearXNG search '%s': %d results (from %d raw, limit %d)", query, len(web_results), len(raw_results), limit)
         return search_ok(web_results)
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return setup_schema(
             "SearXNG", "free · self-hosted", "Free, privacy-respecting metasearch. Point SEARXNG_URL at your instance.",
             "SEARXNG_URL", "SearXNG instance URL (e.g. http://localhost:8080)", "https://searx.space/",

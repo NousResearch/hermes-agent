@@ -1,0 +1,21 @@
+name: selaeron-paperclip-sel9
+repo: https://github.com/nebout2011-debug/selaeron-paperclip-plugin
+sha: "e1fd695eb65dd3bed1797af07c4c85d103cf9e32"
+version: "0.1.0"
+title: Paperclip Comment Writeback
+description: "Posts one approved, comment-only writeback on a Paperclip issue, bound to the issue's current live run; never changes issue status. Fail-closed: nothing is approved until PAPERCLIP_APPROVED_ORIGIN and PAPERCLIP_APPROVED_ISSUES are set. Disclosure — adds a model-callable tool that posts a comment (fixed template plus up to 120 chars of model text) to a Paperclip issue, using your PAPERCLIP_API_KEY against PAPERCLIP_API_URL, after a read-only live-run lookup; posts only to the exact https origin in PAPERCLIP_APPROVED_ORIGIN and the issue IDs in PAPERCLIP_APPROVED_ISSUES (read from the process environment at load time), with no per-call Hermes approval prompt; never changes issue status; no telemetry, shell commands, file writes or background processes."
+maintainer: nebout2011-debug
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/nebout2011-debug/selaeron-paperclip-plugin/blob/e1fd695eb65dd3bed1797af07c4c85d103cf9e32/README.md
+readme: true
+platforms: []
+capabilities:
+  provides_tools: [selaeron_paperclip_sel9_comment]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [PAPERCLIP_API_URL, PAPERCLIP_API_KEY, PAPERCLIP_APPROVED_ORIGIN, PAPERCLIP_APPROVED_ISSUES]
+known_issues:
+  - "Tested against a mock only; not verified against a production Paperclip."
+  - "Requires PAPERCLIP_APPROVED_ORIGIN and PAPERCLIP_APPROVED_ISSUES in the process environment; with neither set, every comment is refused."

@@ -3,7 +3,7 @@ terminal tool uses, so a plugin backend declaring ``is_container`` gets a host-p
 sanitized exactly like docker does (#101013)."""
 
 import tools.file_tools as ft
-import tools.terminal_tool as terminal_tool
+from tools import terminal_tool
 import tools.terminal_tool_config as ttc
 
 

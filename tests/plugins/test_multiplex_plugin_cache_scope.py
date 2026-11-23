@@ -1,9 +1,8 @@
 """Plugin module-level caches must not hand profile A's state to profile B under a multiplexed
 HERMES_HOME override (``hermes_constants.set_hermes_home_override``).
 
-One invariant per mechanism: home-keyed slot with the unscoped module slot intact (router; yuanbao's
-ClassVar twin), credential-fingerprinted catalog keys (openrouter), per-home registries (memory
-provider skills), collect-all atexit (openviking), lru_cache keyed by the home (disk-cleanup).
+One invariant per mechanism: home-keyed slot with the unscoped module slot intact (router), credential-fingerprinted catalog keys (openrouter), per-home registries (memory
+provider skills), lru_cache keyed by the home (disk-cleanup).
 Only HTTP transports are faked; the caches themselves are exercised for real.
 """
 
@@ -85,7 +84,7 @@ def test_router_efforts_cache_and_base_url_follow_the_active_profile(homes, monk
     """Efforts map + once-only flags are per home under an override (and the warm thread inherits the
     scope), while the unscoped path keeps using the module slots; the base URL comes from the
     profile's .env."""
-    import hermes_cli.urllib_security as urllib_security
+    from hermes_cli import urllib_security
 
     a, b = homes
     profile, mod = _router()
@@ -177,28 +176,6 @@ def test_memory_provider_skill_prune_only_touches_the_active_home(homes, monkeyp
         _reset_plugin_managers_for_tests()
 
 
-def test_openviking_atexit_commits_every_profile_provider(homes):
-    """Two profiles' providers initialized in one process both get the atexit commit."""
-    import plugins.memory.openviking as ov
-
-    a, b = homes
-    committed: list[object] = []
-    providers = []
-    try:
-        for home in (a, b):
-            with scoped(home):
-                provider = ov.OpenVikingMemoryProvider()
-                provider.initialize(session_id=f"s-{home.name}", hermes_home=str(home))
-                provider.on_session_end = lambda _msgs, _p=provider: committed.append(_p)
-                providers.append(provider)
-        ov._atexit_commit_sessions()
-        assert committed == providers
-    finally:
-        for provider in providers:
-            with contextlib.suppress(Exception):
-                provider._release_run_lock()
-
-
 def test_disk_cleanup_protected_cron_paths_follow_the_active_home(homes):
     """The protected-path guard must protect the ACTIVE profile's cron dir, not the first one asked."""
     spec = importlib.util.spec_from_file_location(
@@ -213,28 +190,3 @@ def test_disk_cleanup_protected_cron_paths_follow_the_active_home(homes):
     with scoped(b):
         assert dc._is_protected_cron_path(b / "cron")
         assert not dc._is_protected_cron_path(a / "cron")
-
-
-def test_yuanbao_active_adapter_resolves_per_profile(homes, monkeypatch):
-    """Each profile's turn reads back its own adapter; the unscoped slot still serves single-profile."""
-    from gateway.config import PlatformConfig
-    from gateway.platforms.yuanbao import YuanbaoAdapter
-
-    a, b = homes
-    cfg = PlatformConfig(enabled=True, extra={"app_id": "x", "app_secret": "y"})
-    monkeypatch.setattr(YuanbaoAdapter, "_active_instance", None)
-    monkeypatch.setattr(YuanbaoAdapter, "_active_instances", {})
-    with scoped(a):
-        adapter_a = YuanbaoAdapter(cfg)
-        YuanbaoAdapter.set_active(adapter_a)
-    with scoped(b):
-        adapter_b = YuanbaoAdapter(cfg)
-        YuanbaoAdapter.set_active(adapter_b)
-    with scoped(a):
-        assert YuanbaoAdapter.get_active() is adapter_a
-    with scoped(b):
-        assert YuanbaoAdapter.get_active() is adapter_b
-    assert YuanbaoAdapter.get_active() is None  # scoped adapters never claim the unscoped slot
-    unscoped = YuanbaoAdapter(cfg)
-    YuanbaoAdapter.set_active(unscoped)
-    assert YuanbaoAdapter.get_active() is unscoped

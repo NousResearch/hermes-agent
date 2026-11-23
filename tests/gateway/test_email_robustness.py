@@ -50,13 +50,15 @@ class TestImapResponseGuard(unittest.TestCase):
             if command == "search":
                 return ("OK", [uids])
             if command == "fetch":
+                if "BODY.PEEK" in args[1]:
+                    return ("OK", [(args[0], _raw_email())])
                 return next(fetch_iter)
             return ("NO", [])
 
         mock_imap = MagicMock()
         mock_imap.uid.side_effect = uid_handler
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
-            return adapter._fetch_new_messages()
+            return adapter._fetch_new_messages(lambda _c: True)
 
     def test_normal_response_parses(self):
         results = self._fetch_with([("OK", [(b"1 (RFC822 {123}", _raw_email())])])

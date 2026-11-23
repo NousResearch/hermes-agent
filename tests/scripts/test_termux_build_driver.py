@@ -71,6 +71,7 @@ def invoke(build_fixture, *identity, extra=()):
         [sys.executable, str(DRIVER), "--repo", str(repo), "--payload", str(payload),
          "--out", str(out), *identity, *extra],
         cwd=repo.parent, env=env, capture_output=True, text=True, timeout=30,
+        check=False,
     )
 
 
@@ -122,7 +123,7 @@ def test_all_paths_are_explicit(build_fixture, missing):
     args = [value for option, path in paths.items() if option != missing
             for value in (option, str(path))]
     result = subprocess.run([sys.executable, str(DRIVER), *args, "--tag", "v1.2.3"],
-                            cwd=repo.parent, env=env, capture_output=True, text=True, timeout=30)
+                            cwd=repo.parent, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 2
     assert missing in result.stderr
     assert recorded_calls(log) == []
@@ -145,7 +146,7 @@ def test_missing_prepared_payload_is_rejected_before_frontend_work(build_fixture
     ("build_deb.sh", ["node-deps.mjs", "tui.mjs", "build_deb.sh"]),
 ])
 def test_child_failure_stops_sequence_even_with_stale_product(build_fixture, stage, reached):
-    repo, payload, out, log, env = build_fixture
+    repo, _payload, out, log, env = build_fixture
     stale = repo / ".build/termux/tui/dist/entry.js"
     stale.parent.mkdir(parents=True)
     stale.write_text("stale product")
@@ -156,8 +157,11 @@ def test_child_failure_stops_sequence_even_with_stale_product(build_fixture, sta
     assert not out.exists()
 
 
-@pytest.mark.parametrize("identity", [("--tag", "v1.2.3"), ("--commit", "a" * 40)])
-def test_release_workflow_runs_the_shared_sequence(build_fixture, identity):
+@pytest.mark.parametrize(("job_name", "identity"), [
+    ("termux-deb-release", ("--tag", "v1.2.3")),
+    ("termux-deb-commit", ("--commit", "a" * 40)),
+])
+def test_release_workflow_runs_the_shared_sequence(build_fixture, job_name, identity):
     repo, payload, _, log, env = build_fixture
     (repo / "scripts/termux/build.py").symlink_to(DRIVER)
     (repo / "termux-build").mkdir()
@@ -167,12 +171,16 @@ def test_release_workflow_runs_the_shared_sequence(build_fixture, identity):
     env.update(HERMES_BUILD_COMMIT=identity[1] if identity[0] == "--commit" else "",
                HERMES_PAYLOAD_TAG=identity[1] if identity[0] == "--tag" else "")
     workflow = YAML(typ="safe").load((ROOT / ".github/workflows/desktop-bundled-release.yml").read_text())
-    step = next(step for step in workflow["jobs"]["termux-deb"]["steps"]
+    call = next(step for step in workflow["jobs"][job_name]["steps"]
+                if str(step.get("uses", "")).endswith("/.github/actions/build-termux-deb"))
+    env["TERMUX_BUILD_MODE"] = str(call["with"]["build-mode"])
+    action = YAML(typ="safe").load((ROOT / ".github/actions/build-termux-deb/action.yml").read_text())
+    step = next(step for step in action["runs"]["steps"]
                 if step.get("name") == "Assemble the .deb")
     bash = shutil.which("bash")
     assert bash is not None
     result = subprocess.run([bash, "-euo", "pipefail", "-c", step["run"]],
-                            cwd=repo, env=env, capture_output=True, text=True, timeout=30)
+                            cwd=repo, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     calls = recorded_calls(log)
     assert [Path(call["args"][0]).name for call in calls] == [
@@ -201,7 +209,7 @@ def test_builder_image_identity_covers_all_inputs(tmp_path, changed_input):
 
     def image():
         result = subprocess.run(["bash", "-c", command, "fixture", str(scripts / "build_builder_image.sh")],
-                                env=env, capture_output=True, text=True, timeout=30)
+                                env=env, capture_output=True, text=True, timeout=30, check=False)
         assert result.returncode == 0, result.stderr
         return result.stdout.splitlines()[-1]
 
@@ -220,3 +228,46 @@ def test_builder_image_identity_covers_all_inputs(tmp_path, changed_input):
     assert image() != original
     changed.write_bytes(before)
     assert image() == original
+
+
+@pytest.mark.parametrize("mode", ["flag", "env"])
+def test_builder_image_no_push_falls_back_to_digest_pinned_base_image(tmp_path, mode):
+    """Commit builds must never build/login/push to GHCR on a miss; fall back to the pinned base digest."""
+    from pm.lock import termux_docker_digest
+
+    repo = tmp_path / "repo"
+    scripts = repo / "scripts/termux"
+    scripts.mkdir(parents=True)
+    for name in ("build_builder_image.sh", "termux-builder.Dockerfile"):
+        shutil.copy2(ROOT / "scripts/termux" / name, scripts / name)
+    shutil.copytree(ROOT / "pm", repo / "pm", ignore=shutil.ignore_patterns("__pycache__"))
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "python3").symlink_to(sys.executable)
+    docker_log = tmp_path / "docker.log"
+    docker_stub = tools / "docker"
+    docker_stub.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\n"
+        "case \"$1 $2\" in\n"
+        "  'manifest inspect') exit 1 ;;\n"
+        "  'build '*|'run '*|'login '*|'push '*) echo \"FORBIDDEN docker $1\" >&2; exit 99 ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    docker_stub.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
+           "GITHUB_REPOSITORY_OWNER": "NousResearch", "DOCKER_LOG": str(docker_log)}
+    env.pop("GITHUB_TOKEN", None)
+    args = ["bash", str(scripts / "build_builder_image.sh")]
+    if mode == "flag":
+        args.append("--no-push")
+    else:
+        env["TERMUX_BUILDER_NO_PUSH"] = "1"
+    result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    image = result.stdout.splitlines()[-1]
+    assert image == f"termux/termux-docker@{termux_docker_digest()}", image
+    calls = docker_log.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1 and calls[0].startswith("manifest inspect ghcr.io/nousresearch/hermes-termux-builder:")

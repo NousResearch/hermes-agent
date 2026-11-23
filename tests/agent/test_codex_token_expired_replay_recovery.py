@@ -109,7 +109,7 @@ def test_token_expired_without_cached_reasoning_stays_on_auth_path(err, history)
     assert _recover(agent, err, retry, history) == (False, False)
     assert agent.refresh_calls == 1
     assert agent._codex_reasoning_replay_enabled is True
-    assert retry.invalid_encrypted_content_retry_attempted is False
+    assert retry.invalid_encrypted_content_retry_visit is None
 
 
 def test_pooled_token_expired_strips_cached_reasoning_before_benching_entries():

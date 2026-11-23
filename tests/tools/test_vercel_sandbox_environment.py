@@ -216,7 +216,7 @@ def vercel_sdk(monkeypatch):
 @pytest.fixture()
 def vercel_module(vercel_sdk, monkeypatch):
     monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
-    monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", lambda: [])
+    monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", list)
     monkeypatch.setattr("tools.credential_files.iter_skills_files", lambda **kwargs: [])
     monkeypatch.setattr("tools.credential_files.iter_cache_files", lambda **kwargs: [])
 
@@ -598,6 +598,26 @@ class TestSnapshotPersistence:
         assert len(sandbox.stop_calls) == 1
         assert sandbox.closed == 1
         assert vercel_module._load_snapshots() == {}
+
+    def test_cleanup_stops_when_saving_the_snapshot_id_fails(
+        self, make_env, vercel_module, vercel_sdk, monkeypatch, tmp_path
+    ):
+        """snapshot() already stopped the sandbox; a failed metadata write must not raise out of
+        cleanup (teardown would then leave the closed env's background processes unsettled)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        env = make_env()
+        sandbox = vercel_sdk.current
+
+        def disk_full(*_a, **_k):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(vercel_module, "_store_snapshot", disk_full)
+
+        env.cleanup()
+
+        assert len(sandbox.snapshot_calls) == 1
+        assert len(sandbox.stop_calls) == 1
+        assert sandbox.closed == 1
 
     def test_non_persistent_cleanup_stops_without_snapshot(
         self, make_env, vercel_module, vercel_sdk, monkeypatch, tmp_path

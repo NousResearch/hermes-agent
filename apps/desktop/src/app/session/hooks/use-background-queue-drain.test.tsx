@@ -3,16 +3,19 @@ import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { rotateFreshDraftKey } from '@/store/composer'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
   getQueuedPrompts,
   MAX_AUTO_DRAIN_ATTEMPTS,
+  migrateQueuedPrompts,
   parkQueuedPrompts,
   resetFrozenQueuedTransportsForTests
 } from '@/store/composer-queue'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { endReplyPause, markReplyPaused } from '@/store/paused-replies'
 import {
   $sessions,
   _resetSessionOwnerHintsForTests,
@@ -100,13 +103,14 @@ describe('useBackgroundQueueDrain', () => {
     const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
     const submitText = vi.fn(async () => true)
 
-    enqueueQueuedPrompt('stored-session-a', { text: 'continue in the background', attachments: [] })
+    const entry = enqueueQueuedPrompt('stored-session-a', { text: 'continue in the background', attachments: [] })!
     clearAllSessionStates()
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
     await waitFor(() => {
       expect(submitText).toHaveBeenCalledWith('continue in the background', {
+        submission_id: entry.id,
         attachments: [],
         fromQueue: true,
         sessionId: 'rt-session-a',
@@ -181,6 +185,7 @@ describe('useBackgroundQueueDrain', () => {
         attachments: [],
         displayText: 'look at @terminal:`zsh:23-58`',
         fromQueue: true,
+        submission_id: expect.any(String),
         sessionId: 'rt-session-a',
         storedSessionId: 'stored-session-a'
       })
@@ -271,16 +276,104 @@ describe('useBackgroundQueueDrain', () => {
     expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
   })
 
+  // A send held for a paused reply (store/paused-replies.ts) waits for the
+  // continuation to complete even when the user switched to another chat.
+  // The queue is keyed by the chat's lineage root; the pause was marked under the id its runtime showed
+  // (a compression tip).
+  it('holds a compressed chat\'s background queue while its reply is paused under its tip id', async () => {
+    const runtimeMap = { current: new Map([['lineage-root', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    setSessions([lineageSession({ _lineage_root_id: 'lineage-root', id: 'compression-tip' })])
+    enqueueQueuedPrompt('lineage-root', { text: 'after the continuation', attachments: [] })
+    clearAllSessionStates()
+    markReplyPaused('compression-tip')
+
+    try {
+      render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+      expect(submitText).not.toHaveBeenCalled()
+
+      act(() => endReplyPause('compression-tip'))
+
+      await waitFor(() => expect(submitText).toHaveBeenCalledTimes(1))
+    } finally {
+      endReplyPause('compression-tip')
+    }
+  })
+
+  it('holds a background queue while its reply is paused, then drains it', async () => {
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'after the continuation', attachments: [] })
+    clearAllSessionStates()
+    markReplyPaused('stored-session-a')
+
+    try {
+      render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+      expect(submitText).not.toHaveBeenCalled()
+
+      act(() => endReplyPause('stored-session-a'))
+
+      await waitFor(() => expect(submitText).toHaveBeenCalledTimes(1))
+    } finally {
+      endReplyPause('stored-session-a')
+    }
+  })
+
+  // A request another surface sends through the composer during the pause is held in this queue too. A
+  // preview widget's is hidden: an instruction for the model, never a message the user wrote. If the user
+  // opens another chat before the continuation has completed, this drainer sends it, still hidden.
+  it('sends a hidden request held for a paused reply as hidden once the pause ends', async () => {
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn<(text: string, options?: SubmitTextOptions) => Promise<boolean>>(async () => true)
+
+    const entry = enqueueQueuedPrompt('stored-session-a', {
+      text: 'the widget choice',
+      attachments: [],
+      displayKind: 'hidden'
+    })!
+
+    clearAllSessionStates()
+    markReplyPaused('stored-session-a')
+
+    try {
+      render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+      expect(submitText).not.toHaveBeenCalled()
+
+      act(() => endReplyPause('stored-session-a'))
+
+      await waitFor(() => expect(submitText).toHaveBeenCalledTimes(1))
+      expect(submitText).toHaveBeenCalledWith('the widget choice', {
+        submission_id: entry.id,
+        attachments: [],
+        displayKind: 'hidden',
+        fromQueue: true,
+        sessionId: 'rt-session-a',
+        storedSessionId: 'stored-session-a'
+      })
+    } finally {
+      endReplyPause('stored-session-a')
+    }
+  })
+
   it('passes a null runtime id so submitText can resume stale background sessions by stored id', async () => {
     const runtimeMap = { current: new Map<string, string>() }
     const submitText = vi.fn(async () => true)
 
-    enqueueQueuedPrompt('stored-session-a', { text: 'resume then send', attachments: [] })
+    const entry = enqueueQueuedPrompt('stored-session-a', { text: 'resume then send', attachments: [] })!
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
     await waitFor(() => {
       expect(submitText).toHaveBeenCalledWith('resume then send', {
+        submission_id: entry.id,
         attachments: [],
         fromQueue: true,
         sessionId: null,
@@ -344,19 +437,22 @@ describe('useBackgroundQueueDrain', () => {
 
     enqueueQueuedPrompt('stored-session-a', { text: 'send after load', attachments: [] })
 
+    const queuedId = getQueuedPrompts('stored-session-a')[0].id
+
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
     await new Promise(resolve => window.setTimeout(resolve, 0))
     expect(submitText).not.toHaveBeenCalled()
 
-    setSessionsLoading(false)
+    act(() => setSessionsLoading(false))
 
     await waitFor(() => {
       expect(submitText).toHaveBeenCalledWith('send after load', {
         attachments: [],
         fromQueue: true,
         sessionId: 'rt-session-a',
-        storedSessionId: 'stored-session-a'
+        storedSessionId: 'stored-session-a',
+        submission_id: queuedId
       })
     })
 
@@ -521,5 +617,69 @@ describe('useBackgroundQueueDrain', () => {
     expect(submitText).not.toHaveBeenCalled()
     expect(getQueuedPrompts('stored-session-a').map(e => e.id)).toEqual(['queued-restored'])
     expect($notifications.get()).toHaveLength(0)
+  })
+
+  it('leaves a follow-up queued under a fresh draft key for the creation handoff', async () => {
+    vi.useFakeTimers()
+
+    // A follow-up queued while session.create is in flight sits under the
+    // fresh draft key. No session answers to it yet, so a rejecting drain
+    // used to exhaust the budget and drop it as a gone session.
+    setSessions([])
+    const fresh = rotateFreshDraftKey()
+    const runtimeMap = { current: new Map<string, string>() }
+    const submitText = vi.fn(async () => false)
+
+    enqueueQueuedPrompt(fresh, { text: 'follow-up during pending create', attachments: [] })
+
+    render(<Harness runtimeMap={runtimeMap} selectedStoredSessionId={null} submitText={submitText} />)
+
+    for (let attempt = 0; attempt < MAX_AUTO_DRAIN_ATTEMPTS + 2; attempt++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(750)
+      })
+    }
+
+    expect(submitText).not.toHaveBeenCalled()
+    expect(getQueuedPrompts(fresh)).toHaveLength(1)
+    expect($notifications.get()).toHaveLength(0)
+  })
+
+  it('sends a create-window follow-up under the stored id once the creation handoff moves it', async () => {
+    vi.useFakeTimers()
+
+    setSessions([])
+    const fresh = rotateFreshDraftKey()
+    const runtimeMap = { current: new Map([['stored-new-chat', 'rt-new-chat']]) }
+    const submitText = vi.fn(async () => true)
+
+    const entry = enqueueQueuedPrompt(fresh, { text: 'follow-up during pending create', attachments: [] })!
+
+    render(<Harness runtimeMap={runtimeMap} selectedStoredSessionId={null} submitText={submitText} />)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(750 * 2)
+    })
+
+    expect(submitText).not.toHaveBeenCalled()
+
+    // The creation announcement's handoff (use-composer-draft) re-keys the
+    // fresh bucket onto the stored id; the drain then handles it normally.
+    await act(async () => {
+      setSessions([lineageSession({ id: 'stored-new-chat' })])
+      migrateQueuedPrompts(fresh, 'stored-new-chat')
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(submitText).toHaveBeenCalledTimes(1)
+    expect(submitText).toHaveBeenCalledWith('follow-up during pending create', {
+      submission_id: entry.id,
+      attachments: [],
+      fromQueue: true,
+      sessionId: 'rt-new-chat',
+      storedSessionId: 'stored-new-chat'
+    })
+    expect(getQueuedPrompts(fresh)).toHaveLength(0)
+    expect(getQueuedPrompts('stored-new-chat')).toHaveLength(0)
   })
 })

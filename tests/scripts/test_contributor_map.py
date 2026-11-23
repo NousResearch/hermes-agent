@@ -18,8 +18,8 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from scripts.releases import authors, authors_legacy  # noqa: E402
-from add_contributor import add_contributor, read_mapping_file  # noqa: E402
+from scripts.releases import authors, authors_legacy
+from add_contributor import add_contributor, read_mapping_file
 
 
 # ── directory loader behavior ─────────────────────────────────────────
@@ -41,6 +41,31 @@ def test_effective_map_merges_legacy_and_directory():
     )
     for email, login in authors._load_contributor_dir().items():
         assert authors.AUTHOR_MAP[email] == login
+
+
+def test_every_mapping_resolves_whatever_case_the_commit_uses():
+    # A commit stamped `Finn763@...` and one stamped `finn763@...` are the same
+    # author; the directory can hold only one of those filenames.
+    for email, login in authors.AUTHOR_MAP.items():
+        for variant in (email.upper(), email.lower(), email.swapcase()):
+            assert authors.resolve_author("someone", variant) == f"@{login}"
+
+
+def test_attribution_audit_treats_a_case_variant_as_mapped(tmp_path, monkeypatch):
+    import audit_pr_attribution
+
+    emails = tmp_path / "contributors" / "emails"
+    emails.mkdir(parents=True)
+    (emails / "Jane.Doe@example.com").write_text("janedoe\n")
+    (tmp_path / "scripts" / "releases").mkdir(parents=True)
+    (tmp_path / "scripts" / "releases" / "authors_legacy.py").write_text('M = {"Legacy@Example.com": "leg"}\n')
+    monkeypatch.setattr(audit_pr_attribution, "REPO_ROOT", tmp_path)
+
+    assert audit_pr_attribution.is_mapped("jane.doe@example.com")
+    assert audit_pr_attribution.is_mapped("legacy@example.com")
+    assert not audit_pr_attribution.is_mapped("someone-else@example.com")
+    (emails / "folder@example.com").mkdir()  # release notes read files only
+    assert not audit_pr_attribution.is_mapped("Folder@example.com")
 
 
 # ── add_contributor.py CLI behavior ───────────────────────────────────
@@ -102,6 +127,7 @@ def test_cli_entrypoint_end_to_end(tmp_path):
         [sys.executable, str(scripts / "add_contributor.py"),
          "cli@example.com", "cliperson", "via subprocess"],
         cwd=tmp_path, capture_output=True, text=True,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     out = (tmp_path / "contributors" / "emails" / "cli@example.com").read_text(encoding="utf-8")

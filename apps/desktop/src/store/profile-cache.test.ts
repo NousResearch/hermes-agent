@@ -8,7 +8,7 @@ import type { ProfileInfo } from '@/types/hermes'
 
 vi.mock('@/store/gateway', () => ({ $gateway: atom(null) }))
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
-vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
+vi.mock('@/store/starmap', () => ({ reloadOpenStarmapGraph: vi.fn(), resetStarmapGraph: vi.fn() }))
 
 const { $profiles, $profilesByConnection, invalidateProfileListFetches, refreshActiveProfile, refreshProfiles } =
   await import('./profile')
@@ -135,4 +135,28 @@ it('strands a retry during a same-profile source change without retargeting it t
   expect(api.mock.calls.map(([request]) => request.connectionId)).toEqual(['source-a', 'source-b'])
   expect($profiles.get()).toBe(incoming)
   expect($profilesByConnection.get().get('source-b')).toBe(incoming)
+})
+
+it('keeps this host as the list source when a launched profile becomes active', async () => {
+  const list = [profile('default'), profile('work')]
+  const api = vi.fn(async () => ({ profiles: list }))
+  vi.stubGlobal('window', { hermesDesktop: { api } })
+  $connection.set({ baseUrl: 'http://127.0.0.1:9120', mode: 'local', profile: 'default' } as HermesConnection)
+  await refreshProfiles()
+
+  // The sandbox launcher answers on its own loopback port, but main lists
+  // profiles from the host for it: same source, so the rail keeps its list.
+  $connection.set({
+    baseUrl: 'http://127.0.0.1:47911',
+    launcher: { plugin: 'openshell' },
+    mode: 'remote',
+    profile: 'work'
+  } as HermesConnection)
+
+  expect($profiles.get()).toBe(list)
+  expect($profilesByConnection.get().get('local')).toBe(list)
+
+  // A genuinely remote host is another source.
+  $connection.set({ baseUrl: 'https://box.example:9119', mode: 'remote', profile: 'default' } as HermesConnection)
+  expect($profiles.get()).toEqual([])
 })

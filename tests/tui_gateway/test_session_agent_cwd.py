@@ -11,7 +11,7 @@ import pytest
 from agent import codex_runtime, runtime_cwd
 from agent.transports import codex_app_server_session
 from agent.memory_provider import MemoryProvider
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
 from tools import terminal_tool
 
@@ -51,7 +51,7 @@ def workspace_runtime(monkeypatch, tmp_path):
     monkeypatch.setenv("TERMINAL_CWD", str(other))
     monkeypatch.setattr(server, "_sessions", {})
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
     monkeypatch.setattr(server, "_session_info", lambda agent, session: {"cwd": session["cwd"]})
     monkeypatch.setattr(server, "_persist_session_git_meta", lambda *a, **k: None)
@@ -89,14 +89,14 @@ def workspace_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr("plugins.memory.load_memory_provider", load_provider)
     monkeypatch.setattr(socket.socket, "connect", blocked_connect)
     monkeypatch.setattr(codex_app_server_session, "CodexAppServerClient", CodexClient)
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)
 
     def build(cwd, key="conversation"):
         agent = AIAgent(
             model="test-model", api_key="test-key", base_url="https://example.invalid/v1",
             quiet_mode=True, skip_context_files=True, skip_background_review=True,
-            save_trajectories=False, platform="gui", session_id=key, session_db=db,
+            save_trajectories=False, platform="gui", session_id=key, persistence=db,
             cwd=cwd,
         )
         agents.append(agent)

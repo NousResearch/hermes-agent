@@ -1,0 +1,19 @@
+name: tala
+title: Tala
+repo: https://github.com/noxcod-agency/tala-skills
+sha: 642a1f5b12b3a1b734c72188719b0f023d8b90a7
+subdir: plugins/hermes
+version: "1.0.0"
+description: "Read your Tala AI phone agents and their call results from Hermes through Tala's official read-only connector (Streamable HTTP at https://mcp.tala-assistant.com/mcp, OAuth sign-in on Tala's consent screen): list the agents you authorized, list their calls with date and status filters, and read a call's status, duration, context and summary. Bundles one skill for the connector. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to Tala's hosted MCP server (mcp.tala-assistant.com) and acts only on the organization and agents the user selected at OAuth sign-in; results include callers' phone numbers and call summaries (third-party text), which reach the user's configured model. The connector is read-only. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Tala
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://docs.tala-assistant.com/integrations/chatgpt-claude
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

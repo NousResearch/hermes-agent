@@ -80,6 +80,58 @@ describe('session focus while interacting with the sidebar', () => {
     tools.focus()
     expect($activeTreeGroup.get()).toBe('tools')
     expect($focusedStoredSessionId.get()).toBe('split')
+
+    // The remembered group fronting another chat while chrome owns focus (⌘1..9, drag-to-split) is followed.
+    $layoutTree.set(
+      split('row', [
+        group(['sessions'], { active: 'sessions', id: 'sidebar' }),
+        group(['workspace', pane('main')], { active: pane('main'), id: 'main' }),
+        group([pane('split'), pane('other')], { active: pane('other'), id: 'split' }),
+        group(['files', 'terminal'], { active: 'files', id: 'tools' })
+      ])
+    )
+    expect($focusedStoredSessionId.get()).toBe('other')
+
+    // A preview later covering the followed chat keeps it, not the stale remembered tile.
+    $layoutTree.set(
+      split('row', [
+        group(['sessions'], { active: 'sessions', id: 'sidebar' }),
+        group(['workspace', pane('main')], { active: pane('main'), id: 'main' }),
+        group([pane('split'), pane('other'), 'preview-tile:file:test'], {
+          active: 'preview-tile:file:test',
+          id: 'split'
+        }),
+        group(['files', 'terminal'], { active: 'files', id: 'tools' })
+      ])
+    )
+    expect($focusedStoredSessionId.get()).toBe('other')
+  })
+
+  it('retains the chat when a preview replaces its active tab in the same group', () => {
+    $layoutTree.set(
+      group(['workspace', pane('a'), pane('b'), 'preview-tile:file:test'], { active: pane('a'), id: 'main' })
+    )
+    target('main').focus()
+    expect($focusedStoredSessionId.get()).toBe('a')
+
+    $layoutTree.set(
+      group(['workspace', pane('a'), pane('b'), 'preview-tile:file:test'], {
+        active: 'preview-tile:file:test',
+        id: 'main'
+      })
+    )
+    expect($focusedStoredSessionId.get()).toBe('a')
+
+    $layoutTree.set(
+      group(['workspace', pane('a'), pane('b'), 'preview-tile:file:test'], { active: pane('b'), id: 'main' })
+    )
+    $layoutTree.set(
+      group(['workspace', pane('a'), pane('b'), 'preview-tile:file:test'], {
+        active: 'preview-tile:file:test',
+        id: 'main'
+      })
+    )
+    expect($focusedStoredSessionId.get()).toBe('b')
   })
 
   it('uses the visible main tab on restore and after the remembered split closes', () => {

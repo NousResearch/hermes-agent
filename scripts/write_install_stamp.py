@@ -31,7 +31,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 # Bootstrap the repo root onto sys.path so the canary tag shape can come
@@ -39,8 +39,8 @@ from pathlib import Path
 # re-typed regex (hermes_cli/__init__.py is import-light).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from hermes_cli import update_channel  # noqa: E402
-from hermes_cli.steward import UPDATE_MECHANISMS  # noqa: E402
+from hermes_cli import update_channel
+from hermes_cli.steward import UPDATE_MECHANISMS
 
 STAMP_SCHEMA_VERSION = 2
 _REPO_ROOT = Path(__file__).parent.parent.resolve()
@@ -66,7 +66,8 @@ FALLBACK_COMMIT = "0" * 40
 def _run_git(*args: str, cwd: str | Path = _REPO_ROOT) -> str | None:
     try:
         result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, timeout=5, cwd=str(cwd)
+            ["git", *args], capture_output=True, text=True, timeout=5, cwd=str(cwd),
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -104,6 +105,17 @@ def _resolve_commit_date_from_git() -> int | None:
 def _resolve_dirty_from_git() -> bool:
     status = _run_git("status", "--porcelain", "-uno")
     return status is not None and len(status) > 0
+
+
+def _require_commit_tag_pairing(commit_build: str | None, tag: str | None) -> None:
+    """A commit build carries no tag or only its own claim tag (commit.<stamp>-vX.Y.Z), and a commit
+    claim tag only ever stamps a commit build: the stamp says source commit-build either way, so
+    every updater refuses it."""
+    commit_tag = bool(tag) and update_channel.is_commit_tag(tag)
+    if commit_build and tag and not commit_tag:
+        raise ValueError("Commit builds cannot also select a release tag")
+    if commit_tag and not commit_build:
+        raise ValueError("A commit build tag requires HERMES_BUILD_COMMIT (the commit identity)")
 
 
 def build_stamp(
@@ -159,12 +171,11 @@ def build_stamp(
         commit_date = int(git(_REPO_ROOT, "log", "-1", "--format=%ct", "HEAD"))
 
     commit_build = os.environ.get("HERMES_BUILD_COMMIT")
+    _require_commit_tag_pairing(commit_build, os.environ.get("HERMES_PAYLOAD_TAG"))
     if commit_build:
         from scripts.releases.commit_build import require_commit
 
         require_commit(commit_build)
-        if os.environ.get("HERMES_PAYLOAD_TAG"):
-            raise ValueError("Commit builds cannot also select a release tag")
         if _resolve_commit_from_git() != commit_build or commit not in (None, commit_build):
             raise ValueError("Commit build identity does not match the checkout HEAD")
         commit, source, update_mechanism = commit_build, "commit-build", "external"
@@ -247,7 +258,7 @@ def build_stamp(
     ):
         raise SystemExit(
             f"write_install_stamp: HERMES_DESKTOP_VARIANT={payload} requires "
-            f"HERMES_PAYLOAD_TAG=vX.Y.Z or vX.Y.Z+canary.YYYYMMDDTHHMMSSZ (got {tag!r})"
+            f"HERMES_PAYLOAD_TAG=vX.Y.Z or canary.YYYYMMDDTHHMMSSZ-vX.Y.Z (got {tag!r})"
         )
 
     stamp = {
@@ -255,7 +266,7 @@ def build_stamp(
         "commit": commit,
         "commitDate": commit_date,
         "branch": branch,
-        "builtAt": datetime.now(timezone.utc).isoformat(),
+        "builtAt": datetime.now(UTC).isoformat(),
         "dirty": dirty,
         "source": source,
         "distribution": distribution,

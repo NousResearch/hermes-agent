@@ -1,0 +1,32 @@
+name: eventforge
+repo: https://github.com/sinequix/eventforge
+sha: 1b556629b6a20d1f8194beaab8c38253cd837c64
+subdir: plugins/hermes-eventforge
+description: "Proxy the local EventForge control plane into Hermes with approval-gated tools and verified-event context. Disclosure — Each turn, adds up to 8 new signature-verified events from the EventForge control plane (default `http://127.0.0.1:4310`) to the prompt, as bounded excerpts marked untrusted. `ef_listen_for_webhook` asks the plane to ensure a provider relay, which may open a public tunnel under the plane's own configuration. With `auto_start` on (default off), an interactive session starts the repository's `eventforge-standalone.cjs` with node and a minimal environment when the plane is down. Approving or rejecting actions and forge drafts, and spawning plane subagents, go through Hermes' approval prompt."
+maintainer: sinequix
+tier: community
+category: automation
+requires_hermes: ">=0.22.0"
+version: "0.1.0"
+title: EventForge for Hermes
+docs_url: https://github.com/sinequix/eventforge/blob/master/plugins/hermes-eventforge/README.md
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - ef_listen_for_webhook
+    - ef_emit_event
+    - ef_query_memory
+    - ef_spawn_subagent
+    - ef_approve_action
+    - ef_forge_mcp
+    - ef_approve_forge
+    - ef_list_events
+    - ef_list_workflows
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - on_session_start
+  provides_middleware: []
+  requires_env: []

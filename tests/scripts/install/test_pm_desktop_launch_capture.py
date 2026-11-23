@@ -61,7 +61,7 @@ def test_isolated_pm_launch_captures_only_final_electron_spawn(tmp_path, package
     env = {**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
            "PYTHONPATH": str(evil)}
     result = subprocess.run([sys.executable, "-I", str(helper), str(launcher), str(spec)],
-                            cwd=tmp_path, env=env, capture_output=True, text=True)
+                            cwd=tmp_path, env=env, capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "build-ran").is_file()
     assert not (tmp_path / "ambient-hook-ran").exists()

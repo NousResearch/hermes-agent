@@ -10,11 +10,13 @@ ast-grep does **not** interpret regex inside patterns. The following all fail:
 
 | Bad | Why | Use instead |
 |---|---|---|
-| `foo\|bar` | `\|` is regex alternation. ast-grep does not alternate. | Two separate calls, OR `any: [pattern: foo, pattern: bar]` in a YAML rule, OR `rg -e foo -e bar`. |
-| `foo.*bar` | `.*` is a regex wildcard. | `foo($$$) bar` if the gap is a list of nodes; otherwise switch to `rg`. |
+| `foo\|bar` | `\|` is regex alternation. ast-grep does not alternate. | Two separate calls, OR `any: [pattern: foo, pattern: bar]` in a YAML rule, OR `search_files` (see below the table). |
+| `foo.*bar` | `.*` is a regex wildcard. | `foo($$$) bar` if the gap is a list of nodes; otherwise switch to `search_files`. |
 | `\w+`, `\d+`, `\s` | Regex character classes. | `$VAR` to capture any identifier. For digits-only, use `kind: number_literal`. |
-| `[a-z]+` | Regex character class. | No AST equivalent — switch to `rg`. |
+| `[a-z]+` | Regex character class. | No AST equivalent — switch to `search_files`. |
 | `^foo$` | Regex anchors. | Anchor by AST: use `kind: program > expression_statement` or use `inside`/`not has`. |
+
+The `\|` in the table only escapes Markdown's cell separator. In `search_files` the alternation is a plain pipe, `pattern="foo|bar"`; `foo\|bar` there matches the literal text `foo|bar`.
 
 **Why this happens**: LLMs default to regex thinking. The mental switch is "ast-grep patterns are *code*, not *strings*."
 

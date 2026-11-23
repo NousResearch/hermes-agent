@@ -7,7 +7,12 @@ import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-ac
 import { translateNow } from '@/i18n'
 import { settlePendingClarifyToolCall, textPart } from '@/lib/chat-messages'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
-import { normalizeConnectionRequest, setConnectionRequest, updateConnectionRequest } from '@/store/connection-request'
+import {
+  type ConnectionRequest,
+  normalizeConnectionRequest,
+  setConnectionRequest,
+  updateConnectionRequest
+} from '@/store/connection-request'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import {
@@ -16,16 +21,23 @@ import {
   $vaultCodeRequests,
   $vaultSaveLoginRequests,
   $vaultUnlockRequests,
+  accessTarget,
+  type ApprovalRequest,
   clearApprovalRequest,
   clearSecretRequest,
   clearSudoRequest,
   clearVaultCodeRequest,
   clearVaultSaveLoginRequest,
   clearVaultUnlockRequest,
-  sessionApprovalRequests
+  networkTarget,
+  networkTargetName,
+  sessionApprovalRequests,
+  withSpaceRuns
 } from '@/store/prompts'
 import { requestRoute } from '@/store/recovery-requests'
 import { forgetServerRequest } from '@/store/server-requests'
+import { clearSetupBeat } from '@/store/setup-beat'
+import { clearThemePick } from '@/store/theme-pick'
 
 import type { GatewayEventContext } from './types'
 
@@ -40,6 +52,75 @@ const isConnectionRequestEvent = (event: GatewayEvent): event is ConnectionReque
 
 const isConnectionUpdateEvent = (event: GatewayEvent): event is ConnectionUpdateEvent =>
   event.type === 'connection.update' && event.payload !== undefined
+
+/** `approval.settled` / `clarify.settled {prompt_id}`: take down the card
+ *  parked under that server request id. Returns false for other events. */
+function handlePromptSettledEvent(ctx: GatewayEventContext): boolean {
+  const { deps, event, payload, sessionId } = ctx
+
+  if (event.type !== 'approval.settled' && event.type !== 'clarify.settled') {
+    return false
+  }
+
+  const promptId = (payload as { prompt_id?: unknown } | undefined)?.prompt_id
+
+  if (typeof promptId !== 'string' || !promptId) {
+    return true
+  }
+
+  forgetServerRequest(promptId)
+  const key = sessionId ?? ''
+
+  if (event.type === 'clarify.settled') {
+    if ($clarifyRequests.get()[key]?.requestId === promptId) {
+      clearClarifyRequest(promptId, sessionId)
+
+      if (sessionId) {
+        deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
+      }
+    }
+
+    return true
+  }
+
+  const approval = sessionApprovalRequests(sessionId ?? null)
+    .get()
+    .find(request => request.serverRequestId === promptId)
+
+  if (approval) {
+    clearApprovalRequest(sessionId, approval.requestId)
+  }
+
+  return true
+}
+
+// A display card has no targets to name.
+const connectionRequestNoticeBody = (request: ConnectionRequest): string =>
+  request.targets.map(target => target.name).join(', ') || translateNow('connectors.title')
+
+/** What a withdrawn approval leaves in the chat on timeout: the line, and the toast's button.
+ *  A folder or site card says what was not granted. Its sender owns the wait, so its toast has
+ *  no button to the approval timeout setting. */
+function approvalTimeoutNotice(approval: ApprovalRequest) {
+  const access = accessTarget(approval)
+  const network = networkTarget(approval)
+
+  const notGranted = access
+    ? translateNow('assistant.approval.access.timedOut', withSpaceRuns(access.path))
+    : network
+      ? translateNow('assistant.approval.network.timedOut', withSpaceRuns(networkTargetName(network)))
+      : null
+
+  return {
+    action: notGranted
+      ? undefined
+      : {
+          label: translateNow('assistant.approval.openSafetySettings'),
+          onClick: () => requestRoute(SAFETY_SETTINGS_ROUTE)
+        },
+    line: notGranted ?? translateNow('assistant.approval.timedOutSystemLine')
+  }
+}
 
 /** The blocking-input family arrives as server→client REQUESTS (see
  *  `server-requests.ts`); the one EVENT in the family is `request.cancel`, the
@@ -70,7 +151,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
       }
 
       dispatchNativeNotification({
-        body: request.targets.map(target => target.name).join(', '),
+        body: connectionRequestNoticeBody(request),
         kind: 'input',
         sessionId,
         title: translateNow('notifications.native.inputTitle')
@@ -93,6 +174,15 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
       deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
     }
 
+    return true
+  }
+
+  // Canonical gateways settle a shared prompt with `approval.settled` /
+  // `clarify.settled {prompt_id}` once ANY attached viewer answered it (or the
+  // turn ended). The prompt id is the server request id this window parked the
+  // card under. Only the parked card comes down: the answer itself reaches the
+  // transcript through the tool's own completion, so no "skipped" projection.
+  if (handlePromptSettledEvent(ctx)) {
     return true
   }
 
@@ -151,7 +241,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     // see; the tool row then shows a model-facing "BLOCKED" result. Say what
     // happened in human terms and point at the setting that controls the wait.
     if (payload?.reason === 'timeout' && sessionId) {
-      const line = translateNow('assistant.approval.timedOutSystemLine')
+      const { action, line } = approvalTimeoutNotice(approval)
 
       deps.flushQueuedDeltas(sessionId)
       deps.updateSessionState(sessionId, state => ({
@@ -164,13 +254,21 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
       notify({
         kind: 'warning',
         message: line,
-        action: {
-          label: translateNow('assistant.approval.openSafetySettings'),
-          onClick: () => requestRoute(SAFETY_SETTINGS_ROUTE)
-        }
+        action
       })
     }
-  } else if ($sudoRequests.get()[key]?.requestId === id) {
+  } else {
+    cancelParkedCredentialRequest(ctx, key, id)
+  }
+
+  return true
+}
+
+/** Withdraw the sudo / secret / vault / setup card parked under `id`, first match wins. */
+function cancelParkedCredentialRequest(ctx: GatewayEventContext, key: string, id: string): void {
+  const { sessionId } = ctx
+
+  if ($sudoRequests.get()[key]?.requestId === id) {
     clearSudoRequest(sessionId, id)
   } else if ($sudoRequests.get()['']?.requestId === id) {
     clearSudoRequest(null, id) // the app-level Bot Screen install card: not owned by any chat
@@ -182,7 +280,13 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     clearVaultSaveLoginRequest(sessionId, id)
   } else if ($vaultUnlockRequests.get()[key]?.requestId === id) {
     clearVaultUnlockRequest(sessionId, id)
+  } else {
+    clearParkedCard(ctx, id)
   }
+}
 
-  return true
+function clearParkedCard({ deps, sessionId }: GatewayEventContext, requestId: string) {
+  if (sessionId && (clearThemePick(requestId, sessionId) || clearSetupBeat(requestId, sessionId))) {
+    deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
+  }
 }

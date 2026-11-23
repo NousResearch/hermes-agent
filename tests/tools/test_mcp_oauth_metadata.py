@@ -26,7 +26,7 @@ import pytest
 
 pytest.importorskip("mcp.shared.auth", reason="MCP SDK not installed")
 
-from mcp.shared.auth import OAuthMetadata  # noqa: E402
+from mcp.shared.auth import OAuthMetadata
 
 from tools.mcp_oauth import HermesTokenStorage
 from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS
@@ -132,7 +132,6 @@ class TestManagerOAuthProviderMetadata:
         async def fake_parent_flow(self, request):
             if False:
                 yield  # pragma: no cover -- make this an async generator
-            return
 
         manager = MagicMock()
         manager.invalidate_if_disk_changed = AsyncMock(return_value=False)

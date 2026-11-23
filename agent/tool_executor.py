@@ -54,6 +54,8 @@ from agent.tool_dispatch_helpers import (
     _context_pruned_argument_paths, _plan_tool_batch_segments, make_tool_result_message,
 )
 from session_rules.turns import _is_multimodal_tool_result, _multimodal_text_summary
+from agent.tool_executor_deadline import StartOrderGate
+from tools.clarify_gateway import ClarifyWaitAbandoned, ClarifyWaitScope, bind_wait_scope
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
@@ -960,9 +962,11 @@ def _run_sequential_tool_execution_middleware(
     if prepared is None:
         authorization_gate = _ConcurrentToolAuthorizationGate()
         worker_tid: list[int] = []
+    clarify_scope = prepared.clarify_scope if prepared is not None else ClarifyWaitScope()
 
-    def _run() -> _ManagedToolResult:
-        with _registered_tool_worker(agent) as tid:
+    def _run() -> _ManagedToolResult | None:
+        # An abandoned Clarify unwinds to None: only the abandoning executor owns the result/terminal event.
+        with _registered_tool_worker(agent) as tid, bind_wait_scope(clarify_scope), contextlib.suppress(ClarifyWaitAbandoned):
             worker_tid.append(tid)
             return _run_agent_tool_execution_middleware(agent, authorization_gate=authorization_gate, **kwargs)
 
@@ -1003,6 +1007,7 @@ def _run_sequential_tool_execution_middleware(
                 duration_ms=int(timeout_s * 1000), status="timeout", error_type="tool_timeout", error_message=message,
             )
         abandoned = True
+        clarify_scope.cancel()
         if prepared is not None:
             # A timed-out shell may still be unwinding. Never release a later
             # prepared command into overlapping execution.
@@ -1292,51 +1297,11 @@ def _start_order_gate_timeout(batch_timeout: float | None) -> float:
     return min(_START_ORDER_GATE_TIMEOUT_S, batch_timeout / 2)
 
 
-class _StartOrderGate:
-    """Serialize worker dispatch by submit order (prompts appear in call order); ``abandon()``
-    releases every parked worker so none dispatches a tool the turn already gave up on."""
-
-    def __init__(self, timeout: float) -> None:
-        self._condition = threading.Condition()
-        self._next_order = 0
-        self._timeout = timeout
-        self.abandoned = threading.Event()
-
-    def abandon(self) -> None:
-        self.abandoned.set()
-        with self._condition:
-            self._condition.notify_all()
-
-    def begin_in_order(self, order: int, callback=None, *, tool_name: str = "") -> bool:
-        """Wait for ``order``, run ``callback``, advance. Returns False if abandoned."""
-        with self._condition:
-            # Bounded wait so one wedged dispatch can't starve later-ordered workers; on
-            # expiry proceed out of order (interleaved prompts beat starvation). ``>=`` (not
-            # ``==``) releases every skipped worker at once; abandoned short-circuits.
-            in_order = self._condition.wait_for(
-                lambda: self._next_order >= order or self.abandoned.is_set(), timeout=self._timeout,
-            )
-            if self.abandoned.is_set():
-                return False  # the turn already synthesized this result; don't advance
-            if not in_order:
-                logger.warning(
-                    "start-order gate timed out for %s (order=%d next=%d); proceeding out of order",
-                    tool_name or "tool", order, self._next_order,
-                )
-            try:
-                if callback is not None:
-                    callback()
-            finally:
-                self._next_order = max(self._next_order, order + 1)
-                self._condition.notify_all()
-        return True
-
-
 class _WorkerStartOnce:
     """One worker's handle on the start-order gate: advances at most once, raising
     ``_BatchAbandoned`` (instead of dispatching late) when the batch was abandoned."""
 
-    def __init__(self, gate: _StartOrderGate, order: int, tool_name: str) -> None:
+    def __init__(self, gate: StartOrderGate, order: int, tool_name: str) -> None:
         self._gate, self._order, self._tool_name, self._advanced = gate, order, tool_name, False
 
     def advance(self, callback=None) -> None:
@@ -1361,9 +1326,12 @@ class _ConcurrentBatch:
         for i, pc in enumerate(parsed_calls):
             if pc.parse_error is not None:
                 self.results[i] = _ToolOutcome(pc.ref(effective_task_id), pc.parse_error, 0.0, True, True)
-        self.gate = _StartOrderGate(_start_order_gate_timeout(timeout_s))
+        self.gate = StartOrderGate(_start_order_gate_timeout(timeout_s))
         self.authorization_gate = _ConcurrentToolAuthorizationGate()
         self.timed_out_indices: set[int] = set()
+        self.clarify_scopes = [ClarifyWaitScope() for _ in parsed_calls]
+        from model_tools import PostToolCallOnce
+        self.post_owners = [PostToolCallOnce(pc.ref(effective_task_id).call_id) for pc in parsed_calls]
 
     def _dispatch_worker(self, index: int, ref: _ToolCallRef, scope_block, start_gate: _WorkerStartOnce) -> Optional[_ToolOutcome]:
         """Run one call through the middleware and synthesize its slot outcome; ``None`` when
@@ -1423,16 +1391,19 @@ class _ConcurrentBatch:
     def run_worker(self, index: int, start_order: int) -> None:
         """Worker function executed in a thread."""
         agent, pc = self.agent, self.parsed_calls[index]
-        with _registered_tool_worker(agent) as _worker_tid:
+        with _registered_tool_worker(agent) as _worker_tid, bind_wait_scope(self.clarify_scopes[index]):
             # An interrupt may have fanned out before our registration; apply it to our tid.
             if agent._interrupt_requested:
                 _interrupt_worker_tids(agent, [_worker_tid], reason=getattr(agent, "_tool_interrupt_reason", None))
             _set_worker_activity_callback(agent)
             start_gate = _WorkerStartOnce(self.gate, start_order, pc.name)
             try:
-                outcome = self._dispatch_worker(index, pc.ref(self.effective_task_id), pc.scope_block, start_gate)
-                if outcome is not None:
-                    self.results[index] = outcome
+                from model_tools import bind_post_tool_call_once
+                # An abandoned Clarify unwinds here: the abandoning executor owns the result/terminal event.
+                with bind_post_tool_call_once(self.post_owners[index]), contextlib.suppress(ClarifyWaitAbandoned):
+                    outcome = self._dispatch_worker(index, pc.ref(self.effective_task_id), pc.scope_block, start_gate)
+                    if outcome is not None:
+                        self.results[index] = outcome
             finally:
                 with contextlib.suppress(_BatchAbandoned):
                     start_gate.advance()  # keep later-ordered workers moving
@@ -1516,12 +1487,16 @@ class _ConcurrentBatch:
             # dispatches a tool the turn already reported as timed out / interrupted.
             self.gate.abandon()
             if timed_out:
+                for f in not_done:
+                    self.clarify_scopes[future_to_index[f]].cancel()
                 with agent._tool_worker_threads_lock:
                     worker_tids = list(agent._tool_worker_threads)
                 _interrupt_worker_tids(agent, worker_tids)
             else:
                 # Give running tools a moment to notice the per-thread interrupt and exit gracefully.
                 concurrent.futures.wait(not_done, timeout=3.0)
+                for f in (f for f in not_done if not f.done()):  # still running after the grace
+                    self.clarify_scopes[future_to_index[f]].cancel()
             return True
 
     def run(self) -> None:
@@ -1577,9 +1552,10 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
         # prefer its real result over a fabricated timeout.
         if r is None:
             ref, is_error, blocked = pc.ref(effective_task_id), True, False
-            function_result, tool_duration, effect_disposition = _unfinished_tool_result(
-                agent, ref, timed_out=i in batch.timed_out_indices, timeout_s=batch.timeout_s,
-            )
+            from model_tools import bind_post_tool_call_once
+            with bind_post_tool_call_once(batch.post_owners[i]):
+                function_result, tool_duration, effect_disposition = _unfinished_tool_result(
+                    agent, ref, timed_out=i in batch.timed_out_indices, timeout_s=batch.timeout_s)
         else:
             ref, function_result, tool_duration, is_error, blocked = r.ref, r.result, r.duration, r.is_error, r.blocked
             effect_disposition = "none" if blocked else None
@@ -1764,6 +1740,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 tool_request_middleware_trace=list(middleware_trace),
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                clarify_callback=getattr(agent, "clarify_callback", None),
             )
 
     return _SequentialDispatch(

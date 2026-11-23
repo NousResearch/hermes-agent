@@ -575,4 +575,10 @@ def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path)
         other.write_text("mcp_servers:\n  bb: {command: b}\n", encoding="utf-8")
         shutil.copy2(other, cfg)
         os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
+        # Only ctime may tell the swap apart: an atomic rename (new inode) would weaken the test.
+        after = cfg.stat()
+        assert (after.st_mtime_ns, after.st_size, after.st_ino) == (
+            st.st_mtime_ns, st.st_size, st.st_ino,
+        )
+        assert after.st_ctime_ns > st.st_ctime_ns
         assert _tool_defs_cache_key(None, None, False) != before

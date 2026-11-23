@@ -720,7 +720,11 @@ def _update_cron_job_sync(job_id: str, body: CronJobUpdate, profile: Optional[st
 
 
 def _pause_cron_job_sync(job_id: str, profile: Optional[str] = None):
-    return _found(_mutate_cron_for_profile(_job_profile(job_id, profile), "pause_job", job_id))
+    try:
+        return _found(_mutate_cron_for_profile(_job_profile(job_id, profile), "pause_job", job_id))
+    except ValueError as exc:
+        # A finished job has nothing to pause: the job's state refuses it, not a server fault.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def _resume_cron_job_sync(job_id: str, profile: Optional[str] = None):

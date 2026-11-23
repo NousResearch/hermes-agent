@@ -243,7 +243,14 @@ async def run_gateway_chat(args, emitter=None):
                 merged = isinstance(metadata, dict) and metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY)
                 if row.get("role") in {"user", "assistant"} and isinstance(row.get("content"), str) and not merged:
                     print(f"{row['role']}: {row['content']}")
-        return await view.run(query, oneshot=oneshot)
+        result = await view.run(query, oneshot=oneshot)
+        relaunch_request = view.relaunch_request
+
+    # Close this client's gateway connection before replacing only this process.
+    if relaunch_request is not None:
+        from hermes_cli.relaunch import relaunch
+        relaunch(relaunch_request.build_args(resume=True), preserve_inherited=False)
+    return result
 
 
 _RESUME_POLICY_MISMATCH = "Resume retains gateway session policy; creation overrides are unsupported on resume."

@@ -107,6 +107,8 @@ class GatewayChatView:
         self.launch_api_key = None  # `--api-key` of this terminal's launch; never durable (/new reuses it)
         self.finite_admission = None
         self._finite_events = []
+        # Set by /relaunch; run_gateway_chat acts on it after the gateway client closes.
+        self.relaunch_request = None
         self.streams = {}
         self.completions = {}
         # ``gateway_replay_gap``: admission -> the reply segment shown when a gap cut it; own unsettled turns.
@@ -365,6 +367,17 @@ class GatewayChatView:
 
     async def command(self, text):
         command, _, rest = text.partition(" ")
+        if command == "/relaunch":
+            if rest.strip():
+                raise GatewayClientError("/relaunch does not take arguments")
+            if self.mine:
+                raise GatewayClientError("/relaunch is only available when this client has no active turn")
+            import os
+            from hermes_cli.relaunch import SessionRelaunchRequest
+            self.relaunch_request = SessionRelaunchRequest(
+                session_id=self.session_id, cwd=os.getcwd(), original_argv=tuple(sys.argv[1:]))
+            print("Relaunching this CLI and resuming the current session…", file=sys.stderr)
+            return False
         if command in {"/quit", "/exit", "/detach"}:
             return False
         if command == "/stop":

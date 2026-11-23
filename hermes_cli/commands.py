@@ -93,6 +93,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, desktop="terminal"),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
                cli_only=True, desktop="terminal"),
+    CommandDef("relaunch", "Restart the classic CLI and resume this session", "Session",
+               cli_only=True, desktop="terminal"),
     CommandDef("history", "Show conversation history", "Session",
                cli_only=True),
     CommandDef("save", "Export the current conversation (bare /save shows usage)", "Session",

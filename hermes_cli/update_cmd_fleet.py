@@ -1079,8 +1079,11 @@ def _restart_macos_launchd_gateways(
                 drain_pid = _launchd_real_gateway_pid(sibling_home) if sibling_home else None
                 if drain_pid is None:
                     drain_pid = old_pid
-                drain_home = _gateway_home_for_pid(drain_pid) or (
-                    Path(sibling_home) if sibling_home else None)
+                # ``sibling_home`` is the label's pinned profile home — the only home the
+                # drain report should read. Resolving the home by a fleet-wide state-file
+                # PID match could pick a stale record from a different profile whose
+                # gateway_state.json still carries this (recycled) PID (#126913 review).
+                drain_home = Path(sibling_home) if sibling_home else None
                 print(f"  → {label}: draining (up to {drain_budget:.0f}s)...")
                 from hermes_cli.update_cmd_drain_report import drain_progress_reporter
                 graceful_ok = _graceful_restart_via_sigusr1(

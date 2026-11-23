@@ -221,3 +221,64 @@ async def test_no_separate_footer_when_the_captioned_photo_is_queued_for_a_reupl
 
     assert [batch[-1][1] for batch in adapter.batches] == [FOOTER, FOOTER]
     assert FOOTER not in adapter.sent
+
+
+class _LiveThinkAdapter(_Adapter):
+    """Records ``edit_message`` calls so the live-thinking footer ride (Bug A) is observable."""
+
+    def __init__(self):
+        super().__init__()
+        self.edits = []
+
+    async def edit_message(self, chat_id, message_id, content, *, finalize=False) -> SendResult:
+        self.edits.append((message_id, content, finalize))
+        return SendResult(success=True, message_id=message_id)
+
+
+async def _streamed_live_think_turn(adapter, final_id, final_content, footer):
+    """Streamed turn whose agent result records a coherent live-thinking final post (Bug A path)."""
+    runner = _make_runner(adapter)
+    event = _event()
+    return await runner._hmwa_deliver_turn_response(
+        event, event.source, SimpleNamespace(session_id="s1"), "k", None,
+        {"already_sent": True, "live_thinking_final_post_id": final_id,
+         "live_thinking_final_content": final_content}, [], "just text", footer, False)
+
+
+@pytest.mark.asyncio
+async def test_streamed_live_thinking_footer_rides_the_final_post_not_a_separate_message():
+    """Bug A: after the live-thinking bubble is resolved into a single new final post
+    (``live_thinking_final_post_id`` + ``live_thinking_final_content`` recorded on the response),
+    the runtime footer must be edit-appended onto that post — ONE post body+footer — never sent as
+    its own trailing message."""
+    adapter = _LiveThinkAdapter()
+    await _streamed_live_think_turn(adapter, "final-9", "The answer.", FOOTER)
+
+    assert adapter.edits == [("final-9", f"The answer.\n\n{FOOTER}", True)]
+    assert adapter.sent == []  # the footer did NOT go out as a separate trailing message
+
+
+@pytest.mark.asyncio
+async def test_streamed_live_thinking_footer_falls_back_to_trailing_send_when_edit_fails():
+    """The footer must never be lost: if the live-thinking final-post edit-append fails, fall back
+    to the separate trailing send (same guarantee as the photo-caption fallback)."""
+    adapter = _LiveThinkAdapter()
+
+    async def fail_edit(chat_id, message_id, content, *, finalize=False) -> SendResult:
+        adapter.edits.append((message_id, content, finalize))
+        return SendResult(success=False, error="edit refused")
+
+    adapter.edit_message = fail_edit
+    await _streamed_live_think_turn(adapter, "final-9", "The answer.", FOOTER)
+
+    assert adapter.sent == [FOOTER]  # fallback trailing footer, answer intact
+
+
+@pytest.mark.asyncio
+async def test_streamed_multi_part_still_uses_the_trailing_footer():
+    """A chunk-split / ordinary streamed reply never records the live-thinking markers, so it keeps
+    the separate trailing footer (unchanged behaviour — only the single-post live-thinking ride is
+    new)."""
+    adapter = _LiveThinkAdapter()
+    await _streamed_turn(adapter, "just text", FOOTER)
+    assert adapter.sent == [FOOTER] and adapter.edits == []

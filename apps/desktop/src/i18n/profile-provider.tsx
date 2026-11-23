@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 
 import { $gateway } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -14,20 +14,61 @@ import { $requestedLocale } from './runtime'
 export function ProfileI18nProvider({ children }: { children: ReactNode }) {
   const profile = useStore($activeGatewayProfile)
   const connection = useStore($connection)
+  const [lastConnection, setLastConnection] = useState(connection)
+  const [gatewayOpenSeq, setGatewayOpenSeq] = useState(0)
+
+  // A null $connection is an ordinary disconnect/reconnect blip; keep the last
+  // resolved owner so transient drops do not reset scopeKey or clear backend packs.
+  useEffect(() => {
+    if (connection) {
+      setLastConnection(connection)
+    }
+  }, [connection])
+
+  // Track false -> true transitions of gateway open state so long disconnects
+  // that exhaust I18nProvider's startup retry window re-sync once the socket recovers.
+  useEffect(() => {
+    let prevOpen = $gatewayState.get() === 'open'
+
+    return $gatewayState.listen(state => {
+      const isOpen = state === 'open'
+
+      if (isOpen && !prevOpen) {
+        setGatewayOpenSeq(seq => seq + 1)
+      }
+
+      prevOpen = isOpen
+    })
+  }, [])
+
+  const resolvedConnection = connection ?? lastConnection
 
   // The API captures the real read origin (including legacy profile overrides).
   // This is an invalidation key, not an explicit local/registry request pin.
-  const scopeKey = JSON.stringify([
-    connection?.connectionId ?? null,
-    connection?.registryScoped ?? false,
-    connection?.baseUrl,
-    connection?.profile,
+  const ownerKey = JSON.stringify([
+    resolvedConnection?.connectionId ?? null,
+    resolvedConnection?.registryScoped ?? false,
+    resolvedConnection?.baseUrl,
+    resolvedConnection?.profile,
     profile
   ])
 
-  useBackendLocalePacks(scopeKey)
+  const scopeKey = JSON.stringify([
+    resolvedConnection?.connectionId ?? null,
+    resolvedConnection?.registryScoped ?? false,
+    resolvedConnection?.baseUrl,
+    resolvedConnection?.profile,
+    profile,
+    gatewayOpenSeq
+  ])
 
-  return <I18nProvider scopeKey={scopeKey}>{children}</I18nProvider>
+  useBackendLocalePacks(ownerKey)
+
+  return (
+    <I18nProvider cacheKey={ownerKey} scopeKey={scopeKey}>
+      {children}
+    </I18nProvider>
+  )
 }
 
 /**

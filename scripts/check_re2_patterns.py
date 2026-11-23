@@ -33,6 +33,7 @@ restarted when one overruns DEADLINE, so the deadline holds on every OS (no sign
 This script is a development tool under scripts/ and uses stdlib `re` as the reference engine.
 """
 import ast
+import contextlib
 import importlib
 import json
 import queue
@@ -216,8 +217,9 @@ class Comparer:
         proc, self._proc = self._proc, None
         if proc is None:
             return None
-        proc.stdin.close()
         proc.kill()
+        with contextlib.suppress(OSError):  # closing flushes a request the dead worker never read: BrokenPipeError
+            proc.stdin.close()
         return proc.wait(timeout=60)
 
     def _answer(self, timeout):

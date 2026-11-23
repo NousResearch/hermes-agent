@@ -151,6 +151,19 @@ def test_a_worker_dying_mid_comparison_is_unchecked_not_clean():
         assert comparer.differs(rb"a*?", 0, "findall", b"<>") is not None
 
 
+def test_a_worker_dying_during_the_request_write_is_unchecked_not_a_crash(monkeypatch):
+    gate = _load()
+    with gate.Comparer(deadline=60) as comparer:
+        assert comparer.differs("a+", 0, "search", "<>") is None
+        proc = comparer._proc
+        proc.kill()
+        proc.wait(timeout=60)
+        monkeypatch.setattr(proc, "poll", lambda: None)  # it dies after differs() checked that it was running
+        with pytest.raises(gate.Unchecked, match="the comparison process exited"):
+            comparer.differs("a+", 0, "search", "<>")
+        assert comparer.differs(rb"a*?", 0, "findall", b"<>") is not None
+
+
 def test_pre_swap_checks_stdlib_importers(tmp_path):
     code, out = _gate(tmp_path, 'from re import compile\ncompile(r"(?=a)b")\n', "--pre-swap")
     assert code == 1

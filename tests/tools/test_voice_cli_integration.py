@@ -414,7 +414,7 @@ class TestVoiceBargeCaptureSubmit:
         wav = tmp_path / "barge.wav"
         wav.write_bytes(b"RIFF")
         restarted = threading.Event()
-        cli._voice_start_recording = lambda: restarted.set()
+        cli._voice_start_recording = lambda auto=False, epoch=None: restarted.set()
 
         monkeypatch.setattr(
             "tools.voice_mode.transcribe_recording",
@@ -439,7 +439,7 @@ class TestVoiceBargeCaptureSubmit:
         wav = tmp_path / "barge.wav"
         wav.write_bytes(b"RIFF")
         restarted = threading.Event()
-        cli._voice_start_recording = lambda: restarted.set()
+        cli._voice_start_recording = lambda auto=False, epoch=None: restarted.set()
 
         monkeypatch.setattr(
             "tools.voice_mode.transcribe_recording",
@@ -682,3 +682,172 @@ class TestFallbackSpeakArmsBargeMonitor:
         assert not cli._monitor_armed.wait(0.05)
         assert cli._monitor_calls == []
 
+
+
+# ============================================================================
+# Continuous-mode restart guards — the endless start/stop beep loop
+# ============================================================================
+import time as _time
+
+
+class _FakeClock:
+    """Injectable monotonic clock for key-repeat tests."""
+
+    def __init__(self, start: float = 1000.0):
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _inject_clock(monkeypatch, clock: _FakeClock) -> None:
+    import hermes_cli.cli_voice_mixin as cvm
+
+    monkeypatch.setattr(
+        cvm, "time", SimpleNamespace(monotonic=clock, perf_counter=clock, time=clock, sleep=lambda *_: None)
+    )
+
+
+class TestContinuousRestartGuards:
+    """A stop must survive restarts that were already queued when the user pressed it.
+
+    Holding Ctrl+B used to stop the take, then leave a queued restart (post-turn, no-speech
+    or a key repeat) to start recording again a moment later: recording/beeping forever with
+    nobody talking.
+    """
+
+    def _cli(self, **overrides):
+        cli = _make_voice_cli(**overrides)
+        cli._voice_mode = True
+        cli._agent_running = False
+        cli._voice_key_last = 0.0
+        for state in ("_clarify_state", "_sudo_state", "_approval_state",
+                      "_slash_confirm_state", "_connection_state"):
+            setattr(cli, state, None)
+        cli._voice_start_recording = lambda auto=False, epoch=None: cli._start_calls.append(auto)
+        cli._start_calls = []
+        return cli
+
+    def test_queued_restart_does_not_resurrect_a_stopped_chat(self):
+        cli = self._cli()
+        cli._voice_tts = True
+        cli._voice_tts_done.clear()  # TTS still speaking: the restart parks on it
+        cli._voice_arm_continuous(True)
+        worker = cli._voice_restart_recording_async(wait_tts=True)
+        assert worker is not None
+        cli._voice_arm_continuous(False)  # user stops the chat mid-reply
+        cli._voice_tts_done.set()  # reply finishes; the parked restart resumes
+        worker.join(2.0)  # provably finished, not "we slept long enough"
+        assert not worker.is_alive()
+        assert cli._start_calls == []
+
+    def test_second_restart_is_dropped_while_one_is_pending(self):
+        cli = self._cli()
+        cli._voice_tts = True
+        cli._voice_tts_done.clear()
+        cli._voice_arm_continuous(True)
+        worker = cli._voice_restart_recording_async(wait_tts=True)
+        assert worker is not None
+        assert cli._voice_restart_pending is True
+        # The no-speech cycle asks again while that one is still parked on TTS: it is folded
+        # into the request in flight, not queued as a second recording.
+        assert cli._voice_restart_recording_async(wait_tts=True) is None
+        cli._voice_tts_done.set()
+        worker.join(2.0)
+        assert not worker.is_alive()
+        assert cli._start_calls == [True]
+
+    def test_auto_start_is_ignored_once_continuous_mode_is_off(self):
+        cli = self._cli()
+        cli._voice_arm_continuous(False)
+        cli._voice_start_recording = type(cli)._voice_start_recording.__get__(cli)
+        cli._voice_start_recording(auto=True)
+        assert cli._voice_recording is False
+
+    def test_held_record_key_counts_as_one_toggle(self, monkeypatch):
+        clock = _FakeClock()
+        _inject_clock(monkeypatch, clock)
+        cli = self._cli()
+        cli._voice_tts_done.set()
+        event = SimpleNamespace(app=SimpleNamespace(invalidate=lambda: None))
+        for _ in range(5):  # a held key: prompt_toolkit repeats c-b every ~20 ms
+            clock.now += 0.02
+            cli._tui_handle_voice_record(event)
+        assert cli._start_calls == [False]
+        assert cli._voice_continuous is True
+
+    def test_held_record_key_with_real_first_repeat_delay_is_one_toggle(self, monkeypatch):
+        """Auto-repeat starts only after the platform delay (X11 660 ms), not at once."""
+        from hermes_cli.cli_voice_mixin import _VOICE_KEY_REPEAT_WINDOW
+
+        clock = _FakeClock()
+        _inject_clock(monkeypatch, clock)
+        cli = self._cli()
+        cli._voice_tts_done.set()
+        event = SimpleNamespace(app=SimpleNamespace(invalidate=lambda: None))
+        cli._tui_handle_voice_record(event)  # key down
+        # The real burst: silence for the first-repeat delay, then ~30 fast repeats.
+        clock.now += min(0.5, _VOICE_KEY_REPEAT_WINDOW - 0.05)
+        for _ in range(30):
+            clock.now += 0.02
+            cli._tui_handle_voice_record(event)
+        assert cli._start_calls == [False], "a hold toggled more than once"
+        assert cli._voice_continuous is True
+
+    def test_voice_off_between_intent_check_and_start_opens_no_mic(self, monkeypatch):
+        """/voice off landing while the requirement probe runs must still win."""
+        import tools.voice_mode as vm
+
+        cli = self._cli()
+        cli._voice_arm_continuous(True)
+        cli._voice_recorder = None
+        created = []
+
+        def _requirements():
+            # /voice off arrives here: mode off, continuous disarmed, recorder released.
+            cli._voice_mode = False
+            cli._voice_arm_continuous(False)
+            cli._voice_recorder = None
+            return {"audio_available": True, "stt_available": True}
+
+        monkeypatch.setattr(vm, "check_voice_requirements", _requirements)
+        monkeypatch.setattr(vm, "create_audio_recorder", lambda: created.append(1))
+
+        cli._voice_start_recording(auto=True)
+
+        assert created == [], "a recorder was created after /voice off"
+        assert cli._voice_recording is False
+
+
+    def test_restart_request_during_unwind_is_not_lost(self):
+        """A request that arrives while a restart is finishing must still re-arm the chat.
+
+        The pending flag is held until the worker's finally runs, and that worker may return
+        without starting (a stop landed, TTS was speaking). Dropping the request there left
+        continuous mode idle until the user pressed the key again.
+        """
+        cli = self._cli()
+        cli._voice_tts = True
+        cli._voice_tts_done.clear()  # the restart parks on TTS
+        cli._voice_arm_continuous(True)
+        started = threading.Event()
+
+        def _start(auto=False, epoch=None):
+            cli._start_calls.append(auto)
+            started.set()
+
+        cli._voice_start_recording = _start
+        worker = cli._voice_restart_recording_async(wait_tts=True)
+        assert worker is not None
+        # The no-speech cycle asks for a restart while that one is parked.
+        assert cli._voice_restart_recording_async(wait_tts=True) is None
+        # Meanwhile the user stops the chat and starts it again: the parked worker now has a
+        # stale epoch, so it returns WITHOUT recording — the case that used to lose the request.
+        cli._voice_arm_continuous(False)
+        cli._voice_arm_continuous(True)
+        cli._voice_tts_done.set()
+        worker.join(2.0)
+        assert not worker.is_alive()
+
+        assert started.wait(2.0), "the remembered request never re-armed the chat"
+        assert cli._start_calls == [True]

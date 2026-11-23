@@ -580,6 +580,7 @@ class CLIInitMixin:
         self._voice_lock = threading.Lock()
         self._voice_mode = self._voice_tts = self._voice_recording = False
         self._voice_processing = self._voice_continuous = False
+        self._voice_reset_continuous_state()  # epoch, restart bookkeeping, key-repeat stamp
         self._voice_recorder = self._voice_tts_stop = None
         self._voice_live_text = ""  # live STT partial (stt.streaming) shown in the placeholder
         self._voice_tts_done = threading.Event()

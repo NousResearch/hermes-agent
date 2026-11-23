@@ -821,21 +821,19 @@ class CLITuiMixin:
         disk I/O) freezes the whole UI, so all heavy work goes to daemon threads.
         """
         from cli import _DIM, _RST, _cprint, logger
-        if not self._voice_mode:
+        if not self._voice_mode or self._voice_key_repeat():
             return
         if self._voice_recording:
             # Always allow STOPPING (even while the agent runs); manual stop ends continuous
             # mode. Flag clearing happens atomically inside _voice_stop_and_transcribe.
-            with self._voice_lock:
-                self._voice_continuous = False
+            self._voice_arm_continuous(False)
             event.app.invalidate()
             threading.Thread(target=self._voice_stop_and_transcribe, daemon=True).start()
             return
         # Allow disarming continuous mode while the agent runs or transcribes — otherwise the
         # user is stuck in an auto-restart loop until /voice off.
         if self._agent_running or self._voice_processing:
-            with self._voice_lock:
-                self._voice_continuous = False
+            self._voice_arm_continuous(False)
             event.app.invalidate()
             return
         # Don't START recording during interactive prompts.
@@ -856,8 +854,7 @@ class CLITuiMixin:
                 self._voice_tts_done.set()
             except Exception:
                 pass
-        with self._voice_lock:
-            self._voice_continuous = True
+        self._voice_arm_continuous(True)
 
         # play_beep(sd.wait), AudioRecorder.start(lock) and config I/O must never block the loop.
         def _start_recording():
@@ -879,7 +876,7 @@ class CLITuiMixin:
             if self._voice_recording and self._voice_recorder:
                 _recorder_ref = self._voice_recorder
                 self._voice_recording = False
-                self._voice_continuous = False
+                self._voice_disarm_continuous_locked()
         if _recorder_ref is None:
             return False
         _cprint(f"\n{_DIM}{t('cli.tui.recording_cancelled')}{_RST}")
@@ -1865,6 +1862,7 @@ class CLITuiMixin:
         self._voice_recording = False
         self._voice_processing, self._voice_live_text = False, ""  # STT in progress; live partial text
         self._voice_continuous = False  # auto-restart after the agent responds
+        self._voice_reset_continuous_state()
         self._voice_tts_done = threading.Event()  # TTS playback finished
         self._voice_tts_done.set()  # initially "done" (no TTS pending)
         self._voice_tts_stop = None  # active streaming pipeline's stop event

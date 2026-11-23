@@ -19,6 +19,10 @@ from hermes_constants import is_termux as _is_termux_environment
 from typing import Optional
 
 
+# Longer than any platform's first auto-repeat delay (X11 660 ms, KDE 600, GNOME 500).
+_VOICE_KEY_REPEAT_WINDOW = 0.75
+
+
 def _config_section(name: str) -> dict:
     """``load_config()[name]`` coerced to a dict.
 
@@ -59,11 +63,22 @@ class CLIVoiceMixin:
         if hasattr(self, '_app') and self._app:
             self._app.invalidate()
 
-    def _voice_start_recording(self):
-        """Start capturing audio from the microphone."""
+    def _voice_start_recording(self, auto: bool = False, epoch: Optional[int] = None):
+        """Start capturing audio from the microphone.
+
+        ``auto`` marks a restart Hermes scheduled itself (post-turn, no-speech, barge-in) as
+        opposed to an explicit key press: an auto start after the user left continuous mode
+        is dropped, which is what keeps a stopped chat stopped. The check is repeated under
+        the lock below, because the requirement probe and the start beep in between can take
+        long enough for /voice off to land — and that would open the mic after it was closed.
+        """
         from cli import _ACCENT, _DIM, _RST, _cprint
         if getattr(self, '_should_exit', False):
             return
+        if auto and not (getattr(self, '_voice_mode', False) and getattr(self, '_voice_continuous', False)):
+            return
+        if epoch is None:
+            epoch = self._voice_continuous_epoch()
         from tools.voice_mode import create_audio_recorder, check_voice_requirements
 
         reqs = check_voice_requirements()
@@ -79,9 +94,13 @@ class CLIVoiceMixin:
         if not reqs.get("stt_available", reqs.get("stt_key_set")):
             raise RuntimeError(t("cli.voice.err_stt_provider"))
 
-        # Prevent double-start from concurrent threads (atomic check-and-set)
+        # Prevent double-start from concurrent threads (atomic check-and-set), and refuse an
+        # auto start whose intent expired while the checks above ran.
         with self._voice_lock:
             if self._voice_recording:
+                return
+            if auto and (self._voice_continuous_epoch() != epoch
+                         or not (self._voice_mode and self._voice_continuous)):
                 return
             self._voice_recording = True
 
@@ -172,16 +191,105 @@ class CLIVoiceMixin:
         """Configured STT provider name (lowercased), or empty string."""
         return str(_config_section("stt").get("provider") or "").strip().lower()
 
-    def _voice_restart_recording_async(self) -> None:
-        """Restart continuous-mode recording off-thread (start() can block)."""
+    def _voice_reset_continuous_state(self) -> None:
+        """Initial continuous-mode bookkeeping (called once from CLI init)."""
+        self._voice_cont_epoch = 0  # bumped on every arm/disarm; stale restarts die on it
+        self._voice_restart_pending = False  # at most one queued auto restart
+        self._voice_restart_again = False  # a request that arrived while that one unwound
+        self._voice_key_last = 0.0  # last record-key event (key-repeat debounce)
+
+    def _voice_key_repeat(self) -> bool:
+        """True when this record-key event belongs to a held key and must not toggle anything.
+
+        Every repeat used to toggle the state machine, so a long press stopped the take,
+        re-armed continuous mode and started a new one. The window must exceed the platform's
+        FIRST repeat delay (X11 660 ms, KDE 600, GNOME 500) or the first repeat would toggle
+        again and a hold would be start-then-stop; every event then refreshes the stamp, so
+        the rest of the burst is swallowed. The cost is that two deliberate presses closer
+        together than the window count as one.
+        """
+        now = time.monotonic()
+        last = getattr(self, "_voice_key_last", 0.0)
+        self._voice_key_last = now
+        return now - last < _VOICE_KEY_REPEAT_WINDOW
+
+    def _voice_disarm_continuous_locked(self) -> None:
+        """Disarm continuous mode while holding ``_voice_lock`` (callers already do)."""
+        if self._voice_continuous:
+            self._voice_continuous = False
+            self._voice_cont_epoch = self._voice_continuous_epoch() + 1
+
+    def _voice_continuous_epoch(self) -> int:
+        """Counter bumped whenever continuous mode is armed or disarmed."""
+        return getattr(self, "_voice_cont_epoch", 0)
+
+    def _voice_arm_continuous(self, on: bool) -> None:
+        """Set continuous mode, invalidating restarts queued under the previous intent.
+
+        Clearing the flag alone is not enough: a restart queued by key repeat, by the
+        post-turn path or by a no-speech cycle fires afterwards and starts recording again.
+        That is the start/stop beeping loop a held Ctrl+B used to leave behind.
+        """
+        with self._voice_lock:
+            if bool(getattr(self, "_voice_continuous", False)) != bool(on):
+                self._voice_cont_epoch = self._voice_continuous_epoch() + 1
+            self._voice_continuous = bool(on)
+
+    def _voice_restart_recording_async(self, *, wait_tts: bool = False) -> Optional[threading.Thread]:
+        """Restart continuous-mode recording off-thread (start() can block); the worker queue.
+
+        Only one restart may be in flight: the post-turn, no-speech and barge-in paths all
+        ask for it, and two queued restarts open a second recorder behind the first one.
+        Returns the worker thread, or None when the request was folded into one in flight.
+        """
         from cli import _DIM, _RST, _cprint
+        epoch = self._voice_continuous_epoch()
+        with self._voice_lock:
+            if getattr(self, "_voice_restart_pending", False):
+                # One is in flight. Remember the request: it can still return without starting
+                # (a stop landed, TTS is speaking), and dropping the request would leave
+                # continuous mode idle until the user presses the key.
+                self._voice_restart_again = True
+                return None
+            self._voice_restart_pending = True
+            self._voice_restart_again = False
+
+        started = False
+
         def _restart_recording():
+            nonlocal started
             try:
-                self._voice_start_recording()
+                if wait_tts:
+                    tts_done = getattr(self, "_voice_tts_done", None)
+                    if getattr(self, "_voice_tts", False) and tts_done is not None:
+                        tts_done.wait(timeout=60)
+                        time.sleep(0.3)
+                # The intent may have changed while we waited: a stop, /voice off or a
+                # stop phrase wins over a restart that was already in flight.
+                if self._voice_continuous_epoch() != epoch:
+                    return
+                if not (self._voice_continuous and self._voice_mode):
+                    return
+                if self._voice_barge_capture.is_set():
+                    return  # the barge capture owns the mic and submits its own turn
+                self._voice_start_recording(auto=True, epoch=epoch)
+                started = True
                 self._voice_invalidate()
             except Exception as e:
                 _cprint(f"{_DIM}{t('cli.voice.autorestart_failed', error=e)}{_RST}")
-        threading.Thread(target=_restart_recording, daemon=True).start()
+            finally:
+                with self._voice_lock:
+                    self._voice_restart_pending = False
+                    again = getattr(self, "_voice_restart_again", False)
+                    self._voice_restart_again = False
+                if again and not started and self._voice_mode and self._voice_continuous:
+                    # The remembered request still wants a recording this one did not start.
+                    self._voice_restart_recording_async(wait_tts=wait_tts)
+
+        from agent.memory_provider import spawn_context_thread  # keeps the caller's contextvars
+        worker = spawn_context_thread(_restart_recording, name="voice-auto-restart")
+        worker.start()
+        return worker
 
     def _voice_on_live_partial(self, text: str) -> None:
         """Live STT partial (``stt.streaming``): shown in the input placeholder while recording."""
@@ -268,17 +376,23 @@ class CLIVoiceMixin:
             elif not _activity_hold:
                 self._no_speech_count = getattr(self, '_no_speech_count', 0) + 1
                 if self._no_speech_count >= 3:
-                    self._voice_continuous = False
+                    self._voice_arm_continuous(False)
                     self._no_speech_count = 0
                     _cprint(f"{_DIM}{t('cli.voice.no_speech_stop')}{_RST}")
                     stop_continuous_restart = True
             # No transcript but continuous mode active: restart so the user can keep talking
             # (when a transcript IS submitted, process_loop restarts after chat()).
+            # While the agent runs or TTS speaks, the mic is NOT ours: the full-duplex
+            # listener owns it for barge-in and the post-turn restart re-arms recording when
+            # the reply is done. Restarting here beeped a start/stop cycle every few seconds
+            # for the whole length of a turn.
             if (
                 self._voice_continuous
                 and not submitted
                 and not self._voice_recording
-                and not stop_continuous_restart):
+                and not stop_continuous_restart
+                and not _activity_hold
+                and not self._voice_barge_capture.is_set()):
                 self._voice_restart_recording_async()
 
     def _voice_speak_response_async(self, text: str) -> None:
@@ -565,7 +679,7 @@ class CLIVoiceMixin:
             recorder = self._voice_recorder
             self._voice_mode = False
             self._voice_tts = False
-            self._voice_continuous = False
+        self._voice_arm_continuous(False)
 
         # Release the TTS lease so a resident local model (piper/kittentts) can be freed.
         self._tts_lease_async(False)
@@ -711,7 +825,7 @@ class CLIVoiceMixin:
         # Single-utterance capture; VAD auto-stop transcribes and queues for process_loop.
         with self._voice_lock:
             self._voice_mode = True
-        self._voice_continuous = False
+        self._voice_arm_continuous(False)
         try:
             self._voice_start_recording()
         except Exception as e:

@@ -219,21 +219,12 @@ class CLITuiRuntimeMixin:
             except Exception as _exc:
                 logging.debug("%s hook failed: %s", what, _exc)
 
-        # Continuous voice: restart recording off-thread (beep + recorder start would block process_loop).
+        # Continuous voice: restart recording off-thread (beep + recorder start would block
+        # process_loop). The helper waits for TTS, then re-checks that continuous mode is
+        # still armed and that no restart is already queued, so a stop during the reply
+        # cannot resurrect the mic.
         if self._voice_mode and self._voice_continuous and not self._voice_recording:
-            def _restart_recording():
-                try:
-                    if self._voice_tts:
-                        self._voice_tts_done.wait(timeout=60)
-                        time.sleep(0.3)
-                    # A barge-in capture already owns the mic and submits the interruption itself.
-                    if self._voice_barge_capture.is_set():
-                        return
-                    self._voice_start_recording()
-                    self._app.invalidate()
-                except Exception as e:
-                    _cprint(f"{_DIM}{t('cli.voice.autorestart_failed', error=e)}{_RST}")
-            threading.Thread(target=_restart_recording, daemon=True).start()
+            self._voice_restart_recording_async(wait_tts=True)
 
         with suppress(Exception):
             self._drain_process_notifications("cli-post-turn")

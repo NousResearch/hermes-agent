@@ -672,7 +672,7 @@ class CLIChatTurnMixin:
                 failure_reason=turn.result.get("failure_reason"))
             # Stop continuous voice on persistent errors (e.g. 429) — else error→record→error loops.
             if self._voice_continuous:
-                self._voice_continuous = False
+                self._voice_arm_continuous(False)
                 _cprint(f"\n{_DIM}{t('cli.chat.continuous_voice_stopped')}{_RST}")
 
         pending_message, _show_interrupt_marker = self._chat_resolve_interrupt(

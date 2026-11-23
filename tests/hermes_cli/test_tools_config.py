@@ -245,6 +245,89 @@ def test_toolset_has_keys_for_vision_accepts_codex_auth(tmp_path, monkeypatch):
     assert _toolset_has_keys("vision") is True
 
 
+def test_save_platform_tools_uses_captured_plugin_offers(monkeypatch):
+    """A plugin discovered after the checklist was displayed must neither become a false opt-out
+    nor lose a previously selected entry. Offered-but-unchecked plugin toolsets stay opted out."""
+    import hermes_cli.tools_config as _tc
+
+    # Both keys are live by save time, but only offered_plugin was present when the checklist was drawn.
+    monkeypatch.setattr(_tc, "_get_plugin_toolset_keys", lambda: {"offered_plugin", "late_plugin"})
+    config = {
+        "platform_toolsets": {"telegram": ["hermes-telegram", "offered_plugin", "late_plugin"]},
+    }
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(
+            config, "telegram", {"hermes-telegram"},
+            offered_plugin_toolset_keys={"offered_plugin"},
+        )
+
+    known = set(config["known_plugin_toolsets"]["telegram"])
+    assert known == {"offered_plugin"}
+    saved = set(config["platform_toolsets"]["telegram"])
+    assert "offered_plugin" not in saved, "the offered but unchecked plugin should be opted out"
+    assert "late_plugin" in saved, "an unoffered prior selection must not be dropped"
+
+    monkeypatch.setattr(_tc, "_get_plugin_toolset_keys", lambda: {"offered_plugin", "late_plugin"})
+    with patch("toolsets.resolve_toolset", side_effect=lambda key, **_kw: {
+        "offered_plugin": ["offered_tool"], "late_plugin": ["late_tool"],
+    }.get(key, [])):
+        effective = _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
+    assert "late_plugin" in effective
+    assert "offered_plugin" not in effective
+
+    # With no saved late_plugin entry either, it remains default-on because the checklist snapshot
+    # did not mark it as a user-visible opt-out.
+    config_without_prior_selection = {"platform_toolsets": {"telegram": ["hermes-telegram"]}}
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(
+            config_without_prior_selection, "telegram", {"hermes-telegram"},
+            offered_plugin_toolset_keys={"offered_plugin"},
+        )
+    with patch("toolsets.resolve_toolset", side_effect=lambda key, **_kw: {
+        "offered_plugin": ["offered_tool"], "late_plugin": ["late_tool"],
+    }.get(key, [])):
+        effective_without_prior_selection = _get_platform_tools(
+            config_without_prior_selection, "telegram", include_default_mcp_servers=False)
+    assert "late_plugin" in effective_without_prior_selection
+    assert "offered_plugin" not in effective_without_prior_selection
+
+
+def test_save_platform_tools_preserves_opt_out_for_absent_plugin(monkeypatch):
+    """A genuine opt-out survives a save where that plugin was not in the captured checklist."""
+    import hermes_cli.tools_config as _tc
+
+    monkeypatch.setattr(_tc, "_get_plugin_toolset_keys", lambda: {"offered_plugin"})
+    config = {
+        "platform_toolsets": {"telegram": ["hermes-telegram"]},
+        "known_plugin_toolsets": {"telegram": ["offered_plugin"]},
+    }
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(
+            config, "telegram", {"hermes-telegram"}, offered_plugin_toolset_keys=set(),
+        )
+
+    known = set(config["known_plugin_toolsets"]["telegram"])
+    assert "offered_plugin" in known
+    assert "offered_plugin" not in _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
+
+
+def test_prompt_toolset_checklist_returns_the_displayed_plugin_snapshot(monkeypatch):
+    """The save path must use plugin rows the user actually saw, not discovery that changes afterward."""
+    import hermes_cli.tools_config as _tc
+
+    builtin = _tc.CONFIGURABLE_TOOLSETS[0]
+    plugin = ("snapshot_plugin", "Snapshot", "Test row")
+    monkeypatch.setattr(_tc, "_get_effective_configurable_toolsets", lambda: [builtin, plugin])
+    monkeypatch.setattr(_tc, "_estimate_tool_tokens", dict)
+    monkeypatch.setattr(_tc, "_toolset_has_keys", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", lambda *_args, **_kwargs: set())
+
+    selected, offered = _tc._prompt_toolset_checklist("Telegram", set(), "telegram")
+
+    assert selected == set()
+    assert offered == {"snapshot_plugin"}
+
+
 def test_save_platform_tools_preserves_mcp_server_names():
     """Ensure MCP server names are preserved when saving platform tools.
 
@@ -320,7 +403,7 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
 
     monkeypatch.setattr(
         "hermes_cli.tools_config._prompt_toolset_checklist",
-        lambda *args, **kwargs: {"video_gen"},
+        lambda *args, **kwargs: ({"video_gen"}, set()),
     )
     monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
     monkeypatch.setattr(

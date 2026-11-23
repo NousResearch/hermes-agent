@@ -611,11 +611,20 @@ def _clean_names(values) -> set:
 def _save_toolset_pin(cfg, enabled, save_config) -> None:
     """Pin ``platform_toolsets.cli``: the key ``_load_enabled_toolsets`` reads and ``hermes tools`` writes.
     An empty selection clears the pin so the platform default applies again."""
-    from hermes_cli.tools_config import _save_platform_tools
+    from hermes_cli.tools_config import _configurable_keys, _save_platform_tools
 
     wanted = _clean_names(enabled)
     if wanted:
-        _save_platform_tools(cfg, "cli", wanted)
+        # The profile editor submits a complete replacement pin, not a per-row toggle. Use the same
+        # currently visible plugin rows as profiles.describe so omitted rows are intentional opt-outs,
+        # while plugins absent from that editor remain preserved by the shared saver.
+        toolset_rows, _ = _describe_toolsets(cfg)
+        offered_plugins = {
+            row["name"] for row in toolset_rows if row["name"] not in _configurable_keys()
+        }
+        _save_platform_tools(
+            cfg, "cli", wanted, offered_plugin_toolset_keys=offered_plugins,
+        )
     elif isinstance(cfg.get("platform_toolsets"), dict):
         cfg["platform_toolsets"].pop("cli", None)
     save_config(cfg)

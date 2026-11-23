@@ -59,7 +59,9 @@ def _standalone_send(
         # An exception escaping the sender says nothing about what already went out, unless it
         # proves the request never left.
         from gateway.platforms._shared import request_never_left
-        t.standalone_in_flight = t.standalone_in_flight or not request_never_left(e)
+        never_left = request_never_left(e)
+        t.standalone_in_flight = t.standalone_in_flight or not never_left
+        t.standalone_never_left, t.standalone_error = never_left, msg
         return None, msg
 
     def _in_flight(seconds: float) -> tuple[None, str]:
@@ -126,7 +128,12 @@ def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: lis
             compute_obligation_id, is_reconnect_only, ledger_enabled, mark_failed, record_obligation)
         retryable_live_rejection = is_reconnect_only(t.live_error) or (
             t.live_retryable is True and t.live_error in _PRE_SEND_LIVE_REJECTIONS)
-        if not retryable_live_rejection or not ledger_enabled():
+        # Orphaned by transport: the live lane never ran (no adapter ready) and the standalone send
+        # raised before the request left this host. No adapter will replay it after a reconnect and
+        # no platform verdict exists to honour — nothing was sent anywhere, so a replay cannot
+        # duplicate and the ledger is the only thing standing between the payload and silence.
+        orphaned_by_transport = t.standalone_never_left and not t.live_error
+        if not (retryable_live_rejection or orphaned_by_transport) or not ledger_enabled():
             return
         session_key = f"cron:{t.platform_name}:{t.chat_id}" + (f":{t.thread_id}" if t.thread_id else "")
         obligation_id = compute_obligation_id(session_key, f"job:{t.job.get('id', '?')}", content)
@@ -134,7 +141,7 @@ def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: lis
             obligation_id=obligation_id, session_key=session_key, platform=t.platform_name,
             chat_id=str(t.chat_id), thread_id=t.thread_id, content=content,
             adapter_profile=getattr(getattr(t.transport, "adapter", None), "_owner_profile", None))
-        mark_failed(obligation_id, str(t.live_error))
+        mark_failed(obligation_id, str(t.live_error or t.standalone_error or "cron delivery failed"))
         # Arm the in-process drain: this row lands in ``pending_retries`` (backoff tier 0, due in
         # ~30s), but the only arming sites for the flood worker are boot adoption and the
         # agent-reply finalizer — cron enters neither, so without this a retryable-marked row on
@@ -155,6 +162,8 @@ def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: lis
                        t.job.get("id"), t.where, exc_info=True)
         return
     note = f"queued text for {t.where} for redelivery once the live adapter reconnects"
+    if orphaned_by_transport:
+        note = f"queued text for {t.where} for redelivery (the send never left this host)"
     if media_files:
         note += f" ({len(media_files)} attachment(s) not queued)"
     logger.warning("Job '%s': %s", t.job.get("id"), note)

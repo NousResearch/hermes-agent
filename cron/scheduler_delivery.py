@@ -1082,6 +1082,10 @@ class _TargetDelivery:
     # is not — so the queue gate keys on this flag, not on widening a string set.
     live_retryable: Optional[bool] = None
     standalone_in_flight: bool = False  # the standalone send may have delivered (timeout, lost answer, partial)
+    # Set when the standalone send raised an exception that proves the request never left this host
+    # (connect refused, DNS, TLS handshake): no adapter owns the payload and no platform answered.
+    standalone_never_left: bool = False
+    standalone_error: Optional[str] = None  # the standalone lane's failure text, for the ledger row
 
     @property
     def is_relay(self) -> bool:

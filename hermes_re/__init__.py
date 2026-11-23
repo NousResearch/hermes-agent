@@ -18,6 +18,7 @@ This file is the facade only: it re-exports names and holds no logic. Topic modu
   _errors           ``error``: the exception class, a subclass of stdlib ``re.error``
   _comments         `(?#...)` comment groups, removed before anything else reads the pattern
   _validate         syntax check of a source before translation; capture groups and their names
+  _close_order      refuses the repeats whose ``lastindex`` RE2's spans cannot decide
   _translate        Python regex dialect -> RE2 dialect (escapes, `\\Z`, `{,n}`, scoped inline flags)
   _translate_class  `\\d \\w \\s` and bracket classes with stdlib meaning, exact IGNORECASE classes
   _translate_ranges code-point range sets and the four-cell algebra behind class translation

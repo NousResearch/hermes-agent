@@ -38,7 +38,7 @@ import sys
 import types
 import weakref
 
-from . import _budget, _comments, _edge_bound, _edge_plan, _engine
+from . import _budget, _close_order, _comments, _edge_bound, _edge_plan, _engine
 from ._edge_run import step
 from ._errors import error
 from ._flags import SUPPORTED, RegexFlag, checked, inline_globals, ssize
@@ -167,6 +167,7 @@ class Pattern:
             check(text, not is_str, pattern, True)
         form = self._form = Form(pattern, text, engine_flags, not is_str, True, weakref.ref(self))  # raises ``error``
         self.groups, self._names = form.groups, types.MappingProxyType(form.groupindex)
+        _close_order.refuse(text, form.groups, pattern)  # raises ``error`` where lastindex is undecidable
         wide = None
         if is_str and "\\b" in text:
             wide = _edge_bound.rewrite(text, engine_flags)[0]

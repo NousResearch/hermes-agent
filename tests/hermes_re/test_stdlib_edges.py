@@ -58,6 +58,38 @@ def test_lastindex_counts_a_lookahead_group_as_closing_where_the_lookahead_runs(
             assert view(hre.search(source, subject)) == view(std.search(source, subject)), (source, subject)
 
 
+_SUBJECTS = ("ba", "aba", "bba", "cba", "aaba", "ab", "abab", "bab", "a", "b", "")
+
+
+def test_lastindex_is_an_empty_group_closed_in_a_later_iteration_than_a_group_with_text():
+    # `b` ends at 1 in one iteration, `empty` closes at 1 in the next: the empty group closed last
+    for source in (r"(?:(?P<empty>)a|(?P<b>b))+", r"(?:(?:()a)|(b))+", r"((?:()a|(b))+)", r"(?:()a|(b)c?)+",
+                   r"(?:()a|(b)){2}", r"(x)?(?:()a|(b))*?a"):
+        for subject in _SUBJECTS:
+            for find in (std.search, std.fullmatch):
+                mine = getattr(hre, find.__name__)
+                assert view(mine(source, subject)) == view(find(source, subject)), (source, subject, find.__name__)
+
+
+def test_a_repeat_where_two_empty_groups_can_close_in_either_order_is_refused_at_compile():
+    # `x` closes empty at the END of one iteration, `y` empty at the START of the next: both end at
+    # one offset and nothing in the spans says which closed last
+    for source in (r"(?:(?P<y>)b|a(?P<x>))+", r"(?:()b|a())*", r"(?:(?:()|())a|b())+", r"(?:()b|(c)?())+?",
+                   rb"(?:()b|a()){1,3}"):
+        assert outcome(lambda: hre.compile(source)) == "raises error", source
+    # the later group is certain to follow in the same iteration, or one of them must take text
+    for source in (r"(?:()a())*", r"(?:()(?:b|c)())+", r"(?:(a)|()b)*", r"(?:()a|(b))+", r"(?:()(b)?a)+",
+                   r"(?:a()|()b)?"):
+        for subject in _SUBJECTS:
+            assert view(hre.search(source, subject)) == view(std.search(source, subject)), (source, subject)
+
+
+def test_a_deeply_nested_repeat_compiles_where_stdlib_compiles():
+    source = "(" * 400 + "(a)" + ")" * 400 + "*b"
+    assert hre.compile(source).groups == std.compile(source).groups == 401
+    assert view(hre.search(source, "aab")) == view(std.search(source, "aab"))
+
+
 def test_build_all_reaches_every_live_pattern_even_equal_ones():
     hre.purge()
     gc.collect()

@@ -103,20 +103,34 @@ class Match:
 
     @property
     def lastindex(self):
-        # The group that closed last: of those ending latest, the one whose `)` is last in the pattern.
-        # A group inside a trailing lookahead closes when the lookahead runs, at the end of the
-        # match (``stop``), however far past it the group's text reaches.
+        # The group that closed last, read from the spans. Its end is the latest end, ``last``. A
+        # group inside a trailing lookahead closes when the lookahead runs, at the end of the match
+        # (``stop``), however far past it the group's text reaches. Among the groups ending at
+        # ``last`` a group closes after every group nested in it, so only the outermost ones
+        # compete; they do not overlap, so at most one of them took text (two that did would
+        # overlap at ``last``), and every EMPTY one closed after it (an empty group that closed
+        # first would put the other's start at ``last``), even in an earlier `(` position (a later
+        # iteration of a repeat). Two outermost empty groups close in pattern order: the compile
+        # step refuses the repeats where a later iteration could reverse that (``_close_order``).
         pattern = self.re
         ranks = pattern._ranks
         if ranks is None:
             source = pattern.pattern
             ranks = pattern._ranks = _close_ranks(source if pattern._is_str else source.decode("latin-1"))
-        best, best_key = None, (-1, -1)
-        stop = self._spans[0][1]
-        for index in range(1, pattern.groups + 1):
-            end = min(self._spans[index][1], stop)
-            if end >= 0 and (end, ranks[index]) > best_key:
-                best, best_key = index, (end, ranks[index])
+        spans, stop = self._spans, self._spans[0][1]
+        ends = [min(spans[index][1], stop) for index in range(pattern.groups + 1)]
+        last = max(ends[1:], default=-1)
+        if last < 0:
+            return None
+        tied = [index for index in range(1, pattern.groups + 1) if ends[index] == last]
+        best, best_key = None, None
+        for index in tied:
+            # a tied group with a lower number and a later `)` encloses this one
+            if any(other < index and ranks[other] > ranks[index] for other in tied):
+                continue
+            key = (spans[index][0] >= last, ranks[index])
+            if best_key is None or key > best_key:
+                best, best_key = index, key
         return best
 
     @property

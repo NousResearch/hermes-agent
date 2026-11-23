@@ -38,6 +38,7 @@ another engine.
 | Backreference | `(["'])x\1`, `(?P=name)` | One alternative per case: `"x"\|'x'`; or capture both and compare in Python. |
 | Possessive quantifier, atomic group | `a++`, `(?>a+)` | The plain quantifier: `a+`. RE2 cannot backtrack, so the possessive form buys nothing. |
 | Conditional | `(a)?(?(1)b\|c)` | Two alternatives: `ab\|c`. |
+| Two capture groups in one repeat that can both match empty, one at the start and one at the end of an iteration | `(?:(?P<y>)b\|a(?P<x>))+` | Give one of them text to match, or move it out of the repeat: which one closed last (`lastindex`, `lastgroup`) cannot be told from RE2's spans. |
 | `VERBOSE`, `LOCALE`, `DEBUG`; inline `(?x)`, `(?a)`, `(?u)`, `(?L)` | `re.compile(p, re.X)` | Build the pattern from commented string pieces; pass `re.ASCII` as a flag. These raise `ValueError`. |
 | Named character | `\N{EM DASH}` | `\u2014`. |
 | A non-multiline `$` with something to match after it | `x$y`, `(x$)+` | `\Z`, or `(?m)` if "end of line" is meant. |

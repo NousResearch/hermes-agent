@@ -2,6 +2,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { $busyInputConfig } from '@/store/busy-input-mode'
+import { $connectionWires, recordConnectionWire } from '@/store/connection-wire'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 
@@ -106,4 +107,21 @@ it('uses only the current owner config and ignores a late response from the prev
   expect(hook.result.current).toBe('queue')
   act(() => $busyInputConfig.set({ owner: 'foreign-owner', connection: $connection.get(), mode: 'interrupt' }))
   expect(hook.result.current).toBe('steer')
+})
+
+// A public remote chat: the global busy mode applies until the connection's gateway.ready says the
+// owner is canonical; from then the session's own `config.get busy` decides busy Enter.
+it('switches to the session policy once a public connection negotiates the canonical wire', async () => {
+  $connection.set({ connectionId: 'vps', mode: 'remote', wsUrl: 'wss://vps.example/api/ws?ticket=public' } as never)
+  $gatewayState.set('open')
+  $busyInputConfig.set({ owner: JSON.stringify(['vps', 'default']), connection: $connection.get(), mode: 'interrupt' })
+  const request = vi.fn().mockResolvedValue({ value: 'queue' })
+  const hook = renderHook(() => useBusyInputMode({ sessionId: 'chat', storedSessionId: null, requestGateway: request }))
+
+  try {
+    expect(hook.result.current).toBe('interrupt')
+    act(() => recordConnectionWire('vps', 'canonical'))
+    await waitFor(() => expect(hook.result.current).toBe('queue'))
+    expect(request).toHaveBeenCalledWith('config.get', { key: 'busy', session_id: 'chat' })
+  } finally { hook.unmount(); $connection.set(null); $connectionWires.set({}) }
 })

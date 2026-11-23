@@ -1,0 +1,25 @@
+"name": "wing"
+"title": "Wing"
+"repo": "https://github.com/tarkilhk/wing-hermes-plugin"
+"maintainer": "tarkilhk"
+"tier": "community"
+"category": "general"
+"docs_url": "https://github.com/tarkilhk/wing-hermes-plugin#readme"
+"readme": true
+"description": "Extra features for the Wing Android app: GPT Live voice and email draft cards. GPT Live voice uses ChatGPT subscription access with the selected Hermes profile's context. Email draft cards show recipients, cc/bcc, subject and body, then open the user's chosen email app for final edits and sending. Drafts work independently of voice and need no OpenAI credentials or mail account access. Draft cards adapt arsiktech's hermes-draft-cards design (MIT); the voice integration builds on Synero's hermes-live-voice work (MIT). Disclosure — voice calls send the WebRTC SDP, the selected profile's Hermes-built system prompt (including memory) and client-supplied chat excerpts to chatgpt.com (Codex realtime endpoint) through the profile's openai-codex sign-in, with the headers OpenAI-Alpha: quicksilver=v2, originator: hermes-agent and random session ids; building fresh voice context runs a short-lived Python child that initialises the profile's memory providers and reads context files from the profile's configured terminal.cwd only; email drafts persist in the profile's plugin-data/wing SQLite database; relies on undocumented Hermes prompt-inspection and voice helpers that may break on update; draft cards and voice adapt arsiktech's hermes-draft-cards and Synero's hermes-live-voice (MIT). No telemetry, stored credentials or self-updater."
+"known_issues":
+- "Requires the matching Wing Android client. Email cards need a Wing build with wing-email-draft rendering; other clients see the tool fields/reference as text."
+- "Voice context uses undocumented Hermes prompt-inspection and voice helpers that can change; admission validation reports these imports for reviewer inspection."
+- "Live subscription voice requires a profile sign-in with voice access. OpenAI API voice is unavailable pending host-owned per-call instructions/voice support in NousResearch/hermes-agent#151774. Email drafts require neither."
+"sha": "9b0ca946ea82cc9e2180f51929844a535231b958"
+"version": "0.3.4"
+"requires_hermes": ">=0.23.0"
+"screenshots":
+- "https://raw.githubusercontent.com/tarkilhk/wing-hermes-plugin/9b0ca946ea82cc9e2180f51929844a535231b958/docs/email-draft-preview.png"
+"capabilities":
+  "provides_tools":
+  - "wing_email_draft"
+  - "wing_email_draft_read"
+  "provides_hooks": []
+  "provides_middleware": []
+  "requires_env": []

@@ -1,35 +1,52 @@
+# The command the generated git hooks run instead of searching PATH, node_modules and
+# finally `uv run lefthook`, which syncs `.venv` and editable-installs the checkout into it
+# (scripts/run-lefthook). No double quotes in the value: lefthook pastes it into
+# `test -n "..."`. A commit that predates the script skips the hooks instead of failing.
+lefthook: "sh -c 'if test -f scripts/run-lefthook; then exec sh scripts/run-lefthook $0 $*; fi; echo git hooks skipped: this checkout has no scripts/run-lefthook >&2'"
+
+# `just` for the jobs, resolved only for a job whose glob matched (scripts/hook-just), so a
+# commit no job matches never sets up an environment. Absolute: `root:` jobs run in a subdir.
+# `env -u GIT_DIR`: git exports GIT_DIR to hooks in a linked worktree, and with it set
+# `--show-toplevel` answers the job's cwd (apps/desktop/), not the checkout.
+templates:
+  just: sh "$(env -u GIT_DIR git rev-parse --show-toplevel)/scripts/hook-just"
+
 pre-commit:
   jobs:
     - name: lint python
       glob: "*.py" # glob filter
-      run: ruff check --config ./ruff.pre-commit.toml {staged_files}
+      run: "{just} ruff {staged_files}"
+
+    - name: move shims
+      glob: "*.py"
+      run: "{just} check --only shims"
 
     - name: lint web
       root: web/
       glob: "web/**/*.{js,ts,tsx}"
-      run: npx eslint {staged_files}
+      run: "{just} eslint {staged_files}"
 
     - name: lint bootstrap installer
       root: apps/bootstrap-installer/
       glob: "*.{js,ts,tsx}"
-      run: npx eslint {staged_files}
+      run: "{just} eslint {staged_files}"
 
     - name: lint desktop app
       root: apps/desktop/
       glob: "*.{js,ts,tsx}"
-      run: npx eslint {staged_files}
+      run: "{just} eslint {staged_files}"
 
     - name: lint tui
       root: ui-tui/
       glob: "*.{js,ts,tsx}"
-      run: npx eslint {staged_files}
+      run: "{just} eslint {staged_files}"
 
     - name: lint shared
       root: apps/shared/
       glob: "*.{js,ts,tsx}"
-      run: npx eslint {staged_files}
+      run: "{just} eslint {staged_files}"
 
     - name: lint tests
       root: tests-js/
       glob: "*.{js,ts,tsx}"
-      run: npx eslint {staged_files}
+      run: "{just} eslint {staged_files}"

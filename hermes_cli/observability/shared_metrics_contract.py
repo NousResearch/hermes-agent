@@ -21,6 +21,7 @@ from .shared_metrics_prepared_compaction import (
     PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS,
 )
 from .shared_metrics_busy import BUSY_ARRIVAL_DISPOSITIONS, BUSY_ARRIVAL_METRIC, BUSY_PEAK_FIELD, BUSY_WAIT_BUCKETS
+from .shared_metrics_desktop_frames import DESKTOP_LONG_FRAME_ROW_BUCKETS, DESKTOP_LONG_FRAMES_METRIC
 
 SCHEMA_KEY = "hermes.metrics.schema_version"
 # A random per-emit token (no payload) on rows whose producer waits to learn they were SAVED: facts
@@ -162,10 +163,10 @@ TASK_FAILURE_CLASSES = MODEL_ERROR_CLASSES | frozenset({
 _CORE_GATEWAY_PLATFORMS = (frozenset(PLATFORMS) - {"api_server", "cli", "cron"}) | {"none", "plugin", "relay"}
 # The Tool Search bridge tools are not in a toolset; every hosted connector tool reads ``connector``.
 BRIDGE_TOOL_NAMES = frozenset({"tool_call", "tool_describe", "tool_search"})
-# Core tools a stable release shipped that core no longer has: setup_choose/start_chat with the old setup
-# flow; the built-in browser_* tools with agent-browser (the camofox plugin's same-named tools record as
-# ``plugin``); the five browser_vault_* tools folded into one browser_vault; spotify_* when Spotify left core
-# for its catalog plugin. v4 only adds values, and rows older releases saved with these names must still
+# Core tools a stable release shipped that core no longer has: setup_choose/start_chat with the old setup flow;
+# the built-in browser_* tools with agent-browser (the camofox plugin's same-named tools record as ``plugin``);
+# the five browser_vault_* tools folded into one browser_vault; spotify_* / yb_* when Spotify and Yuanbao left
+# core for their catalog plugins. v4 only adds values, and rows older releases saved with these names must still
 # package; recording maps through the live sets (tool_metric_name, toolset_metric_name).
 RETIRED_TOOL_NAMES = frozenset({
     "setup_choose", "start_chat",
@@ -174,9 +175,9 @@ RETIRED_TOOL_NAMES = frozenset({
     "browser_vault_enter_code", "browser_vault_fill", "browser_vault_list", "browser_vault_save_login",
     "browser_vault_unlock",
     "spotify_albums", "spotify_devices", "spotify_library", "spotify_playback", "spotify_playlists",
-    "spotify_queue", "spotify_search",
-})
-RETIRED_TOOLSET_NAMES = frozenset({"setup", "spotify", "start_chat"})
+    "spotify_queue", "spotify_search", "yb_query_group_info", "yb_query_group_members", "yb_search_sticker",
+    "yb_send_dm", "yb_send_sticker"})
+RETIRED_TOOLSET_NAMES = frozenset({"hermes-yuanbao", "setup", "spotify", "start_chat", "yuanbao"})
 _LIVE_TOOL_NAMES = BUILTIN_TOOL_NAMES | BRIDGE_TOOL_NAMES | {"connector", "mcp", "plugin", "unknown"}
 TOOL_NAMES = _LIVE_TOOL_NAMES | RETIRED_TOOL_NAMES
 TOOL_ERROR_CLASSES = frozenset({
@@ -189,9 +190,9 @@ SIZE_BUCKETS = frozenset({
 
 
 def _bundled_memory_providers() -> frozenset[str]:
-    from pathlib import Path
+    from hermes_cli.plugins import get_bundled_plugins_dir
 
-    root = Path(__file__).resolve().parents[2] / "plugins" / "memory"
+    root = get_bundled_plugins_dir() / "memory"
     try:
         return frozenset(p.name for p in root.iterdir() if (p / "__init__.py").is_file())
     except OSError:
@@ -725,8 +726,7 @@ DESKTOP_ONBOARDING_EVENTS = frozenset({"abandoned", "completed", "reached"})
 DESKTOP_MODE_USE_MARK = DESKTOP_MODE_USE_METRIC = "hermes.desktop.mode_use"
 DESKTOP_MODES = frozenset({"bots", "sessions"})
 DESKTOP_ACTIVE_MINUTES_BUCKETS = frozenset({"0", "lt_5m", "5m_to_30m", "30m_to_2h", "2h_to_6h", "gte_6h"})
-_DESKTOP_ACTIVE_THRESHOLDS = ((300_000, "lt_5m"), (1_800_000, "5m_to_30m"), (7_200_000, "30m_to_2h"),
-                              (21_600_000, "2h_to_6h"))
+_DESKTOP_ACTIVE_THRESHOLDS = ((300_000, "lt_5m"), (1_800_000, "5m_to_30m"), (7_200_000, "30m_to_2h"), (21_600_000, "2h_to_6h"))
 
 
 def desktop_active_minutes_bucket(active_ms: Any) -> str:
@@ -1034,10 +1034,8 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     DESKTOP_FEATURE_USE_METRIC: {"area": DESKTOP_FEATURE_AREAS},
     DESKTOP_FRICTION_METRIC: {"detail": DESKTOP_FRICTION_DETAIL_VALUES, "kind": DESKTOP_FRICTION_KINDS},
     DESKTOP_ONBOARDING_METRIC: {"event": DESKTOP_ONBOARDING_EVENTS, "step": DESKTOP_ONBOARDING_STEPS},
-    DESKTOP_MODE_USE_METRIC: {
-        "active_minutes_bucket": DESKTOP_ACTIVE_MINUTES_BUCKETS, "bot_count_bucket": SIZE_BUCKETS,
-        "messages_sent_bucket": SIZE_BUCKETS, "mode": DESKTOP_MODES,
-    },
+    DESKTOP_MODE_USE_METRIC: {"active_minutes_bucket": DESKTOP_ACTIVE_MINUTES_BUCKETS, "bot_count_bucket": SIZE_BUCKETS, "messages_sent_bucket": SIZE_BUCKETS, "mode": DESKTOP_MODES},
+    DESKTOP_LONG_FRAMES_METRIC: {"frame_bucket": DESKTOP_LONG_FRAME_ROW_BUCKETS, "visible_minutes_bucket": DESKTOP_ACTIVE_MINUTES_BUCKETS},
     DESKTOP_ACTION_USE_METRIC: {"action": DESKTOP_ACTION_IDS, "count_bucket": SIZE_BUCKETS, "via": DESKTOP_ACTION_VIAS},
     DESKTOP_DISLIKE_METRIC: {
         "direction": DESKTOP_DISLIKE_DIRECTIONS, "signal": DESKTOP_DISLIKE_SIGNALS, "target": DESKTOP_DISLIKE_TARGET_VALUES,
@@ -1169,7 +1167,7 @@ _LEGACY_METRIC_FIELDS[UPDATE_RUN_METRIC] = (_METRIC_FIELDS[UPDATE_RUN_METRIC] - 
 _LEGACY_METRIC_FIELDS[ENGAGEMENT_DAY_METRIC] = (_METRIC_FIELDS[ENGAGEMENT_DAY_METRIC] - {BUSY_PEAK_FIELD},)  # busy-wait
 COUNTER_METRICS = frozenset(_METRIC_FIELDS) - {LEGACY_MODEL_CALL_METRIC}
 # Counters whose value is a summed quantity rather than an event count.
-SUM_METRICS = frozenset({MODEL_TOKENS_METRIC})
+SUM_METRICS = frozenset({MODEL_TOKENS_METRIC, DESKTOP_LONG_FRAMES_METRIC})  # long frames: the day's frame count
 _SKILL_MARK_METRICS = {
     SKILL_LIFECYCLE_MARK: SKILL_LIFECYCLE_METRIC, SKILL_LOAD_MARK: SKILL_LOAD_METRIC,
 }

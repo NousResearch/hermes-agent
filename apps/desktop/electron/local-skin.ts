@@ -7,7 +7,8 @@ import path from 'node:path'
 import type { HermesSkin, SkinColors } from '@hermes/shared/skin'
 import { parse } from 'yaml'
 
-const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+import { PROFILE_ID_ARG_RE } from '../../shared/src/profile-id'
+
 const SKIN_FILE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/
 const MAX_CONFIG_BYTES = 1_000_000
 const MAX_SKIN_BYTES = 256_000
@@ -109,7 +110,7 @@ const stringMap = (value: unknown): SkinColors | undefined => {
 export function localSkinProfileKey(profile: null | string | undefined): string {
   const name = typeof profile === 'string' ? profile.trim() : ''
 
-  return name && name !== 'default' && PROFILE_NAME_RE.test(name) ? name : 'default'
+  return name && name !== 'default' && PROFILE_ID_ARG_RE.test(name) ? name : 'default'
 }
 
 /** The profile home mirrors `hermes --profile <name>`: `<root>/profiles/<name>`. */

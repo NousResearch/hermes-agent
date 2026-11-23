@@ -8,8 +8,8 @@ thing:
   under the session's frozen checkpoint policy (``--checkpoints`` included) and returns it as data
   for main's terminal renderer. Working-tree modes stay main's local git read of the same checkout.
 - ``/reload``: ``reload.env`` re-reads ``.env`` where turns and tools run (this process re-reads too).
-- ``/handoff``: no gateway verb carries a handoff yet; refused as Ink and Desktop refuse it, instead
-  of the store's ``request_handoff`` refusal dying silently in the process loop.
+- ``/handoff``: the pending row is written in the owner's store (``handoff.request``), where the
+  gateway's handoff watcher claims it; this process's own store write would never be seen.
 """
 from __future__ import annotations
 
@@ -38,20 +38,41 @@ def _reload(cli, connection, cmd):
     return True
 
 
+# A route's verdict for a command that ended the CLI session (a completed /handoff): handled, and
+# ``process_command`` answers False as it does for /quit, so the running app exits.
+EXIT_SESSION = object()
+
+
 def _handoff(cli, connection, cmd):
-    from cli import _cprint
-    from hermes_cli.gateway_chat_commands import refusal
-    _cprint(f"  {refusal('handoff')}")
-    return True
+    """``/handoff <platform>`` on the owner: ``handoff.request`` writes the pending row in the owner's
+    store, where its watcher claims it (this process's own store write would never be seen), and
+    main's two-phase wait (``HermesCLI._handoff_wait``) polls it through the owner."""
+    from hermes_cli.cli_commands_session_tools import _command_arg, _cp, _t
+    platform_name = _command_arg(cmd, lower=True)
+    if not platform_name:
+        _cp(f"  {_t('handoff.usage')}", f"  {_t('handoff.usage_detail_1')}", f"  {_t('handoff.usage_detail_2')}")
+        return True
+    if getattr(cli, "_agent_running", False):
+        _cp(f"  {_t('shared.agent_busy', command='/handoff')}")
+        return True
+    queued = connection.call("handoff.request", session_id=cli.session_id, platform=platform_name) or {}
+    _cp(f"  {_t('handoff.queued', title=cli.session_id[:8], platform=platform_name, home=queued.get('home_name', ''))}",
+        f"  {_t('handoff.waiting')}")
+    kept = cli._handoff_wait(
+        platform_name, cli.session_id,
+        read_state=lambda: connection.call("handoff.state", session_id=cli.session_id),
+        fail_pending=lambda reason: connection.call("handoff.fail", session_id=cli.session_id, error=reason))
+    return True if kept else EXIT_SESSION
 
 
 _ROUTES = {"diff": _diff, "reload": _reload, "handoff": _handoff}
 # Named refusals: nothing runs, so the gateway is not told (no ``pre_command``).
-REFUSED = frozenset({"handoff"})
+REFUSED = frozenset()
 
 
 def run(cli, canonical, cmd):
-    """True when the gateway answered the command (the local handler must not run)."""
+    """Truthy when the gateway answered the command (the local handler must not run); ``EXIT_SESSION``
+    when that answer ended the CLI session."""
     route = _ROUTES.get(canonical)
     if route is None:
         return False
@@ -63,5 +84,6 @@ def run(cli, canonical, cmd):
         return route(cli, connection, (cmd or "").strip())
     except GatewayClientError as exc:
         from cli import _cprint
-        _cprint(f"  /{canonical}: {exc}")
+        # A refusal's code alone (``invalid_params``) does not say what to fix; its detail does.
+        _cprint(f"  /{canonical}: {(getattr(exc, 'data', None) or {}).get('detail') or exc}")
         return True

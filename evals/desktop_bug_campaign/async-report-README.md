@@ -6,7 +6,7 @@ process notification formatter, durable delivery and SQLite, then reads actual r
 The browser imports production hydration, runtime, SystemMessage and Desktop CSS.
 No model, scheduled job or user configuration is used.
 
-From the repository root with the normal Python and npm dependencies installed:
+From the repository root with the normal Python and pnpm dependencies installed:
 
 ```sh
 export HOME=$(mktemp -d)

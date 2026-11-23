@@ -1,13 +1,13 @@
 name: free-model-radar
 repo: https://github.com/jh4184591-lgtm/free-model-radar
-sha: ed3e43334adc8a0ad7c528d0d77390f814c1b18c
+sha: 0dce48248d2f0229ef0e0e6db5eb800b10c912fd
 subdir: ""
-description: Detect Nous free-model window drift with anonymous, keyless $0 snapshots.
+description: Detect Nous free-model window drift and recommend the newest free switch target before a window closes; anonymous, keyless, $0.
 maintainer: Joshua Harrison
 tier: community
 category: models
 requires_hermes: ">=0.22.2"
-version: "0.1.0"
+version: "0.2.0"
 docs_url: ""
 image: ""
 screenshots: []
@@ -21,6 +21,7 @@ capabilities:
   provides_tools:
     - free_model_radar_status
     - free_model_radar_track
+    - free_model_radar_recommend
   provides_hooks: []
   provides_middleware: []
   requires_env: []

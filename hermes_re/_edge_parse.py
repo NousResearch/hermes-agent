@@ -143,7 +143,7 @@ class Parser:
             member = "\\" + member
         if member.endswith("-") and not member.endswith("\\-"):
             member = member[:-1] + "\\-"
-        if member.startswith("-"):
+        if member.startswith(("-", "^")):  # a leading "^" would negate the class the member is spliced into
             member = "\\" + member
         return Node("set", start, ("neg" if negated else "pos", member))
 

@@ -75,6 +75,18 @@ def test_guards_on_bytes_patterns():
     same_everywhere(rb"\w+(?=,)", 0, [b"a,b,c", b"abc"])
 
 
+
+def test_negated_guard_class_keeps_its_literal_caret():
+    # `[^^a]` excludes a literal `^` and `a`: respelled as the class of the characters the guard
+    # lets through, the `^` must stay a member instead of negating that class.
+    subjects = ["", "x", "^x", "ax", "bx", "x^", "xa", "xb", "a^x^a", "]x-", "\\x\\"]
+    for pattern in (r"(?<![^^a])x", r"x(?![^^a])", r"(?<=[^^a])x", r"x(?=[^^a])", r"(?<![^^])x", r"x(?![^^\]-])",
+                    r"a|(?<![^^a])x", r"x(?![^^a])|y", r"(?<![\^a])x", r"(?<!\^|a)x", r"x(?!\^|[\]-])"):
+        for flags in (0, std.IGNORECASE, std.ASCII):
+            same_everywhere(pattern, flags, subjects)
+            same_everywhere(pattern.encode(), flags, [s.encode() for s in subjects])
+    assert hre.findall(r"(?<![^^a])x", "ax bx ^x") == ["x", "x"]
+
 def test_unsupported_lookarounds_raise_error_at_compile():
     for pattern in (r"a(?=b)c", r"a(?<!b)c", r"(?<=ab)c", r"(?<!a)(?<!b)x", r"x(?!ab)", r"(?=a)b", r"(?:(?<!x)a)+",
                     r"a(?!.)", r"(?<!.)x", r"((?<!a)x)?y", r"x(?!y)*", r"^(?<!a)x", r"(?<=\b)x", r"(a)\1", r"a++", r"(?>a)",

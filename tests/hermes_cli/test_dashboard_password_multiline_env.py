@@ -76,9 +76,13 @@ def test_every_other_byte_stays_with_a_bom_crlf_comments_and_blank_lines(tmp_pat
     assert stat.S_IMODE(dotenv.stat().st_mode) == 0o600
 
 
-def test_a_multiline_env_that_is_not_utf8_is_refused_before_anything_is_written(tmp_path):
+@pytest.mark.parametrize("data", [
+    b'NOTE="caf\xe9\nsecond line"\nHERMES_DASHBOARD_BASIC_AUTH_PASSWORD=old-pass\n',
+    b"NOTE=caf\xe9\n'HERMES_DASHBOARD_BASIC_AUTH_PASSWORD'=old-pass\n",
+])
+def test_a_multiline_env_that_is_not_utf8_is_refused_before_anything_is_written(tmp_path, data):
     home, env = _home(tmp_path)
-    dotenv = _write_env(home, b'NOTE="caf\xe9\nsecond line"\nHERMES_DASHBOARD_BASIC_AUTH_PASSWORD=old-pass\n')
+    dotenv = _write_env(home, data)
     before = {name: (home / name).read_bytes() for name in ("config.yaml", ".env")}
 
     result = _set_password(env)

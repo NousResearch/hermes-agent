@@ -14,7 +14,12 @@ from providers.base import ProviderProfile
 _GLM_VERSION_RE = re.compile(r"^glm-(\d+)(?:\.(\d+))?")
 # Alias spellings seen on relays (Fireworks ``glm-5p2``, ``zai-org-glm-5-2``…).
 _GLM_5_3_TOKENS = ("glm-5.3", "glm-5-3", "glm-5p3")
-_GLM_5_2_TOKENS = ("glm-5.2", "glm-5-2", "glm-5p2") + _GLM_5_3_TOKENS
+# GLM-5.4 (API-first launch 2026-11): same effort vocabulary as 5.3 (``low``..``max`` accepted,
+# ``none``/``minimal`` clamped server-side — probed live on api.z.ai), but UNLIKE 5.3 it accepts
+# ``thinking: {"type": "disabled"}`` (HTTP 200), so 5.4 must stay out of the force-enable branch.
+_GLM_5_4_TOKENS = ("glm-5.4", "glm-5-4", "glm-5p4")
+_GLM_53PLUS_TOKENS = _GLM_5_3_TOKENS + _GLM_5_4_TOKENS
+_GLM_5_2_TOKENS = ("glm-5.2", "glm-5-2", "glm-5p2") + _GLM_53PLUS_TOKENS
 
 
 def _model_supports_thinking(model: str | None) -> bool:
@@ -34,7 +39,7 @@ def _glm_5_2_reasoning_effort(reasoning_config: dict | None, *, model: str | Non
     effort = re_.requested_effort(reasoning_config)
     if effort is None or effort == "none":
         return None
-    if _has_token(model, _GLM_5_3_TOKENS):
+    if _has_token(model, _GLM_53PLUS_TOKENS):
         efforts, overrides, floor = re_.GLM53_EFFORTS, re_.GLM53_OVERRIDES, "low"
     else:
         efforts, overrides, floor = re_.GLM52_EFFORTS, re_.GLM52_OVERRIDES, "high"

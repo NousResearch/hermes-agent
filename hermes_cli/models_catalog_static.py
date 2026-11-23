@@ -239,6 +239,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = _CuratedCatalog({
         "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3.6-flash", "gemini-3.1-flash-lite-preview",
     ],
     "zai": [
+        # GLM-5.4: live on api.z.ai /v1/models (2026-11-22) before models.dev picked it up;
+        # Z.ai's Coding Plan launch tag is ``glm-5.4[1m]`` (1M window).
+        "glm-5.4",
         "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "glm-5v-turbo", "glm-5-turbo",
         "glm-4.7", "glm-4.5", "glm-4.5-flash",
     ],

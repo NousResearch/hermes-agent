@@ -335,6 +335,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     # The OpenRouter :free variant is capped; the longer key wins.
     "glm-5.3": 1_310_720, "glm-5.3-flash": 1_310_720, "glm-5.3:batch": 1_048_576, "glm-5.3:us": 1_048_576,
     "glm-5.3-flash:batch": 1_048_576, "glm-5.3-flash:us": 1_048_576, "glm-5.3-flashx": 1_048_576,
+    # GLM-5.4: Z.ai's Coding Plan launch tag is ``glm-5.4[1m]`` (1M window); API exposes a single id.
+    "glm-5.4": 1_048_576,
     "glm-5.2": 1_048_576, "glm-5.2:free": 256_000,
     "glm-5.1": 204_800, "glm-5-turbo": 202752, "glm-5v-turbo": 202752, "glm-5": 204_800,
     "glm-4.7-flash": 202752, "glm-4.7": 204_800, "glm-4.6v": 131072, "glm-4.6": 204_800, "glm": 202752,

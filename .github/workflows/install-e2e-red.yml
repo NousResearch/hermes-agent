@@ -39,7 +39,7 @@ concurrency:
 jobs:
   track:
     name: Update the install-e2e-red tracker
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule'
+    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

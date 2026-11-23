@@ -169,6 +169,7 @@ concurrency:
 jobs:
   pick-releases:
     name: Pick release tags
+    if: (github.event_name != 'schedule' || github.repository == 'NousResearch/hermes-agent')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -270,7 +271,7 @@ jobs:
   bundle-inputs:
     name: Validate pinned bundle transitions
     # Bundled legs need dispatch-only manifests; a PR never runs them.
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && (github.event_name != 'schedule' || github.repository == 'NousResearch/hermes-agent')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -384,6 +385,7 @@ jobs:
   # looks it up by that name.
   leg-player:
     name: Upload leg player
+    if: (github.event_name != 'schedule' || github.repository == 'NousResearch/hermes-agent')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -451,7 +453,7 @@ jobs:
   # the per-OS aggregates.
   report:
     name: Result chart
-    if: always()
+    if: always() && (github.event_name != 'schedule' || github.repository == 'NousResearch/hermes-agent')
     needs: [leg-player, pick-releases, linux, windows, macos, bundle-inputs, windows-bundled, macos-bundled]
     runs-on: ubuntu-latest
     timeout-minutes: 10

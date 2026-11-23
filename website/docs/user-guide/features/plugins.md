@@ -597,6 +597,14 @@ Websites need no SDK — a normal anchor works:
 MCP servers have the equivalent link form — see
 [Add to Hermes link](../../reference/mcp-config-reference.md#add-to-hermes-link).
 
+Every installed package's detail row (**Capabilities → Plugins**) carries a
+share control next to the reveal and settings actions. A package that came
+from the catalog copies its `catalog=<name>` link; a package cloned from a
+git URL copies its `repo=<url>` link — both open the dialogs above on any
+Hermes Desktop install. A folder copied in by hand has no origin to link,
+so its share control opens the catalog submission guide instead: publish the
+plugin, then share its catalog name.
+
 ### Plugin capabilities and consent
 
 Plugins can declare the privileged host surfaces they want in their

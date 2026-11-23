@@ -1,3 +1,4 @@
+import { pluginInstallShareUrl } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 
@@ -5,6 +6,7 @@ import { getToolsets, setToolsetEnabled } from '@/api/toolsets'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { CopyButton } from '@/components/ui/copy-button'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { revokeGrantsIfUninstalled } from '@/contrib/plugin-files'
@@ -15,9 +17,11 @@ import { pluginSettingsRouteHref, SETTINGS_PLUGINS_AREA } from '@/contrib/settin
 import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { DESKTOP_PLUGIN_TOOLSETS } from '@/lib/desktop-toolsets'
+import { openExternalLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
-import { CheckCircle2, FolderOpen, Loader2, Monitor, Package, RefreshCw } from '@/lib/icons'
+import { CheckCircle2, FolderOpen, Loader2, Monitor, Package, RefreshCw, Upload } from '@/lib/icons'
 import { isBrowserHostedDesktop } from '@/lib/platform'
+import { SUBMIT_MOD_URL } from '@/lib/plugin-catalog'
 import { queryClient } from '@/lib/query-client'
 import { cn } from '@/lib/utils'
 import { removeDesktopPluginHalf } from '@/store/agent-plugins'
@@ -324,6 +328,17 @@ function PackageRow({
   // package installed on a remote backend can never materialize here (#114079).
   const remoteBackend = useStore($connection)?.mode === 'remote'
 
+  // Share: a catalog package hands its curated name (the recipient's backend
+  // resolves the reviewed pin), a git package its repo. A hand-copied folder
+  // has neither origin, so its share affordance is the catalog publish flow.
+  const shareUrl = pluginInstallShareUrl({
+    catalogName: agent?.catalog_name ?? desktop?.packageOrigin?.catalogName,
+    repo: desktop?.packageOrigin?.repo
+  })
+
+  const publishable =
+    !shareUrl && (agent?.source === 'user' || (desktop?.kind === 'disk' && !desktop.packageName && !desktop.packageOrigin))
+
   // #96969: when the feature's agent-side tools live in a toolset (the
   // built-in Kanban board has no agent-plugin half), the Desktop switch flips
   // that per-profile opt-in with the panel, through the same
@@ -439,6 +454,26 @@ function PackageRow({
                 </Button>
               </Tip>
             )}
+          </span>
+          {/* Fixed slot for the share hand-off: an origin (catalog or git)
+            copies an install link any Hermes user can open; a hand-copied
+            local folder is pointed at the catalog's publish flow. Bundled
+            plugins have neither. */}
+          <span className="flex size-7 shrink-0 items-center justify-center">
+            {shareUrl ? (
+              <CopyButton appearance="icon" label={p.shareTip(pkg.name)} text={shareUrl} />
+            ) : publishable ? (
+              <Tip label={p.publishTip(pkg.name)}>
+                <Button
+                  aria-label={p.publish(pkg.name)}
+                  onClick={() => openExternalLink(SUBMIT_MOD_URL)}
+                  size="icon"
+                  variant="ghost"
+                >
+                  <Upload className="size-[0.85rem]" />
+                </Button>
+              </Tip>
+            ) : null}
           </span>
         </div>
 

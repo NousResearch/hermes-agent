@@ -29,7 +29,7 @@ export type {
 } from './billing-types'
 export { groupCatalogPlugins, PLUGIN_CATEGORIES, PLUGIN_CATEGORY_ORDER, sortCatalogPlugins } from './catalog-browse'
 export { type FeaturedCandidate, featuredPicks, isOfficialSkillSource, OFFICIAL_SKILL_SOURCES, pickFeatured } from './catalog-featured'
-export { pluginCatalogInstallUrl, skillCatalogInstallIdentifier, skillCatalogInstallUrl } from './catalog-install'
+export { pluginCatalogInstallUrl, pluginInstallShareUrl, skillCatalogInstallIdentifier, skillCatalogInstallUrl } from './catalog-install'
 export {
   driveChargeSettlement,
   SETTLEMENT_MAX_RETRY_AFTER_MS,

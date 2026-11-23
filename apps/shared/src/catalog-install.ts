@@ -33,3 +33,18 @@ export function skillCatalogInstallUrl(skill: SkillCatalogTarget): string | null
 export function pluginCatalogInstallUrl(plugin: { name: string }): string {
   return `hermes://plugin/install?${new URLSearchParams({ catalog: plugin.name })}`
 }
+
+/** The link that hands this plugin to another Hermes user: a curated catalog
+ *  name wins (the recipient's backend resolves the reviewed pin), a git
+ *  repo otherwise. A hand-copied folder has neither — nothing to link. */
+export function pluginInstallShareUrl(plugin: { catalogName?: string | null; repo?: string | null }): string | null {
+  const catalogName = plugin.catalogName?.trim()
+
+  if (catalogName) {
+    return pluginCatalogInstallUrl({ name: catalogName })
+  }
+
+  const repo = plugin.repo?.trim()
+
+  return repo ? `hermes://plugin/install?${new URLSearchParams({ repo })}` : null
+}

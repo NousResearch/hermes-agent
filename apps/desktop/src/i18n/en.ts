@@ -2187,6 +2187,10 @@ export const en: Translations = {
       deepLinkCatalogUnavailable:
         'Could not load the Hermes plugin catalog. Check your connection and open the link again.',
       settingsToggle: (name: string) => `Settings: ${name}`,
+      shareTip: (name: string) => `Copy an install link for ${name}`,
+      publish: (name: string) => `Publish ${name} to the Hermes plugin catalog`,
+      publishTip: (name: string) =>
+        `${name} was copied in by hand, so it has no install link to share. Publish it to the Hermes plugin catalog to share it.`,
       settingsForm: {
         save: 'Save settings',
         saved: (name: string) => `${name} settings saved.`,

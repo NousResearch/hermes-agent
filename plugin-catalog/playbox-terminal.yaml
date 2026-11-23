@@ -1,0 +1,30 @@
+name: playbox-terminal
+repo: https://github.com/Epistetechnician/hermes-playbox-plugin
+sha: f8de032f76e1fc7353fb23630c1fc37ddaa3d5f9
+description: 'Playbox governed microVM terminal backend (NVIDIA OpenShell / libkrun) and certified
+  RL trajectory exporter (`hermes config set terminal.backend playbox`; `hermes playbox-export`).
+  Runs every command in an isolated host-side microVM with signed expiring Biscuit grants, default
+  network=False, optional BOX-7 egress confinement, single-commit .git isolation, and stateful
+  read/delta/full sync. `hermes playbox-export` sanitizes tests/ hunks, blocks harness-hook and .git
+  tampering, and optionally verifies 5-gate hybrid PQ (Ed25519 + ML-DSA-65) bundles offline.
+  Disclosure — zero Python dependencies and no direct network calls: drives the local `playbox` CLI
+  (`playbox mcp` and optional `playbox gate verify`), reads `PLAYBOX_LINK_FILE`, optionally appends
+  metadata to `PLAYBOX_STATS`, keeps room feed telemetry opt-in (`PLAYBOX_FEED_TELEMETRY=0` by
+  default), and uses Hermes''s container sandbox approval semantics (`is_container=True`).'
+maintainer: Epistetechnician
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+version: "0.2.0"
+docs_url: https://github.com/Epistetechnician/playbox/releases/tag/v0.4.7
+readme: true
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - PLAYBOX_HOME
+    - PLAYBOX_LINK_FILE

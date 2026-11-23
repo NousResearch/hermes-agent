@@ -148,14 +148,17 @@ def test_finalize_waits_after_lease_release_and_before_cleanup(monkeypatch):
     assert order == ["flush", "finalize", "memory", "release", "linger", "review", "cleanup"]
 
 
-def test_finalize_survives_review_wait_failure(monkeypatch):
+def test_finalize_survives_review_wait_failure(monkeypatch, caplog):
+    import logging
+
     import cli as cli_mod
     import agent.background_review as br_mod
 
     order = []
+    secret = "synthetic_secret_wait_9f3e21"
 
     def _boom(*a, **k):
-        raise RuntimeError("wait exploded")
+        raise RuntimeError(f"wait exploded Bearer {secret}")
 
     monkeypatch.setattr(br_mod, "wait_for_background_review", _boom)
     monkeypatch.setattr(cli_mod, "_shutdown_agent_memory_provider", lambda a: None)
@@ -171,8 +174,13 @@ def test_finalize_survives_review_wait_failure(monkeypatch):
         def _release_active_session(self):
             order.append("release")
 
-    cli_mod._finalize_single_query(_FakeCli())
+    with caplog.at_level(logging.DEBUG):
+        cli_mod._finalize_single_query(_FakeCli())
     assert order == ["flush", "finalize", "release", "cleanup"]
+    assert "one-shot background review wait failed" in caplog.text
+    # The diagnostic carries no exception text or traceback.
+    assert secret not in caplog.text
+    assert not any(secret in logging.Formatter().format(r) for r in caplog.records)
 
 
 # ── real-process E2E: the daemon review survives a one-shot exit only with the wait ──

@@ -418,5 +418,5 @@ def _finalize_single_query(cli) -> None:
         # it still uses the MCP/aux clients that _run_cleanup tears down.
         _wait_for_oneshot_background_review(cli)
     except Exception:
-        logger.debug("one-shot background review wait failed", exc_info=True)
+        logger.debug("one-shot background review wait failed; exception details omitted")
     _run_cleanup(notify_session_finalize=False)

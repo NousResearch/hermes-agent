@@ -80,6 +80,9 @@ function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
   const place = useStore($firstTimeSplashPlace)
   const seen = useStore($firstTimeSplashSeen)
   const id = useId()
+  // The rows under the pointer or holding focus: the rest steps back then, the navigation with it.
+  const [pointerOver, setPointerOver] = useState(false)
+  const [focusWithin, setFocusWithin] = useState(false)
   const activeRowRef = useRef<HTMLButtonElement | null>(null)
 
   // The active row's button, for the spotlight's connector.
@@ -101,6 +104,10 @@ function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
       <ul
         aria-label={copy.listLabel}
         className="discovery-welcome-card discovery-welcome-places"
+        onBlur={event => setFocusWithin(event.currentTarget.contains(event.relatedTarget))}
+        onFocus={() => setFocusWithin(true)}
+        onPointerEnter={() => setPointerOver(true)}
+        onPointerLeave={() => setPointerOver(false)}
       >
         {FIRST_TIME_PLACES.map(row => {
           const active = row === place
@@ -158,7 +165,7 @@ function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
           {copy.style.action}
         </Button>
       </div>
-      {place && <NavSpotlight anchor={activeRowRef} key={place} spot={place} />}
+      {place && <NavSpotlight anchor={activeRowRef} dim={pointerOver || focusWithin} key={place} spot={place} />}
     </>
   )
 }

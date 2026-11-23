@@ -1140,6 +1140,19 @@
   stroke-width: 1.5;
 }
 
+/* While a row is under the pointer or holds focus, the navigation steps back around the place it
+   points at, as the rest of the splash steps back around the row: the canvas laid over the rail and
+   the sidebar at what --portal-backdrop-opacity leaves, with the place cut out. */
+:root[data-shell='portal'] .discovery-spotlight-veil {
+  fill: var(--portal-surface-canvas);
+  fill-opacity: 0;
+  stroke: none;
+}
+
+:root[data-shell='portal'] .discovery-spotlight[data-dim] .discovery-spotlight-veil {
+  fill-opacity: calc(1 - var(--portal-backdrop-opacity));
+}
+
 /* Placed from the viewport's own origin by the measured box (nav-spotlight.tsx), so physical, not
    logical: a right-to-left page measures the same physical boxes. */
 :root[data-shell='portal'] .discovery-spotlight-ring {

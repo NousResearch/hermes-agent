@@ -198,7 +198,14 @@ export function SplashSurface<Id extends string>({
         <div className="discovery-welcome-actions">{actions}</div>
         <p className="discovery-welcome-footnote">{footnote}</p>
       </div>
-      {active?.spot && <NavSpotlight anchor={activeRowRef} key={active.id} spot={active.spot} />}
+      {active?.spot && (
+        <NavSpotlight
+          anchor={activeRowRef}
+          dim={hovered !== null || focused !== null}
+          key={active.id}
+          spot={active.spot}
+        />
+      )}
     </section>
   )
 }

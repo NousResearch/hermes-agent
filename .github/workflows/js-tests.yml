@@ -38,7 +38,10 @@ jobs:
 
       - name: Install zsh and a virtual display for Electron
         if: runner.os == 'Linux'
+        # Refresh the package index first, like every other apt step here: a
+        # runner image without a populated list can't resolve zsh/libnotify4.
         run: |
+          sudo apt-get update -qq
           sudo apt-get install -y zsh xvfb \
             libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
             xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
@@ -110,9 +113,9 @@ jobs:
       - name: Install WhatsApp bridge dependencies
         uses: ./.github/actions/retry
         with:
-          command: npm ci --ignore-scripts --no-audit --no-fund --prefix scripts/whatsapp-bridge
+          command: just js-install-whatsapp-bridge
       - name: Run WhatsApp bridge node tests
-        run: node --test scripts/whatsapp-bridge/*.test.mjs
+        run: just test-whatsapp-bridge
 
       # Every check runs at the same time. The step fails only after all of
       # them finish. There are two reasons this is not ``pnpm -r run check``.

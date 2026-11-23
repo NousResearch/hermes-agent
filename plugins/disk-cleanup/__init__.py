@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
+from hermes_constants import named_profile_home, named_profile_is_live
+
 from . import disk_cleanup as dg
 
 logger = logging.getLogger(__name__)
@@ -99,7 +101,7 @@ def _on_post_tool_call(tool_name: str = "", args: Optional[dict[str, Any]] = Non
     """Auto-track ephemeral files THIS call created: a path from the call's final arguments that
     this call's own pre-call snapshot saw absent and that exists now. Paths seen only in terminal
     OUTPUT (a `find` or `ls` listing), or absent from the snapshot, carry no such proof and are
-    never tracked. Best-effort, never raises."""
+    never tracked. Best-effort; the hook dispatcher isolates errors."""
     extractor = _PATH_EXTRACTORS.get(tool_name)
     if not isinstance(args, dict) or extractor is None or not tool_call_id:
         return
@@ -225,7 +227,14 @@ def _handle_slash(raw_args: str) -> Optional[str]:
     handler = _SUBCOMMANDS.get(argv[0])
     if handler is None:
         return f"Unknown subcommand: {argv[0]}\n\n{_HELP_TEXT}"
-    return handler(argv)
+    try:
+        return handler(argv)
+    except FileNotFoundError as exc:
+        # A session still bound to a deleted/renamed profile: the state boundary refused to recreate it.
+        home = named_profile_home(dg.get_hermes_home())
+        if home is None or named_profile_is_live(home):
+            raise
+        return f"Profile '{home.name}' no longer exists; disk-cleanup stopped (files it already removed stay removed). {exc}"
 
 
 def register(ctx) -> None:

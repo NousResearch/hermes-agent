@@ -122,6 +122,8 @@ export const arSettings = {
       mcp: 'MCP',
       archivedChats: 'المحادثات المؤرشفة',
       sessions: 'الجلسات',
+      backup: 'النسخ الاحتياطي والنقل',
+      backupOnly: 'النسخ الاحتياطي',
       about: 'حول',
       notifications: 'الإشعارات',
       keybinds: 'اختصارات لوحة المفاتيح',
@@ -605,7 +607,10 @@ export const arSettings = {
       invalidJson: 'JSON غير صالح',
       voiceShortcutHintTitle: 'اختصار تسجيل الصوت',
       voiceShortcutHintDesc:
-        'اضبط اختصار تسجيل الصوت من الإعدادات ← اختصارات لوحة المفاتيح («بدء / إيقاف المحادثة الصوتية»). قيمة voice.record_key مخصصة لـ CLI وTUI فقط.'
+        'اضبط اختصار تسجيل الصوت من الإعدادات ← اختصارات لوحة المفاتيح («بدء / إيقاف المحادثة الصوتية»). قيمة voice.record_key مخصصة لـ CLI وTUI فقط.',
+      desktopReadAloudTitle: 'قراءة الردود صوتياً في هذا التطبيق',
+      desktopReadAloudDesc:
+        'ينطق كل رد مكتمل في Desktop. هو نفس مفتاح زر حقل الكتابة؛ ينطبق على كل النوافذ المفتوحة، وإيقافه يوقف الرد أثناء قراءته. خيار «قراءة الردود صوتياً» أدناه مخصص للمراسلة وCLI.'
     },
     hudModifier: {
       title: 'استدعاء HUD بضغطة',

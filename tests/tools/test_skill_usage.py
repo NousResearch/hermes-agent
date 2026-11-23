@@ -642,6 +642,8 @@ def test_is_locked_is_strict_on_a_corrupt_sidecar(skills_home):
     with pytest.raises(ValueError):  # json.JSONDecodeError; load_usage() would return {} here
         mod.is_locked("anything")
     assert mod.locked_skill_names() == []  # the listing stays best-effort
+    with pytest.raises(ValueError):  # ...while the guards' read refuses to guess
+        mod.locked_skill_names(strict=True)
 
 
 def test_is_locked_ignores_malformed_records_but_never_relaxes_a_truthy_flag(skills_home):

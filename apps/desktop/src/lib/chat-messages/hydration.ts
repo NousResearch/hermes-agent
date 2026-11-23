@@ -278,6 +278,12 @@ function timelineDisplayText(metadata: SessionMessage['display_metadata']): stri
   return typeof text === 'string' && text.trim() ? text : undefined
 }
 
+function promptSubmission(message: SessionMessage): Pick<ChatMessage, 'submissionId'> {
+  const id = message.role === 'user' ? parseDisplayMetadata(message.display_metadata)?.submission_id : undefined
+
+  return typeof id === 'string' && id ? { submissionId: id } : {}
+}
+
 function messageInterrupted(metadata: SessionMessage['display_metadata']): boolean {
   return parseDisplayMetadata(metadata)?.interrupted === true
 }
@@ -436,6 +442,52 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     return timestamps.length ? Math.min(...timestamps) : undefined
   }
 
+  // A stopped mark says the reply ended there. When the same reply goes on with no visible
+  // row between (a host plugin paused the turn to apply a grant and continued it with a hidden
+  // prompt), it was not stopped for the reader: the mark comes off. A visible user or system
+  // row (the user writing next, the "resumed interrupted turn" notice) keeps it.
+  let stoppedBubble: ChatMessage | null = null
+
+  /** `bubble` takes output that continues the reply, so a stopped bubble before it did not end there. */
+  const wentOn = (bubble: ChatMessage) => {
+    if (stoppedBubble) {
+      delete stoppedBubble.interrupted
+    }
+
+    stoppedBubble = bubble.interrupted ? bubble : null
+  }
+
+  /** A row drawn on its own: assistant output goes on with the reply, anything else stands between. */
+  const drawnRow = (bubble: ChatMessage) => {
+    if (bubble.role === 'assistant') {
+      wentOn(bubble)
+    } else {
+      stoppedBubble = null
+    }
+  }
+
+  /** A row that draws nothing stands between only when the reader would have seen it. */
+  const emptyRow = (message: SessionMessage) => {
+    if (message.display_kind !== 'hidden') {
+      stoppedBubble = null
+    }
+  }
+
+  /** The row goes on with the tool bubble; a stopped reply folded in brings its own mark. */
+  const foldContinuing = (
+    bubble: ChatMessage,
+    message: SessionMessage,
+    parts: ChatMessagePart[],
+    durableComplete: boolean | undefined
+  ) => {
+    wentOn(bubble)
+    foldIntoToolBubble(bubble, message, parts, durableComplete)
+
+    if (bubble.interrupted) {
+      stoppedBubble = bubble
+    }
+  }
+
   const appendPartsToActiveAssistant = (parts: ChatMessagePart[], timestamp?: number): boolean => {
     if (activeAssistantIndex === null) {
       return false
@@ -449,6 +501,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       return false
     }
 
+    wentOn(active)
     active.parts = [...active.parts, ...parts]
     active.durableComplete = false
     active.timestamp = earliestTimestamp(active.timestamp, timestamp, ...parts.map(part => part.timestamp))
@@ -472,6 +525,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         timestamp: pendingToolTimestamp
       })
       activeAssistantIndex = result.length - 1
+      wentOn(result[activeAssistantIndex])
     }
 
     clearPendingTools()
@@ -490,6 +544,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     if (bubble?.role === 'assistant') {
       bubble.interrupted = true
+      stoppedBubble = bubble
     }
   }
 
@@ -620,6 +675,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       } else {
         flushPendingTools(index)
         activeAssistantIndex = null
+        emptyRow(message)
       }
 
       return
@@ -659,7 +715,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       const activeHasToolCall = Boolean(activeAssistant?.parts.some(part => part.type === 'tool-call'))
 
       if (activeAssistant && (currentHasToolCall || activeHasToolCall)) {
-        foldIntoToolBubble(activeAssistant, message, parts, durableComplete)
+        foldContinuing(activeAssistant, message, parts, durableComplete)
         activeAssistant.timestamp = earliestTimestamp(
           activeAssistant.timestamp,
           message.timestamp,
@@ -706,6 +762,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
+      ...promptSubmission(message),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
       ...(reactions.length ? { reactions } : {}),
       ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),
@@ -714,6 +771,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     })
 
     activeAssistantIndex = message.role === 'assistant' ? result.length - 1 : null
+    drawnRow(result[result.length - 1])
   })
   flushPendingTools(messages.length)
 

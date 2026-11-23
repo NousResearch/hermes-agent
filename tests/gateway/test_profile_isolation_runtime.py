@@ -157,14 +157,14 @@ class TestGatewayHooksDirResolution:
 
 
 class TestCheckpointManagerPathResolution:
-    """tools/checkpoint_manager.py's checkpoint store root must honor the
+    """agent/checkpoints/manager.py's checkpoint store root must honor the
     active profile — otherwise one profile's CheckpointManager instance can
     read/write code-edit checkpoints into a different profile's store under
     the multiplexed gateway."""
 
     def test_checkpoint_base_follows_override(self, two_profiles):
         prof_a, prof_b = two_profiles
-        import tools.checkpoint_manager as cm
+        import agent.checkpoints.manager as cm
 
         a_seen = _under_override(prof_a, lambda: cm._resolve_checkpoint_base())
         b_seen = _under_override(prof_b, lambda: cm._resolve_checkpoint_base())
@@ -175,7 +175,7 @@ class TestCheckpointManagerPathResolution:
 
     def test_store_path_follows_override(self, two_profiles):
         _prof_a, prof_b = two_profiles
-        import tools.checkpoint_manager as cm
+        import agent.checkpoints.manager as cm
 
         b_seen = _under_override(prof_b, lambda: cm._store_path())
         assert b_seen == prof_b / "checkpoints" / "store"

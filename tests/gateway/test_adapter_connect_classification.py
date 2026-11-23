@@ -327,7 +327,6 @@ def _make_runner():
     runner.delivery_router = MagicMock()
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner.session_store = MagicMock()
     return runner
 

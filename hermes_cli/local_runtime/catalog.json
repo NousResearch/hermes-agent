@@ -36,6 +36,12 @@
         "top-k": "20",
         "min-p": "0.0"
       },
+      "reasoning_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "quality": 90,
       "decode_fraction": 1.0,
       "draft": {
@@ -98,6 +104,12 @@
         "local": "mtp-Qwen3.8-Flash-Next-ggml-org-Q8_0.gguf"
       },
       "min_engine": "b11370",
+      "reasoning_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "quality": 95,
       "decode_fraction": 0.08
     },

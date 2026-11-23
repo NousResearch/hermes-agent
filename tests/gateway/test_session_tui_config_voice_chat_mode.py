@@ -8,7 +8,7 @@ engine id ``<plugin>:<engine>``) and refuse anything else without touching the c
 import pytest
 
 from gateway.session_tui_config import _set_profile_leaf
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 @pytest.mark.parametrize(("value", "stored"), [
@@ -26,6 +26,6 @@ def test_engine_values_land_in_the_voice_section(value, stored):
 @pytest.mark.parametrize("value", ["loud", "", None, "hermes-xai:", "a:b:c", "x y:z"])
 def test_other_values_are_refused_and_leave_the_config_alone(value):
     cfg = {"voice": {"voice_chat_mode": "chained"}}
-    with pytest.raises(RuntimeStoreError):
+    with pytest.raises(AuthorityRefusal):
         _set_profile_leaf(cfg, "voice.voice_chat_mode", value)
     assert cfg == {"voice": {"voice_chat_mode": "chained"}}

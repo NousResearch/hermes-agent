@@ -577,7 +577,7 @@ class TestPatchReplacePostWriteVerification:
 
         def side_effect(command, **kwargs):
             # the byte-exact read (base64 over the transport) — both the initial read and the verify read
-            if "base64 < " in command:
+            if "base64" in command and "wc -c <" in command:
                 for path, contents in file_contents.items():
                     if path in command:
                         return {"output": _fenced_base64_reply(command, contents.encode()),
@@ -616,7 +616,7 @@ class TestPatchReplacePostWriteVerification:
             if stdin_data is not None:  # write (atomic temp-file + mv script)
                 state["content"] = stdin_data
                 return {"output": "", "returncode": 0}
-            if "base64 < " in command:  # byte-exact read
+            if "base64" in command and "wc -c <" in command:  # byte-exact read
                 call_count["read"] += 1
                 # First read (initial fetch) succeeds; second read (verify) fails
                 if call_count["read"] == 1:

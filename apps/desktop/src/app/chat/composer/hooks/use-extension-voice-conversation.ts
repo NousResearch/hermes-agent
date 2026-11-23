@@ -1,3 +1,4 @@
+import { atom, type WritableAtom } from 'nanostores'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
@@ -91,7 +92,12 @@ export function useExtensionVoiceConversation({
   const voiceCopy = t.notifications.voice
   const [status, setStatus] = useState<ConversationStatus>('idle')
   const [muted, setMuted] = useState(false)
-  const [level, setLevel] = useState(0)
+  // Same level-store contract as the built-in engines: the meter stays out of the composer's render path.
+  // Lazily initialized in the ref so a render never allocates a throwaway atom.
+  const levelStoreRef = useRef<WritableAtom<number> | null>(null)
+  levelStoreRef.current ??= atom(0)
+
+  const levelStore = levelStoreRef.current
   const sessionRef = useRef<LiveVoiceEngineSession | null>(null)
   const callRef = useRef<null | symbol>(null)
   const startEpochRef = useRef(0)
@@ -201,10 +207,10 @@ export function useExtensionVoiceConversation({
 
     callRef.current = null
     setMuted(false)
-    setLevel(0)
+    levelStore.set(0)
     setStatus('idle')
     await session?.stop().catch(() => undefined)
-  }, [settleWaiter])
+  }, [levelStore, settleWaiter])
 
   const stopByVoice = useCallback(() => {
     void end()
@@ -426,7 +432,7 @@ export function useExtensionVoiceConversation({
           }
 
           speakingRef.current = speaking
-          setLevel(speaking ? 0.6 : 0)
+          levelStore.set(speaking ? 0.6 : 0)
           refreshStatus()
         },
         // A bare "stop" is judged on the user's caption once the utterance
@@ -490,7 +496,7 @@ export function useExtensionVoiceConversation({
     sessionRef.current = session
     setMuted(false)
     refreshStatus()
-  }, [delegate, end, refreshStatus, stopByVoice, t, voiceCopy])
+  }, [delegate, end, levelStore, refreshStatus, stopByVoice, t, voiceCopy])
 
   const toggleMute = useCallback(() => {
     setMuted(value => {
@@ -519,5 +525,5 @@ export function useExtensionVoiceConversation({
 
   useEffect(() => () => void end(), [end])
 
-  return { end, level, muted, start, status, stopTurn, toggleMute }
+  return { end, levelStore, muted, start, status, stopTurn, toggleMute }
 }

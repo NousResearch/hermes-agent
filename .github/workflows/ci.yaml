@@ -102,6 +102,8 @@ jobs:
           sparse-checkout: |
             .github/actions/detect-changes
             scripts/ci/classify_changes.py
+            hermes_agent/__init__.py
+            hermes_agent/compat/
           sparse-checkout-cone-mode: false
       - name: Detect affected areas
         id: classify
@@ -382,12 +384,22 @@ jobs:
         # Shared with the stable orchestrator (scripts/ci/required_results.py
         # is imported there). NEEDS is the toJSON(needs) context; RELEASE
         # switches the gate into strict mode for release runs.
+        # --allow-superseded (PR runs only): GitHub sometimes delivers one push
+        # as two pull_request runs; the per-PR concurrency group cancels the
+        # older copy. Its gate passes only when it failed solely on cancelled
+        # jobs AND the API shows a later-started live/successful run of this
+        # workflow on the same head SHA, branch and head repository, whose gate
+        # is the real verdict. Only a first executed attempt delegates, and only
+        # forward, so no cycles.
         env:
           NEEDS: ${{ toJSON(needs) }}
           RELEASE: ${{ inputs.release }}
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           args=()
-          if [ "$RELEASE" = true ]; then args+=(--release); fi
+          if [ "$RELEASE" = true ]; then args+=(--release);
+          elif [ "$EVENT_NAME" = pull_request ]; then args+=(--allow-superseded); fi
           printf '%s' "$NEEDS" | python3 scripts/ci/required_results.py "${args[@]}"
 
       # ───────────────────────────────────────────────────────────────────

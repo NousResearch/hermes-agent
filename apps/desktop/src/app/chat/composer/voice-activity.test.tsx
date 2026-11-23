@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
@@ -11,7 +12,7 @@ describe('VoiceActivity accessibility', () => {
   it('keeps the dictation timer visible without announcing every tick', () => {
     render(
       <I18nProvider configClient={null} initialLocale="en">
-        <VoiceActivity state={{ elapsedSeconds: 65, level: 0.5, status: 'recording' }} />
+        <VoiceActivity state={{ elapsedSeconds: 65, levelStore: atom(0.5), status: 'recording' }} />
       </I18nProvider>
     )
 

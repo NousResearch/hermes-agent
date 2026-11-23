@@ -4,6 +4,7 @@ from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
+from tests.fixtures.storage_read import transcript_rows
 
 
 def test_kanban_submission_enters_single_query_approval_context(tmp_path, monkeypatch):
@@ -12,6 +13,7 @@ def test_kanban_submission_enters_single_query_approval_context(tmp_path, monkey
     from gateway.session_kanban import run_task
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
+    from persistence_assembly import profile_scope
     from tools.approval_context import _is_single_query_approval_context
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -53,7 +55,8 @@ def test_kanban_submission_enters_single_query_approval_context(tmp_path, monkey
         pass
 
     authority = SimpleNamespace(profile_id=str(tmp_path), submit=submit,
-                                db=SimpleNamespace(get_session=lambda sid: None, db_path=str(tmp_path / 'state.db')))
+                                persistence=SimpleNamespace(scope=profile_scope(home=tmp_path),
+                                                            sessions=SimpleNamespace(get=lambda sid: None)))
     actor = SessionActor('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
     connection = SimpleNamespace(authority=authority, actor=actor, native_owner=True, resume=resume)
     params = dict(board='owned', task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
@@ -112,11 +115,11 @@ _CONFIG = {'model': {'default': 'loop-model', 'provider': 'custom'}, 'platform_t
 
 @pytest.mark.parametrize('mode', ['deny', 'approve'])
 def test_durable_kanban_admission_preserves_headless_policy_in_worker(kanban_owner, mode):
+    from gateway.session_authority import admission_row
     from gateway.session_contract import SessionRef
     from gateway.session_kanban import run_task
     from gateway.session_managed_worker import _bootstrap, worker_turn_scope
     from gateway.session_policy import policy_for_source
-    from hermes_state_runtime import list_session_admissions
     from tools.approval import request_tool_approval
     from tools.approval_context import _is_single_query_approval_context
 
@@ -129,11 +132,11 @@ def test_durable_kanban_admission_preserves_headless_policy_in_worker(kanban_own
             retry = await run_task(owner.connection, owner.params)
             assert retry == first
             sid = first['session_id']
-            rows = list_session_admissions(authority.db, session_id=sid)
+            rows = authority.persistence.admissions.list(session_id=sid)
             assert len(rows) == 1
             policy = policy_for_source(owner.runner, authority.sessions[sid].source)
             assert policy.source == 'kanban'
-            frame = _bootstrap(authority, SessionRef(authority.profile_id, sid), rows[0], policy,
+            frame = _bootstrap(authority, SessionRef(authority.profile_id, sid), admission_row(rows[0]), policy,
                                {'execution_id': 'probe'})
             with worker_turn_scope(frame):
                 assert _is_single_query_approval_context(), 'persisted card must reach worker as single-query'
@@ -152,32 +155,34 @@ def test_retry_of_pre_finite_kanban_admission_returns_original_receipt(kanban_ow
     """An attempt admitted before cards were finite keeps its committed payload on retry: the
     upgraded run_task must return the original receipt, not admission_conflict. The retry reads
     that payload by its exact admission key, never by listing the session's admissions."""
-    import hermes_state_runtime
     from gateway.session_kanban import run_task
-    from hermes_state_runtime import list_session_admissions
 
     owner = kanban_owner(_CONFIG)
     authority = owner.authority
     real_submit = authority.submit
+    admissions = authority.persistence.admissions
+    list_admissions = admissions.list
 
     async def pre_finite_submit(actor, submission, **kwargs):
         # The payload run_task committed before this change: no finite flag (and no card marker).
         payload = {k: v for k, v in submission.payload.items() if k != 'finite'}
         return await real_submit(actor, type(submission)(submission.request_id, submission.ref, payload, submission.intent))
 
-    def no_listing(*args, **kwargs):
-        raise AssertionError('retry must use the exact-key admission lookup')
+    def no_listing(*args, pending_only=True, **kwargs):
+        if not pending_only:  # the whole-session listing a scan for the retried row reads
+            raise AssertionError('retry must use the exact-key admission lookup')
+        return list_admissions(*args, pending_only=pending_only, **kwargs)
 
     async def scenario():
         try:
             monkeypatch.setattr(authority, 'submit', pre_finite_submit)
             first = await run_task(owner.connection, owner.params)
             monkeypatch.setattr(authority, 'submit', real_submit)
-            monkeypatch.setattr(hermes_state_runtime, 'list_session_admissions', no_listing)
+            monkeypatch.setattr(admissions, 'list', no_listing)
             retry = await run_task(owner.connection, owner.params)
             assert retry == first
-            rows = list_session_admissions(authority.db, session_id=first['session_id'], pending_only=False)
-            assert len(rows) == 1 and 'finite' not in rows[0]['payload']
+            rows = list_admissions(session_id=first['session_id'], pending_only=False)
+            assert len(rows) == 1 and 'finite' not in rows[0].payload
         finally:
             await owner.close()
 
@@ -188,20 +193,19 @@ def test_admission_lookup_matches_only_the_exact_durable_key(kanban_owner):
     """The shared lookup is the UNIQUE (principal, target, request) key: it returns the same row
     the session listing holds, and nothing for another principal, target or request id."""
     from gateway.session_kanban import run_task
-    from hermes_state_runtime import find_session_admission, list_session_admissions
 
     owner = kanban_owner(_CONFIG)
-    db, principal = owner.authority.db, owner.connection.actor.subject
+    admissions, principal = owner.authority.persistence.admissions, owner.connection.actor.subject
 
     async def scenario():
         try:
             sid = (await run_task(owner.connection, owner.params))['session_id']
-            [listed] = list_session_admissions(db, session_id=sid, pending_only=False)
-            key = dict(principal_id=principal, session_id=sid, request_id=listed['request_id'])
-            assert find_session_admission(db, **key) == listed
+            [listed] = admissions.list(session_id=sid, pending_only=False)
+            key = dict(principal_id=principal, session_id=sid, request_id=listed.request_id)
+            assert admissions.find(**key) == listed
             for wrong in ({'principal_id': 'someone-else'}, {'session_id': 'other-session'},
                           {'request_id': 'kanban:other'}):
-                assert find_session_admission(db, **{**key, **wrong}) is None
+                assert admissions.find(**{**key, **wrong}) is None
         finally:
             await owner.close()
 
@@ -211,16 +215,15 @@ def test_admission_lookup_matches_only_the_exact_durable_key(kanban_owner):
 def _lose_across_restart(authority, sid):
     """Claim the card's admission under this owner, then a new owner epoch boots on the same store
     and runs the real boot recovery (fence ``unknown``, then settle the unattended ones)."""
+    from gateway.session_persistence import authority_persistence
     from gateway.session_unattended_unknown import settle_recovered_unattended
-    from hermes_state_runtime import (begin_runtime_epoch, claim_session_input, list_session_admissions,
-                                      recover_session_inputs)
-    db = authority.db
-    claimed = claim_session_input(db, epoch=authority.epoch, session_id=sid)
-    assert claimed and claimed['status'] == 'started'
-    epoch = begin_runtime_epoch(db, instance_id='owner-2')
-    assert recover_session_inputs(db, epoch=epoch) == 1
-    settle_recovered_unattended(db, epoch)
-    [row] = list_session_admissions(db, session_id=sid, pending_only=False)
+    store = authority.persistence
+    claimed = store.admissions.claim(epoch=authority.epoch, session_id=sid)
+    assert claimed and claimed.status == 'started'
+    epoch = store.runtime.begin_epoch(instance_id='owner-2')
+    assert store.admissions.recover(epoch=epoch) == 1
+    settle_recovered_unattended(authority_persistence(authority), epoch)
+    [row] = store.admissions.list(session_id=sid, pending_only=False)
     return row
 
 
@@ -235,8 +238,8 @@ def test_kanban_card_fenced_unknown_across_owner_epochs_settles_interrupted(kanb
         try:
             sid = (await run_task(owner.connection, owner.params))['session_id']
             row = _lose_across_restart(owner.authority, sid)
-            assert (row['status'], row['outcome']) == ('terminal', 'interrupted'), row
-            notices = [m['content'] for m in owner.authority.db.get_messages(sid)
+            assert (row.status, row.outcome) == ('terminal', 'interrupted'), row
+            notices = [m['content'] for m in transcript_rows(owner.authority.persistence, sid)
                        if m.get('display_kind') == 'failed_turn']
             assert notices and 'automat' in notices[0].lower(), notices
         finally:
@@ -265,7 +268,7 @@ def test_card_admitted_before_the_marker_keeps_pausing_and_retries_cleanly(kanba
             monkeypatch.setattr(authority, 'submit', real_submit)
             assert await run_task(owner.connection, owner.params) == first
             row = _lose_across_restart(authority, first['session_id'])
-            assert row['status'] == 'unknown', row
+            assert row.status == 'unknown', row
         finally:
             await owner.close()
 
@@ -277,7 +280,7 @@ def test_a_client_cannot_mint_the_kanban_card_marker(kanban_owner):
     authority's public payload both refuse it, so a person's turn can't opt out of the pause."""
     from gateway.session_contract import Submission
     from gateway.session_kanban import run_task
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     owner = kanban_owner(_CONFIG)
     authority = owner.authority
@@ -288,10 +291,10 @@ def test_a_client_cannot_mint_the_kanban_card_marker(kanban_owner):
             from gateway.session_contract import SessionRef
             ref = SessionRef(authority.profile_id, sid)
             forged = {'text': 'x', 'kanban_card_v1': {'task_id': owner.params['task_id'], 'run_id': owner.params['run_id']}}
-            with pytest.raises(RuntimeStoreError) as refused:
+            with pytest.raises(AuthorityRefusal) as refused:
                 await authority.submit(owner.connection.actor, Submission('forged', ref, forged, 'queue'))
             assert refused.value.reason == 'invalid_params'
-            with pytest.raises(RuntimeStoreError) as refused:
+            with pytest.raises(AuthorityRefusal) as refused:
                 owner.connection.subscriptions[sid] = object()
                 owner.connection.submission(ref, {'session_id': sid, 'submission_id': 'f2', **forged})
             assert refused.value.reason == 'invalid_params'

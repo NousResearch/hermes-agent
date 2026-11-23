@@ -62,7 +62,8 @@ def _wire_pm(monkeypatch, *, current=False, error=None):
     calls = []
     monkeypatch.setattr(pm, "venv_is_current", lambda *, project_root: current)
 
-    def sync(*, explicit, project_root, evict_incompatible_plugins):
+    # A tree without PM facts also carries its old venv's extras (the first sync).
+    def sync(extras=None, *, explicit, project_root, evict_incompatible_plugins, **carried):
         assert evict_incompatible_plugins, "an update sync must disable misfit plugins, not fail"
         calls.append((project_root, explicit))
         if error:

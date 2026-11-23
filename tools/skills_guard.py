@@ -282,8 +282,9 @@ _PUBLIC_SOLANA_PROGRAM_IDS = frozenset((
 # fragment holding NO scheme-anchored loopback URL (`https?://(?:localhost|127\.0\.0\.1|\[::1\])`), as that
 # URL's prefix automaton. `h` opens a candidate URL; it breaks on a new `h` (_LB_RESTART), breaks on any other
 # unexpected character (_LB_BREAK), or is still an incomplete prefix where the fragment ends (_LB_OPEN).
-# `://localh` + `t` is the prefix `ht` again (_LB_RELOOP). Machine-generated: do not edit by hand; after
-# changing a host, regenerate and re-run the differential check against the lookahead spelling.
+# `://localh` + `t` is the prefix `ht` again (_LB_RELOOP). After any edit (a host added or changed),
+# tests/tools/test_skills_guard_loopback_exemption.py compares every env_exfil_* rule with its lookahead
+# original on a generated corpus (add the new host's prefixes to its tokens): it must flag exactly the same lines.
 _LB_RELOOP = r'(?:tps?://localht)*'
 _LB_RESTART = (r'(?:h|t' + _LB_RELOOP +
                r'(?:t(?:ps?(?::(?:/(?:/(?:l(?:o(?:c(?:a(?:lh(?:o(?:sh|h)|h)|h)|h)|h)|h)|1(?:2(?:7(?:\.(?:0(?:\.(?:0(?'

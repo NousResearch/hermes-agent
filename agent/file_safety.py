@@ -97,6 +97,8 @@ def deny_path_under(resolved: str | Path, base: str | Path) -> bool:
 
 
 _PSEUDO_FILESYSTEM_WRITE_ROOTS = ("/dev", "/proc", "/sys")
+# Ordinary tmpfs scratch under /dev that programs legitimately write files into.
+_DEV_SCRATCH_ROOT = "/dev/shm"
 
 
 def is_pseudo_filesystem_write_path(path: str) -> bool:
@@ -104,11 +106,12 @@ def is_pseudo_filesystem_write_path(path: str) -> bool:
     raw = str(path)
     if not raw.startswith("/"):
         return False
-    normalized = deny_key("/" + posixpath.normpath(raw).lstrip("/"))
-    return any(
-        normalized == deny_key(root) or normalized.startswith(deny_key(root) + "/")
-        for root in _PSEUDO_FILESYSTEM_WRITE_ROOTS
-    )
+    normalized = "/" + posixpath.normpath(raw).lstrip("/")
+    # The exemption compares exactly: deny_key folds case, which may widen a deny list, never an exemption.
+    if normalized == _DEV_SCRATCH_ROOT or normalized.startswith(_DEV_SCRATCH_ROOT + "/"):
+        return False
+    key = deny_key(normalized)
+    return any(key == deny_key(root) or key.startswith(deny_key(root) + "/") for root in _PSEUDO_FILESYSTEM_WRITE_ROOTS)
 
 
 def _is_under(resolved: str | Path, base: str | Path) -> bool:

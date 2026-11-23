@@ -1162,6 +1162,7 @@ def test_config_hard_block_follows_file_identity_not_spelling(tmp_path):
     assert err is not None and "Refusing to write to Hermes config file" in err
     assert other is None
 
+
 class TestPseudoFilesystemWriteGuard:
     """Regression for #156063: refuse mutating device and kernel paths before I/O."""
 
@@ -1193,6 +1194,8 @@ class TestPseudoFilesystemWriteGuard:
 
         alias = tmp_path / "device-alias"
         alias.symlink_to("/dev/null")
+        dev_dir = tmp_path / "devdir"  # `mv x devdir` moves INTO /dev
+        dev_dir.symlink_to("/dev")
         ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
 
         def no_io(*args, **kwargs):
@@ -1208,7 +1211,41 @@ class TestPseudoFilesystemWriteGuard:
             lambda: ops.delete_file(str(alias)),
             lambda: ops.move_file(str(alias), safe),
             lambda: ops.move_file(safe, str(alias)),
+            lambda: ops.move_file(safe, str(dev_dir)),
         )
         for action in actions:
             result = action()
             assert "device or kernel pseudo-filesystem" in (result.error or "")
+
+    @pytest.mark.platforms("posix")
+    def test_dev_shm_stays_writable(self):
+        from tools.file_tools_write_guards import _check_sensitive_path
+
+        path = "/dev/shm/hermes-scratch.txt"
+        assert _check_sensitive_path(path) is None
+        assert not _is_write_denied(path)
+
+    @pytest.mark.platforms("linux")
+    def test_a_link_in_dev_shm_to_a_device_is_still_refused(self):
+        """The exemption covers files in /dev/shm, not what a link there points at."""
+        import shutil
+        import tempfile
+
+        from tools.file_tools_write_guards import _check_sensitive_path
+
+        if not os.access("/dev/shm", os.W_OK):
+            pytest.skip("/dev/shm is not writable here")
+        scratch = tempfile.mkdtemp(dir="/dev/shm")
+        try:
+            os.symlink("/dev/null", os.path.join(scratch, "nl"))
+            os.symlink("/dev/pts", os.path.join(scratch, "pts"))
+            for path in (os.path.join(scratch, "nl"), os.path.join(scratch, "pts", "..", "null")):
+                assert _is_write_denied(path)
+                assert "device or kernel pseudo-filesystem" in (_check_sensitive_path(path) or "")
+        finally:
+            shutil.rmtree(scratch)
+
+    @pytest.mark.platforms("posix")
+    @pytest.mark.parametrize("path", ("/dev/shmx", "/dev/shm/../null", "//dev/shm/../../dev/sda", "/dev/mqueue/q"))
+    def test_the_dev_shm_exemption_covers_nothing_else(self, path):
+        assert _is_write_denied(path)

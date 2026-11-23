@@ -234,7 +234,7 @@ def notify_task_updated(
 # DispatchResult counters whose non-zero value means the tick did something.
 _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "reaped_terminal_workers", "crashed", "stale",
-    "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
+    "timed_out", "auto_blocked", "rate_limited", "infrastructure_failed", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
     "skipped_nonspawnable",
 )
@@ -297,7 +297,6 @@ def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Explicit ``ttl_seconds`` > ``HERMES_KANBAN_CLAIM_TTL_SECONDS`` > default."""
     if ttl_seconds is not None:
         return max(1, int(ttl_seconds))
-
     return _env_int("HERMES_KANBAN_CLAIM_TTL_SECONDS", DEFAULT_CLAIM_TTL_SECONDS, minimum=1)
 
 
@@ -308,6 +307,9 @@ DEFAULT_CRASH_GRACE_SECONDS = 30
 # Worker exit "provider rate-limited": released WITHOUT counting a failure (the
 # breaker must never trip on a throttle). 75 == BSD EX_TEMPFAIL.
 KANBAN_RATE_LIMIT_EXIT_CODE = 75
+
+# Worker exit "local infrastructure failure" (BSD EX_IOERR): persistence or host I/O failed.
+KANBAN_INFRASTRUCTURE_EXIT_CODE = 74
 
 # Worker exit "provider rejected the configuration": credential revoked (401/403), model gone
 # (404), TLS chain broken — a retry cannot fix it, so the dispatcher parks the card blocked on
@@ -927,7 +929,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     ended_at            INTEGER,
     outcome             TEXT,
     -- outcome: completed | blocked | crashed | timed_out | spawn_failed |
-    --          gave_up | reclaimed | (null while still running)
+    --          infrastructure_failure | gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
     error               TEXT
@@ -4205,11 +4207,7 @@ from hermes_cli.kanban_db_boards import (
     remove_board,
     write_board_metadata,
 )
-from hermes_cli.kanban_db_connect import (
-    _INITIALIZED_PATHS,
-    init_db,
-    write_txn,
-)
+from hermes_cli.kanban_db_connect import _INITIALIZED_PATHS, init_db, write_txn
 from hermes_cli.kanban_db_workspace import (
     _cleanup_workspace,
     _is_managed_scratch_path,

@@ -340,10 +340,13 @@ def _wait_for_oneshot_background_review(cli) -> None:
     its provider call and interpreter exit kills it silently: no memory/skill writes, no
     "Background review complete" line. Bound: ``auxiliary.background_review.exit_wait_s``.
     """
-    from cli import _oneshot_agent_and_session
+    import cli as cli_module
     from agent.background_review import wait_for_background_review
 
-    agent, _session_id = _oneshot_agent_and_session(cli)
+    # Same resolution as the memory shutdown in _finalize_single_query: a failed goal-loop
+    # re-init leaves cli.agent None while the agent that ran the turns (and owns the review
+    # thread) is still the module's active ref.
+    agent = getattr(cli, "agent", None) or cli_module._active_agent_ref
     if agent is not None:
         wait_for_background_review(agent)
 

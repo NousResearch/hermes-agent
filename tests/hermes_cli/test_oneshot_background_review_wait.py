@@ -148,6 +148,29 @@ def test_finalize_waits_after_lease_release_and_before_cleanup(monkeypatch):
     assert order == ["flush", "finalize", "memory", "release", "linger", "review", "cleanup"]
 
 
+def test_review_wait_falls_back_to_active_agent_ref(monkeypatch):
+    """A failed goal-loop re-init leaves cli.agent None; the agent that ran the turns (and owns
+    the live review thread) is still cli._active_agent_ref, so the wait must use it."""
+    import cli as cli_mod
+
+    seen = []
+    active = _Agent(object())
+    monkeypatch.setattr(cli_mod, "_active_agent_ref", active)
+    monkeypatch.setattr(br, "wait_for_background_review", lambda agent, *a, **k: seen.append(agent))
+
+    class _FakeCli:
+        agent = None
+        session_id = "s1"
+
+    cli_mod._wait_for_oneshot_background_review(_FakeCli())
+    assert seen == [active]
+
+    monkeypatch.setattr(cli_mod, "_active_agent_ref", None)
+    seen.clear()
+    cli_mod._wait_for_oneshot_background_review(_FakeCli())
+    assert seen == []
+
+
 def test_finalize_survives_review_wait_failure(monkeypatch, caplog):
     import logging
 

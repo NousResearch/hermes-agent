@@ -1532,8 +1532,10 @@ __all__ = [
     "_COMBINED_REVIEW_PROMPT",
     "_MEMORY_REVIEW_PROMPT",
     "_SKILL_REVIEW_PROMPT",
+    "background_review_exit_wait_s",
     "build_memory_write_metadata",
     "load_background_review_settings",
     "spawn_background_review_thread",
     "summarize_background_review_actions",
+    "wait_for_background_review",
 ]

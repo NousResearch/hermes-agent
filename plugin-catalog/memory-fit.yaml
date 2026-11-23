@@ -1,0 +1,19 @@
+name: memory-fit
+title: Memory.fit
+repo: https://github.com/Fun-Management-SRL/memory-fit-mcp
+sha: 937d37c944d165efc98b642853c226e3462f95f7
+subdir: hermes-plugin
+version: "1.0.0"
+description: "Memory.fit: your training, your AI, one memory. Memory.fit connects your watch and health apps to the AI you already use, through its hosted MCP server (Streamable HTTP at https://api.memory.fit/mcp): your AI reads workouts, sleep, HRV, recovery and fuel, and writes sessions, daily targets and meal plans back to the Memory.fit app and your watch. Bundles one skill that tells the agent when to use it. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call, with its arguments, goes to api.memory.fit and needs a Memory.fit account (7 days free) with a personal key in MEMORY_FIT_API_KEY; the person's training and health data is returned from that server. Write tools (sessions, daily targets, meal plans, logged meals, notes) change the person's own Memory.fit account and can send sessions to their watch; the package marks the server untrusted, so Hermes asks before every tool the server does not annotate as read-only. OAuth sign-in is available through a plain mcp_servers entry with auth: oauth (see the README). The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Memory.fit
+tier: community
+category: tools
+docs_url: https://github.com/Fun-Management-SRL/memory-fit-mcp/tree/main/hermes-plugin
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [MEMORY_FIT_API_KEY]

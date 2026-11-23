@@ -692,3 +692,106 @@ class TestLineGatewayChatAllowlist:
         monkeypatch.setenv("LINE_ALLOWED_ROOMS", "Rallowed")
         assert self._runner()._get_unauthorized_dm_behavior(Platform("line")) == "pair"
 
+
+class TestLineDispatchGatewayAuth:
+    """``_dispatch_event`` builds the ``MessageEvent`` the gateway re-checks.
+
+    ``allow_adapter_delegation=False`` is the native re-check: a role flag does
+    not count. A listed group or room must still be authorized by its chat id,
+    and an unlisted group or DM never becomes that event.
+    """
+
+    @staticmethod
+    def _register_line():
+        from gateway.platform_registry import platform_registry
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+        entry = platform_registry.get("line")
+        assert entry is not None
+        assert entry.group_allowed_chats_env == "LINE_ALLOWED_GROUPS"
+        assert entry.room_allowed_chats_env == "LINE_ALLOWED_ROOMS"
+        return entry
+
+    @staticmethod
+    def _adapter(monkeypatch, **env):
+        for key in _LINE_AUTH_ENVS:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("LINE_ALLOW_ALL_USERS", "false")
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        from gateway.config import PlatformConfig
+
+        return LineAdapter(PlatformConfig(
+            enabled=True,
+            extra={"channel_access_token": "tok", "channel_secret": "sec"},
+        ))
+
+    @staticmethod
+    def _dispatch(adapter, source: dict, webhook_id: str):
+        captured = {}
+
+        async def _capture(event):
+            captured["event"] = event
+
+        adapter.handle_message = _capture
+        asyncio.run(adapter._dispatch_event({
+            "type": "message",
+            "source": source,
+            "message": {"type": "text", "id": "m1", "text": "hi"},
+            "replyToken": "rt",
+            "webhookEventId": webhook_id,
+        }))
+        return captured.get("event")
+
+    @staticmethod
+    def _strictly_authorized(event) -> bool:
+        from types import SimpleNamespace
+
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
+        return runner._is_user_authorized(event.source, allow_adapter_delegation=False) is True
+
+    def test_allowlisted_group_sender_is_authorized_without_delegation(self, monkeypatch):
+        self._register_line()
+        adapter = self._adapter(
+            monkeypatch, LINE_ALLOWED_USERS="Uowner", LINE_ALLOWED_GROUPS="Callowed")
+        event = self._dispatch(
+            adapter, {"type": "group", "groupId": "Callowed", "userId": "Umember"}, "group-ok")
+        assert event is not None
+        assert event.source.chat_type == "group"
+        assert event.source.chat_id == "Callowed"
+        assert event.source.user_id == "Umember"
+        assert event.source.role_authorized is False
+        assert self._strictly_authorized(event) is True
+
+    def test_allowlisted_room_sender_is_authorized_without_delegation(self, monkeypatch):
+        self._register_line()
+        adapter = self._adapter(
+            monkeypatch, LINE_ALLOWED_USERS="Uowner", LINE_ALLOWED_ROOMS="Rallowed")
+        event = self._dispatch(
+            adapter, {"type": "room", "roomId": "Rallowed", "userId": "Umember"}, "room-ok")
+        assert event is not None
+        assert event.source.chat_type == "room"
+        assert event.source.chat_id == "Rallowed"
+        assert event.source.user_id == "Umember"
+        assert event.source.role_authorized is False
+        assert self._strictly_authorized(event) is True
+
+    def test_unlisted_group_and_dm_sender_are_rejected(self, monkeypatch):
+        self._register_line()
+        adapter = self._adapter(
+            monkeypatch,
+            LINE_ALLOWED_USERS="Uowner",
+            LINE_ALLOWED_GROUPS="Callowed",
+            LINE_ALLOWED_ROOMS="Rallowed",
+        )
+        # The adapter drops these before handle_message, so no MessageEvent
+        # reaches the gateway's strict re-check.
+        assert self._dispatch(
+            adapter, {"type": "group", "groupId": "Cother", "userId": "Umember"}, "group-no") is None
+        assert self._dispatch(
+            adapter, {"type": "user", "userId": "Umember"}, "dm-no") is None
+

@@ -1,7 +1,7 @@
 ---
 name: pixeltable
 description: Multimodal data tables with auto-computed AI columns.
-version: 1.3.1
+version: 1.3.2
 author: Pierre Brunelle (@pierrebrunelle), Pixeltable (pixeltable.com)
 license: Apache-2.0
 platforms: [linux, macos]
@@ -128,8 +128,10 @@ pxt service list
 | Named snapshot | `pxt.create_snapshot('my_app.baseline', t, if_exists='ignore')` |
 | Apply an app | `pxt schema update app.py my_app` then `pxt service update app.py my_app -f` |
 | Bind models in a process | `app.TableModel.bind_all('my_app')` |
+| List built-in functions | `pxt.list_functions()` or `pxt functions` |
+| Update rows by primary key | `t.batch_update([{'id': 1, 'score': 2.0}], if_not_exists='ignore')` |
 
-Column types: `pxt.String`, `pxt.Int`, `pxt.Float`, `pxt.Bool`, `pxt.Timestamp`, `pxt.Json`, `pxt.Array`, `pxt.Image`, `pxt.Video`, `pxt.Audio`, `pxt.Document`. Types are non-nullable by default. Optional is `T | None`. `pxt.Required` is deprecated.
+Column types: `pxt.String`, `pxt.Int`, `pxt.Float`, `pxt.Bool`, `pxt.Timestamp`, `pxt.Json`, `pxt.Array`, `pxt.Image`, `pxt.Video`, `pxt.Audio`, `pxt.Document`. Types are non-nullable by default. Optional is `T | None`. `pxt.Required` was removed in 0.7.25.
 
 **ResultSet.** `.collect()` returns a `ResultSet`. `print(results)` shows a table. `for row in results` yields a dict per row. `results[i]` is that dict, `results['col']` is a list, `results[i, 'col']` is one value. `.to_pandas()` exports. Do not call `.iterrows()`, `.to_string()`, or `results[i][1]`.
 
@@ -277,7 +279,10 @@ Cloud sign-in, secrets, and the hosted wait: `references/apps-and-cloud.md`. Ask
 
 - **Home directory.** Catalog and media live under `PIXELTABLE_HOME` (default `~/.pixeltable`). Media files are in `PIXELTABLE_HOME/media`. Postgres data is `PIXELTABLE_PGDATA` or `PIXELTABLE_HOME/pgdata`. `PXT_HOME` is not a Pixeltable setting.
 - **Daemon.** The CLI daemon listens on `127.0.0.1:22089`. Override with `PXT_PORT`. One daemon serves one project per port. A `pxt` command from another project on that port restarts it.
-- **`if_exists='ignore'` does not fix logic.** It skips a column that already exists. In a notebook, change the expression with `t.alter_computed_column(summary=new_expr)`, which recomputes that column and its dependents. In an app, edit the expression, run `pxt schema update` (existing values stay), then `pxt recompute my_app/docs summary -f`.
+- **`if_exists='ignore'` does not fix logic.** On `create_*` and `add_*` it skips a call that already exists. It does not change an expression. In a notebook, change the expression with `t.alter_computed_column(summary=new_expr)`, which recomputes that column and its dependents. In an app, edit the expression, run `pxt schema update` (existing values stay), then `pxt recompute my_app/docs summary -f`. On insert, `t.insert(rows, if_exists='ignore')` skips rows whose primary key is already present (`row_count_stats.skipped_rows`) and does not evaluate their computed columns. The table needs a primary key. A Json or Array primary key is unsupported.
+- **Row counts.** Read `row_count_stats.inserted_rows`, `deleted_rows`, `updated_rows`, and `skipped_rows`. `ins_rows`, `del_rows`, and `upd_rows` were removed in 0.7.25.
+- **Built-in functions.** Before writing a UDF, check `pixeltable.functions` with `pxt.list_functions()` or `pxt functions`. The list includes functions, aggregates, and iterators, with signatures. Filter with a module (`pxt.list_functions('video')`, `pxt functions video`), `on=pxt.Json` (`pxt functions --on Json`), `search=` (`pxt functions --search detect`), or `kind=` (`pxt functions --kind udf`). Try one on Python values with `pxt.eval_udf(excerpt, 'hello world', n=4)`. A media argument can be a path or URL. Aggregates and iterators cannot be evaluated this way.
+- **Batch update.** `t.batch_update([{'id': 1, 'score': 2.0}], if_not_exists='ignore')` updates rows by primary key. `cascade=`, `if_not_exists=`, and `return_rows=` are keyword-only. `if_not_exists` is `'error'`, `'ignore'`, or `'insert'`.
 - **Type changes.** Changing a column's type, nullability, or `stored` flag is unsupported. `--allow-destructive` does not apply it. Rename a computed column in one `--allow-destructive -f` pass. Declare `T | None` before data exists when the column must accept nulls.
 - **Recompute.** `t.recompute_columns('summary', errors_only=True)`. The column is a positional argument, not `columns=[...]`.
 - **Nullable UDF parameters.** A non-nullable parameter that receives `None` skips the call. The cell is `None` and `errormsg` is empty. Annotate `x: str | None` and handle `None`.
@@ -294,7 +299,10 @@ Cloud sign-in, secrets, and the hosted wait: `references/apps-and-cloud.md`. Ask
 | `{'image_url': {'url': frames.frame}}` | `{'type': 'image_url', 'image_url': frames.frame}`. The API form with `'type': 'image_url'` and a `url` field also works. A URL string must be public |
 | `add_query_route(..., one_row=True)` or `@pxt.query(return_scalar=...)` | Removed in 0.7.22. Shape follows the query. An aggregate without `group_by()`, or a literal `limit(1)`, is one row (no row is a 404). One unnamed expression returns values. `select(text=t.text)` keeps dicts |
 | `openai.decisions(...).choices` | `decisions(input, questions=..., model=...).answers`, in question order. `model` is required. Needs `openai>=3.32` (0.7.22+) |
-| `from pixeltable.iterators import FrameIterator` | `from pixeltable.functions.video import frame_iterator` |
+| `from pixeltable.iterators import FrameIterator` | Removed in 0.7.25 (the import fails). `from pixeltable.functions.video import frame_iterator` |
+| `pxt.Required[pxt.String]` | Removed in 0.7.25. Non-nullable by default. Optional is `T \| None` |
+| `f'{t.title}'` or `'{}'.format(t.title)` | Raises on a Pixeltable expression. Concatenate with `+`, or `pxt.functions.string.format('Hello {0}', t.title)` |
+| `row_count_stats.ins_rows` | `inserted_rows`. Also `deleted_rows`, `updated_rows`, and `skipped_rows` |
 | `t.col.similarity('query')` | `t.col.similarity(string='query')`. Also `image=`, `audio=`, `video=`, `document=`, `vector=`. `idx=` picks among indexes |
 | `t.col.select()` / `t.col.count()` | Those ColumnRef helpers do not exist. Use `t.select(t.col)...` and `t.count()`. `t.show()` and `t.head()` still exist on the table |
 | `t.where(a).where(b)` | One `.where()`. Combine with `&` and `\|` |

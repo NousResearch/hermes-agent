@@ -38,7 +38,7 @@ Since Pixeltable 0.7.20: `0` is done. `1` is an error, including a usage error f
 
 A failed request ends with its code, as in `[TABLE_NOT_FOUND]`. With `--json` it prints `error_code`, `message`, and `retryable`, and `retry_after` when Cloud gives a wait. In text output, `PLAN_LIMIT`, `PAYMENT_REQUIRED`, and `STORE_FULL` print Cloud's reason with no error code after it. Tell the user. Do not retry those. `next:` on stderr names the command that finishes the job.
 
-Without a TTY, a prompt exits 3 and prints `next: <the same command with -f>  # <what it does>`. With `--json` that refusal is `{"error_code": "CONFIRMATION_REQUIRED", "next": [{"command", "effect"}]}`. `schema update`, `service update`, and `db update` print the refused plan instead of that document. `--json` is also accepted by `pxt usage` and `pxt feedback`.
+Without a TTY, a prompt exits 3 and prints `next: <the same command with -f>  # <what it does>`. With `--json` that refusal is `{"error_code": "CONFIRMATION_REQUIRED", "next": [{"command", "effect"}]}`. `schema update`, `service update`, and `db update` print the refused plan instead of that document. `--json` is also accepted by `pxt usage`, `pxt feedback`, and `pxt functions`.
 
 A person who declines a prompt also exits 3. With `--json` that document is `CONFIRMATION_DECLINED` and has no `next` (0.7.22+). A destructive plan without `--allow-destructive` is `DESTRUCTIVE_SCHEMA_CHANGE` and carries `next`. A plan the database blocks is `PLAN_BLOCKED`, exits 1, and names the command that unblocks it.
 
@@ -136,6 +136,16 @@ A computed column that raises during an insert or update route fails the request
 
 `from pixeltable.functions.openai import decisions`. `decisions(input, questions=..., model=...)` answers predicate, choice, and score questions (0.7.22+, package `openai>=3.32`). `model` is required. Read `.answers` in question order. Do not read `.choices[0].message.content` on this result.
 
+## Coding-agent APIs
+
+Before writing a UDF, check `pixeltable.functions` with `pxt.list_functions()` or `pxt functions`. The list includes functions, aggregates, and iterators, with signatures and the first paragraph of each docstring. Filter with a module (`pxt.list_functions('video')`, `pxt functions video`), `on=pxt.Json` (`pxt functions --on Json`), `search=` (`pxt functions --search detect`), or `kind=` (`pxt functions --kind udf`). `pxt functions --json` emits the records.
+
+Try a UDF on Python values without a table: `pxt.eval_udf(excerpt, 'hello world', n=4)`. The first argument is the function. A media argument can be a path or URL. Aggregates and iterators cannot be evaluated this way.
+
+`t.batch_update([{'id': 1, 'score': 2.0}], if_not_exists='ignore')` updates rows by primary key. `cascade=`, `if_not_exists=`, and `return_rows=` are keyword-only (0.7.25). `if_not_exists` is `'error'`, `'ignore'`, or `'insert'`.
+
+Counts on `UpdateStatus.row_count_stats` are `inserted_rows`, `deleted_rows`, `updated_rows`, and `skipped_rows`. `ins_rows`, `del_rows`, and `upd_rows` were removed in 0.7.25. On a table with a primary key, `t.insert(rows, if_exists='ignore')` skips rows whose key is already present (`skipped_rows`). Their computed columns are not evaluated. The table needs a primary key, and that key cannot be Json or Array. `if_exists='ignore'` on `create_*` and `add_*` skips a call that already exists.
+
 ## Call shapes that differ from the HTTP APIs
 
 | Wrong | Correct |
@@ -155,10 +165,12 @@ A computed column that raises during an insert or update route fails the request
 | `json_col.astype(pxt.String)` on a dict or list | `pxtf.json.dumps(json_col)`. Insert fails with `Expected string, got dict` |
 | `recompute_columns(columns=['summary'])` | `t.recompute_columns('summary', errors_only=True)` |
 | `t.where(a).where(b)` | One `where()`. Compose with `&` and `\|` |
-| `pxt.Required[pxt.String]` | Non-nullable is the default. Optional is `T \| None` |
+| `pxt.Required[pxt.String]` | Removed in 0.7.25. Non-nullable is the default. Optional is `T \| None` |
 | `@pxt.udf def f(x: str)` over a nullable column | Annotate `x: str \| None`. Otherwise a `None` input skips the call and leaves `errormsg` empty |
 | `whisper.load_model(...)` inside the UDF body | Weights reload every row. Use `pixeltable.functions.whisper.transcribe`, or a module-scope loader |
-| `from pixeltable.iterators import ...` | Import the function from `pixeltable.functions.*` |
+| `from pixeltable.iterators import ...` | Removed in 0.7.25 (the import fails). Import the function from `pixeltable.functions.*`, for example `from pixeltable.functions.video import frame_iterator` |
+| `f'{t.title}'` or `'{}'.format(t.title)` | Raises on a Pixeltable expression. Concatenate with `+`, or `pxt.functions.string.format('Hello {0}', t.title)` |
+| `row_count_stats.ins_rows` | `inserted_rows`. Also `deleted_rows`, `updated_rows`, and `skipped_rows` |
 
 Extract the text field before embedding or concatenating: `.choices[0].message.content` for OpenAI-compatible chat, `.output_text` for OpenAI `responses`, `.content[0].text` for Anthropic. A Json field that holds a string needs `.astype(pxt.String)` before string operations. That cast is for a string value, not for a dict or list.
 

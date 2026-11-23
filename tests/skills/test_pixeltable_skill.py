@@ -360,3 +360,47 @@ class TestApiCorrectness:
         assert 'Gemini video.' in apps
         for text in (skill_text, apps):
             assert '\u2014' not in text
+
+    def test_pixeltable_0725_removals_and_coding_agent_apis(self, skill_text: str) -> None:
+        apps = APPS_REF.read_text()
+        removed = 'Removed in 0.7.25'
+        insert_skip = "t.insert(rows, if_exists='ignore')"
+        batch = "t.batch_update([{'id': 1, 'score': 2.0}], if_not_exists='ignore')"
+        udf_try = "pxt.eval_udf(excerpt, 'hello world', n=4)"
+        string_format = "pxt.functions.string.format('Hello {0}', t.title)"
+        for text in (skill_text, apps):
+            assert removed in text
+            assert 'pxt.Required' in text
+            assert 'were removed in 0.7.25' in text
+            assert 'pixeltable.iterators' in text
+            assert 'frame_iterator' in text
+            assert 'inserted_rows' in text
+            assert 'deleted_rows' in text
+            assert 'updated_rows' in text
+            assert 'skipped_rows' in text
+            assert 'ins_rows' in text
+            assert 'del_rows' in text
+            assert 'upd_rows' in text
+            assert 'pxt.list_functions()' in text
+            assert 'pxt functions' in text
+            assert 'pxt functions --kind udf' in text
+            assert udf_try in text
+            assert batch in text
+            assert 'keyword-only' in text
+            assert string_format in text
+            assert insert_skip in text
+            assert '\u2014' not in text
+        assert 'the import fails' in skill_text
+        assert 'the import fails' in apps
+        assert 'pxt functions --json' in apps
+        # These files do not teach the removed call forms.
+        for path in (PIPELINE_REF, MCP_REF, SETUP_SH):
+            text = path.read_text()
+            assert 'pixeltable.iterators' not in text
+            assert 'pxt.Required' not in text
+            assert 'ins_rows' not in text
+            assert 'del_rows' not in text
+            assert 'upd_rows' not in text
+        assert 'CLIENT_OUTDATED' in apps and 'is not raised' in apps
+        assert 'PXT-1429' not in skill_text
+        assert 'PXT-1429' not in apps

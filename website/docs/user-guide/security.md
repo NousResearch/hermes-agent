@@ -381,34 +381,51 @@ hermes approvals suggest --json     # machine-readable output
 ```
 
 The command scans the session database (`~/.hermes/state.db`) for
-dangerous-classified commands that actually executed — i.e. commands you
-approved — aggregates them into patterns (`git push *`, or the dangerous-class
-key for compound commands), and ranks them by approval frequency:
+dangerous-classified commands you approved at the prompt, turns them into
+command globs (`docker restart *`), and ranks them by how often you approved
+them:
 
 ```
 Proposed command_allowlist additions (from approval history, last 90 days):
 
-  1. git push *    — approved 14x
-  2. docker restart/stop/kill (container lifecycle)    — approved 9x (class key)
+  1. docker restart *    — approved 14x
+       class: docker restart/stop/kill (container lifecycle)
+       e.g. docker restart web
+  2. docker stop *    — approved 9x
+       class: docker restart/stop/kill (container lifecycle)
+       e.g. docker stop web
 ```
 
 Safety rules:
 
 - **Nothing is ever applied automatically** — the default run is read-only;
   only an explicit `--apply N[,M...]` writes to `config.yaml`.
-- **Destructive classes are never proposed**, no matter how often they were
-  approved: recursive deletes, `sudo`, disk/device writes, credential and
-  system-config edits, pipe-to-shell, SQL DROP/TRUNCATE, process kills, and
-  every hardline class are excluded outright. `rm -rf build/` approved 100
-  times still never yields an `rm` entry.
-- Proposals already covered by your existing `command_allowlist` are skipped.
+- **Only a person's approvals count.** A run that smart approval, an
+  allowlist entry, a remembered `session`/`always` answer, YOLO or
+  `approvals.mode: off` let through is not counted, and neither is text a
+  command printed: only the approval note Hermes records when you approve at
+  the prompt.
+- **Only reviewed patterns are proposed.** Today that is container
+  lifecycle as `docker restart *`, `docker stop *` or `docker kill *` (bare
+  `docker` or an absolute path to it outside your home directory). Everything else is never proposed, no
+  matter how often you approved it: recursive deletes, `sudo` with privilege flags, force pushes,
+  reverse shells, gateway restarts and `hermes update`, changes to approval
+  settings, uninstalls, inline interpreter and shell `-c` code, every hardline
+  class, and any class added later until someone reviews it. `rm -rf build/`
+  approved 100 times still never yields an `rm` entry.
+- **No pattern wider than its class.** A command whose glob would cover
+  more than the class (`timeout 30 docker restart web` → `timeout 30 *`,
+  `docker --debug restart web` → `docker *`) is not proposed, and neither is a
+  dangerous-class key: a key approves whatever is chained after the command.
+- Proposals already in your `command_allowlist` (same text) are skipped.
 - **Credentials inside mined commands are masked** (`ghp_…`, `bot<id>:<token>`
   URLs, `KEY=value` assignments, bearer tokens) in both the printed `e.g.`
   examples and the `--json` payload, using the same redactor as terminal
   output. Masked text is never used as an allowlist pattern: a command whose
-  glob would embed a credential (`TOKEN=… git …`) is proposed under its
-  dangerous-class key instead. The session database itself still holds the
-  command as it was executed.
+  glob would embed a credential (`TOKEN=… docker …`) is not proposed. The
+  session database itself still holds the command as it was executed.
+- A tool-call id used by more than one call (some providers reuse ids across
+  sessions) is not counted, so those providers may see fewer proposals.
 
 Useful flags: `--days N` (history window, default 90), `--min-count N`
 (minimum approvals to qualify, default 2), `--limit N`, and `--db PATH`.

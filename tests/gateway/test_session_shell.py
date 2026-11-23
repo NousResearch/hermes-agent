@@ -74,3 +74,85 @@ async def test_shell_exec_refusal_names_a_sandboxed_terminal_backend(tmp_path, m
         terminal['TERMINAL_ENV'] = 'local'
         ran = await call()
         assert ran.get('result', {}).get('stdout', '').strip() == 'ran', ran
+
+
+def _local_authority(tmp_path, monkeypatch, db, runner):
+    """A SessionAuthority with one local session ``s``. Monkeypatched: policy lookup, local-source check."""
+    from types import SimpleNamespace
+
+    from gateway import session_local, session_policy
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_controls import AuthorityConnection
+    from tests.fixtures.storage_seed import seed_session
+
+    work = tmp_path / 'work'
+    work.mkdir()
+    monkeypatch.setattr(session_local, 'authorize_local_source', lambda runner, source: True)
+    monkeypatch.setattr(session_policy, 'policy_for_source', lambda runner, source: SimpleNamespace(
+        cwd=str(work), terminal_json=json.dumps({'TERMINAL_ENV': 'local'})))
+    seed_session(db, 's', 'test')
+    epoch = db.runtime.begin_epoch(instance_id='current')
+    authority = SessionAuthority(runner, profile_id=str(tmp_path / 'home'), instance_id='current',
+                                 persistence=storage_handle(db.scope.profile_dir), epoch=epoch)
+    authority.sessions['s'] = LiveSession(None, 'route')
+    return AuthorityConnection(authority, object(), {'user_id': 'owner'})
+
+
+_EXEC = {'id': 1, 'method': 'shell.exec', 'params': {'session_id': 's', 'command': 'echo ran'}}
+
+
+@pytest.mark.asyncio
+async def test_shell_exec_scan_does_not_stall_the_event_loop(tmp_path, monkeypatch):
+    """The dangerous-command scan can take seconds (#140091). It runs off the loop, so the loop
+    keeps serving the owner's other sessions meanwhile. Monkeypatched: the scan, which waits for
+    a task only a free loop can run."""
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+
+    from persistence_assembly import open_persistence, profile_scope
+    from tools import approval_detection
+
+    loop_ran, during_scan = threading.Event(), []
+
+    def scan(command):
+        during_scan.append(loop_ran.wait(timeout=2))
+        return (False, None)
+
+    async def other_session_work():
+        loop_ran.set()
+
+    monkeypatch.setattr(approval_detection, 'detect_hardline_command', scan)
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        connection = _local_authority(tmp_path, monkeypatch, db, SimpleNamespace(_draining=False))
+        task = asyncio.create_task(other_session_work())
+        ran = await connection.dispatch(dict(_EXEC))
+        await task
+        assert ran.get('result', {}).get('stdout', '').strip() == 'ran', ran
+        assert during_scan == [True]
+
+
+@pytest.mark.asyncio
+async def test_shell_exec_rechecks_admission_after_the_scan(tmp_path, monkeypatch):
+    """Admission can close while the scan runs off the loop: the command is then refused, not run.
+    Monkeypatched: the scan (it starts the drain) and the runner."""
+    from types import SimpleNamespace
+
+    from gateway import session_shell
+    from persistence_assembly import open_persistence, profile_scope
+    from tools import approval_detection
+
+    runner = SimpleNamespace(_draining=False)
+
+    def scan_while_drain_starts(command):
+        runner._draining = True
+        return (False, None)
+
+    ran = []
+    monkeypatch.setattr(approval_detection, 'detect_hardline_command', scan_while_drain_starts)
+    monkeypatch.setattr(session_shell, '_run', lambda command, cwd: ran.append(command) or {})
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        connection = _local_authority(tmp_path, monkeypatch, db, runner)
+        refused = await connection.dispatch(dict(_EXEC))
+        assert refused['error']['data'].get('reason') == 'runtime_draining', refused
+        assert ran == []

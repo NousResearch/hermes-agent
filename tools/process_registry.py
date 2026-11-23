@@ -587,7 +587,7 @@ class ProcessSession:
     watch_patterns: list[str] = field(default_factory=list)
     heartbeat_seconds: int = 0                  # 0 = off; else a "heartbeat" event every N s while running
     total_output_chars: int = 0                 # Chars ever ingested (the buffer is a rolling tail)
-    last_activity_at: float = field(default_factory=lambda: time.monotonic(), repr=False)  # output or agent action
+    last_touched_at: float = field(default_factory=lambda: time.time(), repr=False)  # launch or agent action
     _heartbeat_last: float = field(default=0.0, repr=False)          # time of the last heartbeat (or spawn)
     _heartbeat_total_at_last: int = field(default=0, repr=False)     # total_output_chars at that moment
     _heartbeat_seq: int = field(default=0, repr=False)
@@ -636,7 +636,6 @@ class ProcessSession:
     def _append_locked(self, text: str) -> None:
         self.output_buffer += text
         self.total_output_chars += len(text)
-        self.last_activity_at = time.monotonic()  # scale-to-zero background idle rule
         if len(self.output_buffer) > self.max_output_chars:
             self.output_buffer = self.output_buffer[-self.max_output_chars:]
 
@@ -1453,8 +1452,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
                 # Unreadable reply: separate liveness and exit-code reads, as before the combined read.
                 exit_code = reply.exit_code if reply else fallback_exit_code(env, q(pid_path), q(exit_path))
-                if exit_code is not None:
-                    self._finish_exited(session, exit_code)
+                if exit_code is not None:  # -1: no exit file, the job died with its stopped sandbox
+                    self._finish_exited(session, exit_code, *(("lost", "sandbox_stopped") if exit_code == -1 else ()))
                     return
             except Exception:
                 # Environment might be gone (sandbox reaped, etc.). A kill that already

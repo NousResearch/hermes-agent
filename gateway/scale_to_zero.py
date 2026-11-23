@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import socket
 import time
@@ -35,7 +36,8 @@ _malformed_sleep_url_logged = False
 
 # Short is safe: real work always blocks the suspend, resume is sub-second; longer bills idle RAM.
 DEFAULT_IDLE_TIMEOUT_MINUTES = 2
-# A background process with no new output and no agent action for this long stops holding the box awake.
+# A background process the agent has not touched (launch or process_manage action) for this long stops
+# holding the box awake. Output does not count: a server logging health checks would pin it forever.
 DEFAULT_BACKGROUND_IDLE_MINUTES = 30
 _TRUTHY = {"1", "true", "yes", "on"}
 # Dashboard-client liveness marker, touched by every /api/ws client socket on each
@@ -67,38 +69,39 @@ def parse_idle_timeout_seconds(cfg_value: Any,
 
 def parse_background_idle_seconds(cfg_value: Any) -> Optional[float]:
     """Coerce ``scale_to_zero.background_idle_minutes`` to seconds. ``0`` turns the rule off (None:
-    every running process blocks a suspend, as before); junk, negative or non-finite -> the default."""
+    every running process blocks a suspend, as before); junk, negative or overflowing -> the default."""
     try:
-        minutes = float(cfg_value)
-    except (TypeError, ValueError):
-        minutes = -1.0
-    if minutes == 0:
+        seconds = float(cfg_value) * 60.0
+    except (TypeError, ValueError, OverflowError):
+        seconds = -1.0
+    if seconds == 0:
         return None
-    return (minutes if 0 < minutes < float("inf") else float(DEFAULT_BACKGROUND_IDLE_MINUTES)) * 60.0
+    return seconds if 0 < seconds < math.inf else DEFAULT_BACKGROUND_IDLE_MINUTES * 60.0
 
 
-_idle_logged: dict[str, float] = {}  # session id -> the last_activity_at already logged as idle
+_idle_logged: dict[str, float] = {}  # session id -> the last_touched_at already logged as untouched
 
 
 def has_live_background_processes(idle_seconds: Optional[float], now: Optional[float] = None) -> bool:
     """Whether a background process (or a watcher waiting to be adopted) must block a suspend.
 
-    A running process idle for ``idle_seconds`` (no new output, no ``process_manage`` action) stops
-    counting, so a forgotten dev server cannot pin the host awake forever. It is NOT killed: a suspend
-    keeps it in RAM. ``None`` keeps the old rule (any running process blocks). A pending watcher blocks
-    unless its process is running and idle; an exited process's completion still needs delivering."""
+    A running process counts only while the agent touched it (launch, ``process_manage`` action, handoff)
+    within ``idle_seconds``; its output never extends that, so nothing it does on its own pins the host.
+    It is NOT killed: a suspend freezes it in RAM (on a sandbox backend the sandbox then stops and the job
+    dies). ``None`` keeps the old rule (any running process blocks). A pending watcher gets no extra
+    grace: it blocks only while its process is inside the window, or once it exited (completion due)."""
     from tools.process_registry import process_registry
     if idle_seconds is None:
         return bool(process_registry.has_any_active() or process_registry.pending_watchers)
-    now = time.monotonic() if now is None else now
+    now = time.time() if now is None else now
 
     def idle(session) -> bool:
-        quiet = now - session.last_activity_at
+        quiet = now - session.last_touched_at
         if quiet < idle_seconds:
             return False
-        if _idle_logged.get(session.id) != session.last_activity_at:
-            _idle_logged[session.id] = session.last_activity_at
-            logger.info("scale-to-zero: background process %s idle %.0f min; no longer blocks suspend",
+        if _idle_logged.get(session.id) != session.last_touched_at:
+            _idle_logged[session.id] = session.last_touched_at
+            logger.info("scale-to-zero: background process %s untouched for %.0f min; no longer blocks suspend",
                         session.id, quiet / 60.0)
         return True
     if process_registry.has_any_active(lambda s: not idle(s)):

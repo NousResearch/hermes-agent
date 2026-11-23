@@ -937,6 +937,24 @@ or opted-in explicit targets. `all` expansions do not gain home mirror eligibili
 briefs are labelled user turns appended at a turn boundary, preserving role alternation
 (`cron/AGENTS.md`).
 
+### Background processes and scale-to-zero
+
+On a hosted instance that scales to zero, a running background process keeps the gateway awake
+only while the agent has touched it within the last `gateway.scale_to_zero.background_idle_minutes`
+(default `30`). A touch is the launch, any `process_manage` action that reaches the process (poll,
+log, wait, write, submit, kill) and a successful handoff to a parent agent. **Output does not
+count**: a server that logs a health check every minute still stops holding the machine awake 30
+minutes after the agent last touched it. The process is not killed. A suspend freezes it in RAM on
+a local or Fly host, where it resumes at the next wake. On a remote sandbox backend the sandbox
+stops once the host sleeps, the job dies with it, and on wake it is reported as lost.
+
+A job awaited with `notify_on_complete` gets no extra grace: its launch starts the window, so it
+is protected for 30 minutes. A job the agent does not touch past that, chatty or silent, is frozen
+on a local host (it finishes after the next wake) and dies on a sandbox backend. Poll it to keep it
+alive longer. `0` turns the rule off: every running
+process blocks the suspend, as before. Junk values fall back to 30. The rule applies only to the
+scale-to-zero check, not to unmanaged idle exit, where exiting the gateway would kill the process.
+
 ## `/login` (off-turn, paired DM only)
 
 `/login` is registered in `hermes_cli/commands.py` with `busy_policy="dispatch"` and

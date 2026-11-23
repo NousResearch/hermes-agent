@@ -55,5 +55,5 @@ def resolve_actionable(session_id: str, task_id) -> tuple[bool, str]:
         return False, session_id
     if not session_action_allowed(session, str(task_id or ""), caller_session_key()):
         return False, session_id
-    session.last_activity_at = time.monotonic()  # the agent is still using it (scale-to-zero idle rule)
+    session.last_touched_at = time.time()  # the agent is still using it (scale-to-zero idle rule)
     return True, session.id

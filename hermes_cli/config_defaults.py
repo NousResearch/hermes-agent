@@ -2135,7 +2135,7 @@ DEFAULT_CONFIG = {
         # (HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent AND a wakeUrl is registered,
         # the gateway goes dormant and suspends the machine; it wakes on the wakeUrl poke. Enablement is
         # the Labs toggle, never a config key. idle_timeout_minutes: 0/negative = default. A background
-        # process with no output or agent action for background_idle_minutes stops blocking it (0 = off).
+        # process the agent has not touched for background_idle_minutes stops blocking it (0 = off).
         "scale_to_zero": {"idle_timeout_minutes": 2, "background_idle_minutes": 30},
         # Auto-resume restart-loop breaker. A supervisor-revived gateway auto-resumes the
         # SIGTERM-interrupted session; if that turn keeps triggering the kill, boots no more than

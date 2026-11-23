@@ -386,10 +386,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         # they succeeded — mirrors the ``not agent_result.get("failed")`` completed-turn guard.
         if not deliver_media:
             return True
-        await self._deliver_media_from_response(
-            response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
-            thread_metadata=metadata,
-        )
+        async with self._delivery_lease("queued final attachments"):
+            await self._deliver_media_from_response(
+                response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
+                thread_metadata=metadata,
+            )
         return True
 
     async def _send_queued_final_text(

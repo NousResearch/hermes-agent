@@ -818,10 +818,37 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         return True
 
     # Drain / interrupt
+    def _delivery_lease_count(self) -> int:
+        """In-flight post-handler delivery uploads (scoped leases, #33711).
+
+        A turn's agent slot is released before its final text/TTS/attachment
+        uploads finish, so the drain must count the active delivery leases too
+        or a ``--replace`` restart kills the upload mid-flight. Rides the
+        interactive (chat-turn) budget, not the cron floor. 0 when the
+        registry is absent (a minimal test double or bare ``object.__new__``
+        runner that never took a lease).
+        """
+        registry = self.__dict__.get("_delivery_leases")
+        return len(registry) if registry is not None else 0
+
+    def _delivery_lease(self, description: str = "post-handler delivery"):
+        """Scoped lease context manager for one post-handler delivery upload.
+
+        Lazily creates the registry so bare ``object.__new__`` test runners
+        work (mirrors ``_sessions_map``).
+        """
+        registry = self.__dict__.get("_delivery_leases")
+        if registry is None:
+            from gateway.delivery_lease import DeliveryLeaseRegistry
+            registry = DeliveryLeaseRegistry()
+            self.__dict__["_delivery_leases"] = registry
+        return registry.lease(description)
+
     def _drain_work_counts(self) -> tuple:
         """``(agents, cron, api, deferred, delegations)`` the drain waits on; a managed-worker turn is a chat turn."""
         return (
-            self._running_agent_count() + managed_turn_count(self), self._active_cron_job_count(),
+            self._running_agent_count() + managed_turn_count(self) + self._delivery_lease_count(),
+            self._active_cron_job_count(),
             self._active_api_run_count(), self._active_deferred_agent_worker_count(),
             _active_async_delegation_count(),
         )

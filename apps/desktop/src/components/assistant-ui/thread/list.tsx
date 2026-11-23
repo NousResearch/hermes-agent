@@ -52,6 +52,7 @@ import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } 
 import { useMessagesBelow } from './use-messages-below'
 import { useStickyPromptClip } from './use-sticky-prompt-clip'
 import { useTimelineReveal } from './use-timeline-reveal'
+import { useWheelScrollHoverRest } from './use-wheel-scroll-hover-rest'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -1615,6 +1616,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey, sessionId: scrollSessionId })
   const promptEdgeRef = useRef<HTMLDivElement>(null)
   useStickyPromptClip({ contentRef, edgeRef: promptEdgeRef, scrollRef, paneVisible, rows })
+  useWheelScrollHoverRest({ contentRef, scrollRef, paneVisible })
 
   return (
     <div

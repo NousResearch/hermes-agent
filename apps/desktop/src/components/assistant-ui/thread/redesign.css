@@ -111,6 +111,13 @@
   opacity: 1;
 }
 
+/* While the wheel scrolls the transcript, its turns sit the gesture out (use-wheel-scroll-hover-rest):
+   the pointer stands still as they pass under it, and re-targeting hover on every frame was most of
+   the script and restyle of a scroll. */
+:root[data-shell='portal'] [data-slot='aui_thread-content'][data-wheel-scrolling] {
+  pointer-events: none;
+}
+
 /* Content-sized, borderless, 6px corners. The padding keeps a one-line prompt
    at Figma's 32px while longer prompts take the 1.6 leading. */
 :root[data-shell='portal'] .composer-human-message {

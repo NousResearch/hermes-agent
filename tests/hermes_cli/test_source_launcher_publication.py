@@ -402,6 +402,8 @@ def test_running_source_launcher_can_republish_itself(tmp_path, monkeypatch, lau
                          ids=["idle", "running", "running-store-pip"])
 def test_repin_without_distlib_retires_stale_native_launcher(tmp_path, monkeypatch, running, store_pip):
     repo, home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    # The running `hermes update` boots on a current generation, which has the regex engine.
+    select_generation(repo, "current", "ready")
     (repo / "hermes_cli/main.py").write_text(
         "import sys\ndef main():\n    print('ready', flush=True)\n    sys.stdin.read()\n    return 0\n",
         encoding="utf-8")

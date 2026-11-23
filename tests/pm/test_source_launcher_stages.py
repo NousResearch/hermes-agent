@@ -10,7 +10,7 @@ import pytest
 from hermes_platform.host.facts import native_arch
 from pm.environments import install_state_dir, site_packages
 from pm.lock import Lockfile
-from tests.hermes_cli.test_source_launcher_publication import fixture_tree
+from tests.hermes_cli.test_source_launcher_publication import fixture_tree, with_engine_stand_in
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -34,6 +34,7 @@ def test_powershell_stage_publishes_without_a_checkout_venv(tmp_path, monkeypatc
     site.mkdir(parents=True)
     (selected / 'pyvenv.cfg').write_text('home = fixture\n', encoding='utf-8')
     (site / 'selected_probe.py').write_text('VALUE = 11\n', encoding='utf-8')
+    with_engine_stand_in(site)  # the published launcher boots this generation
     (install_state_dir(repo) / 'facts.json').write_text(
         json.dumps({'packages': {'venv': {'environment': str(selected)}}}), encoding='utf-8')
     wrapper = tmp_path / 'stage.ps1'

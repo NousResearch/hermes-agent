@@ -715,7 +715,8 @@ def _dashboard_name_taken(name: Any, plugin_dir: Path, source: str, spellings: f
         return False
     others = owners.others(name, plugin_dir, source)
     if name in spellings:
-        others = [d for d in others if _dashboard_name(d) == name]
+        # A copy in another user root (same directory) is ranked by scan order, as before.
+        others = [d for d in others if _dashboard_name(d) == name and d.name != plugin_dir.name]
     if others:
         _log.warning(
             "Dashboard plugin at %s is not registered: its dashboard name '%s' is the name of the plugin "

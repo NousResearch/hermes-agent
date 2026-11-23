@@ -1216,12 +1216,13 @@ class TestRenameProfile:
 
         # (name, old_exists, new_exists, old_tombstoned): unroute first, hot-serve last.
         assert calls[0] == ("oldname", True, False, True)
-        assert calls[-1] == ("newname", False, True, False)
+        assert calls[-1] == ("newname", False, True, True)
         assert not old_dir.exists() and new_dir.is_dir()
-        assert not profiles.named_profile_is_deleted(old_dir)  # a future 'oldname' is not born deleted
+        assert profiles.named_profile_is_deleted(old_dir)  # a writer still bound to it cannot rebuild it
+        assert create_profile("oldname", no_alias=True).is_dir()  # the name stays free to reuse
 
     def test_unmultiplexed_rename_does_not_signal_multiplexer(self, profile_env):
-        """No live multiplexer → rename must neither tombstone nor ping (single-profile installs)."""
+        """No live multiplexer → rename does not ping; the old name is still retired after the move."""
         tmp_path = profile_env
         create_profile("oldname", no_alias=True)
         old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
@@ -1232,7 +1233,7 @@ class TestRenameProfile:
             new_dir = rename_profile("oldname", "newname")
 
         notify.assert_not_called()
-        assert not (tmp_path / ".hermes" / "profiles" / ".deleted").exists()
+        assert profiles.named_profile_is_deleted(old_dir)
         assert not old_dir.exists() and new_dir.is_dir()
 
     def test_rename_migrates_session_identity_without_live_gateway(self, profile_env):

@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.dead_profile_home import stale_writer_shell
+
 from hermes_cli import profile_cmd, profiles, profiles_remove
 from hermes_constants import named_profile_has_identity
 
@@ -331,7 +333,7 @@ def test_a_retried_partial_delete_leaves_a_replaceable_post_delete_shell(profile
             profiles.delete_profile("owned-delete", yes=True)
     profiles.delete_profile("owned-delete", yes=True)
     assert not profile.exists()
-    profile.mkdir()  # a stale writer re-creates the deleted home
+    stale_writer_shell(profile)  # a pre-guard stale writer re-created the deleted home
     assert profiles.create_profile("owned-delete", no_alias=True, no_skills=True).is_dir()
 
 

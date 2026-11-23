@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, _get_platform_default_hermes_home, get_default_hermes_root, get_hermes_home,
-    display_hermes_home,
+    display_hermes_home, restoring_profile_homes,
 )
 from persistence.core.admin import AdminUnsupported
 from persistence_assembly import open_store_admin, profile_scope, store_exists
@@ -630,6 +630,7 @@ def _import_member_rel(member: str, prefix: str) -> tuple[str, bool]:
     return rel, _import_skipped(rel)
 
 
+@restoring_profile_homes()  # writes into a retired home as before the guard
 def run_import(args) -> Optional[int]:
     """Restore a Hermes backup; return 1 on damaged archives or incomplete restores."""
     require_file_tooling("`hermes import`")

@@ -7,8 +7,8 @@ description: Autonomous AI video editing — captions, clips, B-roll, reframe, m
 source: https://github.com/brajendrak00068/agentic-ai-video-production
 
 # Official vendor-hosted remote MCP (Streamable HTTP, stateless). Hermes sends
-# the key as `Authorization: Bearer ${MCP_LEVEA_API_KEY}`. Tool listing works
-# without a key; edits require one.
+# the key as `Authorization: Bearer ${MCP_LEVEA_API_KEY}`. The server requires
+# the API key (or OAuth) for both tool listing and edits.
 transport:
   type: http
   url: https://api.livecore.ai/api/v1/misc/mcp

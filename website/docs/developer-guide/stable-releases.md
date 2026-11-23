@@ -64,7 +64,8 @@ repair a pointer.
 
 Promotion replaces the stable downloads page at `releases/stable/index.html` on
 the R2 public origin. Canary tag builds own `releases/canary/index.html`, and
-commit builds own `releases/commit/<sha>/index.html`. Pages list only staged,
+a commit build owns only its claim archive's page,
+`releases/tag/commit.<stamp>-v<version>/index.html`. Pages list only staged,
 receipt-backed objects; an older run cannot regress a protected channel.
 
 ## Run, publish, or abandon a stable release
@@ -337,10 +338,11 @@ creation to organization administrators and the release integration and blocks
 update and deletion. The ruleset is not applied yet; until an admin applies it,
 these locks are honor-system — anyone with push access can delete a marker ref
 or move a receipt tag. Attempt refs, marker refs, and final tags are immutable.
-Channel and commit builds write annotated post-build receipts such as
-`v0.0.7+channel.<YYYYMMDDTHHMMSSZ>.<run-id>` and
-`v0.0.0+commit.<YYYYMMDDTHHMMSSZ>.<run-id>` only after publication succeeds.
-Receipt tags do not create GitHub releases and do not trigger workflows.
+Channel builds write annotated post-build receipts such as
+`v0.0.7+channel.<YYYYMMDDTHHMMSSZ>.<run-id>` only after publication succeeds.
+Receipt tags do not create GitHub releases and do not trigger workflows. A
+commit build writes no receipt: its claim tag, made before the build, is its
+identity (see below).
 
 A canary tag is `canary.<YYYYMMDDTHHMMSSZ>-v<stable>`, the same claim shape as
 a stable `rc.N-v<stable>`, so nothing that lists `v*` release tags mistakes it for
@@ -398,6 +400,8 @@ canary feed updates that application only. One-off builds use
 `release.py --build-commit REV --remote REMOTE` (add `--publish` to dispatch).
 Their application identity and CLI command (`hermes-<7-character-sha>`) include
 the pinned commit. Two different commit builds do not replace each other.
+A commit build runs the Stable Release pipeline itself (see
+[Commit builds](#commit-builds)).
 
 Branding is selected from those build inputs, not from runtime settings:
 canary uses yellow/dark-yellow icons; one-off builds use red icons bearing
@@ -410,20 +414,66 @@ build. Source checkouts are separate: an official-repository checkout follows
 `stable` and a fork or mirror follows `main`, until
 `hermes update --set-channel` picks another channel.
 
-`--build-commit` prints its deterministic downloads-page URL before dispatch,
-including in dry runs:
-`https://hermes-assets.nousresearch.com/releases/commit/<full-sha>/index.html`.
-`CLOUDFLARE_R2_PUBLIC_URL` overrides the public origin. After admission, the
-commit summary runs even when a build or assembly job fails; it lists only
-receipt-backed existing downloads and marks missing binaries as not built.
-Missing binaries link to the workflow run under **View build run**, not to
-nonexistent downloads. Disabled platforms have no download or failure link.
-Page publication still requires working R2 access. The commit links to its source
-on GitHub; tag and channel pages link to the corresponding GitHub release tag.
-Commit pages also list explicit non-secret `--bundle-env` defaults and
-`--bundle-unset` clears passed to the desktop bundles, not the CI environment.
-Values are shown as JSON strings (including `""` for an empty value); clears are
-labeled **Unset**. The section is omitted when no overrides were supplied.
+### Commit builds
+
+`release.py --build-commit REV --remote REMOTE` claims an exact pushed commit
+with an annotated tag `commit.<YYYYMMDDTHHMMSSZ>-v<version>` (the pyproject
+version at REV) and dispatches `stable-release.yml` on it from the default
+branch, using the same claim/admission pipeline as stable and canary releases.
+Without `--publish` it prints the claim, its lanes and the dispatch command and
+creates nothing. The claim message records the lanes, the green policy and the
+bundle defaults; admission reads only the claim, and `stable verify` refuses
+any candidate leg whose bundle environment differs from it. Stable Release runs
+only from `main`, so a repository whose default branch is another one gets no
+claim: `--build-commit` dispatches the tagless `desktop-bundled-release.yml`
+commit build on that branch instead (its page is
+`releases/commit/<sha>/index.html`), and refuses `--only`, `--with` and
+`--without` there.
+
+Because a commit build runs arbitrary pushed commits rather than reviewed
+release commits, it enforces four trust-boundary rules:
+
+- **Bundles + smoke only:** it starts from `windows`, `macos-arm64` and `smoke`;
+  `--with termux` adds the Termux `.deb` build, and `--only` / `--without`
+  narrow that set. Shared-cache workflows and release-only lanes (`ci`,
+  `docker`, `docker-tests`, `nix`, `pm-bundle`, `install-e2e`, `termux-checks`,
+  `windows-live`, `upgrade`, `windows-store`, `linux`, `bootstrap-version`) are
+  refused.
+- **Read-only caches and no APT signing key:** every native build leg
+  (Windows, macOS and Termux) routes to its `cache-mode: read` branch and skips
+  every cache-save step. The commit Termux leg has no access to
+  `TERMUX_APT_GPG_KEY` or `TERMUX_APT_GPG_PASSPHRASE` and stages only the
+  downloadable `.deb` (never an APT repository).
+- **Identity & pre-PR compatibility:** its packages are versioned like a
+  canary's (`X.Y.Z+commit.<stamp>`, the stamped Windows quad, Debian
+  `X.Y.Z~commit.<stamp>-1`) while keeping the `Commit<sha7>` application
+  identity and `source: commit-build`, so every updater refuses them. A commit
+  whose tree doesn't declare a claim build in
+  `scripts/releases/commit_claim_build.txt` (every commit predating commit-claim
+  packaging) still builds cleanly through the tagless `--commit` path while the
+  default-branch controller records, smokes and stages it under the claim
+  archive; a declared contract the controller doesn't know is refused.
+- **Publication:** none. Its only publication job, `publish-commit`, renders
+  the accepted candidate's full downloadable assets (`.msixbundle`, per-arch
+  `.msix`, macOS `.dmg` and `.zip`, and Termux `.deb`) at
+  `releases/tag/commit.<stamp>-v<version>/index.html` and in the run summary
+  (waiting for every selected check with `--require-green`, the default, or
+  only for the built candidate with `--no-require-green`). Channel and feed
+  writers, APT staging, Docker push and Store submission all refuse commit
+  claims.
+
+The page links its source commit and lists the explicit non-secret
+`--bundle-env` defaults and `--bundle-unset` clears baked into the desktop
+bundles (not the CI environment), as JSON strings with clears labeled
+**Unset**; the section is omitted when there were none. `--build-commit`
+prints the page URL before dispatch, including in dry runs;
+`CLOUDFLARE_R2_PUBLIC_URL` overrides the public origin. Each commit build runs
+in its own concurrency group, so it never queues behind a release, and both the
+stable publication reconciler and sandbox image workflow ignore it.
+
+Commit builds keep 90 days: the daily canary workflow's prune deletes claim
+archives and claim tags older than that (and lets legacy
+`releases/commit/<sha>/` pages from tagless builds age out on the same window).
 
 Tagged builds also publish a per-tag diagnostic page at
 `releases/tag/<tag>/index.html` after build or feed failures, including when no

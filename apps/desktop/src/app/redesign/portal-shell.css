@@ -655,6 +655,13 @@
   }
 }
 
+/* A sheet's action row sits in that corner, portalled after the toast region, so it cannot be the
+   anchor: it publishes its height instead (lib/toast-floor.ts) and toasts rest on it, clear of Save
+   and Cancel. The row's own padding already covers the safe area. */
+:root[data-shell='portal'][data-toast-floor] .hermes-toast-region {
+  bottom: calc(var(--toast-floor-height, 0px) + 0.75rem);
+}
+
 /* A toast arrives with a short rise on the shared motion scale; it leaves at once (a dismissal is the
    user's own act, and a fading toast would linger over what they returned to). */
 @media (prefers-reduced-motion: no-preference) {

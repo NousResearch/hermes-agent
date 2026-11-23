@@ -45,7 +45,11 @@ function useFocusReturn(covered: boolean) {
     const target = lastFocused.current
     const focus = document.activeElement
 
-    if (!covered && target?.isConnected && (!focus || focus === document.body)) {
+    // A target still under a cover nested in this one (the kept chat when an overlay gives way to a
+    // workspace page) cannot take focus, and asking it to would make Chromium bring that hidden
+    // subtree's style up to date inside this commit, a 1,500-1,800 element recalc for a long chat.
+    // That cover gives focus back itself when it uncovers.
+    if (!covered && target?.isConnected && !target.closest('[inert]') && (!focus || focus === document.body)) {
       target.focus({ preventScroll: true })
     }
   }, [covered])

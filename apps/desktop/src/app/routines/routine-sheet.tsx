@@ -235,6 +235,7 @@ function RoutineSheetBody({ job, onDelete, sheet, source }: BodyProps) {
             onDelete(job)
           }
         }}
+        ready={showFields}
         saving={saving}
         source={source}
       />

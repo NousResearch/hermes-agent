@@ -12,7 +12,7 @@ let observer: MutationObserver | null = null
 
 // These root vars position chrome, not palette/font tokens. Keep every other
 // inline declaration (including arbitrary skin vars and !important) observable.
-const GEOMETRY_VARS = new Set(['--workspace-left', '--workspace-right', '--glass-rail-edge'])
+const GEOMETRY_VARS = new Set(['--workspace-left', '--workspace-right', '--glass-rail-edge', '--toast-floor-height'])
 
 // Authored CSS can derive colours/fonts from geometry, but only by naming the variable. A skin
 // whose customCSS never does (the redesign's default Portal skin) must not turn every pane-resize

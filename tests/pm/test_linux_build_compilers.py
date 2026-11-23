@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 import sys
 
 import pytest
@@ -54,6 +55,44 @@ def test_pinned_interpreter_builds_with_gcc_when_its_clang_is_missing(tmp_path, 
     other = managed_environment(tmp_path / "other", python=Path(sys.executable),
                                 env={"PATH": gcc_only}, cache=tmp_path).env
     assert other == {"PATH": gcc_only}
+
+
+@pytest.mark.platforms("linux")
+def test_staged_copy_of_pinned_interpreter_gets_gcc_defaults(tmp_path, monkeypatch):
+    from pm.environment import managed_environment
+
+    pinned = tmp_path / "cache-tools/python/bin/python3.14"
+    pinned.parent.mkdir(parents=True)
+    script = f"#!/bin/sh\necho '{json.dumps(_PBS_LINUX)}'\n"
+    pinned.write_text(script, encoding="utf-8")
+    pinned.chmod(0o755)
+    staged_real = tmp_path / "payload/tools/python/bin/python3.14"
+    staged_real.parent.mkdir(parents=True)
+    shutil.copy2(pinned, staged_real)
+    staged = staged_real.with_name("python3")
+    staged.symlink_to("python3.14")
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (tmp_path / "uv", pinned))
+    gcc_only = _executables(tmp_path / "gcc-only", "gcc", "g++", "ar")
+
+    built = managed_environment(tmp_path / "staged", python=staged, env={"PATH": gcc_only},
+                                cache=tmp_path).env
+    assert {key: built.get(key) for key in _PBS_LINUX} == {
+        "CC": "gcc -pthread", "CXX": "g++ -pthread",
+        "LDSHARED": "gcc -pthread" + _LDFLAGS, "LDCXXSHARED": "g++ -pthread" + _LDFLAGS,
+        "AR": "ar",
+    }
+
+    chosen = managed_environment(tmp_path / "chosen", python=staged,
+                                 env={"PATH": gcc_only, "CC": "custom-cc"}, cache=tmp_path).env
+    assert (chosen["CC"], chosen["CXX"]) == ("custom-cc", "g++ -pthread")
+    assert "LDSHARED" not in chosen
+
+    foreign = tmp_path / "foreign/bin/python3.14"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("#" * len(script), encoding="utf-8")
+    foreign.chmod(0o755)
+    assert managed_environment(tmp_path / "foreign-env", python=foreign,
+                               env={"PATH": gcc_only}, cache=tmp_path).env == {"PATH": gcc_only}
 
 
 def test_build_failure_without_any_compiler_names_the_install(tmp_path):

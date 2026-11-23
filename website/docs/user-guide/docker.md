@@ -263,6 +263,91 @@ A username and password work on both as they are. Nous sign-in needs one more st
 - **Nous sign-in on the Webapp only:** register the client with the Webapp's callback, `https://<webapp host>/auth/callback`, on the Portal's [Local Dashboards](https://portal.nousresearch.com/local-dashboards) page or with `hermes dashboard register --redirect-uri` (see [Registering a dashboard](features/web-dashboard.md#registering-a-dashboard)). If this install already has a dashboard client, `hermes dashboard register` updates that client in place, which moves the dashboard's callback, and it writes the Webapp's address to `HERMES_DASHBOARD_PUBLIC_URL`.
 - **Nous sign-in on both:** native Desktop's **Settings → Web Access** registers a client of the Webapp's own (kept in `webapp/sign-in-registration.json`) and leaves the dashboard's alone, but it works only from the Desktop app on the same machine, so a headless container has no command for it yet. Until there is one, register the Nous client for one hostname and sign in on the other with a username and password. Both login pages offer both providers; Nous sign-in fails on the hostname its client was not registered for.
 
+## Moving a dashboard backend to the gateway {#moving-a-dashboard-backend-to-the-gateway}
+
+The dashboard (the `dashboard` slot with `HERMES_DASHBOARD=1`, or the `dashboard` service of the repo's Compose files) is a second copy of Hermes beside the gateway: chats started in it run in its own process. The gateway's Webapp can serve the dashboard's address instead, so every chat runs in the gateway. `hermes gateway migrate --backends --apply` does not do this in a container: the slot and the sidecar are declared by the image and the Compose file, which it does not edit, so it exits 6 (also with `--detach`, which starts nothing), changes nothing and says why; an exit 3 means something blocks the move, and it prints no steps until you fix what it names. These are the steps for a container. Run `hermes gateway migrate --backends --dry-run` in the container first to see the backend it found and its address.
+
+The image ships the Webapp prebuilt, so there is nothing to build. Keep the sign-in variables the dashboard used (`HERMES_DASHBOARD_BASIC_AUTH_*`, `HERMES_DASHBOARD_OAUTH_CLIENT_ID`, `HERMES_DASHBOARD_OIDC_*`) or the `dashboard.*` settings in `config.yaml`: the Webapp signs in with the same providers, and a non-loopback `webapp.host` requires one. See [What clients notice after the move](features/web-dashboard.md#after-the-move).
+
+A dashboard reached through a proxy or tunnel at its own `https://` hostname has that address in `HERMES_DASHBOARD_PUBLIC_URL` or `dashboard.public_url`. The Webapp reads neither: it builds its sign-in callback on `webapp.public_url`. So when `webapp.public_url` is unset, copy the address the dashboard actually used into it. The dashboard takes the first of these that is set to an `http://` or `https://` URL (a blank or malformed value is skipped):
+
+1. `HERMES_DASHBOARD_PUBLIC_URL` in the Hermes home's `.env` (`/opt/data/.env`; it overrides the container's environment),
+2. `HERMES_DASHBOARD_PUBLIC_URL` in the dashboard container's environment (`-e`, or the Compose service's `environment:`),
+3. `dashboard.public_url` in `config.yaml`.
+
+`dashboard.trusted_proxies` already applies to the Webapp. These commands read each one for the `dashboard` slot, where the dashboard runs in the `hermes` container itself; for the Compose `dashboard` service, read step 2 from its own container, `hermes-dashboard`, instead:
+
+```sh
+docker exec hermes hermes config get webapp.public_url                   # set already: leave it
+docker exec hermes grep '^HERMES_DASHBOARD_PUBLIC_URL=' /opt/data/.env   # 1
+docker exec hermes printenv HERMES_DASHBOARD_PUBLIC_URL                  # 2 (Compose: docker exec hermes-dashboard printenv ...)
+docker exec hermes hermes config get dashboard.public_url                # 3
+docker exec hermes hermes config set webapp.public_url https://dashboard.example.com   # the first one found
+```
+
+### The `dashboard` slot (`HERMES_DASHBOARD=1`)
+
+1. Point the Webapp at the dashboard's address. Use the container's `HERMES_DASHBOARD_HOST` and `HERMES_DASHBOARD_PORT` when you set them; these are their defaults:
+
+   ```sh
+   docker exec hermes hermes config set webapp.enabled true
+   docker exec hermes hermes config set webapp.host 0.0.0.0
+   docker exec hermes hermes config set webapp.port 9119
+   ```
+
+   When the dashboard had a public address and `webapp.public_url` is unset, copy it into `webapp.public_url` as shown above.
+
+2. Recreate the container without `HERMES_DASHBOARD` (a container's environment cannot change on restart). Use your own `docker run` line minus `-e HERMES_DASHBOARD=1`, still publishing the port and passing the sign-in variables. The [Running the dashboard](#running-the-dashboard) example becomes:
+
+   ```sh
+   docker rm -f hermes
+   docker run -d \
+     --name hermes \
+     --restart unless-stopped \
+     -v ~/.hermes:/opt/data \
+     -p 8642:8642 \
+     -p 9119:9119 \
+     nousresearch/hermes-agent gateway run
+   ```
+
+   As with [Upgrading](#upgrading), the data directory is kept and anything installed into the container's own filesystem is not.
+
+3. Check that the gateway serves the address and that no old backend is left, then open the old address in a browser (the public `https://` one when there is one) and sign in:
+
+   ```sh
+   docker exec hermes hermes webapp --status
+   docker exec hermes hermes gateway migrate --backends --dry-run
+   ```
+
+   A gateway that has just started takes a few seconds to serve the address: if `webapp --status` prints "The gateway is not running", wait 5 seconds and run it again.
+
+### The Compose `dashboard` service
+
+The repo's `docker-compose.yml` runs the dashboard as a second container at `127.0.0.1:9119`. Both containers use the host network (`network_mode: host`), so that loopback address is the host's own and the Webapp keeps it:
+
+1. Point the Webapp at that address:
+
+   ```sh
+   docker compose exec gateway hermes config set webapp.enabled true
+   docker compose exec gateway hermes config set webapp.host 127.0.0.1
+   docker compose exec gateway hermes config set webapp.port 9119
+   ```
+
+   When the dashboard had a public address and `webapp.public_url` is unset, find it in the order shown above (the Hermes home's `.env`, then `docker exec hermes-dashboard printenv HERMES_DASHBOARD_PUBLIC_URL`, then `dashboard.public_url`) and copy it: `docker compose exec gateway hermes config set webapp.public_url https://dashboard.example.com`.
+
+2. Delete the `dashboard:` service from the Compose file. Move any `HERMES_DASHBOARD_*` sign-in variables it had to the `gateway` service's `environment:`.
+
+3. Remove the dashboard container and restart the gateway so it reads the new settings:
+
+   ```sh
+   docker compose up -d --remove-orphans
+   docker compose restart gateway
+   ```
+
+4. Check it as for the slot: `docker compose exec gateway hermes webapp --status`, then open the old address (the public one when there is one) and sign in.
+
+`docker-compose.windows.yml` publishes the dashboard with `ports: - "127.0.0.1:9119:9119"` and binds `0.0.0.0` inside its container. There, set `webapp.host 0.0.0.0` instead, move that `ports:` entry to the `gateway` service, give the gateway a sign-in provider (a `0.0.0.0` Webapp refuses to start without one), and pass `-f docker-compose.windows.yml` to every `docker compose` command above.
+
 ## Running interactively (CLI chat)
 
 To open an interactive chat session against a running data directory:

@@ -2280,7 +2280,7 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
     if token_file and (getattr(args, "status", False) or getattr(args, "stop", False)):
         raise SystemExit("--ssh-session-token-file cannot be used with --status or --stop")
     if getattr(args, "status", False):
-        _report_dashboard_status()
+        _report_dashboard_status(args.host, args.port)
         sys.exit(0)  # status is informational, always 0
     if getattr(args, "stop", False):
         # Scoped to the invoking home (`-p` applied by _apply_profile_override): another

@@ -94,9 +94,13 @@ restriction rather than treating every accepted dashboard credential as an opera
 Cross-subject local submissions carry a private, server-written profile/session/principal
 binding for queued execution and recovery. It is not exposed in model requests or public
 session snapshots. This change does not implement OpenAI API-to-local session affinity. The gateway
-listener stays on loopback unless `webapp.host` binds a wildcard address. The Webapp's listener engages
-the dashboard sign-in gate on a wildcard bind or when `webapp.public_url` is set, on any bind, and
-one-use launch links are then off. `dashboard.public_url` never applies to the Webapp's listener; the
+listener stays on loopback unless `webapp.host` binds a wildcard address or one IP address of this
+machine. A specific address also gets a loopback socket on the same port, serving the same app under
+the same boundary state (`loopback_companion` in `gateway/webapp_listener.py`), because native
+clients accept only a loopback origin; its Host check accepts the address, loopback names and the
+Webapp's public host, nothing else. The Webapp's listener engages the dashboard sign-in gate on a
+wildcard or specific-address bind or when `webapp.public_url` is set, on any bind, and one-use launch
+links are then off. `dashboard.public_url` never applies to the Webapp's listener; the
 gateway's private listener for native clients reads it as main does, so hosted sign-in on that
 listener keeps working.
 

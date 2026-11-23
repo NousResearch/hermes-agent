@@ -1,0 +1,16 @@
+name: dsh
+repo: https://github.com/haroon0x/hermes-dsh
+sha: abd16e617808cb453f2849f02534d65197017ce6
+description: "Drive DeepSeek Harness (dsh) agents from Hermes: one-shot headless runs and live ACP sessions with per-turn cancel, permissions, model config, parallel fanout, and resumable sessions. Disclosure — runs the DeepSeek Harness (`dsh`) CLI you install yourself (npm `@deepseek-ai/dsh`, not covered by the pinned commit) as a separate agent with its own shell and file tools in the directory the model picks, outside Hermes' terminal sandbox and under dsh's own sandbox and approval rules (letting dsh grant its own escalations asks you first); your DeepSeek/OpenCode key is passed to it from Hermes' secret store, and dsh sends your tasks and files to the model provider configured in its profile."
+maintainer: haroon0x
+tier: community
+category: automation
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/haroon0x/hermes-dsh#readme
+version: "2.0.2"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [dsh_agent, dsh_session]
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: []

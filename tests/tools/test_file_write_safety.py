@@ -1245,6 +1245,20 @@ class TestPseudoFilesystemWriteGuard:
         finally:
             shutil.rmtree(scratch)
 
+    @pytest.mark.platforms("linux")
+    @pytest.mark.parametrize("spelling", ("/dev/fd/{fd}", "//dev/fd/{fd}", "/dev/shm/../fd/{fd}"))
+    def test_a_dev_path_that_resolves_outside_dev_is_refused_by_its_text(self, tmp_path: Path, spelling):
+        """/dev/fd/N resolves to the open file itself, so only the path text can refuse it."""
+        from tools.file_tools_write_guards import _check_sensitive_path
+
+        regular = tmp_path / "regular.txt"
+        regular.write_text("")
+        with regular.open() as fh:
+            assert os.path.realpath(f"/dev/fd/{fh.fileno()}") == os.path.realpath(regular)
+            path = spelling.format(fd=fh.fileno())
+            assert _is_write_denied(path)
+            assert "device or kernel pseudo-filesystem" in (_check_sensitive_path(path) or "")
+
     @pytest.mark.platforms("posix")
     @pytest.mark.parametrize("path", ("/dev/shmx", "/dev/shm/../null", "//dev/shm/../../dev/sda", "/dev/mqueue/q"))
     def test_the_dev_shm_exemption_covers_nothing_else(self, path):

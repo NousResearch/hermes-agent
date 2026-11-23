@@ -31,6 +31,7 @@ import {
   $workspaceCwdOwner
 } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
+import { $archivedSessions } from '@/store/sidebar-archive'
 import { SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
 import { makeSessionInfo } from '@/test/session-info'
 
@@ -543,6 +544,8 @@ describe('ChatSidebar messaging owners', () => {
     $gatewayGroupCollapsed.set([])
     $sidebarMessagingOpenIds.set([])
     $messagingSessions.set([])
+    $archivedSessions.set([])
+    $sidebarShowArchived.set(false)
     $sessions.set([])
     $profiles.set([])
     $connectionsRegistry.set(null)
@@ -588,5 +591,40 @@ describe('ChatSidebar messaging owners', () => {
     expect(telegramGroups()).toHaveLength(0)
     expect(screen.queryByText('work-1')).toBeNull()
     expect(within(row('default-1')).queryByRole('img', { name: /^Profile:/ })).toBeNull()
+  })
+
+  it('splits the archive by source when the Archived view is on', () => {
+    $archivedSessions.set([
+      { ...telegram('archived-tg', 'default', 5), archived: true },
+      makeSessionInfo({
+        archived: true,
+        connection_id: 'local',
+        id: 'archived-desk',
+        profile: 'default',
+        title: 'archived-desk'
+      })
+    ])
+    $sidebarShowArchived.set(true)
+
+    mount()
+
+    // A section is the sidebar group whose header toggle carries the label.
+    const section = (label: string) =>
+      [...root.querySelectorAll<HTMLElement>('[data-slot="sidebar-group"]')].find(group => {
+        const header = group.querySelector<HTMLElement>('button[aria-expanded]')
+
+        return header != null && within(header).queryAllByText(label).length > 0
+      })!
+
+    // Each archived row renders once, in the section its source owns: the
+    // archive feeds both lists, so a messaging thread in the sessions list too
+    // would be the same row twice.
+    expect(screen.getAllByText('archived-tg')).toHaveLength(1)
+    expect(within(section('Telegram')).getByText('archived-tg')).toBeTruthy()
+    expect(within(section('Sessions')).queryByText('archived-tg')).toBeNull()
+    expect(within(section('Sessions')).getByText('archived-desk')).toBeTruthy()
+    expect(within(section('Telegram')).queryByText('archived-desk')).toBeNull()
+    // Live threads no longer stand in for the archive.
+    expect(screen.queryByText('default-1')).toBeNull()
   })
 })

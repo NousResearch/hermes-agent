@@ -150,7 +150,8 @@ class TestCheckpointLimits:
 
     def test_config_limits_used(self):
         cfg = {"checkpoints": {"max_snapshots": 7, "max_total_size_mb": 1000, "max_file_size_mb": 3}}
-        assert server._resolve_checkpoint_limits(cfg) == {
+        assert server._checkpoint_agent_kwargs(cfg) == {
+            "checkpoints_enabled": False,
             "checkpoint_max_snapshots": 7,
             "checkpoint_max_total_size_mb": 1000,
             "checkpoint_max_file_size_mb": 3,
@@ -158,15 +159,21 @@ class TestCheckpointLimits:
 
     def test_missing_keys_fall_back_to_defaults(self):
         from hermes_cli.config import DEFAULT_CONFIG
+
         defaults = DEFAULT_CONFIG["checkpoints"]
-        limits = server._resolve_checkpoint_limits({"checkpoints": {"max_total_size_mb": 1000}})
+        limits = server._checkpoint_agent_kwargs({"checkpoints": {"max_total_size_mb": 1000}})
         assert limits["checkpoint_max_total_size_mb"] == 1000
         assert limits["checkpoint_max_snapshots"] == defaults["max_snapshots"]
         assert limits["checkpoint_max_file_size_mb"] == defaults["max_file_size_mb"]
 
     def test_legacy_bool_and_malformed_use_defaults(self):
-        assert server._resolve_checkpoint_limits({"checkpoints": True}) == server._resolve_checkpoint_limits({})
-        assert server._resolve_checkpoint_limits(None) == server._resolve_checkpoint_limits({})
+        defaults = server._checkpoint_agent_kwargs({})
+        assert server._checkpoint_agent_kwargs({"checkpoints": True}) == {
+            **defaults,
+            "checkpoints_enabled": True,
+        }
+        assert server._checkpoint_agent_kwargs(None) == defaults
+        assert server._checkpoint_agent_kwargs({"checkpoints": "enabled"}) == defaults
 
     def test_limits_reach_agent(self, monkeypatch):
         captured = TestMakeAgentCheckpointsFallback()._make_agent_with_checkpoints(

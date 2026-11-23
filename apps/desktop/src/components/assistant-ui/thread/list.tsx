@@ -57,7 +57,7 @@ import { useWheelScrollHoverRest } from './use-wheel-scroll-hover-rest'
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
 export type MessageGroup = { id: string; weight: number } & (
-  { index: number; kind: 'standalone' } | { indices: number[]; kind: 'turn' }
+  { index: number; kind: 'standalone' } | { ids: string[]; indices: number[]; kind: 'turn' }
 )
 
 // DOM is bounded by a render-cost budget, not a message/turn count. The
@@ -303,14 +303,16 @@ export function buildGroups(signature: string): MessageGroup[] {
     }
 
     const indices = [message.index]
+    const ids = [message.id]
     let weight = message.weight
 
     while (i + 1 < messages.length && messages[i + 1].role !== 'user') {
       weight += messages[++i].weight
       indices.push(messages[i].index)
+      ids.push(messages[i].id)
     }
 
-    groups.push({ id: message.id, indices, kind: 'turn', weight })
+    groups.push({ id: message.id, ids, indices, kind: 'turn', weight })
   }
 
   return groups
@@ -494,10 +496,10 @@ const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized
             className="composer-human-ai-pair-container relative flex min-w-0 flex-col gap-(--conversation-turn-gap)"
             data-slot="aui_turn-pair"
           >
-            <ResponseMessages components={components} indices={group.indices} />
+            <ResponseMessages components={components} ids={group.ids} />
           </div>
         ) : (
-          <ThreadPrimitive.MessageByIndex components={components} index={group.index} />
+          <ThreadPrimitive.Unstable_MessageById components={components} messageId={group.id} />
         )}
       </MessageRenderBoundary>
     </div>

@@ -154,8 +154,8 @@ describe('buildGroups', () => {
     )
 
     expect(groups).toEqual([
-      { id: 'u1', indices: [0, 1, 2], kind: 'turn', weight: 7 },
-      { id: 'u2', indices: [3, 4], kind: 'turn', weight: 4 }
+      { id: 'u1', ids: ['u1', 'a1', 'a2'], indices: [0, 1, 2], kind: 'turn', weight: 7 },
+      { id: 'u2', ids: ['u2', 'a3'], indices: [3, 4], kind: 'turn', weight: 4 }
     ])
   })
 
@@ -172,7 +172,7 @@ describe('buildGroups', () => {
     expect(groups).toEqual([
       { id: 's1', index: 0, kind: 'standalone', weight: 1 },
       { id: 'a0', index: 1, kind: 'standalone', weight: 2 },
-      { id: 'u1', indices: [2, 3], kind: 'turn', weight: 6 }
+      { id: 'u1', ids: ['u1', 'a1'], indices: [2, 3], kind: 'turn', weight: 6 }
     ])
   })
 

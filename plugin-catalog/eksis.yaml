@@ -1,0 +1,21 @@
+name: eksis
+title: eksis
+repo: https://github.com/eksis-app/eksis-plugin
+sha: ed46ab1facff395dc4a8414befcb5429fd253162
+description: "Social media scheduling for an eksis workspace: draft, schedule, approve and publish posts to Instagram, Facebook, Threads, TikTok, YouTube, LinkedIn, X, Bluesky, Pinterest, Google Business Profile and DEV, answer comments and direct messages, run comment and DM automations, and read analytics. Portable Agent Plugins v1 package (plugin.json, Streamable HTTP mcp.json, one skill), submitted by eksis, which runs the service. Disclosure: no local executable code; every tool call goes to the hosted MCP server at https://api.eksis.io/mcp and needs an eksis account (the Free plan works). Sign-in is Hermes native MCP OAuth through a `mcp_servers.eksis` entry with `auth: oauth` (Agent Plugins v1 has no auth field), and Hermes stores and refreshes the tokens. Write tools publish to the social accounts connected in the user's workspace, send comment replies and direct messages, delete posts, comments and media, and change automations and AI agents; the package marks the server `trust: untrusted`, so Hermes asks before every call that is not annotated readOnlyHint. To upload a local file the skill has the agent run the curl PUT that create_media_upload returns. Workspace data, comments, messages and analytics returned by the tools reach the user's model provider. The remote tool list can change without a new pin of this package. No telemetry, no background process, no self-update."
+maintainer: eksis
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://docs.eksis.io/en/mcp/clients/hermes
+version: "1.8.0"
+readme: true
+platforms: []
+known_issues:
+  - "The portable mcp.json cannot complete OAuth. Add mcp_servers.eksis with url https://api.eksis.io/mcp, auth: oauth and trust: untrusted to config.yaml, then run hermes mcp login eksis and hermes mcp test eksis. A config.yaml entry replaces the package's, so keep trust: untrusted in it to keep the approval prompt."
+  - "Posts, replies, direct messages and automations act on the user's real social accounts, and calls count against the eksis plan's daily request quota and monthly post limit."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

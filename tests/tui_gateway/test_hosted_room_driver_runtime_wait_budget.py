@@ -8,16 +8,10 @@ inside its file-line cap (see root AGENTS.md).
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 
-import pytest
-
-from gateway import hosted_rooms
+from tests.tui_gateway import test_hosted_room_driver_runtime as runtime_fixtures
 from tests.tui_gateway.test_hosted_room_driver_runtime import (
-    BINDING,
-    PROFILE,
-    ROOM_ID,
     FakeSessionRPC,
     _admit,
     _identity,
@@ -25,26 +19,15 @@ from tests.tui_gateway.test_hosted_room_driver_runtime import (
     _wait_for,
 )
 
-
-@pytest.fixture
-def db(tmp_path: Path) -> Path:
-    path = tmp_path / "state.db"
-    hosted_rooms.create_room(
-        path,
-        room_id=ROOM_ID,
-        name="Release room",
-        members=[{"profile": PROFILE, "handle": PROFILE}],
-        authority_gateway_id=BINDING.gateway_id,
-        now=time.time(),
-    )
-    return path
+db = runtime_fixtures.db
+store = runtime_fixtures.store_fixture
 
 
-def test_wait_for_terminal_sleep_budget_stays_inside_the_renewal_window(db: Path):
+def test_wait_for_terminal_sleep_budget_stays_inside_the_renewal_window(db: Path, store):
     identity = _identity()
-    _admit(db, identity)
+    _admit(store, identity)
     rpc = FakeSessionRPC(auto_complete=False)
-    runtime = _runtime(db, rpc, turn_timeout_seconds=30)
+    runtime = _runtime(store, rpc, turn_timeout_seconds=30)
     waits: list[float] = []
 
     class RecordingWake(threading.Event):

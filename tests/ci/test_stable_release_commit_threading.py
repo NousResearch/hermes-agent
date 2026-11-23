@@ -4,6 +4,8 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
+from tests.ci.workflow_steps import is_checkout
+
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github/workflows"
 LOCAL_CALL = re.compile(r"^\./\.github/workflows/(?P<name>[^/@]+)$")
@@ -71,7 +73,7 @@ def test_every_checkout_follows_the_commit_input():
         key = commit_input(name)
         for job_name, job in (doc.get("jobs") or {}).items():
             for index, step in enumerate(job.get("steps") or []):
-                if not step.get("uses", "").startswith("actions/checkout"):
+                if not is_checkout(step):
                     continue
                 if (name, f"{job_name}[{index}]") in CONTROLLER_CHECKOUTS:
                     continue
@@ -122,7 +124,8 @@ CONTROLLER_REFERENCES = (
     ("HEAD_REF:", "label on the lint summary"),
     ("key: visual-baselines-${{ github.ref_name }}", "restores main's baselines and never writes them for a stable run"),
     ("inputs.ref == github.sha", "saves candidates only for the triggering commit, so a stable claim never writes"),
-    ("inputs.channel-build != '' && inputs.controller-sha", "smoke tests the staged artifact with the dispatched ref's scripts"),
+    ("(inputs.channel-build != '' || startsWith(inputs.tag, 'commit.')) && inputs.controller-sha",
+     "smoke tests a staged channel or commit-claim artifact with the controller's scripts"),
     ("cancel-in-progress: ${{ inputs.release != true &&", "only decides whether a side-branch dispatch supersedes its predecessor; a stable run short-circuits on inputs.release"),
 )
 FALLBACK = re.compile(r"inputs\.(commit|ref|sha) \|\|")

@@ -1064,7 +1064,7 @@ def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[C
             return [config_load_issue(exc)]
 
     from hermes_cli.config_value_checks import (
-        _validate_quoted_containers, _validate_timezone, _validate_voice, _validate_web_backends)
+        _validate_quoted_containers, _validate_timezone, _validate_voice)
     issues: list[ConfigIssue] = []
     _validate_voice(config, issues)
     _validate_timezone(config, issues)
@@ -1093,7 +1093,6 @@ def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[C
                    f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
                    f"Move '{key}' under the appropriate section")
 
-    _validate_web_backends(config, issues)
     _validate_quoted_containers(config, issues)
     return issues
 
@@ -2561,9 +2560,9 @@ def _managed_source(filename: str):
     return (managed_dir / filename) if managed_dir else "the managed scope"
 
 
-def save_env_value(key: str, value: str):
-    """Save or update a value in ~/.hermes/.env (also matching ``export KEY=`` lines, so a save
-    never appends a second line that a later delete would resurrect)."""
+def save_env_value(key: str, value: str, env_path: Optional[Path] = None):
+    """Save or update a value in ~/.hermes/.env, or the private copy *env_path* (also matching ``export
+    KEY=`` lines, so a save never appends a second line that a later delete would resurrect)."""
     if _env_write_blocked(key, "set"):
         return
     validate_env_var_name_for_write(key)
@@ -2571,8 +2570,7 @@ def save_env_value(key: str, value: str):
     refuse_redacted_env_value(key, value)
     value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()
-    env_path = get_env_path()
-
+    env_path = Path(env_path) if env_path is not None else get_env_path()
     with _env_write_lock(env_path):
         lines = _read_env_lines(env_path) if env_path.exists() else []
         serialized_value = _quote_env_value(value)

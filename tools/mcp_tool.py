@@ -323,6 +323,10 @@ _MAX_BACKOFF_SECONDS = 60
 _RECYCLED_RECONNECT_TIMEOUT = 15.0
 # Parked servers (tools deregistered) self-probe on this cadence: nothing else can revive them.
 _PARKED_RETRY_INTERVAL = 300
+# Cap for the parked self-probe backoff: each consecutive still-failed probe doubles the wait from
+# _PARKED_RETRY_INTERVAL up to this ceiling, so a server whose failure is provably persistent (a
+# duplicate stdio instance holding a single-writer lock) stops re-spawning a doomed child forever.
+_PARKED_PROBE_BACKOFF_MAX = 3600
 # Bounded wait for a respawned stdio child when a call finds it dead (gateway restarts kill
 # every MCP child); bounded so a broken server still parks via run()'s rapid-drop budget.
 _STDIO_RESPAWN_WAIT_SEC = 15.0
@@ -395,50 +399,6 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
     scopes must enter/exit in the same Task). Run state machine, transport bring-up and
     keepalive/liveness live in the three mixins."""
 
-    __slots__ = (
-        "_auth_park",
-        "_auth_type",
-        "_config",
-        "_elicitation",
-        "_error",
-        "_ever_connected",
-        "_idle_timeout_seconds",
-        "_inflight_tasks",
-        "_last_park_line",
-        "_last_tool_call_at",
-        "_lifecycle_started_at",
-        "_list_cache_meta",
-        "_max_lifetime_seconds",
-        "_park_reason",
-        "_pending_call_callbacks",
-        "_pending_call_context",
-        "_pending_refresh_tasks",
-        "_permanent_grace_used",
-        "_ping_unsupported",
-        "_ready",
-        "_reconnect_event",
-        "_reconnect_retries",
-        "_reconnecting",
-        "_recycled_reason",
-        "_refresh_lock",
-        "_registered_tool_names",
-        "_resolved_identity",
-        "_rpc_lock",
-        "_sampling",
-        "_session_proven",
-        "_shutdown_event",
-        "_sse_fallback",
-        "_stdio_child_pids",
-        "_suspect_reason",
-        "_task",
-        "_teardown_race",
-        "_tools",
-        "_was_parked",
-        "initialize_result",
-        "name",
-        "session",
-        "tool_timeout",
-    )
 
     def __init__(self, name: str):
         self.name = name
@@ -484,14 +444,20 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # Digest of the resolved inputs the transport last connected with; a cross-profile adopter
         # must resolve the same digest in its own scope. None until the transport publishes it.
         self._resolved_identity: Optional[str] = None
+        # True when this stdio server must have exactly ONE live child system-wide (a single-writer
+        # datastore). A non-owner that finds the resource taken parks quietly instead of self-probing.
+        self._single_instance: bool = False
+        # Consecutive park revivals that came back still-broken; drives the parked-probe backoff.
+        self._parked_probe_failures: int = 0
+        # True while parked with no timed self-probe (single_instance conflict).
+        self._park_quiet: bool = False
         # In-flight RPC tasks so a deliberate teardown fails them fast; _reconnecting is True
         # during that teardown so _track_inflight_rpc turns the cancel into a retryable error.
         # In-flight RPC bookkeeping (#48069 salvage): user-visible requests registered while running so a
         # reconnect/shutdown teardown can fail them fast instead of orphaning them on a dying transport.
         self._inflight_tasks: set = set()
         self._reconnecting: bool = False
-        # Latched by races (teardown-vs-keepalive, auth-lock corruption); ensure_healthy()
-        # verifies before the next call.
+        # Latched by races (teardown-vs-keepalive, auth-lock corruption).
         # See #77765, #81051, #84132.
         self._suspect_reason: Optional[str] = None
         # Teardown that failed in-flight calls => next reconnect is RACE RECOVERY, not a

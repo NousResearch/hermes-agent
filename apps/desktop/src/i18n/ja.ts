@@ -389,6 +389,8 @@ export const jaOverrides = {
       mcp: 'MCP',
       archivedChats: 'アーカイブ済みチャット',
       sessions: 'セッション',
+      backup: 'バックアップと移行',
+      backupOnly: 'バックアップ',
       about: '情報',
       billing: '請求',
       notifications: '通知',
@@ -1340,10 +1342,7 @@ export const jaOverrides = {
       searching: '検索中…',
       noResults: '一致するスキルがハブにありません。',
       installed: 'インストール済み',
-      installStarted: name => `「${name}」をインストール中…`,
-      pickerBrowse: 'ハブ全体を見る',
-      pickerHide: 'ハブのブラウザーを隠す',
-      pickerHint: 'スキルの「+ Add to this Agent」を押すと、インストールされて上の一覧に表示されます。'
+      installStarted: name => `「${name}」をインストール中…`
     },
     tabSkills: 'スキル',
     tabToolsets: 'ツールセット',
@@ -2303,7 +2302,10 @@ export const jaOverrides = {
 
   composer: {
     message: 'メッセージ',
-    wakingProfile: profile => `${profile} を起動中…`,
+    switchingProfile: profile => `${profile} に切り替え中…`,
+    switchingProfileSlow: 'まだ接続中です。今送信したメッセージは接続を待ってからこのエージェントに届きます。',
+    switchProfileFailed: profile => `${profile} に切り替えられませんでした`,
+    willSendTo: profile => `${profile} に送信します`,
     placeholderStarting: 'Hermes を起動中...',
     placeholderReconnecting: 'Hermes に再接続中…',
     placeholderFollowUp: 'フォローアップを送信',

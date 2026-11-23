@@ -1,0 +1,23 @@
+name: re-call
+title: "RE-call"
+repo: https://github.com/GiulioDER/RE-call
+sha: "1333fc4ff8fd18e944fac183670bb1849697dba0"
+subdir: integrations/hermes
+description: "Local agent memory with a trust verdict per recalled memory: before each turn, the memories that pass RE-call's calibrated threshold, each with its memo id and validity dates; superseded memories flagged as retired with the memo that replaced them; and an explicit abstention line when nothing clears the threshold. Facts are stored one per memo by the recall_remember tool and by mirroring the built-in memory tool, with supersession on replace; conversation turns are not captured. Disclosure — runs RE-call's own MCP server (recall-mcp from recall-rag[fastembed,mcp]>=0.15.0, installed separately) as one local child process over stdio for the session, with a minimal environment (none of Hermes's keys) and its working directory in $HERMES_HOME/re-call; by default the memory store lives in the per-user folder <XDG_CONFIG_HOME, else ~/.config>/re-call/, shared with every Hermes profile and any other agent the user points at it, so they read each other's memories (set dsn or memo_folder for a separate store); mirrors writes of Hermes's built-in memory tool into RE-call; its memory-writing tools honour memory.write_approval and refuse writes nobody can approve; config, mirror journal, embedding cache and server log stay in $HERMES_HOME/re-call; RE-call downloads its fastembed embedding model from HuggingFace on first use; no other network, no telemetry, no credentials."
+maintainer: GiulioDER
+tier: community
+category: memory
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+docs_url: https://github.com/GiulioDER/RE-call/tree/master/integrations/hermes#readme
+readme: true
+platforms: []
+known_issues:
+  - "Needs RE-call 0.15.0 or later installed outside Hermes and a store created once with `recall --embedder fastembed setup --lite --memory ~/.config/re-call/memos --store ~/.config/re-call/memory.db --no-register`; until then the provider reports itself unavailable with that command"
+  - "Two Hermes profiles share one memory by default; set `dsn` to keep a profile separate"
+  - "A store with very few memos can stay uncalibrated; strict search then refuses and the provider shows the reason instead of recalling"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

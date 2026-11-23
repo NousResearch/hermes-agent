@@ -36,7 +36,7 @@ from agent.skill_utils import (
 def _skill_dir(tmp_path):
     """Patch both SKILLS_DIR and get_all_skills_dirs so _find_skill searches
     only the temp directory — not the real ~/.hermes/skills/."""
-    with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
         yield
 
@@ -192,7 +192,7 @@ class TestCreateSkill:
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
 
-        with patch("tools.skill_manager_tool.SKILLS_DIR", skills_dir), \
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir), \
              patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
             result = _create_skill("my-skill", VALID_SKILL_CONTENT, category="../escape")
 
@@ -919,7 +919,7 @@ class TestSecurityScanGate:
 def _two_roots(local_dir: Path, external_dir: Path):
     """Patch the skill manager so local SKILLS_DIR = local_dir and
     get_all_skills_dirs() returns [local_dir, external_dir] in order."""
-    with patch("tools.skill_manager_tool.SKILLS_DIR", local_dir), \
+    with patch("tools.skills_tool.SKILLS_DIR", local_dir), \
          patch("agent.skill_utils.get_all_skills_dirs",
                return_value=[local_dir, external_dir]):
         yield
@@ -1178,7 +1178,7 @@ class TestDeleteSkillRmtreeGuard:
         evil = skills / "evil-skill"
         evil.symlink_to(victim, target_is_directory=True)
         try:
-            with patch("tools.skill_manager_tool.SKILLS_DIR", skills), \
+            with patch("tools.skills_tool.SKILLS_DIR", skills), \
                  patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills]), \
                  patch("tools.skill_manager_tool._find_skill",
                        return_value={"path": evil}):
@@ -1198,7 +1198,7 @@ class TestDeleteSkillRmtreeGuard:
         outside = tmp_path / "outside_skill"
         outside.mkdir()
         (outside / "SKILL.md").write_text("x")
-        with patch("tools.skill_manager_tool.SKILLS_DIR", skills), \
+        with patch("tools.skills_tool.SKILLS_DIR", skills), \
              patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills]), \
              patch("tools.skill_manager_tool._find_skill",
                    return_value={"path": outside}):
@@ -1235,8 +1235,7 @@ def _curator_pass(tmp_path, *, monkeypatch):
     skills_root = hermes_home / "skills"
     skills_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    with patch("tools.skill_manager_tool.SKILLS_DIR", skills_root), \
-         patch("tools.skills_tool.SKILLS_DIR", skills_root), \
+    with patch("tools.skills_tool.SKILLS_DIR", skills_root), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_root]), \
          patch("tools.skill_usage._is_curator_managed_record", return_value=True), \
          patch("tools.skill_provenance.is_background_review", return_value=True):
@@ -1552,3 +1551,26 @@ class TestLockedGuard:
         assert autonomous["success"] is False, autonomous
         assert "could not be verified" in autonomous["error"], autonomous
         assert foreground["success"] is True, foreground
+
+
+
+def test_index_desc_limit_sets_the_skill_manage_description_budget(tmp_path, monkeypatch):
+    """A profile that widens its index accepts descriptions up to that width, and the tool schema the
+    model reads states the same budget; the default keeps 60 and the static schema bytes."""
+    from model_tools import get_tool_definitions
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    desc = "Use when pulling index weights, options chains or risk factors from the shared market data API."
+    content = f"---\nname: market-data\ndescription: {desc}\n---\n\nBody.\n"
+
+    def schema_desc():
+        return next(t["function"]["description"] for t in get_tool_definitions(["skills"], quiet_mode=True)
+                    if t["function"]["name"] == "skill_manage")
+
+    refused = json.loads(skill_manage(action="create", name="market-data", content=content))
+    assert refused["success"] is False and "60-char" in refused["error"]
+    assert "max 60 chars" in schema_desc()
+
+    (tmp_path / "config.yaml").write_text("skills:\n  index_desc_limit: 160\n", encoding="utf-8")
+    created = json.loads(skill_manage(action="create", name="market-data", content=content))
+    assert created["success"] is True, created
+    assert "max 160 chars" in schema_desc()

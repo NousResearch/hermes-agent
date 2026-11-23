@@ -359,15 +359,14 @@ def test_channel_windows_record_stage_and_assembly_handoff_shell(tmp_path, r2_se
     script = stage_step(jobs[native_builds(jobs)[("win32-x64", "commit")]], channel=True)["run"]
     result = run_shell(tmp_path, r2_server, script, env)
     assert result.returncode == 0, result.stdout + result.stderr
-    # One-dispatch: the env-default commit equals the request's own, which is
-    # provenance, not selection — the channel stage must accept it.
-    for key in ("metadata-windows-x64.json", "handoff-win32-x64.json"):
-        r2_server.store.pop(prefix + key)
-    result = run_shell(tmp_path, r2_server, script, dict(env, HERMES_BUILD_COMMIT=request["commit"]))
-    assert result.returncode == 0, result.stdout + result.stderr
-    # A different commit stays an override attempt (and stages nothing).
-    result = run_shell(tmp_path, r2_server, script, dict(env, HERMES_BUILD_COMMIT="d" * 40))
-    assert result.returncode != 0 and "another commit" in result.stderr
+    # The leg's exported commit identity selects nothing: handoff reads only its explicit
+    # arguments, so the request alone names the commit whatever HERMES_BUILD_COMMIT holds.
+    for build_commit in (request["commit"], "d" * 40):
+        for key in ("metadata-windows-x64.json", "handoff-win32-x64.json"):
+            r2_server.store.pop(prefix + key)
+        result = run_shell(tmp_path, r2_server, script, dict(env, HERMES_BUILD_COMMIT=build_commit))
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert json.loads(r2_server.store[prefix + "handoff-win32-x64.json"][0])["request"] == request
     receipt_key = handoff.channel_prefix(request) + "handoff-win32-x64.json"
     receipt = json.loads(r2_server.store[receipt_key][0])
     assert receipt["request"] == request
@@ -507,7 +506,7 @@ def test_tag_and_commit_staging_never_runs_for_a_pinned_channel_build():
         # it must stand down for a pinned channel build and run otherwise.
         assert not gate(step.get("if", "true"), DOWNLOADABLE_DISPATCHES["channel"], channel, job_if=False), (
             f"{name}: {step['name']!r} stages tag/commit receipts for a channel build")
-        for dispatch in ("tag", "candidate", "commit"):
+        for dispatch in ("candidate", "commit"):
             assert gate(step.get("if", "true"), DOWNLOADABLE_DISPATCHES[dispatch], admitted(["validate"]),
                         job_if=False), (name, dispatch)
         # The pinned-request stage is the one that runs instead.

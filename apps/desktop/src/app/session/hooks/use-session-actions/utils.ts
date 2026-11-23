@@ -1,8 +1,7 @@
-
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
-import { concatPartsByToolCall, sameAttachmentTurn, spliceOlderPreservedRows } from '@/lib/chat-messages'
+import { concatPartsByToolCall, spliceOlderPreservedRows } from '@/lib/chat-messages'
 import {
   assistantTextPart,
   type ChatMessage,
@@ -70,7 +69,7 @@ import type { ClientSessionState } from '../../../types'
 import {
   committedReplyCovers,
   isStrictAnswerTextExtension,
-  pageReplyCommittingLiveRow,
+  livePlaceOnCommittedPage,
   replyAfterLastTool
 } from './committed-reply'
 import { chatMessageArraysEquivalent, chatMessagesEquivalent } from './message-equivalence'
@@ -78,6 +77,7 @@ import {
   isLiveTailRow,
   liveOptimisticUserRun,
   optimisticUserAlreadyRepresented,
+  optimisticUserMatchesCommitted,
   refusedPromptCounterparts
 } from './optimistic-user-dedup'
 import {
@@ -740,7 +740,10 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
-    if (isOptimisticUser && optimisticUserAlreadyRepresented(message, liveOptimisticUsers, contentRefusedCounterparts)) {
+    if (
+      isOptimisticUser &&
+      optimisticUserAlreadyRepresented(message, liveOptimisticUsers, contentRefusedCounterparts)
+    ) {
       continue
     }
 
@@ -777,18 +780,7 @@ export function preserveLocalPendingTurnMessages(
 
     if (
       isOptimisticUser &&
-      acknowledgedUserCandidates.some(
-        candidate =>
-          // #122079: the tolerant arm widens the TEXT compare only — it stays
-          // inside the identity gate, so a rowId-bearing optimistic row is
-          // never swallowed by a committed row it provably is not (a genuine
-          // repeat of the same captioned paste). The rowId-less paste from
-          // #120978 carries no identity and keeps matching tolerantly.
-          !conflictingTranscriptIdentity(message, candidate) &&
-          (textWithoutReferenceLines(chatMessageText(candidate)) ===
-            textWithoutReferenceLines(chatMessageText(message)) ||
-            sameAttachmentTurn(candidate, message))
-      )
+      acknowledgedUserCandidates.some(candidate => optimisticUserMatchesCommitted(message, candidate))
     ) {
       continue
     }
@@ -1526,11 +1518,11 @@ export function overlayConcurrentMessageChanges(
 
     // The page caught this turn's reply committed before its completion
     // reached the live row: the live row takes that bubble's place.
-    const committedIndex = pageReplyCommittingLiveRow(overlaid, committedNewRow, current, currentMessages)
+    const committed = livePlaceOnCommittedPage(overlaid, committedNewRow, current, currentMessages)
 
-    if (committedIndex >= 0) {
-      nextIndexById.set(current.id, committedIndex)
-      overlaid[committedIndex] = current
+    if (committed) {
+      nextIndexById.set(current.id, committed.index)
+      overlaid[committed.index] = committed.row
       changed = true
 
       continue

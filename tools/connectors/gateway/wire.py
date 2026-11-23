@@ -29,9 +29,6 @@ ConnectorReturnTarget = Literal["hermes-desktop", "hermes-desktop-dev", "portal"
 # ``execute_link`` and ``portal`` itself; an older gateway ignores the field.
 ConnectorInitiator = Literal["agent_tool", "desktop_page", "card_retry"]
 
-# Hermes dispatch caps batches lower, so client-side chunking is deliberately absent.
-WIRE_BATCH_MAX = 25
-
 # Any string: a gateway newer than this client may add codes, and an unknown code still renders.
 ConnectorErrorCode = str
 # `product`: the request or the user's setup is the cause. `backend`: the gateway or the vendor failed.

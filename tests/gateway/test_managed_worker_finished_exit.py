@@ -37,21 +37,26 @@ time.sleep(60)  # interpreter teardown that outlives the owner's exit wait
 @pytest.mark.parametrize(('exit_shape', 'rotate'), [('nonzero', False), ('lingering', False), ('nonzero', True)])
 def test_finished_worker_keeps_its_result_on_slow_or_nonzero_exit(tmp_path, monkeypatch, exit_shape, rotate):
     from gateway import session_managed_worker as managed
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_authority import LiveSession, SessionAuthority, admission_row
     from gateway.session_contract import Submission
     from gateway.session_policy import build_policy
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch, claim_session_input
+    from persistence.conversation.usage import BillingRoute, TokenCounts, UsageDelta
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.fixtures.storage_seed import seed_session
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('s', source='test')
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, 's', 'test')
     # The worker's per-call usage writes, already committed by the time it reports 'finished'.
-    db.update_token_counts('s', input_tokens=200, output_tokens=50, cache_read_tokens=800, api_call_count=3, model='m')
+    db.usage.queue_usage('s', UsageDelta(tokens=TokenCounts(input_tokens=200, output_tokens=50, cache_read_tokens=800),
+                                         api_call_count=3, route=BillingRoute(model='m')))
+    db.usage.flush_usage()
     runner = SimpleNamespace(_draining=False, _cached_agent_for=lambda route: None,
                              _adapter_for_source=lambda source: None)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='i'))
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='i',
+                                 epoch=db.runtime.begin_epoch(instance_id='i'),
+                                 persistence=open_persistence(profile_scope(home=tmp_path)))
     authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
     actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
@@ -68,26 +73,28 @@ def test_finished_worker_keeps_its_result_on_slow_or_nonzero_exit(tmp_path, monk
 
         def reserve_then_compress(authority, **kwargs):
             # A worker compression mid-turn: the transcript continues in a child session and the owner's
-            # execution row follows it in the same transaction (hermes_state_worker_compression.py).
+            # execution row follows it in the same transaction (the worker compression publish).
             scope = reserve(authority, **kwargs)
-            db.end_session('s', 'compression')
-            db.create_session('s-c1', source='test', parent_session_id='s')
-            db._execute_write(lambda conn: conn.execute('UPDATE worker_executions SET session_id=? WHERE execution_id=?',
-                                                        ('s-c1', scope['execution_id'])))
-            db.update_token_counts('s-c1', input_tokens=100, output_tokens=10, api_call_count=1, model='m')
+            db.sessions.end('s', 'compression')
+            seed_session(db, 's-c1', 'test', parent_session_id='s')
+            raw_holder(db)._execute_write(lambda conn: conn.execute(
+                'UPDATE worker_executions SET session_id=? WHERE execution_id=?', ('s-c1', scope['execution_id'])))
+            db.usage.queue_usage('s-c1', UsageDelta(tokens=TokenCounts(input_tokens=100, output_tokens=10),
+                                                    api_call_count=1, route=BillingRoute(model='m')))
+            db.usage.flush_usage()
             return scope
         monkeypatch.setattr(managed, 'reserve_admission_worker', reserve_then_compress)
     policy = build_policy({'cwd': str(tmp_path), 'model': 'm'}, {}, profile_terminal=False)
 
     async def scenario():
         await authority.submit(actor, Submission('turn', ref, {'text': 'go'}, 'queue'))
-        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        row = admission_row(db.admissions.claim(epoch=authority.epoch, session_id='s'))
         authority._stamp_claim(ref, authority.sessions['s'], row)  # the drain's claim stamp
         async with asyncio.timeout(40):
             return row, await managed.execute_managed(authority, ref, row, policy)
-    with db:
+    with db, authority.persistence:
         row, response = asyncio.run(scenario())
-        status = db._read_one('SELECT status FROM session_admissions WHERE admission_id=?', (row['admission_id'],))[0]
+        status = db.admissions.get(admission_id=row['admission_id']).status
     assert response == 'FINISHED_ANSWER'
     captured = authority.pending_results[row['admission_id']]
     assert captured['result']['final_response'] == 'FINISHED_ANSWER'

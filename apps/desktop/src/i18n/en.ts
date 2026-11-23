@@ -2,6 +2,7 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import { enAppTour } from './en_app_tour'
+import { enBackupTransfer } from './en_backup_transfer'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
 import { enCatalog } from './en_catalog'
@@ -767,6 +768,8 @@ export const en: Translations = {
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
       sessions: 'Sessions',
+      backup: 'Backup & Transfer',
+      backupOnly: 'Backup',
       about: 'About',
       billing: 'Billing',
       notifications: 'Notifications',
@@ -1116,6 +1119,7 @@ export const en: Translations = {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: enUninstallSection,
+    backup: enBackupTransfer,
     memoryLayers: enMemoryLayers,
     customEndpoints: {
       active: 'Active',
@@ -2245,10 +2249,6 @@ export const en: Translations = {
       openLog: 'Open log',
       actionLog: 'Action log',
       alreadyInstalled: (name: string) => `"${name}" is already installed`,
-      pickerTitle: 'Skills Hub',
-      pickerBrowse: 'Browse the full hub',
-      pickerHide: 'Hide the hub browser',
-      pickerHint: 'Hit "+ Add to this Agent" on any skill — it installs and appears in the list above.',
       loadFailed: 'Skill hub failed to load',
       previewFailed: 'Skill preview failed',
       scanFailed: 'Security scan failed',
@@ -3330,7 +3330,10 @@ export const en: Translations = {
 
   composer: {
     message: 'Message',
-    wakingProfile: profile => `Waking up ${profile}…`,
+    switchingProfile: profile => `Switching to ${profile}…`,
+    switchingProfileSlow: 'Still connecting. Messages you send now will wait and go to this agent.',
+    switchProfileFailed: profile => `Couldn’t switch to ${profile}`,
+    willSendTo: profile => `Will send to ${profile}`,
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',
     placeholderFollowUp: 'Send follow-up',
@@ -4498,6 +4501,7 @@ export const en: Translations = {
       branchNewChat: 'Branch in new chat',
       react: 'React',
       dismissError: 'Dismiss error',
+      responseContinuing: 'Continuing…',
       responseStopped: 'Response stopped',
       contentRefusedNotice: "This message was refused by the model's safety filter — try a different query.",
       ...enErrorLayers,

@@ -1,0 +1,21 @@
+name: slack-history
+repo: https://github.com/TakeshiTGAL/hermes-plugin-slack-history
+sha: a3618d87529b4b9663fd2cf6a7fe8b95eb2447c9
+description: "Slack History returns speakers, times, and messages from the current channel or thread. A channel read includes replies from up to 5 threads and names any reply left unread. Ask what the thread concluded or what happened in this channel. Disclosure — reads message text, speaker display names, timestamps and permalinks from the current Slack channel or thread (and a channel listed in the plugin's extra_channels setting) through slack.com with the gateway's existing bot token, and sends that text to your model provider; anyone the gateway admits in that Slack conversation can trigger a read, with no separate user list. It does not post, react, edit or start OAuth, writes no files, and reads nothing in cron or non-Slack sessions."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-slack-history#readme
+screenshots:
+  - https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-slack-history/a3618d87529b4b9663fd2cf6a7fe8b95eb2447c9/assets/demo.png
+version: "0.1.0"
+requires_hermes: '>=0.21.4'
+platforms:
+  - linux
+  - macos
+title: Slack History
+capabilities:
+  provides_tools:
+    - slack_history
+  provides_hooks: []
+  requires_env: []

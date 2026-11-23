@@ -81,7 +81,7 @@ hermes-agent/
 ├── model_tools.py        # Tool orchestration, handle_function_call(); discovery in tools/registry.py
 ├── toolsets.py           # TOOLSETS dict, _HERMES_CORE_TOOLS
 ├── cli.py                # HermesCLI (REPL, slash dispatch) + hermes_cli/cli_*_mixin.py
-├── hermes_state.py       # SessionDB facade; hermes_state_*.py siblings
+├── persistence/          # storage interface and its sqlite/ backend
 ├── hermes_constants.py   # get_hermes_home(), display_hermes_home() — profile-aware paths
 ├── scripts/              # check, run_tests.sh, code_health/, ci/
 ├── evals/                # live-model A/B and probe harnesses
@@ -94,26 +94,26 @@ all profile-aware via `get_hermes_home()`.
 ### Packages and Python shape
 
 A topic that outgrows its file becomes a folder: `<stem>/__init__.py` is the **facade** (its
-docstring names each module's job, `__all__` is the surface, PEP 562 `__getattr__` when eager
-imports would cycle; no behaviour; `tools/connectors/` is the model), `<stem>/<topic>.py` holds the
-code. Flat `<stem>_<topic>.py` siblings (`gateway/run.py`, `tools/mcp_tool.py`) stay until
-touched; add none except where an area AGENTS.md still prescribes one (`tui_gateway` RPC methods,
-`tools/` backends). A family folder keeps its ABC/Protocol, one module per variant and a name →
-variant table (`tools/environments/`, whose table still sits in `terminal_tool_backends.py`). Tool
-folders register from `tool.py`; tests mirror folders.
+docstring names each module's job, `__all__` is the surface, PEP 562 `__getattr__` only for a
+measured startup cost or import hazard it names; no behaviour; `tools/connectors/` is the model),
+`<stem>/<topic>.py` holds the code. Flat `<stem>_<topic>.py` siblings (`gateway/run.py`,
+`tools/mcp_tool.py`) stay until touched; add none unless an area AGENTS.md still prescribes one
+(`tui_gateway` RPC methods, `tools/` backends). A family folder keeps its ABC/Protocol, one module
+per variant and a name → variant table (`tools/environments/`, its table still in
+`terminal_tool_backends.py`). Tool folders register from `tool.py`; tests mirror folders.
 
-- **Find code by topic:** `grep -rn "def name" <dir>/<stem>/ <dir>/<stem>_*.py`, not the facade.
-- **Topic modules late-import the facade** inside functions, never a module-level cycle; patch
-  where production reads (the facade is the seam, a patch on the defining module passes silently).
+- **Find code by topic:** `search_files` for `def name` in `<stem>/` and `<stem>_*.py`, not the facade.
+- **Imports go at module top:** topic modules import one another, never the facade; a cycle means
+  a shared name belongs in a lower module. Patch where the name is looked up.
 - **Size and complexity are ratcheted per unit:** new functions CC ≤ 20, ≤ 300 lines, nesting ≤ 6;
-  files ≤ 2,000 lines; units already over may only go down (move code into the `<stem>/` folder).
-- **Shape:** code imports on 3.11 (no PEP 695 syntax); importing has no side effects (no I/O,
-  threads, config or env reads); input is parsed where it enters into a frozen dataclass, `Enum`,
+  files ≤ 2,000 lines; units already over may only go down (move code into `<stem>/`).
+- **Shape:** code imports on 3.11 (no PEP 695 syntax); import has no side effect but tool registration
+  (no I/O, threads, config or env reads); input is parsed where it enters into a frozen dataclass, `Enum`,
   `Literal` or the area's wire model (Pydantic in `tui_gateway`); one return shape per function;
   dispatch by table, not `if name ==` ladders; collaborators are objects, not mixins; no module
   constant kept only for tests to patch.
 - **No re-export shims for internal moves;** internal paths are not API. Moving a symbol means
-  fixing its docs in the same PR (grep `website/docs`, `skills/`, every `AGENTS.md`).
+  fixing its docs in the same PR (search `website/docs`, `skills/`, every `AGENTS.md`).
 
 ## Rules that apply everywhere
 

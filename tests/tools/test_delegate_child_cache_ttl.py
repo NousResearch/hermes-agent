@@ -47,7 +47,7 @@ def test_real_spawn_path_applies_it(tmp_path, monkeypatch):
     from run_agent import AIAgent
     from tools import delegate_tool as dt
     import tools.delegate_tool_config as dtc
-    monkeypatch.setattr(dt, "_load_config", dict)
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", dict)
     monkeypatch.setattr(dtc, "_load_config", dict)
     kw = dict(api_key="k", base_url="https://openrouter.ai/api/v1", provider="openrouter",
               api_mode="chat_completions", model="anthropic/claude-sonnet-4.6", platform="cli", quiet_mode=True,

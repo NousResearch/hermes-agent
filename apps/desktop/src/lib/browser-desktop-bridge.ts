@@ -3,6 +3,7 @@ import { externalUrlTarget, LOCAL_CONNECTION_ID } from '@hermes/shared'
 import type { HermesApiRequest } from '@/global'
 import { BROWSER_BRIDGE_STUBS } from '@/lib/browser-bridge-stubs'
 import { createBrowserClipboardBridge } from '@/lib/browser-clipboard'
+import { createBrowserCloudBridge } from '@/lib/browser-cloud'
 import { createBrowserConnectionBridge } from '@/lib/browser-connection'
 import { createBrowserDesktopPluginsBridge } from '@/lib/browser-desktop-plugins'
 import { createBrowserFilesBridge } from '@/lib/browser-files'
@@ -148,6 +149,7 @@ export function installBrowserDesktopBridge(): boolean {
 
   const bridge: Window['hermesDesktop'] = {
     ...BROWSER_BRIDGE_STUBS,
+    cloud: createBrowserCloudBridge({ api, relays }),
     ...createBrowserClipboardBridge({ saveBuffer: uploads.saveImageBuffer }),
     ...createBrowserConnectionBridge({ api, bootstrap, relays }),
     ...(relays ? { connections: relays.connections } : {}),

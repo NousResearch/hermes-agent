@@ -548,3 +548,93 @@ async def test_long_thinking_text_continues_under_its_prefix():
     assert all(m.split("||", 1)[1].startswith("💬 …\n```\n") for m in shown[1:]), shown
     code = " ".join(re.findall(r"💬(?: …)?\n```\n(.*?)\n```", "\n".join(shown), re.DOTALL))
     assert code.split() == run_turn_progress._fold_safe(thinking).split()
+
+
+# ── fold on: a line sent as several messages, with no bubble to edit ─────────────────────────
+
+
+FLOOD = dict(error="flood_control:30", retry_after=30)
+FORBIDDEN = dict(error="403 Forbidden (error code: 50013): Missing Permissions")
+LONG_COMMAND = " && ".join(f"step{i} --flag=value{i}" for i in range(60))
+
+
+class RefusingAdapter(CaptureAdapter):
+    """Refuses the ``refuse_at``-th send attempt with ``refusal``; ``ops`` keeps only what landed.
+    ``edits_gone``: every edit fails for good (a deleted bubble), so the drain stops editing."""
+
+    def __init__(self, refuse_at=0, refusal=FORBIDDEN, *, edits_gone=False):
+        super().__init__(spoiler=True, limit=400)
+        self.refuse_at, self.refusal, self.edits_gone, self.attempts = refuse_at, refusal, edits_gone, []
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.attempts.append(content)
+        if len(self.attempts) == self.refuse_at:
+            return SendResult(success=False, **self.refusal)
+        return await super().send(chat_id, content, reply_to, metadata)
+
+    async def edit_message(self, chat_id, message_id, content, *, finalize=False, metadata=None) -> SendResult:
+        if self.edits_gone:
+            return SendResult(success=False, error="404 Not Found (error code: 10008): Unknown Message")
+        return await super().edit_message(chat_id, message_id, content, finalize=finalize, metadata=metadata)
+
+
+async def _send_long_line(monkeypatch, adapter, route):
+    """One folded terminal line too long for a message, sent with no editable bubble: under
+    ``separate`` grouping, or once its bubble's edit failed for good. The clock stands still."""
+    now = [100.0]
+    monkeypatch.setattr(run_turn_progress, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    turn = _turn(adapter, fold=True, grouping="separate" if route == "separate" else "accumulate")
+    st = turn._progress_edit_state(adapter, fold=True)
+    if route == "edit_gone":
+        st.progress_msg_id = "m0"
+    turn.progress_callback(*_tool("terminal", "run", {"command": LONG_COMMAND}))
+    await turn._progress_send_or_edit(st, turn._progress_absorb(st, turn._ctx.progress_queue.get_nowait()))
+    return turn, st, now
+
+
+async def _every_chunk(monkeypatch, route) -> list:
+    """The same line with nothing refused: every chunk is sent once, in order, each well-formed."""
+    adapter = RefusingAdapter(edits_gone=route == "edit_gone")
+    await _send_long_line(monkeypatch, adapter, route)
+    sent = [content for _, content, _ in adapter.ops]
+    assert len(sent) >= 3 and adapter.attempts == sent
+    for content in sent:
+        _well_formed(content, 400 - 64)
+    code = " ".join(re.findall(r"💻 terminal(?: …)?\n```\n(.*?)\n```", "\n".join(sent), re.DOTALL))
+    assert code.split() == LONG_COMMAND.split()
+    return sent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["separate", "edit_gone"])
+@pytest.mark.parametrize("refuse_at", [1, 2], ids=["first", "middle"])
+async def test_a_chunk_refused_for_good_ends_its_line_and_nothing_is_re_sent(monkeypatch, route, refuse_at):
+    sent = await _every_chunk(monkeypatch, route)
+    adapter = RefusingAdapter(refuse_at, FORBIDDEN, edits_gone=route == "edit_gone")
+    turn, st, now = await _send_long_line(monkeypatch, adapter, route)
+    assert adapter.attempts == sent[:refuse_at]  # no chunk after a gap
+    assert not st.flood_pending  # never owed, as for any fresh progress send refused for good
+    now[0] += 3600
+    assert not await turn._deliver_flood_pending_progress(st)
+    turn.progress_callback(*_tool("read_file", "b.py", {"path": "b.py"}))
+    await turn._progress_send_or_edit(st, turn._progress_absorb(st, turn._ctx.progress_queue.get_nowait()))
+    assert adapter.screen() == sent[:refuse_at - 1] + ["-# 🛠️ 1 tool · click to show\n||📖 Reading b.py||"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["separate", "edit_gone"])
+@pytest.mark.parametrize("refuse_at", [1, 2], ids=["first", "middle"])
+async def test_a_flood_refused_chunk_arms_the_window_before_anything_else_is_sent(monkeypatch, route, refuse_at):
+    sent = await _every_chunk(monkeypatch, route)
+    adapter = RefusingAdapter(refuse_at, FLOOD, edits_gone=route == "edit_gone")
+    turn, st, now = await _send_long_line(monkeypatch, adapter, route)
+    assert adapter.attempts == sent[:refuse_at]
+    assert st.flood_until == now[0] + 30  # armed at once, from the refusal's retry_after
+    assert not await turn._deliver_flood_pending_progress(st)  # nothing fires into the window
+    now[0] += 31
+    for _ in range(3):
+        await turn._deliver_flood_pending_progress(st)
+    # Nothing had landed: the line is owed whole and lands once. A head already on screen is never
+    # re-sent, and the tail behind it is not owed: a line without a bubble is only ever owed whole.
+    assert adapter.attempts == (sent[:1] + sent if refuse_at == 1 else sent[:2])
+    assert [content for _, content, _ in adapter.ops] == (sent if refuse_at == 1 else sent[:1])

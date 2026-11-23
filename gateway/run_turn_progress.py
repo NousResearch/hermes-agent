@@ -19,7 +19,7 @@ from agent.replay_cleanup import strip_stale_dangerous_confirmations
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.helpers import typing_metadata_for_turn
+from gateway.platforms.helpers import send_chunks, typing_metadata_for_turn
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -813,11 +813,10 @@ class GatewayTurnProgressMixin:
 
     async def _send_progress_line(self, st, line):
         """One queued line as its own message (no editable bubble). A folded line goes as cap-sized,
-        self-contained messages: handed whole to the adapter it would be split through the spoiler."""
+        self-contained messages: handed whole to the adapter it would be split through the spoiler.
+        They stop at the first failed send, a partial delivery once one landed (``send_chunks``)."""
         groups = self._split_progress_groups(st, [line]) if getattr(st, "fold", False) else [[line]]
-        for group in groups[:-1]:
-            await self._send_progress_text(st, self._progress_text(group))
-        return await self._send_progress_text(st, self._progress_text(groups[-1]))
+        return await send_chunks([self._progress_text(g) for g in groups], lambda text: self._send_progress_text(st, text))
 
     @staticmethod
     def _hold_partial_tail(st, result) -> bool:

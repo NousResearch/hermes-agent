@@ -22,6 +22,9 @@ interface RoutineSheetFooterProps {
   draft: RoutineDraft
   source: RoutineSource
   saving: boolean
+  /** The fields are showing. Until a new routine has a start (Blank or a template) there is nothing
+   *  to create, and a submit could only fail on fields the sheet has not shown yet. */
+  ready: boolean
   confirmingDelete: boolean
   onConfirmDelete: (confirming: boolean) => void
   onDelete: () => void
@@ -47,7 +50,7 @@ export function RoutineSheetFooter(props: RoutineSheetFooterProps) {
   )
 }
 
-function CreateFooter({ draft, saving, source }: RoutineSheetFooterProps) {
+function CreateFooter({ draft, ready, saving, source }: RoutineSheetFooterProps) {
   const { locale, t } = useI18n()
   const copy = useRoutinesCopy()
   const now = Date.now()
@@ -81,7 +84,7 @@ function CreateFooter({ draft, saving, source }: RoutineSheetFooterProps) {
             <Codicon name="comment-discussion" />
             {copy.createInChat}
           </Button>
-          <Button form={ROUTINE_FORM_ID} loading={saving} type="submit">
+          <Button disabled={!ready} form={ROUTINE_FORM_ID} loading={saving} type="submit">
             {t.cron.createAction}
           </Button>
         </span>

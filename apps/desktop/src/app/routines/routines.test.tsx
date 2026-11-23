@@ -327,6 +327,18 @@ describe('creating a routine', () => {
     expect(within(created).queryByText(/^First run/)).toBeNull()
   })
 
+  it('offers Create only once the new routine has a start', async () => {
+    renderPage()
+    const created = await openNewRoutine()
+    const create = () => screen.getByRole<HTMLButtonElement>('button', { name: en.cron.createAction })
+
+    // Nothing to create yet: a submit could only fail on fields the sheet has not shown.
+    expect(create().disabled).toBe(true)
+
+    fireEvent.click(within(created).getByRole('radio', { name: new RegExp(copy.blank) }))
+    expect(create().disabled).toBe(false)
+  })
+
   it('needs no agent choice with only one agent', async () => {
     $profiles.set([{ name: 'default' }] as ProfileInfo[])
     renderPage()

@@ -39,6 +39,10 @@ on:
       commit-build:
         default: false
         type: boolean
+      legacy-commit-build:
+        description: Commit claim built from a pre-claim commit (tagless X.Y.Z install stamp).
+        default: false
+        type: boolean
       channel-build:
         default: ''
         type: string
@@ -90,6 +94,7 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag }}
       ARCHIVE_TAG: ${{ inputs.archive-tag }}
       COMMIT_BUILD: ${{ inputs.commit-build }}
+      LEGACY_COMMIT_BUILD: ${{ inputs.legacy-commit-build }}
       CHANNEL_BUILD: ${{ inputs.channel-build }}
       CHANNEL_REQUEST_SHA256: ${{ inputs.channel-request-sha256 }}
       PUBLIC_BASE: ${{ inputs.public-base }}
@@ -106,7 +111,9 @@ jobs:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           # A dispatch tests the artifact of `sha` with the dispatched ref's scripts.
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || inputs.channel-build != '' && inputs.controller-sha || inputs.sha }}
+          # Channel and commit claims use the trusted controller's smoke driver so pre-PR
+          # commits still receive claim-aware handoff and stamp verification.
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || (inputs.channel-build != '' || startsWith(inputs.tag, 'commit.')) && inputs.controller-sha || inputs.sha }}
           persist-credentials: false
 
       - name: Set up driver tools only
@@ -193,7 +200,7 @@ jobs:
           ARTIFACT: ${{ steps.artifact.outputs.path }}
         run: |
           args=()
-          if [ -n "$RELEASE_TAG" ]; then args+=(--tag "$RELEASE_TAG"); fi
+          if [ -n "$RELEASE_TAG" ] && [ "${LEGACY_COMMIT_BUILD:-false}" != true ]; then args+=(--tag "$RELEASE_TAG"); fi
           if [ -n "${CHANNEL_BUILD:-}" ]; then args+=(--channel-request "$SMOKE_ROOT/request.json"); fi
           bash tests/install/macos-bundle-smoke.sh --artifact "$ARTIFACT" --arch "$ARCH" \
             --commit "$RELEASE_COMMIT" "${args[@]}" --work "$SMOKE_ROOT/work" --out "$SMOKE_ROOT/out"
@@ -206,7 +213,7 @@ jobs:
           ARTIFACT: ${{ steps.artifact.outputs.path }}
         run: |
           $tagArgs = @()
-          if ($env:RELEASE_TAG) { $tagArgs = @('-Tag', $env:RELEASE_TAG) }
+          if ($env:RELEASE_TAG -and $env:LEGACY_COMMIT_BUILD -ne 'true') { $tagArgs = @('-Tag', $env:RELEASE_TAG) }
           if ($env:CHANNEL_BUILD) { $tagArgs = @('-ChannelRequest', "$env:SMOKE_ROOT/request.json") }
           powershell -NoProfile -ExecutionPolicy Bypass -File tests/install/windows-bundle-smoke.ps1 -Artifact $env:ARTIFACT -Arch $env:ARCH -Commit $env:RELEASE_COMMIT @tagArgs -Work "$env:SMOKE_ROOT/work" -Out "$env:SMOKE_ROOT/out"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

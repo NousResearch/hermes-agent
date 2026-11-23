@@ -232,7 +232,7 @@ def pool_subdir_suite(pool_subdir: str) -> str | None:
     if parse_attempt_ref(pool_subdir) is not None:
         return "hermes-stable"
     match = RELEASE_TAG_RE.fullmatch(pool_subdir) if isinstance(pool_subdir, str) else None
-    if match is not None and match.group("ts") and "\n" not in pool_subdir:
+    if match is not None and match.group("kind") == "canary" and "\n" not in pool_subdir:
         return "hermes-canary"
     return None
 

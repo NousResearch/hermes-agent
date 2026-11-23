@@ -128,7 +128,11 @@ class BuildRequest:
         if bool(tag) == bool(commit):
             raise ValueError("exactly one of --tag or --commit is required")
         bundle_env = validate(bundle_env)
-        if bundle_env and tag:
+        from hermes_cli.update_channel import is_commit_tag
+
+        # A commit build bakes its defaults whether it is tagless or runs the release pipeline on
+        # its claim (commit.<stamp>-vX.Y.Z); a stable or canary release never does.
+        if bundle_env and tag and not is_commit_tag(tag):
             raise ValueError("Bundle environment defaults require a commit build")
         source, work, cache = source.resolve(), work.resolve(), cache.resolve()
         require_output_roots(source)
@@ -148,9 +152,10 @@ class BuildRequest:
                 git(source, "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}")
         release_epoch = None
         if tag:
-            from hermes_cli.update_channel import canary_timestamp
+            from hermes_cli.update_channel import canary_timestamp, commit_timestamp
 
-            canary = canary_timestamp(tag)
+            # A canary's or commit build's claim carries its build time.
+            canary = canary_timestamp(tag) or commit_timestamp(tag)
             if canary:
                 release_epoch = int(datetime.strptime(canary, "%Y%m%dT%H%M%SZ")
                                     .replace(tzinfo=UTC).timestamp())

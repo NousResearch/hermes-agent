@@ -9,7 +9,7 @@
  * by itself, so silence is always safe.
  *
  * Evidence, not focus: with the OS idle clock from main (`electron/presence.ts`) the evidence is
- * input anywhere on the computer; without it (the Webapp, Desktop on Wayland) it is pointer/key/
+ * input anywhere on the computer; without it (the Webapp, Desktop on Linux) it is pointer/key/
  * wheel/touch input inside this document while it is visible. Focus and visibility gate reporting
  * but never count as input. Nothing here renders: the reporter lives in timers and listeners.
  */

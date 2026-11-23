@@ -1,7 +1,5 @@
 import type { IpcMain } from 'electron'
 
-import { hudModifierMonitorSupported } from './hud-modifier-monitor'
-
 /** What main knows about the user being at this computer, pushed on `hermes:presence`. */
 export interface PresenceSnapshot {
   /** The OS idle clock answered for this sample; without it the renderer falls back to its own page input. */
@@ -23,9 +21,18 @@ export const PRESENCE_ACTIVE_SECONDS = 60
 export const PRESENCE_PUSH_MS = 45_000
 
 // Electron answers `'locked'` from `getSystemIdleState`, and emits `lock-screen`/`unlock-screen`, only
-// on macOS and Windows. A lock is not reported on Linux: there the idle clock (X11) just keeps
-// growing while the screen is locked, so presence ends a minute after the last input.
+// on macOS and Windows. A lock is not reported on Linux: no input reaches the window under a screen
+// locker, so the page-input fallback reads as away a minute after the last input.
 const LOCK_STATE_PLATFORMS = new Set<NodeJS.Platform>(['darwin', 'win32'])
+
+/**
+ * Whether the OS idle clock counts only the user's input in every app. True on macOS and Windows.
+ * Not on Linux: Wayland hides it, and under X11 Hermes itself resets it after every reply (releasing
+ * its keep-awake blocker, and when the completion sound ends), which would read as the user coming back.
+ */
+export function presenceIdleClockSupported(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === 'darwin' || platform === 'win32'
+}
 
 export interface PresenceWebContents {
   isDestroyed(): boolean
@@ -51,7 +58,7 @@ export interface AttachPresenceSourceOptions {
   monitor: PresencePowerMonitor
   /** Windows that already exist when this attaches. */
   windows: PresenceWindow[]
-  /** macOS, Windows and X11 have an idle clock that counts input in every app; Wayland hides it. */
+  /** Whether to sample the OS idle clock; defaults to `presenceIdleClockSupported(platform)`. */
   supported?: boolean
   platform?: NodeJS.Platform
   now?: () => number
@@ -104,8 +111,8 @@ export function attachPresenceSource({
   ipc,
   monitor,
   windows: initialWindows,
-  supported = hudModifierMonitorSupported(),
   platform = process.platform,
+  supported = presenceIdleClockSupported(platform),
   now = Date.now
 }: AttachPresenceSourceOptions): void {
   const windows = new Set<PresenceWindow>()

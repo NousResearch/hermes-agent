@@ -21,10 +21,6 @@ from utils import atomic_replace, mkstemp_beside
 
 logger = logging.getLogger(__name__)
 
-# The ONLY env vars sanitized on load: credentials must be pure ASCII (they become HTTP header values);
-# arbitrary user env vars are never silently altered.
-_CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
-
 # Once-per-process guards: load_hermes_dotenv() runs repeatedly (user + project env, gateway hot-reload,
 # lazy imports mid-turn, tests) so warnings/logs fire once per key/path/home.
 _WARNED_KEYS: set[str] = set()          # credential names already given the non-ASCII warning
@@ -364,14 +360,16 @@ def _format_offending_chars(value: str, limit: int = 3) -> str:
 
 
 def _sanitize_loaded_credentials() -> None:
-    """Strip non-ASCII from credential env vars (``_CREDENTIAL_SUFFIXES``) so the codebase never sees them.
+    """Strip non-ASCII from HTTP-header credentials so the codebase never sees them.
 
     Emits a one-line warning to stderr when characters are stripped. Silent stripping would mask copy-paste
     corruption (Unicode lookalike glyphs from PDFs / rich-text editors, ZWSP from web pages) as opaque
     provider-side "invalid API key" errors (see #6843).
     """
+    from hermes_cli.config_credential_values import _is_header_credential_env_name
+
     for key, value in list(os.environ.items()):
-        if not any(key.endswith(suffix) for suffix in _CREDENTIAL_SUFFIXES):
+        if not _is_header_credential_env_name(key):
             continue
         if value.isascii():
             continue
@@ -1223,7 +1221,9 @@ def _publish_live_source_values(home_key: str, home_path: Path, values: dict[str
 def _published_value(name: str, staged: dict) -> str | None:
     """The value this pass published for *name*, in the form ``_sanitize_loaded_credentials`` leaves it."""
     value = staged.get(name)
-    if value is None or value.isascii() or not name.endswith(_CREDENTIAL_SUFFIXES):
+    from hermes_cli.config_credential_values import _is_header_credential_env_name
+
+    if value is None or value.isascii() or not _is_header_credential_env_name(name):
         return value
     return value.encode("ascii", errors="ignore").decode("ascii")
 

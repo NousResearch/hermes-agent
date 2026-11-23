@@ -189,7 +189,7 @@ def test_utf16_le_bom_preserves_non_ascii_values(tmp_path, monkeypatch):
     """UTF-16-LE+BOM rewrite must preserve non-ASCII values (not just ASCII keys).
 
     Uses non-credential var names so _sanitize_loaded_credentials does not
-    strip non-ASCII from values (that path only targets *_KEY/*_TOKEN/etc.).
+    strip non-ASCII from values (that path only targets header credentials).
     """
     home = tmp_path / "hermes"
     home.mkdir()
@@ -832,3 +832,16 @@ def test_lowercase_managed_dir_line_cannot_repoint_launch_value_on_windows(tmp_p
     load_hermes_dotenv(load_external_secrets=False)
 
     assert os.environ["HERMES_MANAGED_DIR"] == str(tmp_path / "admin")
+
+
+def test_dotenv_loader_preserves_a_unicode_ssh_key_path(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("TERMINAL_SSH_KEY", raising=False)
+    ssh_path = r"C:\Users\张三\.ssh\id_ed25519"
+    (home / ".env").write_text(f"TERMINAL_SSH_KEY={ssh_path}\n", encoding="utf-8")
+
+    load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+
+    assert os.environ["TERMINAL_SSH_KEY"] == ssh_path

@@ -1236,6 +1236,31 @@ class TestStandaloneSendUserDmResolution:
         assert client.files_upload_v2.await_args.kwargs["channel"] == "D777666555"
         _slack_mod._slack_dm_cache.clear()
 
+    @pytest.mark.asyncio
+    async def test_cron_user_target_opens_dm_before_post(self):
+        """``deliver=slack:U…`` resolves to ``user:U…``; the standalone sender opens the DM."""
+        from gateway.outbound.send import prepare_send_message_platforms, resolve_send_target
+        prepare_send_message_platforms()
+        chat_id, _thread, err = resolve_send_target(
+            "slack", "U0BN028KU3G", pass_unresolved_references=True)
+        assert err is None
+        _slack_mod._slack_dm_cache.clear()
+        open_resp = self._mock_resp({"ok": True, "channel": {"id": "D0CJ90HFTJ4"}})
+        post_resp = self._mock_resp({"ok": True, "ts": "123.456"})
+        session = self._mock_session(open_resp, post_resp)
+        config = PlatformConfig(enabled=True, token="***")
+
+        with patch.object(_slack_mod.aiohttp, "ClientSession", return_value=session):
+            result = await _slack_mod._standalone_send(config, chat_id, "daily brief")
+
+        assert result["success"] is True
+        open_call, post_call = session.post.call_args_list
+        assert "conversations.open" in open_call.args[0]
+        assert open_call.kwargs["json"] == {"users": "U0BN028KU3G"}
+        assert "chat.postMessage" in post_call.args[0]
+        assert post_call.kwargs["json"]["channel"] == "D0CJ90HFTJ4"
+        _slack_mod._slack_dm_cache.clear()
+
 
 # ---------------------------------------------------------------------------
 # TestSendDocument
@@ -4406,6 +4431,29 @@ class TestEnsureDmConversation:
         assert result.success is True
         post_kwargs = adapter._app.client.chat_postMessage.await_args.kwargs
         assert post_kwargs["channel"] == "D999NEW"
+
+    @pytest.mark.asyncio
+    async def test_cron_user_target_send_opens_dm(self, adapter):
+        """``deliver=slack:U…`` resolves to ``user:U…``; live ``send()`` must open the DM
+        and post to D…, not hand the pseudo-id to chat.postMessage (channel_not_found)."""
+        from gateway.outbound.send import prepare_send_message_platforms, resolve_send_target
+        prepare_send_message_platforms()
+        chat_id, _thread, err = resolve_send_target(
+            "slack", "U0BN028KU3G", pass_unresolved_references=True)
+        assert err is None
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "D0CJ90HFTJ4"}}
+        )
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "111.222"}
+        )
+
+        result = await adapter.send(chat_id, "daily brief")
+
+        assert result.success is True
+        adapter._app.client.conversations_open.assert_awaited_once_with(users="U0BN028KU3G")
+        post_kwargs = adapter._app.client.chat_postMessage.await_args.kwargs
+        assert post_kwargs["channel"] == "D0CJ90HFTJ4"
 
 
 # ---------------------------------------------------------------------------

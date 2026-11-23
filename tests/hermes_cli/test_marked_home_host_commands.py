@@ -197,6 +197,23 @@ def test_a_marked_profiles_cron_script_and_inline_skill_shell_do_not_start(home,
     assert ok is False and "runs elsewhere" in output
 
 
+def test_a_marked_profiles_browser_executable_is_not_started(home, tmp_path):
+    """``browser.executable_path`` names the Chromium a local browser session starts, and ``hermes doctor
+    --live`` launches it without building an agent."""
+    from tools import browser_launcher
+
+    program, ran = _program(tmp_path, "browser")
+    (home / "profiles" / "ops" / "config.yaml").write_text(
+        f"browser:\n  executable_path: {json.dumps(str(program))}\n", encoding="utf-8")
+    _mark(home)
+    try:
+        browser, error = browser_launcher.launch_chromium("marked-probe", ephemeral=True, timeout=5)
+    finally:
+        browser_launcher.stop_browser("marked-probe")
+    assert browser is None and "runs elsewhere" in error
+    assert not ran.exists()
+
+
 def test_a_marked_profiles_key_cmd_is_not_run(home, tmp_path):
     from agent import command_token_source
 

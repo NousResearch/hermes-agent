@@ -146,6 +146,8 @@ class MessageEvent:
     _admitted_before_drain: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+    # Only while executing this native admission; never restored from event fields.
+    _native_turn_route: Optional[str] = field(default=None, init=False, repr=False, compare=False)
 
     def accept_interrupt(self) -> None:
         """The runner's stop/reset handler ran (past admission and slash access): the receiving adapter

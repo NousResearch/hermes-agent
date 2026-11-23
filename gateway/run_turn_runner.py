@@ -26,6 +26,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
+from gateway.session_context import scoped_messaging_turn
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from hermes_cli.plugins_dispatch import stream_held
@@ -1321,7 +1322,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from gateway.session_authorities import active_authority
         from persistence.core.errors import AuthorityRefusal
         policy = policy_for_source(self._runner, self._ctx.source)
-        with ExitStack() as scope:
+        with ExitStack() as scope, scoped_messaging_turn(self._ctx):
             try:
                 scope.enter_context(policy_scope(policy, authority=active_authority(self._runner)))
             except AuthorityRefusal as exc:

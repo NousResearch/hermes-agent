@@ -343,6 +343,8 @@ async def execute_admission(authority, ref, row):
     if provenance is not None:
         from gateway.session_ingress_context import restore_provenance
         home = restore_provenance(authority.runner, event.source, provenance)
+        # A viewer can submit on this same route, but only a native input has connector provenance.
+        event._native_turn_route = row['payload']['native_text_v1']['route']
     from gateway.config import Platform
     from gateway.session_api_turn import api_execution, prepare_api_execution
     from gateway.session_results import execution_result
@@ -409,6 +411,7 @@ async def execute_admission(authority, ref, row):
             await _hand_over_turn_marker(authority, row['admission_id'], event)
             return response
     finally:
+        event._native_turn_route = None  # also revoke a cancelled admission's unfinished worker
         if not native:
             # No adapter task awaits this turn to run its post-delivery callbacks: the drain runs them
             # once the turn settled and its reply went out (``fire_post_delivery``).

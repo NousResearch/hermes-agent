@@ -318,6 +318,7 @@ export const arChrome = {
       sessionActions: 'إجراءات الجلسة',
       sessionRunning: 'الجلسة تعمل',
       needsInput: 'تحتاج إدخالا',
+      needsYouBadge: 'بانتظارك',
       waitingForAnswer: 'بانتظار إجابة',
       backgroundRunning: 'تعمل في الخلفية',
       draftSession: 'مسودة — لم تُرسل بعد',

@@ -3188,6 +3188,7 @@ export const zhOverrides = {
       sessionActions: '会话操作',
       sessionRunning: '会话运行中',
       needsInput: '需要你输入',
+      needsYouBadge: '等你处理',
       waitingForAnswer: '正在等待你的回答',
       finishedUnread: '已完成 — 未读',
       backgroundRunning: '后台任务运行中',

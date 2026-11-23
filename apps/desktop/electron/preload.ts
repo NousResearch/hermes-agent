@@ -357,6 +357,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // rejection the renderer expects — see electron/api-expected-404.ts.
   api: request => ipcRenderer.invoke('hermes:api', request).then(unwrapExpectedNotFound),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
+  setDockBadgeCount: count => ipcRenderer.invoke('hermes:dock-badge:set', count),
   claimStartupLatency: () => ipcRenderer.invoke('hermes:startup-latency:claim'),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
   readWindowBelow: () => ipcRenderer.invoke('hermes:window:readBelow'),

@@ -4,7 +4,7 @@ import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
-import { OUT_OF_STORE_PUBLISHER, channelBuildRequest } from '../../../scripts/msix-shared.mjs'
+import { COMMIT_TAG_RE, OUT_OF_STORE_PUBLISHER, channelBuildRequest, releaseVersion } from '../../../scripts/msix-shared.mjs'
 import { codesignTeam, channelStampAssertions } from './mac-bundled-manifest.cjs'
 
 const identityModule = fileURLToPath(new URL('../../../apps/desktop/product-identity.cjs', import.meta.url))
@@ -18,7 +18,7 @@ function admitChannelRequest(request, commit, tag) {
 
 export function bundleIdentity(commit, tag = '', channelRequest = null) {
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Expected exact full lowercase commit SHA')
-  if (tag && !/^v\d+\.\d+\.\d+(?:\+canary\.20\d{6}T\d{6}Z)?$/.test(tag)) throw new Error('Invalid release tag')
+  if (tag && !releaseVersion(tag)) throw new Error('Invalid release tag')
   if (channelRequest !== null) {
     const request = admitChannelRequest(channelRequest, commit, tag)
     return { appId: request.identity.appId, msixIdentity: request.identity.msixAppIdWithOrg,
@@ -30,7 +30,7 @@ export function bundleIdentity(commit, tag = '', channelRequest = null) {
   const identity = JSON.parse(execFileSync(process.execPath, ['-e',
     'console.log(JSON.stringify(require(process.argv[1])))', identityModule], {
     encoding: 'utf8', env: { ...process.env, HERMES_DESKTOP_VARIANT: 'bundled',
-      HERMES_PAYLOAD_TAG: tag, HERMES_BUILD_COMMIT: tag ? '' : commit, _HERMES_CHANNEL_REQUEST_JSON: '' },
+      HERMES_PAYLOAD_TAG: tag, HERMES_BUILD_COMMIT: !tag || COMMIT_TAG_RE.test(tag) ? commit : '', _HERMES_CHANNEL_REQUEST_JSON: '' },
   }))
   return { appId: identity.appId, msixIdentity: identity.msixAppIdWithOrg,
     applicationId: identity.appNamePascal, publisher: OUT_OF_STORE_PUBLISHER }
@@ -41,10 +41,12 @@ export function bundleIdentity(commit, tag = '', channelRequest = null) {
  * channelRequest?: import('../../../apps/desktop/electron/install-stamp.js').ChannelBuildRequest | null}} options */
 export function verifyBundleStamp(stamp, { commit, tag = '', platform, channelRequest = null }) {
   if (!['darwin', 'win32'].includes(platform)) throw new Error('Unsupported native platform')
+  if (tag && !releaseVersion(tag)) throw new Error('Invalid release tag')
   const request = channelRequest === null ? null : admitChannelRequest(channelRequest, commit, tag)
+  const commitBuild = !request && (!tag || COMMIT_TAG_RE.test(tag))
   const expected = { commit, tag: request?.receiverCandidate ? request.releaseTag : tag || null, payload: 'bundled', distribution: 'desktop-app', dirty: false,
-    updateMechanism: tag || request ? { darwin: 'electron-updater', win32: 'app-installer' }[platform] : 'external' }
-  if (!tag && !request) Object.assign(expected, { source: 'commit-build', branch: null })
+    updateMechanism: commitBuild ? 'external' : { darwin: 'electron-updater', win32: 'app-installer' }[platform] }
+  if (commitBuild) Object.assign(expected, { source: 'commit-build', branch: null })
   for (const [key, value] of Object.entries(expected)) {
     if (stamp?.[key] !== value) throw new Error(`stamp.${key}: ${JSON.stringify(stamp?.[key])} != ${JSON.stringify(value)}`)
   }
@@ -58,7 +60,7 @@ export function verifyBundleStamp(stamp, { commit, tag = '', platform, channelRe
 
 function legacyBundleVersion(stamp, tag) {
   if (stamp.channelBuild != null) throw new Error('Unexpected stamp.channelBuild without an admitted request')
-  const version = tag ? tag.slice(1) : stamp.displayVersion
+  const version = tag ? releaseVersion(tag) : stamp.displayVersion
   if (!tag && !/^\d+\.\d+\.\d+$/.test(version)) throw new Error('stamp.displayVersion must be a commit-build semver')
   return version
 }

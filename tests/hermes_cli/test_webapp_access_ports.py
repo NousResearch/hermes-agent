@@ -6,7 +6,8 @@ to bind 9120 too, which the default gateway's Webapp holds, so nothing was serve
 profile the first port above 9120 that no other Hermes home claims and nothing listens on, and writes it to
 that profile's ``webapp.port``, so the gateway binds it, the launcher prints and opens it, the sign-in
 callback names it, and it stays the same across restarts. A ``webapp.port`` the user set always stays.
-No test binds a real port: what listens is faked, and the probe itself is checked on OS-chosen ports.
+What listens is faked, and the probe itself is checked on OS-chosen ports; one specific-address case
+holds a real loopback listener on the first candidate port.
 """
 import os
 import socket
@@ -16,6 +17,9 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import webapp_access
+
+_REAL_PORT_FREE = webapp_access._port_free
+_REAL_LAN_ADDRESS = webapp_access.lan_address
 
 
 def _write(path: Path, text: str) -> Path:
@@ -246,6 +250,26 @@ def test_a_start_that_fails_after_choosing_keeps_the_port(machine):
     machine["probed"].clear()
     _host, port, _public_url, callback = webapp_access.plan("lan")
     assert (port, callback, machine["probed"]) == (None, "http://192.168.1.50:9123/auth/callback", [])
+
+
+def test_a_specific_address_gets_a_port_that_is_free_on_loopback_too(machine):
+    """The gateway also binds the port on loopback for a specific address, so a port something holds
+    on loopback is never chosen for it, though the address itself is free there."""
+    address = _REAL_LAN_ADDRESS()
+    if address is None:
+        pytest.skip("this machine has no non-loopback IPv4 address")
+    _write(machine["solo"], f"gateway:\n  standalone: true\nwebapp:\n  host: {address}\n")
+    machine["monkeypatch"].setattr(webapp_access, "_port_free", _REAL_PORT_FREE)
+    with socket.socket() as held:
+        try:
+            held.bind(("127.0.0.1", 9121))
+        except OSError:
+            pytest.skip("9121 is already in use on loopback here")
+        held.listen()
+        host, port, _public_url, _callback = webapp_access.plan("lan")
+    assert host == address
+    assert port not in {9121, 9122}, "9121 is held on loopback, 9122 is the other profile's"
+    assert _webapp_block(machine["solo"])["port"] == port
 
 
 def test_the_probe_sees_a_port_a_listener_holds():

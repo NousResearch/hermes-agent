@@ -948,11 +948,17 @@ By default, MCP tools run sequentially — one at a time. If your MCP server exp
 ```yaml
 mcp_servers:
   docs:
-    command: "docs-server"
+    url: "https://mcp.example.com/mcp"
     supports_parallel_tool_calls: true
+    sampling:
+      enabled: false
+    elicitation:
+      enabled: false
 ```
 
-When `supports_parallel_tool_calls` is `true`, Hermes may execute multiple tools from that server at the same time within a single tool-call batch, just like it does for built-in read-only tools (web_search, read_file, etc.).
+When `supports_parallel_tool_calls` is `true`, Hermes admits tools from that server to parallel tool-call batches. Calls to the **same server** overlap on Streamable HTTP only when both sampling and elicitation are disabled. These callbacks carry server-wide state, so enabling either retains serialized RPCs. Both are enabled by default.
+
+Stdio, explicit legacy SSE (`transport: sse`), and automatic SSE fallback retain serialized RPCs even with the opt-in. Discovery, resource and prompt utilities keep their existing locking. The opt-in belongs to the calling profile, including when profiles share a connection. With the setting absent or `false`, calls remain serial. Tool approval and replay-safety rules are unchanged.
 
 :::caution
 Only enable parallel calls for MCP servers whose tools are safe to run at the same time. If tools read and write shared state, files, databases, or external resources, review the read/write race conditions before enabling this setting.

@@ -1,0 +1,5 @@
+# The commit-claim build contract this tree's packaging honours. Stable Release reads it with
+# git, never by running this tree (scripts/releases/stable.py, commit_supports_claim_tag): a
+# commit without this file builds through the tagless --commit path instead.
+# Raise it together with stable.CLAIM_BUILD_VERSIONS when claim packaging changes incompatibly.
+1

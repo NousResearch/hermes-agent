@@ -8,10 +8,11 @@ Defaults are the Desktop bot page's "Share keys & accounts with the main profile
 launch profile's provider/tool keys (bot tokens and allowlists stripped) and its model unless one is
 picked, so a profile made on any surface answers its first chat. Logins are shared by NOT copying
 ``auth.json``: a profile without one reads the default root's (``hermes_cli.auth`` fallback). That only
-shares the launch profile's logins when the launch profile IS the root, so a named launch profile's
-``auth.json`` is copied instead. Opt-outs: ``share_auth=False`` (auth copied once, single-use OAuth
-grants dropped) and ``mirror_credentials=False`` (no keys, logins or model copied; the root's logins
-stay readable through the same fallback). Clones keep their own ``.env``.
+shares the source's logins (a clone's, else the launch profile's) when the source reads the root's
+too (it is the root or has no ``auth.json``), so a named source's own ``auth.json`` is copied instead.
+Opt-outs: ``share_auth=False`` (auth copied once, single-use OAuth grants dropped) and
+``mirror_credentials=False`` (no keys, logins or model copied; the root's logins stay readable through
+the same fallback). Clones keep their own ``.env`` (a comment-only one takes the launch profile's keys).
 """
 from __future__ import annotations
 
@@ -65,7 +66,7 @@ class ProfileCreateRequest:
     quiet: bool = True                 # bundled-skill seeding prints its own failures when False
     # Bot-page defaults (see module docstring); every surface exposes both opt-outs.
     mirror_credentials: bool = True    # launch .env keys / voice / model (and auth.json unless shared)
-    share_auth: bool = True            # read the root's auth.json instead of copying one (root launch only)
+    share_auth: bool = True            # read the root's auth.json instead of copying one (source reads the root's)
     model: str = ""                    # explicit model pin (with provider)
     provider: str = ""
     model_validate_in: Optional[Path] = None  # home whose catalog vouches for the pick (default: the profile)
@@ -256,11 +257,20 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
         result.alias_path, result.alias_collision = step(
             "alias wrapper", lambda: write_alias(request.name), default=(None, None))
     if request.mirror_credentials:
-        from hermes_cli.auth import _global_auth_file_path
+        # A clone's logins come from its source; a fresh profile's from the launch profile. A source that
+        # can't be read now copies no logins, never the launch profile's (another account's): sharing the
+        # root's store leaves the profile reading the root's, as any profile without its own auth.json does.
+        auth_home = step("logins source", lambda: _logins_home(
+            None if request.fresh else profiles._resolve_clone_source(request.clone_from)))
+        share_auth = request.share_auth or auth_home is None
+        if auth_home is None:
+            from hermes_constants import get_default_hermes_root
+            auth_home = get_default_hermes_root()
         kept_root = step("launch credentials", lambda: mirror_launch_credentials(
-            path, result.mirrored, share_auth=request.share_auth, clone_channels=request.clone_channels), default=())
-        if kept_root and _global_auth_file_path() is not None:
-            # A named launch profile's own subscription logins can't be copied (single-use refresh
+            path, result.mirrored, share_auth=share_auth, clone_channels=request.clone_channels,
+            auth_home=auth_home), default=())
+        if kept_root and not _is_root(auth_home):
+            # A named source's own subscription logins can't be copied (single-use refresh
             # tokens); the copy reads the default profile's for those providers instead.
             result.warnings.append(
                 f"subscription logins not carried over ({', '.join(kept_root)}): the profile uses the default "
@@ -478,18 +488,35 @@ def inherit_launch_model(path: Path) -> bool:
 
 
 
+def _is_root(home: Optional[Path]) -> bool:
+    """Whether *home* (default: the launch profile) is the default root, the auth fallback's store."""
+    from hermes_cli.auth import _same_path
+    from hermes_constants import get_default_hermes_root, get_hermes_home
+    return _same_path(home or get_hermes_home(), get_default_hermes_root())
+
+
+def _logins_home(home: Optional[Path]) -> Path:
+    """The home whose auth.json *home* (default: the launch profile) signs in with: its own, else the
+    root's through the auth fallback, so ``--isolated-auth`` copies the logins the source actually uses."""
+    from hermes_constants import get_default_hermes_root, get_hermes_home
+    home = home or get_hermes_home()
+    return home if (home / "auth.json").exists() else get_default_hermes_root()
+
+
 def mirror_launch_credentials(path: Path, mirrored: dict[str, Any], *, share_auth: bool = False,
-                              clone_channels: bool = False) -> tuple[str, ...]:
+                              clone_channels: bool = False, auth_home: Optional[Path] = None) -> tuple[str, ...]:
     """Copy the launch profile's .env / auth.json / voice sections into a new profile, recording each
-    item in ``mirrored`` (best-effort per item). ``share_auth`` skips the auth copy when the launch
-    profile is the root: the new profile then reads the root's auth.json, i.e. the launch logins. From a
-    named launch profile that fallback would pair its keys with the root's logins, so its auth is copied.
+    item in ``mirrored`` (best-effort per item). ``auth_home`` (default: the launch profile) is the
+    auth.json source; ``provision_profile`` passes ``_logins_home(...)``, the store the new profile's
+    source signs in with. ``share_auth`` skips the copy when that is the root, so a new profile without
+    its own auth.json (a ``--clone-all`` copies the source's, if it has one) reads the root's; a named source's own
+    auth.json is copied instead, so its keys stay paired with its logins.
     Returns the providers whose single-use logins were left out of a copy (read from the root instead)."""
-    from hermes_cli.auth import _global_auth_file_path
     from hermes_constants import get_hermes_home
     launch_home = get_hermes_home()
-    # Same test as the auth fallback that makes sharing work: share only when it reads the launch store.
-    share_auth = share_auth and _global_auth_file_path() is None
+    auth_home = auth_home or launch_home
+    # Same test as the auth fallback that makes sharing work: share only when it reads the source's store.
+    share_auth = share_auth and _is_root(auth_home)
     kept_root: tuple[str, ...] = ()
     mirrored["env"] = _try(".env copy", lambda: _mirror_secret(path, launch_home, ".env", _env_over_stub), False)
     if mirrored["env"] and not clone_channels:
@@ -499,7 +526,7 @@ def mirror_launch_credentials(path: Path, mirrored: dict[str, Any], *, share_aut
             strip_channel_env_file(path / ".env")
         _try("channel strip", _strip_channels, None)
     if not share_auth:  # a copied auth.json forks token state: a refresh in either store strands the other
-        mirrored["auth"] = _try("auth.json copy", lambda: _mirror_secret(path, launch_home, "auth.json",
+        mirrored["auth"] = _try("auth.json copy", lambda: _mirror_secret(path, auth_home, "auth.json",
                                                        lambda src, dst: not dst.exists()), False)
         if mirrored["auth"]:
             # Single-use OAuth grants stay in the root store; the profile reads them via the pool fallback.

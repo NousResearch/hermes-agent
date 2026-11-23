@@ -35,6 +35,14 @@ def _strip_headers(request, keep: frozenset[str]) -> None:
             request.remove_header(name)
 
 
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect: urllib would repeat the request's headers, ``Authorization``
+    included, to wherever the reply points. The 3xx reply surfaces as an ``HTTPError``."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 class SafeCredentialRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Preserve request headers only while redirects stay on one origin."""
 

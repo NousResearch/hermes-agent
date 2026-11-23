@@ -154,6 +154,37 @@ function reconcileSessionInfoPendingSubmissions(ctx: GatewayEventContext): void 
   }
 }
 
+/** Foreground runtime preferences; workspace ownership is reconciled separately. */
+function reconcileSessionInfoPreferences(payload: GatewayEventContext['payload']): void {
+  if (typeof payload?.terminal_backend === 'string') {
+    setTerminalBackend(payload.terminal_backend)
+  }
+
+  if (typeof payload?.personality === 'string') {
+    setCurrentPersonality(normalizePersonalityValue(payload.personality))
+  }
+
+  if (typeof payload?.reasoning_effort === 'string') {
+    setCurrentReasoningEffort(payload.reasoning_effort)
+  }
+
+  if (typeof payload?.reasoning_effort_wire === 'string') {
+    setCurrentReasoningEffortWire(payload.reasoning_effort_wire)
+  }
+
+  if (typeof payload?.service_tier === 'string') {
+    setCurrentServiceTier(payload.service_tier)
+  }
+
+  if (typeof payload?.fast === 'boolean') {
+    setCurrentFastMode(payload.fast)
+  }
+
+  if (typeof payload?.yolo === 'boolean') {
+    setYoloActive(payload.yolo)
+  }
+}
+
 /** session.info / session.usage / session.title. */
 export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, explicitSid, isActiveEvent, occurredAt, fromActiveSource } = ctx
@@ -257,33 +288,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         setCurrentBranch(payload.branch)
       }
 
-      if (typeof payload?.terminal_backend === 'string') {
-        setTerminalBackend(payload.terminal_backend)
-      }
-
-      if (typeof payload?.personality === 'string') {
-        setCurrentPersonality(normalizePersonalityValue(payload.personality))
-      }
-
-      if (typeof payload?.reasoning_effort === 'string') {
-        setCurrentReasoningEffort(payload.reasoning_effort)
-      }
-
-      if (typeof payload?.reasoning_effort_wire === 'string') {
-        setCurrentReasoningEffortWire(payload.reasoning_effort_wire)
-      }
-
-      if (typeof payload?.service_tier === 'string') {
-        setCurrentServiceTier(payload.service_tier)
-      }
-
-      if (typeof payload?.fast === 'boolean') {
-        setCurrentFastMode(payload.fast)
-      }
-
-      if (typeof payload?.yolo === 'boolean') {
-        setYoloActive(payload.yolo)
-      }
+      reconcileSessionInfoPreferences(payload)
     }
 
     if (sessionId && (hasStatePatch || payload?.usage)) {
@@ -329,6 +334,16 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // the turn now live, so it neither ends that turn's compaction phase, nor
     // clears its prompts, nor settles it.
     if (runningEdge(ctx, knownState, runningChanged) && sessionId) {
+      // Like every other turn-end edge, drain throttled text before settling:
+      // a delta still waiting on the flush floor would otherwise land after
+      // the settle cleared streamId and seed a fresh pending bubble. Only a
+      // live turn owns that text; with no live turn and no open stream the
+      // queued bytes are orphans of a superseded attempt, which the next
+      // turn boundary drops (#119543).
+      if (!payload!.running && (knownState?.turnLive || knownState?.streamId)) {
+        deps.flushQueuedDeltas(sessionId)
+      }
+
       // Reconnect can miss the structured `compacted` edge. A gateway-authored
       // running=false is a terminal fact; a running heartbeat is intentionally
       // not used as a timeout-like guess, so genuine compaction stays visible.

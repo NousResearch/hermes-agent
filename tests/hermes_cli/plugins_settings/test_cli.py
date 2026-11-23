@@ -69,3 +69,47 @@ def test_list_values_are_json_safe_and_bad_input_is_a_readable_refusal():
     for raw in ("[2026-11-20]", "[a, b", "plain text"):
         with pytest.raises(ValueError):
             cli.parse_json_value(raw)
+
+
+REQUIRED_KEY = MANIFEST.replace(
+    "api_key: {type: secret, env: DEMO_API_KEY}", "api_key: {type: secret, env: DEMO_API_KEY, required: true}")
+
+
+@pytest.mark.parametrize("key_value, answer, opens", [
+    ("sk-demo-not-real", "y", True), ("sk-demo-not-real", "", False),  # nothing missing: default No
+    (None, "", True), ("", "", True), (None, "n", False),               # required key empty or blank: default Yes
+    (None, EOFError, False),                                            # Ctrl-D / Ctrl-C declines
+])
+def test_install_offer_defaults_to_no_unless_a_required_setting_is_empty(
+        plugin_home, monkeypatch, capsys, key_value, answer, opens):
+    from rich.console import Console
+    from hermes_cli import plugins_cmd
+    plugin_dir = plugin_home / "plugins" / "demo-plugin"
+    (plugin_dir / "plugin.yaml").write_text(REQUIRED_KEY, encoding="utf-8")
+    if key_value is not None:
+        monkeypatch.setenv("DEMO_API_KEY", key_value)
+    monkeypatch.setattr(plugins_cmd, "_is_tty", lambda: True)
+    opened = []
+    monkeypatch.setattr(cli, "run_editor", lambda *a, **k: opened.append(a[0]))
+
+    def reply(_prompt):
+        if answer is EOFError:
+            raise EOFError
+        return answer
+    monkeypatch.setattr("builtins.input", reply)
+    cli.offer_settings_after_install(Console(), "demo-plugin", plugin_dir)
+    out = capsys.readouterr().out
+    assert opened == (["demo-plugin"] if opens else [])
+    assert ("Still needed: API key" in out) == (not key_value)
+
+
+@pytest.mark.parametrize("brief, noninteractive, tty", [(False, False, False), (True, False, True), (False, True, True)])
+def test_install_offer_never_reads_input_without_a_person(plugin_home, monkeypatch, capsys, brief, noninteractive, tty):
+    from rich.console import Console
+    from hermes_cli import plugins_cmd
+    if noninteractive:
+        monkeypatch.setenv("HERMES_NONINTERACTIVE", "1")
+    monkeypatch.setattr(plugins_cmd, "_is_tty", lambda: tty)
+    monkeypatch.setattr("builtins.input", lambda *_: pytest.fail("a non-interactive install must not prompt"))
+    cli.offer_settings_after_install(Console(), "demo-plugin", plugin_home / "plugins" / "demo-plugin", brief=brief)
+    assert "hermes plugins config demo-plugin" in capsys.readouterr().out

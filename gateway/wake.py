@@ -26,6 +26,8 @@ WAKE_TURN_TIMEOUT_SECONDS = 600.0
 # is worth waiting out.
 _RETRY_DELAYS_SECONDS = (2.0, 5.0, 10.0)
 
+_RECEIPT_CHARS = 200
+
 
 def adapter_supports_push(adapter: Any) -> bool:
     """Whether this adapter can push a message to the user after a turn ends. Reads
@@ -120,14 +122,25 @@ def _runner_draining(adapter: Any) -> bool:
     return getattr(getattr(adapter, "gateway_runner", None), "_draining", False) is True
 
 
+def _local_receipt(source: Any, display_text: str) -> dict:
+    from gateway.config import Platform
+    receipt = " ".join(str(display_text or "").split())[:_RECEIPT_CHARS]
+    if not receipt or getattr(source, "platform", None) != Platform.LOCAL:
+        return {}
+    from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
+    return {"display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND, "display_text": receipt}
+
+
 async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None,
                        notification_category: str = "result", profile: Optional[str] = None,
-                       kanban_notices: Optional[list[dict]] = None) -> None:
+                       kanban_notices: Optional[list[dict]] = None, display_text: str = "") -> None:
     """Deliver a wake turn to the session behind ``adapter``. ``session_id`` is the RAW session id
     (``X-Hermes-Session-Id`` / state.db key) — required for non-push adapters. ``source`` is the
     ``SessionSource`` for the synthetic event — required for push-capable adapters. ``profile``
     names the served profile that canonically owns a non-push destination; a non-default value is
     delivered in-process under the caller's profile scope (see ``_self_post_chat_completion``).
+    ``display_text`` (collapsed to one line of at most 200 characters; blank means none) becomes the
+    card on a LOCAL source's authority-admitted wake, which an idle classic CLI needs to open the turn.
     Raises on failure so the caller can rewind/retry."""
     if adapter_supports_push(adapter):
         if source is None:
@@ -141,7 +154,8 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
             if kanban_notices:
                 category["kanban_notices"] = kanban_notices
             try:
-                if await admit_route_wake(runner, adapter, source, text, "kanban-wake", category):
+                if await admit_route_wake(runner, adapter, source, text, "kanban-wake",
+                                          category | _local_receipt(source, display_text)):
                     return  # committed to the session FIFO: never interrupts the admitted turn
             except AuthorityRefusal as exc:
                 raise WakeNotAccepted(str(exc), reason=exc.reason) from exc

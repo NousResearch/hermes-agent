@@ -805,7 +805,8 @@ class _KanbanNotification:
         async with _async_profile_runtime_scope(self.runner._resolve_profile_home_for_source(_source)):
             await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key, source=_source,
                                notification_category="diagnostic" if self.wake_diagnostic else "result",
-                               kanban_notices=[self._notice_reference()])
+                               kanban_notices=[self._notice_reference()],
+                               display_text=self.synth.partition("\n")[0])
         self._log_woke()
 
     def _notice_reference(self) -> dict:

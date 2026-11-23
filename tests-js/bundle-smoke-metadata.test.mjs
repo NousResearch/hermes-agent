@@ -7,6 +7,7 @@ import { bundleIdentity, verifyBundleStamp, verifyMacMetadata } from '../tests/i
 import { stampAssertions } from '../tests/install/e2e-assets/mac-bundled-manifest.cjs'
 import { randomBytes } from 'node:crypto'
 import { buildStampPayload } from '../apps/desktop/scripts/write-build-stamp.mjs'
+import { releaseVersion } from '../scripts/msix-shared.mjs'
 
 const commit = 'a'.repeat(40)
 
@@ -19,10 +20,10 @@ test('fresh-install provenance admits tagless commit stamps without relaxing upd
       ['source', 'git'], ['branch', 'main'], ['dirty', true], ['updateMechanism', 'electron-updater']]) {
       expect(() => verifyBundleStamp({ ...stamp, [key]: value }, { commit, platform })).toThrow(key)
     }
-    const tag = 'v1.2.3+canary.20260913T000000Z'
-    const tagged = { ...stamp, tag, source: 'git', branch: 'main', displayVersion: tag.slice(1),
+    const tag = 'canary.20260913T000000Z-v1.2.3'
+    const tagged = { ...stamp, tag, source: 'git', branch: 'main', displayVersion: releaseVersion(tag),
       updateMechanism: platform === 'darwin' ? 'electron-updater' : 'app-installer' }
-    expect(verifyBundleStamp(tagged, { commit, tag, platform })).toBe(tag.slice(1))
+    expect(verifyBundleStamp(tagged, { commit, tag, platform })).toBe(releaseVersion(tag))
     expect(() => verifyBundleStamp({ ...tagged, updateMechanism: 'external' }, { commit, tag, platform })).toThrow('updateMechanism')
   }
   expect(stampAssertions(stamp, { commit, tag: null }).join(';')).toContain('electron-updater')
@@ -30,7 +31,7 @@ test('fresh-install provenance admits tagless commit stamps without relaxing upd
 
 test('identity uses the production bundled variant and exact input tokens, not inherited build flags', () => {
   const stable = bundleIdentity(commit, 'v1.2.3')
-  const canary = bundleIdentity(commit, 'v1.2.3+canary.20260913T000000Z')
+  const canary = bundleIdentity(commit, 'canary.20260913T000000Z-v1.2.3')
   const tagless = bundleIdentity(commit)
   expect(stable.appId).not.toBe(canary.appId)
   expect(stable.msixIdentity).not.toBe(tagless.msixIdentity)

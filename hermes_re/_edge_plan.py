@@ -25,6 +25,7 @@ DEAD = r"[^\s\S]"  # never matches, keeps the group numbering; valid in str and 
 DOLLAR = r"(?:\n?\z)"            # what a non-multiline `$` stands before: an optional final newline
 _END_ANCHORS = frozenset("$Zz")
 _TOKENS = ("(?=", "(?!", "(?<=", "(?<!")
+_FLIP = {r"\d": r"\D", r"\w": r"\W", r"\s": r"\S"}  # a negated shorthand as a class member
 _ONCE = {"": "", "{1}": "", "?": "?", "{0,1}": "?", "??": "??", "{0,1}?": "??"}  # quantifier -> its short form
 
 
@@ -67,8 +68,9 @@ def _negated(items):
     """A bracket class for "one character that no item matches", else ``None``."""
     if len(items) == 1 and items[0][0] == "neg":
         return "[" + items[0][1] + "]"
-    if items and all(kind == "pos" for kind, _ in items):
-        return "[^" + "".join(member for _, member in items) + "]"
+    members = [member if kind == "pos" else _FLIP.get(member) if kind == "neg" else None for kind, member in items]
+    if items and None not in members:
+        return "[^" + "".join(members) + "]"
     return None
 
 

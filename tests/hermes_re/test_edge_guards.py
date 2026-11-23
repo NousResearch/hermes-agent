@@ -87,6 +87,21 @@ def test_negated_guard_class_keeps_its_literal_caret():
             same_everywhere(pattern.encode(), flags, [s.encode() for s in subjects])
     assert hre.findall(r"(?<![^^a])x", "ax bx ^x") == ["x", "x"]
 
+
+def test_guard_alternatives_joined_into_one_class_keep_their_own_characters():
+    # `(?<!\0|1)` excludes NUL and `1`: joined into one class, `\0` then `1` must not read `\01`.
+    subjects = ["", "x", "1x", "\x01x", "\x00x", "7x", "\x07x", "?x", "\x7fx", "ax", "-x", "x1", "x\x01", "x\x00",
+                "x7", "x\x07", "x?", "x\x7f", "xa", "x-", "1x\x01x\x00x7"]
+    for guard in (r"\0|1", r"\00|1", r"\07|7", r"\077|7", r"[a\0]|1", r"\177|7", r"a|-|b", r"[\d-]|a", r"\0|\0|1",
+                  r"a|\D", r"\W|1"):
+        for shape in ("(?<!{})x", "(?<={})x", "x(?!{})", "x(?={})", "a|(?<!{})x", "x(?!{})|y"):
+            pattern = shape.format(guard)
+            for flags in (0, std.IGNORECASE, std.ASCII, std.IGNORECASE | std.ASCII):
+                same_everywhere(pattern, flags, subjects)
+                same_everywhere(pattern.encode(), flags, [s.encode("latin-1") for s in subjects])
+    assert [m.start() for m in hre.finditer(r"(?<!\0|1)x", "1x\x01x\x00xax")] == [3, 7]
+
+
 def test_unsupported_lookarounds_raise_error_at_compile():
     for pattern in (r"a(?=b)c", r"a(?<!b)c", r"(?<=ab)c", r"(?<!a)(?<!b)x", r"x(?!ab)", r"(?=a)b", r"(?:(?<!x)a)+",
                     r"a(?!.)", r"(?<!.)x", r"((?<!a)x)?y", r"x(?!y)*", r"^(?<!a)x", r"(?<=\b)x", r"(a)\1", r"a++", r"(?>a)",

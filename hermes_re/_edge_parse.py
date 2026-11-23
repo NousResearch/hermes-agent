@@ -14,7 +14,48 @@ _HEX = {"x": 2, "u": 4, "U": 8}
 _SHORT = {"d": ("pos", r"\d"), "w": ("pos", r"\w"), "s": ("pos", r"\s"),
           "D": ("neg", r"\d"), "W": ("neg", r"\w"), "S": ("neg", r"\s")}
 _ANCHORS = frozenset("AZzbB")
-_CLASS_SPECIAL = frozenset("\\]^-[")
+_OCTAL = frozenset("01234567")
+_EDGE_SPECIAL = frozenset("]^-[&~|")  # a literal that means something else at the edge of a joined class
+
+
+def _class_tokens(text: str):
+    """Bracket-class member text as ``(source, is an escape)`` tokens."""
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] != "\\" or i + 1 >= n:
+            yield text[i], False
+            i += 1
+            continue
+        nxt, end = text[i + 1], i + 2
+        if nxt in _HEX:
+            end += _HEX[nxt]
+        elif nxt == "N" and text.startswith("{", end):
+            end = text.find("}", end) + 1 or n
+        elif nxt in _OCTAL:
+            while end < min(i + 4, n) and text[end] in _OCTAL:
+                end += 1
+        yield text[i:end], True
+        i = end
+
+
+def class_safe(text: str) -> str:
+    r"""Member text that keeps its meaning when spliced next to other members in one class.
+
+    An octal escape is respelled ``\xHH``: a digit after it would otherwise extend it (``\0`` then
+    ``1`` reads ``\01``). A literal that means something else at the edge of the joined class
+    (a leading ``^`` or ``]``, a ``-`` that would form a range, a doubled set operator) is escaped.
+    """
+    out = []
+    tokens = list(_class_tokens(text))
+    for k, (tok, escaped) in enumerate(tokens):
+        if escaped and tok[1] in _OCTAL:
+            value = int(tok[1:], 8)
+            out.append(f"\\x{value:02x}" if value <= 0o377 else tok)  # a larger value stays an error
+        elif not escaped and tok in _EDGE_SPECIAL and k in (0, len(tokens) - 1):
+            out.append("\\" + tok)
+        else:
+            out.append(tok)
+    return "".join(out)
 
 
 class Unsupported(Exception):
@@ -89,7 +130,7 @@ class Parser:
             return Node("set", i, ("dot", ""))
         if ch in "^$":
             return Node("anchor", i, ch)
-        return Node("char", i, "\\" + ch if ch in _CLASS_SPECIAL else ch)
+        return Node("char", i, class_safe(ch))
 
     def escape(self):
         p, i = self.p, self.i
@@ -114,7 +155,9 @@ class Parser:
             while j < min(i + 4, self.n) and p[j] in "01234567":
                 j += 1
             self.i = j
-        elif "0" <= nxt <= "9":  # a backreference (or a 3-digit octal escape; not worth telling apart)
+        elif nxt in _OCTAL and len(p[i + 2:i + 4]) == 2 and set(p[i + 2:i + 4]) <= _OCTAL:  # \177: octal
+            self.i = i + 4
+        elif "0" <= nxt <= "9":  # a backreference
             j = i + 2
             while j < min(i + 4, self.n) and "0" <= p[j] <= "9":
                 j += 1
@@ -122,7 +165,7 @@ class Parser:
             return Node("other", i)
         else:
             self.i = i + 2
-        return Node("char", i, p[i:self.i])
+        return Node("char", i, class_safe(p[i:self.i]))
 
     def bracket(self):
         p, start = self.p, self.i
@@ -138,14 +181,7 @@ class Parser:
         if i >= self.n:
             raise Unsupported("unterminated character class")
         self.i = i + 1
-        member = p[inner:i]
-        if member.startswith("]"):
-            member = "\\" + member
-        if member.endswith("-") and not member.endswith("\\-"):
-            member = member[:-1] + "\\-"
-        if member.startswith(("-", "^")):  # a leading "^" would negate the class the member is spliced into
-            member = "\\" + member
-        return Node("set", start, ("neg" if negated else "pos", member))
+        return Node("set", start, ("neg" if negated else "pos", class_safe(p[inner:i])))
 
     def group(self):
         p, start = self.p, self.i

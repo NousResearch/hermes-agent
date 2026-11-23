@@ -233,6 +233,24 @@ def test_dashboard_refuses_requests_scoped_to_a_marked_profile(root):
     assert web_server_cron._cron_profile_home("dev")[0] == "dev"
 
 
+def test_dashboard_file_requests_never_dial_a_marked_profiles_ssh_workspace(root, monkeypatch):
+    from fastapi import HTTPException
+    from hermes_cli import ssh_workspace_fs
+    from hermes_cli.web_routers import files as file_routes
+
+    for name in ("ops", "dev"):
+        (root / "profiles" / name / "config.yaml").write_text(
+            "terminal:\n  backend: ssh\n  ssh_host: ssh.example\n  ssh_user: dev\n", encoding="utf-8")
+    dialed = []
+    monkeypatch.setattr(ssh_workspace_fs, "get_ssh_workspace_fs", lambda key, _terminal: dialed.append(key) or key)
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin")
+    with pytest.raises(HTTPException) as refused:
+        file_routes._fs_backend("ops")
+    assert refused.value.status_code == 409 and "sandbox-plugin" in refused.value.detail
+    assert dialed == []
+    assert file_routes._fs_backend("dev") == "dev" and dialed == ["dev"]
+
+
 def test_desktop_cron_ticker_never_ticks_a_marked_profile(root, monkeypatch):
     from cron import scheduler_provider as sp
     from hermes_cli import web_server

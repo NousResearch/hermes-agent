@@ -1954,7 +1954,7 @@ slash:
   kanban:
     description: "Tableau de collaboration multi-profils (tâches, liens, commentaires)"
   reload:
-    description: "Recharger les variables .env dans la session en cours"
+    description: "Recharge .env, plugins, serveurs MCP et skills dans ce chat (/reload env : .env seul)"
   reload-mcp:
     description: "Recharger les serveurs MCP depuis la configuration"
   reload-skills:
@@ -2755,6 +2755,29 @@ cli:
     change_unknown: "Le gateway n'a pas répondu pour l'élément {index} de la file ({error}) ; vérifiez /queue list avant de réessayer."
   reload:
     env_reloaded: ".env rechargé ({count} variable(s) mise(s) à jour)"
+  reload_all:
+    title: "⚠️  /reload — Avertissement d'invalidation du cache du prompt"
+    detail: "Recharge .env, plugins, serveurs MCP et skills dans ce chat et\nreconstruit ses outils, ce qui invalide le cache du prompt du fournisseur\n(le prochain message renvoie tous les jetons d'entrée).\nÉvitez cette question avec /reload now (une fois) ou /reload always."
+    confirm_required: "⚠️  /reload reconstruit les outils de ce chat et invalide le cache du prompt (le prochain message renvoie tous les jetons d'entrée). Répondez `/reload now` pour continuer, ou `/reload always` pour continuer et ne plus jamais demander. `/reload env` ne recharge que .env."
+    cancel_hint: "ne rien recharger"
+    unchanged: "Rien n'a été rechargé."
+    always_msg: "🔒 Les prochains appels à /reload et /reload-mcp s'exécuteront sans confirmation."
+    reloading: "🔄 Rechargement de .env, des plugins, des serveurs MCP et des skills..."
+    busy: "⏳ /reload est indisponible pendant que l'agent travaille. Attendez la fin du tour ; rien n'a été rechargé."
+    usage: "Usage : /reload [env|now|always]"
+    env: ".env : {count} variable(s) mise(s) à jour"
+    plugins: "Plugins : {count} chargé(s), code réimporté"
+    mcp: "Serveurs MCP : {count} connecté(s)"
+    skills: "Skills : {count} disponible(s)"
+    tools: "Ce chat : {count} outil(s)"
+    added: "ajoutés : {names}"
+    removed: "supprimés : {names}"
+    changed: "modifiés : {names}"
+    reconnected: "reconnectés : {names}"
+    failed: "en échec : {names}"
+    restart: "redémarrage nécessaire (dépendances manquantes) : {names}"
+    prompt_next_session: "les sections du prompt système s'appliquent dès la prochaine session : {names}"
+    step_failed: "échec du rechargement de {step} : {error}"
   steer:
     usage: "Usage : /steer <prompt>"
     failed: "Échec de l'orientation : {error}"

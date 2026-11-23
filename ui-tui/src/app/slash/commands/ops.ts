@@ -3,6 +3,7 @@ import type {
   CommandsCatalogResponse,
   DelegationPauseResponse,
   ProcessStopResponse,
+  ReloadAllResponse,
   ReloadEnvResponse,
   ReloadMcpResponse,
   RollbackDiffResponse,
@@ -167,20 +168,42 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
-    help: 're-read ~/.hermes/.env into the running gateway (CLI parity)',
+    help: 'reload .env, plugins, MCP servers and skills into this chat [env|now|always] (invalidates the prompt cache)',
     name: 'reload',
-    run: (_arg, ctx) => {
-      // The shared gateway serves `/reload` for one session this client controls.
-      ctx.gateway
-        .rpc<ReloadEnvResponse>('reload.env', ctx.gateway.gw?.isCanonical && ctx.sid ? { session_id: ctx.sid } : {})
-        .then(
-          ctx.guarded<ReloadEnvResponse>(r => {
-            const n = Number(r.updated ?? 0)
+    run: (arg, ctx) => {
+      const a = (arg || '').trim().toLowerCase()
 
-            ctx.transcript.sys(
-              t(n === 1 ? 'slashCmd.ops.reloadEnv.reloadedOne' : 'slashCmd.ops.reloadEnv.reloadedOther', String(n))
-            )
-          })
+      if (a === 'env') {
+        // `.env` only. The shared gateway serves it for one session this client controls.
+        return void ctx.gateway
+          .rpc<ReloadEnvResponse>('reload.env', ctx.gateway.gw?.isCanonical && ctx.sid ? { session_id: ctx.sid } : {})
+          .then(
+            ctx.guarded<ReloadEnvResponse>(r => {
+              const n = Number(r.updated ?? 0)
+
+              ctx.transcript.sys(
+                t(n === 1 ? 'slashCmd.ops.reloadEnv.reloadedOne' : 'slashCmd.ops.reloadEnv.reloadedOther', String(n))
+              )
+            })
+          )
+          .catch(ctx.guardedErr)
+      }
+
+      // The server owns the consent (`approvals.mcp_reload_confirm`: it answers `confirm_required`, naming
+      // `/reload now` and `/reload always`) and refuses while this chat's turn runs. `now` confirms once;
+      // `always` also persists the opt-out.
+      const confirm = a === 'now' || a === 'always'
+
+      ctx.gateway
+        .rpc<ReloadAllResponse>('reload.all', {
+          session_id: ctx.sid,
+          ...(confirm ? { confirm: true } : {}),
+          ...(a === 'always' ? { always: true } : {})
+        })
+        .then(
+          ctx.guarded<ReloadAllResponse>(r =>
+            ctx.transcript.sys([r.output, r.message].filter(Boolean).join('\n') || t('slashCmd.ops.reloadMcp.complete'))
+          )
         )
         .catch(ctx.guardedErr)
     }

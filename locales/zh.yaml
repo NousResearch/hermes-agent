@@ -1705,7 +1705,7 @@ slash:
   kanban:
     description: "多配置档协作看板（任务、链接、评论）"
   reload:
-    description: "将 .env 变量重新加载到运行中的会话"
+    description: "将 .env、插件、MCP 服务器和技能重新加载到当前对话（/reload env：仅 .env）"
   reload-mcp:
     description: "从配置重新加载 MCP 服务器"
   reload-skills:
@@ -2485,6 +2485,29 @@ cli:
     change_unknown: "网关未回应队列项 {index}（{error}）；请先查看 /queue list 再重试。"
   reload:
     env_reloaded: "已重新加载 .env（更新了 {count} 个变量）"
+  reload_all:
+    title: "⚠️  /reload — 提示词缓存失效警告"
+    detail: "将 .env、插件、MCP 服务器和技能重新加载到当前对话，\n并重建其工具集，这会使服务商的提示词缓存失效\n（下一条消息会重新发送全部输入 token）。\n可用 /reload now（仅此一次）或 /reload always 跳过此确认。"
+    confirm_required: "⚠️  /reload 会重建当前对话的工具并使提示词缓存失效（下一条消息会重新发送全部输入 token）。回复 `/reload now` 继续，或回复 `/reload always` 继续并永久关闭此提示。`/reload env` 只重新加载 .env。"
+    cancel_hint: "不重新加载任何内容"
+    unchanged: "未重新加载任何内容。"
+    always_msg: "🔒 今后的 /reload 和 /reload-mcp 将无需确认直接运行。"
+    reloading: "🔄 正在重新加载 .env、插件、MCP 服务器和技能..."
+    busy: "⏳ 智能体运行期间无法使用 /reload。请等待本轮结束；未重新加载任何内容。"
+    usage: "用法：/reload [env|now|always]"
+    env: ".env：更新了 {count} 个变量"
+    plugins: "插件：已加载 {count} 个，代码已重新导入"
+    mcp: "MCP 服务器：已连接 {count} 个"
+    skills: "技能：{count} 个可用"
+    tools: "当前对话：{count} 个工具"
+    added: "新增：{names}"
+    removed: "移除：{names}"
+    changed: "已变更：{names}"
+    reconnected: "已重连：{names}"
+    failed: "失败：{names}"
+    restart: "需要重启（缺少依赖）：{names}"
+    prompt_next_session: "系统提示词部分将从下一个会话开始生效：{names}"
+    step_failed: "{step} 重新加载失败：{error}"
   steer:
     usage: "用法：/steer <prompt>"
     failed: "引导失败：{error}"

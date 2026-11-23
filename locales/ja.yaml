@@ -1705,7 +1705,7 @@ slash:
   kanban:
     description: "マルチプロファイルの協業ボード（タスク、リンク、コメント）"
   reload:
-    description: ".env の変数を実行中のセッションに再読み込み"
+    description: "このチャットに .env・プラグイン・MCP サーバー・スキルを再読み込み（/reload env: .env のみ）"
   reload-mcp:
     description: "設定から MCP サーバーを再読み込み"
   reload-skills:
@@ -2485,6 +2485,29 @@ cli:
     change_unknown: "ゲートウェイからキュー項目 {index} の応答がありません ({error})。再試行する前に /queue list を確認してください。"
   reload:
     env_reloaded: ".env を再読み込みしました（{count} 件の変数を更新）"
+  reload_all:
+    title: "⚠️  /reload — プロンプトキャッシュ無効化の警告"
+    detail: "このチャットに .env・プラグイン・MCP サーバー・スキルを再読み込みし、\nツール一式を再構築します。プロバイダーのプロンプトキャッシュが無効になります\n（次のメッセージで入力トークンをすべて再送信します）。\n/reload now（今回のみ）または /reload always でこの確認を省略できます。"
+    confirm_required: "⚠️  /reload はこのチャットのツールを再構築し、プロンプトキャッシュを無効にします（次のメッセージで入力トークンをすべて再送信します）。続行するには `/reload now`、続行して今後確認しないなら `/reload always` と返信してください。`/reload env` は .env のみを再読み込みします。"
+    cancel_hint: "何も再読み込みしない"
+    unchanged: "何も再読み込みしませんでした。"
+    always_msg: "🔒 今後の /reload と /reload-mcp は確認なしで実行されます。"
+    reloading: "🔄 .env・プラグイン・MCP サーバー・スキルを再読み込みしています..."
+    busy: "⏳ エージェントの実行中は /reload を使えません。ターンが終わるまで待ってください（何も再読み込みしていません）。"
+    usage: "使い方: /reload [env|now|always]"
+    env: ".env: {count} 件の変数を更新"
+    plugins: "プラグイン: {count} 件を読み込み、コードを再インポート"
+    mcp: "MCP サーバー: {count} 件接続"
+    skills: "スキル: {count} 件利用可能"
+    tools: "このチャット: ツール {count} 件"
+    added: "追加: {names}"
+    removed: "削除: {names}"
+    changed: "変更: {names}"
+    reconnected: "再接続: {names}"
+    failed: "失敗: {names}"
+    restart: "再起動が必要（依存関係が不足）: {names}"
+    prompt_next_session: "システムプロンプトのセクションは次のセッションから適用: {names}"
+    step_failed: "{step} の再読み込みに失敗しました: {error}"
   steer:
     usage: "使い方: /steer <prompt>"
     failed: "ステアに失敗しました: {error}"

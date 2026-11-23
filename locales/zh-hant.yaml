@@ -1705,7 +1705,7 @@ slash:
   kanban:
     description: "多設定檔協作看板（任務、連結、留言）"
   reload:
-    description: "將 .env 變數重新載入到執行中的工作階段"
+    description: "將 .env、外掛、MCP 伺服器和技能重新載入到目前對話（/reload env：僅 .env）"
   reload-mcp:
     description: "從設定重新載入 MCP 伺服器"
   reload-skills:
@@ -2485,6 +2485,29 @@ cli:
     change_unknown: "閘道未回應佇列項目 {index}（{error}）；請先查看 /queue list 再重試。"
   reload:
     env_reloaded: "已重新載入 .env（更新了 {count} 個變數）"
+  reload_all:
+    title: "⚠️  /reload — 提示詞快取失效警告"
+    detail: "將 .env、外掛、MCP 伺服器和技能重新載入到目前對話，\n並重建其工具集，這會使服務商的提示詞快取失效\n（下一則訊息會重新傳送全部輸入 token）。\n可用 /reload now（僅此一次）或 /reload always 略過此確認。"
+    confirm_required: "⚠️  /reload 會重建目前對話的工具並使提示詞快取失效（下一則訊息會重新傳送全部輸入 token）。回覆 `/reload now` 繼續，或回覆 `/reload always` 繼續並永久關閉此提示。`/reload env` 只重新載入 .env。"
+    cancel_hint: "不重新載入任何內容"
+    unchanged: "未重新載入任何內容。"
+    always_msg: "🔒 今後的 /reload 和 /reload-mcp 將無需確認直接執行。"
+    reloading: "🔄 正在重新載入 .env、外掛、MCP 伺服器和技能..."
+    busy: "⏳ 代理執行期間無法使用 /reload。請等待本輪結束；未重新載入任何內容。"
+    usage: "用法：/reload [env|now|always]"
+    env: ".env：更新了 {count} 個變數"
+    plugins: "外掛：已載入 {count} 個，程式碼已重新匯入"
+    mcp: "MCP 伺服器：已連線 {count} 個"
+    skills: "技能：{count} 個可用"
+    tools: "目前對話：{count} 個工具"
+    added: "新增：{names}"
+    removed: "移除：{names}"
+    changed: "已變更：{names}"
+    reconnected: "已重新連線：{names}"
+    failed: "失敗：{names}"
+    restart: "需要重新啟動（缺少相依套件）：{names}"
+    prompt_next_session: "系統提示詞部分將從下一個工作階段開始生效：{names}"
+    step_failed: "{step} 重新載入失敗：{error}"
   steer:
     usage: "用法：/steer <prompt>"
     failed: "引導失敗：{error}"

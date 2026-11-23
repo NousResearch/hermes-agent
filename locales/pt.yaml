@@ -1705,7 +1705,7 @@ slash:
   kanban:
     description: "Quadro de colaboração multiperfil (tarefas, links, comentários)"
   reload:
-    description: "Recarregar as variáveis do .env na sessão em execução"
+    description: "Recarrega .env, plugins, servidores MCP e skills neste chat (/reload env: só .env)"
   reload-mcp:
     description: "Recarregar os servidores MCP a partir da configuração"
   reload-skills:
@@ -2485,6 +2485,29 @@ cli:
     change_unknown: "O gateway não respondeu sobre o item {index} da fila ({error}); confira /queue list antes de tentar de novo."
   reload:
     env_reloaded: ".env recarregado ({count} variável(is) atualizada(s))"
+  reload_all:
+    title: "⚠️  /reload — Aviso de invalidação do cache do prompt"
+    detail: "Recarrega .env, plugins, servidores MCP e skills neste chat e\nreconstrói suas ferramentas, o que invalida o cache do prompt do provedor\n(a próxima mensagem reenvia todos os tokens de entrada).\nPule esta pergunta com /reload now (uma vez) ou /reload always."
+    confirm_required: "⚠️  /reload reconstrói as ferramentas deste chat e invalida o cache do prompt (a próxima mensagem reenvia todos os tokens de entrada). Responda `/reload now` para continuar, ou `/reload always` para continuar e não perguntar mais. `/reload env` recarrega só o .env."
+    cancel_hint: "não recarregar nada"
+    unchanged: "Nada foi recarregado."
+    always_msg: "🔒 As próximas chamadas de /reload e /reload-mcp rodarão sem confirmação."
+    reloading: "🔄 Recarregando .env, plugins, servidores MCP e skills..."
+    busy: "⏳ /reload não está disponível enquanto o agente está em execução. Aguarde o turno terminar; nada foi recarregado."
+    usage: "Uso: /reload [env|now|always]"
+    env: ".env: {count} variável(is) atualizada(s)"
+    plugins: "Plugins: {count} carregado(s), código reimportado"
+    mcp: "Servidores MCP: {count} conectado(s)"
+    skills: "Skills: {count} disponível(is)"
+    tools: "Este chat: {count} ferramenta(s)"
+    added: "adicionados: {names}"
+    removed: "removidos: {names}"
+    changed: "alterados: {names}"
+    reconnected: "reconectados: {names}"
+    failed: "com falha: {names}"
+    restart: "reinício necessário (dependências ausentes): {names}"
+    prompt_next_session: "as seções do prompt do sistema valem a partir da próxima sessão: {names}"
+    step_failed: "falha ao recarregar {step}: {error}"
   steer:
     usage: "Uso: /steer <prompt>"
     failed: "Falha no redirecionamento: {error}"

@@ -1705,7 +1705,7 @@ slash:
   kanban:
     description: "다중 프로필 협업 보드 (작업, 링크, 댓글)"
   reload:
-    description: ".env 변수를 실행 중인 세션에 다시 불러오기"
+    description: "이 채팅에 .env, 플러그인, MCP 서버, 스킬을 다시 불러와요 (/reload env: .env만)"
   reload-mcp:
     description: "설정에서 MCP 서버 다시 불러오기"
   reload-skills:
@@ -2485,6 +2485,29 @@ cli:
     change_unknown: "게이트웨이가 대기열 항목 {index}에 응답하지 않았습니다 ({error}). 다시 시도하기 전에 /queue list를 확인하세요."
   reload:
     env_reloaded: ".env를 다시 불러왔어요 (변수 {count}개 업데이트됨)"
+  reload_all:
+    title: "⚠️  /reload — 프롬프트 캐시 무효화 경고"
+    detail: "이 채팅에 .env, 플러그인, MCP 서버, 스킬을 다시 불러오고\n도구 세트를 다시 만들어요. 그러면 제공자의 프롬프트 캐시가 무효화돼요\n(다음 메시지에서 입력 토큰을 모두 다시 보내요).\n/reload now(이번만) 또는 /reload always로 이 질문을 건너뛸 수 있어요."
+    confirm_required: "⚠️  /reload는 이 채팅의 도구를 다시 만들고 프롬프트 캐시를 무효화해요 (다음 메시지에서 입력 토큰을 모두 다시 보내요). 계속하려면 `/reload now`, 계속하고 다시 묻지 않으려면 `/reload always`로 답해 주세요. `/reload env`는 .env만 다시 불러와요."
+    cancel_hint: "아무것도 다시 불러오지 않기"
+    unchanged: "아무것도 다시 불러오지 않았어요."
+    always_msg: "🔒 앞으로 /reload와 /reload-mcp는 확인 없이 실행돼요."
+    reloading: "🔄 .env, 플러그인, MCP 서버, 스킬을 다시 불러오는 중..."
+    busy: "⏳ 에이전트가 실행 중일 때는 /reload를 쓸 수 없어요. 턴이 끝날 때까지 기다려 주세요. 아무것도 다시 불러오지 않았어요."
+    usage: "사용법: /reload [env|now|always]"
+    env: ".env: 변수 {count}개 업데이트됨"
+    plugins: "플러그인: {count}개 로드됨, 코드 다시 가져옴"
+    mcp: "MCP 서버: {count}개 연결됨"
+    skills: "스킬: {count}개 사용 가능"
+    tools: "이 채팅: 도구 {count}개"
+    added: "추가됨: {names}"
+    removed: "제거됨: {names}"
+    changed: "변경됨: {names}"
+    reconnected: "다시 연결됨: {names}"
+    failed: "실패: {names}"
+    restart: "재시작 필요(의존성 누락): {names}"
+    prompt_next_session: "시스템 프롬프트 섹션은 다음 세션부터 적용돼요: {names}"
+    step_failed: "{step} 다시 불러오기 실패: {error}"
   steer:
     usage: "사용법: /steer <prompt>"
     failed: "조정 실패: {error}"

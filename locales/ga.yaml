@@ -1705,7 +1705,7 @@ slash:
   kanban:
     description: "Clár comhoibrithe ilphróifíle (tascanna, naisc, tráchtanna)"
   reload:
-    description: "Athlódáil athróga .env isteach sa seisiún atá ag rith"
+    description: "Athlódálann .env, breiseáin, freastalaithe MCP agus scileanna sa chomhrá seo (/reload env: .env amháin)"
   reload-mcp:
     description: "Athlódáil freastalaithe MCP ón gcumraíocht"
   reload-skills:
@@ -2485,6 +2485,29 @@ cli:
     change_unknown: "Níor fhreagair an geata faoi mhír {index} den scuaine ({error}); seiceáil /queue list sula ndéanann tú iarracht arís."
   reload:
     env_reloaded: "Athlódáladh .env ({count} athróg nuashonraithe)"
+  reload_all:
+    title: "⚠️  /reload — Rabhadh: déanfar taisce an phras neamhbhailí"
+    detail: "Athlódálann sé .env, breiseáin, freastalaithe MCP agus scileanna sa chomhrá seo\nagus atógann sé a uirlisí, rud a fhágann taisce phras an tsoláthraí neamhbhailí\n(seolfaidh an chéad teachtaireacht eile na comharthaí ionchuir go léir arís).\nScipeáil an cheist seo le /reload now (uair amháin) nó /reload always."
+    confirm_required: "⚠️  Atógann /reload uirlisí an chomhrá seo agus fágann sé taisce an phras neamhbhailí (seolfaidh an chéad teachtaireacht eile na comharthaí ionchuir go léir arís). Freagair `/reload now` chun leanúint ar aghaidh, nó `/reload always` chun leanúint ar aghaidh agus gan fiafraí arís. Ní athlódálann `/reload env` ach .env."
+    cancel_hint: "ná hathlódáil aon rud"
+    unchanged: "Níor athlódáladh aon rud."
+    always_msg: "🔒 Rithfear glaonna /reload agus /reload-mcp amach anseo gan dearbhú."
+    reloading: "🔄 Ag athlódáil .env, breiseán, freastalaithe MCP agus scileanna..."
+    busy: "⏳ Níl /reload ar fáil fad atá an gníomhaire ag obair. Fan go gcríochnóidh an seal; níor athlódáladh aon rud."
+    usage: "Úsáid: /reload [env|now|always]"
+    env: ".env: {count} athróg nuashonraithe"
+    plugins: "Breiseáin: {count} lódáilte, cód athiompórtáilte"
+    mcp: "Freastalaithe MCP: {count} ceangailte"
+    skills: "Scileanna: {count} ar fáil"
+    tools: "An comhrá seo: {count} uirlis"
+    added: "curtha leis: {names}"
+    removed: "bainte: {names}"
+    changed: "athraithe: {names}"
+    reconnected: "athcheangailte: {names}"
+    failed: "teipthe: {names}"
+    restart: "atosú ag teastáil (spleáchais in easnamh): {names}"
+    prompt_next_session: "bíonn ailt phras an chórais i bhfeidhm ón gcéad seisiún eile: {names}"
+    step_failed: "theip ar athlódáil {step}: {error}"
   steer:
     usage: "Úsáid: /steer <prompt>"
     failed: "Theip ar an stiúradh: {error}"

@@ -154,6 +154,51 @@ method("reload.mcp", params=ReloadMcpParams, result=ReloadMcpResult,
        doc="Tear down and rediscover MCP servers for every live session (prompt cache is invalidated).")
 
 
+class ReloadAllParams(Params):
+    """``/reload``. Without ``confirm`` the handler may answer ``confirm_required`` (per
+    ``approvals.mcp_reload_confirm``); ``always`` persists that opt-out."""
+
+    session_id: str | None = None
+    profile: str | None = None
+    confirm: bool = False
+    always: bool = False
+
+
+class ReloadAllStatus(WireEnum):
+    confirm_required = "confirm_required"
+    busy = "busy"
+    reloaded = "reloaded"
+
+
+class ReloadAllReport(OpenModel):
+    """``hermes_cli.chat_reload.ReloadReport``: ``plugins``, ``mcp`` and ``skills`` are each step's
+    own result; ``errors`` maps a step that failed to its error."""
+
+    env_updated: int = 0
+    plugins: dict[str, JsonValue] = Field(default_factory=dict)
+    mcp: dict[str, JsonValue] = Field(default_factory=dict)
+    skills: dict[str, JsonValue] = Field(default_factory=dict)
+    tools_added: list[str] = Field(default_factory=list)
+    tools_removed: list[str] = Field(default_factory=list)
+    tool_count: int | None = None
+    errors: dict[str, str] = Field(default_factory=dict)
+
+
+class ReloadAllResult(Result):
+    """``output``: the rendered summary a client prints; ``message``: a refusal, the consent question,
+    or a note beside the summary."""
+
+    status: ReloadAllStatus
+    message: str | None = None
+    output: str | None = None
+    report: ReloadAllReport | None = None
+
+
+method("reload.all", params=ReloadAllParams, result=ReloadAllResult,
+       doc="/reload: .env, plugins, MCP servers and skills into the calling chat, then one tool rebuild "
+           "(prompt cache is invalidated).")
+
+
 # ── skills ────────────────────────────────────────────────────────────────────────────────────
 
 

@@ -3067,6 +3067,24 @@
       }
     },
     {
+      "name": "reload.all",
+      "summary": "/reload: .env, plugins, MCP servers and skills into the calling chat, then one tool rebuild (prompt cache is invalidated).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ReloadAllParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ReloadAllResult"
+        }
+      }
+    },
+    {
       "name": "reload.env",
       "summary": "Re-read ~/.hermes/.env (CLI /reload parity); built agents keep their pool until /new.",
       "params": [
@@ -34785,6 +34803,167 @@
         ],
         "title": "RelayEnvelope",
         "type": "object"
+      },
+      "ReloadAllParams": {
+        "additionalProperties": false,
+        "description": "``/reload``. Without ``confirm`` the handler may answer ``confirm_required`` (per\n``approvals.mcp_reload_confirm``); ``always`` persists that opt-out.",
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
+          },
+          "always": {
+            "default": false,
+            "title": "Always",
+            "type": "boolean"
+          }
+        },
+        "title": "ReloadAllParams",
+        "type": "object"
+      },
+      "ReloadAllReport": {
+        "additionalProperties": true,
+        "description": "``hermes_cli.chat_reload.ReloadReport``: ``plugins``, ``mcp`` and ``skills`` are each step's\nown result; ``errors`` maps a step that failed to its error.",
+        "properties": {
+          "env_updated": {
+            "default": 0,
+            "title": "Env Updated",
+            "type": "integer"
+          },
+          "plugins": {
+            "additionalProperties": true,
+            "title": "Plugins",
+            "type": "object"
+          },
+          "mcp": {
+            "additionalProperties": true,
+            "title": "Mcp",
+            "type": "object"
+          },
+          "skills": {
+            "additionalProperties": true,
+            "title": "Skills",
+            "type": "object"
+          },
+          "tools_added": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools Added",
+            "type": "array"
+          },
+          "tools_removed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools Removed",
+            "type": "array"
+          },
+          "tool_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Count"
+          },
+          "errors": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Errors",
+            "type": "object"
+          }
+        },
+        "title": "ReloadAllReport",
+        "type": "object"
+      },
+      "ReloadAllResult": {
+        "additionalProperties": false,
+        "description": "``output``: the rendered summary a client prints; ``message``: a refusal, the consent question,\nor a note beside the summary.",
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/ReloadAllStatus"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message"
+          },
+          "output": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Output"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReloadAllReport"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "ReloadAllResult",
+        "type": "object"
+      },
+      "ReloadAllStatus": {
+        "enum": [
+          "confirm_required",
+          "busy",
+          "reloaded"
+        ],
+        "title": "ReloadAllStatus",
+        "type": "string"
       },
       "ReloadEnvParams": {
         "additionalProperties": false,

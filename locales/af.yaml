@@ -1705,7 +1705,7 @@ slash:
   kanban:
     description: "Multiprofiel-samewerkingsbord (take, skakels, kommentaar)"
   reload:
-    description: "Herlaai .env-veranderlikes in die lopende sessie"
+    description: "Herlaai .env, plugins, MCP-bedieners en skills in hierdie klets (/reload env: net .env)"
   reload-mcp:
     description: "Herlaai MCP-bedieners vanaf konfigurasie"
   reload-skills:
@@ -2485,6 +2485,29 @@ cli:
     change_unknown: "Die gateway het nie oor tou-item {index} geantwoord nie ({error}); kyk na /queue list voordat jy weer probeer."
   reload:
     env_reloaded: ".env herlaai ({count} veranderlike(s) opgedateer)"
+  reload_all:
+    title: "⚠️  /reload — Waarskuwing: prompt-kas word ongeldig"
+    detail: "Herlaai .env, plugins, MCP-bedieners en skills in hierdie klets en\nbou sy gereedskap oor, wat die verskaffer se prompt-kas ongeldig maak\n(die volgende boodskap stuur al die invoer-tokens weer).\nSlaan hierdie vraag oor met /reload now (een keer) of /reload always."
+    confirm_required: "⚠️  /reload bou hierdie klets se gereedskap oor en maak die prompt-kas ongeldig (die volgende boodskap stuur al die invoer-tokens weer). Antwoord `/reload now` om voort te gaan, of `/reload always` om voort te gaan en nooit weer te vra nie. `/reload env` herlaai net .env."
+    cancel_hint: "herlaai niks"
+    unchanged: "Niks is herlaai nie."
+    always_msg: "🔒 Toekomstige /reload- en /reload-mcp-oproepe loop sonder bevestiging."
+    reloading: "🔄 Herlaai .env, plugins, MCP-bedieners en skills..."
+    busy: "⏳ /reload is nie beskikbaar terwyl die agent loop nie. Wag tot die beurt klaar is; niks is herlaai nie."
+    usage: "Gebruik: /reload [env|now|always]"
+    env: ".env: {count} veranderlike(s) opgedateer"
+    plugins: "Plugins: {count} gelaai, kode weer ingevoer"
+    mcp: "MCP-bedieners: {count} gekoppel"
+    skills: "Skills: {count} beskikbaar"
+    tools: "Hierdie klets: {count} gereedskap"
+    added: "bygevoeg: {names}"
+    removed: "verwyder: {names}"
+    changed: "verander: {names}"
+    reconnected: "herkoppel: {names}"
+    failed: "misluk: {names}"
+    restart: "herbegin nodig (ontbrekende afhanklikhede): {names}"
+    prompt_next_session: "stelselprompt-afdelings geld vanaf die volgende sessie: {names}"
+    step_failed: "herlaai van {step} het misluk: {error}"
   steer:
     usage: "Gebruik: /steer <prompt>"
     failed: "Stuur het misluk: {error}"

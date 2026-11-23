@@ -246,6 +246,57 @@ def _go_live(name: str) -> Optional[dict[str, Any]]:
     return activation
 
 
+def rediscover_plugins() -> dict[str, Any]:
+    """Force-rediscover every plugin of the caller's profile (the explicit ``/reload``): changed plugin
+    code is re-imported and its tools re-registered. Unlike :func:`load_and_go_live` this publishes
+    nothing; the caller refreshes the chat it reloads. Takes the go-live lock, then the discovery lock
+    (the :func:`load_and_go_live` order).
+
+    Returns ``{loaded, added, removed, changed, failed: {name: error}, restart: {name: [deps]},
+    prompt: [names]}``: ``changed`` = version, tool set or source files moved; ``restart`` = a
+    Python dependency this process cannot import; ``prompt`` = plugins with system-prompt sections,
+    which still apply from the next session."""
+    from hermes_cli.plugins import _join_background_discovery, get_plugin_manager
+    with _GO_LIVE_LOCK:
+        _join_background_discovery()
+        manager = get_plugin_manager()
+        with manager._discovery_lock:
+            before = _plugin_fingerprints(manager)
+            manager.discover_and_load(force=True)
+            after = _plugin_fingerprints(manager)
+            summaries = activation_summaries(manager)
+            blocked = {e["name"]: e["missing_dependencies"] for e in dependency_blocked_summaries(manager)}
+            failed = {getattr(p.manifest, "name", None) or k: str(p.error) for k, p in manager._plugins.items()
+                      if p.enabled and p.error}
+    return {"loaded": sorted(after), "added": sorted(after.keys() - before.keys()),
+            "removed": sorted(before.keys() - after.keys()),
+            "changed": sorted(n for n in after.keys() & before.keys() if after[n] != before[n]),
+            "failed": {n: e for n, e in failed.items() if n not in blocked}, "restart": blocked,
+            "prompt": sorted(s["name"] for s in summaries if (s.get("deferred") or {}).get("prompt"))}
+
+
+def _plugin_fingerprints(manager: Any) -> dict[str, tuple]:
+    """``{name: (version, tools, newest source mtime)}`` of the plugins loaded without error."""
+    out = {}
+    for key, loaded in manager._plugins.items():
+        if loaded.error or loaded.deferred or not loaded.enabled:
+            continue
+        manifest = loaded.manifest
+        out[getattr(manifest, "name", None) or key] = (
+            getattr(manifest, "version", ""), tuple(sorted(loaded.tools_registered)),
+            _newest_source_mtime(getattr(manifest, "path", None)))
+    return out
+
+
+def _newest_source_mtime(path: Optional[str]) -> int:
+    if not path:
+        return 0
+    try:
+        return max((p.stat().st_mtime_ns for p in Path(path).rglob("*.py")), default=0)
+    except OSError:
+        return 0
+
+
 def _serve_backend_record():
     """The host-owner record, else the Desktop child's (a Desktop-only box has no host owner)."""
     from gateway import host_rendezvous as hr

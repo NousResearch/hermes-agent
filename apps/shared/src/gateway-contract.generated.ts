@@ -4265,6 +4265,33 @@ export interface ReloadMcpResult {
 }
 export type ReloadMcpStatus = 'confirm_required' | 'reloaded'
 export type ReloadMcpSession = 'applied' | 'unchanged' | 'busy'
+/** ``/reload``. Without ``confirm`` the handler may answer ``confirm_required`` (per ``approvals.mcp_reload_confirm``); ``always`` persists that opt-out. */
+export interface ReloadAllParams {
+  session_id?: string | null
+  profile?: string | null
+  confirm?: boolean
+  always?: boolean
+}
+/** ``output``: the rendered summary a client prints; ``message``: a refusal, the consent question, or a note beside the summary. */
+export interface ReloadAllResult {
+  status: ReloadAllStatus
+  message?: string | null
+  output?: string | null
+  report?: ReloadAllReport | null
+}
+export type ReloadAllStatus = 'confirm_required' | 'busy' | 'reloaded'
+/** ``hermes_cli.chat_reload.ReloadReport``: ``plugins``, ``mcp`` and ``skills`` are each step's own result; ``errors`` maps a step that failed to its error. */
+export interface ReloadAllReport {
+  env_updated?: number
+  plugins?: Record<string, unknown>
+  mcp?: Record<string, unknown>
+  skills?: Record<string, unknown>
+  tools_added?: string[]
+  tools_removed?: string[]
+  tool_count?: number | null
+  errors?: Record<string, string>
+  [key: string]: unknown
+}
 /** ``query`` is the search text / hub identifier / browse page (digits); ``page`` / ``page_size`` apply to ``browse``. */
 export interface SkillsManageParams {
   profile?: string | null
@@ -6727,6 +6754,8 @@ export interface RpcMethods {
   'prompt.btw': { params: SideAgentParams; result: TaskIdResult }
   /** Send a user turn to a live session; busy sessions queue / steer / redirect instead of refusing. */
   'prompt.submit': { params: PromptSubmitParams; result: PromptSubmitResult }
+  /** /reload: .env, plugins, MCP servers and skills into the calling chat, then one tool rebuild (prompt cache is invalidated). */
+  'reload.all': { params: ReloadAllParams; result: ReloadAllResult }
   /** Re-read ~/.hermes/.env (CLI /reload parity); built agents keep their pool until /new. */
   'reload.env': { params: ReloadEnvParams; result: ReloadEnvResult }
   /** Tear down and rediscover MCP servers for every live session (prompt cache is invalidated). */
@@ -7088,6 +7117,7 @@ export const RPC_METHODS = [
   'prompt.background',
   'prompt.btw',
   'prompt.submit',
+  'reload.all',
   'reload.env',
   'reload.mcp',
   'request.answer',

@@ -1705,7 +1705,7 @@ slash:
   kanban:
     description: "Çok profilli iş birliği panosu (görevler, bağlantılar, yorumlar)"
   reload:
-    description: ".env değişkenlerini çalışan oturuma yeniden yükle"
+    description: ".env, eklentiler, MCP sunucuları ve becerileri bu sohbete yeniden yükler (/reload env: yalnızca .env)"
   reload-mcp:
     description: "MCP sunucularını yapılandırmadan yeniden yükle"
   reload-skills:
@@ -2485,6 +2485,29 @@ cli:
     change_unknown: "Ağ geçidi kuyruk öğesi {index} için yanıt vermedi ({error}); yeniden denemeden önce /queue list ile kontrol edin."
   reload:
     env_reloaded: ".env yeniden yüklendi ({count} değişken güncellendi)"
+  reload_all:
+    title: "⚠️  /reload — İstem önbelleği geçersiz kılma uyarısı"
+    detail: ".env, eklentiler, MCP sunucuları ve becerileri bu sohbete yeniden yükler ve\naraçlarını yeniden oluşturur; bu, sağlayıcının istem önbelleğini geçersiz kılar\n(sonraki mesaj tüm girdi tokenlarını yeniden gönderir).\nBu soruyu /reload now (bir kez) veya /reload always ile atlayın."
+    confirm_required: "⚠️  /reload bu sohbetin araçlarını yeniden oluşturur ve istem önbelleğini geçersiz kılar (sonraki mesaj tüm girdi tokenlarını yeniden gönderir). Devam etmek için `/reload now`, devam edip bir daha sormaması için `/reload always` yanıtını verin. `/reload env` yalnızca .env'yi yeniden yükler."
+    cancel_hint: "hiçbir şeyi yeniden yükleme"
+    unchanged: "Hiçbir şey yeniden yüklenmedi."
+    always_msg: "🔒 Gelecekteki /reload ve /reload-mcp çağrıları onay olmadan çalışacak."
+    reloading: "🔄 .env, eklentiler, MCP sunucuları ve beceriler yeniden yükleniyor..."
+    busy: "⏳ Ajan çalışırken /reload kullanılamaz. Turun bitmesini bekleyin; hiçbir şey yeniden yüklenmedi."
+    usage: "Kullanım: /reload [env|now|always]"
+    env: ".env: {count} değişken güncellendi"
+    plugins: "Eklentiler: {count} yüklendi, kod yeniden içe aktarıldı"
+    mcp: "MCP sunucuları: {count} bağlı"
+    skills: "Beceriler: {count} kullanılabilir"
+    tools: "Bu sohbet: {count} araç"
+    added: "eklendi: {names}"
+    removed: "kaldırıldı: {names}"
+    changed: "değişti: {names}"
+    reconnected: "yeniden bağlandı: {names}"
+    failed: "başarısız: {names}"
+    restart: "yeniden başlatma gerekli (eksik bağımlılıklar): {names}"
+    prompt_next_session: "sistem istemi bölümleri sonraki oturumdan itibaren geçerli: {names}"
+    step_failed: "{step} yeniden yüklenemedi: {error}"
   steer:
     usage: "Kullanım: /steer <prompt>"
     failed: "Yönlendirme başarısız oldu: {error}"

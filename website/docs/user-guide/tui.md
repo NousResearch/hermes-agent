@@ -133,7 +133,7 @@ All slash commands work unchanged. A few are TUI-owned — they produce richer o
 | `/usage` | Rich token / cost / context panel |
 | `/agents` (alias `/tasks`) | Observability overlay — live subagent tree with kill/pause controls, per-branch cost / token / file rollups, turn-by-turn history |
 | `/connectors` | Connector accounts list: rename, add, reconnect or remove accounts, and show retired ones. See [Slash Commands](../reference/slash-commands.md#tools--skills) for the keys |
-| `/reload` | Re-reads `~/.hermes/.env` into the running TUI process so newly added API keys take effect without a restart |
+| `/reload [env\|now\|always]` | Reloads `.env`, plugins, MCP servers and skills into the current chat and rebuilds its tool list (asks first; see [Slash Commands](../reference/slash-commands.md#tools--skills)). `/reload env` only re-reads `~/.hermes/.env` so newly added API keys take effect without a restart |
 | `/mouse [on\|off\|toggle\|wheel\|buttons\|all]` | Pick a mouse tracking preset at runtime (also persists to `display.mouse_tracking` in `config.yaml`). `wheel` (1000+1006) keeps scroll-wheel scrolling without the hover events that make tmux spam "No image in clipboard" over the prompt row; `buttons` adds drag-to-select; `all` is the default with hover-driven UI. |
 
 Every other slash command (including installed skills, quick commands, and personality toggles) works identically to the classic CLI. See [Slash Commands Reference](../reference/slash-commands.md).

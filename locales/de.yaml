@@ -1705,7 +1705,7 @@ slash:
   kanban:
     description: "Profilübergreifendes Kollaborations-Board (Aufgaben, Links, Kommentare)"
   reload:
-    description: ".env-Variablen in die laufende Sitzung neu laden"
+    description: "Lädt .env, Plugins, MCP-Server und Skills in diesen Chat neu (/reload env: nur .env)"
   reload-mcp:
     description: "MCP-Server aus der Konfiguration neu laden"
   reload-skills:
@@ -2485,6 +2485,29 @@ cli:
     change_unknown: "Das Gateway hat zu Warteschlangeneintrag {index} nicht geantwortet ({error}); prüfe /queue list, bevor du es erneut versuchst."
   reload:
     env_reloaded: ".env neu geladen ({count} Variable(n) aktualisiert)"
+  reload_all:
+    title: "⚠️  /reload — Warnung: Prompt-Cache wird ungültig"
+    detail: "Lädt .env, Plugins, MCP-Server und Skills in diesen Chat neu und\nbaut seine Werkzeuge neu auf; das macht den Prompt-Cache des Anbieters ungültig\n(die nächste Nachricht sendet alle Eingabe-Tokens erneut).\nÜberspringe diese Frage mit /reload now (einmal) oder /reload always."
+    confirm_required: "⚠️  /reload baut die Werkzeuge dieses Chats neu auf und macht den Prompt-Cache ungültig (die nächste Nachricht sendet alle Eingabe-Tokens erneut). Antworte `/reload now`, um fortzufahren, oder `/reload always`, um fortzufahren und diese Frage dauerhaft abzuschalten. `/reload env` lädt nur .env neu."
+    cancel_hint: "nichts neu laden"
+    unchanged: "Nichts wurde neu geladen."
+    always_msg: "🔒 Künftige /reload- und /reload-mcp-Aufrufe laufen ohne Bestätigung."
+    reloading: "🔄 Lade .env, Plugins, MCP-Server und Skills neu..."
+    busy: "⏳ /reload ist nicht verfügbar, während der Agent läuft. Warte, bis der Durchgang fertig ist; nichts wurde neu geladen."
+    usage: "Verwendung: /reload [env|now|always]"
+    env: ".env: {count} Variable(n) aktualisiert"
+    plugins: "Plugins: {count} geladen, Code neu importiert"
+    mcp: "MCP-Server: {count} verbunden"
+    skills: "Skills: {count} verfügbar"
+    tools: "Dieser Chat: {count} Werkzeug(e)"
+    added: "hinzugefügt: {names}"
+    removed: "entfernt: {names}"
+    changed: "geändert: {names}"
+    reconnected: "neu verbunden: {names}"
+    failed: "fehlgeschlagen: {names}"
+    restart: "Neustart nötig (fehlende Abhängigkeiten): {names}"
+    prompt_next_session: "System-Prompt-Abschnitte gelten ab der nächsten Sitzung: {names}"
+    step_failed: "Neuladen von {step} fehlgeschlagen: {error}"
   steer:
     usage: "Verwendung: /steer <prompt>"
     failed: "Steer fehlgeschlagen: {error}"

@@ -512,7 +512,8 @@ so a plugin that needs a review (widened pin or Git update, caution scan of a Gi
 listed as "needs review" with nothing changed; update it by name to review it.
 Each plugin they update is reloaded right away, as an update from the plugin's
 own Update action is: its MCP servers and skills reach open chats now, its
-Python tools load in new sessions. Two
+Python tools load in new sessions (or in the current chat after `/reload`, which
+re-imports changed plugin code and rebuilds that chat's tool list). Two
 updates of the same plugin never run at once: the second one is refused and
 changes nothing.
 

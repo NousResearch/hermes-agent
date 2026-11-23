@@ -1064,6 +1064,76 @@ class CLIInfoMixin:
         except Exception as e:
             print(f"  {t('gateway.reload_mcp.failed', error=str(e))}")
 
+    def _confirm_and_reload_chat(self, cmd_original: str = "") -> None:
+        """``/reload [now|always]`` (#159205): ``.env``, plugins, MCP servers and skills into this chat.
+        It rebuilds the chat's tools[] (a prompt-cache break), so it shares ``/reload-mcp``'s consent:
+        bare ``/reload`` asks when ``approvals.mcp_reload_confirm`` is on, ``now`` skips the question
+        once, ``always`` skips it and turns the gate off. Refused while a turn runs."""
+        from hermes_cli.cli_commands_session_tools import _command_arg
+        arg = _command_arg(cmd_original, lower=True)
+        if arg not in ("", "now", "always"):
+            print(f"  {t('cli.reload_all.usage')}")
+            return
+        if getattr(self, "_agent_running", False):
+            print(f"  {t('cli.reload_all.busy')}")
+            return
+        if arg == "always":
+            from cli import save_config_value
+            if not save_config_value("approvals.mcp_reload_confirm", False):
+                print(t("cli.modal.persist_opt_out_failed", once_verb=t("cli.reload_mcp.once_verb")))
+            else:
+                print(t("cli.reload_all.always_msg"))
+        elif not arg and _gated_confirm(
+                self, "reload", "mcp_reload_confirm", title=t("cli.reload_all.title"),
+                detail=t("cli.reload_all.detail"), choices=_reload_mcp_choices()[:2] + [
+                    ("cancel", t("cli.reload_mcp.choice_cancel"), t("cli.reload_all.cancel_hint"))],
+                unchanged=t("cli.reload_all.unchanged"), always_msg=t("cli.reload_all.always_msg"),
+                once_verb=t("cli.reload_mcp.once_verb")) is None:
+            return
+        with self._busy_command(self._slow_command_status(cmd_original)):
+            self._reload_chat()
+
+    def _reload_chat(self) -> None:
+        """The consented ``/reload``: on the shared gateway the owner reloads the session it runs
+        (``reload.all``, which queues the model's note there); here, :mod:`hermes_cli.chat_reload`
+        against this process's agent, with the note prepended to the next message."""
+        from hermes_cli import chat_reload
+        from hermes_cli.gateway_side import connection_for
+        if not self._command_running:
+            print(t("cli.reload_all.reloading"))
+        if (connection := connection_for(self)) is not None:
+            return self._reload_gateway_chat(connection)
+        report = chat_reload.ReloadReport()
+        chat_reload.run_steps(report)
+        if self.agent is not None and (
+                selection := chat_reload.publish(report, self.agent, enabled_toolsets=self.enabled_toolsets)):
+            self.enabled_toolsets = selection
+        for line in chat_reload.summary_lines(report):
+            print(line)
+        if note := chat_reload.model_note(report):
+            # The one-shot slot /reload-skills uses: prepended to the next user message, never a
+            # transcript row of its own (role alternation), replacing any older skills note.
+            self._pending_skills_reload_note = note
+
+    def _reload_gateway_chat(self, connection) -> None:
+        from hermes_cli import chat_reload
+        from hermes_cli.config import reload_env
+        from hermes_cli.gateway_client import GatewayClientError
+        reload_env()  # this process re-reads too, as `/reload env` does
+        try:
+            result = connection.call("reload.all", session_id=self.session_id, confirm=True) or {}
+            snapshot = connection.call("session.resume", session_id=self.session_id) or {}
+        except GatewayClientError as e:
+            print(f"  {t('cli.reload_all.step_failed', step='reload', error=str(e))}")
+            return
+        for line in chat_reload.summary_lines(chat_reload.ReloadReport.from_dict(result.get("report") or {})):
+            print(line)
+        if result.get("message"):
+            print(f"  {result['message']}")
+        connection.state(self.session_id).adopt_snapshot(snapshot)
+        from hermes_cli.gateway_plugin_commands import invalidate
+        invalidate(self)  # /help, completion and dispatch read the reloaded plugin and skill commands
+
     def _reload_skills(self) -> None:
         """Reload skills: rescan ~/.hermes/skills/ and queue a note for the next user turn.
 

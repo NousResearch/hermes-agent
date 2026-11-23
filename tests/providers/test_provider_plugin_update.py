@@ -135,3 +135,36 @@ def test_a_broken_update_keeps_the_previous_version_and_says_so(plugin):
     # The fixed release after it loads clean: nothing the broken one half-imported is reused.
     assert "new sessions use this version" in activation_hint(update_to(4))
     assert get_provider_profile("demo-provider").create_client().version == "v4"
+
+
+@pytest.mark.platforms("any")  # the profile extraction is a child process: its env/home resolution is per-OS
+def test_an_update_that_gets_a_hosted_profile_refused_says_the_update_is_in_use(plugin, monkeypatch):
+    """Under ``host`` a release whose profile starts building its own client is refused once it is swapped
+    in: the old release's profile is gone too, so the hint must not say the previous version keeps serving."""
+    from hermes_cli.plugins_activation import activation_hint, find_activation, plugin_activation_summary
+    from providers import get_provider_profile
+
+    home = plugin.parent.parent
+    monkeypatch.setenv("HOME", str(home / "os-home"))
+    (home / "config.yaml").write_text("plugins:\n  isolation: host\n", encoding="utf-8")
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: demo-provider\nkind: model-provider\nversion: 1.0\n")
+    (plugin / "__init__.py").write_text(
+        "from providers import register_provider\nfrom providers.base import ProviderProfile\n"
+        "register_provider(ProviderProfile(name='demo-provider', base_url='https://demo.example/v1'))\n")
+    assert get_provider_profile("demo-provider") is not None
+
+    _write(plugin, 2)  # this release overrides create_client
+    manager = _forced_sweep()
+    try:
+        key = next(k for k in manager._plugins if k.endswith("demo-provider"))
+        summary = find_activation([plugin_activation_summary(manager, key)], "demo-provider")
+        hint = activation_hint({"gateway_reloaded": True, "activation": summary})
+        assert get_provider_profile("demo-provider") is None  # what the running process serves now
+        assert "previous version keeps serving" not in hint
+        assert hint.startswith("The updated provider plugin is in use without the profiles Hermes refused (")
+        assert "plugins.host.in_process_providers" in hint
+    finally:
+        host = getattr(manager, "_plugin_host_instance", None)
+        if host is not None:
+            host.shutdown()

@@ -330,6 +330,11 @@ def activation_hint(result: dict[str, Any]) -> str:
     if missing := act.get("missing_dependencies"):
         return "\n".join([*lines, dependency_restart_hint(missing, act.get("missing_in") or [])])
     if error := act.get("load_error"):
+        # Under plugins.isolation: host the updated tree loads with a profile refused (that record starts
+        # "provider profile", an import failure "<ExceptionName>:"): the update is live, the refused profile gone.
+        if error.startswith("provider profile "):
+            return "\n".join([*lines, f"The updated provider plugin is in use without the profiles Hermes "
+                                      f"refused ({error})."])
         return "\n".join([*lines, f"The updated provider plugin failed to load ({error}); "
                                   "the previous version keeps serving."])
     if not result.get("gateway_reloaded"):

@@ -112,19 +112,42 @@ class SQLiteRoutingRepository:
 
     def replace_routing_entries(self, entries: Mapping[str, str], *, routing_scope: str = "") -> set[str]:
         now = time.time()
-        rows = [{'scope': routing_scope, 'key': k, **route_retired_params(k, v, now)}
-                for k, v in entries.items() if k and v]
+        desired = {k: v for k, v in entries.items() if k and v}
 
         def _do(conn):
-            conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (routing_scope,))
-            if rows:
-                conn.executemany(
-                    "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
-                    "SELECT :scope, :key, :entry, :now WHERE NOT " + ROUTE_RETIRED_SQL,
-                    rows)
-            kept = {r[0] for r in conn.execute(
-                "SELECT session_key FROM gateway_routing WHERE scope = ?", (routing_scope,))}
-            return {row['key'] for row in rows} - kept
+            # Delta-only: the old code deleted the scope's whole index and
+            # re-inserted it on every call, holding the state.db writer mutex
+            # 10-12s on a saturated disk. Read the current rows, evaluate the
+            # retired predicate per desired key (the same predicate the old
+            # INSERT used), and write only the difference: a no-change call
+            # writes zero rows. Unchanged rows keep their payload and
+            # timestamp; removed or newly-retired rows are deleted.
+            current = {row[0]: row[1] for row in conn.execute(
+                "SELECT session_key, entry_json FROM gateway_routing WHERE scope = ?",
+                (routing_scope,))}
+            final = {}
+            for key, entry in desired.items():
+                retired = conn.execute(
+                    "SELECT " + ROUTE_RETIRED_SQL,
+                    route_retired_params(key, entry, now)).fetchone()[0]
+                if not retired:
+                    final[key] = entry
+            for key in current.keys() - final.keys():
+                conn.execute(
+                    "DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",
+                    (routing_scope, key))
+            for key, entry in final.items():
+                if key not in current:
+                    conn.execute(
+                        "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (routing_scope, key, entry, now))
+                elif current[key] != entry:
+                    conn.execute(
+                        "UPDATE gateway_routing SET entry_json = ?, updated_at = ? "
+                        "WHERE scope = ? AND session_key = ?",
+                        (entry, now, routing_scope, key))
+            return set(desired) - set(final)
         with translated():
             holder = self._store.holder()
             return holder._execute_write(_do)

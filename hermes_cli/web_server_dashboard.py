@@ -692,7 +692,7 @@ def _portable_plugin_name(plugin_dir: Path, key: str) -> set:
                 or not (plugin_dir / "plugin.json").exists():
             return set()
         name = read_agent_plugin_manifest(plugin_dir)[0].get("name")
-    except (OSError, ValueError):  # an unreadable or invalid plugin.json is no plugin the loader keys by name
+    except (OSError, ValueError, RecursionError):  # a plugin.json the loader cannot read names no plugin
         return set()
     return {name} if isinstance(name, str) and name else set()
 

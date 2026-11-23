@@ -163,6 +163,54 @@ def test_non_literal_flags_never_give_a_flag_dependent_finding(tmp_path, source)
     assert "not checked (flags not a literal)" in out
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        # one substitution of the empty lazy match at 0 is the same in both engines; unlimited ones are not
+        'import hermes_re as re\nre.sub("a*?", "-", "x", count=1)\n',
+        'import hermes_re as re\nre.subn(rb"a*?", b"-", b"x", 1)\n',
+        'import hermes_re as re\nre.split("a*?", "x", maxsplit=1)\n',
+        'import hermes_re as re\nre.split("a*?", "x", 1)\n',
+    ],
+    ids=["sub-count-keyword", "subn-count-positional", "split-maxsplit-keyword", "split-maxsplit-positional"],
+)
+def test_the_calls_own_limit_is_compared(tmp_path, source):
+    code, out = _gate(tmp_path, source)
+    assert code == 0, out
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import hermes_re as re\nre.sub("a*?", "-", "x", count=0)\n',
+        'import hermes_re as re\nre.split("a*?", "x")\n',
+    ],
+    ids=["sub-count-0", "split-unlimited"],
+)
+def test_an_unlimited_call_still_differs(tmp_path, source):
+    code, out = _gate(tmp_path, source)
+    assert code == 1 and out.startswith("DIFFERS"), out
+
+
+@pytest.mark.parametrize(
+    ("source", "reason"),
+    [
+        ('import hermes_re as re\nn = 1\nre.sub("a*?", "-", "x", count=n)\n', "count not a literal"),
+        ('import hermes_re as re\nn = 1\nre.split("a*?", "x", n)\n', "maxsplit not a literal"),
+    ],
+    ids=["sub-count", "split-maxsplit"],
+)
+def test_a_non_literal_limit_is_dynamic(tmp_path, source, reason):
+    code, out = _gate(tmp_path, source, "--verbose")
+    assert code == 0, out
+    assert f"not checked ({reason})" in out
+
+
+def test_a_non_literal_limit_still_reports_a_refused_pattern(tmp_path):
+    code, out = _gate(tmp_path, 'import hermes_re as re\nn = 1\nre.sub(r"(?=a)b", "-", "x", count=n)\n')
+    assert code == 1 and out.startswith("REJECTED"), out
+
+
 def test_missing_engine_exits_2_with_one_line(tmp_path):
     blocker = (
         "import sys, runpy\n"

@@ -11,12 +11,14 @@ For every call `<alias>.compile/search/match/fullmatch/findall/finditer/split/su
   SURROGATE  the pattern names a lone surrogate (U+D800..U+DFFF), as a character or a \\u / \\U escape; RE2 can
              never match one
   INEXACT    the pattern has a `\\b` / `\\B` that RE2 evaluates with ASCII word rules
-  DIFFERS    the call's operation gives another result than stdlib `re` on generated strings (bytes too)
+  DIFFERS    the call's operation, with its own literal count / maxsplit, gives another result than stdlib `re` on
+             generated strings (bytes too)
   UNCHECKED  stdlib `re` did not finish the comparison within DEADLINE seconds (catastrophic backtracking on the
              generated strings), so nothing says the swap keeps the results; review the pattern and waive it
   DYNAMIC    not checked, with the reason (listed with --verbose): the pattern is not a string literal, or the
              flags are not a literal (every verdict depends on the flags, so such a call reports only a REJECTED
-             or SURROGATE that holds under every combination of ASCII, I, M, S and X)
+             or SURROGATE that holds under every combination of ASCII, I, M, S and X), or the count / maxsplit
+             of sub/subn/split is not a literal (only DIFFERS depends on it, so the other findings still apply)
 Any finding except DYNAMIC makes the exit status 1. One call is waived with a comment on its first or last line
 (a real comment token: the marker inside a string literal waives nothing):
     # re2: reviewed -- <reason>
@@ -54,6 +56,8 @@ def _repo_root():
 
 
 ROOT = _repo_root()
+# The call's own result limit: (keyword, positional index); compared as given, so `count=1` is not judged unlimited.
+LIMITS = {"split": ("maxsplit", 2), "sub": ("count", 3), "subn": ("count", 3)}
 FUNCS = {"compile": 1, "search": 2, "match": 2, "fullmatch": 2, "findall": 2, "finditer": 2, "split": 3, "sub": 4, "subn": 4}
 FLAGS = {"I": 2, "IGNORECASE": 2, "M": 8, "MULTILINE": 8, "S": 16, "DOTALL": 16, "A": 256, "ASCII": 256, "U": 32,
          "UNICODE": 32, "X": 64, "VERBOSE": 64, "L": 4, "LOCALE": 4, "DEBUG": 128, "NOFLAG": 0}
@@ -117,7 +121,7 @@ def _view(m):
     return None if m is None else (m.span(), m.groups())
 
 
-def operation(fn, repl):
+def operation(fn, repl, limit=0):
     def marker(p):
         return b"<>" if isinstance(p.pattern, bytes) else "<>"
 
@@ -128,9 +132,9 @@ def operation(fn, repl):
         "fullmatch": lambda p, s: _view(p.fullmatch(s)),
         "findall": lambda p, s: p.findall(s),
         "finditer": lambda p, s: [_view(m) for m in p.finditer(s)],
-        "split": lambda p, s: p.split(s),
-        "sub": lambda p, s: p.sub(repl, s),
-        "subn": lambda p, s: p.subn(repl, s),
+        "split": lambda p, s: p.split(s, limit),
+        "sub": lambda p, s: p.sub(repl, s, limit),
+        "subn": lambda p, s: p.subn(repl, s, limit),
     }
     return table[fn]
 
@@ -167,14 +171,14 @@ def _within_deadline(work):
         signal.signal(alarm, previous)
 
 
-def differs(facade, pattern, flags, fn, repl):
+def differs(facade, pattern, flags, fn, repl, limit=0):
     """The first generated subject on which the call's result differs, else None; raises _Deadline when stdlib stalls."""
     try:
         old = stdlib_re.compile(pattern, flags)
     except (stdlib_re.error, ValueError, RecursionError):
         return None
     new = facade.compile(pattern, flags)
-    call = operation(fn, repl)
+    call = operation(fn, repl, limit)
     texts = subjects(pattern)
     return _within_deadline(lambda: _compare(call, old, new, texts))
 
@@ -213,6 +217,24 @@ def names_surrogate(pattern: str, flags: int) -> bool:
 
 def keyword(node, name):
     return next((k.value for k in node.keywords if k.arg == name), None)
+
+
+def call_limit(node, fn):
+    """The call's literal count / maxsplit (0 when absent, as in stdlib), or None when it is not a literal int."""
+    if fn not in LIMITS:
+        return 0
+    name, index = LIMITS[fn]
+    limit_node = keyword(node, name)
+    if limit_node is None and len(node.args) > index:
+        limit_node = node.args[index]
+    if limit_node is None:
+        return 0
+    if isinstance(limit_node, ast.Constant) and isinstance(limit_node.value, int):
+        return limit_node.value
+    if isinstance(limit_node, ast.UnaryOp) and isinstance(limit_node.op, ast.USub) \
+            and isinstance(limit_node.operand, ast.Constant) and isinstance(limit_node.operand.value, int):
+        return -limit_node.operand.value
+    return None
 
 
 def build_error(facade, pattern, flags):
@@ -255,12 +277,15 @@ def classify(facade, node, fn, pattern):
         return "REJECTED", error
     if isinstance(pattern, str) and facade.inexact_boundaries(pattern, flags):
         return "INEXACT", "ASCII-only word boundary"
+    limit = call_limit(node, fn)
+    if limit is None:  # only the comparison depends on the limit; the verdicts above hold for any limit
+        return "DYNAMIC", f"not checked ({LIMITS[fn][0]} not a literal)"
     repl_node = node.args[1] if len(node.args) > 1 else keyword(node, "repl")
     marker = b"<>" if isinstance(pattern, bytes) else "<>"
     repl = repl_node.value if fn in ("sub", "subn") and isinstance(repl_node, ast.Constant) \
         and isinstance(repl_node.value, type(pattern)) else marker
     try:
-        example = differs(facade, pattern, flags, fn, repl)
+        example = differs(facade, pattern, flags, fn, repl, limit)
     except _Deadline:
         return "UNCHECKED", f"stdlib re did not finish {fn}() on the generated strings within {DEADLINE:g}s"
     if example is not None:

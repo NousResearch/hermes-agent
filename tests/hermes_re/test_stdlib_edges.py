@@ -7,6 +7,7 @@ every live Pattern even when two are equal.
 """
 import gc
 import re as std
+import time
 
 import hermes_re as hre
 from tests.hermes_re._support import outcome, view
@@ -157,3 +158,13 @@ def test_a_never_matching_edge_alternative_compiles_in_bytes_patterns():
     # the facade's own never-matching filler must be valid in a bytes pattern, which has no \U escape
     for pattern, subject in ((rb"(?<=a)b|c", b"abcxc"), ((r"(?<=a)b|c", "abcxc"))):
         assert hre.compile(pattern).findall(subject) == std.compile(pattern).findall(subject)
+
+
+def test_lastindex_reads_many_tied_groups_in_one_pass():
+    # 12,000 empty groups all end at 0: comparing each with every other took minutes; one pass takes milliseconds.
+    pattern = hre.compile("()" * 12_000)
+    found = pattern.match("x")
+    started = time.monotonic()
+    assert found.lastindex == std.compile("()" * 12_000).match("x").lastindex == 12_000
+    assert found.lastgroup is None
+    assert time.monotonic() - started < 2

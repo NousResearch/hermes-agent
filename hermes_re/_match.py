@@ -123,10 +123,12 @@ class Match:
         if last < 0:
             return None
         tied = [index for index in range(1, pattern.groups + 1) if ends[index] == last]
-        best, best_key = None, None
-        for index in tied:
+        best, best_key, highest = None, None, -1
+        for index in tied:  # ascending group number
             # a tied group with a lower number and a later `)` encloses this one
-            if any(other < index and ranks[other] > ranks[index] for other in tied):
+            enclosed = highest > ranks[index]
+            highest = max(highest, ranks[index])
+            if enclosed:
                 continue
             key = (spans[index][0] >= last, ranks[index])
             if best_key is None or key > best_key:

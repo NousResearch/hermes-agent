@@ -172,6 +172,22 @@ def test_a_plugin_yaml_name_borrowed_from_another_plugin_grants_no_consent(dash,
         assert dash.ping("owner-tool").json() == {"pong": "owner-tool"}
 
 
+@pytest.mark.parametrize("enabled, served", [(["shared-dir", "shared"], True), (["shared"], False)])
+def test_a_shared_plugin_yaml_name_keeps_the_only_tab_of_that_name(dash, enabled, served):
+    """Two directories declare one plugin.yaml name and only one has a dashboard, named the same: its tab
+    stays its own and its directory name turns it on; the shared name alone does not."""
+    imported = _install(dash.home, "shared-dir", "shared", yaml_name="shared")
+    other = dash.home / "plugins" / "shared-other"
+    other.mkdir()
+    (other / "plugin.yaml").write_text("name: shared\nversion: 1.0.0\n")
+    _plugins(dash.home, enabled=enabled)
+    dash.start()
+
+    assert ("shared" in dash.listed()) is served
+    assert imported.exists() is served
+    assert dash.ping("shared").status_code == (200 if served else 404)
+
+
 def test_a_plugin_yaml_name_another_plugin_also_answers_to_still_disables_it(dash):
     """Owning a name decides consent only: ``plugins.disabled`` still matches every name a plugin declares."""
     _install(dash.home, "shared-name", "shared-name", yaml_name="shared-name")

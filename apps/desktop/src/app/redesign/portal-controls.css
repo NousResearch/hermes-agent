@@ -510,11 +510,13 @@
   }
 
   /* Pages carry many bespoke buttons (tabs, segments, filters, table titles, header plates): on touch
-     every button in a page, a workspace page or the conversation header is at least the target tall. */
+     every button in a page, a workspace page or the conversation header is at least the target tall.
+     Not the ones that keep their visual and extend their hit area instead (below): a carousel dot
+     grown to the target is a 44px bar. */
   html[data-hermes-desktop-host='browser'][data-shell='portal']
     #root
     :is([data-page-surface], [data-zone-page], [data-slot='portal-conversation-header'])
-    button:not([data-slot='switch'], [data-slot='checkbox']) {
+    button:not([data-slot='switch'], [data-slot='checkbox'], .catalog-featured-dot) {
     min-height: var(--portal-touch-target);
   }
 

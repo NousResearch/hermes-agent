@@ -260,7 +260,7 @@ export function useTerminalSession({
     term.loadAddon(terminalWebLinksAddon())
     term.unicode.activeVersion = '11'
 
-    const stripBootGap = createBootGapFilter()
+    let stripBootGap = createBootGapFilter()
 
     // Created first because history replay and snapshots read whether its shell
     // is server-persistent; its callbacks only run once start() is called.
@@ -276,6 +276,9 @@ export function useTerminalSession({
         const initial = term.hasSelection() ? term.getSelection() : ''
         selectionRef.current = initial
         selectionLabelRef.current = initial ? terminalSelectionLabel(term, shellNameRef.current, initial) : ''
+      },
+      resetBootGap: () => {
+        stripBootGap = createBootGapFilter()
       },
       resolveCwd: () => lastObservedCwdRef.current || initialRestoreCwdRef.current || cwd,
       restoreHistory: () => history.restore(),

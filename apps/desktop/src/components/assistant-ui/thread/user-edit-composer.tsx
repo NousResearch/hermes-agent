@@ -82,7 +82,7 @@ import { Loader2Icon } from '@/lib/icons'
 import { $touchPointer } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
-import { holdEditingRow } from '@/store/editing-rows'
+import { holdEditingRow, holdLiveKey } from '@/store/editing-rows'
 import { notify, notifyError, readableError } from '@/store/notifications'
 import { $terminalBackend } from '@/store/session'
 import { ambientRequestFor } from '@/store/session-gone-latch'
@@ -105,6 +105,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   // Tell the transcript merge which durable row is open, so a stored re-read
   // keeps this row's id and the typed draft with it (#145872).
   useEffect(() => (typeof rowId === 'number' ? holdEditingRow(rowId) : undefined), [rowId])
+  const messageId = useAuiState(s => s.message.id)
+  const unstoredAtOpen = useRef(typeof rowId !== 'number')
+  // A row still unstored when the box opens keeps its live React key until the box closes, so
+  // binding its stored row id on Stop does not remount the editor.
+  useEffect(() => (unstoredAtOpen.current ? holdLiveKey(messageId) : undefined), [messageId])
   const textDirection = useForcedTextDirection()
   const rootRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)

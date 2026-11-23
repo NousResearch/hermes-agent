@@ -71,6 +71,9 @@ _CONFIDENCE_RANK = {UNKNOWN: 0, ASSUMED: 1, DECLARED: 2, PROVEN: 3}
 _OPENAI_READ_FLOOR = "30m"
 #: ``prompt_cache_retention`` values a request can ask for, as the entry's estimated lifetime.
 _RETENTION_SECONDS = {"24h": 86_400}
+# The last event of each of this many recent routes is kept, so a session that returns to one of them
+# reads that route's own window.
+_ROUTES_REMEMBERED = 4
 #: Route classes saved by earlier builds, read as the API spec they were sent on.
 _LEGACY_CLASSES = {"openai_ttl": "openai_spec", "openai_retention": "openai_spec", "implicit": "openai_spec",
                    "route_ceiling": "anthropic_spec", "anthropic_native": "anthropic_spec",
@@ -412,12 +415,33 @@ def _agent_generation(agent: Any) -> Optional[int]:
     return current_generation(_clock_store(agent), getattr(agent, "session_id", None))
 
 
-def _agent_invalid_reason(agent: Any, event: CacheEvent, generation: Optional[int]) -> Optional[str]:
+def _agent_invalid_reason(agent: Any, event: CacheEvent, generation: Optional[int],
+                          mark: Optional[int] = None) -> Optional[str]:
     # No durable generation (a worker store): this process's compressor count is the only witness.
-    if generation is None and getattr(agent, "_prompt_cache_compression_mark", 0) != _compression_count(agent):
-        return "compacted"
+    if generation is None:
+        recorded = getattr(agent, "_prompt_cache_compression_mark", 0) if mark is None else mark
+        if recorded != _compression_count(agent):
+            return "compacted"
     return _invalid_reason(event, session_id=str(getattr(agent, "session_id", "") or ""), generation=generation,
                            route=_display_route(agent))
+
+
+def _live_event(agent: Any, event: CacheEvent, generation: Optional[int]) -> tuple[CacheEvent, Optional[str]]:
+    """The newest event that describes the cache the next request reaches, and why none does.
+
+    The clock's own event is the last response's. A session that spent a turn on a fallback and came
+    back is on a route whose own last event still describes its cache, so that event answers, under
+    the same rules and with the rewrite count of its own time."""
+    reason = _agent_invalid_reason(agent, event, generation)
+    if reason != "route_changed":
+        return event, reason
+    own = (getattr(agent, "_prompt_cache_clock_by_route", None) or {}).get(_display_route(agent))
+    if own is None:
+        return event, reason
+    mark, remembered = own
+    if _agent_invalid_reason(agent, remembered, generation, mark=mark) is not None:
+        return event, reason
+    return remembered, None
 
 
 def context_witness(agent: Any) -> tuple[str, Optional[int], int, tuple[str, str, str]]:
@@ -431,6 +455,14 @@ def context_witness(agent: Any) -> tuple[str, Optional[int], int, tuple[str, str
 def _set_event(agent: Any, event: Optional[CacheEvent], *, mark: Optional[int] = None) -> None:
     agent._prompt_cache_clock = event
     agent._prompt_cache_compression_mark = _compression_count(agent) if mark is None else mark
+    by_route = agent._prompt_cache_clock_by_route = getattr(agent, "_prompt_cache_clock_by_route", None) or {}
+    if event is None:
+        by_route.clear()
+        return
+    by_route[event.route] = (agent._prompt_cache_compression_mark, event)
+    others = [route for route in by_route if route != event.route]
+    for route in others[:-(_ROUTES_REMEMBERED - 1)]:
+        del by_route[route]
 
 
 # ── Response side ───────────────────────────────────────────────────────────
@@ -444,7 +476,8 @@ def _valid_previous(agent: Any, generation: Optional[int]) -> Optional[CacheEven
     previous = getattr(agent, "_prompt_cache_clock", None)
     if not isinstance(previous, CacheEvent) or previous.confidence == UNKNOWN:
         return None
-    return None if _agent_invalid_reason(agent, previous, generation) else previous
+    valid, reason = _live_event(agent, previous, generation)
+    return None if reason else valid
 
 
 def _moa_destination(agent: Any) -> tuple[Optional[dict], Optional[dict]]:
@@ -681,7 +714,7 @@ def cache_window(agent: Any) -> Optional[CacheWindow]:
     if not isinstance(event, CacheEvent):
         # A restore that could not read the store: the session may have a window nobody can see.
         return None if getattr(agent, "_prompt_cache_clock_restored", False) else _unknown("storage_unavailable")
-    reason = _agent_invalid_reason(agent, event, _agent_generation(agent))
+    event, reason = _live_event(agent, event, _agent_generation(agent))
     return _unknown(reason, event) if reason else _window(event)
 
 
@@ -815,7 +848,9 @@ def prompt_cache_is_cold(agent: Any, *, now: float | None = None) -> bool:
 
     A route switch (``/model``, a fallback, any change of provider, endpoint or model since the last
     response) is cold too: the new route has never seen this prefix, so the first request there writes
-    it whole and an offload before it breaks nothing."""
+    it whole and an offload before it breaks nothing. Coming back is not a switch: while the window of
+    that route's own last response is still open, the route has seen the prefix and the rewrite would
+    break it."""
     window = cache_window(agent)
     if window is not None and window.reason == "route_changed":
         return True

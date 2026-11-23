@@ -128,6 +128,8 @@ def test_a_file_under_a_folder_named_like_a_user_reads_as_before(tmp_path, monke
     monkeypatch.chdir(tmp_path)
 
     assert secret_scope.load_env_file(Path("~no-such-user-for-this-test") / ".env") == {"MH2_TILDE_KEY": "from-the-file"}
+    # The dotenv load asks about a home through the other question, which expanded the name the same way.
+    assert pre.run_elsewhere_for_home(Path("~no-such-user-for-this-test")) is None
 
 
 def test_another_path_to_the_marked_home_is_withheld_too(root):

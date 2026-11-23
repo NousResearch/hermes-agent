@@ -211,6 +211,62 @@ def test_a_non_literal_limit_still_reports_a_refused_pattern(tmp_path):
     assert code == 1 and out.startswith("REJECTED"), out
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        # exact under the ASCII flag the literal mapping supplies; flags=0 would make the boundary INEXACT
+        'import hermes_re as re\nre.compile(r"x\\b.", **{"flags": re.ASCII})\n',
+        # one substitution / split, as the literal mapping says; unlimited ones differ
+        'import hermes_re as re\nre.sub("a*?", "-", "x", **{"count": 1})\n',
+        'import hermes_re as re\nre.split("a*?", "x", **{"maxsplit": 1, "flags": 0})\n',
+    ],
+    ids=["mapping-flags", "mapping-count", "mapping-maxsplit"],
+)
+def test_a_literal_mapping_supplies_its_arguments(tmp_path, source):
+    code, out = _gate(tmp_path, source)
+    assert code == 0, out
+
+
+def test_a_literal_mapping_without_the_argument_leaves_the_default(tmp_path):
+    code, out = _gate(tmp_path, 'import hermes_re as re\nre.sub("a*?", "-", "x", **{"flags": 0})\n')
+    assert code == 1 and out.startswith("DIFFERS"), out
+
+
+@pytest.mark.parametrize(
+    ("source", "reason"),
+    [
+        ('import hermes_re as re\no = {}\nre.compile(r"x\\b.", **o)\n', "flags not a literal"),
+        ('import hermes_re as re\no = ()\nre.compile(r"x\\b.", *o)\n', "flags not a literal"),
+        ('import hermes_re as re\no = {}\nre.compile(r"x\\b.", **{**o, "count": 1})\n', "flags not a literal"),
+        ('import hermes_re as re\no = {}\nre.sub("a*?", "-", "x", flags=0, **o)\n', "count not a literal"),
+        ('import hermes_re as re\no = ()\nre.split("a*?", "x", *o, flags=0)\n', "maxsplit not a literal"),
+        ('import hermes_re as re\no = {}\nre.compile(**o)\n', "pattern not a literal"),
+        ('import hermes_re as re\no = ()\nre.compile(*o, flags=0)\n', "pattern not a literal"),
+    ],
+    ids=["mapping-flags", "star-flags", "mapping-with-unpacking", "mapping-count", "star-maxsplit",
+         "mapping-pattern", "star-pattern"],
+)
+def test_unpacked_arguments_are_unknown(tmp_path, source, reason):
+    code, out = _gate(tmp_path, source, "--verbose")
+    assert code == 0, out
+    assert f"not checked ({reason})" in out
+    assert "1 dynamic sites not checked" in out
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import hermes_re as re\no = {}\nre.compile(r"(?=a)b", **o)\n',
+        'import hermes_re as re\nre.compile(**{"pattern": r"(?=a)b"})\n',
+        'import hermes_re as re\no = ()\nre.sub(r"(?=a)b", *o)\n',
+    ],
+    ids=["unknown-flags", "pattern-from-mapping", "star-after-pattern"],
+)
+def test_unpacked_arguments_still_report_a_refused_pattern(tmp_path, source):
+    code, out = _gate(tmp_path, source)
+    assert code == 1 and out.startswith("REJECTED"), out
+
+
 def test_missing_engine_exits_2_with_one_line(tmp_path):
     blocker = (
         "import sys, runpy\n"

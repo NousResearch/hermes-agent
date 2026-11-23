@@ -6,7 +6,8 @@
 
 For every call `<alias>.compile/search/match/fullmatch/findall/finditer/split/sub/subn(<string literal>, ...)` where
 <alias> is the name the file binds to the regex module, and every call of such a function imported by name
-(`from hermes_re import compile [as c]`); the pattern may be positional or the `pattern=` keyword:
+(`from hermes_re import compile [as c]`); the pattern may be positional or the `pattern=` keyword. An argument a
+literal `**{...}` names is read from it; one a `*args` or another `**mapping` may supply is not a literal:
   REJECTED   hermes_re refuses the pattern, or its RE2 program cannot be built
   SURROGATE  the pattern names a lone surrogate (U+D800..U+DFFF), as a character or a \\u / \\U escape; RE2 can
              never match one
@@ -215,18 +216,41 @@ def names_surrogate(pattern: str, flags: int) -> bool:
         return False
 
 
-def keyword(node, name):
-    return next((k.value for k in node.keywords if k.arg == name), None)
+UNKNOWN = ast.Name(id="<unpacked>")  # an argument `*args` or `**mapping` may supply: never a literal
+
+
+def _mapping_value(mapping, name):
+    """What a `**mapping` gives for ``name``: its value, None when a literal dict lacks the key, else UNKNOWN."""
+    if not isinstance(mapping, ast.Dict) or not all(isinstance(k, ast.Constant) and isinstance(k.value, str)
+                                                    for k in mapping.keys):
+        return UNKNOWN  # a name, a call, or a dict with `**inner` / computed keys: any key may be there
+    return next((v for k, v in zip(mapping.keys, mapping.values) if k.value == name), None)
+
+
+def argument(node, name, index):
+    """The call's argument for parameter ``name`` at positional ``index``: its node, None when the call does not pass
+    it, or UNKNOWN when a `*args` at or before ``index`` or a non-literal `**mapping` may supply it."""
+    for k in node.keywords:
+        if k.arg == name:
+            return k.value
+    for position, arg in enumerate(node.args):
+        if isinstance(arg, ast.Starred):
+            return UNKNOWN
+        if position == index:
+            return arg
+    found = None
+    for k in node.keywords:
+        if k.arg is None:
+            value = _mapping_value(k.value, name)
+            found = value if value is not None else found
+    return found
 
 
 def call_limit(node, fn):
     """The call's literal count / maxsplit (0 when absent, as in stdlib), or None when it is not a literal int."""
     if fn not in LIMITS:
         return 0
-    name, index = LIMITS[fn]
-    limit_node = keyword(node, name)
-    if limit_node is None and len(node.args) > index:
-        limit_node = node.args[index]
+    limit_node = argument(node, *LIMITS[fn])
     if limit_node is None:
         return 0
     if isinstance(limit_node, ast.Constant) and isinstance(limit_node.value, int):
@@ -263,11 +287,7 @@ def classify_unknown_flags(facade, pattern):
 
 def classify(facade, node, fn, pattern):
     """(kind, detail) for one call with a literal pattern, or None when it is clean."""
-    flag_node = keyword(node, "flags")
-    index = FUNCS[fn]
-    if flag_node is None and len(node.args) > index:
-        flag_node = node.args[index]
-    flags = flag_value(flag_node)
+    flags = flag_value(argument(node, "flags", FUNCS[fn]))
     if flags is None:
         return classify_unknown_flags(facade, pattern)
     if isinstance(pattern, str) and names_surrogate(pattern, flags):
@@ -280,7 +300,7 @@ def classify(facade, node, fn, pattern):
     limit = call_limit(node, fn)
     if limit is None:  # only the comparison depends on the limit; the verdicts above hold for any limit
         return "DYNAMIC", f"not checked ({LIMITS[fn][0]} not a literal)"
-    repl_node = node.args[1] if len(node.args) > 1 else keyword(node, "repl")
+    repl_node = argument(node, "repl", 1)
     marker = b"<>" if isinstance(pattern, bytes) else "<>"
     repl = repl_node.value if fn in ("sub", "subn") and isinstance(repl_node, ast.Constant) \
         and isinstance(repl_node.value, type(pattern)) else marker
@@ -327,7 +347,7 @@ def check_file(tools, path, pre_swap):
     rows = []
     for node in ast.walk(canonical_tree(tree)):
         fn = called_function(node, wanted) if isinstance(node, ast.Call) else None
-        arg = (node.args[0] if node.args else keyword(node, "pattern")) if fn else None
+        arg = argument(node, "pattern", 0) if fn else None
         if arg is None:
             continue
         if not isinstance(arg, ast.Constant) or not isinstance(arg.value, (str, bytes)):

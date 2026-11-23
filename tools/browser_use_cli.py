@@ -793,11 +793,23 @@ def _launch_refusal(code: str, session: str, task_id: Optional[str]) -> Optional
         return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                           "dashes, or underscores (e.g. 'r7k2').")
     from tools.approval import check_browser_exec_guard
+    shown: list[str] = []
+
+    def script() -> str:
+        shown.append(_workspace_listing(task_id))
+        return code + shown[-1]
+
     try:
-        guard = check_browser_exec_guard(lambda: code + _workspace_listing(task_id))
+        guard = check_browser_exec_guard(script)
+        # Another call (a delegated child, a background job) can rewrite the workspace while the prompt waits:
+        # what runs must be what was shown.
+        changed = bool(shown) and guard.get("approved", False) and _workspace_listing(task_id) != shown[-1]
     except _UnshowableWorkspaceFile as exc:
         return tool_error(f"browser_exec was not run: {exc}, so the approval could not show everything "
                           "this call would run. Remove or fix that file and retry.")
+    if changed:
+        return tool_error("browser_exec was not run: the workspace files it loads changed while the approval "
+                          "was pending, so what was approved is not what would run. Retry to be asked again.")
     if not guard.get("approved", False):
         return tool_error(guard.get("message") or "browser_exec blocked by approval guard.",
                           **({"user_summary": guard["user_summary"]} if guard.get("user_summary") else {}))
@@ -829,6 +841,14 @@ def _workspace_listing(task_id: Optional[str]) -> str:
                    for name, role in _WORKSPACE_LOADED_FILES)
 
 
+def _env_listing(text: str) -> str:
+    """A workspace ``.env`` as the harness splits it (``str.splitlines``), with secret values masked: the
+    listing also goes to the smart approver's model and onto a chat card, and these values were never
+    shown to either."""
+    from agent.redact import redact_sensitive_text
+    return redact_sensitive_text("\n".join(text.splitlines()), force=True, secret_file=True)
+
+
 def _loaded_file_listing(path: Path, role: str) -> str:
     """One loaded file's listing ("" when absent). Read without blocking or following a FIFO, capped,
     and decoded the way the harness reads it (Python source with its coding cookie; ``.env`` split into
@@ -852,7 +872,7 @@ def _loaded_file_listing(path: Path, role: str) -> str:
     if len(raw) > _WORKSPACE_LISTING_MAX_BYTES:
         raise _UnshowableWorkspaceFile(f"{path} is larger than {_WORKSPACE_LISTING_MAX_BYTES // 1024} KB")
     try:
-        text = importlib.util.decode_source(raw) if path.suffix == ".py" else "\n".join(raw.decode("utf-8").splitlines())
+        text = importlib.util.decode_source(raw) if path.suffix == ".py" else _env_listing(raw.decode("utf-8"))
     except (SyntaxError, UnicodeDecodeError, LookupError) as exc:
         raise _UnshowableWorkspaceFile(f"{path} cannot be decoded ({exc})") from exc
     return f"\n\n# --- {path} ({role}) ---\n{text}"

@@ -130,6 +130,36 @@ def test_a_helpers_file_that_cannot_be_shown_refuses_the_call(gateway_user, harn
     assert "larger than" in result["error"] and prompts == [] and harness == []
 
 
+def test_env_secrets_are_masked_in_what_is_assessed_and_shown(gateway_user, harness, workspace):
+    """The listing reaches the smart approver's model and a chat card; .env secrets never went to either."""
+    answers, prompts = gateway_user
+    secret = "sk-proj-" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6"
+    (workspace / ".env").write_text(f"OPENAI_API_KEY={secret}\nPYTHONSTARTUP=/tmp/x.py\n")
+    answers.append("deny")
+    _exec()
+    shown = json.dumps(prompts[0])
+    assert secret not in shown and "OPENAI_API_KEY" in shown and "PYTHONSTARTUP=/tmp/x.py" in shown
+
+
+def test_helpers_rewritten_while_the_prompt_waits_are_refused(manual, harness, workspace, monkeypatch):
+    """What runs must be what was shown: a concurrent write during the wait voids the approval."""
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    helpers = workspace / "agent_helpers.py"
+    helpers.write_text("x = 1\n")
+
+    def notify(data):
+        helpers.write_text("import os\nos.system('id')\n")
+        with A._lock:
+            entry = A._gateway_queues[SESSION][-1]
+            entry.result = "once"
+            entry.event.set()
+
+    with A._lock:
+        A._gateway_notify_cbs[SESSION] = notify
+    result = _exec()
+    assert "changed while the approval was pending" in result["error"] and harness == []
+
+
 def test_a_helpers_directory_refuses_the_call(gateway_user, harness, workspace):
     _answers, prompts = gateway_user
     (workspace / "agent_helpers.py").mkdir()

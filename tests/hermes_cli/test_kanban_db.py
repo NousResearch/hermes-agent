@@ -958,6 +958,37 @@ def test_classify_worker_exit_registry_wins_over_echild_poisoned_handle(
     assert _kb._classify_worker_exit(42002)[0] == "rate_limited"
 
 
+def test_classify_worker_exit_registry_decodes_without_os_wif_helpers(
+    kanban_home, monkeypatch
+):
+    """On Windows ``os`` has no WIFEXITED/WEXITSTATUS/WIFSIGNALED/WTERMSIG, so the
+    registry branch used to swallow AttributeError and return ("unknown", None)
+    even with an entry present. Simulate that platform by removing the helpers
+    and check the portable decode matches the POSIX one for every class.
+    Reported on native Windows in NousResearch/hermes-agent#61836."""
+    import hermes_cli.kanban_db as _kb
+
+    for name in ("WIFEXITED", "WEXITSTATUS", "WIFSIGNALED", "WTERMSIG"):
+        monkeypatch.delattr(_kb.os, name, raising=False)
+    monkeypatch.setattr(_kb, "_worker_handles", {}, raising=False)
+    monkeypatch.setattr(_kb, "_recent_worker_exits", {}, raising=False)
+
+    cases = {
+        43000: (_exited_status(0), ("clean_exit", 0)),
+        43001: (_exited_status(7), ("nonzero_exit", 7)),
+        43002: (
+            _exited_status(_kb.KANBAN_RATE_LIMIT_EXIT_CODE),
+            ("rate_limited", _kb.KANBAN_RATE_LIMIT_EXIT_CODE),
+        ),
+        43003: (9, ("signaled", 9)),  # SIGKILL
+        43004: ((19 << 8) | 0x7F, ("unknown", None)),  # stopped, not exited
+    }
+    for pid, (raw, expected) in cases.items():
+        _kb._recent_worker_exits[pid] = (raw, 0.0)
+        _kb._worker_handles[pid] = _FakeProc(0)  # ECHILD-poisoned; must not win
+        assert _kb._classify_worker_exit(pid) == expected, pid
+
+
 def test_classify_worker_exit_handle_still_running_falls_through(
     kanban_home,
     monkeypatch,

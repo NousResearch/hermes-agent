@@ -5852,6 +5852,23 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
         _worker_handles.pop(int(pid), None)
         raw, _ = entry
         try:
+            if not hasattr(os, "WIFEXITED"):
+                # Windows has no os.WIF*/WEXITSTATUS helpers, so the branch below
+                # raised AttributeError and every registry entry came back
+                # "unknown". Entries here carry the POSIX wait-status layout
+                # (low 7 bits = terminating signal, 0x7f = stopped, next byte =
+                # exit code), so decode it directly. (Review: #61836.)
+                signal_bits = raw & 0x7F
+                if signal_bits == 0x7F:
+                    return ("unknown", None)  # stopped, not exited
+                if signal_bits:
+                    return ("signaled", signal_bits)
+                code = (raw >> 8) & 0xFF
+                if code == 0:
+                    return ("clean_exit", 0)
+                if code == KANBAN_RATE_LIMIT_EXIT_CODE:
+                    return ("rate_limited", code)
+                return ("nonzero_exit", code)
             if os.WIFEXITED(raw):
                 code = os.WEXITSTATUS(raw)
                 if code == 0:

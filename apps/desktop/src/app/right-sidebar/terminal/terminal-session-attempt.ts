@@ -96,6 +96,7 @@ export function createSessionAttemptController(
 ): SessionAttemptController {
   let persistent = Boolean($terminals.get().find(tab => tab.id === id)?.persistent)
   let resumeOnly = persistent
+  let clearOnRetry = false
   let replayWrites = 0
   let retrySession: (() => void) | null = null
   let cleanupAttempt: (() => void) | null = null
@@ -224,6 +225,7 @@ export function createSessionAttemptController(
             if (persistent && exit.signal) {
               resumeOnly = exit.signal !== 'expired'
               if (exit.signal === 'expired') {
+                clearOnRetry = true
                 term.write('\u001bc')
                 armRetry(TERMINAL_EXIT_MESSAGES.expired)
               } else {
@@ -303,6 +305,7 @@ export function createSessionAttemptController(
           removeExitedTerminal(id)
         } else if (signal === 'expired') {
           resumeOnly = false
+          clearOnRetry = true
           term.write('\u001bc')
           armRetry(TERMINAL_EXIT_MESSAGES.expired)
         } else if (hostHas('retryTerminalSpawn') || runsOverSsh(gateway)) {
@@ -328,7 +331,8 @@ export function createSessionAttemptController(
     if (!sessionId && retrySession && data === '\r') {
       const retry = retrySession
       retrySession = null
-      if (!resumeOnly) {
+      if (clearOnRetry) {
+        clearOnRetry = false
         term.write('\u001bc')
       }
       setStatus('starting')

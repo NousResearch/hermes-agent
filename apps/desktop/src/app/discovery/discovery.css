@@ -211,19 +211,16 @@
   text-align: start;
 }
 
-/* The place speaks while the pointer or focus is on the rows: its fill, no check (18695:17294). Every
-   row says its line and its example at rest, as the rename splash's rows say theirs: an example that
-   only showed under the pointer was missed, and swapping it in made the rows different heights. */
-:root[data-shell='portal']
-  .discovery-welcome-places:is(:hover, :focus-within)
-  > li[data-active]
-  .discovery-welcome-place {
+/* One place speaks at a time: its fill, its example for its line, no check (18695:17294). Chats
+   speaks from the start, so the card opens showing that a row has more to say and the others are
+   there to be reached; the rest say their lines (18695:17833). */
+:root[data-shell='portal'] .discovery-welcome-places > li[data-active] .discovery-welcome-place {
   background-color: var(--portal-surface-selected);
 }
 
-/* The speaking row's fill covers the divider above it, as Figma's 65px fill does. */
-:root[data-shell='portal'] .discovery-welcome-places:is(:hover, :focus-within) > li[data-active]::before,
-:root[data-shell='portal'] .discovery-welcome-places:is(:hover, :focus-within) > li[data-active] + li::before {
+/* The speaking row's fill covers the divider above it, as Figma's fill does. */
+:root[data-shell='portal'] .discovery-welcome-places > li[data-active]::before,
+:root[data-shell='portal'] .discovery-welcome-places > li[data-active] + li::before {
   visibility: hidden;
 }
 
@@ -251,11 +248,27 @@
   min-inline-size: 0;
 }
 
-/* A place's line and, under it, its example. */
+/* The line and the example share one cell, so a row is as tall as the longer of the two and none
+   moves when another speaks; the one not speaking keeps its room, unseen. */
 :root[data-shell='portal'] .discovery-welcome-place-lines {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
+  display: grid;
+}
+
+:root[data-shell='portal'] .discovery-welcome-place-lines > .discovery-welcome-place-line {
+  grid-area: 1 / 1;
+}
+
+:root[data-shell='portal'] .discovery-welcome-place-line[data-example],
+:root[data-shell='portal']
+  .discovery-welcome-places
+  > li[data-active]
+  .discovery-welcome-place-lines
+  > :not([data-example]) {
+  visibility: hidden;
+}
+
+:root[data-shell='portal'] .discovery-welcome-places > li[data-active] .discovery-welcome-place-line[data-example] {
+  visibility: visible;
 }
 
 /* The place's name: Nous/Body Regular at the 14px body; its line: Nous/Metadata, mono at .6. */
@@ -307,10 +320,7 @@
   color: var(--portal-text-chrome);
 }
 
-:root[data-shell='portal']
-  .discovery-welcome-places:is(:hover, :focus-within)
-  > li[data-active]
-  .discovery-welcome-seen {
+:root[data-shell='portal'] .discovery-welcome-places > li[data-active] .discovery-welcome-seen {
   visibility: hidden;
 }
 

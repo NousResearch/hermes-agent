@@ -34,7 +34,8 @@ export type FirstTimeSplashRow = FirstTimeSplashPlace | 'theme'
 /** Why the splash is on screen: it showed itself, or the tray reopened it. Null while closed. */
 export const $firstTimeSplash = atom<null | 'reopened' | 'shown'>(null)
 
-/** The place a row last pointed at (hover, focus or tap) in this showing; null until one has. */
+/** The place speaking in this showing: Chats when it opens, then the row last reached (hover, focus
+ *  or tap). Null while the splash is closed. */
 export const $firstTimeSplashPlace = atom<FirstTimeSplashPlace | null>(null)
 
 /** Every place a row has pointed at in this showing: their rows carry the seen check. */
@@ -59,6 +60,8 @@ function resetShowing(): void {
 
 function open(reason: 'reopened' | 'shown'): void {
   resetShowing()
+  // Chats speaks from the start: the card opens with one row already saying its example.
+  $firstTimeSplashPlace.set(FIRST_TIME_PLACES[0])
   $firstTimeSplash.set(reason)
   recordIaAction(reason === 'shown' ? 'ia.splash.first_time_shown' : 'ia.splash.first_time_reopened', 'state')
 }

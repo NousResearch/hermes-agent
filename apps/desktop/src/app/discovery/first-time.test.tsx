@@ -124,7 +124,8 @@ describe('the first-time splash in the shell', () => {
     const agents = screen.getByRole('button', { name: name => name.endsWith(`: ${copy.splash.lines.agents.line}`) })
     const routineRow = () => routines.closest('li')!
     expect(routineRow().dataset.active).toBeUndefined()
-    expect(firstTime()?.dataset.place).toBeUndefined()
+    // Chats speaks from the start, so the card opens showing a row has more to say.
+    expect(firstTime()?.dataset.place).toBe('chats')
     expect(window.document.querySelectorAll('[data-slot="seen-check"]')).toHaveLength(0)
 
     // The active row is the one whose example shows (discovery.css swaps it for the line).

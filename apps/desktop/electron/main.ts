@@ -129,7 +129,7 @@ import {
 import { CHALLENGE_PARTITION } from './challenge-window'
 import { registerChallengeWindowIpc } from './challenge-window-ipc'
 import { provisionCliLinks } from './cli-provision'
-import { readClipboardImagePng } from './clipboard-image'
+import { readClipboardImage } from './clipboard-image'
 import { registerClipboardTextIpc } from './clipboard-ipc'
 import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
 import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
@@ -16056,12 +16056,12 @@ ipcMain.handle('hermes:savePastedText', async (_event, payload) => {
 })
 
 ipcMain.handle('hermes:saveClipboardImage', async () => {
-  // Electron 44 removed clipboard.readImage(); PNG bytes now arrive through
-  // clipboard.read() + ClipboardItem.getType('image/png') as a Blob.
-  const png = await readClipboardImagePng(clipboard)
+  // PNG bytes, else the image file a clipboard file URL names: macOS Universal
+  // Clipboard hands over an iPhone copy as a file URL (#159184).
+  const image = await readClipboardImage(clipboard, ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES)
 
-  if (png) {
-    return writeComposerImage(png, '.png')
+  if (image) {
+    return writeComposerImage(image.data, image.ext, image.name)
   }
 
   // WSL2/WSLg doesn't bridge clipboard *images* from the Windows host to the

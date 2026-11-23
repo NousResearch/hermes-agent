@@ -89,6 +89,7 @@ import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
 import { ActionBadges } from './micro-actions'
+import { attachPastedImages } from './pasted-images'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { enterLocked, pausedReplyControls } from './paused-reply'
 import { PreparedImageRecovery } from './prepared-image-recovery'
@@ -363,12 +364,9 @@ export function ChatBar({
       }
 
       triggerHaptic('selection')
-
-      for (const blob of blobs) {
-        void onAttachImageBlob(blob)
-      }
+      void attachPastedImages(blobs, onAttachImageBlob, onPasteClipboardImage)
     })
-  }, [onAttachImageBlob, scope.target])
+  }, [onAttachImageBlob, onPasteClipboardImage, scope.target])
 
   // Prior history belongs to the draft that just left — undoing into another
   // conversation's text is worse than having none.
@@ -599,10 +597,7 @@ export function ChatBar({
 
     if (imageBlobs.length > 0 && onAttachImageBlob) {
       triggerHaptic('selection')
-
-      for (const blob of imageBlobs) {
-        void onAttachImageBlob(blob)
-      }
+      void attachPastedImages(imageBlobs, onAttachImageBlob, onPasteClipboardImage)
     }
 
     // Trim surrounding whitespace so a copy that dragged along leading/trailing

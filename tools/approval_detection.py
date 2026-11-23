@@ -31,15 +31,13 @@ from tools.approval_grep_spans import _grep_safe_detection_variant, _quoted_grep
 from tools.approval_hermes_store import (
     _HERMES_HOME_ROOT, _HERMES_STORE_FILE, _HERMES_STORE_PATH, _HERMES_STORE_ROOT, _HERMES_STORE_ROOT_WORD,
     SqliteStoreWriteMatcher,
-)
-from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
-from tools.approval_sensitive_paths import (
     _COMMAND_TAIL, _CREDENTIAL_FILES, _HERMES_CONFIG_PATH, _HERMES_ENV_PATH, _HOME_PREFIX, _HOME_SENSITIVE_CREATE_FILE,
     _HOME_SENSITIVE_CREATE_TARGET, _LN_FILE_TAIL, _LN_TAIL, _PROJECT_ENV_PATH, _PROJECT_SENSITIVE_WRITE_TARGET,
     _SECRET_FILE_NAMED, _SECRET_KEY_FILE, _SECRET_PATH_FILE, _SECRET_VAR, _SENSITIVE_WRITE_DIR, _SENSITIVE_WRITE_FILE,
     _SENSITIVE_WRITE_TARGET, _SSH_SENSITIVE_PATH, _SYSTEM_CONFIG_PATH, _USER_SENSITIVE_WRITE_TARGET,
     _WRITE_TARGET_BOUNDARY,
 )
+from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
 from tools.approval_shell_tokens import _shell_tokens_with_spans
 from tools.approval_windows_hardline import (
     WhatIfExemptMatcher, whatif_preview_is_real, windows_hardline_patterns, windows_whatif_strict_patterns,

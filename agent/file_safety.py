@@ -343,7 +343,7 @@ def get_safe_write_roots() -> set[str]:
 
 
 # Login shell startup files: approval-gated for the file tools and, via
-# tools.approval_sensitive_paths._SHELL_RC_FILES, for terminal writes. One inventory so the two
+# tools.approval_hermes_store._SHELL_RC_FILES, for terminal writes. One inventory so the two
 # gates cannot drift apart (#85321).
 SHELL_RC_FILES: tuple[str, ...] = (".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile")
 

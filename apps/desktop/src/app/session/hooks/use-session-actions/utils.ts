@@ -7,8 +7,8 @@ import {
   type ChatMessage,
   chatMessageText,
   indexStoredParts,
-  isLocalRowToKeep,
   lendLiveResults,
+  liveRemainder,
   preserveLocalAssistantErrors,
   textPart,
   toChatMessages
@@ -87,6 +87,7 @@ import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
   matchPreviousResumeRows,
+  ordinalCounterpart,
   transcriptRowIds
 } from './pending-turn-identity'
 import { reconcileOwnerApprovalMode } from './runtime-owner'
@@ -666,12 +667,21 @@ export function preserveLocalPendingTurnMessages(page: ChatMessage[], previousMe
   const replacements = new Map<string, ChatMessage>()
   let crossedUserBoundary = false
 
-  for (const [index, message] of previousMessages.entries()) {
-    if (index <= acknowledged.localIndex || isGatewaySystemMarker(message)) {
+  for (const [index, row] of previousMessages.entries()) {
+    if (index <= acknowledged.localIndex || isGatewaySystemMarker(row)) {
       continue
     }
 
-    crossedUserBoundary ||= message.role === 'user' || message.role === 'system'
+    crossedUserBoundary ||= row.role === 'user' || row.role === 'system'
+    const ordinal = previousRoleCounts.get(row.role) ?? 0
+    previousRoleCounts.set(row.role, ordinal + 1)
+
+    // A live row is only what the page does not store of it (none left: it is the page's copy).
+    const [message] = liveRemainder(storedParts, row)
+
+    if (!message) {
+      continue
+    }
 
     // A second segment of the acknowledged turn can still be folded into its
     // final row. A new prompt closes that ownership; identical later replies
@@ -679,9 +689,6 @@ export function preserveLocalPendingTurnMessages(page: ChatMessage[], previousMe
     const candidates = (crossedUserBoundary ? remainingNext : acknowledgedTurn).filter(
       candidate => !conflictingTranscriptIdentity(message, candidate)
     )
-
-    const ordinal = previousRoleCounts.get(message.role) ?? 0
-    previousRoleCounts.set(message.role, ordinal + 1)
 
     const isOptimisticUser = message.role === 'user' && message.id.startsWith('user-')
 
@@ -715,9 +722,7 @@ export function preserveLocalPendingTurnMessages(page: ChatMessage[], previousMe
       chatMessageText(message).trim() !== '' &&
       !nextByRoleOrdinal.has(`assistant:${ordinal}`)
 
-    if (
-      !isLocalRowToKeep(message, storedParts, isOptimisticUser, isPendingAssistant || isSettledUnpersistedAssistant)
-    ) {
+    if (!isOptimisticUser && !isPendingAssistant && !isSettledUnpersistedAssistant) {
       continue
     }
 
@@ -780,10 +785,7 @@ export function preserveLocalPendingTurnMessages(page: ChatMessage[], previousMe
       continue
     }
 
-    const ordinalMatch = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
-
-    const authoritative =
-      ordinalMatch && !conflictingTranscriptIdentity(message, ordinalMatch) ? ordinalMatch : undefined
+    const authoritative = ordinalCounterpart(nextByRoleOrdinal, row, message, ordinal)
 
     // A settled stream row (`pending: false` after message.complete) whose reply
     // the authoritative transcript already carries under its committed id is

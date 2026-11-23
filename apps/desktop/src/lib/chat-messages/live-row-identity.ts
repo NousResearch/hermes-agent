@@ -111,38 +111,29 @@ export function indexStoredParts(messages: ChatMessage[]): StoredParts {
  * An assistant row the stream drew, not one an earlier history read hydrated: it has no stored row
  * of its own, or it is the live tail a completion receipt bound to its final row.
  */
-export const isLiveCopy = (message: ChatMessage) =>
+const isLiveCopy = (message: ChatMessage) =>
   message.role === 'assistant' && (message.rowId === undefined || isLiveTailReplyId(message.id))
 
 /** A live row whose own state the page cannot carry: its error card, stopped mark or open stream. */
-export const keepsItsLiveState = (message: ChatMessage) =>
-  Boolean(message.pending || message.error || message.interrupted)
-
-/** Every reply part of live row `message` has a stored copy in `stored` (reasoning alone is no reply). */
-export function storedWhole(stored: StoredParts, message: ChatMessage): boolean {
-  const replies = message.parts.filter(part => part.type !== 'reasoning')
-
-  return (
-    isLiveCopy(message) &&
-    !keepsItsLiveState(message) &&
-    replies.length > 0 &&
-    replies.every(part => stored.copyOf(part) !== undefined)
-  )
-}
+const keepsItsLiveState = (message: ChatMessage) => Boolean(message.pending || message.error || message.interrupted)
 
 /**
- * A row only this window holds: an optimistic prompt, or a live assistant row (streaming, or the
- * settled tail the backend has not committed) unless every piece of it names a stored row the page
- * paints. Such a row is that page's copy, under whatever row
- * ids a compaction since gave those rows.
+ * What of live row `message` is its own beside a page that stores `stored`: the row without the parts
+ * the page holds a copy of, or nothing when no reply part is left (reasoning alone is no reply) and the
+ * row carries no state the page cannot. A row the stream did not draw is returned whole.
  */
-export function isLocalRowToKeep(
-  message: ChatMessage,
-  storedParts: StoredParts,
-  isOptimisticUser: boolean,
-  isLiveAssistant: boolean
-): boolean {
-  return isOptimisticUser || (isLiveAssistant && !storedWhole(storedParts, message))
+export function liveRemainder(stored: StoredParts, message: ChatMessage): ChatMessage[] {
+  if (!isLiveCopy(message)) {
+    return [message]
+  }
+
+  const parts = message.parts.filter(part => !stored.copyOf(part))
+
+  if (parts.length === message.parts.length) {
+    return [message]
+  }
+
+  return keepsItsLiveState(message) || parts.some(part => part.type !== 'reasoning') ? [{ ...message, parts }] : []
 }
 
 /** A stored call slot the page has no result for yet takes the live card's result. */

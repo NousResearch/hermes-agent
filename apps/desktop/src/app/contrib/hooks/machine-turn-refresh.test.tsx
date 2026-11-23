@@ -401,6 +401,10 @@ const reopen = (rows: SessionMessage[], live: ChatMessage[]) =>
 const refreshed = (rows: SessionMessage[], live: ChatMessage[]) =>
   preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(toChatMessages(rows), live), live)
 
+/** The resume barrier and cached-view restore, which hand the page to the preserve step directly. */
+const resumed = (rows: SessionMessage[], live: ChatMessage[]) =>
+  preserveLocalPendingTurnMessages(toChatMessages(rows), live)
+
 describe('a refreshed page over a settled backend-started turn', () => {
   it.each(['complete', 'partial', 'none'] as const)(
     'draws a turn with no visible starter once (receipt: %s)',
@@ -969,28 +973,74 @@ describe('a page read while the backend-started turn still runs', () => {
   // Rounds 1-3 are stored; round 4's narration is still streaming.
   const committed = [...history.slice(3), ...machine.rows.slice(0, 1 + 3 * 3)]
 
-  async function runningWindow() {
+  async function runningWindow(owner: StreamOptions['owner'] = 'classic') {
     seed(history)
-    await streamRounds(machine, { rounds: 3 })
-    send('message.delta', { text: machine.narrations[3], turn_id: machine.tag, segment: 3, offset: 0 })
+    await streamRounds(machine, { rounds: 3, owner, seal: owner === 'classic' })
+    send('message.delta', { text: machine.narrations[3], ...replyStamp(machine, owner, 3, 0) })
     await flush()
 
     return messages()
   }
 
-  it.each([
+  // A host that seals narration leaves only the open round in the streaming bubble; one that does not
+  // (the session authority, a managed worker) streams the whole turn into it.
+  const merges = [
     ['refresh', refreshed],
-    ['reopen', reopen]
-  ] as const)('draws committed rounds once and keeps the streaming remainder (%s)', async (_, compose) => {
-    const live = await runningWindow()
-    const merged = compose(committed, live)
-    const stored = machine.tools.slice(0, 6)
+    ['reopen', reopen],
+    ['resume', resumed]
+  ] as const
 
-    expect(paintedNarrations(merged, machine)).toEqual(machine.narrations.slice(0, 4))
-    expect(stored.map(id => toolOccurrences(merged, id))).toEqual(stored.map(() => 1))
-    expect(merged.filter(message => message.pending).map(chatMessageText)).toEqual([machine.narrations[3]])
-    // Idempotent: the next read of the same page changes nothing.
-    expect(compose(committed, merged).map(chatMessageText)).toEqual(merged.map(chatMessageText))
+  const hosts = ['classic', 'authority'] as const
+  const everyMerge = merges.flatMap(([how, compose]) => hosts.map(owner => [how, owner, compose] as const))
+
+  it.each(everyMerge)(
+    'draws committed rounds once and keeps the streaming remainder (%s, %s)',
+    async (_, owner, compose) => {
+      const live = await runningWindow(owner)
+      const merged = compose(committed, live)
+      const stored = machine.tools.slice(0, 6)
+
+      expect(paintedNarrations(merged, machine)).toEqual(machine.narrations.slice(0, 4))
+      expect(stored.map(id => toolOccurrences(merged, id))).toEqual(stored.map(() => 1))
+      expect(merged.filter(message => message.pending).map(chatMessageText)).toEqual([machine.narrations[3]])
+      // Idempotent: the next read of the same page changes nothing.
+      expect(compose(committed, merged).map(chatMessageText)).toEqual(merged.map(chatMessageText))
+    }
+  )
+
+  it.each(everyMerge)('shows a running card once, and its late result on it (%s, %s)', async (_, owner, compose) => {
+    seed(history)
+    const emit = await streamRounds(machine, { rounds: 3, owner, seal: owner === 'classic' })
+    const stored = storedRowOf(machine, owner, 3)
+    const running = machine.tools[6]
+    emit('message.delta', { text: machine.narrations[3], ...replyStamp(machine, owner, 3, 0) })
+    await flush()
+
+    if (owner === 'classic') {
+      emit('message.interim', {
+        text: machine.narrations[3],
+        already_streamed: true,
+        ...replyStamp(machine, owner, 3),
+        ...stored
+      })
+    }
+
+    emit('tool.start', { name: 'terminal', tool_id: running, args: {}, ...stored })
+    await flush()
+
+    // Round 4's row (its narration and both calls) is stored; neither result is.
+    const merged = compose([...committed, machine.rows[1 + 3 * 3]], messages())
+    act(() => cache.updateSessionState(RUNTIME, state => ({ ...state, messages: merged }), STORED))
+    expect(toolOccurrences(messages(), running)).toBe(1)
+
+    emit('tool.complete', { name: 'terminal', tool_id: running, result: 'ok', ...stored })
+    await flush()
+
+    expect(toolCards(messages(), running).map(card => card.result)).toEqual(['ok'])
+    expect(paintedNarrations(messages(), machine)).toEqual(machine.narrations.slice(0, 4))
+    expect(machine.tools.slice(0, 8).map(id => toolOccurrences(messages(), id))).toEqual(
+      machine.tools.slice(0, 8).map(() => 1)
+    )
   })
 
   it('keeps every live row when the page holds none of its rows yet', async () => {

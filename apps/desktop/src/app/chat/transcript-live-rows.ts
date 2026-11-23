@@ -11,12 +11,12 @@
  * never paired here; older backends keep the receipt path (transcript-receipt-turns).
  */
 
-import { type ChatMessage, indexStoredParts, isLiveCopy, keepsItsLiveState, lendLiveResults } from '@/lib/chat-messages'
+import { type ChatMessage, indexStoredParts, lendLiveResults, liveRemainder } from '@/lib/chat-messages'
 
 /**
  * The window without the parts the page stores, and the page with the results only the live cards
- * had. A window row whose every reply part the page stores goes (reasoning alone is no reply of its
- * own), unless it carries state the page cannot (an error, a stop, a part still streaming).
+ * had (`liveRemainder`). A cached fold from an earlier read keeps its parts under the stored-id
+ * merge's rules (transcript-backfill); it only lends the page a result an earlier refresh filled in.
  */
 export function reconcileLiveRowsWithPage(
   window: ChatMessage[],
@@ -28,30 +28,5 @@ export function reconcileLiveRowsWithPage(
     return { window, page }
   }
 
-  const rows = new Map<number, ChatMessage | null>()
-
-  window.forEach((message, at) => {
-    // A cached fold from an earlier read keeps its parts under the stored-id merge's rules
-    // (transcript-backfill); it only lends the page a result an earlier refresh filled in.
-    if (message.role !== 'assistant' || !isLiveCopy(message)) {
-      return
-    }
-
-    const parts = message.parts.filter(part => !stored.copyOf(part))
-
-    if (parts.length !== message.parts.length) {
-      const kept = keepsItsLiveState(message) || parts.some(part => part.type !== 'reasoning')
-      rows.set(at, kept ? { ...message, parts } : null)
-    }
-  })
-
-  const nextWindow = rows.size
-    ? window.flatMap((message, at) => {
-        const next = rows.has(at) ? rows.get(at) : message
-
-        return next ? [next] : []
-      })
-    : window
-
-  return { window: nextWindow, page: lendLiveResults(page, window) }
+  return { window: window.flatMap(message => liveRemainder(stored, message)), page: lendLiveResults(page, window) }
 }

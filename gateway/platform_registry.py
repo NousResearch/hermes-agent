@@ -147,7 +147,12 @@ class PlatformEntry:
     own_policy_env: Optional[tuple] = None
     # Env var listing group/forum CHAT ids whose traffic is authorized by chat (any sender, user_id
     # optional): Telegram ``TELEGRAM_GROUP_ALLOWED_CHATS``, QQ ``QQ_GROUP_ALLOWED_USERS``. "" = none.
+    # ``chat_type == "room"`` is not a group/forum type and is not read from this var.
     group_allowed_chats_env: str = ""
+    # Env var listing room CHAT ids (``chat_type == "room"``) authorized the same way.
+    # LINE ``LINE_ALLOWED_ROOMS``. A distinct list from ``group_allowed_chats_env``: one
+    # platform can allow groups and rooms under different ids. "" = none.
+    room_allowed_chats_env: str = ""
     # True: a configured env allowlist turns the unauthorized-DM default from "pair" into "ignore"
     # (the owner restricted access; unknown senders get no pairing code).
     allowlist_suppresses_pairing: bool = False

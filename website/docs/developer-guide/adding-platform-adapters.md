@@ -212,7 +212,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | Gateway adapter creation | Registry checked before the built-in `_BUILTIN_ADAPTERS` table |
 | Config parsing | `Platform._missing_()` accepts any platform name |
 | Connected platform validation | Registry `validate_config()` called |
-| User authorization | `allowed_users_env` / `allow_all_env` checked; `group_allowed_chats_env` / `allowlist_suppresses_pairing` (see below) |
+| User authorization | `allowed_users_env` / `allow_all_env` checked; `group_allowed_chats_env` / `room_allowed_chats_env` / `allowlist_suppresses_pairing` (see below) |
 | Env-only auto-enable | `env_enablement_fn` seeds `PlatformConfig.extra` + `home_channel` |
 | YAML config bridge | `apply_yaml_config_fn` translates `config.yaml` keys into env vars / extras |
 | Cron delivery | `cron_deliver_env_var` makes `deliver=<name>` work |
@@ -273,19 +273,21 @@ older Hermes cores that predate them.
 
 ## Authorization fields for chat platforms
 
-Two more optional `PlatformEntry` fields carry gateway authorization behaviour that core used to
+These optional `PlatformEntry` fields carry gateway authorization behaviour that core used to
 hard-code for its bundled platforms. Declare them and a plugin platform behaves the same way:
 
 | Field | Type / default | Effect |
 |---|---|---|
-| `group_allowed_chats_env` | `str = ''` | Env var holding comma-separated group/forum **chat** IDs. Any message from a listed chat is authorized, even without a `user_id` (anonymous admins, channel posts). Telegram declares `TELEGRAM_GROUP_ALLOWED_CHATS` and QQ Bot declares `QQ_GROUP_ALLOWED_USERS`. |
-| `allowlist_suppresses_pairing` | `bool = False` | When the platform's `allowed_users_env` (or `group_allowed_chats_env`) is set, unknown DM senders are ignored rather than sent a pairing code: the owner already restricted access. Most bundled chat platforms set it. |
+| `group_allowed_chats_env` | `str = ''` | Env var holding comma-separated group/forum **chat** IDs (`chat_type` of `group` or `forum`). Any message from a listed chat is authorized, even without a `user_id` (anonymous admins, channel posts). Telegram declares `TELEGRAM_GROUP_ALLOWED_CHATS` and QQ Bot declares `QQ_GROUP_ALLOWED_USERS`. LINE declares `LINE_ALLOWED_GROUPS`. `room` is not covered. |
+| `room_allowed_chats_env` | `str = ''` | Env var holding comma-separated **room** chat IDs (`chat_type == "room"`). Same grant as `group_allowed_chats_env`, for a list that is not the group list. LINE declares `LINE_ALLOWED_ROOMS`. |
+| `allowlist_suppresses_pairing` | `bool = False` | When the platform's `allowed_users_env` (or `group_allowed_chats_env` / `room_allowed_chats_env`) is set, unknown DM senders are ignored rather than sent a pairing code: the owner already restricted access. Most bundled chat platforms set it. |
 
 ```python
 kwargs = dict(name="my_chat", label="My Chat", adapter_factory=MyChatAdapter, check_fn=check_requirements,
               allowed_users_env="MY_CHAT_ALLOWED_USERS", allow_all_env="MY_CHAT_ALLOW_ALL_USERS")
 known = {f.name for f in dataclasses.fields(PlatformEntry)}
 for key, value in (("group_allowed_chats_env", "MY_CHAT_GROUP_ALLOWED_CHATS"),
+                   ("room_allowed_chats_env", "MY_CHAT_ROOM_ALLOWED_CHATS"),
                    ("allowlist_suppresses_pairing", True)):
     if key in known:  # older cores reject unknown kwargs
         kwargs[key] = value

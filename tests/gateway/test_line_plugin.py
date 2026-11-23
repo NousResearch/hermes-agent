@@ -575,3 +575,120 @@ class TestMediaPublicUrlGuard:
         assert not result.success
         assert "LINE_PUBLIC_URL" in (result.error or "")
 
+
+# ---------------------------------------------------------------------------
+# Gateway second gate — LINE group/room chat allowlists
+# ---------------------------------------------------------------------------
+
+_LINE_AUTH_ENVS = (
+    "LINE_ALLOW_ALL_USERS",
+    "LINE_ALLOWED_USERS",
+    "LINE_ALLOWED_GROUPS",
+    "LINE_ALLOWED_ROOMS",
+    "GATEWAY_ALLOW_ALL_USERS",
+    "GATEWAY_ALLOWED_USERS",
+)
+
+
+class TestLineGatewayChatAllowlist:
+    """The adapter admits a group/room listed in ``LINE_ALLOWED_GROUPS`` /
+    ``LINE_ALLOWED_ROOMS`` even when the sender is absent from
+    ``LINE_ALLOWED_USERS``. The gateway then re-checks authorization and, without
+    those chat lists declared, default-denies the same sender
+    (``Unauthorized user: … on line``).
+
+    ``group_allowed_chats_env`` covers ``chat_type == "group"`` only.
+    ``"room"`` is not a group/forum type and lives in a different env var, so
+    rooms use ``room_allowed_chats_env``. DMs stay on ``LINE_ALLOWED_USERS``.
+    """
+
+    @pytest.fixture
+    def line_auth(self, monkeypatch):
+        for key in _LINE_AUTH_ENVS:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("LINE_ALLOW_ALL_USERS", "false")
+        from gateway.platform_registry import platform_registry
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+        entry = platform_registry.get("line")
+        assert entry is not None, "LINE platform plugin did not register"
+        assert entry.allowed_users_env == "LINE_ALLOWED_USERS"
+        assert entry.allow_all_env == "LINE_ALLOW_ALL_USERS"
+        assert entry.group_allowed_chats_env == "LINE_ALLOWED_GROUPS"
+        assert entry.room_allowed_chats_env == "LINE_ALLOWED_ROOMS"
+        return entry
+
+    @staticmethod
+    def _runner():
+        from types import SimpleNamespace
+
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
+        return runner
+
+    @staticmethod
+    def _source(chat_type: str, chat_id: str, user_id: str):
+        from gateway.session import Platform, SessionSource
+
+        return SessionSource(
+            platform=Platform("line"),
+            chat_id=chat_id,
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=user_id,
+        )
+
+    def test_group_member_outside_dm_allowlist_is_authorized(self, line_auth, monkeypatch):
+        monkeypatch.setenv("LINE_ALLOWED_USERS", "Uowner")
+        monkeypatch.setenv("LINE_ALLOWED_GROUPS", "Callowed")
+        source = self._source("group", "Callowed", "Umember")
+        assert self._runner()._is_user_authorized(source) is True
+
+    def test_unlisted_group_is_rejected(self, line_auth, monkeypatch):
+        monkeypatch.setenv("LINE_ALLOWED_USERS", "Uowner")
+        monkeypatch.setenv("LINE_ALLOWED_GROUPS", "Callowed")
+        monkeypatch.setenv("LINE_ALLOWED_ROOMS", "Rallowed")
+        source = self._source("group", "Cother", "Umember")
+        assert self._runner()._is_user_authorized(source) is False
+
+    def test_room_member_outside_dm_allowlist_is_authorized(self, line_auth, monkeypatch):
+        monkeypatch.setenv("LINE_ALLOWED_USERS", "Uowner")
+        monkeypatch.setenv("LINE_ALLOWED_ROOMS", "Rallowed")
+        source = self._source("room", "Rallowed", "Umember")
+        assert self._runner()._is_user_authorized(source) is True
+
+    def test_unlisted_room_is_rejected(self, line_auth, monkeypatch):
+        monkeypatch.setenv("LINE_ALLOWED_USERS", "Uowner")
+        monkeypatch.setenv("LINE_ALLOWED_GROUPS", "Callowed")
+        monkeypatch.setenv("LINE_ALLOWED_ROOMS", "Rallowed")
+        source = self._source("room", "Rother", "Umember")
+        assert self._runner()._is_user_authorized(source) is False
+
+    def test_group_list_does_not_authorize_a_room(self, line_auth, monkeypatch):
+        monkeypatch.setenv("LINE_ALLOWED_GROUPS", "Rallowed")
+        source = self._source("room", "Rallowed", "Umember")
+        assert self._runner()._is_user_authorized(source) is False
+
+    def test_room_list_does_not_authorize_a_group(self, line_auth, monkeypatch):
+        monkeypatch.setenv("LINE_ALLOWED_ROOMS", "Callowed")
+        source = self._source("group", "Callowed", "Umember")
+        assert self._runner()._is_user_authorized(source) is False
+
+    def test_dm_requires_user_allowlist(self, line_auth, monkeypatch):
+        monkeypatch.setenv("LINE_ALLOWED_USERS", "Uowner")
+        monkeypatch.setenv("LINE_ALLOWED_GROUPS", "Callowed")
+        monkeypatch.setenv("LINE_ALLOWED_ROOMS", "Rallowed")
+        runner = self._runner()
+        assert runner._is_user_authorized(self._source("dm", "Uowner", "Uowner")) is True
+        assert runner._is_user_authorized(self._source("dm", "Umember", "Umember")) is False
+
+    def test_chat_allowlists_do_not_suppress_dm_pairing(self, line_auth, monkeypatch):
+        from gateway.session import Platform
+
+        monkeypatch.setenv("LINE_ALLOWED_GROUPS", "Callowed")
+        monkeypatch.setenv("LINE_ALLOWED_ROOMS", "Rallowed")
+        assert self._runner()._get_unauthorized_dm_behavior(Platform("line")) == "pair"
+

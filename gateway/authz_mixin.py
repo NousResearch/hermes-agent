@@ -22,16 +22,19 @@ from gateway.whatsapp_identity import (
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
 )
 
+# ``room`` is intentionally absent. LINE rooms are authorized by ``room_allowed_chats_env``
+# (``LINE_ALLOWED_ROOMS``), not by folding them into the group/forum chat list.
 _GROUP_CHAT_TYPES = frozenset({"group", "forum", "channel"})
 _GROUP_FORUM_TYPES = frozenset({"group", "forum"})
 _TRUTHY = frozenset({"true", "1", "yes"})
 _BOT_LOOP_GUARD_INIT_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
-# ``<PLATFORM>_ALLOWED_USERS`` / ``<PLATFORM>_ALLOW_ALL_USERS``, the group-chat allowlist env and
-# whether an allowlist suppresses pairing come from each platform's ``PlatformEntry``
-# (``allowed_users_env`` / ``allow_all_env`` / ``group_allowed_chats_env`` /
-# ``allowlist_suppresses_pairing``), so a plugin platform declares them like a bundled one.
+# ``<PLATFORM>_ALLOWED_USERS`` / ``<PLATFORM>_ALLOW_ALL_USERS``, the group- and room-chat
+# allowlist envs and whether an allowlist suppresses pairing come from each platform's
+# ``PlatformEntry`` (``allowed_users_env`` / ``allow_all_env`` / ``group_allowed_chats_env`` /
+# ``room_allowed_chats_env`` / ``allowlist_suppresses_pairing``), so a plugin platform
+# declares them like a bundled one.
 _GROUP_USER_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS"}
 
 
@@ -67,6 +70,13 @@ def _group_chat_env(platform, entry=None) -> str:
     if platform is None:
         return ""
     return authz_field(platform.value, "group_allowed_chats_env", entry or _registry_entry(platform)) or ""
+
+
+def _room_chat_env(platform, entry=None) -> str:
+    """The platform's room-chat allowlist env name (``PlatformEntry.room_allowed_chats_env``), or ""."""
+    if platform is None:
+        return ""
+    return authz_field(platform.value, "room_allowed_chats_env", entry or _registry_entry(platform)) or ""
 
 
 def _registry_entry(platform):
@@ -760,6 +770,12 @@ class GatewayAuthorizationMixin:
                 adapter_group_allowed = self._adapter_extra_for_source(source).get("group_allowed_chats")
                 if adapter_group_allowed and _allows(_coerce_allow_set(adapter_group_allowed), source.chat_id):
                     return True
+        # Room chats (LINE ``LINE_ALLOWED_ROOMS``) are not group/forum types, so the block
+        # above never sees them. Same grant: the chat id is the allowlist, not the sender.
+        if str(getattr(source, "chat_type", "") or "").strip().lower() == "room" and source.chat_id:
+            room_allowlist_env = _room_chat_env(source.platform)
+            if room_allowlist_env and _allows(_coerce_allow_set(_auth_env(room_allowlist_env)), source.chat_id):
+                return True
         # Bots admitted by the platform's ``allow_bots_env`` (scoped env → the routed adapter's YAML
         # ``allow_bots`` → none) bypass the human allowlist (#4466). Checked here, before the no-user-id
         # guard: Slack Workflow Builder posts arrive as subtype=bot_message with user=None. The YAML rung
@@ -883,6 +899,7 @@ class GatewayAuthorizationMixin:
         chat_type_norm = str(source.chat_type or "").strip().lower()
         is_group = chat_type_norm in _GROUP_CHAT_TYPES
         is_group_or_forum = chat_type_norm in _GROUP_FORUM_TYPES
+        is_room = chat_type_norm == "room"
         if self._chat_scoped_grant(source, adapter_profile, is_group, allow_adapter_delegation):
             return True
         user_id = source.user_id
@@ -906,9 +923,10 @@ class GatewayAuthorizationMixin:
         platform_allowlist = _auth_env(platform_allow_env)
         group_user_allowlist = _auth_env(_GROUP_USER_ENV.get(source.platform, "")) if is_group_or_forum else ""
         group_chat_allowlist = _auth_env(_group_chat_env(source.platform, entry)) if is_group_or_forum else ""
+        room_chat_allowlist = _auth_env(_room_chat_env(source.platform, entry)) if is_room else ""
         global_allowlist = _auth_env("GATEWAY_ALLOWED_USERS")
 
-        if not (platform_allowlist or group_user_allowlist or group_chat_allowlist or global_allowlist):
+        if not (platform_allowlist or group_user_allowlist or group_chat_allowlist or room_chat_allowlist or global_allowlist):
             # No env allowlist: own-policy adapters gate at intake (see _own_policy_authorizes).
             if allow_adapter_delegation and self._adapter_flag(source.platform, "enforces_own_access_policy", adapter_profile):
                 verdict = self._own_policy_authorizes(source, user_id, is_group, adapter_profile)
@@ -927,6 +945,10 @@ class GatewayAuthorizationMixin:
                 and self._legacy_telegram_chat_grant(source, group_user_allowlist)
             ):
                 return True
+        if is_room and source.chat_id and room_chat_allowlist and _allows(
+            _coerce_allow_set(room_chat_allowlist), source.chat_id
+        ):
+            return True
 
         # TELEGRAM_GROUP_ALLOWED_USERS is group-scoped (no DM access); TELEGRAM_ALLOWED_USERS is platform-wide.
         allowed_ids = (
@@ -977,7 +999,8 @@ class GatewayAuthorizationMixin:
             # A group allowlist alone must not silence DM pairing: only platforms that opt in.
             if authz_field(platform.value, "allowlist_suppresses_pairing", entry):
                 allowlist_keys = [authz_field(platform.value, "allowed_users_env", entry) or "",
-                                  _GROUP_USER_ENV.get(platform), _group_chat_env(platform, entry), *allowlist_keys]
+                                  _GROUP_USER_ENV.get(platform), _group_chat_env(platform, entry),
+                                  _room_chat_env(platform, entry), *allowlist_keys]
         if any(key and _auth_env(key).strip() for key in allowlist_keys):
             return "ignore"
         return "pair"

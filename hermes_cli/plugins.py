@@ -266,13 +266,16 @@ def _resolve_hook_callback_timeout() -> float:
 class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     """Central manager that discovers, loads, and invokes plugins."""
 
-    def __init__(self, scope_key: Optional[str] = None) -> None:
+    def __init__(self, scope_key: Optional[str] = None, owner_home: Optional[Path] = None) -> None:
         # Capture the home immutably. Unload can run from a different ambient
         # profile context, but every inverse must target the registration's
         # original scope.  Normalize through hermes_home_key so the scope
         # matches the key the registries store under (normcase on Windows).
         self.scope_key = hermes_home_key(scope_key)
         self.home_path = Path(self.scope_key)
+        # The home as the profile was named, before resolving: a marked profile whose directory is a link
+        # out of the Hermes root is found by that name only (``plugin_isolation.host_launcher``).
+        self.owner_home = Path(owner_home) if owner_home is not None else self.home_path
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
         # True once a discovery re-applied plugin secret sources for this home: the per-home snapshot and
@@ -838,7 +841,7 @@ def get_plugin_manager() -> PluginManager:
         else:
             manager = _plugin_managers_by_home.get(current_home)
             if manager is None:
-                manager = PluginManager(scope_key=hermes_home_key(current_home))
+                manager = PluginManager(scope_key=hermes_home_key(current_home), owner_home=get_hermes_home())
                 _plugin_managers_by_home[current_home] = manager
             _plugin_manager = manager
     _attach_published_gateway_host(manager)

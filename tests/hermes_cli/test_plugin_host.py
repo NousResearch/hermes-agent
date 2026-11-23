@@ -180,6 +180,36 @@ def test_a_managed_launcher_expands_its_env_refs_for_a_marked_profile_too(tmp_pa
     assert host_launcher() == ["operator-runner", "--quiet"]
 
 
+@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
+def test_a_marked_profile_linked_out_of_the_root_does_not_get_its_own_launcher(tmp_path, monkeypatch):
+    """``hermes -p ops`` names the home ``<root>/profiles/ops``, a link to a directory outside the root;
+    discovery binds the directory it leads to, where no marker folder is. The marker is asked by the name."""
+    from hermes_cli import profiles_run_elsewhere as pre
+
+    outside = _home_with_plugins(tmp_path / "outside", monkeypatch, {"quietprobe": "def register(ctx):\n    pass\n"})
+    ran = tmp_path / "launcher.ran"
+    runner = tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+    runner.chmod(0o755)
+    (outside / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": ["quietprobe"], "isolation": "host", "host": {"launcher": [str(runner)]}}}), encoding="utf-8")
+    root = tmp_path / ".hermes"
+    (root / "profiles").mkdir(parents=True)
+    (root / "profiles" / "ops").symlink_to(outside, target_is_directory=True)
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin", root=root)
+    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "ops"))
+    plugins_mod._reset_plugin_managers_for_tests()
+    manager = plugins_mod.get_plugin_manager()
+    manager.discover_and_load()
+    try:
+        assert not ran.exists()
+        assert manager._plugins["quietprobe"].error is None
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 def test_managed_scope_pins_host_isolation_over_the_profiles_own_config(tmp_path, monkeypatch):
     """The isolated party must not be able to opt out: an operator pin in the managed scope
     (/etc/hermes/config.yaml) wins over a profile config that says in_process."""

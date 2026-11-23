@@ -4371,6 +4371,13 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
+            # A streamed/edited final reaches the chat mid-turn: the handler stashes the delivered
+            # body on the event (``_hmwa_deliver_turn_response``) and returns None, so the send
+            # paths below never run and ``delivery_attempted`` stays False — while the user already
+            # reads the reply. Count the stash as the delivery it records, or the mention watchdog
+            # false-fires on every streamed group mention.
+            if getattr(event, "_streamed_final_response", None):
+                delivery_attempted = delivery_succeeded = True
             generation = getattr(interrupt_event, "_hermes_run_generation", None)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.

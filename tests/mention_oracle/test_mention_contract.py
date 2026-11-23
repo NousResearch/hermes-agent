@@ -334,3 +334,35 @@ async def test_mention_trigger_with_delivery_stays_quiet(caplog):
         await chat._process_message_background(event, session_key)
     assert chat.log == ["all good"]
     assert not any("mention_unanswered" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_streamed_group_mention_delivery_does_not_trip_watchdog(caplog):
+    """Replay of the live hit (gateway.log 2026-11-23 09:19:24): a group mention whose final
+    reached the chat through the stream path — the draft send was edited in place by
+    ``edit_streamed_message`` (``already_sent``), so ``_hmwa_deliver_turn_response`` stashed the
+    delivered body on ``event._streamed_final_response`` and returned None. The turn's send paths
+    never ran (``delivery_attempted=False``) while the user already had the reply on screen:
+    outcome was SUCCESS and the watchdog still logged mention_unanswered delivered=False — a
+    false alarm on every streamed mention until the seam counted the stash."""
+    import logging
+
+    chat = _RecordingChat()
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id=GROUP_CHAT_ID,
+                           chat_type="group", user_id="u-owner")
+    event = MessageEvent(text="@hqecea_bot status?", source=source,
+                         message_type=MessageType.TEXT, message_id="10")
+    event.mention_trigger = True
+
+    async def streamed_handler(ev):
+        # The production contract after a confirmed streamed/edit delivery
+        # (run_turn_persistence._hmwa_deliver_turn_response): stash the delivered text, return
+        # None so the adapter does not send it a second time.
+        ev._streamed_final_response = "Неизвестно."
+
+    chat.set_message_handler(streamed_handler)
+    session_key = "agent:main:telegram:group:g-100:u-owner"
+    with caplog.at_level(logging.ERROR):
+        await chat._process_message_background(event, session_key)
+    assert not any("mention_unanswered" in rec.message for rec in caplog.records), (
+        "stream-mediated delivery must count as delivered at the outcome seam")

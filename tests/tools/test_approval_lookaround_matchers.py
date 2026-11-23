@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from tools.approval_detection import _CMDPOS, DANGEROUS_PATTERNS, DANGEROUS_PATTERNS_COMPILED, HARDLINE_PATTERNS_COMPILED
+from tools.approval_detection import _CMD_PATH, _CMDPOS, DANGEROUS_PATTERNS, DANGEROUS_PATTERNS_COMPILED, HARDLINE_PATTERNS_COMPILED
 from tools.approval_fetch_exec import _ps_reads
 from tools.approval_hermes_store import home_create_target_matcher
 
@@ -197,4 +197,120 @@ def test_ps_reads_work_stays_linear_on_a_shared_flag_run():
     command = "gc" + " -cat" * 20_000 + " " + "f" * 100_000 + " | x"
     started = time.process_time()
     assert list(_ps_reads(command, 0)) == []
+    assert time.process_time() - started < 2
+
+
+_NC = "reverse shell via netcat -e/-c"
+_SOCAT = "reverse shell via socat EXEC:/SYSTEM:"
+_NC_SPANS = ["", " ", " h 1", "&>x", "2>&1", "<&0", " &", " # c", "#x", " x#y", ";", "|", "\n", " >&2", "&", " <x", ">"]
+
+
+def _reverse_shell_cases(names, flags):
+    return _sample([["", "sudo ", "x; ", "$(", "a\n", "env A=1 ", "busybox "], ["", "/usr/bin/", "x/", "./a b/"], names,
+                    ["", ".exe", ".", "x"], _NC_SPANS, _NC_SPANS, flags, ["", "x", " y", ";"]], 40_000, 7)
+
+
+def _nc_cases():
+    return _reverse_shell_cases(["nc", "ncat", "netcat", "NC", "ncx", "xnc"],
+                                [" -e sh", " -c", "\n-e", ' "-e', " -E", " --exec", " --sh-exec", " -xe", " -ex", "-e", ""])
+
+
+def _socat_cases():
+    return _reverse_shell_cases(["socat", "SOCAT", "socatx"], ["exec:sh", " EXEC:sh", " system:x", "-x:exec:sh", " xexec:",
+                                                                 "\nexec:", " ,exec:", ""])
+
+
+# The exec argument in another command or line than the tool word, before it and after it: only an argument in the
+# tool's own span (up to `;`, `|`, a background `&`, a comment or a newline it may still start on) counts.
+_OTHER_COMMANDS = ["", "echo -e x", "echo EXEC:x", "x --exec", "nc -e sh", "socat exec:sh", "x -c y", "echo system:a"]
+_COMMAND_BREAKS = ["\n", ";", " | ", " & ", " && ", "\n\n", " # ", "\n "]
+
+
+def _split_reverse_shell_cases(names, flags):
+    return _sample([_OTHER_COMMANDS, _COMMAND_BREAKS, ["", "sudo ", "/usr/bin/"], names, ["", " h 1", "&>x", " -z h 80"],
+                    ["", *flags[:3]], ["", *_COMMAND_BREAKS], _OTHER_COMMANDS], 20_000, 10)
+
+
+_MKFS, _MKFS_HL = "format filesystem", "format filesystem (mkfs)"
+_SHUTDOWN = "system shutdown/reboot"
+_VERB_TAILS = ["", " /dev/sda", "/x", ".ext4", ".ext4/x", ".ext_4", "x", "-x", "-x/y", ".exe", ".exe/x", ".exex", ".sh", "=1",
+               ")", ">x", "<x", " | y", ";", "\n", "_", ".", "\u00e9"]
+
+
+def _verb_cases(verbs):
+    return _sample([["", "sudo ", "sudo -x ", "x; ", "$(", "`", "a\n", "env A=1 ", "busybox ", "exec ", "env mkfs=1 ",
+                     "env A_mkfs=1 A_halt=1 "],
+                    ["", "/sbin/", "./", "x/", "C:/w/", "a=b/"], verbs, _VERB_TAILS, ["", " y", ";z", "/q"]], 30_000, 8)
+
+
+def _hardline(description):
+    return next(r for r, d, _ in HARDLINE_PATTERNS_COMPILED if d == description)
+
+
+# The stdlib command position (possessive runs): the reference for the rules whose matcher stands in for it.
+_STDLIB_CMD_PATH = r'(?:/?+(?:[^\s/)=<>]++/)*+)?+'
+_STDLIB_CMDPOS = (r'(?:^|\n(?![^\S\n]*+\n)|`|\$\()' r'\s*+' r'(?:sudo\s++(?:-[^\s]++\s++)*+)?'
+                  r'(?:env\s++(?:\w+=\S*+\s++)*+)?' r'(?:(?:exec|nohup|setsid|time)\s++)*+' r'\s*+'
+                  r'(?:' + _STDLIB_CMD_PATH + r'(?:busybox|toybox)\b\s++)?+' + _STDLIB_CMD_PATH)
+_NC_RULE = (r'(?:\S*/)?(?:nc|ncat|netcat)(?:\.\w+)?(?=[\s<>]|&>)(?:[^\n;&|#]|(?<!\s)#|(?<=[<>])&|(?<![<>])&(?=>))*\s["\']?'
+            r'(?:(?-i:-[a-zA-Z]*[ec])\b|--(?:sh-)?exec\b)')
+_SOCAT_RULE = (r'(?:\S*/)?socat(?:\.\w+)?(?=[\s<>]|&>)(?:[^\n;&|#]|(?<!\s)#|(?<=[<>])&|(?<![<>])&(?=>))*'
+               r'\b(?:exec|system):')
+
+
+@pytest.mark.parametrize(("description", "rule", "cases", "table"), [
+    (_NC, _NC_RULE, _nc_cases, DANGEROUS_PATTERNS),
+    (_SOCAT, _SOCAT_RULE, _socat_cases, DANGEROUS_PATTERNS),
+    (_NC, _NC_RULE, lambda: _split_reverse_shell_cases(["nc", "ncat"], [" -e sh", " -c", "\n-e"]), DANGEROUS_PATTERNS),
+    (_SOCAT, _SOCAT_RULE, lambda: _split_reverse_shell_cases(["socat"], [" EXEC:sh", " system:x", "\nexec:"]),
+     DANGEROUS_PATTERNS),
+    (_MKFS, r'mkfs\b', lambda: _verb_cases(["mkfs", "MKFS", "mkfsx"]), DANGEROUS_PATTERNS),
+    (_MKFS_HL, r'mkfs(\.[a-z0-9]+)?\b', lambda: _verb_cases(["mkfs", "MKFS", "mkfsx"]), None),
+    (_SHUTDOWN, r'(shutdown|reboot|halt|poweroff)\b(?!-|\.(?!exe\b))',
+     lambda: _verb_cases(["shutdown", "reboot", "halt", "poweroff", "HALT", "rebootx"]), None),
+])
+def test_gated_rule_matches_exactly_where_the_stdlib_rule_does(description, rule, cases, table):
+    # Dangerous rules keep the stdlib spelling in the table (it feeds the legacy approval key); hardline rules have no
+    # key, so their table holds the matcher itself.
+    if table is not None:
+        assert (_CMDPOS + rule, description) in table
+        matcher = next(p for p, d in DANGEROUS_PATTERNS_COMPILED if d == description)
+    else:
+        matcher = _hardline(description)
+    # Exact against the stdlib rule on the current command position with the stdlib (possessive) `_CMD_PATH`, the
+    # run the gate stands in for. The fully possessive stdlib command position also keeps a sudo flag or env pair
+    # that names the verb (`env mkfs=1 x`), which the rewritten `_CMDPOS` may give back: never less than it.
+    exact = re.compile(_CMDPOS.replace(_CMD_PATH, _STDLIB_CMD_PATH) + rule, re.IGNORECASE | re.DOTALL)
+    original = re.compile(_STDLIB_CMDPOS + rule, re.IGNORECASE | re.DOTALL)
+    corpus = cases()
+    assert [c for c in corpus if bool(exact.search(c)) != bool(matcher.search(c))] == []
+    assert [c for c in corpus if original.search(c) and not matcher.search(c)] == []
+    assert any(original.search(c) for c in corpus) and not all(original.search(c) for c in corpus)
+
+
+@pytest.mark.parametrize(("description", "command"), [
+    (_NC, "echo -e hello\nnc -z example.org 80"),
+    (_NC, "nc -z example.org 80\necho -e hello"),
+    (_SOCAT, "echo EXEC:notes\nsocat TCP-LISTEN:8000 TCP:example.org:80"),
+    (_SOCAT, "socat TCP-LISTEN:8000 TCP:example.org:80; echo EXEC:notes"),
+])
+def test_reverse_shell_rule_ignores_an_exec_argument_of_another_command(description, command):
+    original, matcher = _rule(description)
+    assert original.search(command) is None
+    assert matcher.search(command) is None
+
+
+def test_gated_matcher_marks_with_a_character_the_text_lacks():
+    matcher = next(p for p, d in DANGEROUS_PATTERNS_COMPILED if d == _NC)
+    assert matcher.search("nc -e sh \ue000\ue001")
+    assert not matcher.search("nc\ue000 -e sh")
+    assert not matcher.search("echo nc -e \ue000")
+
+
+def test_reverse_shell_gate_work_stays_linear_with_many_names():
+    # Every `nc` is a candidate end; each reads the next `-e` and the next span break once, by bisection.
+    matcher = next(p for p, d in DANGEROUS_PATTERNS_COMPILED if d == _NC)
+    command = "x" + " nc" * 100_000 + " ; y -e"
+    started = time.process_time()
+    assert matcher.search(command) is None
     assert time.process_time() - started < 2

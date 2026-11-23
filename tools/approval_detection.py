@@ -38,7 +38,7 @@ from tools.approval_hermes_store import (
     _WRITE_TARGET_BOUNDARY,
 )
 from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
-from tools.approval_shell_tokens import _shell_tokens_with_spans
+from tools.approval_shell_tokens import _shell_tokens_with_spans, reverse_shell_matcher, verb_matcher
 from tools.approval_windows_hardline import (
     WhatIfExemptMatcher, narrowable_rm_rule, whatif_preview_is_real, windows_hardline_patterns, windows_whatif_strict_patterns,
 )
@@ -155,7 +155,8 @@ HARDLINE_PATTERNS = [
     # Command-name rules (mkfs, dd, kill, shutdown...) are _CMDPOS-anchored so quoted prose
     # (`echo "does this use mkfs?"`) cannot trip the floor.
     # See #93392.
-    (_CMDPOS + r'mkfs(\.[a-z0-9]+)?(?=(?:[^\w\s/)=<>][^\s/)=<>]*)?(?:[\s)=<>]|$))', "format filesystem (mkfs)"),
+    # The stdlib rule was `_CMDPOS mkfs(\.[a-z0-9]+)?\b` on a possessive `_CMD_PATH`; the gate reads that word end.
+    (verb_matcher(_CMDPOS, r'mkfs'), "format filesystem (mkfs)"),
     # `dd` is a command-name token, so anchor it to command position like mkfs/rm/shutdown (#93392): quoted
     # prose such as `git commit -m "never dd of=/dev/sda"` is an argument, not a command. The argument tail
     # ([^\n]*of=/dev/...) is kept so flag order doesn't matter.
@@ -173,7 +174,8 @@ HARDLINE_PATTERNS = [
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
     (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
-    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)(?=(?:\.exe(?:[^\w\s/)=<>][^\s/)=<>]*)?|[^\w\s/)=<>.-][^\s/)=<>]*)?(?:[\s)=<>]|$))', "system shutdown/reboot"),
+    # Stdlib: `_CMDPOS (shutdown|reboot|halt|poweroff)\b(?!-|\.(?!exe\b))` on a possessive `_CMD_PATH`.
+    (verb_matcher(_CMDPOS, r'(?:shutdown|reboot|halt|poweroff)', shutdown=True), "system shutdown/reboot"),
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
@@ -584,7 +586,7 @@ DANGEROUS_PATTERNS = [
     (r'\bchown\s+--recur[a-z]*\W.*root', "recursive chown to root (long flag)"),
     # _CMDPOS-anchored like the hardline twins: quoted prose mentioning mkfs/dd must not require approval to echo.
     # See #93392.
-    (_CMDPOS + r'mkfs(?=(?:[^\w\s/)=<>][^\s/)=<>]*)?(?:[\s)=<>]|$))', "format filesystem"),
+    (_CMDPOS + r'mkfs\b', "format filesystem"),  # not compiled: EndGatedMatcher in _CUSTOM_MATCHERS
     (_CMDPOS + r'dd\s+.*if=', "disk copy"),
     (r'>\s*/dev/sd', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
@@ -629,9 +631,10 @@ DANGEROUS_PATTERNS = [
     # The flag may be quoted (`nc "-e" sh h 1` still passes -e); a whitespace-led `#` starts a shell comment, so
     # the span stops there and `nc -z h 80 # -e note` stays quiet. The flag is case-sensitive (`-C` is CRLF).
     # An `&` stays in the span only inside a redirect (`2>&1`, `<&0`, `&>x`); a background `&` ends it.
-    (_CMDPOS + r'(?:\S*/)?(?:nc|ncat|netcat)(?:\.\w+)?(?:(?:[^\S\n]|(?:<&?|&?>&?)#*)(?:[^\S\n]|(?:[^\s;&|#<>]|<&?|&?>&?)#*)*)?\s["\']?(?:(?-i:-[a-zA-Z]*[ec])\b|--(?:sh-)?exec\b)',
+    # Not compiled (nc and socat): EndGatedMatcher marks the command-word ends whose argument span reaches the flag.
+    (_CMDPOS + r'(?:\S*/)?(?:nc|ncat|netcat)(?:\.\w+)?(?=[\s<>]|&>)(?:[^\n;&|#]|(?<!\s)#|(?<=[<>])&|(?<![<>])&(?=>))*\s["\']?(?:(?-i:-[a-zA-Z]*[ec])\b|--(?:sh-)?exec\b)',
      "reverse shell via netcat -e/-c"),
-    (_CMDPOS + r'(?:\S*/)?socat(?:\.\w+)?(?:[^\S\n]|(?:<&?|&?>&?)#*)(?:(?:[^\S\n]|(?:[^\s;&|#<>]|<&?|&?>&?)#*)*(?:[^\S\n]|(?:[^\w\s;&|#<>]|<&?|&?>&?)#*|\w#+))?(?:exec|system):', "reverse shell via socat EXEC:/SYSTEM:"),
+    (_CMDPOS + r'(?:\S*/)?socat(?:\.\w+)?(?=[\s<>]|&>)(?:[^\n;&|#]|(?<!\s)#|(?<=[<>])&|(?<![<>])&(?=>))*\b(?:exec|system):', "reverse shell via socat EXEC:/SYSTEM:"),
     # Cloud instance-metadata (IMDS) credential endpoints — deterministic containment-escape
     # detection. On a cloud VM these serve live IAM/service-account credentials to ANY local
     # process with no auth, so a fetch is credential exfiltration unless the operator expects it.
@@ -885,6 +888,9 @@ _CUSTOM_MATCHERS = {
     _SQLITE3_STORE_WRITE_DESCRIPTION: lambda: SqliteStoreWriteMatcher(_CMDPOS),
     _HOME_CREATE_DESCRIPTION: lambda: home_create_target_matcher(_CMDPOS),
     _LINK_DESCRIPTION: lambda: link_destination_matcher(_CMDPOS),
+    "format filesystem": lambda: verb_matcher(_CMDPOS, r'mkfs'),
+    "reverse shell via netcat -e/-c": lambda: reverse_shell_matcher(_CMDPOS, "nc"),
+    "reverse shell via socat EXEC:/SYSTEM:": lambda: reverse_shell_matcher(_CMDPOS, "socat"),
     "recursive delete (flags after operands)": _RmFlagAfterOperandsMatcher,
     _LAUNCHCTL_STOP_DESCRIPTION: lambda: _AllOfMatcher(_LAUNCHCTL_STOP, _HERMES_NAME),
     _DOWNLOAD_THEN_RUN_DESCRIPTION: lambda: DownloadThenRunMatcher(_SHELL_NAMES_RE),

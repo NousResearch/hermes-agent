@@ -264,6 +264,26 @@ def _private_import_warnings(tmp_path: Path, name: str, source: str) -> list[str
     return [w for w in report.warnings if w.startswith("private core imports")]
 
 
+@pytest.mark.platforms("posix")  # Windows has no mode bits for mark() to set
+def test_mark_leaves_the_marker_folder_listable_by_other_local_users(root):
+    """A host service that runs as another local user must be able to list the marker folder: a
+    listing that is denied reads as "this process is the backend the plugin runs" and refuses
+    nothing. So ``mark`` sets the folder to 0755 whatever the umask of the marking process, also
+    when the folder is already there with a stricter mode."""
+    import stat
+
+    folder = pre.run_elsewhere_dir(root)
+    old_umask = os.umask(0o077)
+    try:
+        pre.mark_profile_run_elsewhere("ops", "sandbox-plugin", root=root)
+        assert stat.S_IMODE(folder.stat().st_mode) == 0o755
+        os.chmod(folder, 0o700)
+        pre.mark_profile_run_elsewhere("dev", "sandbox-plugin", root=root)
+        assert stat.S_IMODE(folder.stat().st_mode) == 0o755
+    finally:
+        os.umask(old_umask)
+
+
 def test_the_documented_marker_functions_are_public_plugin_api(tmp_path):
     """The user guide tells host-side plugin code to call these, so ``hermes plugins validate`` must
     not call them private. The rest of the module stays internal."""

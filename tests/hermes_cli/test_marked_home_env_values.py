@@ -116,6 +116,20 @@ def test_a_copy_outside_the_home_reads_as_before(root):
     assert secret_scope.load_env_file(pin / ".env") == {"MH2_KEY": "pinned"}
 
 
+@pytest.mark.platforms("posix")  # on Windows a "~name" that is no user still expands to a guessed folder
+def test_a_file_under_a_folder_named_like_a_user_reads_as_before(tmp_path, monkeypatch):
+    """The tokenizer never raises: a file it cannot place reads as the file it is, and one it cannot
+    open reads as ``{}``. With no marker anywhere, a relative path whose first folder is named like
+    ``~someone`` (and there is no such user) is opened as written, as before the marker check
+    existed. The check must not turn that read into a ``RuntimeError`` from expanding the name."""
+    folder = tmp_path / "~no-such-user-for-this-test"
+    folder.mkdir()
+    (folder / ".env").write_text("MH2_TILDE_KEY=from-the-file\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert secret_scope.load_env_file(Path("~no-such-user-for-this-test") / ".env") == {"MH2_TILDE_KEY": "from-the-file"}
+
+
 def test_another_path_to_the_marked_home_is_withheld_too(root):
     _mark(root)
     other = root / "profiles" / "dev" / ".." / "OPS"

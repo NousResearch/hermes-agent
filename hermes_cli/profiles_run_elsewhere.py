@@ -274,7 +274,9 @@ def run_elsewhere_for_home(home: str | Path) -> RunElsewhere | None:
     marker of any other profile of the same root whose home is the directory *home* is: a marked
     name that is itself a link marks the directory it leads to, under that directory's own name too.
     """
-    home = Path(home).expanduser()
+    # os.path.expanduser leaves a "~name" that is no user's as written, as the read of a file under
+    # it does; Path.expanduser raises for it.
+    home = Path(os.path.expanduser(home))
     return _marker_over(str(home), _home_readings(home))[0]
 
 
@@ -348,7 +350,7 @@ def home_runs_elsewhere(home: str | Path) -> bool:
             return known[6]
         readings = known[1]  # listed too soon after the folder changed: the path still leads where it led
     if readings is None:
-        readings = _home_readings(Path(home).expanduser())
+        readings = _home_readings(Path(os.path.expanduser(home)))  # never raises: see run_elsewhere_for_home
     markers = tuple((str(folder), str(folder / f"{profile}{_SUFFIX}"))
                     for profile, folder in ((profile, run_elsewhere_dir(root)) for profile, root in readings))
     asked = time.time_ns()

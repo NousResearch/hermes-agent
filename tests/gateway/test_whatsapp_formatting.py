@@ -207,6 +207,32 @@ class TestBridgeEventMetadata:
         assert event.raw_message["hasQuotedMessage"] is True
 
     @pytest.mark.asyncio
+    async def test_reaction_does_not_expect_a_reply(self):
+        """A reaction may go unanswered: reply_expected=False lets a bare silence marker stand.
+        An ordinary message stays None (unknown), which keeps the visible fallback."""
+        from gateway.response_filters import silence_allowed
+
+        adapter = _make_adapter()
+        base = {
+            "messageId": "incoming-msg", "chatId": "15551234567@s.whatsapp.net",
+            "senderId": "15551234567@s.whatsapp.net", "senderName": "Tester", "chatName": "Tester",
+            "isGroup": False, "hasMedia": False, "mediaUrls": [],
+        }
+        reaction = await adapter._build_message_event({
+            **base, "body": "[Reaction: 👍 to outbound-msg]", "mediaType": "reaction",
+            "nativeType": "reactionMessage", "quotedMessageId": "outbound-msg",
+            "quotedText": "Deploy finished.", "hasQuotedMessage": True,
+        })
+        text = await adapter._build_message_event({**base, "body": "thanks"})
+
+        assert reaction.reply_expected is False
+        assert reaction.reply_to_message_id == "outbound-msg"
+        assert reaction.reply_to_text == "Deploy finished."
+        assert silence_allowed(None, reaction.reply_expected)
+        assert text.reply_expected is None
+        assert not silence_allowed(None, text.reply_expected)
+
+    @pytest.mark.asyncio
     async def test_reply_to_uncaptioned_image_attaches_quoted_media(self, tmp_path, monkeypatch):
         # contextInfo.quotedMessage only ever carries a thumbnail-sized stub
         # for media (or nothing for an uncaptioned attachment). The bridge

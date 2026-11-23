@@ -1528,7 +1528,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 reply_to_text=str(data.get("quotedText") or "").strip() or None,
                 reply_to_author_id=(self._normalize_whatsapp_id(data.get("quotedParticipant")) or None) if quoted else None,
                 reply_to_is_own_message=self._message_is_reply_to_bot(data) if quoted else False,
-                reply_expected=True if clips else None,  # a spoken wake word addressed the bot
+                # A spoken wake word addressed the bot; a reaction is an acknowledgement that may go unanswered.
+                reply_expected=True if clips else False if data.get("mediaType") == "reaction" else None,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

@@ -188,6 +188,44 @@ class TestCustomReasoningWireShape:
         assert kwargs["reasoning_effort"] == expected
         assert "think" not in kwargs.get("extra_body", {}) and "reasoning" not in kwargs.get("extra_body", {})
 
+    @pytest.mark.parametrize(
+        "reasoning_config, model, base_url, expected",
+        [
+            pytest.param({"enabled": False}, "openai/gpt-oss-120b", "https://api.groq.com/openai/v1", None,
+                         id="gpt-oss-thinking-off-omitted"),
+            pytest.param({"enabled": True, "effort": "none"}, "openai/gpt-oss-20b", "https://api.groq.com/openai/v1",
+                         None, id="gpt-oss-effort-none-omitted"),
+            pytest.param({"enabled": True, "effort": "low"}, "openai/gpt-oss-120b", "https://api.groq.com/openai/v1",
+                         "low", id="gpt-oss-graded-kept"),
+            pytest.param({"enabled": True, "effort": "max"}, "openai/gpt-oss-120b", "https://api.groq.com/openai/v1",
+                         "high", id="gpt-oss-max-clamped-high"),
+            pytest.param({"enabled": True, "effort": "medium"}, "openai/gpt-oss-safeguard-20b",
+                         "https://api.groq.com/openai/v1", "medium", id="gpt-oss-safeguard-graded-kept"),
+            pytest.param({"enabled": True, "effort": "low"}, "qwen/qwen3.8-27b", "https://api.groq.com/openai/v1",
+                         "default", id="qwen-graded-unchanged"),
+            pytest.param({"enabled": False}, "qwen/qwen3.8-27b", "https://api.groq.com/openai/v1", "none",
+                         id="qwen-thinking-off-unchanged"),
+            pytest.param({"enabled": False}, "openai/gpt-oss-120b", "https://relay.example.com/v1", "none",
+                         id="gpt-oss-off-groq-no-host-leak"),
+        ],
+    )
+    def test_groq_gpt_oss_vocabulary_is_model_scoped(self, custom_profile, reasoning_config, model, base_url,
+                                                     expected):
+        """Groq's gpt-oss family accepts only low/medium/high and 400s on 'none' AND 'default' (#138054).
+
+        Thinking-off omits the field (provider default applies); graded levels keep their tier
+        clamped to low/medium/high. qwen/* on Groq and gpt-oss on any other host are unchanged.
+        """
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config=reasoning_config, base_url=base_url, model=model
+        )
+        if expected is None:
+            assert "reasoning_effort" not in tl
+        else:
+            assert tl == {"reasoning_effort": expected}
+        if "api.groq.com" in base_url:
+            assert "think" not in eb and "reasoning" not in eb
+
 
 class TestCustomReasoningWithNumCtx:
     """Ollama num_ctx and reasoning are independent and compose."""

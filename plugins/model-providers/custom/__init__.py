@@ -9,6 +9,18 @@ from providers import register_provider
 from providers.base import ProviderProfile
 from utils import base_url_host_matches
 
+GROQ_GPT_OSS_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
+_GROQ_GPT_OSS_SLUGS: frozenset[str] = frozenset({"gpt-oss-20b", "gpt-oss-120b", "gpt-oss-safeguard-20b"})
+
+
+def _is_groq_gpt_oss(model: Any, base_url: Any) -> bool:
+    """A Groq-hosted gpt-oss model: the one custom route whose reasoning vocabulary is known and
+    narrower than the OpenAI-compat wire. Model-scoped *and* host-scoped — this profile is the
+    single shared instance behind every ``custom:<name>`` alias, so a same-named model on an
+    unrelated relay must not inherit Groq's vocabulary."""
+    slug = str(model or "").strip().lower().rsplit("/", 1)[-1]
+    return slug in _GROQ_GPT_OSS_SLUGS and base_url_host_matches(str(base_url or ""), "api.groq.com")
+
 
 def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
     """True only for explicit Ollama signatures (port 11434 or an ``ollama`` host label).
@@ -71,14 +83,24 @@ class CustomProfile(ProviderProfile):
         if reasoning_config and isinstance(reasoning_config, dict):
             effort = (reasoning_config.get("effort") or "").strip().lower()
             if effort == "none" or reasoning_config.get("enabled", True) is False:
-                # See #14820.
-                top_level["reasoning_effort"] = "none"
+                # See #14820. Groq's gpt-oss models have no thinking-off level at all: their
+                # vocabulary is exactly low/medium/high and "none" 400s (#138054), so the field
+                # is omitted and the provider default applies — the same remedy the auxiliary
+                # ladder reaches, one round-trip earlier.
+                if _is_groq_gpt_oss(ctx.get("model"), ctx.get("base_url")):
+                    pass
+                else:
+                    top_level["reasoning_effort"] = "none"
                 if _looks_like_ollama_endpoint(ctx.get("base_url")):
                     extra_body["think"] = False
             elif effort and base_url_host_matches(str(ctx.get("base_url") or ""), "api.groq.com"):
-                # Groq's OpenAI-compatible wire accepts top-level reasoning_effort only as
-                # "none" / "default"; any graded level ("medium", "high") 400s (#75089).
-                top_level["reasoning_effort"] = "default"
+                # Groq's reasoning_effort vocabulary is per-model, not per-host: qwen/* accepts
+                # only "none" / "default", where any graded level 400s (#75089); the gpt-oss
+                # family is the mirror image (#138054).
+                if _is_groq_gpt_oss(ctx.get("model"), ctx.get("base_url")):
+                    top_level["reasoning_effort"] = clamp_effort(effort, GROQ_GPT_OSS_EFFORTS)
+                else:
+                    top_level["reasoning_effort"] = "default"
             elif effort:
                 top_level["reasoning_effort"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
         return extra_body, top_level
